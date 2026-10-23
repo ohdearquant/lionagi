@@ -269,6 +269,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   only when every one reads `false`. Whitespace or an invisible character such as a byte-order
   mark ahead of a profile's frontmatter no longer hides it. Containment is unchanged for
   `li agent -a`, which reads profiles the same way and so prints the same warnings.
+- The scheduler's readiness (`/admin/readiness`, `li doctor`) reads `stalled` when a
+  `github_poll` schedule's poll pass has run for more than 300 seconds. The time a process the
+  pass dispatched takes to start and run is left out, so a long action does not read as a stall,
+  while a poll, or a store write of the pass or of a fire it makes, that does not return makes
+  the scheduler unready.
 
 ### Changed
 
@@ -593,14 +598,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   schedule, or a `play` schedule without a playbook, whatever its `action_prompt` holds, since
   neither launch sends it. The scheduler fills templates in those two fields only: others, such as
   `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
-  checked. A schedule that cannot launch at all, such as one with an unknown action kind or an
-  invalid playbook name, is refused for that reason first, and the run record of a launch that
-  sends no prompt no longer shows its `action_prompt`.
-- The scheduler's readiness (`/admin/readiness`, `li doctor`) read `stalled` whenever an action a
-  `github_poll` schedule dispatched ran for more than 300 seconds, since a poll pass waits on each
-  action it dispatches and the check timed the whole pass. It now leaves out only the time a
-  process the pass dispatched takes to start and run, so a poll, or a store write of the pass or
-  of a fire it makes, that does not return still makes the scheduler unready.
+  checked. A schedule whose stored fields cannot launch, such as one with an unknown action kind,
+  an invalid playbook name, a command outside the allowlist or an `engine` schedule with no
+  engine kind, is refused for that reason first, with the error its launch would raise. A value
+  that only a filled template makes invalid, such as a prompt that renders to a flag, is still
+  refused when the launch is built. The run record of a launch that sends no prompt no longer
+  shows its `action_prompt`.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read
@@ -610,8 +613,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   interval had passed, every poll that fired nothing (a quiet repository, events its filter left
   out, a failed request) was followed by another on the next scheduler tick, every 30 seconds.
   The interval now counts from the later of the last fire and the last poll, so the schedule
-  polls once per interval whatever the poll found. A restarted scheduler polls at its first tick
-  if the interval has passed since the last fire.
+  polls once per interval whatever the poll found. The exception is a poll whose kept events are
+  dropped because the schedule has moved past them: the poll that found them counts as never
+  made, and the schedule lists afresh at the tick that drops them. A restarted scheduler polls at
+  its first tick if the interval has passed since the last fire.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so

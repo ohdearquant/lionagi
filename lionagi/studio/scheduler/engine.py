@@ -1629,20 +1629,28 @@ class SchedulerEngine:
             del self._github_tick_tasks[sid]
             self._github_tick_started_at.pop(sid, None)
 
-    def _current_github_pass(self) -> str | None:
-        """The schedule whose github_poll pass is the running task, if any: a fire awaited inside
-        a pass, chained fires included, runs in the pass's own task."""
+    def _current_github_pass(self) -> tuple[str, asyncio.Task] | None:
+        """The github_poll pass that is the running task, as its schedule id and its task, if
+        any: a fire awaited inside a pass, chained fires included, runs in the pass's own task."""
         task = asyncio.current_task()
         for sid, pass_task in self._github_tick_tasks.items():
             if pass_task is task:
-                return sid
+                return sid, task
         return None
 
-    def _github_pass_clock(self, sid: str | None, *, running: bool) -> None:
-        """Start or stop the stall clock of github_poll pass *sid*, while that pass is still the
-        schedule's registered one and the running task: a pass that has ended or been dropped by
-        stop() gets no stamp back, and another pass's stamp is never touched."""
-        if sid is None or self._github_tick_tasks.get(sid) is not asyncio.current_task():
+    def _github_pass_clock(
+        self, github_pass: tuple[str, asyncio.Task] | None, *, running: bool
+    ) -> None:
+        """Start or stop the stall clock of a pass ``_current_github_pass`` found, while its task
+        is still the schedule's registered pass: a pass that has ended or been dropped by stop()
+        gets no stamp back, and another pass's stamp is never touched. The pass is matched by the
+        task found when the fire began, never by the running task, since ``spawn_and_wait`` awaits
+        ``on_launched`` inside ``asyncio.wait_for``, which runs it in a task of its own on Python
+        3.10 and 3.11."""
+        if github_pass is None:
+            return
+        sid, pass_task = github_pass
+        if self._github_tick_tasks.get(sid) is not pass_task:
             return
         if running:
             self._github_tick_started_at[sid] = time.time()

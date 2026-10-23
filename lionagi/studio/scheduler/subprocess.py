@@ -508,9 +508,10 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
 
 
 def validate_launch_fields(schedule: dict) -> str:
-    """Check the fields a launch reads as written, and return its action kind with a legacy
+    """Check every field a launch reads as stored, and return its action kind with a legacy
     alias resolved. ``build_argv`` runs this before it renders anything, and a manual trigger
-    runs it before its placeholder check, so a schedule that cannot launch is refused for that.
+    runs it before its placeholder check, so a schedule whose stored fields cannot launch is
+    refused for that. The prompt as rendered is checked by ``build_argv`` after rendering.
     """
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)  # normalize legacy alias
@@ -540,6 +541,51 @@ def validate_launch_fields(schedule: dict) -> str:
         _validate_playbook_args(_playbook_args(schedule))
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
+
+    if kind == "agent" and not schedule.get("action_model") and isinstance(extra, list) and extra:
+        # Omitting the model positional when unset lets `li agent` fall through to the profile
+        # default. But with model omitted, a single extra-args token brings arity back to
+        # [model, prompt] and would silently misroute the prompt as MODEL.
+        raise ValueError(
+            "action_extra_args is not supported together with an empty "
+            "action_model for kind='agent': omitting the model "
+            "positional makes the extra-args token(s) indistinguishable "
+            "from an explicit [model, prompt] pair, which would silently "
+            "misroute action_prompt as the model. Set action_model "
+            "explicitly, or clear action_extra_args."
+        )
+    elif kind == "flow_yaml" and isinstance(extra, list) and extra:
+        # No positionals here (spec file carries prompt/model), so extra tokens would soak into
+        # flow's optional slots.
+        raise ValueError(
+            "flow_yaml launches do not accept action_extra_args; "
+            "set model/prompt inside the flow spec instead"
+        )
+    elif kind == "engine":
+        # action_agent = engine kind (e.g. "research"); action_prompt = spec.
+        if not agent:
+            raise ValueError("engine launches require action_agent (the engine kind)")
+        if not schedule.get("action_prompt"):
+            raise ValueError("engine launches require action_prompt (the engine spec)")
+        # The engine CLI exits nonzero for 'coding' without --test-cmd (and a blank command
+        # splits into an empty argv downstream); fail here so no invocation row is created for a
+        # launch that cannot run.
+        engine_opts = schedule.get("action_engine_options") or {}
+        if agent == "coding" and not str(engine_opts.get("test_cmd") or "").strip():
+            raise ValueError(
+                "the 'coding' engine kind requires a non-blank action_engine_options.test_cmd"
+            )
+    elif kind == "command":
+        command = schedule.get("action_command") or ""
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+        if isinstance(extra, list) and extra:
+            raise ValueError(
+                "command launches do not accept action_extra_args; set "
+                "arguments via action_command_args instead"
+            )
+        if not isinstance(schedule.get("action_command_args") or [], list):
+            raise ValueError("action_command_args must be a list of strings")
     return kind
 
 
@@ -596,19 +642,7 @@ def build_argv(
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
-        # Omitting the model positional when unset lets `li agent` fall
-        # through to the profile default. But with model omitted, a single
-        # extra-args token brings arity back to [model, prompt] and would
-        # silently misroute the prompt as MODEL -- reject that combination.
-        if not model and isinstance(extra, list) and extra:
-            raise ValueError(
-                "action_extra_args is not supported together with an empty "
-                "action_model for kind='agent': omitting the model "
-                "positional makes the extra-args token(s) indistinguishable "
-                "from an explicit [model, prompt] pair, which would silently "
-                "misroute action_prompt as the model. Set action_model "
-                "explicitly, or clear action_extra_args."
-            )
+        # validate_launch_fields refused extra args beside an empty model.
         positionals = [model, prompt] if model else [prompt]
         argv += ["agent", *flags, "--", *positionals]
 
@@ -644,13 +678,7 @@ def build_argv(
                 argv.append(prompt)
 
     elif kind == "flow_yaml":
-        # No positionals here (spec file carries prompt/model), so extra
-        # tokens would soak into flow's optional slots; fail at build time.
-        if isinstance(extra, list) and extra:
-            raise ValueError(
-                "flow_yaml launches do not accept action_extra_args; "
-                "set model/prompt inside the flow spec instead"
-            )
+        # validate_launch_fields refused extra args, which would soak into flow's optional slots.
         # Caller deletes tmp_path after the subprocess exits.
         yaml_text = schedule.get("action_flow_yaml") or ""
         if model:
@@ -681,9 +709,8 @@ def build_argv(
 
     elif kind == "engine":
         # argv shape: uv run li engine run [named flags] -- <engine_kind> <spec>
-        # action_agent = engine kind (e.g. "research"); action_prompt = spec.
-        if not agent:
-            raise ValueError("engine launches require action_agent (the engine kind)")
+        # action_agent = engine kind (e.g. "research"); action_prompt = spec. The stored fields
+        # are checked in validate_launch_fields; a spec that renders empty is refused here.
         if not prompt:
             raise ValueError("engine launches require action_prompt (the engine spec)")
         engine_kind = agent
@@ -691,13 +718,6 @@ def build_argv(
         if model:
             flags += ["--model", model]
         engine_opts = schedule.get("action_engine_options") or {}
-        # The engine CLI exits nonzero for 'coding' without --test-cmd (and a
-        # blank command splits into an empty argv downstream); fail here so no
-        # invocation row is created for a launch that cannot run.
-        if engine_kind == "coding" and not str(engine_opts.get("test_cmd") or "").strip():
-            raise ValueError(
-                "the 'coding' engine kind requires a non-blank action_engine_options.test_cmd"
-            )
         max_depth = engine_opts.get("max_depth")
         max_agents = engine_opts.get("max_agents")
         test_cmd = engine_opts.get("test_cmd")
@@ -716,17 +736,10 @@ def build_argv(
         # This kind spawns the allow-listed executable DIRECTLY -- it never
         # goes through `li`, so the executable_prefix/uv-run-li argv built
         # above is discarded entirely rather than extended.
+        # The command, its allowlisting and its argument list are checked in
+        # validate_launch_fields.
         command = schedule.get("action_command") or ""
-        _validate_action_command(command)
-        _validate_command_allowlisted(command)
-        if isinstance(extra, list) and extra:
-            raise ValueError(
-                "command launches do not accept action_extra_args; set "
-                "arguments via action_command_args instead"
-            )
         command_args = schedule.get("action_command_args") or []
-        if not isinstance(command_args, list):
-            raise ValueError("action_command_args must be a list of strings")
         rendered_args = [_render_command_arg(str(a), trigger_context) for a in command_args]
         argv = [command, *rendered_args]
 

@@ -1318,11 +1318,12 @@ async def test_fire_now_returns_none_when_schedule_missing():
     ],
 )
 @pytest.mark.asyncio
-async def test_fire_now_refuses_a_template_a_manual_trigger_cannot_fill(fields, names):
+async def test_fire_now_refuses_a_template_a_manual_trigger_cannot_fill(monkeypatch, fields, names):
     """A manual trigger has no event, so a placeholder naming an event field would reach the
     run unfilled. It is refused, naming each such placeholder, before a slot or a run exists."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "uv")
     svc = _make_svc()
     svc.get_schedule.return_value = _minimal_schedule(**fields)
     engine = SchedulerEngine(svc=svc)
@@ -1378,9 +1379,12 @@ async def test_fire_now_fires_a_template_the_manual_trigger_fills():
     ],
 )
 @pytest.mark.asyncio
-async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_send(fields):
+async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_send(
+    monkeypatch, fields
+):
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "uv")
     svc = _make_svc()
     svc.get_schedule.return_value = _minimal_schedule(**fields)
     engine = SchedulerEngine(svc=svc)
@@ -1401,14 +1405,53 @@ async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_sen
             {"action_kind": "play", "action_playbook": "  "},
             "action_playbook '  ' contains characters not allowed",
         ),
+        (
+            {"action_kind": "agent", "action_model": "", "action_extra_args": ["x"]},
+            "action_extra_args is not supported together with an empty action_model",
+        ),
+        (
+            {
+                "action_kind": "flow_yaml",
+                "action_flow_yaml": "prompt: x\n",
+                "action_extra_args": ["x"],
+            },
+            "flow_yaml launches do not accept action_extra_args",
+        ),
+        ({"action_kind": "engine"}, "engine launches require action_agent"),
+        (
+            {"action_kind": "engine", "action_agent": "summarize", "action_prompt": ""},
+            "engine launches require action_prompt",
+        ),
+        (
+            {"action_kind": "engine", "action_agent": "coding"},
+            "the 'coding' engine kind requires a non-blank action_engine_options.test_cmd",
+        ),
+        ({"action_kind": "command", "action_command": ""}, "action_command is required"),
+        (
+            {"action_kind": "command", "action_command": "make"},
+            "action_command 'make' is not in LIONAGI_SCHEDULER_COMMAND_ALLOWLIST",
+        ),
+        (
+            {"action_kind": "command", "action_command": "uv", "action_extra_args": ["x"]},
+            "command launches do not accept action_extra_args",
+        ),
+        (
+            {"action_kind": "command", "action_command": "uv", "action_command_args": "x"},
+            "action_command_args must be a list of strings",
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_fire_now_refuses_a_schedule_that_cannot_launch_for_that_reason(fields, reason):
+async def test_fire_now_refuses_a_schedule_that_cannot_launch_for_that_reason(
+    monkeypatch, fields, reason
+):
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "uv")
     svc = _make_svc()
-    svc.get_schedule.return_value = _minimal_schedule(action_prompt="{{pr_number}}", **fields)
+    svc.get_schedule.return_value = _minimal_schedule(
+        **{"action_prompt": "{{pr_number}}", **fields}
+    )
     engine = SchedulerEngine(svc=svc)
 
     with patch.object(engine, "_tracked_fire") as mock_tracked:
@@ -1438,6 +1481,19 @@ def test_the_rendered_prompt_is_only_one_the_launch_sends(fields, recorded):
     schedule = _minimal_schedule(action_prompt="check {{pr_number}}", **fields)
     poll_context = {"github_events": [{"pr_number": 7}], "fired_at": 1.0}
     assert render_action_prompt(schedule, poll_context) == recorded
+
+
+def test_an_engine_spec_that_renders_empty_is_refused_when_the_launch_is_built():
+    from lionagi.studio.scheduler.subprocess import build_argv, validate_launch_fields
+
+    schedule = _minimal_schedule(
+        action_kind="engine", action_agent="summarize", action_prompt="{{pr_body}}"
+    )
+    poll_context = {"github_events": [{"pr_body": ""}], "fired_at": 1.0}
+
+    assert validate_launch_fields(schedule) == "engine"
+    with pytest.raises(ValueError, match="engine launches require action_prompt"):
+        build_argv(schedule, poll_context)
 
 
 def test_unfilled_template_vars_reads_the_event_a_poll_fire_carries():
@@ -4548,7 +4604,16 @@ async def test_a_github_pass_hung_in_its_poll_or_a_store_write_reads_stalled(mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "hang", ["invocation", "occurrence", "launch", "dispatched", "process", "terminal"]
+    "hang",
+    [
+        "invocation",
+        "occurrence",
+        "launch",
+        "dispatched",
+        "dispatched_in_its_own_task",
+        "process",
+        "terminal",
+    ],
 )
 async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_runs(
     monkeypatch, tmp_path, hang
@@ -4586,7 +4651,7 @@ async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_
         engine._svc.create_invocation.side_effect = wait_here
     elif hang == "occurrence":
         engine._svc.create_schedule_run_and_advance.side_effect = wait_here
-    elif hang == "dispatched":
+    elif hang in ("dispatched", "dispatched_in_its_own_task"):
         engine._svc.update_schedule_run.side_effect = wait_here
 
     async def update_status(entity_type, entity_id, **fields):
@@ -4601,7 +4666,12 @@ async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_
         # The process starts and runs for as long as it takes; the pass waits on it.
         if hang == "launch":
             await wait_here()
-        await on_launched()
+        if hang == "dispatched_in_its_own_task":
+            # On Python 3.10 and 3.11, asyncio.wait_for runs the coroutine it awaits in a task of
+            # its own, and spawn_and_wait awaits on_launched through it.
+            await asyncio.ensure_future(on_launched())
+        else:
+            await on_launched()
         if hang == "process":
             await wait_here()
         return 0, ""
@@ -4639,6 +4709,115 @@ async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_
     finally:
         release.set()
         await asyncio.wait_for(task, timeout=1)
+
+    assert engine._github_tick_started_at == {}
+    assert engine._global_inflight == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait_for_runs_in_its_own_task", [False, True])
+async def test_a_github_pass_is_timed_through_the_dispatched_stamp_of_the_real_launch(
+    monkeypatch, tmp_path, wait_for_runs_in_its_own_task
+):
+    import lionagi.studio.config as config
+    from lionagi.studio.scheduler import engine as engine_mod
+    from lionagi.studio.scheduler import subprocess as sched_subprocess
+    from lionagi.studio.scheduler.github import GithubPollResult
+    from tests.studio.test_scheduler_github_fire_per_event import _item
+
+    class Pipe:
+        async def read(self, _n):
+            return b""
+
+    class Process:
+        pid = None
+        returncode = None
+        stdout = Pipe()
+        stderr = Pipe()
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+    class AsyncioInLaunch:
+        """The asyncio name inside the launch module: no process is created, and wait_for runs
+        the coroutine it awaits in a task of its own when asked, as on Python 3.10 and 3.11."""
+
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def create_subprocess_exec(self, *args, **kwargs):
+            return Process()
+
+        async def wait_for(self, fut, timeout=None):
+            if not wait_for_runs_in_its_own_task or timeout is None:
+                return await asyncio.wait_for(fut, timeout)
+            task = asyncio.ensure_future(fut)
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if task in done:
+                return task.result()
+            task.cancel()
+            raise asyncio.TimeoutError()
+
+    clock = [1000.0]
+
+    class FakeClock:
+        @staticmethod
+        def time() -> float:
+            return clock[0]
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(engine_mod, "time", FakeClock())
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 10)
+    monkeypatch.setattr(sched_subprocess, "asyncio", AsyncioInLaunch())
+    monkeypatch.setattr(sched_subprocess, "observe_process_group_leader", lambda *a, **k: None)
+    monkeypatch.setattr(sched_subprocess, "resolve_li_executable", lambda: (["/usr/bin/li"], None))
+
+    async def poll(*args, **kwargs):
+        return GithubPollResult(items=[_item(1, "2026-01-01T00:00:00Z")], scan_complete=True)
+
+    monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
+    engine = engine_mod.SchedulerEngine(svc=_make_svc())
+    engine._task = asyncio.current_task()
+    engine._started_at = clock[0] - 10
+    engine._last_tick_completed_at = clock[0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def dispatched_stamp_hangs(*args, **kwargs):
+        entered.set()
+        await release.wait()
+
+    async def update_status(*args, **kwargs):
+        return True
+
+    engine._svc.update_schedule_run.side_effect = dispatched_stamp_hangs
+    engine._svc.update_status.side_effect = update_status
+    schedule = _minimal_schedule(
+        id="github-1",
+        trigger_type="github_poll",
+        github_repo="acme/widgets",
+        last_fired_at=0,
+        action_cwd=str(tmp_path),
+    )
+    engine._start_github_tick(schedule, clock[0])
+    task = engine._github_tick_tasks["github-1"]
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        clock[0] += engine_mod._TICK_STALL_AFTER + 1
+        engine._last_tick_completed_at = clock[0]
+
+        report = engine.health()
+
+        assert report["ready"] is False
+        stalled_for = engine_mod._TICK_STALL_AFTER + 1
+        assert f"has run for {stalled_for:.0f}s outside its actions" in report["detail"]
+    finally:
+        release.set()
+        await asyncio.wait_for(task, timeout=2)
 
     assert engine._github_tick_started_at == {}
     assert engine._global_inflight == 0
