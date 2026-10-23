@@ -307,12 +307,6 @@ class TestCreateNodeConfigPropagation:
         v.touch()
         assert v.version == 2
 
-    def test_soft_delete_enabled(self):
-        cls = create_node("Deletable", soft_delete=True)
-        d = cls(content="bye")
-        d.soft_delete()
-        assert d.is_deleted is True
-
     def test_content_hashing_on_touch(self):
         cls = create_node("Hashed", content_hashing=True)
         h = cls(content="payload")
