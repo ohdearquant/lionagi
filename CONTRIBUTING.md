@@ -93,7 +93,7 @@ existing warning-level diagnostics remain visible in the CI summary and the
 
 1. **Formatting & linting are automated by [ruff](https://docs.astral.sh/ruff/).**
    Run `uv run ruff format . && uv run ruff check --fix .`, or
-   `pre-commit run -a` for the full pipeline (file sanity hooks, ruff-format,
+   `uvx pre-commit run -a` for the full pipeline (file sanity hooks, ruff-format,
    ruff, pyupgrade, markdownlint, and frontend/marketplace hooks when relevant).
    `[tool.ruff]` in `pyproject.toml` is the source of truth — line length
    **100**, target `py310`. CI tests Python 3.10-3.14 on PRs and on

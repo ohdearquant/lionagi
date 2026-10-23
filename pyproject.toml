@@ -51,7 +51,6 @@ classifiers=[
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.2.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.1.0",
     "ipython>=8.31.0",

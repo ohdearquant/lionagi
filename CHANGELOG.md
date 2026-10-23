@@ -542,6 +542,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   extra. `Graph.display()` and `li o flow --show-graph` still draw with matplotlib when it is
   installed, and raise `ImportError` naming it when it is not.
 
+- `pre-commit` from the dev dependency group, and `virtualenv`, `nodeenv`, `identify`, `cfgv`,
+  `distlib`, `filelock` and `python-discovery` with it. CI already runs the hooks with
+  `uvx pre-commit`, and so do the contributing docs now.
+
 - `msgspec` is no longer a dependency. lionagi still accepts a `msgspec.Struct` value wherever it
   accepted one before, when `msgspec` is installed; code that passes one installs `msgspec`
   itself.
