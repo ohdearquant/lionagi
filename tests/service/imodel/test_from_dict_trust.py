@@ -239,12 +239,21 @@ CREDENTIAL_HEADERS = [
     "Cookie",
     "Ocp-Apim-Subscription-Key",
     "X-Functions-Key",
+    "X-Cache-Key",  # its last word is "key", so it is dropped like the rest
     "X-Auth",
     "X-Auth-Key",
     "X-Cookie",
     "Cookie2",
     "X-Authentication",
     "Authorisation",
+    "XAuth",
+    "AuthKey",
+    "authKey",
+    "X-AuthKey",
+    "Key",
+    "X-Session-Key",
+    "X-Token-Auth",
+    "x_authentication",
     # Not a credential, but it would send the restored key to another virtual host.
     "Host",
 ]
@@ -273,7 +282,7 @@ async def test_a_stored_credential_header_never_reaches_the_request(env_key, nam
     assert headers["Authorization"] == f"Bearer {caller.get('api_key', env_key)}"
     assert "stored-secret" not in headers.values()
     assert headers["OpenAI-Beta"] == "kept"
-    # Ends in "key" but not in "-Key": a header name, not a key.
+    # Ends in "key" but its last word is not "key".
     assert headers["X-Monkey"] == "kept"
 
     session = endpoint._create_http_session()
@@ -486,6 +495,14 @@ CREDENTIAL_SETTINGS = [
     "authKey",
     "auth_key",
     "XAuth",
+    "AuthKey",
+    "Authorisation",
+    "x_authentication",
+    "authentication_key",
+    "session_key",
+    "client_key",
+    "clientKey",
+    "api_key_id",
     # Names the vocabulary takes whole, never as part of a longer word.
     "auth",
     "bearer",
@@ -518,12 +535,15 @@ def test_a_stored_setting_named_in_bytes_is_read_as_its_text():
     assert model.provider_metadata == {"session_id": "s-1"}
 
 
-def test_a_stored_setting_that_counts_tokens_or_names_a_cache_key_is_kept():
+def test_a_stored_setting_whose_name_reads_as_no_credential_is_kept():
     schema = {"type": "object", "properties": {"token": {"type": "string"}}}
     kept = {
         "max_tokens": 10,
         "max_completion_tokens": 20,
         "prompt_cache_key": "team-a",
+        "token_limit": 5,
+        "custom_key": "c-1",
+        "user": "u-1",
         "response_format": {"type": "json_schema", "json_schema": {"schema": schema}},
     }
     data = _stored(requires_tokens=True)
@@ -738,7 +758,7 @@ def test_a_stored_url_outside_the_restorable_form_is_refused(reason, stored):
     with pytest.raises(ValueError) as refused:
         iModel.from_dict(_stored(base_url=stored))
     message = str(refused.value)
-    assert message.startswith(f"The stored base_url {reason}, so a user and password")
+    assert message.startswith(f"The stored base_url {reason}, so it cannot be read for a user")
     for part in ("stored-se", "Stored-se", "stored-user", "gateway.example", "api.openai"):
         assert part not in message
     assert "chat_model=" in message
@@ -749,7 +769,7 @@ def test_a_stored_url_outside_the_restorable_form_is_refused(reason, stored):
 @pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
 @pytest.mark.parametrize("stored", [urls[0] for urls in REFUSED.values()])
 def test_every_restore_refuses_a_stored_url_outside_the_form(entry, stored):
-    with pytest.raises(ValueError, match="cannot be removed"):
+    with pytest.raises(ValueError, match="cannot be read for a user and password"):
         _restore_through(entry, _stored(base_url=stored))
 
 
@@ -808,3 +828,77 @@ def test_the_private_address_check_resolves_the_host_the_client_connects_to(monk
     model.endpoint._assert_ssrf_safe_url()
     assert checked == [httpx.URL("https://straße.example/v1").raw_host.decode("ascii")]
     assert checked == ["xn--strae-oqa.example"]
+
+
+@pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
+def test_a_stored_retry_config_and_circuit_breaker_are_restored(entry):
+    data = _stored()
+    data["endpoint"]["retry_config"] = {"max_retries": 7, "base_delay": 0.25}
+    data["endpoint"]["circuit_breaker"] = {"failure_threshold": 9, "recovery_time": 4.0}
+    if entry == "endpoint":
+        endpoint = Endpoint.from_dict(data["endpoint"])
+    elif entry == "imodel":
+        endpoint = iModel.from_dict(data).endpoint
+    else:
+        branch_data = Branch(
+            chat_model=iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+        ).to_dict()
+        branch_data["chat_model"] = data
+        endpoint = Branch.from_dict(branch_data).chat_model.endpoint
+    assert endpoint.retry_config.max_retries == 7
+    assert endpoint.retry_config.base_delay == 0.25
+    assert endpoint.circuit_breaker.failure_threshold == 9
+    assert endpoint.circuit_breaker.recovery_time == 4.0
+
+
+@pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
+@pytest.mark.parametrize("field", ["retry_config", "circuit_breaker"])
+@pytest.mark.parametrize(
+    "stored", [{"stored-secret": 1}, {"backoff_factor": "stored-secret"}, ["stored-secret"]]
+)
+def test_a_stored_retry_or_breaker_setting_that_does_not_build_is_refused_without_its_text(
+    entry, field, stored
+):
+    data = _stored()
+    data["endpoint"][field] = stored
+    with pytest.raises(ValueError) as refused:
+        _restore_through(entry, data)
+    message = str(refused.value)
+    assert f"The stored {field} does not build (" in message
+    assert "stored-secret" not in message
+    assert refused.value.__context__ is None
+    assert refused.value.__cause__ is None
+
+
+@pytest.mark.parametrize("stored", [{"api_key": "stored-secret"}, {"stored-secret": 1}])
+def test_a_stored_branch_that_does_not_validate_is_refused_without_its_text(stored):
+    branch_data = Branch(
+        chat_model=iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    ).to_dict()
+    branch_data.update(stored)
+    with pytest.raises(ValueError) as refused:
+        Branch.from_dict(branch_data)
+    message = str(refused.value)
+    assert message.startswith("The stored branch does not validate (a name with no field: ")
+    assert "stored-secret" not in message
+    assert refused.value.__context__ is None
+
+
+def test_a_stored_setting_name_that_is_not_a_string_is_refused_without_its_text():
+    data = _stored()
+    # A name the credential rule does not drop, so it reaches the config.
+    data["endpoint"]["config"][b"stored-name"] = "stored-value"
+    with pytest.raises(ValueError) as refused:
+        iModel.from_dict(data)
+    message = str(refused.value)
+    assert "a setting's name is not a string" in message
+    assert "stored-name" not in message and "stored-value" not in message
+    assert refused.value.__context__ is None
+
+
+def test_stored_client_headers_that_cannot_be_read_by_name_leave_no_client_options():
+    data = _stored()
+    data["endpoint"]["config"]["client_kwargs"] = {"headers": "X-Api-Key: stored-secret"}
+    config = iModel.from_dict(data).endpoint.config
+    assert config.client_kwargs == {}
+    assert "stored-se" not in str(iModel.from_dict(data).to_dict())

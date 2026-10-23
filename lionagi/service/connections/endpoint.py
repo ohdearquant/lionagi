@@ -26,11 +26,6 @@ from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
 
-# Header names, folded, that a restored model drops beside the credential names
-# (``_without_credential_headers``). Only restore reads this: the redaction callers of
-# credential_fields keep their own vocabulary.
-_HEADERS_NOT_RESTORED = frozenset({"cookie", "x_auth", "host"})
-
 # What ``from_dict`` never takes from a stored config: the credential source, the
 # local-network opt-in and the kwargs a config never writes down. A setting named as a
 # credential or a proxy is dropped too, by ``_names_credential_setting``.
@@ -1258,9 +1253,11 @@ class Endpoint:
         restored as written, a value nested inside one included. A user and password in
         the stored URL are removed, and a stored URL that is not in a form they can be
         removed from is refused (see ``_without_userinfo``). A stored config that does not
-        validate is refused with the fields and reasons only, none of its values.
-        Without the keyword arguments the config has no API key and the opt-in is off;
-        ``iModel.from_dict`` then applies the provider's registration.
+        validate is refused with the fields and reasons only, none of its values, and a
+        stored ``retry_config`` or ``circuit_breaker`` that does not build is refused naming
+        the part and the error's type only. Without the keyword arguments the config has no
+        API key and the opt-in is off; ``iModel.from_dict`` then applies the provider's
+        registration.
         """
         from lionagi.utils import to_dict
 
@@ -1270,9 +1267,9 @@ class Endpoint:
         config = data.get("config")
 
         if retry_config:
-            retry_config = RetryConfig(**retry_config)
+            retry_config = _restored_part(RetryConfig, "retry_config", retry_config)
         if circuit_breaker:
-            circuit_breaker = CircuitBreaker(**circuit_breaker)
+            circuit_breaker = _restored_part(CircuitBreaker, "circuit_breaker", circuit_breaker)
         if config:
             # None of these is taken from a stored row. The config writes down only the
             # opt-in; a row written by an older version, or by any other writer, may
@@ -1330,6 +1327,9 @@ class Endpoint:
                         include_url=False, include_context=False, include_input=False
                     )
                 )
+            except TypeError:
+                # A name that is not a string, bytes say, which no field takes.
+                problems = "a setting's name is not a string"
             if problems is not None:
                 raise ValueError(
                     f"The stored endpoint config does not validate ({problems}). Its values "
@@ -1342,6 +1342,24 @@ class Endpoint:
             circuit_breaker=circuit_breaker,
             retry_config=retry_config,
         )
+
+
+def _restored_part(part: type, field: str, stored: Any) -> Any:
+    """``part`` built from the stored ``field``, or refused without the stored text.
+
+    The constructor's message names an unknown stored key, which is stored text and may be
+    a password, so the refusal names the field and the error's class only. It is raised
+    outside the handler, so the original error is not attached to it.
+    """
+    try:
+        return part(**stored)
+    except (TypeError, ValueError) as exc:
+        reason = type(exc).__name__
+    raise ValueError(
+        f"The stored {field} does not build ({reason}). Its names and values are left out "
+        "of this message. Correct the stored config, or pass a live model to "
+        "Branch.from_dict (chat_model=, parse_model=)."
+    )
 
 
 def _restored_settings(settings: Mapping, *, drop: frozenset[str] = frozenset()) -> dict:
@@ -1365,60 +1383,84 @@ def _restored_settings(settings: Mapping, *, drop: frozenset[str] = frozenset())
     return restored
 
 
-def _names_credential_setting(name: Any) -> bool:
-    """Whether a stored setting's name reads as a credential or a proxy.
+# Read in a name with its case, separators and camel-case run together, so ``X-AuthKey``,
+# ``auth_key`` and ``authKey`` read alike. The stored settings and the stored headers are
+# both tested against these; see ``_names_credential_setting``.
+_CREDENTIAL_NAME_PARTS = (
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "bearer",
+    "cookie",
+    "proxy",
+    "proxies",
+    "authorization",
+    "authorisation",
+    "authentication",
+    "authkey",
+    "authtoken",
+    "apikey",
+    "accesskey",
+    "privatekey",
+    "sessionkey",
+    "clientkey",
+    "signingkey",
+    "encryptionkey",
+    "masterkey",
+    "subscriptionkey",
+    "licensekey",
+)
 
-    That is a name the library reads as a credential, with ``token`` counted only where
-    the name ends in it (``token``, ``access_token``, ``accessToken``), so ``max_tokens``
-    and ``requires_tokens`` are kept; ``key`` on its own; ``auth_key`` and ``authKey``;
-    ``cookie``, ``x_auth`` and ``xauth``; and a name holding ``proxy`` or ``proxies``,
-    whose URL can hold a user and password. A bytes name is read as Latin-1, as the HTTP
-    client reads it. Only the name is read, so a setting nested inside another keeps its
-    names: a JSON schema field named ``token`` is sent.
+
+def _names_credential_setting(name: Any) -> bool:
+    """Whether a stored setting's or header's name reads as a credential or a proxy.
+
+    The name is read with its case, separators and camel-case run together. It reads as a
+    credential when it is ``auth``, ``authentication``, ``bearer`` or ``key``; begins with
+    ``xauth`` (``X-Auth``, ``XAuth``, ``x_authentication``); ends in ``token``
+    (``access_token``, ``accessToken``), so ``max_tokens`` and ``token_limit`` are kept; or
+    holds one of ``_CREDENTIAL_NAME_PARTS``: ``Authorisation``, ``authentication_key``,
+    ``api_key_id``, ``session_key``, ``clientKey``, ``Ocp-Apim-Subscription-Key``,
+    ``client_secret``, ``Cookie2`` and a name holding ``proxy`` or ``proxies``, whose URL
+    can hold a user and password. A setting otherwise named, ``author``, ``user``,
+    ``prompt_cache_key`` or ``custom_key`` say, is kept. Headers are read by this rule and
+    two more (see ``_without_credential_headers``). A bytes name is read as Latin-1, as the
+    HTTP client reads it. Only the name is read, so a setting nested inside another keeps
+    its names: a JSON schema field named ``token`` is sent.
     """
-    from lionagi.libs.credential_fields import (
-        EXACT_SECRET_FIELD_NAMES,
-        SECRET_KEY_MARKERS,
-        fold_field_name,
-    )
+    from lionagi.libs.credential_fields import fold_field_name
 
     if isinstance(name, (bytes, bytearray)):
         name = bytes(name).decode("latin-1")
     if not isinstance(name, str):
         return False
-    folded = fold_field_name(name).strip("_")
-    markers = (
-        *(m for m in SECRET_KEY_MARKERS if m != "token"),
-        "auth_key",
-        "authkey",
-        "cookie",
-        "proxy",
-        "proxies",
-    )
+    compact = fold_field_name(name).replace("_", "")
     return (
-        folded in EXACT_SECRET_FIELD_NAMES
-        or folded in ("key", "x_auth", "xauth")
-        or folded.endswith("token")
-        or any(marker in folded for marker in markers)
+        compact in ("auth", "authentication", "bearer", "key")
+        or compact.startswith("xauth")
+        or compact.endswith("token")
+        or any(part in compact for part in _CREDENTIAL_NAME_PARTS)
     )
 
 
 def _without_credential_headers(headers: Any) -> Any:
     """``headers`` without each stored header a restored model must not send.
 
-    That is a header whose name the library reads as a credential (see
-    ``lionagi.libs.credential_fields``), one whose name ends in ``-Key``
-    (``Ocp-Apim-Subscription-Key``, ``X-Auth-Key``), one holding ``Cookie``
-    (``X-Cookie``, ``Cookie2``), ``Authentication`` (``X-Authentication``) or
-    ``Authorisation``, ``X-Auth``, and ``Host``, which would send the restored key to
-    another virtual host at the same address. Only those names are read: a header named
-    otherwise, ``X-Signature`` or ``Passphrase`` say, is kept. A bytes name is read as
-    Latin-1, as the HTTP client reads it. A mapping and a list of name-value pairs are
-    filtered, and an entry of the list that is not a pair is dropped. Any other value,
-    such as a string of header lines, cannot be read for its names and is returned as
-    ``None``, so no header from it is restored.
+    That is a header whose name reads as a credential or a proxy as a stored setting's
+    does (see ``_names_credential_setting``: ``Authorisation``, ``X-Auth``, ``AuthKey``,
+    ``X-Session-Key``, ``Cookie2``) and three more: one with ``token`` anywhere in its name
+    (``X-Token-Auth``), since no header counts tokens as ``max_tokens`` does; one whose
+    last word is ``key`` (``X-Functions-Key``, ``X-Cache-Key``), since a header so named
+    carries a key where a setting so named, ``custom_key``, may be the caller's own; and
+    ``Host``, which would send the restored key to another virtual host at the same address.
+    Only the name is read: a header named otherwise, ``X-Signature``, ``X-Monkey`` or
+    ``Passphrase`` say, is kept. A bytes name is read as Latin-1, as the HTTP client reads
+    it. A mapping and a list of name-value pairs are filtered, and an entry of the list that
+    is not a pair is dropped. Any other value, such as a string of header lines, cannot be
+    read for its names and is returned as ``None``, so no header from it is restored.
     """
-    from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
+    from lionagi.libs.credential_fields import fold_field_name
 
     def names_credential(name: Any) -> bool:
         if isinstance(name, (bytes, bytearray)):
@@ -1426,12 +1468,12 @@ def _without_credential_headers(headers: Any) -> Any:
         if not isinstance(name, str):
             return False
         folded = fold_field_name(name).strip("_")
+        compact = folded.replace("_", "")
         return (
-            is_secret_field_name(name)
-            or folded in _HEADERS_NOT_RESTORED
-            or folded == "key"
+            _names_credential_setting(name)
+            or compact == "host"
+            or "token" in compact
             or folded.endswith("_key")
-            or any(word in folded for word in ("cookie", "authentication", "authorisation"))
         )
 
     if isinstance(headers, Mapping):
@@ -1467,8 +1509,8 @@ def _stored_base_url(config: Mapping) -> Any:
         # Raised here, outside the handler, so the decode error and the bytes it holds
         # are not attached to the refusal.
         raise ValueError(
-            "The stored base_url is bytes that do not decode as UTF-8, so a user and "
-            f"password in it cannot be removed. {_STORED_URL_REMEDY}"
+            "The stored base_url is bytes that do not decode as UTF-8, so it cannot be read "
+            f"for a user and password and is not restored. {_STORED_URL_REMEDY}"
         )
     return value
 
@@ -1476,16 +1518,17 @@ def _stored_base_url(config: Mapping) -> Any:
 def _without_userinfo(url: str) -> str:
     """``url`` without the ``user:password@`` part the HTTP client reads in it, or refused.
 
-    A stored URL is restored only in this form, read from the stored text itself: ``http://`` or ``https://`` from its first
-    character, an optional user and password running to the last ``@`` and holding no
-    slash, backslash, ``?`` or ``#``, then a host name of letters, digits, ``-``, ``.``
-    and ``_`` (outside ASCII, a letter's combining marks count as letters, in the composed
-    form, NFC, that the client accepts), or an IPv6 address in brackets with an optional
-    zone of letters, digits and ``-._~``, then an optional port of digits, which may be
-    empty and is at most 65535, and no ``@`` anywhere once the user and password are removed. Text with no
-    ``:`` and no ``@``, such as ``internal``, is returned as it is, since it has no place
-    for a password. Anything else is refused, because which part of it is a password cannot be
-    told and the config would write it back. The check for ``:`` and ``@`` reads the text
+    A stored URL is restored only in this form, read from the stored text itself:
+    ``http://`` or ``https://`` from its first character, an optional user and password
+    running to the last ``@`` and holding no slash, backslash, ``?`` or ``#``, then a host
+    name of letters, digits, ``-``, ``.`` and ``_`` (outside ASCII, a letter's combining
+    marks count as letters, in the composed form, NFC, that the client accepts), or an IPv6
+    address in brackets with an optional zone of letters, digits and ``-._~``, then an
+    optional port of digits, which may be empty and is at most 65535, and no ``@`` anywhere
+    once the user and password are removed. Text with no ``:`` and no ``@``, such as
+    ``internal``, is returned as it is, since it has no place for a password. Anything else
+    is refused, because which part of it is a password cannot be told and the config would
+    write it back. The check for ``:`` and ``@`` reads the text
     with its percent-encoding removed and its compatibility characters folded until it
     stops changing, so ``%2540`` and a fullwidth ``＠`` count as an ``@``.
     """
@@ -1508,8 +1551,8 @@ def _without_userinfo(url: str) -> str:
 
     def refused(reason: str) -> ValueError:
         return ValueError(
-            f"The stored base_url {reason}, so a user and password in it cannot be "
-            f"removed. {_STORED_URL_REMEDY}"
+            f"The stored base_url {reason}, so it cannot be read for a user and password "
+            f"and is not restored. {_STORED_URL_REMEDY}"
         )
 
     deep = f"is still percent-encoded after {_URL_DECODE_PASSES} layers are read"

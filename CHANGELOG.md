@@ -29,12 +29,14 @@ gateway that reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A
 stored in the config's `kwargs`, a copy no request reads, is not restored, nor is a stored
 setting whose name reads as a credential or a proxy, at the config's top level or in its
 `kwargs`, which the request body carries: `proxy`, `proxy_url`, `proxies`, `x_api_key`,
-`authorization`, `password`, `auth_key`, a name that ends in `token` (`access_token`,
-`accessToken`) and the like.
-A setting that counts tokens or names a cache key, such as `max_tokens` or `prompt_cache_key`,
-is kept, and a value nested inside a kept setting is restored as written. A set of headers
-stored there, `headers` or `extra_headers`, loses its credential headers as `default_headers`
-does, a header named with `Cookie`, `Authentication` or `Authorisation` in it (`X-Cookie`,
+`authorization`, `Authorisation`, `password`, `auth_key`, `session_key`, `client_key`, `key`,
+a name that begins with `x_auth` or ends in `token` (`access_token`, `accessToken`) and the
+like. A setting otherwise named, such as `max_tokens`, `token_limit`, `prompt_cache_key` or
+`custom_key`, is kept, and a value nested inside a kept setting is restored as written. A
+stored header is dropped by the same rule and three more: `token` anywhere in its name, `Key`
+as its last word (`X-Functions-Key`, `X-Cache-Key`), and `Host`. A set of headers stored
+there, `headers` or `extra_headers`, loses its credential headers as `default_headers` does,
+a header named with `Cookie`, `Authentication` or `Authorisation` in it (`X-Cookie`,
 `Cookie2`, `X-Authentication`) among them; a stored set of headers that is not a mapping or a
 list of name-value pairs, such as a string of header lines, is not restored at all. A
 `provider_metadata` entry named as a credential is dropped, and stored metadata that is not a
@@ -58,8 +60,13 @@ password that are removed. It also refuses text the client could not send, such 
 the client cannot encode. Stored bytes that do not decode as UTF-8 raise `ValueError` as well,
 without their text; they raised pydantic's `ValidationError` before, whose message held part of
 the bytes. A stored config that does not validate raises `ValueError` too, naming each field
-and the reason and none of the stored values. Pass the URL the same way, or a live model to
-`Branch.from_dict`.
+and the reason and none of the stored values, and so does one holding a setting whose name is
+not a string. A stored `retry_config` or `circuit_breaker` that does not build raises
+`ValueError` naming only the part and the error's type, and stored `Branch` data that does not
+validate raises `ValueError` naming each field and the reason, a name with no field as "a name
+with no field". Pass the URL the same way, or a live model to `Branch.from_dict`. A stored
+`retry_config` and `circuit_breaker` are now kept by `iModel.from_dict` and
+`Branch.from_dict`, which dropped them before.
 
 Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
 (a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import

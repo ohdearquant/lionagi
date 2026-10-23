@@ -727,7 +727,8 @@ class iModel:  # noqa: N801
         the local-network opt-in off but not on. Without
         ``api_key``, the environment's credential is attached only at the provider's
         registered base URL. Without ``allow_local_network``, the provider's
-        registered setting applies. ``base_url`` replaces the stored URL.
+        registered setting applies. ``base_url`` replaces the stored URL. The stored
+        ``retry_config`` and ``circuit_breaker`` are kept.
         """
         endpoint = Endpoint.from_dict(
             data.get("endpoint", {}),
@@ -747,6 +748,9 @@ class iModel:  # noqa: N801
         ):
             registered = e1.config
             e1.config = endpoint.config
+            # The registered endpoint is built without them; copy() keeps them too.
+            e1.retry_config = endpoint.retry_config
+            e1.circuit_breaker = endpoint.circuit_breaker
             if allow_local_network is None:
                 e1.config.allow_local_network = _restored_opt_in(registered, data)
             # The environment's credential is for the provider's own URL only.

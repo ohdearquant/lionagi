@@ -719,8 +719,8 @@ class Branch(Element, Relational):
         A stored model is rebuilt by ``iModel.from_dict``, which takes from ``data`` no
         API key, no header or setting whose name reads as a credential, no proxy and no
         user or password in a URL, and lets it turn the local-network opt-in off but never
-        on. A model
-        given here replaces the stored one.
+        on. A model given here replaces the stored one. Stored data that does not validate
+        is refused naming each field and the reason, none of the stored values.
         """
         # Copy first: the pops below would otherwise strip messages, chat_model,
         # and log_config out of the caller's snapshot, so it could not be reused
@@ -751,7 +751,27 @@ class Branch(Element, Relational):
                 params[k] = v
 
         params.update(dict_)
-        return cls(**{k: v for k, v in params.items() if v is not Unset})
+        from pydantic import ValidationError
+
+        # pydantic's message repeats a stored value and the name of a stored key the branch
+        # has no field for, either of which may be a password, so the refusal names only
+        # the fields a branch has and the reasons. It is raised outside the handler, so the
+        # original error is not attached to it.
+        try:
+            return cls(**{k: v for k, v in params.items() if v is not Unset})
+        except ValidationError as exc:
+            errors = exc.errors(include_url=False, include_context=False, include_input=False)
+            problems = "; ".join(
+                f"{loc[0] if loc and loc[0] in cls.model_fields else 'a name with no field'}: "
+                f"{error['msg']}"
+                for error in errors
+                for loc in (error["loc"],)
+            )
+        raise ValueError(
+            f"The stored branch does not validate ({problems}). Its values are left out of "
+            "this message. Correct the stored data, or pass a live model (chat_model=, "
+            "parse_model=)."
+        )
 
     def dump_logs(self, clear: bool = True, persist_path=None):
         self._log_manager.dump(clear=clear, persist_path=persist_path)
