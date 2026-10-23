@@ -694,3 +694,46 @@ async def test_no_auto_resume_opt_in_real_teardown_stamps_timed_out(
     assert s is not None
     assert s["status"] == "timed_out"
     assert s["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_keeps_the_legs_workload(monkeypatch, tmp_path):
+    """The resumed leg runs in the workload class of the leg that timed out, not
+    the profile's default: a light leg resumed as heavy would lose its light
+    containment and count against the heavy cap."""
+    import lionagi.cli.agent as agent_mod
+
+    def side_effect(i):
+        if i == 0:
+            raise TimeoutError("boom")
+        return "concluded"
+
+    call_count, _insts, _timeouts = _wire_agent_stubs(
+        monkeypatch, tmp_path, operate_side_effect=side_effect
+    )
+    built: list[str | None] = []
+
+    def build_chat_model(*a, **kw):
+        built.append(kw.get("workload"))
+        return "claude_code/sonnet"
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", build_chat_model)
+    resumed: list[str] = []
+    add_workload_kwarg = agent_mod._add_workload_kwarg
+
+    def record(extra, endpoint, workload):
+        resumed.append(workload)
+        add_workload_kwarg(extra, endpoint, workload)
+
+    monkeypatch.setattr(agent_mod, "_add_workload_kwarg", record)
+
+    from lionagi.cli.agent import _run_agent
+
+    _result, _provider, _bid, status, _sid = await _run_agent(
+        "claude_code/sonnet", "hello", timeout=30, resume_on_timeout=True, workload="light"
+    )
+
+    assert call_count["n"] == 2
+    assert status == "completed"
+    assert built == ["light"]
+    assert resumed == ["light"]
