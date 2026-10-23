@@ -471,7 +471,12 @@ def parse_model_spec(spec: str) -> ModelSpec:
         name, raw_effort = split
         effort = normalize_effort(raw_effort)
 
-        if provider_raw in PROVIDERS_NO_EFFORT:
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        # Folded as the endpoint match folds it, so an alias such as "gemini-api" is refused
+        # as the provider it names.
+        provider = EndpointRegistry.canonical_provider(provider_raw) if has_provider else None
+        if provider in PROVIDERS_NO_EFFORT:
             raise ValueError(
                 f"Provider '{provider_raw}' does not support effort levels. "
                 f"Remove '-{effort}' from '{spec}'."

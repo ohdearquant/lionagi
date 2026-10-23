@@ -983,15 +983,23 @@ def _contain_flag_of(values: list[Any]) -> Any:
 
 def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     """The settings a profile keeps when no frontmatter block that reads opens it: none, with a
-    warning when a block was there to lose. The worker is contained when the block, from its
-    opening ``---`` line to the next one or to the end, names ``contain_user_settings``
-    anywhere, so neither a broken line in the block nor text ahead of it can turn containment
-    off. A profile with no ``---`` line has no block, and all of it is the prompt."""
+    warning when a block with settings in it was there to lose. The worker is contained when
+    that block names ``contain_user_settings``: as a key when the block reads as YAML settings,
+    anywhere in its text when it does not read, so neither a broken line in the block nor text
+    ahead of it can turn containment off. A block that reads as no settings (empty, comments
+    only, a line of prose) has none to lose. A profile with no ``---`` line has no block, and
+    all of it is the prompt."""
     import yaml
 
     from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
 
     from ._logging import warn
+
+    def read(block: str) -> tuple[bool, Any]:
+        try:
+            return True, yaml.safe_load(block)
+        except yaml.YAMLError:
+            return False, None
 
     if text.startswith("---"):
         try:
@@ -1002,33 +1010,40 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         parts = _FM_SPLIT.split(text, maxsplit=2)
         # An unclosed block runs to the end, since where it was meant to end is not known.
         block = parts[1] if len(parts) == 3 else text[3:]
-        named = _CONTAIN_KEY in block
+        reads, document = read(block)
         # A block with no settings in it, empty or comments only, has none to lose.
-        try:
-            if not named and yaml.safe_load(block) is None:
-                return {}
-        except yaml.YAMLError:
-            pass
+        if reads and document is None:
+            return {}
+        named = _CONTAIN_KEY in block
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
-        opening = next((i for i, line in enumerate(lines) if line.rstrip().endswith("---")), None)
-        if opening is None:
-            return {}
+        if lines and lines[0].rstrip().endswith("---"):
+            # Text on the line of the opening delimiter hides the block it opens, which runs
+            # to the next ``---`` line or, unclosed, to the end.
+            opening = 0
+        else:
+            # Text on lines of its own ahead of a ``---`` line is the prompt of a profile with
+            # no block, as before; a block counts only between that line and a closing one.
+            opening = next((i for i, line in enumerate(lines) if line.rstrip() == "---"), None)
+            if opening is None:
+                return {}
         rest = lines[opening + 1 :]
-        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), len(rest))
-        block = "\n".join(rest[:closing])
-        named = _CONTAIN_KEY in block
-        # Text on the line of the opening delimiter hides the block it opens; text on lines of
-        # its own ahead of a delimiter is the prompt of a profile with no block, as before,
-        # unless what follows the delimiter names the flag.
+        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
+        if closing is None and opening > 0:
+            return {}
+        block = "\n".join(rest if closing is None else rest[:closing])
+        reads, document = read(block)
+        if reads:
+            if not isinstance(document, dict) or not document:
+                return {}
+            named = bool(_contain_flag_values(block))
+        else:
+            named = _CONTAIN_KEY in block
+            if not named and closing is None:
+                return {}
         if not named and opening > 0:
             return {}
-        try:
-            if not named and yaml.safe_load(block) is None:
-                return {}
-        except yaml.YAMLError:
-            pass
         what = f"text ahead of the --- on line {opening + 1} hides the frontmatter after it"
     warn(
         f"agent profile {name!r}: {what}; every setting in it is ignored"
