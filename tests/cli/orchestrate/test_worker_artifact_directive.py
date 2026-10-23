@@ -708,6 +708,7 @@ async def _spawned_branch_kwargs(
     independent: bool = True,
     assignee: str | None = None,
     role_contained: bool = False,
+    role_provider: str = "claude_code",
     handed: list | None = None,
     expected: list | None = None,
     refuses: bool = False,
@@ -722,10 +723,10 @@ async def _spawned_branch_kwargs(
     on another engine than the orchestrator's, and *emitter_contained* runs it with no
     settings files read (``contain_user_settings``). With *independent* false the request is a
     dependent one, cloned from that worker's branch. With *assignee* the request names a
-    Claude role of that name, and is cloned from its branch, which *role_contained* runs with
-    no settings files read. *handed* collects the server set each hand-off gives the
-    spawn and whether it is the whole set. *expected* collects the spawn ids
-    the run is told to expect a worker for. With *refuses* the node builder must refuse
+    role of that name on *role_provider* (Claude unless named), and is cloned from its
+    branch, which *role_contained* runs with no settings files read. *handed* collects the
+    server set each hand-off gives the spawn and whether it is the whole set. *expected*
+    collects the spawn ids the run is told to expect a worker for. With *refuses* the node builder must refuse
     the request, and the refusal's text comes back as ``{"refusal": ...}``."""
     import lionagi.engines as engines_mod
     from lionagi import Branch, iModel
@@ -769,7 +770,11 @@ async def _spawned_branch_kwargs(
         canonical = EndpointRegistry.canonical_provider(branch_provider)
         chat_model = iModel(
             provider=branch_provider,
-            model={"codex": "gpt-5.5", "openai": "gpt-4.1-mini"}.get(canonical, "sonnet"),
+            model={
+                "codex": "gpt-5.5",
+                "openai": "gpt-4.1-mini",
+                "gemini_code": "gemini-2.5-pro",
+            }.get(canonical, "sonnet"),
             **({"api_key": "dummy-key"} if branch_provider == "openai" else {}),
         )
         _add_workload_kwarg(
@@ -785,7 +790,7 @@ async def _spawned_branch_kwargs(
     orchestrator = _branch("orchestrator")
     role_branch = None
     if assignee is not None:
-        role_branch = _branch(assignee, branch_provider="claude_code")
+        role_branch = _branch(assignee, branch_provider=role_provider)
         if role_contained:
             from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
 
@@ -1139,6 +1144,94 @@ async def test_an_agent_a_claude_worker_with_its_settings_asks_for_by_role_keeps
 
     assert kwargs.get("setting_sources") is None
     assert kwargs.get("disallowed_tools") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_provider", ["gemini_code", "gemini-cli", "pi"])
+async def test_a_contained_claude_worker_cannot_ask_for_a_role_on_a_cli_that_reads_its_own_settings(
+    tmp_path, monkeypatch, role_provider
+):
+    """Only a Claude spawn can be contained and only a codex one runs with its user config
+    left out, so a role on any other CLI would read the settings the asking worker runs
+    without: the request is refused before the node is built."""
+    expected: list = []
+    result = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_provider=role_provider,
+        expected=expected,
+        refuses=True,
+    )
+
+    assert "role 'reviewer' runs on" in result["refusal"]
+    assert "contain_user_settings" in result["refusal"]
+    assert expected == []
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_with_its_settings_can_ask_for_a_role_on_another_cli(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        assignee="reviewer",
+        role_provider="gemini_code",
+    )
+
+    assert kwargs.get("setting_sources") is None
+
+
+@pytest.mark.asyncio
+async def test_a_contained_claude_worker_can_ask_for_a_codex_role(tmp_path, monkeypatch):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_provider="codex",
+    )
+
+    assert kwargs["ignore_user_config"] is True
+    assert kwargs.get("profile") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("independent", [True, False])
+async def test_an_unnamed_agent_a_contained_claude_worker_asks_for_on_a_gemini_orchestrator(
+    tmp_path, monkeypatch, independent
+):
+    """An independent agent is cloned from the orchestrator's branch, so on a gemini
+    orchestrator it is refused; a dependent one is cloned from the asking worker's and stays
+    contained."""
+    result = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="gemini_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_provider="claude_code",
+        emitter_contained=True,
+        independent=independent,
+        refuses=independent,
+    )
+
+    if independent:
+        assert "the orchestrator runs on gemini_code" in result["refusal"]
+        return
+    assert result["setting_sources"] == ""
+    assert result["permission_mode"] == "dontAsk"
 
 
 @pytest.mark.asyncio
