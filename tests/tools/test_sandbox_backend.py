@@ -487,3 +487,16 @@ def test_require_daytona_without_the_package_names_it_and_its_floor(monkeypatch)
     message = str(excinfo.value)
     assert message.endswith("pip install 'daytona>=0.171.0'")
     assert "lionagi[sandbox]" not in message
+
+
+async def test_exec_stream_without_the_package_names_it_and_its_floor(monkeypatch):
+    """A sandbox handed in by the caller still gets the install line, not a bare import error."""
+    import sys
+
+    from lionagi.tools.daytona import DaytonaSandbox
+
+    monkeypatch.setitem(sys.modules, "daytona", None)
+    sandbox = DaytonaSandbox(client=None, sandbox=object())
+    with pytest.raises(ImportError) as excinfo:
+        await sandbox.exec_stream("true")
+    assert str(excinfo.value).endswith("pip install 'daytona>=0.171.0'")

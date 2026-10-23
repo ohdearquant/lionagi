@@ -101,17 +101,17 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 behaviour, including accepting a write-capable submission without `cwd`.
 
 The `reader` extra and document conversion are removed (see Removed). `lionagi[reader]` no
-longer exists, so an install that names it gets a missing-extra warning from the installer, and
-`lionagi[all]` no longer installs `docling`. Code that called the reader's `open` action, built
-`ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or passed
-`reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
+longer exists: `uv sync --extra reader` fails, and pip or `uv pip install` warns and installs
+lionagi without it. `lionagi[all]` no longer installs `docling`. Code that called the reader's
+`open` action, built `ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or
+passed `reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
 `chunk(text=...)`, or a callable `reader_tool` that returns a file's text.
 
-The `schema` and `sandbox` extras are removed (see Removed), so an install that names one gets
-a missing-extra warning from the installer. Code that loads a JSON schema through the
-`datamodel-code-generator` fallback installs `datamodel-code-generator>=0.64.0` itself, and code
-that runs agents in a Daytona sandbox installs `daytona>=0.171.0`; without them each raises an
-error naming the package and the version.
+The `schema` and `sandbox` extras are removed (see Removed): `uv sync --extra` with either
+fails, and pip or `uv pip install` warns and installs lionagi without it. Code that loads a JSON
+schema through the `datamodel-code-generator` fallback installs `datamodel-code-generator>=0.64.0`
+itself, and code that runs agents in a Daytona sandbox installs `daytona>=0.171.0`; without them
+each raises an error naming the package and the version.
 
 `lionagi[graph]` no longer installs `matplotlib` (see Removed). Code that draws a graph with
 `Graph.display()`, and `li o flow --show-graph`, installs `matplotlib` beside it.
