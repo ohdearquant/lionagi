@@ -46,7 +46,7 @@ class HookEvent(Event):
 
                 self.associated_event_info = AssociatedEventInfo(**meta)
                 self._should_exit = se
-                self.execution.status = st
+                self.status = st
                 if isinstance(res, tuple) and len(res) == 2:
                     self.execution.response = None
                     self.execution.error = str(res[1])
@@ -63,7 +63,7 @@ class HookEvent(Event):
             raise
 
         except Exception as e:
-            self.execution.status = EventStatus.FAILED
+            self.status = EventStatus.FAILED
             self.execution.response = None
             self.execution.error = str(e)
             # Registry/wiring failures should obey the configured policy
