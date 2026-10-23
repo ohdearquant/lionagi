@@ -362,6 +362,23 @@ async def test_a_slot_reserved_for_a_held_batch_is_released_when_the_batch_is(mo
 
 
 @pytest.mark.asyncio
+async def test_a_schedule_no_longer_polled_forgets_when_it_last_polled(monkeypatch):
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    _quiet_tick(engine)
+    engine._github_polled_at.update({"poll": 10_000.0, "gone": 10_000.0})
+    svc.list_schedules.return_value = [_poll_row()]
+    turns = []
+    monkeypatch.setattr(engine, "_start_github_tick", lambda schedule, now: turns.append(now))
+
+    with patch("lionagi.studio.scheduler.engine.time.time", return_value=10_010.0):
+        await engine._tick()
+
+    assert engine._github_polled_at == {"poll": 10_000.0}
+    assert turns == [10_010.0]
+
+
+@pytest.mark.asyncio
 async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeypatch, caplog):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()

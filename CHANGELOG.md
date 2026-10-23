@@ -588,6 +588,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   action it dispatches and the check timed the whole pass. It now leaves out the time a pass
   waits on an action, so a poll or a store write of the pass that does not return still makes the
   scheduler unready.
+- A `github_poll` schedule counted its `poll_interval_sec` from its last fire only, so once that
+  interval had passed, every poll that fired nothing (a quiet repository, events its filter left
+  out, a failed request) was followed by another on the next scheduler tick, every 30 seconds.
+  The interval now counts from the later of the last fire and the last poll, so the schedule
+  polls once per interval whatever the poll found. A restarted scheduler polls at its first tick
+  if the interval has passed since the last fire.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so

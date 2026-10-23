@@ -439,6 +439,10 @@ class SchedulerEngine:
         self._github_tick_started_at: dict[str, float] = {}
         # schedule_id -> events a poll found while the fire cap was full, held for its next turn.
         self._github_batches: dict[str, _GithubBatch] = {}
+        # schedule_id -> when this scheduler last polled GitHub for it. The poll cadence counts
+        # from the later of this and the schedule's last fire, so a poll that fires nothing, or
+        # fails, still waits out poll_interval_sec before the next one.
+        self._github_polled_at: dict[str, float] = {}
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
         # Starts unresolved rather than at 0.0, which would make a prune due on the first tick. It
@@ -1311,9 +1315,9 @@ class SchedulerEngine:
             now = time.time()
             for s in schedules:
                 if s.get("trigger_type") == "github_poll":
-                    # github_poll's cadence is last_fired_at + poll_interval_sec, not next_fire_at,
-                    # so a stale or legacy-persisted value here is not a missed scheduled
-                    # occurrence.
+                    # github_poll's cadence is its last fire or poll + poll_interval_sec, not
+                    # next_fire_at, so a stale or legacy-persisted value here is not a missed
+                    # scheduled occurrence.
                     continue
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at > now:
@@ -1504,6 +1508,8 @@ class SchedulerEngine:
         polled = {s.get("id") for s in schedules if s.get("trigger_type") == "github_poll"}
         for sid in [sid for sid in self._github_batches if sid not in polled]:
             self._drop_github_batch(sid)
+        for sid in [sid for sid in self._github_polled_at if sid not in polled]:
+            del self._github_polled_at[sid]
 
         def schedule_order(schedule: dict) -> float:
             # Every row is admitted in oldest-due order, a poll row at the due instant of its next
@@ -1550,11 +1556,18 @@ class SchedulerEngine:
         batch = self._github_batches.get(schedule.get("id"))
         if batch is not None:
             return batch.due_at
-        last = schedule.get("last_fired_at") or 0
+        last = self._github_cadence_start(schedule)
         interval = resolve_schedule_cadence_seconds(schedule)
         if isinstance(last, int | float) and isinstance(interval, int | float):
             return last + interval
         return None
+
+    def _github_cadence_start(self, schedule: dict) -> Any:
+        """When *schedule*'s poll cadence counts from: its last fire or last poll, the later."""
+        last = schedule.get("last_fired_at") or 0
+        if not isinstance(last, int | float):
+            return last
+        return max(last, self._github_polled_at.get(schedule.get("id"), 0))
 
     async def _admit_github_tick(self, schedule: dict, now: float) -> None:
         """Start *schedule*'s poll turn; a batch the fire cap held back takes its slot here.
@@ -1570,6 +1583,9 @@ class SchedulerEngine:
         if batch is not None and (active is None or active.done()):
             if not batch.matches(schedule):
                 self._drop_github_batch(sid)
+                # The poll cycle that found the dropped events was never served, so the cadence
+                # counts from the last fire alone and the schedule re-lists from where it stands.
+                self._github_polled_at.pop(sid, None)
             elif batch.slot_claim is None:
                 allowed, batch.slot_claim = await self._reserve_global_slot(
                     sid, path="github_event"
@@ -1663,7 +1679,7 @@ class SchedulerEngine:
         # A held batch is due at once: its events belong to a poll cycle that already came due.
         batch = self._github_batches.pop(schedule["id"], None)
         poll_interval = resolve_schedule_cadence_seconds(schedule)
-        last = schedule.get("last_fired_at") or 0
+        last = self._github_cadence_start(schedule)
         if batch is None and now - last < poll_interval:
             return
         deferred = False
@@ -1721,6 +1737,7 @@ class SchedulerEngine:
             if batch is not None:
                 polled = batch.items
             else:
+                self._github_polled_at[sid] = now
                 poll_result = await github_poll(schedule)
                 polled = poll_result.items
                 if not poll_result.scan_complete:

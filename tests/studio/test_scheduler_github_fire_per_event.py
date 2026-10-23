@@ -828,3 +828,37 @@ async def test_a_filtered_event_between_two_dispatched_ones_does_not_break_the_c
         await engine._tick_github(schedule, now=10_000.0)
 
     assert written == [1, 3], f"the filtered event stalled the batch: wrote {written}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["empty", "filtered", "error", "auth_error", "raised"])
+async def test_a_poll_that_fires_nothing_waits_out_its_interval_before_the_next(outcome):
+    """poll_interval_sec is how often the schedule polls, whatever the poll found.
+
+    Counted from the last fire alone, the cadence of a schedule whose polls fire nothing stays
+    open once one interval has passed, and every scheduler tick polls again.
+    """
+    schedule = _minimal_schedule(poll_interval_sec=300, github_cursor=None)
+    engine = SchedulerEngine(svc=_make_svc())
+    polls: list[tuple] = []
+
+    async def poll(*args, **kwargs):
+        polls.append(args)
+        if outcome == "raised":
+            raise RuntimeError("connection reset")
+        if outcome == "filtered":
+            items = [_item(1, "2026-01-01T00:00:01Z", dispatchable=False)]
+            return GithubPollResult(items=items, scan_complete=True)
+        status = {"empty": "ok", "error": "error", "auth_error": "auth_error"}[outcome]
+        return GithubPollResult(items=[], scan_complete=True, poll_status=status)
+
+    counts = []
+    build_argv_patch, spawn_patch = _spawn_patches()
+    with build_argv_patch, spawn_patch, patch.object(gh_mod, "github_poll", new=poll):
+        for now in (10_000.0, 10_030.0, 10_299.0, 10_300.0):
+            await engine._tick_github_guarded(schedule, now)
+            counts.append(len(polls))
+
+    assert counts == [1, 1, 1, 2]
+    # The next turn is ordered by the same cadence the tick gates on.
+    assert engine._github_due_at(schedule) == 10_600.0
