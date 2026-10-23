@@ -591,12 +591,16 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   failed at spawn, and an agent prompt received it as written. A template that names only what a
   manual trigger fills, `{{manual}}` and `{{fired_at}}`, still fires, and so does a `flow_yaml`
   schedule, or a `play` schedule without a playbook, whatever its `action_prompt` holds, since
-  neither launch sends it.
+  neither launch sends it. The scheduler fills templates in those two fields only: others, such as
+  `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
+  checked. A schedule that cannot launch at all, such as one with an unknown action kind or an
+  invalid playbook name, is refused for that reason first, and the run record of a launch that
+  sends no prompt no longer shows its `action_prompt`.
 - The scheduler's readiness (`/admin/readiness`, `li doctor`) read `stalled` whenever an action a
   `github_poll` schedule dispatched ran for more than 300 seconds, since a poll pass waits on each
-  action it dispatches and the check timed the whole pass. It now leaves out the time a pass
-  waits on an action, so a poll or a store write of the pass that does not return still makes the
-  scheduler unready.
+  action it dispatches and the check timed the whole pass. It now leaves out only the time a
+  process the pass dispatched takes to start and run, so a poll, or a store write of the pass or
+  of a fire it makes, that does not return still makes the scheduler unready.
 - A `github_poll` schedule counted its `poll_interval_sec` from its last fire only, so once that
   interval had passed, every poll that fired nothing (a quiet repository, events its filter left
   out, a failed request) was followed by another on the next scheduler tick, every 30 seconds.

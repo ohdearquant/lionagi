@@ -387,24 +387,31 @@ def _render_template(template: str, context: dict) -> str:
     return _TEMPLATE_RE.sub(_replace, template)
 
 
+def _sends_prompt(schedule: dict, kind: str | None) -> bool:
+    # A command launch sends its arguments, a flow_yaml launch its spec file as written and a play
+    # launch its prompt only beside a playbook; every other kind sends its action_prompt.
+    if kind in ("command", "flow_yaml"):
+        return False
+    return kind != "play" or bool(schedule.get("action_playbook"))
+
+
 def unfilled_template_vars(schedule: dict, trigger_context: dict) -> list[str]:
     """The ``{{var}}`` names in what *schedule* sends that *trigger_context* has no value for.
 
-    A command launch sends its ``action_command_args``, a ``flow_yaml`` launch no template (its
-    spec file goes as written), a ``play`` launch its ``action_prompt`` only beside an
-    ``action_playbook``, and every other kind its ``action_prompt``. A placeholder with no value
-    renders as itself, so a command argument holding one is refused at spawn and a prompt
-    hands it to the agent as written.
+    The templates a launch fills are a command launch's ``action_command_args`` and, for a kind
+    that sends one, the ``action_prompt``; other fields, a ``flow_yaml`` spec among them, go as
+    written. A placeholder with no value renders as itself, so a command argument holding one is
+    refused at spawn and a prompt hands it to the agent as written.
     """
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
     if kind == "command":
         args = schedule.get("action_command_args")
         templates = [str(a) for a in args] if isinstance(args, list) else []
-    elif kind == "flow_yaml" or (kind == "play" and not schedule.get("action_playbook")):
-        templates = []
-    else:
+    elif _sends_prompt(schedule, kind):
         templates = [schedule.get("action_prompt") or ""]
+    else:
+        templates = []
     return sorted(
         {
             m.group(1)
@@ -418,12 +425,13 @@ def unfilled_template_vars(schedule: dict, trigger_context: dict) -> list[str]:
 def render_action_prompt(schedule: dict, trigger_context: dict) -> str | None:
     """Render a schedule's ``action_prompt`` with the trigger context.
 
-    Returns ``None`` when the schedule has no prompt template, so callers can
-    fall back to another field (e.g. ``action_playbook``) without confusing
+    Returns ``None`` when the schedule has no prompt template or its launch sends none, so
+    callers can fall back to another field (e.g. ``action_playbook``) without confusing
     "no prompt" with "empty rendered prompt".
     """
+    kind = schedule.get("action_kind")
     prompt = schedule.get("action_prompt") or ""
-    if not prompt:
+    if not prompt or not _sends_prompt(schedule, _ALIAS_ACTION_KINDS.get(kind, kind)):
         return None
     rendered = _render_template(prompt, trigger_context)
     _validate_prompt(rendered)
@@ -499,6 +507,42 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     return None, "; ".join(tried)
 
 
+def validate_launch_fields(schedule: dict) -> str:
+    """Check the fields a launch reads as written, and return its action kind with a legacy
+    alias resolved. ``build_argv`` runs this before it renders anything, and a manual trigger
+    runs it before its placeholder check, so a schedule that cannot launch is refused for that.
+    """
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)  # normalize legacy alias
+    if kind not in _VALID_ACTION_KINDS:
+        raise ValueError(
+            f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
+        )
+    agent = schedule.get("action_agent")
+    playbook = schedule.get("action_playbook")
+    project = schedule.get("action_project")
+    extra = schedule.get("action_extra_args") or []
+
+    # Reject flag-injection vectors before touching argv (defense-in-depth,
+    # mirrors services/schedules.py). action_prompt is validated AFTER
+    # rendering in build_argv since a templated '{{payload}}' can render to the
+    # forbidden '--' sentinel; other fields aren't templated.
+    _validate_action_model(schedule.get("action_model") or "")
+    if agent:
+        _validate_identifier(agent, "action_agent")
+    if project:
+        _validate_identifier(project, "action_project")
+    if playbook:
+        _validate_identifier(playbook, "action_playbook")
+    if isinstance(extra, list):
+        _validate_extra_args(extra)
+    if kind == "play":
+        _validate_playbook_args(_playbook_args(schedule))
+    if kind == "engine":
+        _validate_engine_options(schedule.get("action_engine_options"))
+    return kind
+
+
 def build_argv(
     schedule: dict,
     trigger_context: dict,
@@ -515,39 +559,17 @@ def build_argv(
     Returns ``(argv, tmp_path)`` where ``tmp_path`` is a temporary file that
     must be deleted after the subprocess exits (only set for ``flow_yaml``).
     """
-    kind = schedule["action_kind"]
-    kind = _ALIAS_ACTION_KINDS.get(kind, kind)  # normalize legacy alias
-    if kind not in _VALID_ACTION_KINDS:
-        raise ValueError(
-            f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
-        )
+    kind = validate_launch_fields(schedule)
     model = schedule.get("action_model") or ""
     prompt = schedule.get("action_prompt") or ""
     agent = schedule.get("action_agent")
     playbook = schedule.get("action_playbook")
     project = schedule.get("action_project")
     extra = schedule.get("action_extra_args") or []
-
-    # Reject flag-injection vectors before touching argv (defense-in-depth,
-    # mirrors services/schedules.py). action_prompt is validated AFTER
-    # rendering below since a templated '{{payload}}' can render to the
-    # forbidden '--' sentinel; other fields aren't templated.
-    _validate_action_model(model)
-    if agent:
-        _validate_identifier(agent, "action_agent")
-    if project:
-        _validate_identifier(project, "action_project")
-    if playbook:
-        _validate_identifier(playbook, "action_playbook")
-    if isinstance(extra, list):
-        _validate_extra_args(extra)
     play_args: dict = {}
     if kind == "play":
         stored_args = _playbook_args(schedule)
-        _validate_playbook_args(stored_args)
         play_args = stored_args if isinstance(stored_args, dict) else {}
-    if kind == "engine":
-        _validate_engine_options(schedule.get("action_engine_options"))
 
     # Render template variables from trigger context FIRST, then validate the
     # rendered prompt so that template-injected values (e.g. '{{payload}}' →

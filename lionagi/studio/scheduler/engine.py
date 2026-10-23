@@ -433,9 +433,9 @@ class SchedulerEngine:
         # poll loop, which advances the cursor per committed event, so a pass lasts as long as the
         # slowest action it dispatched; it runs off the tick so later ticks continue meanwhile.
         self._github_tick_tasks: dict[str, asyncio.Task] = {}
-        # schedule_id -> when its pass started, cleared while the pass waits on an action it
-        # dispatched and set again when the action returns: the readiness check times the poll and
-        # the store writes of a pass, not the actions it waits on.
+        # schedule_id -> when its pass started, cleared while a process the pass dispatched runs
+        # and set again when it exits: the readiness check times the poll and every store write of
+        # a pass, those of its fires included, not the actions it waits on.
         self._github_tick_started_at: dict[str, float] = {}
         # schedule_id -> events a poll found while the fire cap was full, held for its next turn.
         self._github_batches: dict[str, _GithubBatch] = {}
@@ -860,7 +860,8 @@ class SchedulerEngine:
         trigger_context = {"manual": True, "fired_at": now}
         # A manual trigger carries no event, so a template naming an event's field, such as a poll
         # row's {{pr_number}}, would reach the run unfilled. Refuse before anything is reserved or
-        # recorded.
+        # recorded, and refuse a schedule that cannot launch at all for that reason first.
+        _subprocess.validate_launch_fields(schedule)
         unfilled = _subprocess.unfilled_template_vars(schedule, trigger_context)
         if unfilled:
             names = ", ".join("{{" + name + "}}" for name in unfilled)
@@ -1628,6 +1629,26 @@ class SchedulerEngine:
             del self._github_tick_tasks[sid]
             self._github_tick_started_at.pop(sid, None)
 
+    def _current_github_pass(self) -> str | None:
+        """The schedule whose github_poll pass is the running task, if any: a fire awaited inside
+        a pass, chained fires included, runs in the pass's own task."""
+        task = asyncio.current_task()
+        for sid, pass_task in self._github_tick_tasks.items():
+            if pass_task is task:
+                return sid
+        return None
+
+    def _github_pass_clock(self, sid: str | None, *, running: bool) -> None:
+        """Start or stop the stall clock of github_poll pass *sid*, while that pass is still the
+        schedule's registered one and the running task: a pass that has ended or been dropped by
+        stop() gets no stamp back, and another pass's stamp is never touched."""
+        if sid is None or self._github_tick_tasks.get(sid) is not asyncio.current_task():
+            return
+        if running:
+            self._github_tick_started_at[sid] = time.time()
+        else:
+            self._github_tick_started_at.pop(sid, None)
+
     async def _tick_github_guarded(self, schedule: dict, now: float) -> None:
         try:
             await self._tick_github(schedule, now)
@@ -1845,10 +1866,9 @@ class SchedulerEngine:
                     }
                     run_id = short_id(12)
                     admission_handed_off = True
-                    # The pass waits on the action it dispatches, however long that runs, so the
-                    # stall check stops timing the pass while the action runs and starts again when
-                    # it returns, timing the store writes that follow.
-                    self._github_tick_started_at.pop(sid, None)
+                    # The pass waits on the action it dispatches, however long that runs: _fire_inner
+                    # stops the pass's stall clock while the process runs and starts it again when
+                    # the process exits, so the store writes on either side stay timed.
                     fired = await self._fire(
                         schedule,
                         run_id,
@@ -1867,7 +1887,6 @@ class SchedulerEngine:
                         ),
                         expect_github_cursor=claimed_cursor,
                     )
-                    self._github_tick_started_at[sid] = time.time()
                     if fired:
                         unclaimed_poll_cycle = False
                         # Only a written advance moves the claim. Skipped events move the local
@@ -2951,6 +2970,11 @@ class SchedulerEngine:
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
             )
 
+            # A github_poll pass waits on each process it dispatches, so its stall clock stops
+            # while the process runs; the store writes before and after it, the dispatched_at
+            # stamp among them, stay timed.
+            github_pass = self._current_github_pass()
+
             async def _on_launched() -> None:
                 # Stamps dispatched_at the instant the OS process is confirmed to exist, the signal
                 # that tells 'committed but never launched', safe to re-fire, apart from 'launched,
@@ -2958,16 +2982,24 @@ class SchedulerEngine:
                 # paths running before a restart could read the column.
                 nonlocal dispatched
                 dispatched = True
-                await self._mark_dispatched(run_id)
+                self._github_pass_clock(github_pass, running=True)
+                try:
+                    await self._mark_dispatched(run_id)
+                finally:
+                    self._github_pass_clock(github_pass, running=False)
 
-            exit_code, stderr_tail = await _subprocess.spawn_and_wait(
-                argv,
-                inv_id,
-                tmp_path=_tmp_path,
-                cwd=action_cwd,
-                action_kind=schedule.get("action_kind"),
-                on_launched=_on_launched,
-            )
+            self._github_pass_clock(github_pass, running=False)
+            try:
+                exit_code, stderr_tail = await _subprocess.spawn_and_wait(
+                    argv,
+                    inv_id,
+                    tmp_path=_tmp_path,
+                    cwd=action_cwd,
+                    action_kind=schedule.get("action_kind"),
+                    on_launched=_on_launched,
+                )
+            finally:
+                self._github_pass_clock(github_pass, running=True)
             # spawn_and_wait returns only once it has an exit code, so a process existed;
             # on_launched flips the flag earlier so a mid-run cancellation classifies the same.
             dispatched = True
