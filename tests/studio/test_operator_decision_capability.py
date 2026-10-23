@@ -131,6 +131,83 @@ def test_a_launch_code_belongs_to_the_daemon_it_starts_in_the_same_process(fresh
     assert fresh.redeem_pairing_grant(other, origin=_HOSTED) is None
 
 
+def test_the_page_origin_a_launcher_names_outlives_the_serving_start_but_not_a_reset(fresh):
+    dev = "http://127.0.0.1:3000"
+    fresh.mint_pairing_code(origins=[dev])
+    assert not fresh.is_launch_origin(dev)
+
+    fresh.mint_pairing_code(origins=[dev], for_launch=True)
+    fresh.begin_serving()
+    assert fresh.is_launch_origin(dev)
+
+    fresh.reset_launch_access()
+    assert not fresh.is_launch_origin(dev)
+
+
+def test_a_later_serving_start_keeps_only_the_page_origins_its_carried_codes_named(fresh):
+    dev = "http://127.0.0.1:3000"
+    code = fresh.mint_pairing_code(origins=[dev], for_launch=True)
+    fresh.begin_serving()
+    assert fresh.redeem_pairing_grant(code, origin=dev) is not None
+
+    fresh.mint_pairing_code(for_launch=True)
+    fresh.begin_serving()
+    assert not fresh.is_launch_origin(dev)
+    assert not fresh._launch_origins
+
+
+@pytest.mark.parametrize(
+    ("named", "origin"),
+    [
+        ("http://LocalHost:3000", "http://localhost:3000"),
+        ("HTTP://127.0.0.1:80/", "http://127.0.0.1"),
+        ("https://Studio.Example:443/app/", "https://studio.example"),
+        ("http://[::1]:3000/", "http://[::1]:3000"),
+        ("http://[0:0:0:0:0:0:0:1]:3000/", "http://[::1]:3000"),
+        ("http://127.0.0.1:3000", "http://127.0.0.1:3000"),
+    ],
+)
+def test_a_named_page_address_binds_the_origin_a_browser_sends(fresh, named, origin):
+    code = fresh.mint_pairing_code(origins=[named], for_launch=True)
+
+    assert fresh.is_launch_origin(origin)
+    assert fresh.redeem_pairing_grant(code, origin=named.rstrip("/") + "/x") is None
+    assert fresh.redeem_pairing_grant(code, origin=origin) is not None
+
+
+def test_a_named_origin_that_is_not_an_http_url_is_kept_as_written(fresh):
+    code = fresh.mint_pairing_code(origins=["null"], for_launch=True)
+
+    assert fresh.is_launch_origin("null")
+    assert fresh.redeem_pairing_grant(code, origin="null") is not None
+
+
+@pytest.mark.parametrize(
+    ("named", "elsewhere"),
+    [
+        ("http://127.0.0.1:3000@evil.example", "http://evil.example"),
+        ("http://localhost:abc", "http://localhost"),
+    ],
+)
+def test_a_named_address_with_credentials_or_a_bad_port_is_kept_as_written(fresh, named, elsewhere):
+    code = fresh.mint_pairing_code(origins=[named], for_launch=True)
+
+    assert fresh.is_launch_origin(named)
+    assert not fresh.is_launch_origin(elsewhere)
+    assert fresh.redeem_pairing_grant(code, origin=elsewhere) is None
+
+
+def test_a_code_bound_to_the_admitted_origins_keeps_them_as_configured(fresh, monkeypatch):
+    import lionagi.studio.config as config
+
+    configured = "https://Studio.Example:443/"
+    monkeypatch.setattr(config, "CORS_ORIGINS", [configured])
+    code = fresh.mint_pairing_code()
+
+    assert fresh.redeem_pairing_grant(code, origin="https://studio.example") is None
+    assert fresh.redeem_pairing_grant(code, origin=configured) is not None
+
+
 # Capabilities
 
 

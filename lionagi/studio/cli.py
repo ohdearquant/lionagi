@@ -28,7 +28,7 @@ from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
 from lionagi.ln import now_utc
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
-from lionagi.studio._host import normalize_host
+from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -259,19 +259,43 @@ class _PairingRefusedError(Exception):
     """A daemon answers on the port but did not issue a pairing code."""
 
 
-def _daemon_health(port: int, challenge: str | None = None) -> dict[str, Any] | None:
-    """What a lionagi daemon on loopback ``port`` answers at ``/health``, or None."""
+def _daemon_health(
+    port: int, challenge: str | None = None, *, host: str = "127.0.0.1", deadline_s: float = 3.0
+) -> dict[str, Any] | None:
+    """What a lionagi daemon on ``host`` and ``port`` answers at ``/health``, or None.
+
+    The socket timeout bounds each read, not the exchange: a peer that sends a
+    byte at a time holds ``urlopen`` and ``read`` for as long as it keeps going.
+    So the exchange runs on a worker and an answer later than *deadline_s* is
+    None, the same as no answer. The abandoned worker is a daemon thread and
+    ends when that peer stops or closes.
+    """
+    import http.client
     import urllib.parse
     import urllib.request
 
-    url = f"http://127.0.0.1:{port}/health"
+    url = f"http://{_url_authority(host)}:{port}/health"
     if challenge is not None:
         url += "?" + urllib.parse.urlencode({"challenge": challenge})
-    try:
-        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
-            health = json.loads(resp.read())
-    except (OSError, ValueError):
+    outcome: list[object] = []
+
+    def _probe() -> None:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+                outcome.append(json.loads(resp.read()))
+        except (OSError, ValueError, http.client.HTTPException):
+            outcome.append(None)
+        except Exception as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=_probe, name="studio-health-probe", daemon=True)
+    worker.start()
+    worker.join(deadline_s)
+    if worker.is_alive() or not outcome:
         return None
+    health = outcome[0]
+    if isinstance(health, Exception):
+        raise health
     if isinstance(health, dict) and health.get("status") == "ok":
         return health
     return None
@@ -346,6 +370,57 @@ def _hosted_launch_url(port: int, code: str) -> str:
     return f"{_HOSTED_URL}/{query}#pair={code}"
 
 
+def _dev_pairing_line(frontend_url: str) -> str:
+    """The link that pairs the dev page at *frontend_url* with the daemon this process starts.
+
+    The code is bound to that page's exact origin, the address Vite reported, so
+    only a page opened at that address can spend it. The link is that origin as a
+    browser sends it, so the page it opens is the page the code is bound to.
+    """
+    from lionagi.studio.launch_access import (
+        PAIRING_CODE_TTL_S,
+        _canonical_origin,
+        mint_pairing_code,
+    )
+
+    origin = _canonical_origin(frontend_url)
+    code = mint_pairing_code(origins=[origin], for_launch=True)
+    minutes = int(PAIRING_CODE_TTL_S // 60)
+    return (
+        f"to decide Operator proposals, open this link within {minutes} minutes; "
+        f"it works once: {origin}/#pair={code}"
+    )
+
+
+def _dev_pairing_origin(frontend_url: str, bind_host: str) -> str | None:
+    """The origin a dev page pairs from, or None when no page this daemon serves can.
+
+    Vite forwards the page's own Host to the daemon, and the daemon refuses every
+    request whose Host it does not admit, the pairing request included. The page
+    Vite reported is used when its host is admitted. A wildcard bind admits only
+    loopback names and Vite serves the same port on loopback, so the link moves to
+    ``localhost``, the name Vite prints as that bind's Local address. Any other
+    refused host gets no link.
+    """
+    from urllib.parse import urlsplit
+
+    from lionagi.studio.launch_access import _canonical_origin
+
+    origin = _canonical_origin(frontend_url)
+    try:
+        parts = urlsplit(origin)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    if normalize_host(parts.hostname) in admitted_host_names(bind_host):
+        return origin
+    if is_unspecified_host(bind_host):
+        return f"{parts.scheme}://localhost" + (f":{port}" if port else "")
+    return None
+
+
 def _ignore_sigpipe() -> None:
     """Let a write to a peer that already closed raise BrokenPipeError in the daemon.
 
@@ -406,7 +481,13 @@ def _start_backend_only(host: str, port: int) -> int:
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
-    uvicorn.run("lionagi.studio.app:app", host=host, port=port)
+    # One process: a pairing code lives in the process that minted it, whether a
+    # hosted launch minted it before calling here or a later `li studio` asks
+    # the reconnect socket for one, and every worker starts its own reconnect
+    # channel and mints into its own memory. A worker count from WEB_CONCURRENCY
+    # would serve the pairing route from a process that never issued the code,
+    # so a --no-frontend start, which mints nothing itself, runs one worker too.
+    uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
     return 0
 
 
@@ -627,6 +708,16 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
+        # The page pairs with the daemon this process serves; no other daemon
+        # knows the code minted here.
+        if _daemon_health(port, host=host) is not None:
+            log_error(
+                f"A Studio daemon is already running at http://{_url_authority(host)}:{port}; "
+                f"--dev serves its own. Stop that daemon or choose another --port."
+            )
+            return 1
+        api_url = _studio_api_url(host, port)
+        proxied_to = os.environ.get("STUDIO_API_URL", api_url)
         launched = _launch_vite_dev(
             frontend_dir,
             frontend_port,
@@ -638,6 +729,20 @@ def _start_local(
             frontend_proc, frontend_url = launched
             if frontend_url:
                 print(f"Lion Studio UI (dev):  {frontend_url}")
+                pairing_origin = _dev_pairing_origin(frontend_url, host)
+                if not _proxy_reaches_daemon(proxied_to, host, port):
+                    warn(
+                        f"STUDIO_API_URL sends the dev page's API calls to {proxied_to}, "
+                        f"which cannot redeem a code this launch mints; no pairing link."
+                    )
+                elif pairing_origin is None:
+                    warn(
+                        f"The daemon refuses the Host a page at {frontend_url} sends, so "
+                        f"that page cannot pair; no pairing link. Bind --host to the "
+                        f"address you open the page at."
+                    )
+                else:
+                    print(f"  {_dev_pairing_line(pairing_origin)}")
             # else: _launch_vite_dev already printed a specific, actionable
             # warning (early exit / stream end / timeout) with captured output.
         print(f"Lion Studio API:       http://{host}:{port}")
@@ -660,7 +765,8 @@ def _start_local(
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
     try:
-        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
+        # One process, as in _start_backend_only: the dev page's code lives here.
+        uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
     finally:
@@ -811,8 +917,9 @@ def _host_is_loopback(host: str) -> bool:
     127.0.0.0/8 block is loopback, not just 127.0.0.1. `localhost` and
     `*.localhost` get explicit handling since they aren't IP literals.
     The 0.0.0.0/:: wildcards are "unspecified", not loopback, and stay
-    LAN-seeking.
+    LAN-seeking. Hostnames compare case-insensitively, as DNS does.
     """
+    host = host.lower()
     if host == "localhost" or host.endswith(".localhost"):
         return True
     try:
@@ -952,6 +1059,41 @@ def _await_vite_ready_url(
     return matches[0]
 
 
+def _studio_api_url(api_host: str, api_port: int) -> str:
+    """The address the dev server's /api proxy reaches this launch's daemon at."""
+    url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
+    return f"http://{url_host}:{api_port}"
+
+
+def _proxy_reaches_daemon(target: str, host: str, port: int) -> bool:
+    """Whether a dev proxy aimed at *target* reaches the daemon bound to *host* and *port*.
+
+    Both sides are read as the address a client connects to, so an unspecified
+    bind address matches the loopback address of its family and an IPv6 address
+    matches however it is spelled. A name is compared as written: ``localhost``
+    can resolve to either family, so it is not taken to reach a daemon bound to
+    one of them. A target with a path, query or fragment sends the page's API
+    calls under that path, where this daemon serves nothing.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(target)
+        target_port = parts.port
+    except ValueError:
+        return False
+    if (
+        parts.scheme != "http"
+        or not parts.hostname
+        or "@" in parts.netloc
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+    ):
+        return False
+    return (_url_authority(parts.hostname), target_port or 80) == (_url_authority(host), port)
+
+
 def _launch_vite_dev(
     frontend_dir: Path,
     frontend_port: int,
@@ -971,8 +1113,7 @@ def _launch_vite_dev(
     if api_host is not None and api_port is not None:
         # An operator-supplied target is an intentional escape hatch and wins
         # over the host/port selected by this CLI invocation.
-        url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
-        env.setdefault("STUDIO_API_URL", f"http://{url_host}:{api_port}")
+        env.setdefault("STUDIO_API_URL", _studio_api_url(api_host, api_port))
     try:
         proc = subprocess.Popen(  # noqa: S603
             _vite_dev_argv(frontend_port, host),  # noqa: S607

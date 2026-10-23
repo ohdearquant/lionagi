@@ -551,6 +551,10 @@ class TestAuthenticatedIdentity:
 
 
 _HOSTED = "https://lion-studio.khive.ai"
+# A dev page's address as Vite reports it; not one of the default CORS origins.
+_DEV_PAGE = "http://127.0.0.1:3000"
+# The Host a dev page's requests carry: Vite's proxy (changeOrigin false) keeps the page's Host.
+_DEV_PAGE_HOST = "127.0.0.1:3000"
 _LOOPBACK = {"Host": "127.0.0.1:8765"}
 # No route answers here, so an accepted request is a 404 and a refused one is a 401.
 _UNROUTED = "/api/no-such-route"
@@ -855,7 +859,8 @@ def fresh_launch(monkeypatch):
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
     monkeypatch.setattr(launch_access, "_capabilities", {}, raising=False)
-    monkeypatch.setattr(launch_access, "_launch_codes", set(), raising=False)
+    monkeypatch.setattr(launch_access, "_launch_codes", {}, raising=False)
+    monkeypatch.setattr(launch_access, "_launch_origins", set())
     return launch_access
 
 
@@ -869,8 +874,10 @@ class TestPairing:
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
         monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
 
-    def _pair(self, client, code, origin=_HOSTED):
+    def _pair(self, client, code, origin=_HOSTED, host=None):
         headers = dict(_LOOPBACK)
+        if host is not None:
+            headers["Host"] = host
         if origin is not None:
             headers["Origin"] = origin
         return client.post(_PAIR, json={"code": code}, headers=headers)
@@ -933,6 +940,55 @@ class TestPairing:
 
         assert refused.status_code == 403
         assert self._pair(client, code).status_code == 200
+
+    def test_a_page_on_the_origin_a_launcher_named_pairs_and_its_neighbour_does_not(
+        self, make_client, fresh_launch
+    ):
+        """`li studio --dev` names its page's exact origin, which CORS need not allow."""
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(origins=[_DEV_PAGE], for_launch=True)
+
+        refused = self._pair(client, code, origin="http://127.0.0.1:3001", host="127.0.0.1:3001")
+        paired = self._pair(client, code, origin=_DEV_PAGE, host=_DEV_PAGE_HOST)
+
+        assert refused.status_code == 403
+        assert paired.status_code == 200
+        principal = fresh_launch.resolve_decision_capability(
+            paired.json()["decision_token"], origin=_DEV_PAGE
+        )
+        assert principal is not None
+        assert principal.origin == _DEV_PAGE
+
+    def test_a_code_minted_for_no_named_origin_admits_no_new_page(self, make_client, fresh_launch):
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(for_launch=True)
+
+        assert not fresh_launch._launch_origins
+        assert self._pair(client, code, origin=_DEV_PAGE, host=_DEV_PAGE_HOST).status_code == 403
+        assert self._pair(client, code).status_code == 200
+
+    def test_a_page_address_written_another_way_pairs_from_the_origin_its_browser_sends(
+        self, make_client, fresh_launch
+    ):
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(origins=[f"{_DEV_PAGE}/"], for_launch=True)
+
+        assert self._pair(client, code, origin=_DEV_PAGE, host=_DEV_PAGE_HOST).status_code == 200
+
+    def test_a_named_page_asking_the_daemon_directly_is_refused_before_the_code_is_spent(
+        self, make_client, fresh_launch
+    ):
+        """CORS answers no page on a named origin it does not allow, so that page
+        could not read a bearer the route handed it."""
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(origins=[_DEV_PAGE], for_launch=True)
+
+        direct = self._pair(client, code, origin=_DEV_PAGE)
+        proxied = self._pair(client, code, origin=_DEV_PAGE, host=_DEV_PAGE_HOST)
+
+        assert direct.status_code == 403
+        assert "access-control-allow-origin" not in direct.headers
+        assert proxied.status_code == 200
 
     def test_the_launch_bearer_is_not_in_the_environment(self, make_client, fresh_launch):
         import os

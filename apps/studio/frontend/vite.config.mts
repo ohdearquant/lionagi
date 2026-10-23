@@ -42,10 +42,16 @@ export function hostedApiBaseInjector(env: NodeJS.ProcessEnv = process.env): Plu
 const apiTarget =
   process.env.STUDIO_API_URL ?? `http://127.0.0.1:${process.env.STUDIO_E2E_API_PORT ?? "8765"}`;
 
+// changeOrigin false: the proxy passes the page's own Host on, so a page that pairs
+// through it sends the daemon a same-origin request (lionagi/studio/services/pairing.py),
+// and the daemon answers its loopback names on any port. A target given as a bare string
+// would get changeOrigin true and send the target's Host instead.
+const daemonProxy = { target: apiTarget, changeOrigin: false };
+
 export const studioProxy = {
-  "/api": apiTarget,
-  "/health": apiTarget,
-  "/openapi.json": apiTarget,
+  "/api": daemonProxy,
+  "/health": daemonProxy,
+  "/openapi.json": daemonProxy,
 };
 
 export default defineConfig({

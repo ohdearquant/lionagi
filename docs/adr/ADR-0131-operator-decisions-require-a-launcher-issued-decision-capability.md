@@ -18,8 +18,10 @@ daemon's own OS user can open, and that no HTTP request can obtain.
 
 Landing steps 1, 2 and 2b are in: the decision-capability store and the decision rows that record
 its principal, minting at launch, the retired HTTP mint route, redemption returning the capability,
-the page's use of it, and the same-user reconnect channel the CLI pairs over. Step 3's remaining
-launch adapters and step 4's principal check and refusals are not; decisions are still admitted under
+the page's use of it, and the same-user reconnect channel the CLI pairs over. Of step 3, `--dev`
+delivers a code bound to the page origin Vite reports, and the pairing route admits an origin a
+launcher in the same process named; `--no-frontend` and the desktop shell do not deliver one yet.
+Step 4's principal check and refusals are not in; decisions are still admitted under
 contract version 1, every decision request accepted today is still accepted, and a request without
 the capability is recorded unattributed.
 
@@ -44,7 +46,7 @@ that can send HTTP can mint, redeem with a forged `Origin`, and decide. This par
 daemon before the HTTP mint route was retired (its line numbers are at `124b14193`).
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
-variable (`apps/studio/frontend/src/lib/pairing.ts:14`); a reload loses it. Nothing reachable over
+variable (`apps/studio/frontend/src/lib/pairing.ts:27`); a reload loses it. Nothing reachable over
 HTTP can read it.
 
 **P4 — the permission bridge reads storage, not HTTP.** The provider-permission bridge polls the
@@ -136,7 +138,7 @@ rule and the token's narrower meaning.
    2b. D2's reconnect channel, with the CLI's reconnect moved from the HTTP mint to it. It ships in
    the same release as step 2's 410, so no released daemon is without a reconnect, and before step 4.
 3. D5's adapters, one launch path per change, so that every launch path except Docker delivers a code
-   before any decision requires one. Today only the hosted launch delivers one.
+   before any decision requires one. Today the hosted launch and `--dev` deliver one.
 4. D4: the principal check in `decide()` and the refusals, Docker's decisions-disabled refusal, and
    D7's version-2 marker with the page's version gate, in one release. From this step the contract
    is version 2.
