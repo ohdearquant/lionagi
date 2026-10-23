@@ -362,15 +362,20 @@ class _Slot:
     path: Path
     fd: int
     record: dict[str, Any]
+    # Whether the file holds this child's whole record with its start time: only then
+    # does the record keep the slot held without its lock.
+    holds_child: bool = False
 
     def write(self) -> None:
         data = json.dumps(self.record, sort_keys=True).encode()
         # Written, then cut to length: a reader never finds the file empty while it is held.
         written = os.pwrite(self.fd, data, 0)
         if written != len(data):
-            # What the file then holds may not parse, or may parse to a record naming
-            # another child, or this child with another start time: none of them keeps
-            # the slot held for this child once its holder exits.
+            # What the file then holds may not parse, may parse to a record naming
+            # another child or this child with another start time, or may by chance
+            # parse to this child with its exact start time. Only the last keeps the
+            # slot held for this child once its holder exits, so every short write
+            # is refused.
             raise OSError(errno.ENOSPC, f"wrote {written} of the record's {len(data)} bytes")
         os.ftruncate(self.fd, len(data))
 
@@ -382,6 +387,16 @@ class _Slot:
             # Cleared before unlocking, so a released slot never names a child.
             with contextlib.suppress(OSError):
                 os.ftruncate(fd, 0)
+            with contextlib.suppress(OSError):
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def unlock_keeping_record(self) -> None:
+        if self.fd < 0:
+            return
+        fd, self.fd = self.fd, -1
+        try:
             with contextlib.suppress(OSError):
                 _fcntl.flock(fd, _fcntl.LOCK_UN)
         finally:
@@ -405,6 +420,7 @@ class SubagentLease:
                 continue
             slot.record["child_pid"] = pid
             slot.record["child_started"] = create_time
+            slot.holds_child = False
             try:
                 slot.write()
             except OSError as exc:
@@ -414,11 +430,27 @@ class SubagentLease:
                     "the agent was ended",
                     pool=slot.pool,
                 ) from exc
+            slot.holds_child = create_time is not None
 
     def release(self) -> None:
         slots, self.slots = self.slots, []
         for slot in reversed(slots):
             slot.release()
+
+    def keep_for_child(self) -> bool:
+        """Give up the locks of a child whose group is not known to have ended, keeping
+        each slot's record, so the slots read held while that child runs and free once it
+        has gone, as after this process exits.
+
+        Returns False, keeping the locks until this process exits, when any slot lacks the
+        child's whole record with its start time: that record would not hold it.
+        """
+        if not all(slot.holds_child for slot in self.slots if slot.fd >= 0):
+            return False
+        slots, self.slots = self.slots, []
+        for slot in reversed(slots):
+            slot.unlock_keeping_record()
+        return True
 
 
 def _read_record(path: Path) -> dict[str, Any] | None:

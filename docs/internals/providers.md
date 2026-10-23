@@ -568,12 +568,16 @@ the pool, its cap, the variable that set it and the holder pids.
 
 The lease is released when the spawn fails, when the `on_spawn` observer fails,
 and in the generator's final `finally` after `end_child_group()`, so the slot
-frees only once the worker's group has been ended. The stdin payload is encoded
-before admission, so an input that cannot be encoded is refused with nothing to
-give back. A spawn cancelled while the creation call runs keeps its slot until
-that call returns: the abandoned-spawn callback sends SIGKILL to the late
-child's group (to the child alone without spawn-time witnesses) and then
-releases it; if that end raises, the slot stays held until the process exits.
+frees only once the worker's group has been ended. If `end_child_group()`
+raises, the slot gives up its lock but keeps the child's record, so it reads
+held while that child runs, as after its holder exits; without the child's
+start time in the record it keeps its lock until the process exits. The stdin
+payload is encoded before admission, so an input that cannot be encoded is
+refused with nothing to give back. A spawn cancelled while the creation call
+runs keeps its slot until that call returns: the abandoned-spawn callback
+records the late child in the slot, sends SIGKILL to its group (to the child
+alone without spawn-time witnesses) and then releases it; if that end raises,
+the slot is kept for the child in the same way.
 A spawn task that is itself cancelled hands back no pid, so only
 the direct child's transport is closed before the slot is released.
 

@@ -913,15 +913,29 @@ async def ndjson_from_cli(
         # arrive after this unwinds. The slots stay held until the callback has ended
         # that child's group; a spawn that already finished is ended and released now.
         def _end_then_release(task: asyncio.Future) -> None:
+            if not task.cancelled() and task.exception() is None:
+                late = task.result()[1]
+                try:
+                    # Named before its group is ended, so the slots still hold this
+                    # child if that end fails and this process then exits.
+                    lease.record_child(late.pid, late.create_time)
+                except Exception:
+                    log.exception("could not record the child whose spawn was abandoned")
             try:
                 _kill_abandoned_spawn(task)
             except Exception:
-                # The group is not known to have ended, so its slots stay held until
-                # this process exits; the error being raised here stays the caller's.
-                log.exception(
-                    "could not end the group of a child whose spawn was abandoned; its "
-                    "subagent slots stay held until this process exits"
-                )
+                # The group is not known to have ended. The caller already has its own
+                # error; this one is logged, and the slots stay held.
+                if lease.keep_for_child():
+                    log.exception(
+                        "could not end the group of a child whose spawn was abandoned; its "
+                        "subagent slots stay held while that child runs"
+                    )
+                else:
+                    log.exception(
+                        "could not end the group of a child whose spawn was abandoned; its "
+                        "subagent slots stay held until this process exits"
+                    )
             else:
                 lease.release()
 
@@ -969,8 +983,11 @@ async def ndjson_from_cli(
     except BaseException:
         try:
             await end_child_group(proc, spawned=spawned)
-        finally:
-            lease.release()
+        except BaseException:
+            # Not known to have ended: the slots stay held while the child runs.
+            lease.keep_for_child()
+            raise
+        lease.release()
         raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -1174,8 +1191,11 @@ async def ndjson_from_cli(
 
         try:
             await end_child_group(proc, spawned=spawned)
-        finally:
-            lease.release()
+        except BaseException:
+            # Not known to have ended: the slots stay held while the child runs.
+            lease.keep_for_child()
+            raise
+        lease.release()
 
         if abandoned_silently:
             # Drain first, or the warning reports "said nothing" about a child

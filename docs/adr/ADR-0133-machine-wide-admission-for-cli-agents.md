@@ -112,19 +112,23 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   that slot would read free once its holder exited while the child ran, so ending the child's
   process group is attempted and the slots are released before the error reaches the caller. A
   slot written only in part is refused the same way: what the file then holds may not parse,
-  or may parse to a record naming another child, or this child with another start time, and
-  none of them keeps the slot held once its holder exits.
+  may parse to a record naming another child or this child with another start time, or may by
+  chance parse to this child with its exact start time. Only the last keeps the slot held once
+  its holder exits, so every short write is refused.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
   generator's final `finally` after `end_child_group()`, so a slot frees only once the group has
   been ended. Ended here means `end_child_group()` has returned: it signals the group, sends
   SIGKILL once the grace period (5 s) passes with members left, and waits that long again for the
   child, then returns whether or not every member has gone, so a member that survives SIGKILL can
-  outlive its slot.
+  outlive its slot. If `end_child_group()` raises instead, nothing shows that the group has
+  ended: each slot gives up its lock and keeps the child's record, so it reads held while that
+  child runs and free once it has gone, as after its holder exits. A slot without the child's
+  whole record and start time keeps its lock until this process exits.
 - A cancellation that lands while the spawn is in flight unwinds the caller before the child
   arrives, and the slots stay held. When the creation call returns, the abandoned-spawn callback
-  (ADR-0030 D4) sends SIGKILL to the child's group (to the child alone when the spawn-time
-  witnesses do not prove the group is its) and then releases them; if that end raises, they stay
-  held until this process exits. If the spawn task is itself
+  (ADR-0030 D4) records the child in its slots, sends SIGKILL to the child's group (to the child
+  alone when the spawn-time witnesses do not prove the group is its) and then releases them; if
+  that end raises, they are kept for the child in the same way. If the spawn task is itself
   cancelled, no pid reaches this process: asyncio closes the transport, which ends the direct
   child but not its group, and the slots are released then.
 

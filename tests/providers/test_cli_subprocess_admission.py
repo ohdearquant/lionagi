@@ -384,7 +384,9 @@ async def test_a_cancel_as_the_spawn_finishes_ends_the_child_before_the_slot_fre
     ended = []
 
     def _record_end(proc, *args, **kwargs):
-        ended.append((proc.pid, _held()["held"]))
+        # Inside the caller's own task only when the unwinding caller ended it itself, not
+        # a done-callback run later by the loop.
+        ended.append((proc.pid, _held()["held"], asyncio.current_task() is first[0]))
         return real_end(proc, *args, **kwargs)
 
     _cancel_the_caller_as_the_spawn_finishes(monkeypatch, first, pids)
@@ -394,8 +396,8 @@ async def test_a_cancel_as_the_spawn_finishes_ends_the_child_before_the_slot_fre
     with pytest.raises(asyncio.CancelledError):
         await first[0]
     [pid] = pids
-    # Ended while the slot was still held, then given back, before the caller unwound.
-    assert ended == [(pid, 1)]
+    # Ended by the caller as it unwound, while the slot was still held, then given back.
+    assert ended == [(pid, 1, True)]
     assert _held()["held"] == 0
     assert _await_death(pid)
     await stream.aclose()
@@ -405,14 +407,15 @@ async def test_a_cancel_as_the_spawn_finishes_ends_the_child_before_the_slot_fre
 async def test_an_abandoned_child_whose_group_end_raises_keeps_its_slot(
     capped, monkeypatch, caplog
 ):
-    """Nothing shows that group has ended, so its slot stays held; the caller still sees
-    its own cancellation."""
+    """Nothing shows that group has ended, so its slot stays held while the child runs,
+    with or without this process; the caller still sees its own cancellation."""
     from lionagi.providers import _cli_subprocess
 
     real_admit = _cli_subprocess.admit_subagent
     first: list[asyncio.Future] = []
     pids: list[int] = []
     leases = []
+    ends = []
 
     async def _keep_lease(**kwargs):
         lease = await real_admit(**kwargs)
@@ -420,6 +423,7 @@ async def test_an_abandoned_child_whose_group_end_raises_keeps_its_slot(
         return lease
 
     def _end_raises(proc, *args, **kwargs):
+        ends.append(asyncio.current_task() is first[0])
         raise RuntimeError("the group could not be signalled")
 
     _cancel_the_caller_as_the_spawn_finishes(monkeypatch, first, pids)
@@ -432,13 +436,165 @@ async def test_an_abandoned_child_whose_group_end_raises_keeps_its_slot(
     [pid] = pids
     [lease] = leases
     try:
+        assert ends == [True]
+        _exit_the_holder(lease)
         assert _is_alive(pid)
         assert _held()["held"] == 1
-        assert "slots stay held until this process exits" in caplog.text
+        assert "slots stay held while that child runs" in caplog.text
     finally:
         os.kill(pid, signal.SIGKILL)
-        lease.release()
     assert _await_death(pid)
+    assert _held()["held"] == 0
+    await stream.aclose()
+
+
+def _exit_the_holder(lease) -> None:
+    """What this process exiting does to the locks it still holds: each is dropped and
+    its record stays in the file."""
+    for slot in lease.slots:
+        slot.unlock_keeping_record()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_spawn_keeps_the_slot_for_the_child_when_its_end_raises(
+    capped, monkeypatch, caplog
+):
+    """The late child is named in the slot before its group is ended, so a failed end
+    leaves the slot held while that child runs, even once its holder has exited."""
+    from lionagi.providers import _cli_subprocess
+
+    real_admit = _cli_subprocess.admit_subagent
+    real_create = asyncio.create_subprocess_exec
+    created = asyncio.Event()
+    finish_creation = asyncio.Event()
+    pids = []
+    leases = []
+
+    async def _keep_lease(**kwargs):
+        lease = await real_admit(**kwargs)
+        leases.append(lease)
+        return lease
+
+    async def _slow_create(*args, **kwargs):
+        child = await real_create(*args, **kwargs)
+        pids.append(child.pid)
+        created.set()
+        await finish_creation.wait()
+        return child
+
+    def _end_raises(proc, *args, **kwargs):
+        raise RuntimeError("the group could not be signalled")
+
+    monkeypatch.setattr(_cli_subprocess, "admit_subagent", _keep_lease)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _slow_create)
+    monkeypatch.setattr(_cli_subprocess, "_end_group_with_evidence", _end_raises)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
+    first = asyncio.ensure_future(stream.__anext__())
+    await asyncio.wait_for(created.wait(), timeout=5.0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    [pid] = pids
+    [lease] = leases
+    try:
+        finish_creation.set()
+        deadline = time.monotonic() + 5.0
+        while "could not end the group" not in caplog.text and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert "slots stay held while that child runs" in caplog.text
+        _exit_the_holder(lease)
+        assert _is_alive(pid)
+        assert _held()["held"] == 1
+    finally:
+        os.kill(pid, signal.SIGKILL)
+    assert _await_death(pid)
+    assert _held()["held"] == 0
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["teardown", "observer"])
+async def test_a_group_end_that_raises_keeps_the_slot_while_the_child_runs(
+    capped, monkeypatch, where
+):
+    """At the stream's end and when the spawn observer fails, a group end that raises
+    leaves the slot held while the child runs, and free once it has gone, with this
+    process still running."""
+    from lionagi.providers import _cli_subprocess
+
+    pids = []
+
+    async def _end_raises(proc, **kwargs):
+        raise RuntimeError("the group could not be ended")
+
+    def _observe(spawned):
+        pids.append(spawned.pid)
+        if where == "observer":
+            raise ValueError("the observer failed")
+
+    monkeypatch.setattr(_cli_subprocess, "end_child_group", _end_raises)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex", on_spawn=_observe)
+    with pytest.raises(RuntimeError, match="could not be ended"):
+        if where == "teardown":
+            assert (await stream.__anext__()) == {"type": "hello"}
+            await stream.aclose()
+        else:
+            await stream.__anext__()
+    [pid] = pids
+    try:
+        assert _is_alive(pid)
+        assert _held()["held"] == 1
+    finally:
+        os.kill(pid, signal.SIGKILL)
+    assert _await_death(pid)
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_child_without_a_start_time_keeps_the_lock_when_its_end_raises(
+    capped, monkeypatch, caplog
+):
+    """A record without the child's start time would not hold the slot, so the lock is
+    kept until this process exits."""
+    from lionagi.providers import _cli_subprocess
+
+    real_admit = _cli_subprocess.admit_subagent
+    real_observe = _cli_subprocess.observe_spawned
+    first: list[asyncio.Future] = []
+    pids: list[int] = []
+    leases = []
+
+    async def _keep_lease(**kwargs):
+        lease = await real_admit(**kwargs)
+        leases.append(lease)
+        return lease
+
+    def _no_start_time(pid, *, expected_marker):
+        observed = real_observe(pid, expected_marker=expected_marker)
+        return _cli_subprocess.SpawnedProcess(
+            pid=observed.pid, pgid=observed.pgid, create_time=None
+        )
+
+    def _end_raises(proc, *args, **kwargs):
+        raise RuntimeError("the group could not be signalled")
+
+    _cancel_the_caller_as_the_spawn_finishes(monkeypatch, first, pids)
+    monkeypatch.setattr(_cli_subprocess, "admit_subagent", _keep_lease)
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
+    monkeypatch.setattr(_cli_subprocess, "_end_group_with_evidence", _end_raises)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
+    first.append(asyncio.ensure_future(stream.__anext__()))
+    with pytest.raises(asyncio.CancelledError):
+        await first[0]
+    [pid] = pids
+    [lease] = leases
+    try:
+        os.kill(pid, signal.SIGKILL)
+        assert _await_death(pid)
+        assert "slots stay held until this process exits" in caplog.text
+        assert _held()["held"] == 1
+    finally:
+        lease.release()
     assert _held()["held"] == 0
     await stream.aclose()
 
