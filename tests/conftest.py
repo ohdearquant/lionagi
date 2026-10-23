@@ -289,7 +289,7 @@ def write_plugin(plugin_home):
 def _outside_any_agent(monkeypatch: pytest.MonkeyPatch):
     """Run every test as if the suite had been started by hand, outside any agent.
 
-    A suite an agent runs (a review or fix leg) inherits that agent's depth and runs under its
+    A suite an agent runs inherits that agent's depth and runs under its
     process, so every test that starts a CLI child in this process would be refused as a nested
     agent. Tests of that refusal set their own depth and ancestry. A test that starts lionagi in
     a subprocess is not covered: the child reads its real ancestry and, under an agent, is
