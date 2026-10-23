@@ -502,6 +502,13 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Fixed
 
+- `extract_docstring(func, style="rest")`, and `function_to_schema(..., style="rest")` with it,
+  keeps a parameter's whole description. Indented lines after `:param x:` were dropped, so a
+  description kept only its first line, and one that starts on the indented line below
+  `:param x:` read as empty; both now read in full. A field such as `:returns:` or `:type:`
+  ends the parameter before it, so that field's own continuation lines are not added to it. A
+  tool schema built from a reST docstring can therefore carry longer parameter descriptions
+  than before.
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.
   Health now counts the schedule's last healthy poll as liveness, as it counts a threshold

@@ -42,7 +42,10 @@ max_extensions=N)` (`lionagi/cli/agent.py:415-419`, ADR-0041 Amendment 1). Each 
 is at least one model request, and a reply that fails to parse costs more, since it is sent back to
 the model to be reformatted (`lionagi/operations/communicate/communicate.py:119-128`,
 `lionagi/operations/parse/parse.py:186-217`). A round's tool calls run through `act()`, concurrently
-unless the model asks for them in sequence (`lionagi/operations/ReAct/ReAct.py:165`, `:502`). After
+unless the model asks for them in sequence: ReAct passes `strategy="concurrent"`
+(`lionagi/operations/ReAct/ReAct.py:165`, `:502`), the model's `action_strategy` field
+(`lionagi/operations/ReAct/utils.py:53`) can declare `sequential`, and `operate` then runs the calls
+one at a time (`lionagi/operations/operate/operate.py:318`). After
 the last analysis round ReAct always makes one more request for the answer
 (`ReAct.py:591-644`). A ReAct turn therefore costs its analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
 usually asks for another round to look at it before saying it is done: the leg's own test of a

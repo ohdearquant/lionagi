@@ -1,3 +1,5 @@
+# The questions and their `truth` lines were written against lionagi commit 6fa69b19, and the runs
+# read a checkout of that commit. The cited line numbers are that commit's, not the current tree's.
 tasks:
 - id: t01
   class: lookup

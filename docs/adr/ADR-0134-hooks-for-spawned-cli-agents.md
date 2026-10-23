@@ -57,8 +57,11 @@ machine.
 
 **P1 — the hooks a spawned agent runs are decided by the machine, not by lionagi.** On `main` the
 Studio Operator sets `setting_sources`, and so does a flow or fan-out worker whose role's profile
-sets `contain_user_settings` (`build_worker_branch`), with the agents that worker spawns; #3671
-changed only Codex spawns. Any other Claude agent, whether another flow or fan-out worker, one
+sets `contain_user_settings` (`build_worker_branch`), with every agent the run spawns at that
+worker's request, whatever role the request names. That reaches the processes the run starts; a
+program the worker starts itself through its Bash tool (`claude -p`, `li agent`) is not a spawn the
+run sees and runs with the CLI's default sources. #3671 changed only Codex spawns. Any other Claude
+agent, whether another flow or fan-out worker, one
 started by `li agent`, a flow's orchestrator, a fan-out's synthesis step or any other spawn path,
 runs with the CLI's default sources (user, project, local): the user's interactive
 `~/.claude/settings.json` hooks, plugins and permissions, and the
@@ -1179,7 +1182,9 @@ harder to read back. Kept as a fallback if the file path proves unworkable.
   and unchecked for sign. #3671, since merged, changes the second: flow and fan-out workers run
   Codex with `--ignore-user-config`, through the field that change adds. It leaves Claude workers'
   setting sources as they were; a flow or fan-out worker runs Claude with empty setting sources
-  when its role's profile sets `contain_user_settings`, and so do the agents that worker spawns.
+  when its role's profile sets `contain_user_settings`, and so do the agents the run spawns at that
+  worker's request, whatever role they name; a program the worker starts through its own Bash tool
+  reads the default sources.
   This record builds on #3671.
 - Engine behaviors this record relies on (Claude's `--setting-sources`, `--strict-mcp-config` and
   `--session-id`, Codex's `--ignore-user-config`, project layers, hook trust records, hook decision
