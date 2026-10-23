@@ -1154,18 +1154,21 @@ async def _run_agent(
             "or use --resume / --continue-last to reopen an existing one."
         )
 
-    from lionagi.agent.factory import _reject_unforwardable_explicit_mcp
+    from lionagi.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
     _reject_unforwardable_explicit_mcp(
         provider,
         named_explicitly=mcp_resolution.explicit,
         asked_for_servers=bool(mcp_resolution.servers),
     )
+    # Settings are looked up under the provider the name resolves to, so an alias such as
+    # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
+    canonical = _canonical_provider(provider)
 
     if branch is None:
         # Codex blocks tool calls until file access is enabled. Surface this
         # even without verbose output; CLI or profile approval flags suppress it.
-        if provider == "codex" and not yolo and not bypass:
+        if canonical == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(
@@ -1344,9 +1347,9 @@ async def _run_agent(
                 # on a spark resume).
                 from lionagi.service.providers import reclamp_effort_for_model
 
-                kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+                kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                 if kwarg and cfg.get(kwarg) is not None:
-                    cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
+                    cfg[kwarg] = reclamp_effort_for_model(canonical, cfg[kwarg], model)
         # The display flags are CLI endpoint options; an API model sends its
         # config's kwargs with each request, so a branch on the tool loop is
         # handed neither.
@@ -1358,14 +1361,14 @@ async def _run_agent(
         if theme is not None and not on_tool_loop:
             cfg["cli_display_theme"] = theme
         if effort is not None:
-            kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+            kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
             if kwarg:
-                if provider == "codex":
+                if canonical == "codex":
                     effort = _clamp_codex_effort(effort, cfg.get("model"))
-                elif provider in _CLAUDE_PROVIDER_NAMES:
+                elif canonical in _CLAUDE_PROVIDER_NAMES:
                     effort = _clamp_claude_effort(effort, cfg.get("model") or "")
                 cfg[kwarg] = effort
-            elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+            elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                 # agy (Antigravity CLI) has no effort kwarg — fold effort into
                 # the resolved --model name instead (see resolve_agy_model).
                 from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -1376,16 +1379,14 @@ async def _run_agent(
                     reapply_effort=model_str is None,
                 )
         if bypass:
-            cfg.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
         elif yolo:
-            cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_YOLO_KWARGS.get(canonical, {}))
         if fast:
-            cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_FAST_KWARGS.get(canonical, {}))
         # The stored row never carries a connector grant; its containment value also belongs
         # to the previous role, so both settings come from the current role.
-        from lionagi.service.connections.registry import EndpointRegistry
-
-        if EndpointRegistry.canonical_provider(provider) == "codex":
+        if canonical == "codex":
             cfg.pop("contain_account_integrations", None)
             if branch.chat_model.endpoint.is_cli:
                 _add_codex_account_integration_kwargs(

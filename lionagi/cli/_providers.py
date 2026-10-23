@@ -341,7 +341,11 @@ def resolve_persisted_effort(
     chat_model: Any,
     requested_effort: str | None,
 ) -> str | None:
-    """Return the post-clamp effort to persist; None for providers in PROVIDERS_NO_EFFORT."""
+    """Return the post-clamp effort to persist; None for providers in PROVIDERS_NO_EFFORT. An
+    alias (``openai-codex``) is read as the provider it names, whose effort kwarg it carries."""
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    provider = EndpointRegistry.canonical_provider(provider or "")
     effort = requested_effort
     if isinstance(chat_model, iModel):
         _ep_kwargs = chat_model.endpoint.config.kwargs or {}
@@ -928,85 +932,109 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
-def _contain_flag_values(text: str) -> list[Any]:
-    """The value of each top-level ``contain_user_settings`` line in *text*, key quoted or not,
-    each line read alone."""
-    import re
+_CONTAIN_KEY = "contain_user_settings"
 
+
+def _contain_flag_values(block: str) -> list[Any]:
+    """The value each top-level ``contain_user_settings`` key of *block*, a frontmatter block
+    that reads as YAML, gives the flag. Keys are found on the parsed nodes, so a quoted key, an
+    indented block, ``? contain_user_settings`` and a merge key all count; an explicit key wins
+    over a merged one, as it does in YAML. A boolean spelled other than ``true`` or ``false``,
+    such as ``off`` or ``no``, keeps its spelling, which reads as neither and so contains."""
     import yaml
 
-    values: list[Any] = []
-    for line in text.splitlines():
-        if not re.match(r"""(["']?)contain_user_settings\1[ \t]*:""", line):
-            continue
-        try:
-            read = yaml.safe_load(line)
-        except yaml.YAMLError:
-            read = None
-        # A line that does not read alone keeps its text, which is not true or false and
-        # so contains, as any other such value does.
-        values.append(
-            read["contain_user_settings"]
-            if isinstance(read, dict) and "contain_user_settings" in read
-            else line.split(":", 1)[1].strip()
-        )
-    return values
+    def value_nodes(node: Any, seen: set[int]) -> list[Any]:
+        if id(node) in seen or not isinstance(node, yaml.MappingNode):
+            return []
+        seen.add(id(node))
+        explicit: list[Any] = []
+        merged: list[Any] = []
+        for key, value in node.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                for source in sources:
+                    merged.extend(value_nodes(source, seen))
+            elif isinstance(key, yaml.ScalarNode) and key.value == _CONTAIN_KEY:
+                explicit.append(value)
+        return explicit or merged
+
+    loader = yaml.SafeLoader(block)
+    try:
+        values: list[Any] = []
+        for node in value_nodes(loader.get_single_node(), set()):
+            if (
+                isinstance(node, yaml.ScalarNode)
+                and node.tag == "tag:yaml.org,2002:bool"
+                and node.value.lower() not in ("true", "false")
+            ):
+                values.append(node.value)
+            else:
+                values.append(loader.construct_object(node, deep=True))
+        return values
+    finally:
+        loader.dispose()
 
 
 def _contain_flag_of(values: list[Any]) -> Any:
-    """The flag several lines give it: a line turning containment off loses to any other, so
+    """The flag several keys give it: a key turning containment off loses to any other, so
     it is off only when every one reads false."""
     return next((value for value in values if value is not False), False)
 
 
 def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
-    """The settings a profile keeps when its frontmatter block is not read, with a warning:
-    none, except ``contain_user_settings`` when it has a top-level line of its own, so a
-    broken line elsewhere in the block, or a character ahead of the opening delimiter that
-    hides the block, cannot turn containment off."""
+    """The settings a profile keeps when no frontmatter block that reads opens it: none, with a
+    warning when a block was there to lose. The worker is contained when the block, from its
+    opening ``---`` line to the next one or to the end, names ``contain_user_settings``
+    anywhere, so neither a broken line in the block nor text ahead of it can turn containment
+    off. A profile with no ``---`` line has no block, and all of it is the prompt."""
     import yaml
 
-    from lionagi.libs.frontmatter import parse_frontmatter_strict
+    from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
 
     from ._logging import warn
 
-    if not text.strip().startswith("---"):
-        # No block opens the profile, so none is read. Where the text ahead of a block ends
-        # is not known, so the flag is read from any line of its own in the whole profile.
-        values = _contain_flag_values(text)
-        if not values:
+    if text.startswith("---"):
+        try:
+            parse_frontmatter_strict(text)
             return {}
-        warn(
-            f"agent profile {name!r}: no frontmatter block opens it, so every setting in it "
-            "is ignored except contain_user_settings, read from its own line"
-        )
-        return {"contain_user_settings": _contain_flag_of(values)}
-    try:
-        parse_frontmatter_strict(text)
-        return {}
-    except yaml.YAMLError as exc:
-        reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
-    block = text.strip()[3:].split("\n---", 1)[0]
-    # A block with no settings in it, empty or comments only, has none to lose.
-    try:
-        if yaml.safe_load(block) is None:
+        except yaml.YAMLError as exc:
+            reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        parts = _FM_SPLIT.split(text, maxsplit=2)
+        # An unclosed block runs to the end, since where it was meant to end is not known.
+        block = parts[1] if len(parts) == 3 else text[3:]
+        named = _CONTAIN_KEY in block
+        # A block with no settings in it, empty or comments only, has none to lose.
+        try:
+            if not named and yaml.safe_load(block) is None:
+                return {}
+        except yaml.YAMLError:
+            pass
+        what = f"its frontmatter does not read as YAML settings ({reason})"
+    else:
+        lines = text.splitlines()
+        opening = next((i for i, line in enumerate(lines) if line.rstrip().endswith("---")), None)
+        if opening is None:
             return {}
-    except yaml.YAMLError:
-        pass
-
-    # Where a block that does not read ends is not known, so a false further down cannot
-    # undo a true above it, nor can one in the body of a profile whose block is never closed.
-    values = _contain_flag_values(block)
-    kept: dict[str, Any] = {"contain_user_settings": _contain_flag_of(values)} if values else {}
+        rest = lines[opening + 1 :]
+        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), len(rest))
+        block = "\n".join(rest[:closing])
+        named = _CONTAIN_KEY in block
+        # Text on the line of the opening delimiter hides the block it opens; text on lines of
+        # its own ahead of a delimiter is the prompt of a profile with no block, as before,
+        # unless what follows the delimiter names the flag.
+        if not named and opening > 0:
+            return {}
+        try:
+            if not named and yaml.safe_load(block) is None:
+                return {}
+        except yaml.YAMLError:
+            pass
+        what = f"text ahead of the --- on line {opening + 1} hides the frontmatter after it"
     warn(
-        f"agent profile {name!r}: its frontmatter does not read as YAML settings ({reason}); "
-        + (
-            "every setting in it is ignored except contain_user_settings, read from its own line"
-            if kept
-            else "every setting in it is ignored, contain_user_settings included"
-        )
+        f"agent profile {name!r}: {what}; every setting in it is ignored"
+        + (", and its worker is contained, since it names contain_user_settings" if named else "")
     )
-    return kept
+    return {_CONTAIN_KEY: True} if named else {}
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
@@ -1028,15 +1056,16 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
 
         values = _contain_flag_values(_FM_SPLIT.split(text.strip(), maxsplit=2)[1])
         if len(values) > 1:
-            # YAML keeps the last of a repeated key; the flag follows the rule of a block that
-            # does not read, so moving a line cannot turn containment off.
+            # YAML keeps the last of a repeated key; the flag is off only when every one reads
+            # false, so moving a line cannot turn containment off.
             from ._logging import warn
 
             warn(
-                f"agent profile {name!r}: contain_user_settings is set on {len(values)} lines; "
+                f"agent profile {name!r}: contain_user_settings is set {len(values)} times; "
                 "it is off only when every one reads false"
             )
-            frontmatter = {**frontmatter, "contain_user_settings": _contain_flag_of(values)}
+        if values:
+            frontmatter = {**frontmatter, _CONTAIN_KEY: _contain_flag_of(values)}
 
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion

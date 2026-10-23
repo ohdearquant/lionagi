@@ -112,6 +112,7 @@ class iModel:  # noqa: N801
             # Effort-suffixed model names ("gpt-5.6-luna-high") are stripped and
             # routed to the provider's effort kwarg here so it works at every
             # construction site. See docs/internals/service-layer.md#effort-suffix-routing.
+            from .connections.registry import EndpointRegistry
             from .providers import (
                 _CLAUDE_PROVIDER_NAMES,
                 PROVIDER_EFFORT_KWARG,
@@ -120,7 +121,9 @@ class iModel:  # noqa: N801
                 split_effort_suffix,
             )
 
-            _effort_kwarg = PROVIDER_EFFORT_KWARG.get(provider) if provider else None
+            # An alias ("openai-codex") routes as the provider it names.
+            _canonical = EndpointRegistry.canonical_provider(provider) if provider else None
+            _effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical) if _canonical else None
             _model_name = kwargs.get("model")
             if _effort_kwarg and isinstance(_model_name, str):
                 _split = split_effort_suffix(_model_name)
@@ -129,7 +132,7 @@ class iModel:  # noqa: N801
                     kwargs["model"] = _name
                     if _effort_kwarg not in kwargs:
                         _eff = normalize_effort(_raw_effort)
-                        if provider in _CLAUDE_PROVIDER_NAMES:
+                        if _canonical in _CLAUDE_PROVIDER_NAMES:
                             _eff = _clamp_claude_effort(_eff, kwargs["model"])
                         kwargs[_effort_kwarg] = _eff
 
