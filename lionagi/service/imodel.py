@@ -17,7 +17,7 @@ from lionagi.protocols.ids import to_uuid
 from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
-from .connections.endpoint import _event_reports_call_failure
+from .connections.endpoint import _event_reports_call_failure, _stored_base_url
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -747,7 +747,7 @@ class iModel:  # noqa: N801
             if (
                 api_key is None
                 and registered._api_key
-                and _same_base_url(e1.config.base_url, registered.base_url)
+                and _same_base_url(_as_written(data, base_url, e1.config), registered.base_url)
             ):
                 e1.config._api_key = registered._api_key
         else:
@@ -825,3 +825,16 @@ def _restored_opt_in(registered: Any, data: Mapping) -> bool:
         if "allow_local_network" in place and place["allow_local_network"] is not True:
             return False
     return registered.allow_local_network
+
+
+def _as_written(data: Mapping, base_url: str | None, config: Any) -> str | None:
+    """The base URL the model was restored with as its writer gave it: the caller's, else
+    the stored one, so a stored URL that carried a user or password matches only itself
+    although the endpoint restores it without them."""
+    if base_url is not None:
+        return base_url
+    endpoint = data.get("endpoint")
+    stored = endpoint.get("config") if isinstance(endpoint, Mapping) else None
+    if isinstance(stored, Mapping) and isinstance(url := _stored_base_url(stored), str):
+        return url
+    return config.base_url
