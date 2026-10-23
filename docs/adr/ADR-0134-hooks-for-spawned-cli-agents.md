@@ -7,7 +7,7 @@
 - **Date**: 2026-10-19
 - **Relations**: extends ADR-0120 D6 (one versioned external hook profile) and ADR-0048 (external
   hooks: D4 argv, D7 trust tiers); builds on ADR-0030 D4 (Proposed; one subprocess entry point for
-  agentic providers); depends on #3671 (open: Codex user-config isolation and the project-layer
+  agentic providers); depends on #3671 (merged: Codex user-config isolation and the project-layer
   walk); read with ADR-0133 (proposed in #3657, open: admission at the same entry point) and
   ADR-0094 (automated PR review pipeline)
 
@@ -55,11 +55,13 @@ process, around lionagi's own tool loop. None of it reaches into a CLI agent's p
 spawns `claude -p` or `codex exec`, the hooks that run are whatever that program finds on the
 machine.
 
-**P1 — the hooks a spawned agent runs are decided by the machine, not by lionagi.** On `main` only
-the Studio Operator sets `setting_sources`; the change in #3671 adds it for flow and fan-out workers
-(built by `build_worker_branch`). A Claude agent started by `li agent`, a flow's orchestrator, a
-fan-out's synthesis step or any other spawn path runs with the CLI's default sources (user, project,
-local): the user's interactive `~/.claude/settings.json` hooks, plugins and permissions, and the
+**P1 — the hooks a spawned agent runs are decided by the machine, not by lionagi.** On `main` the
+Studio Operator sets `setting_sources`, and so does a flow or fan-out worker whose role's profile
+sets `contain_user_settings` (`build_worker_branch`), with the agents that worker spawns; #3671
+changed only Codex spawns. Any other Claude agent, whether another flow or fan-out worker, one
+started by `li agent`, a flow's orchestrator, a fan-out's synthesis step or any other spawn path,
+runs with the CLI's default sources (user, project, local): the user's interactive
+`~/.claude/settings.json` hooks, plugins and permissions, and the
 hooks of whatever repository the agent's working directory is in. A Codex agent loads the user's
 `config.toml` and `hooks.json` unless its request sets `CodexCodeRequest.ignore_user_config`, which
 the change in #3671 adds and sets for flow and fan-out workers and for a run handed an empty MCP set; every
@@ -1174,9 +1176,11 @@ harder to read back. Kept as a fallback if the file path proves unworkable.
 - Measured at lionagi `main` 208bcc08: no spawn path other than the Operator sets `setting_sources`;
   `CodexCodeRequest` has no user-config isolation field; the library maps `post_response` to `Stop`;
   the library validator accepts `description`, `command` and `timeout` only, with `timeout` optional
-  and unchecked for sign. The change in #3671 (open) changes the first two: flow and fan-out workers
-  run Claude with empty setting sources and Codex with `--ignore-user-config`, through the field
-  that change adds. This record builds on that change and merges after it.
+  and unchecked for sign. #3671, since merged, changes the second: flow and fan-out workers run
+  Codex with `--ignore-user-config`, through the field that change adds. It leaves Claude workers'
+  setting sources as they were; a flow or fan-out worker runs Claude with empty setting sources
+  when its role's profile sets `contain_user_settings`, and so do the agents that worker spawns.
+  This record builds on #3671.
 - Engine behaviors this record relies on (Claude's `--setting-sources`, `--strict-mcp-config` and
   `--session-id`, Codex's `--ignore-user-config`, project layers, hook trust records, hook decision
   shapes) are taken from each vendor's documentation and are not yet measured at a pinned version.
