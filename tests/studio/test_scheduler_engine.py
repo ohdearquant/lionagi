@@ -1278,6 +1278,84 @@ async def test_fire_now_returns_none_when_schedule_missing():
     assert run_id is None
 
 
+@pytest.mark.parametrize(
+    ("fields", "names"),
+    [
+        (
+            {
+                "trigger_type": "github_poll",
+                "action_kind": "command",
+                "action_command": "uv",
+                "action_command_args": ["run", "ci.py", "--pr", "{{pr_number}}"],
+            },
+            "{{pr_number}}",
+        ),
+        (
+            {"action_prompt": "Check {{pr_title}} by {{author}} at {{fired_at}}"},
+            "{{author}}, {{pr_title}}",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_fire_now_refuses_a_template_a_manual_trigger_cannot_fill(fields, names):
+    """A manual trigger has no event, so a placeholder naming an event field would reach the
+    run unfilled. It is refused, naming each such placeholder, before a slot or a run exists."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(**fields)
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        with pytest.raises(ValueError) as refused:
+            await engine.fire_now("sched-001")
+
+    assert f"has no value for {names} on a manual trigger" in str(refused.value)
+    mock_tracked.assert_not_called()
+    assert engine.global_slot_holders == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"action_prompt": "Nightly check at {{fired_at}} (manual={{manual}})"},
+        # A command launch sends its arguments, not its prompt.
+        {
+            "action_kind": "command",
+            "action_command": "uv",
+            "action_command_args": ["run", "ci.py"],
+            "action_prompt": "{{pr_number}}",
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_fire_now_fires_a_template_the_manual_trigger_fills(fields):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(**fields)
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire", return_value=MagicMock()) as mock_tracked:
+        run_id = await engine.fire_now("sched-001")
+
+    assert run_id is not None
+    assert mock_tracked.call_args.kwargs["trigger_context"]["manual"] is True
+
+
+def test_unfilled_template_vars_reads_the_event_a_poll_fire_carries():
+    from lionagi.studio.scheduler.subprocess import _render_command_arg, unfilled_template_vars
+
+    schedule = _minimal_schedule(
+        action_kind="command", action_command="uv", action_command_args=["{{pr_number}}"]
+    )
+    poll_context = {"github_events": [{"pr_number": 42}], "fired_at": 1.0}
+
+    assert unfilled_template_vars(schedule, poll_context) == []
+    assert unfilled_template_vars(schedule, {"manual": True}) == ["pr_number"]
+    assert _render_command_arg("{{pr_number}}", poll_context) == "42"
+
+
 # _maybe_fire() tests
 
 

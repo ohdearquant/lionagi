@@ -363,23 +363,50 @@ def _validate_prompt(prompt: str) -> None:
         )
 
 
+def _template_value(key: str, context: dict) -> str | None:
+    """The value a ``{{key}}`` placeholder takes from *context*, or None when it has none."""
+    events = context.get("github_events", [])  # check github events first
+    if events and isinstance(events, list) and isinstance(events[0], dict):
+        val = events[0].get(key)
+        if val is not None:
+            return str(val)
+    # Stringify non-string values too (e.g. numeric threshold-alert
+    # fields) -- re.sub's replacement callback requires a str return.
+    if key in context:
+        return str(context[key])
+    return None
+
+
 def _render_template(template: str, context: dict) -> str:
     """Replace {{var}} placeholders with values from trigger context."""
 
     def _replace(m: re.Match) -> str:
-        key = m.group(1)
-        events = context.get("github_events", [])  # check github events first
-        if events and isinstance(events, list) and isinstance(events[0], dict):
-            val = events[0].get(key)
-            if val is not None:
-                return str(val)
-        # Stringify non-string values too (e.g. numeric threshold-alert
-        # fields) -- re.sub's replacement callback requires a str return.
-        if key in context:
-            return str(context[key])
-        return m.group(0)
+        val = _template_value(m.group(1), context)
+        return m.group(0) if val is None else val
 
     return _TEMPLATE_RE.sub(_replace, template)
+
+
+def unfilled_template_vars(schedule: dict, trigger_context: dict) -> list[str]:
+    """The ``{{var}}`` names in what *schedule* sends that *trigger_context* has no value for.
+
+    A command launch sends its ``action_command_args`` and every other kind its
+    ``action_prompt``. A placeholder with no value renders as itself, so a command argument
+    holding one is refused at spawn and a prompt hands it to the agent as written.
+    """
+    if schedule.get("action_kind") == "command":
+        args = schedule.get("action_command_args")
+        templates = [str(a) for a in args] if isinstance(args, list) else []
+    else:
+        templates = [schedule.get("action_prompt") or ""]
+    return sorted(
+        {
+            m.group(1)
+            for template in templates
+            for m in _TEMPLATE_RE.finditer(template)
+            if _template_value(m.group(1), trigger_context) is None
+        }
+    )
 
 
 def render_action_prompt(schedule: dict, trigger_context: dict) -> str | None:

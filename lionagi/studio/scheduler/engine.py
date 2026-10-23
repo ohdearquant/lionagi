@@ -819,6 +819,19 @@ class SchedulerEngine:
         schedule = await self._svc.get_schedule(schedule_id)
         if not schedule:
             return None
+        now = time.time()
+        trigger_context = {"manual": True, "fired_at": now}
+        # A manual trigger carries no event, so a template naming an event's field, such as a poll
+        # row's {{pr_number}}, would reach the run unfilled. Refuse before anything is reserved or
+        # recorded.
+        unfilled = _subprocess.unfilled_template_vars(schedule, trigger_context)
+        if unfilled:
+            names = ", ".join("{{" + name + "}}" for name in unfilled)
+            raise ValueError(
+                f"Schedule {schedule_id!r} has no value for {names} on a manual trigger, "
+                "which carries no event; manual trigger refused. The schedule's own trigger "
+                "fills it."
+            )
         if await self._check_budget(schedule):
             raise ValueError(
                 f"Schedule {schedule_id!r} has exhausted its budget; manual trigger refused."
@@ -827,7 +840,6 @@ class SchedulerEngine:
         claim: _MaxRunsClaim | None = None
         slot_claim: _GlobalSlotClaim | None = None
         handed_off = False
-        now = time.time()
         try:
             rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
             if not rate_allowed:
@@ -855,7 +867,7 @@ class SchedulerEngine:
             self._tracked_fire(
                 schedule,
                 run_id,
-                trigger_context={"manual": True, "fired_at": now},
+                trigger_context=trigger_context,
                 rate_limit_claim=rate_claim,
                 max_runs_claim=claim,
                 global_slot_claim=slot_claim,

@@ -560,6 +560,13 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   polls left due cron and interval schedules two slots to share. The poll now holds no slot: it skips the fetch when the cap is already
   full, and each event it finds reserves its own slot; an event that finds the cap full stays
   ahead of the cursor and is offered again by the next poll.
+- A manual trigger (`li schedule trigger`, `POST /api/schedules/{schedule_id}/trigger`) of a
+  schedule whose command arguments or prompt name a variable only its own trigger fills, such as
+  a `github_poll` schedule's `{{pr_number}}`, is refused with a 400 that names the variable,
+  before any run is recorded or slot reserved. A manual trigger carries no event, so the
+  placeholder reached the run unfilled: a command argument holding it failed at spawn, and an
+  agent prompt received it as written. A template that names only what a manual trigger fills,
+  `{{manual}}` and `{{fired_at}}`, still fires.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so
