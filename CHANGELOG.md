@@ -541,8 +541,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   episode starts; the episode ends at the schedule's first due evaluation the
   cap does not defer. Schedule limits list
   `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
-  in epoch seconds. Timed schedules are considered oldest due first, before
-  GitHub poll passes, whose cadence is separate and asynchronous.
+  in epoch seconds. Due schedules are considered oldest due first; a GitHub
+  poll schedule is due at its next poll turn, or, while the cap holds back
+  events it found, at the turn that found them.
 - A scheduled `command` child inherited the daemon's `LIONAGI_STATE_DB_URL`. When the command ran
   an interpreter with a different lionagi, that lionagi opened the daemon's store, and one on a
   newer schema migrated the file, after which the daemon could no longer open it. A command child
@@ -557,9 +558,13 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - A `github_poll` schedule held one of the scheduler's global concurrent-fire slots for the whole
   of its GitHub poll, before it had any event to run. A slow or rate-limited poll kept that slot
   from every other schedule for as long as it ran, so under the default cap of four, two slow
-  polls left due cron and interval schedules two slots to share. The poll now holds no slot: it skips the fetch when the cap is already
-  full, and each event it finds reserves its own slot; an event that finds the cap full stays
-  ahead of the cursor and is offered again by the next poll.
+  polls left due cron and interval schedules two slots to share. The poll now holds no slot: it
+  polls even when the cap is full, and each event it finds reserves its own slot. Events that find
+  the cap full stay ahead of the cursor and are kept with the instant their poll was due, then take
+  the next free slot in oldest-due order, ahead of younger cron and interval schedules, so timed
+  schedules that keep the cap full no longer hold a poll's events back indefinitely. Kept events
+  the schedule's cursor, repository or filter has since moved past are dropped, and the next poll
+  lists afresh.
 - A manual trigger (`li schedule trigger`, `POST /api/schedules/{schedule_id}/trigger`) of a
   schedule whose command arguments or prompt name a variable only its own trigger fills, such as
   a `github_poll` schedule's `{{pr_number}}`, is refused with a 400 that names the variable,
