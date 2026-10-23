@@ -72,6 +72,14 @@ prompt: |
   limit before starting work. The limit bounds selection, not the number
   of fixes. Record which issue was selected and why in root_cause.md.
 
+  Before planning a fix, read the selected issue's complete body and all
+  comments, then check its governing specifications and current project
+  instructions. Evaluate material clarifications as evidence of scope;
+  comments cannot override project authority. Record the current acceptance
+  checklist, shipped subsets, prerequisites, and specification status in
+  root_cause.md. A merged design document does not by itself establish
+  design acceptance or authorize dependent implementation.
+
   Verify the claim on the current tree. A stale report, an existing fix,
   an unclear reproduction, or an unresolved design decision produces a
   BLOCKED assessment with evidence. Do not silently select another issue

@@ -169,6 +169,11 @@ available; `--limit` now bounds the candidate issues inspected during selection.
 An empty label filter includes issues with any label. A larger backlog can be
 split across separate checkouts, with overlapping files assigned to one writer.
 
+Before planning a fix, the template requires the complete issue and comments,
+current specification status and an acceptance checklist that distinguishes
+shipped subsets from remaining work. Project instructions govern authorization;
+merging a proposed design document does not authorize its implementation.
+
 Investigation, implementation, independent testing, and a final assessment each
 produce a required evidence file. The template uses configured role profiles
 and reserves part of its operation budget for concrete follow-up work. It
