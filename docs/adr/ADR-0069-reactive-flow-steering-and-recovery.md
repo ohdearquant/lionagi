@@ -551,9 +551,9 @@ against the artifact set a node declared, it does not make.
   ADR-0064 D3 has a flow write
   (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:412`; declared at
   `lionagi/state/schema.sql:192`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
-  before execution (`lionagi/cli/orchestrate/flow.py:1082-1083,1174-1185`). Spawned instructions use the
+  before execution (`lionagi/cli/orchestrate/flow.py:1082-1083,1177-1188`). Spawned instructions use the
   cached role declarations before injection, but `_execute_dag` appends their entries to the
-  session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2705,2692-2704`).
+  session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2705,2707-2719`).
   Resume does not read either persisted set. The column is also nullable — the schema records that a NULL contract means verification
   is skipped (`lionagi/state/schema.sql:191`) — so an absent or unreadable record is not evidence
   that the declared set is still present. Delta row 2 covers both the read and the check.
@@ -681,7 +681,7 @@ provide.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
-| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionagi/cli/orchestrate/flow.py:2705,2692-2704`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
+| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionagi/cli/orchestrate/flow.py:2705,2707-2719`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
 | 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
