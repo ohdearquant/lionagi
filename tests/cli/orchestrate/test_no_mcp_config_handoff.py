@@ -282,9 +282,11 @@ async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home):
+@pytest.mark.parametrize("model", ["codex/gpt-5", "openai-codex/gpt-5"])
+async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home, model):
     """The worker gets the run's set over `-c` and loads no user config, so the
-    job-control server the user config declares is neither forwarded nor loaded."""
+    job-control server the user config declares is neither forwarded nor loaded.
+    The provider's alias is the same provider."""
     servers = {
         "lion-control": {"command": "li", "args": ["mcp"]},
         "knowledge": {"command": "kkernel", "args": ["mcp"]},
@@ -297,7 +299,7 @@ async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home
         env,
         agent_id="w1",
         role="implementer",
-        model_override="codex/gpt-5",
+        model_override=model,
     )
     args = await _codex_cli_args(branch.chat_model)
 
@@ -1279,12 +1281,18 @@ def test_the_flag_keeps_its_own_line_when_the_rest_of_the_frontmatter_does_not_r
 
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
-def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog, newline):
+@pytest.mark.parametrize(
+    "prefix",
+    ["\ufeff", "\ufeff\ufeff", "\n\ufeff", " \ufeff", "\ufeff\n", "\u200b", "\u2060\t"],
+)
+def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog, newline, prefix):
+    """Whitespace and invisible format characters ahead of the opening delimiter, in any
+    order, do not hide the frontmatter."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
 
-    text = "\ufeff" + newline.join(
+    text = prefix + newline.join(
         ["---", "model: claude_code/sonnet", "contain_user_settings: true", "---", "", "Work."]
     )
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
@@ -1292,8 +1300,57 @@ def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog,
 
     assert profile.model == "claude_code/sonnet"
     assert profile.contain_user_settings is True
-    assert "\ufeff" not in profile.raw_body
+    assert not {"\ufeff", "\u200b", "\u2060"} & set(profile.raw_body)
     assert "does not read as YAML settings" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (["contain_user_settings: true", "contain_user_settings: false"], True),
+        (["contain_user_settings: false", "contain_user_settings: true"], True),
+        (["contain_user_settings: false", "contain_user_settings: maybe"], True),
+        (["contain_user_settings: false", "contain_user_settings: false"], False),
+        (['"contain_user_settings": true'], True),
+        (["'contain_user_settings': true"], True),
+        (['"contain_user_settings": false'], False),
+    ],
+)
+def test_no_line_of_a_frontmatter_that_does_not_read_turns_containment_off_alone(
+    caplog, lines, expected
+):
+    """A block that does not read has no YAML order to follow, so the flag is off only when
+    every line naming it, quoted key or not, reads false."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    flag = "".join(f"{line}\n" for line in lines)
+    text = f"---\nmodel: claude_code/sonnet\n{flag}notes: [unclosed\n---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.contain_user_settings is expected
+    assert "every setting in it is ignored except contain_user_settings" in caplog.text
+
+
+def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):
+    """With no closing delimiter, where the block ends is not known, so a line in the body
+    cannot undo the flag the block set."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = (
+        "---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\n"
+        "Work.\ncontain_user_settings: false\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is True
+    assert "every setting in it is ignored except contain_user_settings" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1341,8 +1398,11 @@ def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(co
     [
         ("CODEX", {"ignore_user_config": True, "profile": None}),
         (" codex ", {"ignore_user_config": True, "profile": None}),
+        ("openai-codex", {"ignore_user_config": True, "profile": None}),
+        ("OpenAI-Codex", {"ignore_user_config": True, "profile": None}),
         ("CLAUDE_CODE", {}),
         (" claude_code ", {}),
+        ("claude", {}),
     ],
 )
 def test_the_boundary_folds_provider_spellings(spelling, expected):

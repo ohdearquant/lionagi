@@ -462,14 +462,16 @@ Exact replay semantics:
 - A checkpoint `spawned` list whose entries can all be rebuilt is reconstructed into the fresh
   graph rather than refused as a whole. Refusal is whole-resume, not per-entry:
   `_reconstruct_spawned_nodes` (`lionagi/cli/orchestrate/flow.py:1209-1217`) runs before any spawned node is
-  added by reconstruction, and each of its five checks raises `FlowResumeError` for the whole resume when any single
+  added by reconstruction, and each of its six checks raises `FlowResumeError` for the whole resume when any single
   entry fails: (1) the entry must carry `operation` (`CHECKPOINT_VERSION` 2+; a pre-2 entry carries
   nothing to rebuild from, `lionagi/cli/orchestrate/flow.py:1235-1243`); (2) its `status` must be
   `completed` or `failed` (`lionagi/cli/orchestrate/flow.py:1245-1253`); (3) an entry with an `assignee`
   must also carry `spawn_id` (`lionagi/cli/orchestrate/flow.py:1255-1265`); (4) under `--retry-failed`, a
   failed entry naming no assignee must not record the class of the worker that asked for it, or,
   for an escalation retry, the class it ran at (`lionagi/cli/orchestrate/flow.py:1270-1286`,
-  ADR-0133); (5) a `parent_id` must itself
+  ADR-0133); (5) under `--retry-failed`, a failed entry asked for by a worker that read no
+  settings files must not be rebuilt on a branch that reads them
+  (`lionagi/cli/orchestrate/flow.py:1288-1331`); (6) a `parent_id` must itself
   be checkpointed terminal or another entry in the same list
   (`lionagi/cli/orchestrate/flow.py:1333-1356`). One failing entry refuses the resume, naming that
   entry's node, and no entry is rebuilt. The rule is therefore "no spawned entry is replayed unless
@@ -617,18 +619,18 @@ digest to match.
 **Spawned replay today, and the `--retry-failed` trade.** A checkpoint `spawned` list whose entries
 can all be rebuilt is reconstructed into the fresh graph rather than refused as a whole:
 `_reconstruct_spawned_nodes` (`lionagi/cli/orchestrate/flow.py:1209-1217`) runs before any spawned node is added by reconstruction,
-and each of its five checks refuses the whole resume, not just the failing entry, when any single
-entry fails — `operation` present (`lionagi/cli/orchestrate/flow.py:1235-1243`, raise at `1237`), `status`
-in `completed|failed` (`:1244-1252`, raise at `1248`), `assignee` paired with a `spawn_id` (`:1254-1264`,
-raise at `1258`), under `--retry-failed` no failed entry naming no assignee that records the class of
-the worker that asked for it (`:1269-1285`, raise at `1278`; ADR-0133), under `--retry-failed` no
+and each of its six checks refuses the whole resume, not just the failing entry, when any single
+entry fails — `operation` present (`lionagi/cli/orchestrate/flow.py:1235-1243`, raise at `1238`), `status`
+in `completed|failed` (`:1245-1253`, raise at `1249`), `assignee` paired with a `spawn_id` (`:1255-1265`,
+raise at `1259`), under `--retry-failed` no failed entry naming no assignee that records the class of
+the worker that asked for it (`:1270-1286`, raise at `1279`; ADR-0133), under `--retry-failed` no
 failed entry asked for by a worker that read no settings files that would run again on a branch that
-reads them (`:1296-1314`, raise at `1307`), and a `parent_id` that is
-itself checkpointed terminal or another entry in the same list (`:1316-1339`, raise at `1333`). One
+reads them (`:1288-1331`, raise at `1323`), and a `parent_id` that is
+itself checkpointed terminal or another entry in the same list (`:1333-1356`, raise at `1350`). One
 failing entry means no entry is rebuilt and the resume
 fails. One live behaviour already trades recorded spawns away: with `--retry-failed`, the resume
 drops every recorded spawn descended from a re-running (formerly failed) parent
-(`_drop_spawns_under_rerun_parents`, `lionagi/cli/orchestrate/flow.py:1407-1429`, called at `1467`),
+(`_drop_spawns_under_rerun_parents`, `lionagi/cli/orchestrate/flow.py:1407-1429`, called at `1484`),
 which D5's rule that refusal is preferable to silently dropping spawned work disfavours.
 
 **Rejected paths, kept with their reasons.** Three ways of settling a node were weighed, and each

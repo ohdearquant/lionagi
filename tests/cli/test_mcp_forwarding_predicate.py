@@ -22,7 +22,7 @@ from lionagi.cli.agent import _report_mcp_resolution
 
 # Every provider name the CLI can route a leg to, plus one API provider, so a
 # new CLI backend cannot quietly land on the wrong side of the predicate.
-KNOWN_PROVIDERS = ["claude_code", "codex", "gemini-cli", "pi", "claude", "openai"]
+KNOWN_PROVIDERS = ["claude_code", "codex", "gemini-cli", "pi", "claude", "openai", "openai-codex"]
 
 
 class _FakeConfig:
@@ -150,11 +150,12 @@ def test_antigravity_refusal_fires_for_a_named_server_set():
 
 
 def test_forwarding_providers_are_the_two_cli_transports():
-    """Two transports, every spelling the CLI accepts for the Claude one: which
-    alias a caller typed is not a capability of the provider behind it, and a
-    `claude/...` leg reaches the same endpoint a `claude_code/...` leg does."""
+    """Two transports, every spelling the CLI accepts for each: which alias a
+    caller typed is not a capability of the provider behind it, and a
+    `claude/...` leg reaches the same endpoint a `claude_code/...` leg does, as an
+    `openai-codex/...` one reaches the codex endpoint."""
     accepted = {p for p in KNOWN_PROVIDERS if provider_accepts_forwarded_mcp(p)}
-    assert accepted == {"claude", "claude_code", "codex"}
+    assert accepted == {"claude", "claude_code", "codex", "openai-codex"}
     assert {"gemini-cli", "pi", "openai"}.isdisjoint(accepted)
 
 

@@ -707,6 +707,7 @@ async def _spawned_branch_kwargs(
     emitter_contained: bool = False,
     independent: bool = True,
     assignee: str | None = None,
+    role_alias: str | None = None,
     role_contained: bool = False,
     role_provider: str = "claude_code",
     handed: list | None = None,
@@ -724,7 +725,9 @@ async def _spawned_branch_kwargs(
     settings files read (``contain_user_settings``). With *independent* false the request is a
     dependent one, cloned from that worker's branch. With *assignee* the request names a
     role of that name on *role_provider* (Claude unless named), and is cloned from its
-    branch, which *role_contained* runs with no settings files read. *handed* collects the
+    branch, which *role_contained* runs with no settings files read. *role_alias* plans a
+    worker of that name on the role and has the request name the worker, as a team
+    instance (``reviewer-2``) is named. *handed* collects the
     server set each hand-off gives the spawn and whether it is the whole set. *expected*
     collects the spawn ids the run is told to expect a worker for. With *refuses* the node builder must refuse
     the request, and the refusal's text comes back as ``{"refusal": ...}``."""
@@ -821,7 +824,10 @@ async def _spawned_branch_kwargs(
         op_segments=[],
         max_spawn=5,
     )
-    plan = SimpleNamespace(assignments=[], agent_ids=[])
+    plan = SimpleNamespace(
+        assignments=[SimpleNamespace(assignee=assignee)] if role_alias else [],
+        agent_ids=[role_alias] if role_alias else [],
+    )
     with pytest.raises(_Captured):
         await flow_mod._execute_dag(env, plan, dag_state, max_concurrent=1, max_ops=5)
 
@@ -843,7 +849,9 @@ async def _spawned_branch_kwargs(
             operation_branches={emitter.id: emitter_branch}
         )
         request = SpawnRequest(
-            instruction="check the result", independent=independent, assignee=assignee
+            instruction="check the result",
+            independent=independent,
+            assignee=role_alias or assignee,
         )
         if refuses:
             from lionagi._errors import CLIInputRefusedError
@@ -1174,6 +1182,35 @@ async def test_a_contained_claude_worker_cannot_ask_for_a_role_on_a_cli_that_rea
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("role_provider", "refused"), [("gemini_code", True), ("codex", False)])
+async def test_a_contained_claude_worker_asking_for_a_team_instance_is_held_to_its_role(
+    tmp_path, monkeypatch, role_provider, refused
+):
+    """A team instance's name (reviewer-2) resolves to its role before the check, as the
+    node builder resolves it, so naming the instance is no way around the refusal."""
+    expected: list = []
+    result = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_alias="reviewer-2",
+        role_provider=role_provider,
+        expected=expected,
+        refuses=refused,
+    )
+
+    if refused:
+        assert "role 'reviewer-2' runs on gemini_code" in result["refusal"]
+        assert expected == []
+    else:
+        assert result["ignore_user_config"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_claude_worker_with_its_settings_can_ask_for_a_role_on_another_cli(
     tmp_path, monkeypatch
 ):
@@ -1191,7 +1228,10 @@ async def test_a_claude_worker_with_its_settings_can_ask_for_a_role_on_another_c
 
 
 @pytest.mark.asyncio
-async def test_a_contained_claude_worker_can_ask_for_a_codex_role(tmp_path, monkeypatch):
+@pytest.mark.parametrize("role_provider", ["codex", "openai-codex", "Codex"])
+async def test_a_contained_claude_worker_can_ask_for_a_codex_role(
+    tmp_path, monkeypatch, role_provider
+):
     kwargs = await _spawned_branch_kwargs(
         tmp_path,
         monkeypatch,
@@ -1200,7 +1240,7 @@ async def test_a_contained_claude_worker_can_ask_for_a_codex_role(tmp_path, monk
         emitted_by=DEFAULT_WORKLOAD,
         emitter_contained=True,
         assignee="reviewer",
-        role_provider="codex",
+        role_provider=role_provider,
     )
 
     assert kwargs["ignore_user_config"] is True

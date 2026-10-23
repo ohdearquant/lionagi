@@ -762,9 +762,14 @@ _ANTIGRAVITY_PROVIDER_NAMES = frozenset({"gemini-cli", "gemini_cli", "gemini-cod
 
 
 def _canonical_provider(provider: str | None) -> str:
-    """Fold a provider string the way endpoint resolution does, so a spelling that
-    resolves to an endpoint is never one these predicates fail to recognise."""
-    return provider.strip().lower() if isinstance(provider, str) else ""
+    """Fold a provider string the way endpoint resolution does, aliases included
+    ("openai-codex" is codex), so a spelling that resolves to an endpoint is never
+    one these predicates fail to recognise."""
+    if not isinstance(provider, str):
+        return ""
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    return EndpointRegistry.canonical_provider(provider.strip())
 
 
 def provider_accepts_forwarded_mcp(provider: str | None) -> bool:

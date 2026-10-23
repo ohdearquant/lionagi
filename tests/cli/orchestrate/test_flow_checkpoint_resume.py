@@ -963,6 +963,7 @@ def _role_branch(name: str, role: str) -> Branch:
         "claude": ("claude_code", "sonnet"),
         "contained claude": ("claude_code", "sonnet"),
         "codex": ("codex", "gpt-5.5"),
+        "openai codex": ("openai-codex", "gpt-5.5"),
         "api": ("openai", "gpt-4.1-mini"),
         "gemini cli": ("gemini_code", "gemini-2.5-pro"),
     }[role]
@@ -980,6 +981,7 @@ def _role_branch(name: str, role: str) -> Branch:
         ("gemini cli", False),
         ("contained claude", True),
         ("codex", True),
+        ("openai codex", True),
         ("api", True),
     ],
 )
