@@ -52,16 +52,16 @@ which aiohttp read as a read that times out at once, raises `ValueError`); any o
 request option raises `TypeError`. A request's `ssl=True` now verifies certificates when the
 endpoint's `client_kwargs` set `verify=False`. Once a request pinned with an `aiohttp.Fingerprint`
 has gone over https, a redirect to plain http raises `httpx.ConnectError` before anything is sent
-there and is not retried, since the pin cannot be checked on a plain connection; aiohttp followed
-such a redirect. A transport failure raises httpx's error (`httpx.ConnectError`,
+there, and the endpoint does not retry it, since the pin cannot be checked on a plain connection;
+aiohttp followed such a redirect. A transport failure raises httpx's error (`httpx.ConnectError`,
 `httpx.ReadTimeout`, `httpx.RemoteProtocolError` and the like, all `httpx.RequestError`) where
 aiohttp raised its own, so a read that stalls past the timeout raises `httpx.ReadTimeout`, which is
 not a `TimeoutError`, and a certificate that does not match a `Fingerprint` raises
 `httpx.ConnectError`. A 200 response is read as JSON whatever its content type, so a JSON body
-served as `text/plain` returns its value; one whose body is not JSON raises `json.JSONDecodeError`
-and is not retried. aiohttp raised `ContentTypeError`, which was retried, for any body not served as
-JSON. An `Endpoint` subclass that overrides `_call_aiohttp` or `_stream_aiohttp` raises `TypeError`
-when the class is defined; rename the override to `_call_http` or `_stream_http`.
+served as `text/plain` returns its value; one whose body is not JSON raises `json.JSONDecodeError`,
+which the endpoint does not retry. aiohttp raised `ContentTypeError`, which it retried, for any body
+not served as JSON. An `Endpoint` subclass that overrides `_call_aiohttp` or `_stream_aiohttp`
+raises `TypeError` when the class is defined; rename the override to `_call_http` or `_stream_http`.
 
 ### Added
 
