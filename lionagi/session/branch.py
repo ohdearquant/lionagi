@@ -422,6 +422,13 @@ class Branch(Element, Relational):
         cp = self.metadata.get("current_progression")
         if cp is None:
             return
+        if isinstance(msg, System):
+            # A replacement system message heads the view in place of the one it replaced.
+            # That one has already left the pile, and a view naming it refuses compaction.
+            pile = self.msgs.messages
+            cp.exclude([uid for uid in cp if uid not in pile or uid == msg.id])
+            cp.insert(0, msg.id)
+            return
         if msg.id not in cp:
             cp.append(msg.id)
 
@@ -517,12 +524,14 @@ class Branch(Element, Relational):
             base = _strip_capability_block(self._system_text())
             combined = f"{base.rstrip()}\n\n{block}" if base.strip() else block
             self.msgs.set_system(self.msgs.create_system(system=combined))
+            self._track_message_in_view(self.msgs.system)
 
     def revoke_capabilities(self) -> None:
         self._capabilities = None
         base = _strip_capability_block(self._system_text())
         if self.msgs.system is not None:
             self.msgs.set_system(self.msgs.create_system(system=base or None))
+            self._track_message_in_view(self.msgs.system)
 
     def _system_text(self) -> str:
         sys_msg = self.msgs.system
@@ -740,6 +749,14 @@ class Branch(Element, Relational):
         # and log_config out of the caller's snapshot, so it could not be reused
         # for a retry, comparison, or a second restoration.
         data = dict(data)
+        # The curated view is stored as a plain dict. Restored as one, every later message
+        # add, evict and compaction on the branch would fail on it.
+        metadata = data.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("current_progression"), dict):
+            data["metadata"] = {
+                **metadata,
+                "current_progression": Progression.from_dict(metadata["current_progression"]),
+            }
         stored_chat_model = data.pop("chat_model", Unset)
         stored_parse_model = data.pop("parse_model", Unset)
         dict_ = {

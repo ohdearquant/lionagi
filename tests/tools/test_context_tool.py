@@ -189,6 +189,31 @@ async def test_the_compaction_summary_is_in_the_view_once():
     assert notes == [b.progression[3]]
 
 
+async def test_a_replacement_system_message_heads_the_view_in_place_of_the_old_one():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=3)
+    old = b.msgs.system.id
+    b.msgs.add_message(system="You are a reviewing agent.")
+
+    assert b.progression[0] == b.msgs.system.id
+    assert old not in b.progression
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True, res
+
+
+async def test_a_restored_branch_keeps_its_view_and_admits_new_messages():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=5)
+    view = list(b.progression)
+
+    restored = Branch.from_dict(b.to_dict())
+    assert list(restored.progression) == view
+    msg = restored.msgs.add_message(instruction="next step")
+    assert list(restored.progression) == [*view, msg.id]
+    res = await _call(restored, action="compact", start=1, end=6, summary="s")
+    assert res["success"] is True, res
+
+
 async def test_compact_keeps_working_when_the_view_already_has_two_instructions_in_a_row(
     monkeypatch,
 ):

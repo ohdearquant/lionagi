@@ -51,7 +51,7 @@ keeps growing its request until the provider refuses it or bills it at the next 
 child with no branch of its own is built from its emitter's branch
 (`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:537`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
+(`lionagi/session/branch.py:546`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
@@ -303,7 +303,10 @@ also prints one line. Nothing in the signal schema changes.
 **Library changes the landing needed.**
 
 - A branch's curated view no longer freezes: a message added after the view exists joins it. Before
-  this, once a model evicted or compacted, no later message reached the model again.
+  this, once a model evicted or compacted, no later message reached the model again. A replacement
+  system message takes the head of the view in place of the one it replaced, which had left the
+  message record and made every later compaction refuse, and a branch restored from its stored form
+  gets its view back as a progression rather than a plain mapping.
 - `compact` places its summary note once, where the first collapsed message was.
 - `chat` emits `API_PRE_CALL` before it compiles the request from the active view, so a handler that
   curates the view shapes the request it precedes (ADR-0047 records the scope); `run` still emits it
