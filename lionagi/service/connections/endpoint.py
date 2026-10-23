@@ -597,10 +597,19 @@ class Endpoint:
         """Raise PermissionError if full_url resolves to a blocked address."""
         from urllib.parse import urlparse
 
+        import httpx
+
         from lionagi.ln._ssrf import is_ssrf_safe
 
-        parsed = urlparse(self.config.full_url)
-        hostname = parsed.hostname or ""
+        # The host the HTTP client connects to, in its own ASCII encoding: a name outside
+        # ASCII is encoded differently by the resolver (IDNA 2003 maps ``straße`` to
+        # ``strasse``) than by the client (IDNA 2008, ``xn--strae-oqa``), so checking the
+        # name as written would resolve a host the request never reaches. A URL the
+        # client cannot read is checked as before; the client refuses to send it.
+        try:
+            hostname = httpx.URL(self.config.full_url).raw_host.decode("ascii")
+        except (httpx.InvalidURL, UnicodeError):
+            hostname = urlparse(self.config.full_url).hostname or ""
         allow_local = getattr(self.config, "allow_local_network", False)
         if not is_ssrf_safe(hostname, allow_local=allow_local):
             raise PermissionError(
@@ -1272,23 +1281,13 @@ class Endpoint:
             # restoring the row, who hands it again if the role names it.
             # A name the config has no field for becomes a kwarg, which the request body
             # carries, so the setting rule and the header filter apply at the top level too.
-            config = {
-                k: _without_credential_headers(v) if k in _HEADER_KWARGS else v
-                for k, v in config.items()
-                if k not in _NOT_RESTORED and not _names_credential_setting(k)
-            }
+            config = _restored_settings(config)
             kwargs = config.get("kwargs")
             if isinstance(kwargs, dict):
                 # A base_url there is a copy no request reads, the config's own field being
                 # the URL the client uses, so it is dropped with any user and password in it.
                 # A stored set of headers kept there is filtered as default_headers is.
-                config["kwargs"] = {
-                    k: _without_credential_headers(v) if k in _HEADER_KWARGS else v
-                    for k, v in kwargs.items()
-                    if k not in _NOT_RESTORED
-                    and k != "base_url"
-                    and not _names_credential_setting(k)
-                }
+                config["kwargs"] = _restored_settings(kwargs, drop=frozenset({"base_url"}))
             # Nor does a stored header. The endpoint merges default_headers over the
             # credential header it writes, so a stored Authorization or x-api-key would
             # replace the restored key, at whatever URL the model is restored to. Of the
@@ -1300,9 +1299,10 @@ class Endpoint:
             client_kwargs = config.get("client_kwargs")
             if isinstance(client_kwargs, Mapping):
                 config["client_kwargs"] = {
-                    name: _without_credential_headers(value)
+                    name: headers
                     for name, value in client_kwargs.items()
                     if name == "headers"
+                    and (headers := _without_credential_headers(value)) is not None
                 }
             # The stored URL keeps no user and password either: the HTTP client would
             # send them as Basic authentication to the host the URL names. A URL the
@@ -1316,14 +1316,16 @@ class Endpoint:
             if allow_local_network is not None:
                 config["allow_local_network"] = allow_local_network
             # pydantic's message repeats the values it could not read, and a stored value
-            # may be a password, so the refusal names each field and reason only. It is
-            # raised outside the handler, so the original error is not attached to it.
+            # may be a password, so the refusal names each field and reason only. A
+            # location past the field is a key of the stored value (``params.<key>``),
+            # which is stored text too, so only the field is named. It is raised outside
+            # the handler, so the original error is not attached to it.
             try:
                 config = EndpointConfig(**config)
                 problems = None
             except ValidationError as exc:
                 problems = "; ".join(
-                    f"{'.'.join(str(part) for part in error['loc']) or 'config'}: {error['msg']}"
+                    f"{error['loc'][0] if error['loc'] else 'config'}: {error['msg']}"
                     for error in exc.errors(
                         include_url=False, include_context=False, include_input=False
                     )
@@ -1342,15 +1344,37 @@ class Endpoint:
         )
 
 
+def _restored_settings(settings: Mapping, *, drop: frozenset[str] = frozenset()) -> dict:
+    """``settings`` without what a restored config never takes from a stored row.
+
+    That is a name in ``_NOT_RESTORED`` or ``drop`` and one ``_names_credential_setting``
+    reads as a credential or a proxy, each test reading a bytes name as Latin-1, as the
+    HTTP client reads it. A stored set of headers loses its credential headers (see
+    ``_without_credential_headers``), and one that cannot be read for its names is dropped.
+    """
+    restored = {}
+    for key, value in settings.items():
+        name = bytes(key).decode("latin-1") if isinstance(key, (bytes, bytearray)) else key
+        if name in _NOT_RESTORED or name in drop or _names_credential_setting(name):
+            continue
+        if name in _HEADER_KWARGS:
+            value = _without_credential_headers(value)
+            if value is None:
+                continue
+        restored[key] = value
+    return restored
+
+
 def _names_credential_setting(name: Any) -> bool:
     """Whether a stored setting's name reads as a credential or a proxy.
 
-    That is a name the library reads as a credential, with ``token`` counted only as a
-    whole word (``token``, ``access_token``), so ``max_tokens`` and ``requires_tokens``
-    are kept; ``key`` on its own; ``cookie`` and ``x_auth``; and a name holding
-    ``proxy`` or ``proxies``, whose URL can hold a user and password. A bytes name is
-    read as Latin-1, as the HTTP client reads it. Only the name is read, so a setting
-    nested inside another keeps its names: a JSON schema field named ``token`` is sent.
+    That is a name the library reads as a credential, with ``token`` counted only where
+    the name ends in it (``token``, ``access_token``, ``accessToken``), so ``max_tokens``
+    and ``requires_tokens`` are kept; ``key`` on its own; ``auth_key`` and ``authKey``;
+    ``cookie``, ``x_auth`` and ``xauth``; and a name holding ``proxy`` or ``proxies``,
+    whose URL can hold a user and password. A bytes name is read as Latin-1, as the HTTP
+    client reads it. Only the name is read, so a setting nested inside another keeps its
+    names: a JSON schema field named ``token`` is sent.
     """
     from lionagi.libs.credential_fields import (
         EXACT_SECRET_FIELD_NAMES,
@@ -1363,11 +1387,18 @@ def _names_credential_setting(name: Any) -> bool:
     if not isinstance(name, str):
         return False
     folded = fold_field_name(name).strip("_")
-    markers = (*(m for m in SECRET_KEY_MARKERS if m != "token"), "cookie", "proxy", "proxies")
+    markers = (
+        *(m for m in SECRET_KEY_MARKERS if m != "token"),
+        "auth_key",
+        "authkey",
+        "cookie",
+        "proxy",
+        "proxies",
+    )
     return (
         folded in EXACT_SECRET_FIELD_NAMES
-        or folded in ("key", "x_auth")
-        or folded.split("_")[-1] == "token"
+        or folded in ("key", "x_auth", "xauth")
+        or folded.endswith("token")
         or any(marker in folded for marker in markers)
     )
 
@@ -1377,12 +1408,15 @@ def _without_credential_headers(headers: Any) -> Any:
 
     That is a header whose name the library reads as a credential (see
     ``lionagi.libs.credential_fields``), one whose name ends in ``-Key``
-    (``Ocp-Apim-Subscription-Key``, ``X-Auth-Key``), ``Cookie``, ``X-Auth``, and
-    ``Host``, which would send the restored key to another virtual host at the same
-    address. Only those names are read: a header named otherwise, ``X-Signature`` or
-    ``Passphrase`` say, is kept. A bytes name is read as Latin-1, as the HTTP client
-    reads it. A mapping and a list of name-value pairs are filtered; any other value is
-    returned as it is, for the config or the HTTP client to accept or refuse.
+    (``Ocp-Apim-Subscription-Key``, ``X-Auth-Key``), one holding ``Cookie``
+    (``X-Cookie``, ``Cookie2``), ``Authentication`` (``X-Authentication``) or
+    ``Authorisation``, ``X-Auth``, and ``Host``, which would send the restored key to
+    another virtual host at the same address. Only those names are read: a header named
+    otherwise, ``X-Signature`` or ``Passphrase`` say, is kept. A bytes name is read as
+    Latin-1, as the HTTP client reads it. A mapping and a list of name-value pairs are
+    filtered, and an entry of the list that is not a pair is dropped. Any other value,
+    such as a string of header lines, cannot be read for its names and is returned as
+    ``None``, so no header from it is restored.
     """
     from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
 
@@ -1397,6 +1431,7 @@ def _without_credential_headers(headers: Any) -> Any:
             or folded in _HEADERS_NOT_RESTORED
             or folded == "key"
             or folded.endswith("_key")
+            or any(word in folded for word in ("cookie", "authentication", "authorisation"))
         )
 
     if isinstance(headers, Mapping):
@@ -1405,9 +1440,9 @@ def _without_credential_headers(headers: Any) -> Any:
         return [
             pair
             for pair in headers
-            if not (isinstance(pair, (list, tuple)) and pair and names_credential(pair[0]))
+            if isinstance(pair, (list, tuple)) and len(pair) == 2 and not names_credential(pair[0])
         ]
-    return headers
+    return None
 
 
 _STORED_URL_REMEDY = (
@@ -1441,14 +1476,13 @@ def _stored_base_url(config: Mapping) -> Any:
 def _without_userinfo(url: str) -> str:
     """``url`` without the ``user:password@`` part the HTTP client reads in it, or refused.
 
-    A stored URL is restored only in a form that every URL parser splits the same way,
-    read from the stored text itself: ``http://`` or ``https://`` from its first
+    A stored URL is restored only in this form, read from the stored text itself: ``http://`` or ``https://`` from its first
     character, an optional user and password running to the last ``@`` and holding no
     slash, backslash, ``?`` or ``#``, then a host name of letters, digits, ``-``, ``.``
     and ``_`` (outside ASCII, a letter's combining marks count as letters, in the composed
     form, NFC, that the client accepts), or an IPv6 address in brackets with an optional
     zone of letters, digits and ``-._~``, then an optional port of digits, which may be
-    empty, and no ``@`` anywhere once the user and password are removed. Text with no
+    empty and is at most 65535, and no ``@`` anywhere once the user and password are removed. Text with no
     ``:`` and no ``@``, such as ``internal``, is returned as it is, since it has no place
     for a password. Anything else is refused, because which part of it is a password cannot be
     told and the config would write it back. The check for ``:`` and ``@`` reads the text
@@ -1505,7 +1539,7 @@ def _without_userinfo(url: str) -> str:
         r"(?i:https?)://"
         r"(?:[^/?#\\]+@)?"
         r"(?:\[[0-9A-Fa-f:.]+(?:%25[A-Za-z0-9._~-]+)?\]|(?P<name>[^\[\]:/?#@\\]+))"
-        r"(?::[0-9]*)?"
+        r"(?::(?P<port>[0-9]*))?"
         r"(?:[/?#].*)?",
         url,
         re.DOTALL | re.ASCII,
@@ -1519,8 +1553,10 @@ def _without_userinfo(url: str) -> str:
             return char.isalnum() or char in "-._"
         return unicodedata.category(char)[0] in "LMN"
 
-    if stored is None or not (
-        stored["name"] is None or all(name_char(char) for char in stored["name"])
+    if (
+        stored is None
+        or not (stored["name"] is None or all(name_char(char) for char in stored["name"]))
+        or (stored["port"] and int(stored["port"]) > 65535)
     ):
         raise refused("has something other than a host name or IP address and a port number")
     restored = str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url

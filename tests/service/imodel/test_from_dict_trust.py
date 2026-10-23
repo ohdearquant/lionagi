@@ -241,6 +241,10 @@ CREDENTIAL_HEADERS = [
     "X-Functions-Key",
     "X-Auth",
     "X-Auth-Key",
+    "X-Cookie",
+    "Cookie2",
+    "X-Authentication",
+    "Authorisation",
     # Not a credential, but it would send the restored key to another virtual host.
     "Host",
 ]
@@ -477,6 +481,15 @@ CREDENTIAL_SETTINGS = [
     "client_secret",
     "key",
     "cookie",
+    "accessToken",
+    "authToken",
+    "authKey",
+    "auth_key",
+    "XAuth",
+    # Names the vocabulary takes whole, never as part of a longer word.
+    "auth",
+    "bearer",
+    "authentication",
 ]
 
 
@@ -537,6 +550,45 @@ def test_a_stored_set_of_headers_kept_in_kwargs_loses_its_credential_headers(whe
     assert "stored-se" not in str(model.to_dict())
 
 
+def test_a_stored_set_of_headers_named_in_bytes_in_kwargs_loses_its_credential_headers():
+    data = _stored()
+    data["endpoint"]["config"].setdefault("kwargs", {})[b"headers"] = {
+        "Authorization": "Bearer stored-secret",
+        "X-Trace": "kept",
+    }
+    model = iModel.from_dict(data)
+    assert model.endpoint.config.kwargs[b"headers"] == {"X-Trace": "kept"}
+    assert "stored-se" not in str(model.to_dict())
+
+
+@pytest.mark.parametrize("where", ["kwargs", "config"])
+@pytest.mark.parametrize("name", ["headers", "extra_headers"])
+def test_a_stored_set_of_headers_that_cannot_be_read_by_name_is_not_restored(where, name):
+    data = _stored()
+    config = data["endpoint"]["config"]
+    (config.setdefault("kwargs", {}) if where == "kwargs" else config)[name] = (
+        "Authorization: Bearer stored-secret"
+    )
+    model = iModel.from_dict(data)
+    assert name not in model.endpoint.config.kwargs
+    assert "stored-se" not in str(model.to_dict())
+
+
+@pytest.mark.parametrize("where", ["kwargs", "config"])
+def test_a_stored_list_of_headers_keeps_only_its_pairs_not_named_as_a_credential(where):
+    data = _stored()
+    config = data["endpoint"]["config"]
+    (config.setdefault("kwargs", {}) if where == "kwargs" else config)["headers"] = [
+        "Authorization: Bearer stored-secret",
+        ["X-Cookie", "stored-secret"],
+        ["X-Trace", "kept"],
+        ["X-Other", "kept", "stored-secret"],
+    ]
+    model = iModel.from_dict(data)
+    assert [list(pair) for pair in model.endpoint.config.kwargs["headers"]] == [["X-Trace", "kept"]]
+    assert "stored-se" not in str(model.to_dict())
+
+
 def test_the_stored_provider_metadata_keeps_no_entry_named_as_a_credential():
     data = _stored()
     data["provider_metadata"] = {
@@ -549,9 +601,23 @@ def test_the_stored_provider_metadata_keeps_no_entry_named_as_a_credential():
     assert "stored-se" not in str(model.to_dict())
 
 
+@pytest.mark.parametrize("stored", ["stored-secret", [("api_key", "stored-secret")]])
+def test_stored_provider_metadata_that_is_not_a_mapping_is_not_restored(stored):
+    data = _stored()
+    data["provider_metadata"] = stored
+    model = iModel.from_dict(data)
+    assert model.provider_metadata == {}
+    assert "stored-se" not in str(model.to_dict())
+
+
 @pytest.mark.parametrize(
     "stored",
-    [{"base_url": [STORED_PASSWORD_URL]}, {"kwargs": ["stored-secret"]}, {"timeout": "stored-se"}],
+    [
+        {"base_url": [STORED_PASSWORD_URL]},
+        {"kwargs": ["stored-secret"]},
+        {"timeout": "stored-se"},
+        {"params": {"stored-secret": ["x"]}},
+    ],
 )
 def test_a_stored_config_that_does_not_validate_is_refused_without_its_values(stored):
     data = _stored()
@@ -636,6 +702,8 @@ REFUSED = {
         "https://stored-user:stored-secret@gateway.example\\x@evil.example/v1",
         "https://gateway.example\\@evil.example/v1",
         f"https://gateway{_encoded(14)}.example/v1",
+        "https://stored-user:stored-secret@gateway.example:65536/v1",
+        "https://gateway.example:99999999999999999999999/v1",
     ],
     "has an '@' after its host": [
         "https://stored-user:/stored-secret@gateway.example/v1",
@@ -699,6 +767,7 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
         "gateway.example/v1",
         "https://gateway.example",
         "https://gateway.example:8443/v1",
+        "https://gateway.example:65535/v1",
         "https://gateway.example:/v1",
         "HTTPS://Gateway.Example/v1",
         "http://localhost:11434/v1",
@@ -718,3 +787,24 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
 )
 def test_a_stored_url_in_the_restorable_form_is_kept_as_written(stored):
     assert iModel.from_dict(_stored(base_url=stored)).endpoint.config.base_url == stored
+
+
+def test_the_private_address_check_resolves_the_host_the_client_connects_to(monkeypatch):
+    import lionagi.ln._ssrf
+
+    checked = []
+
+    def record(hostname, *, allow_local=False):
+        checked.append(hostname)
+        return True
+
+    monkeypatch.setattr(lionagi.ln._ssrf, "is_ssrf_safe", record)
+    model = iModel(
+        provider="openai",
+        model="gpt-4.1-mini",
+        api_key="test-key",
+        base_url="https://straße.example/v1",
+    )
+    model.endpoint._assert_ssrf_safe_url()
+    assert checked == [httpx.URL("https://straße.example/v1").raw_host.decode("ascii")]
+    assert checked == ["xn--strae-oqa.example"]

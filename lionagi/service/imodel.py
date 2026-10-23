@@ -762,12 +762,15 @@ class iModel:  # noqa: N801
         # The executor's rate limits only: any other key would reach __init__ as an
         # endpoint setting, such as a base_url or an env, past the rules above.
         stored_limits = data.get("processor_config") or {}
-        # to_dict writes the metadata back, so an entry named as a credential is not kept.
+        # to_dict writes the metadata back, so an entry named as a credential is not kept,
+        # and metadata that is not a mapping cannot be read for its names and is not kept.
         stored_metadata = data.get("provider_metadata")
         if isinstance(stored_metadata, dict):
             stored_metadata = {
                 k: v for k, v in stored_metadata.items() if not _names_credential_setting(k)
             }
+        else:
+            stored_metadata = None
         return cls(
             endpoint=e1,
             provider_metadata=stored_metadata,

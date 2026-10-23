@@ -29,22 +29,27 @@ gateway that reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A
 stored in the config's `kwargs`, a copy no request reads, is not restored, nor is a stored
 setting whose name reads as a credential or a proxy, at the config's top level or in its
 `kwargs`, which the request body carries: `proxy`, `proxy_url`, `proxies`, `x_api_key`,
-`authorization`, `password`, a name whose last word is `token` (`access_token`) and the like.
+`authorization`, `password`, `auth_key`, a name that ends in `token` (`access_token`,
+`accessToken`) and the like.
 A setting that counts tokens or names a cache key, such as `max_tokens` or `prompt_cache_key`,
 is kept, and a value nested inside a kept setting is restored as written. A set of headers
 stored there, `headers` or `extra_headers`, loses its credential headers as `default_headers`
-does, and a `provider_metadata` entry named as a credential is dropped. A stored base URL is
-restored only in a form every URL parser splits the same way, read from the stored text:
+does, a header named with `Cookie`, `Authentication` or `Authorisation` in it (`X-Cookie`,
+`Cookie2`, `X-Authentication`) among them; a stored set of headers that is not a mapping or a
+list of name-value pairs, such as a string of header lines, is not restored at all. A
+`provider_metadata` entry named as a credential is dropped, and stored metadata that is not a
+mapping is not restored. A stored base URL is
+restored only in this form, read from the stored text:
 `http://` or `https://` from its first character, an optional user and password running to the
 last `@` and holding no `/`, `\`, `?` or `#`, a host name of letters, digits, `-`, `.` and `_`
 (outside ASCII a letter's combining marks count as letters, in the composed form, NFC) or an
-IPv6 address in brackets, an optional port number, and no `@` anywhere once the user and
+IPv6 address in brackets, an optional port number up to 65535, and no `@` anywhere once the user and
 password are removed, a percent-encoded or fullwidth `@` included. Any other stored base URL with a `:` or an `@` in
 it raises `ValueError` when it is restored, since which part of it is a password cannot be
 told; text with neither, such as `internal`, is kept as it is unless it is still
 percent-encoded after 16 layers are read. That refuses some URLs the client could send: one
 with an `@` in its path, query or fragment, such as `https://gateway.example/v1/@team`; one
-with an empty user (`https://@gateway.example/v1`); one with a `\` before its host; one whose
+with an `@` and nothing before it (`https://@gateway.example/v1`); one with a `\` before its host; one whose
 IPv6 zone is not written after
 `%25` in letters, digits and `-._~`; one whose host holds percent-encoding or other
 punctuation; and one still percent-encoded after 16 layers are read, outside the user and
@@ -700,14 +705,14 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   restored key, a caller's key included, and from a `headers` or `extra_headers` setting; and
   no client option other than `headers` is restored (`auth`, `proxy_auth`, `cookies` and
   `trust_env` among them). A stored setting whose name reads as a credential or a proxy
-  (`proxy`, `proxies`, `x_api_key`, `password`, a name whose last word is `token`) is dropped
+  (`proxy`, `proxies`, `x_api_key`, `password`, `auth_key`, a name that ends in `token`) is dropped
   as well, at the config's top level or in its `kwargs`, which the request body carries, and
   so is a `provider_metadata` entry so named; any other setting, `max_tokens` included, is
   restored as written. Nor is a user and password written
   into a stored base URL, which the HTTP client would send as Basic authentication to the host
   the URL names; a base URL the caller passes keeps them. A stored base URL is restored only in
-  a form every URL parser splits the same way: `http://` or `https://`, a host name or IP
-  address, an optional port number, and no `@` anywhere once a user and password running to the
+  this form: `http://` or `https://`, a host name or IP
+  address, an optional port number up to 65535, and no `@` anywhere once a user and password running to the
   last `@` are removed, a percent-encoded or fullwidth `@` included. Any other stored base URL
   with a `:` or an `@` in it is refused, since which part of it is a password cannot be told.
   That covers one the client reads with a password in its host or in an IPv6 zone, which it
@@ -747,6 +752,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. One release with published
   advisories stays: `uv.lock` keeps Pillow 12.3.0 for Python 3.10, since Pillow 13.0.0, the
   release that fixes them, requires Python 3.11.
+- An endpoint's private-address check before a request now resolves the host name as the
+  HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
+  differ (`straße.example` resolves as `strasse.example` but the client connects to
+  `xn--strae-oqa.example`), so the check could pass a name whose real address it never
+  looked up.
 
 ### Docs
 
