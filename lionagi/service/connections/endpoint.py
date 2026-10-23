@@ -1279,6 +1279,10 @@ class Endpoint:
                     for name, value in client_kwargs.items()
                     if name == "headers"
                 }
+            # Nor a user and password written into the stored URL, which the HTTP client
+            # would send as Basic authentication to the host the URL names.
+            if isinstance(config.get("base_url"), str):
+                config["base_url"] = _without_userinfo(config["base_url"])
             if base_url is not None:
                 config["base_url"] = base_url
             if api_key is not None:
@@ -1325,3 +1329,17 @@ def _without_credential_headers(headers: Any) -> Any:
             if not (isinstance(pair, (list, tuple)) and pair and names_credential(pair[0]))
         ]
     return headers
+
+
+def _without_userinfo(url: str) -> str:
+    """``url`` without the ``user:password@`` part of its authority. A URL that does
+    not parse is returned as it is, for the config or the HTTP client to refuse."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))

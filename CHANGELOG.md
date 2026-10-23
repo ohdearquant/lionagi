@@ -23,6 +23,14 @@ is refused either way. `Branch.from_dict` takes live models instead: a `chat_mod
 neither, so a branch saved against such a URL is resumed from Python instead. A restored model also keeps no
 client option but its headers: one that relied on a stored `trust_env`, for proxy settings
 from the environment, sets it again on the live config (`model.endpoint.config.client_kwargs`).
+Nor does it keep a user and password written into its stored base URL: for a gateway that
+reads them, pass the URL, `iModel.from_dict(data, base_url=...)`.
+
+Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
+(a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import
+the module first, or allow its package with `lionagi.ln.register_type_prefix()`; until then
+the load raises `ValueError` naming both remedies. A bare `item_type` name is refused, so give
+its dotted path, and `lion_class` must name an `Element` subclass.
 
 Pair `li studio` and the daemon from the same release. Updating only the daemon leaves an older
 `li studio` asking the retired `POST /api/studio/pairing-codes`, which now answers 410, so a page
@@ -271,6 +279,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   capability, but this release does not require one: a decision request that carries only that
   bearer is still accepted, and recorded unattributed. Every other route's admission is
   unchanged.
+- `li studio --dev` prints a one-time pairing link for the page address Vite reports, and the
+  daemon it starts lets a page on that origin redeem the code through Vite's proxy, whether or
+  not the origin is in the default list. It prints no link when the page's API calls go to
+  another daemon or the page's host is one the daemon refuses
+  (`docs/guides/studio-getting-started.md`).
 - MCP argument validation now enforces `minimum`/`maximum`, `minLength`/`maxLength` and
   `pattern`, checks `enum` whatever the value's type, and treats `null` as a type it checks
   rather than as an absent check, so a value outside a published bound or choice is refused
@@ -653,11 +666,19 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `default_headers` and from the client options' `headers`, where before it could replace the
   restored key, a caller's key included; and
   no client option other than `headers` is restored (`auth`, `proxy_auth`, `cookies` and
-  `trust_env` among them). A CLI model's own settings are still restored as stored and read by
+  `trust_env` among them). Nor is a user and password written into a stored base URL, which
+  the HTTP client would send as Basic authentication to the host the URL names; a base URL the
+  caller passes keeps them. A CLI model's own settings are still restored as stored and read by
   the child process it starts: Codex `config_overrides` can name another provider URL and the
   environment variable its key is read from, Claude Code's `settings` and `permission_mode`
   set what that child may do, and a stored `mcp_servers` or `mcp_config` names the MCP servers
   it starts, so restore a CLI row only from a writer you trust.
+- A class named in saved data, by `lion_class` in an element's metadata or by a `Pile`'s
+  `item_type`, no longer has its module imported unless the name is under an allowed prefix
+  (`lionagi.` and any added with `lionagi.ln.register_type_prefix()`). Outside them a class
+  loads from a module that is already imported or from `LION_CLASS_REGISTRY`, and
+  `Element.from_dict` accepts only an `Element` subclass. The lookup order is in
+  `docs/internals/support-libs.md`.
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.

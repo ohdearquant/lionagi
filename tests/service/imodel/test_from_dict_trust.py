@@ -1,5 +1,6 @@
 """What a restored model takes from stored data, and what it takes only from the caller."""
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -280,3 +281,53 @@ async def test_a_stored_credential_header_never_reaches_the_request(env_key, nam
         assert session.trust_env is False
     finally:
         await session.aclose()
+
+
+STORED_PASSWORD_URL = "https://stored-user:stored-secret@gateway.example/v1"
+
+
+async def _send(endpoint):
+    seen = {}
+
+    def handler(request):
+        seen["authorization"] = request.headers.get("authorization")
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={})
+
+    session = endpoint._create_http_session({"transport": httpx.MockTransport(handler)})
+    try:
+        await session.post(endpoint.config.full_url, json={})
+    finally:
+        await session.aclose()
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_user_and_password_in_the_stored_url_never_reach_the_request(env_key):
+    endpoint = iModel.from_dict(_stored(base_url=STORED_PASSWORD_URL)).endpoint
+    assert endpoint.config.base_url == ELSEWHERE
+    assert endpoint.config._api_key is None
+
+    seen = await _send(endpoint)
+    assert seen["url"] == f"{ELSEWHERE}/chat/completions"
+    assert seen["authorization"] is None
+
+
+def test_the_providers_url_stored_with_a_password_gets_neither(env_key):
+    # Restored without the password, and still not the registered URL as written.
+    stored = "https://stored-user:stored-secret@api.openai.com/v1"
+    config = iModel.from_dict(_stored(base_url=stored)).endpoint.config
+    assert config.base_url == OPENAI_URL
+    assert config._api_key is None
+
+
+def test_a_callers_url_keeps_its_user_and_password(env_key):
+    caller = "https://caller-user:caller-secret@gateway.example/v1"
+    config = iModel.from_dict(_stored(), base_url=caller).endpoint.config
+    assert config.base_url == caller
+    assert config._api_key is None
+
+
+def test_an_at_sign_after_the_host_is_kept():
+    url = "https://gateway.example/v1/@team"
+    assert iModel.from_dict(_stored(base_url=url)).endpoint.config.base_url == url
