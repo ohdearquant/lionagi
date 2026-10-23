@@ -569,9 +569,10 @@ the pool, its cap, the variable that set it and the holder pids.
 The lease is released when the spawn fails, when the `on_spawn` observer fails,
 and in the generator's final `finally` after `end_child_group()`, so the slot
 frees only once the worker's group has been ended. If `end_child_group()`
-raises, the slot gives up its lock but keeps the child's record, so it reads
-held while that child runs, as after its holder exits; without the child's
-start time in the record it keeps its lock until the process exits. The stdin
+raises and every slot holds the child's record with its start time, the slots
+give up their locks but keep that record, so they read held while that child
+runs, as after their holder exits; when any slot lacks it, every slot keeps its
+lock until the process exits. The stdin
 payload is encoded before admission, so an input that cannot be encoded is
 refused with nothing to give back. A spawn cancelled while the creation call
 runs keeps its slot until that call returns: the abandoned-spawn callback

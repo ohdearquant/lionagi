@@ -113,17 +113,20 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   process group is attempted and the slots are released before the error reaches the caller. A
   slot written only in part is refused the same way: what the file then holds may not parse,
   may parse to a record naming another child or this child with another start time, or may by
-  chance parse to this child with its exact start time. Only the last keeps the slot held once
-  its holder exits, so every short write is refused.
+  chance parse to this child with its exact start time. Only the last keeps the slot held for
+  this child once its holder exits, so every short write is refused. If ending the group raises
+  after either refusal, the slots keep their locks until this process exits, since not every
+  slot then holds the child's whole record with its start time.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
   generator's final `finally` after `end_child_group()`, so a slot frees only once the group has
   been ended. Ended here means `end_child_group()` has returned: it signals the group, sends
   SIGKILL once the grace period (5 s) passes with members left, and waits that long again for the
   child, then returns whether or not every member has gone, so a member that survives SIGKILL can
   outlive its slot. If `end_child_group()` raises instead, nothing shows that the group has
-  ended: each slot gives up its lock and keeps the child's record, so it reads held while that
-  child runs and free once it has gone, as after its holder exits. A slot without the child's
-  whole record and start time keeps its lock until this process exits.
+  ended. When every slot holds the child's whole record with its start time, each gives up its
+  lock and keeps that record, so it reads held while that child runs and free once it has gone,
+  as after its holder exits. When any slot lacks that record, every slot keeps its lock until
+  this process exits: the slots are kept or given up together.
 - A cancellation that lands while the spawn is in flight unwinds the caller before the child
   arrives, and the slots stay held. When the creation call returns, the abandoned-spawn callback
   (ADR-0030 D4) records the child in its slots, sends SIGKILL to the child's group (to the child
@@ -185,15 +188,15 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   child, which leads its own session, keeps running. A free lock whose record names a child that
   is still the same process (pid and start time, through `lionagi.ln._proc`) counts as held. An
   unreadable process table counts as running, so a slot is never handed out on a probe that
-  could not look. A child whose start time cannot be read is never recorded: its pid alone could
-  name a process that took the pid over, so once the holder exits such a slot would read free
-  even while the child still runs. The spawn observes the child once more for its start time; if
+  could not look. A child whose start time cannot be read never holds a slot by its record: its
+  pid alone could name a process that took the pid over, so a record without a start time reads
+  free once its holder exits, even while the child still runs. The spawn observes the child once more for its start time; if
   the second read has none too, and the admission holds at least one slot, the spawn is refused
   with the same `SubagentAdmissionRefusedError` a full pool raises, the child is killed, and the
   slots are released. The processes the child has started by then are left running: signalling
   its process group needs the start-time evidence that is missing here, as when the first
-  observation fails outright. So a slot is either held for a child recorded with its start time,
-  or not taken at all. With no cap set there are no slots to keep, and the child runs whether or
+  observation fails outright. So a slot that has given up its lock is held only for a child
+  recorded with its start time. With no cap set there are no slots to keep, and the child runs whether or
   not its start time can be read.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
   `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts

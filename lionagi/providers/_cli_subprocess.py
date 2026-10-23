@@ -916,8 +916,8 @@ async def ndjson_from_cli(
             if not task.cancelled() and task.exception() is None:
                 late = task.result()[1]
                 try:
-                    # Named before its group is ended, so the slots still hold this
-                    # child if that end fails and this process then exits.
+                    # Named before its group is ended, so if that end fails the slots
+                    # can be kept for this child by a record with its start time.
                     lease.record_child(late.pid, late.create_time)
                 except Exception:
                     log.exception("could not record the child whose spawn was abandoned")
@@ -926,7 +926,9 @@ async def ndjson_from_cli(
             except Exception:
                 # The group is not known to have ended. The caller already has its own
                 # error; this one is logged, and the slots stay held.
-                if lease.keep_for_child():
+                if not lease.slots:
+                    log.exception("could not end the group of a child whose spawn was abandoned")
+                elif lease.keep_for_child():
                     log.exception(
                         "could not end the group of a child whose spawn was abandoned; its "
                         "subagent slots stay held while that child runs"
