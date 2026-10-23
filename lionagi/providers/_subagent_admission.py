@@ -368,7 +368,8 @@ class _Slot:
         # Written, then cut to length: a reader never finds the file empty while it is held.
         written = os.pwrite(self.fd, data, 0)
         if written != len(data):
-            # Part of a record does not parse, so the slot would read as unrecorded.
+            # What the file then holds may not parse, or, over a longer stale record,
+            # may parse and name another child: either way it does not name this one.
             raise OSError(errno.ENOSPC, f"wrote {written} of the record's {len(data)} bytes")
         os.ftruncate(self.fd, len(data))
 

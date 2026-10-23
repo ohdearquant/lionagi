@@ -570,9 +570,11 @@ The lease is released when the spawn fails, when the `on_spawn` observer fails,
 and in the generator's final `finally` after `end_child_group()`, so the slot
 frees only once the worker's group has been ended. The stdin payload is encoded
 before admission, so an input that cannot be encoded is refused with nothing to
-give back. A cancelled spawn releases its slot when the cancellation unwinds,
-while the abandoned-spawn callback ends a child that arrives later; that child
-can outlive its slot by the moment the creation call takes to return.
+give back. A spawn cancelled while the creation call runs keeps its slot until
+that call returns: the abandoned-spawn callback sends SIGKILL to the late
+child's group (to the child alone without spawn-time witnesses) and then
+releases it. A spawn task that is itself cancelled hands back no pid, so only
+the direct child's transport is closed before the slot is released.
 
 `iModel.stream()` re-raises every stream failure as a `ValueError` whose
 `__cause__` is the provider's error. `li agent` walks that chain: a refusal

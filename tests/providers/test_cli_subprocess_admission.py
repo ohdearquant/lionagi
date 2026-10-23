@@ -10,6 +10,7 @@ recorded child is the kernel's pid.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import sys
@@ -220,8 +221,8 @@ async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(ca
 
 @pytest.mark.asyncio
 async def test_a_slot_written_in_part_refuses_and_ends_the_child(capped, monkeypatch):
-    """A record written only in part does not parse, so the slot would read as unrecorded:
-    a short write is refused like a failed one."""
+    """A record written only in part may not parse, or may run into an older record and
+    name another child, so a short write is refused like a failed one."""
     from lionagi.providers import _cli_subprocess
 
     real_pwrite = os.pwrite
@@ -277,6 +278,56 @@ async def test_every_slot_stays_held_until_the_childs_group_is_ended(capped, mon
         assert [obj async for obj in stream] == [{"type": "done"}]
     assert held_while_ending == [{"all": 1, "codex": 1}]
     assert _pools() == {"all": 0, "codex": 0}
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_spawn_keeps_the_slot_until_the_late_child_is_ended(
+    capped, monkeypatch
+):
+    """A cancellation that lands while the creation call still runs unwinds the caller
+    before the child arrives. The slot stays held until that child's group is ended."""
+    from lionagi.providers import _cli_subprocess
+
+    real_create = asyncio.create_subprocess_exec
+    real_end = _cli_subprocess._end_group_with_evidence
+    created = asyncio.Event()
+    finish_creation = asyncio.Event()
+    pids = []
+    ended = []
+
+    async def _slow_create(*args, **kwargs):
+        child = await real_create(*args, **kwargs)
+        pids.append(child.pid)
+        created.set()
+        await finish_creation.wait()
+        return child
+
+    def _record_end(proc, *args, **kwargs):
+        ended.append((proc.pid, _held()["held"]))
+        return real_end(proc, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _slow_create)
+    monkeypatch.setattr(_cli_subprocess, "_end_group_with_evidence", _record_end)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
+    first = asyncio.ensure_future(stream.__anext__())
+    await asyncio.wait_for(created.wait(), timeout=5.0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    # The caller has unwound; the child exists and the creation call has not returned.
+    [pid] = pids
+    assert _is_alive(pid)
+    assert _held()["held"] == 1
+    assert ended == []
+
+    finish_creation.set()
+    deadline = time.monotonic() + 5.0
+    while _held()["held"] and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert ended == [(pid, 1)]
+    assert _await_death(pid)
+    assert _held()["held"] == 0
+    await stream.aclose()
 
 
 @pytest.mark.asyncio

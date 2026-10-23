@@ -908,8 +908,19 @@ async def ndjson_from_cli(
     try:
         proc, spawned = await asyncio.shield(spawn)
     except BaseException:
-        spawn.add_done_callback(_kill_abandoned_spawn)
-        lease.release()
+        # A cancellation can land while the creation call still runs, so the child may
+        # arrive after this unwinds. The slots stay held until the callback has ended
+        # that child's group; a spawn that already finished is ended and released now.
+        def _end_then_release(task: asyncio.Future) -> None:
+            try:
+                _kill_abandoned_spawn(task)
+            finally:
+                lease.release()
+
+        if spawn.done():
+            _end_then_release(spawn)
+        else:
+            spawn.add_done_callback(_end_then_release)
         raise
     # From here the child runs and holds the lease. A failure in this try ends the
     # child's group and gives the slots back here; the statements between it and the

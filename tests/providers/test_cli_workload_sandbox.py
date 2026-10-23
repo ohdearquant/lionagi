@@ -235,9 +235,17 @@ def test_a_light_codex_agent_reads_each_project_config_codex_can_merge(tmp_path,
     assert str(config) in str(refused.value) or str(config.resolve()) in str(refused.value)
 
 
-def test_a_light_codex_agent_leaves_a_project_config_above_the_git_root_unread(tmp_path):
+# A linked worktree's root holds a `.git` file naming the main checkout's git directory.
+@pytest.mark.parametrize("git_marker", ["directory", "file"])
+def test_a_light_codex_agent_leaves_a_project_config_above_the_git_root_unread(
+    tmp_path, git_marker
+):
     repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo.mkdir()
+    if git_marker == "directory":
+        (repo / ".git").mkdir()
+    else:
+        (repo / ".git").write_text("gitdir: /elsewhere/.git/worktrees/repo\n")
     cwd = repo / "sub"
     cwd.mkdir()
     (tmp_path / ".codex").mkdir()
