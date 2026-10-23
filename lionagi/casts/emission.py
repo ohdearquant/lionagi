@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi.ln.types import Operable, Spec
 
-SPAWN_ALLOWED_OPERATIONS: frozenset[str] = frozenset({"operate", "chat", "communicate", "ReAct"})
+_SpawnOperation = Literal["operate", "chat", "communicate", "ReAct"]
+SPAWN_ALLOWED_OPERATIONS: frozenset[str] = frozenset(get_args(_SpawnOperation))
 
 __all__ = (
     # discovery
@@ -444,7 +445,7 @@ class SpawnRequest(_EmissionModel):
         description="Role to execute it (researcher, implementer, critic, ...). "
         "Omit to reuse the emitter's own role/branch.",
     )
-    operation: Literal["operate", "chat", "communicate", "ReAct"] = Field(
+    operation: _SpawnOperation = Field(
         default="operate",
         description="lionagi operation to run: operate | chat | communicate | ReAct. Default operate.",
     )
