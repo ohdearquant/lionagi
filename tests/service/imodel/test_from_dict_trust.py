@@ -333,6 +333,7 @@ def test_a_callers_url_keeps_its_user_and_password(env_key):
     [
         "https://gateway.example/v1/@team",
         "https://gateway.example/v1/%40team",
+        "https://gateway.example/v1/%2540team",
         "https://gateway.example/v1?team=%40x",
         "https://gateway.example/v1#%40team",
     ],
@@ -430,6 +431,10 @@ UNPLACED_AT_SIGN = [
     " https://stored-user:stored-secret@gateway.example/v1",
     "https://stored-user:stored-secret@",
     "https://stored-user:stored-secret@gateway.example/v1/\ud800",
+    # Where the client reads a port, a percent-encoded '@' leaves it no host to read.
+    "https://stored-user:stored-secret%40gateway.example/v1",
+    "https://stored-user:stored-secret%2540gateway.example/v1",
+    "https://stored-user:stored-secret%EF%BC%A0gateway.example/v1",
 ]
 
 
@@ -438,6 +443,7 @@ def test_a_stored_url_whose_at_sign_cannot_be_placed_is_refused(stored):
     with pytest.raises(ValueError, match="cannot be removed") as refused:
         iModel.from_dict(_stored(base_url=stored))
     assert "stored-se" not in str(refused.value)
+    assert "chat_model=" in str(refused.value)
 
 
 @pytest.mark.parametrize(
@@ -455,21 +461,25 @@ def test_a_refused_url_says_why_it_cannot_be_read(stored, reason):
         iModel.from_dict(_stored(base_url=stored))
 
 
-# A host with an '@' written as '%40': the client reads no user in it and would send the
+# A host with a percent-encoded '@', once or more: the client reads no user in it and would send the
 # text as the host name, to the resolver and in the Host header.
 ENCODED_AT_SIGN_IN_HOST = [
     "https://stored-user%3Astored-secret%40gateway.example/v1",
     "https://stored-user%3astored-secret%40gateway.example/v1",
     "https://other:pass@stored-user%3Astored-secret%40gateway.example/v1",
+    "https://stored-user%3AStored-secret%2540gateway.example/v1",
+    "https://stored-user%253Astored-secret%25252540gateway.example/v1",
 ]
 
 
 @pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
 @pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)
 def test_a_stored_host_with_an_encoded_at_sign_is_refused(entry, stored):
-    with pytest.raises(ValueError, match="written as '%40' in its host") as refused:
+    with pytest.raises(ValueError, match="percent-encoded '@' in its host") as refused:
         _restore_through(entry, _stored(base_url=stored))
     assert "stored-se" not in str(refused.value)
+    assert "Stored-se" not in str(refused.value)
+    assert "chat_model=" in str(refused.value)
 
 
 @pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)

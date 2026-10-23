@@ -1362,12 +1362,18 @@ def _without_userinfo(url: str) -> str:
     it is. One it cannot read, or reads with no host, is refused if it has an ``@`` in
     it, since which part is a password cannot be told and the config would write the
     URL back; without an ``@`` it is returned as it is, for the client to refuse. A host
-    with an ``@`` written as ``%40`` is refused too: the client reads no user there and
-    sends that text as the host name, to the resolver and in the Host header."""
+    with a percent-encoded ``@`` is refused too: the client reads no user there and
+    sends that text as the host name, to the resolver and in the Host header. Both
+    checks decode the text until it stops changing, so ``%2540`` counts as an ``@``."""
     import unicodedata
     from urllib.parse import unquote
 
     import httpx
+
+    def decoded(text: str) -> str:
+        while (once := unquote(text)) != text:
+            text = once
+        return text
 
     unencodable = False
     try:
@@ -1377,13 +1383,13 @@ def _without_userinfo(url: str) -> str:
     except UnicodeError:
         parsed, unencodable = None, True
     if parsed is not None and parsed.host:
-        if "@" in unquote(parsed.host):
+        if "@" in decoded(parsed.host):
             raise ValueError(
-                "The stored base_url has an '@' written as '%40' in its host, so a user "
+                "The stored base_url has a percent-encoded '@' in its host, so a user "
                 f"and password in it cannot be removed. {_STORED_URL_REMEDY}"
             )
         return str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
-    if "@" not in unicodedata.normalize("NFKC", url):
+    if "@" not in unicodedata.normalize("NFKC", decoded(url)):
         return url
     # The URL is not quoted: the part that cannot be placed may be the password.
     reason = (

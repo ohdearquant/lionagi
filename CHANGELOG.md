@@ -24,12 +24,12 @@ neither, so a branch saved against such a URL is resumed from Python instead. A 
 client option but its headers: one that relied on a stored `trust_env`, for proxy settings
 from the environment, sets it again on the live config (`model.endpoint.config.client_kwargs`).
 Nor does it keep a user and password written into its stored base URL: for a gateway that
-reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A stored base URL with an `@`
-in it that the HTTP client does not read as a URL with a host raises `ValueError` when it is
-restored, since the user and password in it cannot be removed, and so do a stored host with an
-`@` written as `%40` and stored bytes that do not decode as UTF-8 (these raised pydantic's
-`ValidationError` before, with part of the bytes in its message); pass the URL the same way,
-or a live model to `Branch.from_dict`.
+reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A stored base URL whose user
+and password cannot be removed raises `ValueError` when it is restored: one with an `@` in it,
+percent-encoded or not, that the HTTP client does not read as a URL with a host, and one whose
+host has a percent-encoded `@`. Stored bytes that do not decode as UTF-8 raise `ValueError` as
+well, where they raised pydantic's `ValidationError` before, with part of the bytes in its
+message. Pass the URL the same way, or a live model to `Branch.from_dict`.
 
 Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
 (a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import
