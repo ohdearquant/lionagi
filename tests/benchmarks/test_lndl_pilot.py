@@ -513,6 +513,14 @@ def test_adr_0132_gives_the_runs_own_figures():
         f"({r5['react']['requests']} requests)",
         f"so r5 {'meets' if r5['met'] else 'does not meet'} the rule",
     ]
+    # The decision r5 sets, in the header and in the Result, and when r5 started.
+    assert not r5["met"]
+    expected += [
+        "`lndl` stays an opt-in setting and is not recommended, and the default stays `react`",
+        "so r5 does not meet the rule: `lndl` is not recommended, and the default stays `react`",
+    ]
+    started = json.loads((PILOT / "runs" / "r5" / "header.json").read_text())["started_utc"]
+    expected.append(f"r5 started on {started[:10]} at {started[11:16]} UTC (its `header.json`)")
     text = _flat(ADR)
     assert [line for line in expected if line not in text] == []
 
@@ -565,6 +573,11 @@ def test_each_reading_covers_its_runs_rows_and_the_adr_result_table_is_its_tally
         )
 
 
+_DIFFER_ROW = re.compile(
+    r"^\| `(t\d+)` \| (r\d(?:, r\d)*) \| (both|`lndl`|`react`) \| (accepted|rejected) \| (right|wrong) \|"
+)
+
+
 def test_the_reading_and_the_checks_differ_in_the_eleven_answers_the_adr_names():
     differ = sorted(
         (run, r["id"], r["loop"])
@@ -585,6 +598,29 @@ def test_the_reading_and_the_checks_differ_in_the_eleven_answers_the_adr_names()
         ("r4", "t24", "lndl"),
         ("r5", "t24", "lndl"),
     ]
+    # The README's table lists these answers with each one's check and reading, and the README
+    # and the ADR give their count.
+    rows = {
+        (run, r["id"], r["loop"]): (r["check"], r["reading"])
+        for run in RUNS
+        for r in _jsonl(PILOT / "runs" / run / "reading.jsonl")
+    }
+    readme = (PILOT / "README.md").read_text()
+    listed = {}
+    for line in readme.split("The reading and the checks differ in", 1)[1].splitlines():
+        if listed and not line.startswith("|"):
+            break
+        if m := _DIFFER_ROW.match(line):
+            loops = LOOPS if m[3] == "both" else [m[3].strip("`")]
+            for key in ((run, m[1], loop) for run in m[2].split(", ") for loop in loops):
+                assert key not in listed
+                listed[key] = (m[4], m[5])
+    assert listed == {key: rows[key] for key in differ}
+    assert [run for run, _, _ in differ].count("r5") == 1
+    assert "disagree: ten answers in r2, r3 and r4, and one in r5" in " ".join(readme.split())
+    assert "The README lists the eleven answers where the reading and the checks differ" in _flat(
+        ADR
+    )
 
 
 def test_the_t05_answers_the_readme_names_say_max_tokens_does_not_fit_the_field():
@@ -657,8 +693,13 @@ def test_each_answer_is_the_text_its_row_measured_and_checked(run):
     """answers.jsonl holds each leg's answer as the check read it: its length is the row's
     `answer_chars`, the check of the task set the run ran, re-run on it, gives the row's
     `accepted`, and the last spend line gives the row's requests, tool calls and wall time."""
-    as_run = "runs/tasks.r5.yaml" if run == "r5" else "runs/tasks.r2-r4.yaml"
-    loaded = runner.yaml.load((PILOT / as_run).read_bytes(), Loader=runner._TaskLoader)
+    header = json.loads((PILOT / "runs" / run / "header.json").read_text())
+    assert header["tasks_file"] == (
+        "runs/tasks.r5.yaml" if run == "r5" else "runs/tasks.r2-r4.yaml"
+    )
+    raw = (PILOT / header["tasks_file"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == header["tasks_sha256"]
+    loaded = runner.yaml.load(raw, Loader=runner._TaskLoader)
     accept = {task["id"]: task["accept"] for task in loaded["tasks"]}
     result_rows = _jsonl(PILOT / "runs" / run / "results.jsonl")
     answer_rows = _jsonl(PILOT / "runs" / run / "answers.jsonl")

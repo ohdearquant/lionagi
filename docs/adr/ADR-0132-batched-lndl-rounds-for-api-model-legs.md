@@ -159,7 +159,7 @@ the check rejects and the reading finds right is. The result is a per-task table
 calls, wall time and acceptance for both loops, published with the pilot's commit, and a per-task
 record of each answer's reading beside its check. The pilot can run more than once as the code
 changes, and each run is recorded in the Result. r2, r3 and r4 did not settle the rule (Result);
-after r4 the run that decides was named as `r5`. r5 ran on 2026-10-20 from 02:09 to 02:12 UTC with
+after r4 the run that decides was named as `r5`. r5 started on 2026-10-20 at 02:09 UTC (its `header.json`) with
 lionagi installed from `208bcc08`, a commit on `main` and the head of its environment's checkout
 (`benchmarks/lndl_pilot/runs/r5/environment.json`), and read the source at `6fa69b19`, as r2 to r4
 did. It asks the same questions against the same source lines, with the `t06` and `t20` checks
