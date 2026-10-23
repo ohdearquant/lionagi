@@ -35,15 +35,15 @@ who decides. With no token configured, the middleware admits a request that carr
 no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:123`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
-**P2 — a code that pairs a page can be minted by any such request.** `POST
-/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) mints a 120-second code
+**P2 — a code that paired a page could be minted by any such request.** `POST
+/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) minted a 120-second code
 (`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
-/api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
-(`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
-redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
-daemon that is already running (`lionagi/studio/cli.py:261`). So pairing is not a boundary: a tool
-that can send HTTP can mint, redeem with a forged `Origin`, and decide. This paragraph describes the
-daemon before the HTTP mint route was retired (its line numbers are at `124b14193`).
+/api/studio/pair` (`pairing.py:48`) redeemed it for the daemon's one process-wide bearer
+(`launch_access.py:43`, `:63`). A test pinned that the command line could mint and that the minted
+code redeemed (`tests/studio/test_hosted_hardening.py:967`). The CLI used that route to pair a page
+with a daemon that was already running (`lionagi/studio/cli.py:261`). So pairing was not a boundary:
+a tool that could send HTTP could mint, redeem with a forged `Origin`, and decide. This paragraph
+describes the daemon before the HTTP mint route was retired (its line numbers are at `124b14193`).
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
 variable (`apps/studio/frontend/src/lib/pairing.ts:27`); a reload loses it. Nothing reachable over
