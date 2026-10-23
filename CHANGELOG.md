@@ -627,12 +627,14 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   neither launch sends it. The scheduler fills templates in those two fields only: others, such as
   `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
   checked. A schedule whose stored fields cannot launch, such as one with an unknown action kind,
-  an invalid playbook name, a command outside the allowlist, an `engine` schedule with no engine
+  an invalid playbook name, a `play` playbook named `list`, `check` or `status` (which `li play`
+  runs as its own subcommands), a command outside the allowlist, an `engine` schedule with no engine
   kind, a `play` schedule whose stored prompt, sent beside its playbook, starts with `-`, or an
   `action_cwd` or `action_project` that no longer resolves to a directory, is refused for that
-  reason first, with the error its launch would raise. The refusal for a root names the schedule
-  and its root, never the daemon's working directory, and a project registry that cannot be read
-  is refused with a 400 naming the error's class and logged; on a store that is not a local
+  reason first, with a refusal naming that reason. A manual trigger's refusal for a root names the
+  schedule and its root, never the daemon's working directory, and a project registry that cannot
+  be read, or a root the daemon is not allowed to check, is refused with a 400 naming the error's
+  class and logged; on a store that is not a local
   SQLite file, which cannot read the registry, the trigger answers 501, as the store's other
   local-only routes do. A value that only a filled template makes
   invalid, such as a sent prompt that renders to a flag, is still refused when the launch is
@@ -644,7 +646,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   prompt or the playbook, so a row stored before the check can still be edited in its other
   fields. A manual trigger of such a row is refused before a run is recorded; when it fires on
   its schedule or as a chained run, the run is recorded, as every such fire's is, and fails
-  naming the refusal, and no process starts.
+  naming the refusal (or, when `li` itself cannot be resolved, that resolution error), and no
+  process starts. The same holds for a `play` schedule whose playbook is named `list`, `check` or
+  `status`: creating or updating one is refused, and a stored one is refused when it fires.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read

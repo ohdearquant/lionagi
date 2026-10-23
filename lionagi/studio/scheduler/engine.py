@@ -887,6 +887,18 @@ class SchedulerEngine:
                 f"Schedule {schedule_id!r}: the project registry its action_project is read from "
                 f"could not be read ({type(exc).__name__}); manual trigger refused."
             )
+        except OSError as exc:
+            # The registry file or a configured root the daemon may not read (a permission
+            # error, say): also a fault of this host, not of the request, so it is logged too.
+            _log.warning(
+                "manual trigger of schedule %s: its execution root could not be resolved",
+                schedule_id,
+                exc_info=True,
+            )
+            refusal = (
+                f"Schedule {schedule_id!r}: its execution root could not be resolved "
+                f"({type(exc).__name__}); manual trigger refused."
+            )
         if refusal is not None:
             raise ValueError(refusal)
         unfilled = _subprocess.unfilled_template_vars(schedule, trigger_context)

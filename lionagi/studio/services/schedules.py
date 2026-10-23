@@ -347,6 +347,20 @@ def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
         raise ValueError("action_prompt for a play launch must not start with '-'")
 
 
+def _svc_validate_play_playbook(schedule: dict[str, Any]) -> None:
+    """Service-boundary check: `li play` reads list, check and status as its own subcommands,
+    so a play schedule naming one of them as its playbook would never run a playbook."""
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _PLAY_SUBCOMMANDS
+
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    playbook = schedule.get("action_playbook")
+    if kind == "play" and isinstance(playbook, str) and playbook in _PLAY_SUBCOMMANDS:
+        raise ValueError(
+            f"action_playbook {playbook!r} names a `li play` subcommand, not a playbook"
+        )
+
+
 def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     """Parse and validate an inline YAML flow spec; returns an error message on
     failure or None on success. Mirrors _validate_spec_fields() in the CLI —
@@ -1134,6 +1148,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_action_model(data.get("action_model"))
     _svc_validate_prompt(data.get("action_prompt"))
     _svc_validate_play_prompt(data)
+    _svc_validate_play_playbook(data)
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
@@ -1274,6 +1289,7 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         # can still be paused or edited elsewhere.
         if {"action_kind", "action_prompt", "action_playbook"} & set(fields):
             _svc_validate_play_prompt(effective)
+            _svc_validate_play_playbook(effective)
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:
             _svc_validate_github_repo(effective_repo)

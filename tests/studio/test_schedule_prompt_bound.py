@@ -128,6 +128,41 @@ def test_update_rejects_a_play_prompt_that_opens_with_a_dash_before_db_write(sto
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize("kind", ["play", "playbook"])
+def test_create_rejects_a_play_playbook_named_for_a_subcommand_before_db_write(kind):
+    async def _run() -> None:
+        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+            db = AsyncMock()
+            state_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            state_db.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match="names a `li play` subcommand"):
+                await create_schedule(_play_data("", action_kind=kind, action_playbook="list"))
+            db.create_schedule.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    ("stored", "fields"),
+    [
+        (_play_data(""), {"action_playbook": "status"}),
+        (_play_data("", action_kind="agent", action_playbook="check"), {"action_kind": "play"}),
+    ],
+)
+def test_update_rejects_a_play_playbook_named_for_a_subcommand_before_db_write(stored, fields):
+    async def _run() -> None:
+        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+            db = AsyncMock()
+            db.get_schedule.return_value = stored | {"id": "sched-1"}
+            state_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            state_db.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match="names a `li play` subcommand"):
+                await update_schedule("sched-1", fields)
+            db.update_schedule.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
 def test_update_of_another_field_on_a_stored_dash_play_prompt_is_written():
     # A row stored before the check stays editable; it is refused when it fires.
     async def _run() -> None:

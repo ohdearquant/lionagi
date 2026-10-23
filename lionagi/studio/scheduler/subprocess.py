@@ -45,6 +45,10 @@ _VALID_ACTION_KINDS = frozenset(
     {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
 )
 _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
+# Names `li play` reads as its own subcommands before any playbook name (cli/main.py
+# _handle_play_shortcut): a play schedule whose playbook has one of them would run that
+# subcommand at every fire, exit 0, and never run a playbook.
+_PLAY_SUBCOMMANDS: frozenset[str] = frozenset({"list", "check", "status"})
 
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
 # colons, hyphens and underscores only.  Values starting with '-' are rejected
@@ -535,6 +539,10 @@ def validate_launch_fields(schedule: dict) -> str:
         _validate_identifier(project, "action_project")
     if playbook:
         _validate_identifier(playbook, "action_playbook")
+        if kind == "play" and playbook in _PLAY_SUBCOMMANDS:
+            raise ValueError(
+                f"action_playbook {playbook!r} names a `li play` subcommand, not a playbook"
+            )
     if isinstance(extra, list):
         _validate_extra_args(extra)
     if kind == "play":

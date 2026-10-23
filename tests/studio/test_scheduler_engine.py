@@ -1538,6 +1538,34 @@ async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeyp
     assert engine.global_slot_holders == []
 
 
+@pytest.mark.asyncio
+async def test_fire_now_refuses_when_the_execution_root_cannot_be_resolved(monkeypatch, caplog):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services import projects
+
+    async def denied(name):
+        raise PermissionError(13, "Permission denied", "/private/registry.db")
+
+    monkeypatch.setattr(projects, "get_project", denied)
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(action_project="proj")
+    engine = SchedulerEngine(svc=svc)
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        with patch.object(engine, "_tracked_fire") as mock_tracked:
+            with pytest.raises(
+                ValueError, match=r"could not be resolved \(PermissionError\)"
+            ) as refused:
+                await engine.fire_now("sched-001")
+
+    assert "/private/registry.db" not in str(refused.value)
+    assert refused.value.__cause__ is None
+    (record,) = [r for r in caplog.records if "could not be resolved" in r.message]
+    assert isinstance(record.exc_info[1], PermissionError)
+    mock_tracked.assert_not_called()
+    assert engine.global_slot_holders == []
+
+
 @pytest.mark.parametrize(
     ("fields", "recorded"),
     [
@@ -5169,4 +5197,37 @@ async def test_a_scheduled_fire_of_a_stored_dash_play_prompt_fails_its_run_and_s
             "run.failed.exception",
             "ValueError: action_prompt for a play launch must not start with '-'",
         )
+    ]
+    # The run row the operator reads carries the refusal too, not only the signal.
+    stored = [
+        args[0].get("error_detail")
+        for args, _ in svc.create_schedule_run_and_advance.await_args_list
+        if args and isinstance(args[0], dict)
+    ]
+    assert stored == ["action_prompt for a play launch must not start with '-'"]
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_fire_of_a_play_playbook_named_for_a_subcommand_spawns_nothing(
+    monkeypatch,
+):
+    from lionagi.studio.scheduler import engine as engine_mod
+    from lionagi.studio.scheduler import subprocess as sched_subprocess
+    from lionagi.studio.scheduler.signals import SchedulerSignalBus, ScheduleRunFailed
+
+    monkeypatch.setattr(sched_subprocess, "resolve_li_executable", lambda: (["li"], None))
+    spawn = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(sched_subprocess, "spawn_and_wait", spawn)
+    svc = _make_svc()
+    bus = SchedulerSignalBus()
+    failed: list = []
+    bus.observe(ScheduleRunFailed, handler=failed.append)
+    engine = engine_mod.SchedulerEngine(svc=svc, signal_bus=bus)
+    schedule = _minimal_schedule(action_kind="play", action_playbook="list", action_prompt="")
+
+    await fire_with_claim(engine, schedule, "run-list", trigger_context={"scheduled": True})
+
+    assert spawn.await_count == 0
+    assert [s.error_detail for s in failed] == [
+        "ValueError: action_playbook 'list' names a `li play` subcommand, not a playbook"
     ]

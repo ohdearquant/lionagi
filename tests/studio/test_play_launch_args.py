@@ -91,6 +91,41 @@ class TestBuildArgvPlay:
         with pytest.raises(ValueError, match="must not start with '-'"):
             validate_launch_fields(_play_schedule(action_kind=kind, action_prompt="--bypass"))
 
+    @pytest.mark.parametrize("kind", ["play", "playbook"])
+    @pytest.mark.parametrize("name", ["list", "check", "status"])
+    def test_a_playbook_named_for_a_play_subcommand_is_refused(self, kind, name):
+        # `li play list` runs the listing and exits 0; the playbook would never run.
+        with pytest.raises(ValueError, match="names a `li play` subcommand"):
+            validate_launch_fields(_play_schedule(action_kind=kind, action_playbook=name))
+
+    def test_the_refused_names_are_the_subcommands_li_play_reads(self):
+        import ast
+        import importlib
+        import inspect
+
+        from lionagi.studio.scheduler.subprocess import _PLAY_SUBCOMMANDS
+
+        # The module, not the `main` function the package exports under the same name.
+        cli_main = importlib.import_module("lionagi.cli.main")
+
+        (shortcut,) = [
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(cli_main)))
+            if isinstance(node, ast.FunctionDef) and node.name == "_handle_play_shortcut"
+        ]
+        read = {
+            comparator.value
+            for node in ast.walk(shortcut)
+            if isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "head"
+            and isinstance(node.ops[0], ast.Eq)
+            for comparator in node.comparators
+            if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str)
+        }
+        # Flags (--resume) are refused by the identifier check already.
+        assert {name for name in read if not name.startswith("-")} == _PLAY_SUBCOMMANDS
+
     @pytest.mark.parametrize("playbook", [None, ""])
     def test_a_leading_dash_prompt_is_kept_when_no_playbook_sends_it(self, playbook):
         schedule = _play_schedule(action_playbook=playbook, action_prompt="--bypass")
