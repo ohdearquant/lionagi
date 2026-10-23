@@ -1691,52 +1691,52 @@ describe("OperatorPanel", () => {
       expect(container.querySelector('[role="alert"]')).toBeNull();
     });
 
-    it.each(["auto-allow", "hand"])(
-      "shows a decision made by %s and refused after another conversation is chosen only in its own",
-      async (by) => {
-        if (by === "auto-allow") window.localStorage.setItem("studio:operator-auto-allow", "1");
-        const other = { ...firstRow, id: "other", title: "Other conversation" };
-        api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
-        api.getOperatorConversation.mockResolvedValueOnce({
-          conversation: firstRow,
-          frames: [proposalFrame(firstRow.id, "proposal-1")],
-        });
-        const decision = deferred<never>();
-        api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
-        await mount();
-        if (by === "auto-allow") await flushAutoAllow();
-        else await act(async () => buttonNamed("Allow")!.click());
+    it.each([
+      ["auto-allow", "is decided again on return, and only that refusal shows there"],
+      ["hand", "keeps its refusal for its own conversation and shows it on return"],
+    ])("a decision made by %s and refused after another conversation is chosen %s", async (by) => {
+      if (by === "auto-allow") window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      if (by === "auto-allow") await flushAutoAllow();
+      else await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Refused again"));
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      if (by === "auto-allow") {
+        // Untried again, so auto-allow decides it once more, and that refusal shows here.
+        expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
+      } else {
+        // Its refusal was kept for this conversation; the proposal waits for a click.
         expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          "Decision refused",
+        );
+        expect(buttonNamed("Allow")).toBeDefined();
+      }
+    });
 
-        api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
-        await selectRow(other);
-        await act(async () => decision.reject(new Error("Decision refused")));
-        expect(container.querySelector('[role="alert"]')).toBeNull();
-
-        api.decideOperatorProposal.mockRejectedValueOnce(new Error("Refused again"));
-        api.getOperatorConversation.mockResolvedValueOnce({
-          conversation: firstRow,
-          frames: [proposalFrame(firstRow.id, "proposal-1")],
-        });
-        await selectRow(firstRow);
-        await flushAutoAllow();
-
-        if (by === "auto-allow") {
-          // Untried again, so auto-allow decides it once more, and that refusal shows here.
-          expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
-          expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
-        } else {
-          // Its refusal was kept for this conversation; the proposal waits for a click.
-          expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
-          expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-            "Decision refused",
-          );
-          expect(buttonNamed("Allow")).toBeDefined();
-        }
-      },
-    );
-
-    it("drops a kept refusal once auto-allow decides its proposal again", async () => {
+    it("shows no alert once auto-allow decides a kept refusal's proposal again and it succeeds", async () => {
       window.localStorage.setItem("studio:operator-auto-allow", "1");
       const other = { ...firstRow, id: "other", title: "Other conversation" };
       api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
@@ -1820,6 +1820,157 @@ describe("OperatorPanel", () => {
       await sendInstruction();
       expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
       expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    // A decision by hand on the first row's proposal is refused while another
+    // conversation is shown, so its refusal is kept for the first row.
+    async function keepARefusalForTheFirstRow(frames = [proposalFrame(firstRow.id, "proposal-1")]) {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+      return other;
+    }
+
+    it("reports a kept refusal once: a send after it leaves no alert, and it does not come back", async () => {
+      const other = await keepARefusalForTheFirstRow();
+      const shown = { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-1")] };
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-after" });
+      const sends = api.submitOperatorTurn.mock.calls.length;
+      await sendInstruction();
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(buttonNamed("Allow")).toBeDefined();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("reports each kept refusal of a conversation in turn, oldest first", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      const frames = [
+        proposalFrame(firstRow.id, "proposal-1"),
+        { ...proposalFrame(firstRow.id, "proposal-2"), sequence: 2 },
+      ];
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames });
+      const first = deferred<never>();
+      const second = deferred<never>();
+      api.decideOperatorProposal
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      await mount();
+      // A proposal being decided shows no Allow button, so the first one left is the next.
+      await act(async () => buttonNamed("Allow")!.click());
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => first.reject(new Error("Refused 1")));
+      await act(async () => second.reject(new Error("Refused 2")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames });
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused 1");
+
+      // Allowing the first proposal clears its alert, and the second refusal is reported.
+      api.decideOperatorProposal.mockResolvedValueOnce({
+        proposalId: "proposal-1",
+        status: "allowed",
+      });
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenLastCalledWith(
+        firstRow.id,
+        "proposal-1",
+        "allow",
+        "sha256",
+        null,
+      );
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused 2");
+    });
+
+    it("reports a kept send failure before a kept refusal of the same conversation", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const shown = { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-1")] };
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+      expect(container.textContent).not.toContain("Decision refused");
+
+      // Sent again, the failed text goes through, and the refusal is reported after it.
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-again" });
+      const sends = api.submitOperatorTurn.mock.calls.length;
+      await act(async () => buttonNamed("Send")!.click());
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+    });
+
+    it("does not report a kept refusal over a lost connection", async () => {
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const shown = { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-1")] };
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      // Back on the first row its send is still in flight, so the refusal waits; the
+      // stream then fails for good before the send completes.
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      await act(async () =>
+        subscriptions.at(-1)!.onError?.(new Error("Connection lost — reload to continue."), true),
+      );
+      await act(async () => pending.resolve({ requestId: "request-first" }));
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Connection lost — reload to continue.",
+      );
+      expect(container.textContent).not.toContain("Decision refused");
     });
 
     it("clears a refused decision's error once the stream resolves that proposal", async () => {

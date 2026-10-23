@@ -828,9 +828,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // A send that failed once its conversation was no longer shown: the error and the
   // text, kept until that conversation is selected again.
   const failedSendsRef = useRef(new Map<string, { message: string; instruction: string }>());
-  // A decision refused once its conversation was no longer shown: its error, kept until
-  // that conversation is selected again or the proposal is decided again.
-  const refusedDecisionsRef = useRef(new Map<string, ActionError>());
+  // Decisions refused once their conversation was no longer shown: each one's error, by
+  // proposal in the order refused, kept until that conversation is selected again or the
+  // proposal is decided again.
+  const refusedDecisionsRef = useRef(new Map<string, Map<string, ActionError>>());
   // Proposals auto-allow has decided once. A decision refused while its conversation is
   // shown is not retried by itself: its error shows, and the operator can decide again
   // by hand. One refused after its conversation stopped being shown leaves this set.
@@ -1018,9 +1019,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   // A failed send or a refused decision kept for a conversation is reported, the send
   // first, once that conversation is shown and ready, no send, Stop or decision is in
-  // flight or about to start under auto-allow, and no other error is showing. A new
-  // decision of a proposal drops its kept refusal when it starts, so only that
-  // decision's outcome is reported. A send in flight still owns the
+  // flight or about to start under auto-allow, and no other error is showing. Refusals
+  // are reported one at a time, oldest first, each once the alert before it has
+  // cleared. A new decision of a proposal drops its kept refusal when it starts, so only
+  // that decision's outcome is reported. A send in flight still owns the
   // composer and its outcome may clear it, a Stop or a decision made by hand clears
   // the alert when it starts, and each of them replaces it when it fails, as another
   // error showing would be replaced, so each defers the report rather than losing it.
@@ -1032,7 +1034,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
       sending ||
       stopping ||
       deciding.size > 0 ||
-      actionError
+      actionError ||
+      state.error
     )
       return;
     // A proposal auto-allow will decide on its next tick; if that decision fails, its
@@ -1047,16 +1050,21 @@ export default function OperatorPanel({ open, onClose }: Props) {
       return;
     const failed = failedSendsRef.current.get(shownConversationId);
     if (!failed) {
-      const refused = refusedDecisionsRef.current.get(shownConversationId);
-      if (!refused) return;
-      refusedDecisionsRef.current.delete(shownConversationId);
-      // Reported once, and only while its proposal is still pending here.
-      if (
-        proposals.some(
-          ({ frame, resolved }) => !resolved && frame.payload.proposal.id === refused.proposalId,
-        )
-      )
-        setActionError(refused);
+      const kept = refusedDecisionsRef.current.get(shownConversationId);
+      if (!kept) return;
+      const pending = new Set(
+        proposals.filter(({ resolved }) => !resolved).map(({ frame }) => frame.payload.proposal.id),
+      );
+      // Each reported once, and only while its proposal is still pending here; the
+      // rest wait for the next report.
+      for (const [proposalId, refused] of kept) {
+        kept.delete(proposalId);
+        if (pending.has(proposalId)) {
+          setActionError(refused);
+          break;
+        }
+      }
+      if (kept.size === 0) refusedDecisionsRef.current.delete(shownConversationId);
       return;
     }
     // Reported once: a later error replaces this one as it replaces any other, and the
@@ -1075,6 +1083,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     proposals,
     sending,
     shownConversationId,
+    state.error,
     state.loadState,
     stopping,
   ]);
@@ -1515,8 +1524,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setDeciding((current) => new Set(current).add(proposal.id));
       // A click clears the alert; a decision that auto-allow makes leaves it showing.
       if (!auto) setActionError(null);
-      if (refusedDecisionsRef.current.get(conversationId)?.proposalId === proposal.id)
-        refusedDecisionsRef.current.delete(conversationId);
+      refusedDecisionsRef.current.get(conversationId)?.delete(proposal.id);
       try {
         await decideOperatorProposal(
           conversationId,
@@ -1537,7 +1545,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
           // again. The proposal is still pending there and counts as untried, so with
           // auto-allow on it is decided again there instead.
           autoAllowTriedRef.current.delete(proposal.id);
-          refusedDecisionsRef.current.set(conversationId, refusal);
+          let kept = refusedDecisionsRef.current.get(conversationId);
+          if (!kept) refusedDecisionsRef.current.set(conversationId, (kept = new Map()));
+          kept.set(proposal.id, refusal);
           return;
         }
         setActionError(refusal);

@@ -52,16 +52,18 @@ behaviour, including accepting a write-capable submission without `cwd`.
   the composer ahead of any text typed there since. Auto-allow sends one
   decision per proposal, a second only when the first was refused after another
   conversation was chosen, and none while no conversation is shown. A decision
-  auto-allow makes leaves an error already showing in place when it succeeds; a
-  refused decision shows its own error in place of any other, and its proposal
-  can be decided again by hand. A decision's error clears once its proposal is
-  decided or the stream resolves it. A decision refused after another
-  conversation was chosen is not shown in that one: its error is kept for its
-  own conversation and shown once when that conversation is shown again, after
+  auto-allow makes leaves an error already showing in place when it succeeds,
+  except a refusal of that same proposal, which the success clears; a refused
+  decision shows its own error in place of any other, and its proposal can be
+  decided again by hand. A decision's error clears once its proposal is decided
+  or the stream resolves it. A decision refused after another conversation was
+  chosen is not shown in that one: its error is kept for its own conversation,
+  one per proposal, and shown once when that conversation is shown again, after
   any kept send failure and under the same conditions, if the proposal is still
-  pending there, and the proposal is offered again for a hand decision. With
-  auto-allow on, auto-allow decides it again there instead, and only that
-  decision's outcome is shown. A reported failure shows once: a later error
+  pending there, and the proposal is offered again for a hand decision. Several
+  kept refusals are shown one at a time, oldest first, each once the alert
+  before it has cleared. With auto-allow on, auto-allow decides it again there
+  instead, and only that decision's outcome is shown. A reported failure shows once: a later error
   replaces it, and its text stays in the composer. A draft whose conversation
   could not be
   created, including one sent while the selected conversation was still loading,
@@ -78,9 +80,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores
   the existing fallback name. Operator renames change this explicit label, and
-  search, run references, proposals and CLI displays use it. A label longer
-  than 160 characters after trimming, or one holding control, format or
-  line/paragraph-separator characters, is refused with a 422 that names
+  search, run references, proposals and CLI displays use it. A label is
+  trimmed first, so whitespace and separators at its edges are dropped; one
+  longer than 160 characters after trimming, or still holding control, format
+  or line/paragraph-separator characters, is refused with a 422 that names
   `user_label`. The store adds nullable `sessions.user_label`.
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
   `play.submit` accept `exclude_mcp_servers`, which removes named servers from
