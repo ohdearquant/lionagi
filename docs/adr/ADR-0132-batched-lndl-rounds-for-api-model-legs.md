@@ -15,8 +15,8 @@ An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=Tr
 max_extensions=N)` (`lionagi/cli/agent.py:415-419`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request (a reply that fails to parse is asked for again), and a round's tool
 calls run through `act()`, concurrently unless the model asks for them in sequence
-(`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always
-makes one more request for the answer (`ReAct.py:631-684`). A ReAct turn therefore costs its
+(`lionagi/operations/ReAct/ReAct.py:165`, `:502`). After the last analysis round ReAct always
+makes one more request for the answer (`ReAct.py:591-644`). A ReAct turn therefore costs its
 analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
 usually asks for another round to look at it before saying it is done: the leg's own test of a
 one-read task scripts three requests, the read round, a round that sees the result and stops, and
