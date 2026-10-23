@@ -39,15 +39,53 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   raised. The driver's statement cache is off (`cached_statements=0`) because the authorizer runs
   only when SQLite prepares a statement, and one of its decisions (no COMMIT of a transaction in
   which a statement was denied) depends on the transaction, not on the statement text.
-- `has_wal_reset_fix()` — [SQLite's WAL-reset documentation](https://www.sqlite.org/wal.html#walresetbug)
-  describes a data race between a starting checkpoint and a
-  commit that resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
-  header field, and a later checkpoint then skips part of the committed transaction,
-  corrupting the database. SQLite identifies the likely affected range as 3.7.0 through
-  3.51.2. The [3.51.3 release notes](https://www.sqlite.org/releaselog/3_51_3.html)
-  record the fix; the WAL documentation also names backports 3.44.6 and 3.50.7. Exposure needs two
-  connections writing or checkpointing at the same instant, which is exactly what this store
-  does — hence the startup warning when an unfixed SQLite is linked.
+- `has_wal_reset_fix()` — identifies the known fixed versions for the
+  [SQLite WAL-reset policy](#sqlite-wal-reset-policy) below.
+
+#### SQLite WAL-reset policy
+
+The state engine keeps WAL enabled for concurrent readers and writers. On a linked SQLite
+version without a known WAL-reset fix, it warns once per process and continues; it does not
+impose a version floor or serialize every connection to the database file. Deployments using
+concurrent state access should use a fixed runtime rather than treating the warning as a
+corruption safeguard.
+
+[SQLite's WAL-reset documentation](https://www.sqlite.org/wal.html#walresetbug) identifies the
+**likely** affected range as 3.7.0 through 3.51.2. The fix is in 3.51.3 and later, and is also
+backported to the 3.44 branch from 3.44.6 and the 3.50 branch from 3.50.7. A release on another
+branch, such as 3.46.0, does not gain the fix merely by sorting after 3.44.6. The
+[3.51.3 release notes](https://www.sqlite.org/releaselog/3_51_3.html) confirm the fix.
+
+The race requires a WAL-mode database with two or more connections to the **same file**, in
+separate threads or processes, attempting writes or checkpoints at the same instant. A
+checkpoint that starts while another connection commits a WAL reset can miss that reset;
+a later checkpoint can then skip committed data. Upstream describes tight timing constraints
+and an unusual usage pattern. Ordinary `SQLITE_BUSY` or "database is locked" errors are not
+proof that this corruption race occurred, and a successful run does not rule out exposure.
+
+Check the library used by the actual process that opens the store. Run the following with
+the same Python interpreter, virtual environment or container that launches the CLI, Studio
+or worker; replace `python` with that interpreter's path when needed:
+
+```bash
+python -c "import sqlite3, sys; print(sys.executable); print(sqlite3.sqlite_version)"
+```
+
+Use a Python build or runtime linked to SQLite 3.51.3 or later, or one of the fixed backport
+branches above. After changing the runtime, restart every process accessing that store and
+repeat the check in each launch environment. Updating a separate `sqlite3` command-line
+program, or reinstalling this package, does not establish which library Python's `sqlite3`
+module uses.
+
+If an upgrade must wait, excluding this race's concurrent-connection condition requires an
+application-wide guarantee: only one live connection to that file at a time, with its entire
+lifetime and all reads, writes and checkpoints serialized across every thread and process.
+This includes pooled connections, Studio, workers, maintenance and external tools. The
+engine does not provide that cross-process guarantee. One application writer, a writer-only
+lock, fewer workers, or disabling manual checkpoints alone is insufficient: other connections
+can remain open, and SQLite also checkpoints automatically on commits or the last connection's
+close. Only use temporary serialization when the deployment can enforce the full guarantee;
+otherwise use a fixed runtime before running concurrent state workloads.
 
 ### `state/compat.py`
 

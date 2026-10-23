@@ -674,6 +674,9 @@ class _RecordingLog:
     def warning(self, msg, *args):
         self.warnings.append(msg % args if args else msg)
 
+    def info(self, *_args):
+        pass
+
 
 def _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str):
     import lionagi.state.engine as engine_mod
@@ -692,9 +695,15 @@ async def test_make_engine_warns_on_unfixed_sqlite(monkeypatch, tmp_path):
     reported, not assumed away."""
     recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
     try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+            assert await conn.scalar(sa.text("PRAGMA wal_autocheckpoint")) == 1000
         assert len(recorder.warnings) == 1
-        assert "3.46.0" in recorder.warnings[0]
-        assert "3.51.3" in recorder.warnings[0]
+        warning = recorder.warnings[0]
+        assert "3.46.0" in warning
+        assert "3.51.3" in warning
+        assert "Python runtime" in warning
+        assert "docs/internals/runtime.md#sqlite-wal-reset-policy" in warning
     finally:
         await engine.dispose()
 
