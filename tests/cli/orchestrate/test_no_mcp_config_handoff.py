@@ -970,6 +970,234 @@ async def test_a_claude_worker_keeps_its_settings_sources(tmp_run):
     assert "--setting-sources" not in args
 
 
+def _claude_roles(**roles: dict):
+    """A profile loader answering each named role with a Claude profile setting its fields."""
+
+    def _load_profile(name):
+        if name in roles:
+            body = "Use the configured provider."
+            return AgentProfile(
+                name=name,
+                model="claude_code/sonnet",
+                system_prompt=body,
+                raw_body=body,
+                **roles[name],
+            )
+        raise FileNotFoundError(name)
+
+    return _load_profile
+
+
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    """The values one flag carries: the args after it, up to the next flag."""
+    start = args.index(flag) + 1
+    end = next((i for i in range(start, len(args)) if args[i].startswith("--")), len(args))
+    return args[start:end]
+
+
+_CONTAINED_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"]
+_CONTAINMENT_FLAGS = (
+    "--setting-sources",
+    "--tools",
+    "--allowedTools",
+    "--disallowedTools",
+    "--permission-mode",
+    "--disable-slash-commands",
+)
+
+
+async def _worker_args(env, role: str) -> list[str]:
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id=role, role=role, model_override="claude_code/sonnet"
+    )
+    return await _cli_args(branch.chat_model)
+
+
+@pytest.mark.asyncio
+async def test_a_contained_claude_worker_reads_no_settings_and_runs_a_fixed_tool_set(
+    tmp_run, monkeypatch
+):
+    """With ``contain_user_settings`` the worker reads no settings file, so the operator's
+    hooks and permission rules do not gate it. What gates it is on its command line: the
+    built-in tools it may use, the servers the run handed it, ``dontAsk`` for anything
+    else, and no Agent or Task. A role without the flag, in the same run, keeps its
+    settings sources and none of those flags."""
+    (tmp_run / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"knowledge": {"command": "kkernel", "args": ["mcp"]}}})
+    )
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(implementer={"contain_user_settings": True}, plain={}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "implementer")
+    control = await _worker_args(env, "plain")
+
+    assert _flag_values(args, "--setting-sources") == [""]
+    assert _flag_values(args, "--tools") == [",".join(_CONTAINED_TOOLS)]
+    assert _flag_values(args, "--allowedTools") == [*_CONTAINED_TOOLS, "mcp__knowledge__*"]
+    assert _flag_values(args, "--disallowedTools") == ["Agent", "Task"]
+    assert _flag_values(args, "--permission-mode") == ["dontAsk"]
+    assert "--disable-slash-commands" in args
+    assert "--dangerously-skip-permissions" not in args
+    assert "--strict-mcp-config" in args
+    assert [flag for flag in _CONTAINMENT_FLAGS if flag in control] == []
+    assert "--strict-mcp-config" in control
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_bypass", [False, True])
+async def test_yolo_and_bypass_do_not_reach_a_contained_claude_worker(
+    tmp_run, monkeypatch, run_bypass
+):
+    """``yolo`` or ``--bypass`` would skip every permission check; a contained worker runs
+    under ``dontAsk``, which refuses any tool its allow list does not name. The same
+    settings on a role without the flag still skip the checks."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(
+            implementer={"contain_user_settings": True, "yolo": True},
+            plain={"yolo": True},
+        ),
+    )
+    env = await _setup(no_mcp_config=False)
+    env.bypass = run_bypass
+
+    args = await _worker_args(env, "implementer")
+    control = await _worker_args(env, "plain")
+
+    assert _flag_values(args, "--permission-mode") == ["dontAsk"]
+    assert "--dangerously-skip-permissions" not in args
+    assert "--allow-dangerously-skip-permissions" not in args
+    assert "--dangerously-skip-permissions" in control
+
+
+@pytest.mark.asyncio
+async def test_a_contained_light_claude_worker_keeps_its_class(tmp_run, monkeypatch):
+    """The light class still takes the file-writing tools away, in the one deny list."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(implementer={"contain_user_settings": True, "workload": "light"}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "implementer")
+
+    assert args.count("--disallowedTools") == 1
+    assert _flag_values(args, "--disallowedTools") == [
+        "Agent",
+        "Task",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+    ]
+    assert _flag_values(args, "--setting-sources") == [""]
+
+
+def test_the_contained_boundary_keeps_what_a_worker_denies_and_is_idempotent():
+    """Settings, agents and a skipped permission check the model already carries are
+    dropped; tools it already denies stay denied; applying the boundary twice changes
+    nothing."""
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    claude = build_imodel_from_spec("claude_code/sonnet")
+    kwargs = claude.endpoint.config.kwargs
+    kwargs.update(
+        settings="settings.json",
+        agent="helper",
+        agents={"helper": {"description": "d", "prompt": "p"}},
+        disallowed_tools=["WebFetch", "Task"],
+        permission_mode="bypassPermissions",
+    )
+    assert not orch_mod._claude_worker_contained(claude)
+
+    orch_mod._isolate_worker_cli_config(
+        claude, contain_user_settings=True, mcp_server_names=["b", "a"]
+    )
+    once = dict(kwargs)
+    orch_mod._isolate_worker_cli_config(
+        claude, contain_user_settings=True, mcp_server_names=["b", "a"]
+    )
+
+    assert kwargs == once
+    assert kwargs["disallowed_tools"] == ["WebFetch", "Task", "Agent"]
+    assert (kwargs["settings"], kwargs["agent"], kwargs["agents"]) == (None, None, None)
+    assert kwargs["allowed_tools"] == [*_CONTAINED_TOOLS, "mcp__a__*", "mcp__b__*"]
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert orch_mod._claude_worker_contained(claude)
+
+
+@pytest.mark.parametrize(
+    ("spelling", "contained"),
+    [
+        ("CODEX", False),
+        (" codex ", False),
+        ("CLAUDE_CODE", True),
+        (" claude ", True),
+        ("claude-code", True),
+    ],
+)
+def test_the_contained_boundary_folds_provider_spellings_and_leaves_codex_as_it_was(
+    spelling, contained
+):
+    imodel = SimpleNamespace(
+        is_cli=True,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider=spelling, kwargs={})),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel, contain_user_settings=True)
+
+    kwargs = imodel.endpoint.config.kwargs
+    if contained:
+        assert kwargs["setting_sources"] == ""
+        assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+    else:
+        assert kwargs == {"ignore_user_config": True, "profile": None}
+
+
+def test_the_contained_boundary_leaves_a_claude_model_with_no_cli_alone():
+    kwargs = {"temperature": 0.1}
+    imodel = SimpleNamespace(
+        is_cli=False,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider="claude_code", kwargs=kwargs)),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel, contain_user_settings=True)
+
+    assert kwargs == {"temperature": 0.1}
+
+
+@pytest.mark.parametrize(
+    ("line", "expected", "warned"),
+    [
+        ("", False, False),
+        ("contain_user_settings: false\n", False, False),
+        ("contain_user_settings: true\n", True, False),
+        ("contain_user_settings: maybe\n", True, True),
+        ("contain_user_settings: 0\n", True, True),
+    ],
+)
+def test_the_profile_flag_reads_true_or_false_and_contains_otherwise(
+    caplog, line, expected, warned
+):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile, profile_config
+
+    text = f"---\nmodel: claude_code/sonnet\n{line}---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.contain_user_settings is expected
+    assert profile_config(profile).get("contain_user_settings") is (True if expected else None)
+    assert "contain_user_settings" not in profile.extra
+    assert ("is not true or false; containing" in caplog.text) is warned
+
+
 def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(codex_home):
     """A `-p` profile is part of the codex user config and does not reach a
     worker; a Claude settings file does."""

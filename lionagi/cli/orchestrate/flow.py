@@ -47,6 +47,7 @@ from ._orchestration import (
     OrchestrationEnv,
     _check_orchestrator_clone_mcp_set,
     _check_orchestrator_clone_profile,
+    _claude_worker_contained,
     _hand_mcp_servers,
     _resolve_worker_model_spec,
     attribute_worker_build_failure,
@@ -1282,6 +1283,25 @@ def _reconstruct_spawned_nodes(
             "from scratch."
         )
 
+    # Likewise for a contained worker: the orchestrator's branch reads the settings
+    # files that worker ran without.
+    uncontained = [
+        e["node_id"]
+        for e in checkpoint_spawned
+        if retry_failed
+        and e.get("status") == "failed"
+        and not e.get("assignee")
+        and e.get("emitter_contains_user_settings")
+    ]
+    if uncontained:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(uncontained)}]: each was asked for, naming no assignee, by a "
+            "worker that ran with no settings files read (contain_user_settings), or "
+            "retries a node that ran so, and --retry-failed would run them again on the "
+            "orchestrator's branch, which reads them. Re-run the flow from scratch."
+        )
+
     known_ids = {str(n) for n in dag_state.node_ids}
     candidate_ids = {e["node_id"] for e in checkpoint_spawned}
     replayable = ("completed",) if retry_failed else ("completed", "failed")
@@ -1884,6 +1904,9 @@ async def _execute_dag(
                         else getattr(params, "context", None)
                     )
                     spawn_fields["emitter_workload"] = spawned_node.metadata.get("emitter_workload")
+                    spawn_fields["emitter_contains_user_settings"] = bool(
+                        spawned_node.metadata.get("emitter_contains_user_settings")
+                    )
                     if spawned_node.metadata.get("escalated_from") is not None:
                         # An escalation retry runs on a clone of the branch of the node it
                         # retries, at that node's class, and is built with no record of it:
@@ -1897,6 +1920,10 @@ async def _execute_dag(
                 retry_workload = _escalation_retry_workload(executor, escalation_retry)
                 if retry_workload is not _NO_RECORDED_BRANCH_MODEL:
                     spawn_fields["emitter_workload"] = retry_workload
+                # Read off the same branch: a retry of a contained node ran contained.
+                retry_branch = executor.operation_branches.get(escalation_retry.id)
+                if _claude_worker_contained(getattr(retry_branch, "chat_model", None)):
+                    spawn_fields["emitter_contains_user_settings"] = True
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -2200,11 +2227,15 @@ async def _execute_dag(
         # no key, and nothing is recorded for its spawn. The class is read before
         # the node is built, so a refused request leaves no expected worker.
         workload = None
+        contained = False
         executor = _executor_ref.get("executor")
         if not req.assignee and emitter is not None and executor is not None:
             emitter_branch = executor.operation_branches.get(emitter.id)
             emitter_model = getattr(emitter_branch, "chat_model", None)
             if emitter_branch is not env.orc_branch and emitter_model is not None:
+                # Recorded like the class, so a contained worker cannot obtain an agent
+                # that reads the settings it does not.
+                contained = _claude_worker_contained(emitter_model)
                 workload = emitter_model.endpoint.config.kwargs.get("workload")
                 if workload is not None:
                     # An independent one runs on the orchestrator's engine, and a class
@@ -2236,6 +2267,8 @@ async def _execute_dag(
         node = _role_spawn_node(req, emitter)
         if workload is not None:
             node.metadata["emitter_workload"] = workload
+        if contained:
+            node.metadata["emitter_contains_user_settings"] = True
         return node
 
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
@@ -2263,9 +2296,17 @@ async def _execute_dag(
             return
         # A spawned node is a worker the run starts: a codex one keeps the user's
         # CLI config out, as a planned worker does. Its model is a copy (Branch.clone).
+        # A copy of a contained Claude branch stays contained, its model a copy too. A
+        # copy of the orchestrator's branch reads the settings files, so it is contained
+        # here when the worker that asked for it was (recorded by _build_spawn_node).
         from ._orchestration import _isolate_worker_cli_config
 
-        _isolate_worker_cli_config(chat_model)
+        worker_mcp_servers = getattr(env, "mcp_servers", None)
+        _isolate_worker_cli_config(
+            chat_model,
+            contain_user_settings=bool(operation.metadata.get("emitter_contains_user_settings")),
+            mcp_server_names=worker_mcp_servers or (),
+        )
         if getattr(branch, "metadata", {}).get("clone_from") is env.orc_branch and not env.effort:
             # A copy of the orchestrator's model carries the effort that model was
             # built with, which a codex orchestrator derives from the user config
@@ -2284,7 +2325,6 @@ async def _execute_dag(
         # A clone of the orchestrator's branch would carry the run's whole set,
         # job control included. A spawned node is a leaf like a planned worker
         # and gets the worker set the same way, as its whole set.
-        worker_mcp_servers = getattr(env, "mcp_servers", None)
         _hand_mcp_servers(
             chat_model,
             worker_mcp_servers,

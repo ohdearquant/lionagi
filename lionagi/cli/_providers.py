@@ -547,6 +547,9 @@ class AgentProfile:
     workload: str = DEFAULT_WORKLOAD
     """'light' (held to what its engine can enforce, counted against the total and engine caps)
     or 'heavy' (also counted against the heavy cap); see ``li agent --workload``."""
+    contain_user_settings: bool = False
+    """Run a Claude flow or fan-out worker of this role with no settings files read, so the
+    operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:
@@ -708,6 +711,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["account_connectors"] = list(profile.account_connectors)
     if profile.workload != DEFAULT_WORKLOAD:
         config["workload"] = profile.workload
+    if profile.contain_user_settings:
+        config["contain_user_settings"] = True
     return config
 
 
@@ -869,6 +874,18 @@ def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
     return True
 
 
+def _parse_profile_contain_user_settings(name: str, raw: Any) -> bool:
+    """Validate the profile flag; an unreadable value warns and defaults to contained."""
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    from ._logging import warn
+
+    warn(f"agent profile {name!r}: contain_user_settings {raw!r} is not true or false; containing")
+    return True
+
+
 def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
     """Validate the profile 'account_connectors' list; warn and grant none when it does not
     read as connector names, rather than read it as all."""
@@ -939,6 +956,9 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
             name, frontmatter.get("idle_timeout"), field="idle_timeout"
         ),
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
+        contain_user_settings=_parse_profile_contain_user_settings(
+            name, frontmatter.get("contain_user_settings")
+        ),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -958,6 +978,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "contain_account_integrations",
                 "account_connectors",
                 "workload",
+                "contain_user_settings",
             )
         },
     )

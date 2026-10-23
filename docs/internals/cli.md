@@ -367,7 +367,14 @@ so set it in the worker's `env` or in this process's environment. A
 path is refused before either read or any process starts, from either
 environment.
 A Claude worker is not isolated here and keeps its settings sources, as an
-interactive run does. A worker therefore has none of the servers its CLI would load
+interactive run does, unless its role sets `contain_user_settings`
+(`_contain_claude_worker`): then it reads no settings files, so the operator's
+hooks and permission rules do not gate it, and it runs only the built-in tools
+named in `_CONTAINED_CLAUDE_TOOLS` and the servers it is handed, under
+`dontAsk`, with Agent and Task disallowed. A spawned node is contained when the
+branch it copies was, or when the worker that asked for it was; a checkpoint
+records the second, and `--retry-failed` refuses to rebuild such a node naming
+no assignee on the orchestrator's branch. A worker therefore has none of the servers its CLI would load
 from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
 synthesis branch starts from a copy of the orchestrator's model and is not
 isolated, so the same exclusive hand-over is what takes the orchestrator's

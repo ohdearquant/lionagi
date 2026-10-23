@@ -900,6 +900,52 @@ def test_retry_failed_refuses_an_unassigned_failed_spawn_with_a_recorded_worker_
     assert UUID(child_id) not in builder.get_graph().internal_nodes
 
 
+def test_retry_failed_refuses_an_unassigned_failed_spawn_a_contained_worker_asked_for():
+    """Rebuilt with no assignee, the node would run on the orchestrator's branch, which reads
+    the settings files the worker that asked for it ran without, so the resume refuses."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-6",
+            "emitter_contains_user_settings": True,
+        }
+    ]
+
+    with pytest.raises(FlowResumeError) as refused:
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+
+    assert f"[{child_id}]" in str(refused.value)
+    assert str(refused.value).endswith("Re-run the flow from scratch.")
+    assert UUID(child_id) not in builder.get_graph().internal_nodes
+
+
 @pytest.mark.parametrize("retry_failed", [False, True])
 def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_another_class(
     retry_failed,
@@ -1362,9 +1408,10 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
     ]
 
 
+@pytest.mark.parametrize("contained", [False, True])
 @pytest.mark.parametrize("emitter_workload", [None, "light"])
 async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_node(
-    tmp_path: Path, emitter_workload
+    tmp_path: Path, emitter_workload, contained
 ):
     """Write-side counterpart: role_node_builder stamps spawn_id unconditionally on a spawned node's metadata, so _checkpoint_record must capture it off the live graph node the same way it captures assignee, for reconstruction's assignee-without-spawn_id check."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
@@ -1399,6 +1446,8 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
     spawned_node.metadata["reference_id"] = "spawn-7"
     if emitter_workload is not None:
         spawned_node.metadata["emitter_workload"] = emitter_workload
+    if contained:
+        spawned_node.metadata["emitter_contains_user_settings"] = True
     builder.get_graph().add_node(spawned_node)
     spawned_id_str = str(spawned_node.id)
 
@@ -1452,16 +1501,20 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
             "spawn_id": "spawn-7",
             "context": None,
             **({"emitter_workload": emitter_workload} if emitter_workload else {}),
+            **({"emitter_contains_user_settings": True} if contained else {}),
         }
     ]
 
 
+@pytest.mark.parametrize("contained", [False, True])
 @pytest.mark.parametrize("workload", ["light", None])
-async def test_a_failed_escalation_retry_records_the_class_it_ran_at(tmp_path: Path, workload):
+async def test_a_failed_escalation_retry_records_the_class_it_ran_at(
+    tmp_path: Path, workload, contained
+):
     """An escalation retry is built with no class of its own and runs on a clone of the branch
     of the node it retries. Its record carries the class that branch ran at, so --retry-failed,
     which would rebuild it on the orchestrator's branch, refuses a light one; a heavy one
-    records none."""
+    records none. A branch that read no settings files is recorded and refused the same way."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = _make_resume_env(tmp_path)
     env.builder = builder
@@ -1493,11 +1546,12 @@ async def test_a_failed_escalation_retry_records_the_class_it_ran_at(tmp_path: P
     retry.metadata["escalated_from"] = str(parent_id)
     builder.get_graph().add_node(retry)
     retry_id = str(retry.id)
+    ran_on_kwargs = {"workload": workload} if workload else {}
+    if contained:
+        ran_on_kwargs["setting_sources"] = ""
     ran_on = SimpleNamespace(
         chat_model=SimpleNamespace(
-            endpoint=SimpleNamespace(
-                config=SimpleNamespace(kwargs={"workload": workload} if workload else {})
-            )
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs=ran_on_kwargs))
         )
     )
 
@@ -1540,7 +1594,8 @@ async def test_a_failed_escalation_retry_records_the_class_it_ran_at(tmp_path: P
     assert entry["status"] == "failed"
     assert entry["assignee"] is None
     assert entry.get("emitter_workload") == workload
-    if workload is None:
+    assert entry.get("emitter_contains_user_settings") is (True if contained else None)
+    if workload is None and not contained:
         return
 
     resume_builder, resume_parent, resume_branch = _real_planned_node("worker")
@@ -1564,7 +1619,11 @@ async def test_a_failed_escalation_retry_records_the_class_it_ran_at(tmp_path: P
             retry_failed=True,
             checkpoint_spawned=[entry],
         )
-    assert f"{retry_id} (light)" in str(refused.value)
+    if workload is not None:
+        assert f"{retry_id} (light)" in str(refused.value)
+    else:
+        assert retry_id in str(refused.value)
+        assert "contain_user_settings" in str(refused.value)
     assert UUID(retry_id) not in resume_builder.get_graph().internal_nodes
 
 

@@ -704,6 +704,7 @@ async def _spawned_branch_kwargs(
     provider: str = "codex",
     emitted_by: str | None = None,
     emitter_provider: str | None = None,
+    emitter_contained: bool = False,
     independent: bool = True,
     expected: list | None = None,
     refuses: bool = False,
@@ -715,7 +716,8 @@ async def _spawned_branch_kwargs(
     naming no assignee, built by the run's node builder for a worker of that class (or
     for the orchestrator itself, when it is "orchestrator") and cloned from the
     orchestrator's branch, as the executor clones it. *emitter_provider* puts that worker
-    on another engine than the orchestrator's. With *independent* false the request is a
+    on another engine than the orchestrator's, and *emitter_contained* runs it with no
+    settings files read (``contain_user_settings``). With *independent* false the request is a
     dependent one, cloned from that worker's branch. *expected* collects the spawn ids
     the run is told to expect a worker for. With *refuses* the node builder must refuse
     the request, and the refusal's text comes back as ``{"refusal": ...}``."""
@@ -809,6 +811,10 @@ async def _spawned_branch_kwargs(
             if emitted_by == "orchestrator"
             else _branch("emitter", emitted_by, emitter_provider or provider)
         )
+        if emitter_contained:
+            from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
+
+            _isolate_worker_cli_config(emitter_branch.chat_model, contain_user_settings=True)
         captured["executor_ref"]["executor"] = SimpleNamespace(
             operation_branches={emitter.id: emitter_branch}
         )
@@ -1028,6 +1034,46 @@ async def test_an_independent_spawn_a_heavy_worker_asks_for_on_another_engine_ru
     )
 
     assert "workload" not in kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("independent", [True, False])
+async def test_an_agent_a_contained_claude_worker_asks_for_reads_no_settings(
+    tmp_path, monkeypatch, independent
+):
+    """A request naming no assignee from a worker that reads no settings files: a dependent
+    agent copies that worker's branch, an independent one copies the orchestrator's, which
+    reads them, and is contained from what the request recorded. Either way asking for an
+    agent is not a way back to the settings the worker runs without."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        independent=independent,
+    )
+
+    assert kwargs["setting_sources"] == ""
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_a_claude_worker_with_its_settings_asks_for_keeps_them(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+    )
+
+    assert kwargs.get("setting_sources") is None
+    assert kwargs.get("disallowed_tools") is None
 
 
 @pytest.mark.asyncio
