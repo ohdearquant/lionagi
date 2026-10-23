@@ -24,7 +24,6 @@ starts clean.
 from __future__ import annotations
 
 import collections.abc
-import hashlib
 import json
 import re
 import time
@@ -37,7 +36,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
-from lionagi.ln import parse_duration, short_id
+from lionagi.ln import compute_hash, parse_duration, short_id
 from lionagi.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     ScheduleOwnershipConflictError,
@@ -400,7 +399,7 @@ def _resolve_trigger(trigger: Trigger) -> dict[str, Any]:
 
 
 def _digest_of(obj: Any) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()
+    return compute_hash(json.dumps(obj, sort_keys=True, default=str), max_bytes=None)
 
 
 def _resolve_path(raw: str, manifest_dir: Path) -> Path:
