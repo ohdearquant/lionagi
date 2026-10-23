@@ -458,9 +458,12 @@ def _verb(figures: dict) -> str:
 
 def test_the_readme_gives_the_runs_own_figures():
     figures = {run: _figures(run) for run in RUNS}
+    # Table rows are whole lines, so a row with an extra cell is not one of these.
+    rows = [row for run in RUNS for row in _table_rows(run, figures[run])[0]]
+    lines = _prose(PILOT / "README.md").splitlines()
+    assert [row for row in rows if lines.count(row) != 1] == []
     expected = []
     for run in RUNS:
-        expected += _table_rows(run, figures[run])[0]
         expected.append(f"| {run} | `{figures[run]['commit'][:8]}` |")
         expected.append(figures[run]["commit"])
     r3, r4, r5 = figures["r3"], figures["r4"], figures["r5"]
@@ -485,17 +488,22 @@ def test_adr_0132_gives_the_runs_own_figures():
     r3, r4, r5 = figures["r3"], figures["r4"], figures["r5"]
     fewer = r5["react"]["reading"] - r5["lndl"]["reading"]
     assert fewer == 1
-    expected = [row for run in RUNS for row in _table_rows(run, figures[run])[1]]
-    expected += [
-        # The header and Amendment 1.
-        f"`r5`, the run that decides, {'meets' if r5['met'] else 'does not meet'} the rule: "
-        "`lndl` accepted one task fewer than ReAct",
+    # Table rows are whole lines, so a row with an extra cell is not one of these.
+    rows = [row for run in RUNS for row in _table_rows(run, figures[run])[1]]
+    rows += [
         f"| each task's check, as r5 ran them | {r5['lndl']['checks']} / 24 | "
         f"{r5['react']['checks']} / 24 | {r5['lndl']['per_checks']} | "
         f"{r5['react']['per_checks']} | {'met' if r5['met_by_checks'] else 'not met'} |",
         f"| the reading | {r5['lndl']['reading']} / 24 | {r5['react']['reading']} / 24 | "
         f"{r5['lndl']['per_reading']} | {r5['react']['per_reading']} | "
         f"{'met' if r5['met'] else 'not met'} |",
+    ]
+    lines = _prose(ADR).splitlines()
+    assert [row for row in rows if lines.count(row) != 1] == []
+    expected = [
+        # The header and Amendment 1.
+        f"`r5`, the run that decides, {'meets' if r5['met'] else 'does not meet'} the rule: "
+        "`lndl` accepted one task fewer than ReAct",
         f"give {r5['lndl']['reading']} against {r5['react']['reading']} as well",
         # D4, Result.
         f"r3 {_verb(r3)} the rule with no margin: {r3['lndl']['reading']} tasks accepted on each "
@@ -529,19 +537,46 @@ def test_adr_0132_gives_the_runs_own_figures():
     ]
     text = _flat(ADR)
     assert [line for line in expected if line not in text] == []
-    # The decision r5 sets, in the header's status and in r5's own paragraph of the Result.
+    # The decision r5 sets, in the header's status and in r5's own paragraph of the Result. Each
+    # is compared whole: a sentence beside the right one that says otherwise is not allowed in.
     assert not r5["met"]
     adr = _prose(ADR)
-    status = adr.split("\n- **Implementation-status**", 1)[1].split("\n- **", 1)[0]
-    result = adr.split("\n- `r5`, the run D4 names", 1)[1].split("\n- ", 1)[0]
-    assert (
-        "`lndl` stays an opt-in setting and is not recommended, and the default stays `react`"
-        in " ".join(status.split())
+    status_marker, result_marker = "\n- **Implementation-status**: ", "\n- `r5`, the run D4 names"
+    assert adr.count(status_marker) == adr.count(result_marker) == 1
+    status = adr.split(status_marker, 1)[1].split("\n- ", 1)[0]
+    result = adr.split(result_marker, 1)[1].split("\n- ", 1)[0]
+    assert " ".join(status.split()) == (
+        "implemented — D1-D3 are implemented and the D4 pilot ran four times (D4, Result); read "
+        "against the source (Amendment 1), `r5`, the run that decides, does not meet the rule: "
+        "`lndl` accepted one task fewer than ReAct, a margin that one answer read the other way "
+        "would reverse (D4, Result). `lndl` stays an opt-in setting and is not recommended, and "
+        "the default stays `react`"
     )
-    assert (
-        "so r5 does not meet the rule: `lndl` is not recommended, and the default stays `react`"
-        in " ".join(result.split())
+    lndl, react = r5["lndl"], r5["react"]
+    assert " ".join(result.split()) == (
+        f", ran with lionagi installed from `{r5['commit'][:8]}` (13 commits past `d8838f28`, "
+        "none of which changes `lionagi/lndl/` or the LNDL Middle; both loops ran that same "
+        "code). Before it started, the `t06` check was changed to accept the value written as "
+        "`100000`, `100,000`, `100_000` or `100 000`, and the `t20` check to accept the module "
+        f"by its file or its import path. Its checks accept {lndl['checks']} tasks on each side. "
+        "Every answer was read against the source as above, and the reading differs from the "
+        "checks in one: the `lndl` answer to `t24` again says `lionagi/mcp/config.py` defines no "
+        f"`RUNS_DIR`, and its check accepted it. Read that way, `lndl` accepted {lndl['reading']} "
+        f"tasks at {lndl['per_reading']} requests per accepted task ({lndl['requests']} "
+        f"requests) and ReAct {react['reading']} at {react['per_reading']} ({react['requests']} "
+        "requests). `lndl` used fewer requests per accepted task and accepted one task fewer, so "
+        "r5 does not meet the rule: `lndl` is not recommended, and the default stays `react`. "
+        "The other two rejected answers are wrong on reading too: the `lndl` answer to `t03` "
+        "gives a default from another package in the read tree, and the ReAct leg on `t10` "
+        "called a tool it does not have and then answered that it could not find the constants."
     )
+    # Each of those two names the recommendation once; elsewhere the ADR names it only in D4's rule.
+    flat = _flat(ADR)
+    assert flat.count("recommend") == 3
+    assert (
+        "`lndl` becomes a recommended profile setting only if it uses fewer requests per accepted "
+        "task in total and accepts no fewer tasks;"
+    ) in flat
 
 
 def test_the_checks_as_they_now_stand_differ_from_r5s_only_on_its_lndl_t24_answer():
@@ -575,7 +610,7 @@ def test_each_reading_covers_its_runs_rows_and_the_adr_result_table_is_its_tally
         assert r["check"] == ("accepted" if accepted else "rejected")
         assert r["reading"] in {"right", "wrong"}
     table = {}
-    for line in ADR.read_text().splitlines():
+    for line in _prose(ADR).splitlines():
         if m := _RESULT_ROW.match(line):
             assert (m[1], m[2]) not in table
             table[(m[1], m[2])] = (int(m[3]), int(m[4]), int(m[5]), m[6], int(m[7]))
@@ -583,6 +618,7 @@ def test_each_reading_covers_its_runs_rows_and_the_adr_result_table_is_its_tally
         mine = [results[(r["id"], r["loop"])] | r for r in reading if r["loop"] == loop]
         right = sum(r["reading"] == "right" for r in mine)
         requests = sum(r["requests"] for r in mine)
+        assert (run, loop) in table, (run, loop)
         assert table[(run, loop)] == (
             sum(r["check"] == "accepted" for r in mine),
             right,
@@ -628,6 +664,9 @@ def test_the_reading_and_the_checks_differ_in_the_eleven_answers_the_adr_names()
     readme = _prose(PILOT / "README.md")
     after = readme.split("The reading and the checks differ in", 1)[1]
     table = after[after.index("\n|") + 1 :].split("\n\n", 1)[0].splitlines()
+    # A row set apart by a blank line is still one of the table's rows, up to the next heading.
+    section = after.split("\n#", 1)[0]
+    assert [line for line in section.splitlines() if line.startswith("|")] == table
     assert table[:2] == [
         "| task | runs | loop | check | reading | why |",
         "|---|---|---|---|---|---|",
@@ -673,7 +712,7 @@ def test_the_t05_answers_the_readme_names_say_max_tokens_does_not_fit_the_field(
         ("r5", "lndl"),
     }
     assert "It is a time limit, not a token count." in answers[("r3", "lndl")]
-    readme = " ".join((PILOT / "README.md").read_text().split())
+    readme = _flat(PILOT / "README.md")
     assert (
         "Six of them also say the question's `max_tokens` does not fit the field (the r2 ReAct, "
         "r2 `lndl`, r3 ReAct and r4 ReAct answers and both r5 answers)"
@@ -688,11 +727,21 @@ _R5_ROW = re.compile(
 
 
 def test_the_readmes_r5_table_is_r5s_reading():
-    text = (PILOT / "README.md").read_text().split("### r5, task by task", 1)[1]
+    readme = _prose(PILOT / "README.md")
+    assert readme.count("\n### r5, task by task\n") == 1
+    text = readme.split("\n### r5, task by task\n", 1)[1].split("\n#", 1)[0]
+    piped = [line for line in text.splitlines() if line.startswith("|")]
+    assert piped[:2] == [
+        "| task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |",
+        "|---|---|---|---|---|",
+    ]
     table = {}
-    for line in text.splitlines():
-        if m := _R5_ROW.match(line):
-            table[m[1]] = (m[2], m[3], {"lndl": (m[4], m[5]), "react": (m[6], m[7])})
+    for line in piped[2:]:
+        m = _R5_ROW.match(line)
+        assert m, line
+        # One row per task: a second row for a task would replace the first.
+        assert m[1] not in table, line
+        table[m[1]] = (m[2], m[3], {"lndl": (m[4], m[5]), "react": (m[6], m[7])})
     reading = _jsonl(PILOT / "runs" / "r5" / "reading.jsonl")
     expected = {}
     for r in reading:
@@ -764,7 +813,7 @@ def test_the_adr_counts_of_rounds_requests_and_exits_are_the_runs_tallies():
     """The Result's counts of `lndl` rounds, of the runs that opened with an `<invoke>` tag and
     of the requests that went to rounds with no block are recomputed from rounds.jsonl, and the
     exits and request counts beside them from results.jsonl."""
-    flat = " ".join(ADR.read_text().split())
+    flat = _flat(ADR)
     runs = ("r2", "r3", "r4")
     rounds = {
         run: {r["id"]: r["rounds"] for r in _jsonl(PILOT / "runs" / run / "rounds.jsonl")}
@@ -825,6 +874,18 @@ def test_the_adr_counts_of_rounds_requests_and_exits_are_the_runs_tallies():
     assert len(rows) == 48 * len(RUNS)
     assert {row["rc"] for row in rows} == {0}
     assert f"All {len(rows)} legs exited 0" in flat
+    # The most tool calls any one `lndl` leg ran in each run, and in r4 which legs ran them.
+    most = {}
+    for run in RUNS:
+        lndl = [r for r in _jsonl(PILOT / "runs" / run / "results.jsonl") if r["loop"] == "lndl"]
+        top = max(r["tool_calls"] for r in lndl)
+        most[run] = (top, sorted(r["id"] for r in lndl if r["tool_calls"] == top))
+    word = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+    r4_legs = " and ".join(f"`{t}`" for t in most["r4"][1])
+    assert (
+        f"The most any `lndl` run made was {word[most['r2'][0]]} in r2, {word[most['r3'][0]]} in "
+        f"r3, {word[most['r4'][0]]} in r4 ({r4_legs}) and {word[most['r5'][0]]} in r5."
+    ) in flat
     spent_all = sorted(t for t, syntax in r2.items() if len(syntax) == 11)
     assert spent_all == late
     assert all("O" in r2[t][-1] for t in spent_all)
