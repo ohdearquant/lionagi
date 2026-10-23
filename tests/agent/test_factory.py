@@ -2000,3 +2000,28 @@ async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_un
     config.mcp_servers = ["docs"]
     with pytest.raises(ConfigurationError, match="allowlist"):
         await create_agent(config, load_settings=False)
+
+
+@pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+async def test_create_agent_builds_a_provider_alias_as_its_provider(monkeypatch, tmp_path, alias):
+    import lionagi.service.imodel as imodel_mod
+
+    captured: dict[str, dict] = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured[kwargs["provider"]] = {k: v for k, v in kwargs.items() if k != "provider"}
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    for provider in ("codex", alias):
+        config = AgentSpec.compose(
+            "implementer", model=f"{provider}/gpt-5.5", effort="high", yolo=True, cwd=str(tmp_path)
+        )
+        await create_agent(config, load_settings=False)
+
+    assert captured[alias] == captured["codex"]
+    assert captured["codex"]["reasoning_effort"] == "high"
+    assert captured["codex"]["api_key"] == "dummy"
+    assert captured["codex"]["repo"] == str(tmp_path)

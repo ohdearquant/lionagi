@@ -140,14 +140,19 @@ def build_imodel_from_spec(
 
     extra: dict = {}
 
-    # Resolve provider for yolo/effort kwarg lookup
+    # Resolve provider for yolo/effort kwarg lookup, folded as the endpoint match folds it, so
+    # an alias such as "openai-codex" takes its provider's settings; the spec keeps the name as
+    # written. A slashless name is a model, not a provider.
     provider_raw = ms.model.split("/")[0] if "/" in ms.model else ms.model
+    provider = (
+        EndpointRegistry.canonical_provider(provider_raw) if "/" in ms.model else provider_raw
+    )
     resolved_model = ms.model
 
     # Before the effort clamp below, whose ceilings are keyed on the model: a
     # profile names a different model than the spec did.
     codex_profile_overrides: dict[str, Any] = {}
-    if provider_raw == "codex" and "/" in ms.model:
+    if provider == "codex" and "/" in ms.model:
         from ._logging import progress
 
         profile_name = ms.model.split("/", 1)[1]
@@ -161,28 +166,28 @@ def build_imodel_from_spec(
             ms = ModelSpec(model=resolved_model, effort=ms.effort)
 
     if bypass:
-        extra.update(PROVIDER_BYPASS_KWARGS.get(provider_raw, {}))
+        extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
     elif yolo:
-        extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
+        extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
-        extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
+        extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if ignore_user_config and provider_raw == "codex":
+    if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
-    if effort is None and provider_raw == "codex" and not ignore_user_config:
+    if effort is None and provider == "codex" and not ignore_user_config:
         effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
     if effort is not None:
-        kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
+        kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
-            if provider_raw == "codex":
+            if provider == "codex":
                 effort = _clamp_codex_effort(effort, ms.model)
-            elif provider_raw in _CLAUDE_PROVIDER_NAMES:
+            elif provider in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, ms.model)
             extra[kwarg] = effort
-        elif provider_raw in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
             from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -240,13 +245,18 @@ def build_chat_model(
     given or derived (a codex request may derive one from the global config);
     any such setting needs an iModel to carry it.
     """
+    from lionagi.service.connections.registry import EndpointRegistry
+
     effort = normalize_effort(effort)
     extra: dict = {}
+    # Settings are looked up under the provider the name resolves to, so an alias such as
+    # "openai-codex" takes its provider's; the model is built under the name as written.
+    canonical = EndpointRegistry.canonical_provider(provider)
     # Before anything keyed on the model — the effort clamp below included,
     # since its ceilings belong to specific models and a profile names a
     # different one than the spec did.
     codex_profile_overrides: dict[str, Any] = {}
-    if provider == "codex":
+    if canonical == "codex":
         from ._logging import progress
 
         resolved_profile = resolve_codex_config_profile(model)
@@ -270,14 +280,12 @@ def build_chat_model(
             exclusive=mcp_exclusive or not mcp_servers,
         )
     if bypass:
-        extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+        extra.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
     elif yolo:
-        extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+        extra.update(PROVIDER_YOLO_KWARGS.get(canonical, {}))
     if fast:
-        extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
-    from lionagi.service.connections.registry import EndpointRegistry
-
-    if EndpointRegistry.canonical_provider(provider) == "codex":
+        extra.update(PROVIDER_FAST_KWARGS.get(canonical, {}))
+    if canonical == "codex":
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
@@ -285,20 +293,20 @@ def build_chat_model(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if effort is None and provider == "codex" and not extra.get("ignore_user_config"):
+    if effort is None and canonical == "codex" and not extra.get("ignore_user_config"):
         # The derived default exists to keep the user config's own effort under the
         # model's ceiling. A request that ignores the user config never loads that
         # value, so there is nothing to derive from it.
         effort = codex_unset_effort_default(model, codex_profile_overrides)
     if effort is not None:
-        kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+        kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
         if kwarg is not None:
-            if provider == "codex":
+            if canonical == "codex":
                 effort = _clamp_codex_effort(effort, model)
-            elif provider in _CLAUDE_PROVIDER_NAMES:
+            elif canonical in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, model)
             extra[kwarg] = effort
-        elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
             from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -920,16 +928,59 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
-def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
-    """The settings a profile keeps when its frontmatter block is not read, with a warning:
-    none, except ``contain_user_settings`` when it has a top-level line of its own, so a
-    broken line elsewhere in the block cannot turn containment off."""
+def _contain_flag_values(text: str) -> list[Any]:
+    """The value of each top-level ``contain_user_settings`` line in *text*, key quoted or not,
+    each line read alone."""
     import re
 
     import yaml
 
+    values: list[Any] = []
+    for line in text.splitlines():
+        if not re.match(r"""(["']?)contain_user_settings\1[ \t]*:""", line):
+            continue
+        try:
+            read = yaml.safe_load(line)
+        except yaml.YAMLError:
+            read = None
+        # A line that does not read alone keeps its text, which is not true or false and
+        # so contains, as any other such value does.
+        values.append(
+            read["contain_user_settings"]
+            if isinstance(read, dict) and "contain_user_settings" in read
+            else line.split(":", 1)[1].strip()
+        )
+    return values
+
+
+def _contain_flag_of(values: list[Any]) -> Any:
+    """The flag several lines give it: a line turning containment off loses to any other, so
+    it is off only when every one reads false."""
+    return next((value for value in values if value is not False), False)
+
+
+def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
+    """The settings a profile keeps when its frontmatter block is not read, with a warning:
+    none, except ``contain_user_settings`` when it has a top-level line of its own, so a
+    broken line elsewhere in the block, or a character ahead of the opening delimiter that
+    hides the block, cannot turn containment off."""
+    import yaml
+
     from lionagi.libs.frontmatter import parse_frontmatter_strict
 
+    from ._logging import warn
+
+    if not text.strip().startswith("---"):
+        # No block opens the profile, so none is read. Where the text ahead of a block ends
+        # is not known, so the flag is read from any line of its own in the whole profile.
+        values = _contain_flag_values(text)
+        if not values:
+            return {}
+        warn(
+            f"agent profile {name!r}: no frontmatter block opens it, so every setting in it "
+            "is ignored except contain_user_settings, read from its own line"
+        )
+        return {"contain_user_settings": _contain_flag_of(values)}
     try:
         parse_frontmatter_strict(text)
         return {}
@@ -943,29 +994,10 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     except yaml.YAMLError:
         pass
 
-    kept: dict[str, Any] = {}
-    for line in block.splitlines():
-        if not re.match(r"""(["']?)contain_user_settings\1[ \t]*:""", line):
-            continue
-        try:
-            read = yaml.safe_load(line)
-        except yaml.YAMLError:
-            read = None
-        # A line that does not read alone keeps its text, which is not true or false and
-        # so contains, as any other such value does.
-        value = (
-            read["contain_user_settings"]
-            if isinstance(read, dict) and "contain_user_settings" in read
-            else line.split(":", 1)[1].strip()
-        )
-        # Where a block that does not read ends is not known, so a line turning
-        # containment off loses to any other: a false further down cannot undo a true
-        # above it, nor can one in the body of a profile whose block is never closed.
-        if kept.get("contain_user_settings", False) is False:
-            kept["contain_user_settings"] = value
-
-    from ._logging import warn
-
+    # Where a block that does not read ends is not known, so a false further down cannot
+    # undo a true above it, nor can one in the body of a profile whose block is never closed.
+    values = _contain_flag_values(block)
+    kept: dict[str, Any] = {"contain_user_settings": _contain_flag_of(values)} if values else {}
     warn(
         f"agent profile {name!r}: its frontmatter does not read as YAML settings ({reason}); "
         + (
@@ -991,6 +1023,20 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
         frontmatter = _settings_of_unread_frontmatter(name, text)
+    else:
+        from lionagi.libs.frontmatter import _FM_SPLIT
+
+        values = _contain_flag_values(_FM_SPLIT.split(text.strip(), maxsplit=2)[1])
+        if len(values) > 1:
+            # YAML keeps the last of a repeated key; the flag follows the rule of a block that
+            # does not read, so moving a line cannot turn containment off.
+            from ._logging import warn
+
+            warn(
+                f"agent profile {name!r}: contain_user_settings is set on {len(values)} lines; "
+                "it is off only when every one reads false"
+            )
+            frontmatter = {**frontmatter, "contain_user_settings": _contain_flag_of(values)}
 
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion
