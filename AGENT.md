@@ -24,7 +24,7 @@ uvx pre-commit run -a                       # All hooks (file sanity, ruff, pyup
 uv build                                    # Build wheel
 ```
 
-CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14 on `main`/`develop` pushes. Async mode is auto-detected.
+CI tests Python 3.10-3.14 on PRs and `main`/`develop` pushes; only the manual `endpoints` diagnostic selects 3.10 and 3.14. Async mode is auto-detected.
 
 ## Repository Map
 
