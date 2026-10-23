@@ -133,10 +133,6 @@ plugins:
       minify_css: true
       htmlmin_opts:
         remove_comments: true
-  - git-committers:
-      repository: ohdearquant/lionagi
-      branch: main
-      enabled: false
   - autorefs
   - mkdocstrings:
       enable_inventory: true

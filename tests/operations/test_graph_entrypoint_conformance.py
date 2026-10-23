@@ -294,7 +294,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
         persistence="inherited",
         reason="registers the 'engine' operation consumed by run-workflow-def; production "
         "make_engine_operation resolves whichever engine kind the node names and calls "
-        "engine.run(...) generically (lionagi/studio/services/workflow_compile.py:613-643) — "
+        "engine.run(...) generically (lionagi/studio/services/workflow_compile.py:539-602) — "
         "the cited test drives a coding-kind engine through exactly that dispatch. Only the "
         "planning kind's engine.run subsequently reaches EngineRun.run_dag, and that further hop "
         "is covered separately by planning-engine-run and engine-run-dag, not by this row",
@@ -3818,7 +3818,7 @@ async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monk
     """cli-o-fanout persistence: drives the REAL `_run_fanout` wrapper (only
     `setup_orchestration` and the heavy `_run_fanout_inner` execution are
     stubbed — the wrapper's own `start_live_persist` call at
-    lionagi/cli/orchestrate/fanout.py:209 is NOT) and asserts a real StateDB
+    lionagi/cli/orchestrate/fanout.py:221 is NOT) and asserts a real StateDB
     session row exists afterward. This is the seam the generic
     tests/cli/orchestrate/test_live_persist.py::
     test_start_creates_session_and_registers_hook_on_orc_branch test cannot
@@ -3859,7 +3859,7 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
     """cli-o-flow-exec/cli-o-flow-synth persistence: drives the REAL
     `_run_flow` wrapper (only `setup_orchestration` and the heavy
     `_run_flow_inner` execution are stubbed — the wrapper's own
-    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3036 is NOT)
+    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3062 is NOT)
     and asserts a real StateDB session row exists afterward, closing the
     same gap as test_run_fanout_persists_session_via_start_live_persist for
     the flow CLI. HOME is isolated so the finally block's

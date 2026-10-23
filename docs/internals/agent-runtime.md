@@ -68,22 +68,95 @@ and one implementation.
   rather than an addition to whatever the provider finds for itself. It
   makes an empty set mean "no servers", and so does no set at all
   (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
-  needs `strict_mcp_config`; codex, which has no wholesale clear, needs each
-  server its own config declares disabled by name (see
+  needs `strict_mcp_config`; codex, which has no wholesale clear, gets
+  `ignore_user_config` (`--ignore-user-config`), so the user config and every
+  server, hook and profile it declares are not loaded at all (a profile a `codex/<name>`
+  model string names is read by lionagi itself, and under the flag only its model
+  settings may apply; see providers.md). A codex request that
+  hands an exclusive set and names a profile, or whose config overrides select one
+  (`profile`), is refused whichever form the set takes: under the flag the codex
+  provider refuses it, since the profile is user config too, which the flag drops;
+  without the flag (a non-empty set, or an allowlist that keeps a server codex's
+  config declares) the factory refuses it, since the by-name disables below take
+  their server list from `config.toml` (or from `codex mcp list --json` when that
+  file cannot be read) and a server only the profile declares would load. Without
+  the flag the factory refuses a root `profile` key in that `config.toml` the same
+  way, since codex before 0.135 makes it the active profile when no `-p` is given;
+  a key in a `config.toml` its TOML parser cannot read is not seen. The key and
+  the server list are read with `tomllib` (`tomli` on Python 3.10), which decodes
+  a quoted key as TOML defines it, so `"mcp\u005fservers"` declares servers as
+  `mcp_servers` does. `tomllib` (tried on Python 3.11 to 3.14) refuses the
+  syntax only TOML 1.1 allows (an `\e` or `\x` escape, an inline table across
+  lines or with a trailing comma, a time without seconds), which codex 0.162.1
+  reads with its TOML 1.1 parser; on Python 3.10, `tomli` 2.4.1, the version the
+  lock file pins, accepts it, as `tomli` does from 2.4.0, and `tomli` 2.0.1, the
+  declared floor, refuses it.
+  `tomllib` and `tomli` both refuse a leading byte-order mark. A root `profile`
+  key in a file the parser refuses is not seen here, and such a file takes its
+  server list from the fallback; whether that list holds a server only a profile
+  declares is codex's, unchecked here. Under `--ignore-user-config` a user config
+  the parser refuses stops the run instead, and two checks read the project
+  layers. Every such request is refused when a project layer declares
+  `mcp_servers`: the parse decides it, and a layer the parser refuses is read
+  line by line, so any line whose first key segment is `mcp_servers` refuses the
+  run. The message names the file and the line, and where the parse does not
+  show that line declaring the key, it says only that the line reads as a
+  declaration. While a sandbox setting rides beside the flag, a project layer the
+  parser refuses also stops the run, whatever it declares. So where the parser
+  reads only TOML 1.0 a `config.toml` that codex itself reads is refused when it
+  uses that syntax: always for the user config, and for a project layer under
+  the second check. The user config message gives the parser's error and says to
+  make the file one this parser reads; the second check's message gives the
+  parser's error, or says the file nests deeper than the parser can follow. Where
+  the parser reads only TOML 1.0, both messages add to the parser's error that
+  codex reads TOML 1.1 forms. A
+  user config nested deeper than the parser can follow is refused with a
+  `ConfigurationError` that gives Python's "maximum recursion depth exceeded".
+  These reads and the fallback use the codex home named by the environment the
+  child runs under (the model's `env` when it holds one, else this process's);
+  an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's
+  home. A `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an
+  absolute path is refused before these reads and the fallback, from either
+  environment, with one `ConfigurationError` naming the variable. A run that
+  makes none of these reads is not checked here; one that contains account
+  integrations (`contain_account_integrations`) is refused the same way when the
+  codex provider reads that `config.toml` for its root `profile` key. The
+  fallback runs the codex binary the run itself starts; with no codex binary
+  found the allowlist is refused rather than listed with another. A
+  `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at
+  spawn is not seen by these reads, which run before the fill: set it in the
+  model's `env` or in this process's environment. A set whose
+  `env` or `http_headers` need a generated profile is refused when that home is
+  not this process's, since the profile file is written here.
+  Those disables do not reach a server only
+  a project layer (`.codex/config.toml`) declares either, and only a run under the
+  flag has its project layers checked, so a run that keeps the user config is
+  exclusive only over the servers `config.toml` declares. A non-empty
+  exclusive codex set instead needs each server its own config declares, and
+  the set leaves out, disabled by name (see
   `_discover_ambient_codex_mcp_server_names`, which raises
   `ConfigurationError` if it can't enumerate them — an allowlist that can't
-  be enforced must fail closed, never silently pass every ambient server
-  through). Only those names: `mcp_servers.<name>.enabled=false` for a name
-  codex has no table for is a table with no server in it, and codex refuses
-  to start with one. An exclusive set also replaces whatever set the
+  be enforced over those servers must fail closed, never silently pass every ambient server
+  through). Only those names, and none when the request ignores the user
+  config: `mcp_servers.<name>.enabled=false` for a name codex has no table
+  for is a table with no server in it, and codex refuses to start with one.
+  An exclusive set also replaces whatever set the
   request already carries — a resumed leg's request is the persisted one —
   so the Claude `mcp_servers` map, codex `mcp_servers.*` overrides (a whole
   `mcp_servers` table included) and a generated codex profile are dropped
-  first; a profile the caller named stays.
+  first; a profile the caller named is not dropped, and is refused as above.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters
-  under `exclusive`.
+  under `exclusive`. An empty set with an allowlist that names a server
+  codex's own config declares is therefore not the no-servers case: codex
+  keeps loading that config, so the allowed server is still there, and only
+  the names left out are disabled. An allowlist naming none of the declared
+  servers leaves nothing to serve, so the request gets `--ignore-user-config`
+  as the empty set does. A request that already carries
+  `--ignore-user-config` keeps it, since a worker is isolated before its
+  hand-off on purpose; a server that only codex's config would serve cannot
+  load on such a request.
 - For codex, only fields in `_CODEX_MCP_SERVER_FIELDS` (verified against the
   installed CLI: `codex mcp list --json` echoes back exactly this field set)
   are forwarded; an unsupported field is a caller mistake (loud
@@ -93,7 +166,11 @@ and one implementation.
   etc.), so they route through `_write_codex_mcp_secret_profile` to a
   private on-disk profile (`$CODEX_HOME/<name>.config.toml`, loaded via
   `-p <name>`) instead of a `-c` override. `env_http_headers` values are
-  env-var *names*, not secrets, so those stay on the `-c` path.
+  env-var *names*, not secrets, so those stay on the `-c` path. A request
+  that ignores the user config loads no profile either, so a server carrying
+  `env` or `http_headers` on one is refused with `ConfigurationError` rather
+  than started without them. So is one whose config overrides select a
+  profile (`profile`), since the run would then name two.
 - `_forward_mcp_to_cli_request` reaches the per-turn request kwargs a CLI
   provider subprocess actually reads (unlike `_load_mcp`, which only reaches
   lionagi-native `branch.acts` tools, inert for CLI providers). With

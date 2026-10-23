@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import socket
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,16 +23,6 @@ from lionagi.cli.doctor import (
     collect_checks,
     run_doctor,
 )
-
-
-def _closed_port_url() -> str:
-    """A localhost URL nothing is listening on (bind, grab the port, close)."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return f"http://127.0.0.1:{port}/api/admin/readiness"
-
 
 # _looks_editable
 
@@ -147,7 +136,7 @@ def test_check_imports_reports_broken_module(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_check_core_deps_all_ok() -> None:
     results = _check_core_deps()
-    assert set(results) == {"pydantic", "aiohttp", "sqlalchemy", "aiosqlite", "psutil"}
+    assert set(results) == {"pydantic", "httpx", "sqlalchemy", "aiosqlite", "psutil"}
     assert all(r["status"] == "ok" for r in results.values())
 
 
@@ -164,14 +153,23 @@ def test_check_core_deps_reports_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr("lionagi.cli.doctor.importlib.import_module", _broken)
     results = _check_core_deps()
     assert results["pydantic"]["status"] == "fail"
-    assert results["aiohttp"]["status"] == "ok"
+    assert results["httpx"]["status"] == "ok"
 
 
 # _check_studio_daemon
 
 
-def test_check_studio_daemon_unreachable_is_warn_not_fail() -> None:
-    url = _closed_port_url()
+def test_check_studio_daemon_unreachable_is_warn_not_fail(monkeypatch) -> None:
+    import urllib.error
+
+    url = "http://studio.example.test/api/admin/readiness"
+
+    def _offline(request, *, timeout):
+        assert request.full_url == url
+        assert timeout == 0.5
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("urllib.request.urlopen", _offline)
     result = _check_studio_daemon(url=url, timeout=0.5)
     assert result["status"] == "warn"
     assert url in result["detail"]

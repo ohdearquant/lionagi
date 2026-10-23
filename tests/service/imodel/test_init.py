@@ -82,7 +82,7 @@ class TestiModel:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
@@ -95,7 +95,7 @@ class TestiModel:
 
         async def mock_request_with_id(request, cache_control=False, **kwargs):
             await asyncio.sleep(0.1)  # Simulate network delay
-            response = mock_response.json.return_value.copy()
+            response = mock_response.json().copy()
             response["id"] = f"response-{request['messages'][0]['content'][-1]}"
             return response
 
@@ -886,7 +886,7 @@ class TestiModel:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 

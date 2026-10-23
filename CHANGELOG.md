@@ -50,6 +50,35 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 `<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
 behaviour, including accepting a write-capable submission without `cwd`.
 
+The `reader` extra and document conversion are removed (see Removed). `lionagi[reader]` no
+longer exists, so an install that names it gets a missing-extra warning from the installer, and
+`lionagi[all]` no longer installs `docling`. Code that called the reader's `open` action, built
+`ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or passed
+`reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
+`chunk(text=...)`, or a callable `reader_tool` that returns a file's text.
+
+`aiohttp` is no longer a dependency (see Changed). An endpoint HTTP error that raised
+`aiohttp.ClientResponseError` raises `lionagi.service.resilience.APIClientError`, with
+`status_code`, `headers` and `response_data`; code that read `.status` reads `.status_code`.
+`EndpointConfig.client_kwargs` go to `httpx.AsyncClient`, so an aiohttp-only option such as
+`connector` raises `TypeError`. A request's `ssl`, `proxy`, `allow_redirects` and `timeout` are
+still taken, with the values aiohttp took (an `aiohttp.Fingerprint` or `aiohttp.ClientTimeout`
+included, and a timeout of zero or below meaning no timeout, except that a negative `sock_read`,
+which aiohttp read as a read that times out at once, raises `ValueError`); any other aiohttp-only
+request option raises `TypeError`. A request's `ssl=True` now verifies certificates when the
+endpoint's `client_kwargs` set `verify=False`. Once a request pinned with an `aiohttp.Fingerprint`
+has gone over https, a redirect to plain http raises `httpx.ConnectError` before anything is sent
+there, and the endpoint does not retry it, since the pin cannot be checked on a plain connection;
+aiohttp followed such a redirect. A transport failure raises httpx's error (`httpx.ConnectError`,
+`httpx.ReadTimeout`, `httpx.RemoteProtocolError` and the like, all `httpx.RequestError`) where
+aiohttp raised its own, so a read that stalls past the timeout raises `httpx.ReadTimeout`, which is
+not a `TimeoutError`, and a certificate that does not match a `Fingerprint` raises
+`httpx.ConnectError`. A 200 response is read as JSON whatever its content type, so a JSON body
+served as `text/plain` returns its value; one whose body is not JSON raises `json.JSONDecodeError`,
+which the endpoint does not retry. aiohttp raised `ContentTypeError`, which it retried, for any body
+not served as JSON. An `Endpoint` subclass that overrides `_call_aiohttp` or `_stream_aiohttp`
+raises `TypeError` when the class is defined; rename the override to `_call_http` or `_stream_http`.
+
 ### Added
 
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
@@ -368,7 +397,35 @@ behaviour, including accepting a write-capable submission without `cwd`.
   `StateDB.close()`. `register_shared_db()` raises any error the displaced handle's close raised,
   a refusal included, rather than replacing the entry over a handle that is still open.
 
+- `httpx` replaces `aiohttp` as the HTTP client for every endpoint request, and is now a core
+  dependency. The client still follows redirects, ignores proxy settings from the environment and
+  verifies certificates against the trust store Python's `ssl` module loads by default,
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` included, rather than the `certifi` bundle httpx uses on its
+  own. That store is read once, when the first client is built, as aiohttp read it once at
+  import. A request still takes `ssl` (`True`, `None`, `False`, an `ssl.SSLContext` or an
+  `aiohttp.Fingerprint`), `proxy` (`None` or an empty one adds no proxy of its own, so the
+  client's configured proxy, if any, applies), `allow_redirects` and `timeout`, and an empty
+  response body still reads as `None`. `EndpointConfig.timeout`, a request's numeric `timeout`
+  and an `aiohttp.ClientTimeout`'s `total` now bound each connect, read, write and pool wait
+  rather than the whole request, and a `ClientTimeout`'s `connect`, `sock_connect` and
+  `sock_read` bound the waits they bounded in aiohttp, each wait taking the smallest bound set on
+  it. Zero or below is still no timeout, but a negative `sock_read` raises `ValueError`. A number
+  given as `client_kwargs["timeout"]`, which aiohttp refused beside the configured timeout with
+  `TypeError`, is read the same way.
+
 ### Removed
+
+- The `reader` optional dependency group and document conversion through `docling`. The reader
+  tool's `open` action, its converted-text cache and its remote-URL host allowlist are gone:
+  `ReaderAction` is `read` and `list_dir`, `ReaderTool` takes only a keyword `workspace_root`, and
+  the coding toolkit's reader answers `open` as an unknown action. `chunk()` accepts a callable
+  `reader_tool` only and raises `TypeError` for any other value, `"docling"` included. With
+  `docling` go the `torch`, `torchvision`, `accelerate` and OCR packages it pulled into
+  `lionagi[all]`.
+
+- `msgspec` is no longer a dependency. lionagi still accepts a `msgspec.Struct` value wherever it
+  accepted one before, when `msgspec` is installed; code that passes one installs `msgspec`
+  itself.
 
 - A mutable `HashableModel` or `DataClass` value, the operation field models included, now
   raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary

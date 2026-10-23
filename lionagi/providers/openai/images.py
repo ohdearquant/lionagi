@@ -123,8 +123,6 @@ class OpenaiImageEditEndpoint(Endpoint):
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
         """Encode request as multipart/form-data."""
-        import aiohttp
-
         image_data = kwargs.pop("image", None)
         image_filename: str = kwargs.pop("image_filename", "image.png")
         mask_data = kwargs.pop("mask", None)
@@ -137,34 +135,25 @@ class OpenaiImageEditEndpoint(Endpoint):
         multipart_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 
         def _build_form():
-            form = aiohttp.FormData()
+            data = {}
             for key, value in payload.items():
                 if value is not None:
-                    form.add_field(key, str(value))
+                    data[key] = str(value)
 
+            files = {}
             image_obj = image_factory()
             if image_obj is not None:
-                form.add_field(
-                    "image",
-                    image_obj,
-                    filename=image_filename,
-                    content_type="image/png",
-                )
+                files["image"] = (image_filename, image_obj, "image/png")
 
             mask_obj = mask_factory()
             if mask_obj is not None:
-                form.add_field(
-                    "mask",
-                    mask_obj,
-                    filename=mask_filename,
-                    content_type="image/png",
-                )
-            return {"data": form}
+                files["mask"] = (mask_filename, mask_obj, "image/png")
+            return {"data": data, "files": files}
 
-        # API fields stay in the multipart body; only transport kwargs
-        # (proxy, ssl, timeout, ...) are forwarded to the HTTP layer.
+        # API fields stay in the multipart body; other keyword arguments are
+        # forwarded to the HTTP request.
         transport_kwargs = {k: v for k, v in kwargs.items() if k not in payload}
-        return await self._call_aiohttp(
+        return await self._call_http(
             payload=payload,
             headers=multipart_headers,
             request_body_factory=_build_form,

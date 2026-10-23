@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Replay HTTP-success streams through real loopback transport and public consumers."""
+"""Replay HTTP-success streams through an HTTPX mock transport and public consumers."""
 
 from __future__ import annotations
 
@@ -9,10 +9,8 @@ import asyncio
 import json
 from dataclasses import asdict, dataclass, field
 
+import httpx
 import pytest
-import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi.protocols.generic import EventStatus
 from lionagi.service.connections.api_calling import APICalling
@@ -55,46 +53,47 @@ class _Replay:
     release: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-@pytest_asyncio.fixture
-async def replay_server():
-    servers = []
+@pytest.fixture
+def replay_server(monkeypatch):
     replays = []
 
     async def start(wire, *, hold_open=False):
         replay = _Replay(url="")
         replays.append(replay)
 
-        async def handler(request):
-            payload = await request.json()
-            replay.requests.append(payload)
-            response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
-            await response.prepare(request)
-            data = wire(payload) if callable(wire) else wire
-            await response.write(data.encode())
-            if hold_open:
-                await replay.release.wait()
-            try:
-                await response.write_eof()
-            except ConnectionResetError:
-                # A close/cancel control deliberately disconnects before EOF.
-                pass
-            replay.eof.set()
-            return response
+        class ReplayStream(httpx.AsyncByteStream):
+            def __init__(self, data: str) -> None:
+                self.data = data
 
-        app = web.Application()
-        app.router.add_post("/{tail:.*}", handler)
-        server = TestServer(app, host="127.0.0.1")
-        await server.start_server()
-        servers.append(server)
-        replay.url = str(server.make_url("/")).rstrip("/")
-        assert replay.url.startswith("http://127.0.0.1:")
+            async def __aiter__(self):
+                yield self.data.encode()
+                if hold_open:
+                    await replay.release.wait()
+                replay.eof.set()
+
+            async def aclose(self):
+                replay.eof.set()
+
+        def handler(request):
+            payload = json.loads(request.content)
+            replay.requests.append(payload)
+            data = wire(payload) if callable(wire) else wire
+            return httpx.Response(
+                200,
+                stream=ReplayStream(data),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+
+        def create_client(self, *args, **kwargs):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        monkeypatch.setattr(Endpoint, "_create_http_session", create_client)
+        monkeypatch.setattr(Endpoint, "_assert_ssrf_safe_url", lambda self: None)
+        replay.url = "https://api.example.test"
         return replay
 
-    yield start
-    for replay in replays:
-        replay.release.set()
-    for server in servers:
-        await server.close()
+    return start
 
 
 def _endpoint(replay):
@@ -140,7 +139,7 @@ async def _observe(replay, entry, record_property):
         if model:
             await model.close()
     await asyncio.wait_for(replay.eof.wait(), timeout=2)
-    assert len(replay.requests) == 1, "replay must reach the real local HTTP server exactly once"
+    assert len(replay.requests) == 1, "replay must reach the HTTP transport exactly once"
     assert replay.requests[0]["model"] == _REQUESTED
     record_property("entry", entry)
     record_property("execution_status", call.status.value)

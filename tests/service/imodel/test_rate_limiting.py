@@ -134,7 +134,7 @@ class TestiModelRateLimitingEdgeCases:
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.005)
-            return mock_response.json.return_value
+            return mock_response.json()
 
         with patch.object(imodel.endpoint, "call", side_effect=count_calls):
             # Fire exactly limit_requests so all clear in one window
@@ -172,7 +172,7 @@ class TestiModelRateLimitingEdgeCases:
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.005)
-            return mock_response.json.return_value
+            return mock_response.json()
 
         with patch.object(imodel.endpoint, "call", side_effect=count_calls):
             # Fire well over the per-window budget (3) in one burst.

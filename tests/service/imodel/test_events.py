@@ -82,7 +82,7 @@ class TestiModelEdgeCases:
         async def track_timing(*args, **kwargs):
             call_times.append(asyncio.get_running_loop().time())
             await asyncio.sleep(0.01)
-            return mock_response.json.return_value
+            return mock_response.json()
 
         with patch.object(imodel.endpoint, "call", side_effect=track_timing):
             # Fire exactly limit_requests so all complete in one window
@@ -202,7 +202,7 @@ class TestiModelEdgeCases:
 
         async def slow_call(*args, **kwargs):
             await asyncio.sleep(0.01)
-            return mock_response.json.return_value
+            return mock_response.json()
 
         with patch.object(imodel.endpoint, "call", side_effect=slow_call):
             # Fire exactly limit_requests so all complete in one window

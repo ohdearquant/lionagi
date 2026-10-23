@@ -1,10 +1,21 @@
 # ADR-0013: Built-in tool provider and Branch binding
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-22 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: actions-tools
 - **Date**: 2026-07-09
 - **Relations**: extends ADR-0011
+
+## Amendment 1 (2026-10-22) — the reader no longer converts documents
+
+The reader's `open` action is removed, with its converted-text cache, its remote-URL host
+allowlist and the optional `docling` dependency that did the conversion. `ReaderAction` is
+`read | list_dir`. `ReaderTool` takes `workspace_root` as its only argument, keyword-only, so the
+`cache_ttl` and `allowed_url_hosts` arguments are gone, and the toolkit's bound reader answers
+`open` as an unknown action. `chunk()` takes a callable `reader_tool` only and refuses any other
+value with a `TypeError`. The D2 bullets on `open`, its cache and a missing `docling`, the D4 notes
+on reads served from the converted-document cache and on toolkit document opening, and the
+Consequences remark on the inactive reader cache setting describe the code before this amendment.
 
 ## Context
 

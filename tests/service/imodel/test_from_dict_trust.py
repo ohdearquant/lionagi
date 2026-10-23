@@ -279,4 +279,4 @@ async def test_a_stored_credential_header_never_reaches_the_request(env_key, nam
         assert session.auth is None
         assert session.trust_env is False
     finally:
-        await session.close()
+        await session.aclose()

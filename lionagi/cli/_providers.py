@@ -16,6 +16,7 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
 from lionagi.providers.openai._codex_profile import (
+    refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
 )
 from lionagi.service.providers import (
@@ -103,8 +104,13 @@ def build_imodel_from_spec(
     fast: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    ignore_user_config: bool = False,
 ) -> iModel:
-    """Parse spec, build iModel. Effort in spec unless overridden."""
+    """Parse spec, build iModel. Effort in spec unless overridden.
+
+    ``ignore_user_config`` builds a codex request that loads no user config, so no
+    effort is derived from that config either.
+    """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
 
@@ -124,6 +130,8 @@ def build_imodel_from_spec(
         resolved_profile = resolve_codex_config_profile(profile_name)
         if resolved_profile is not None:
             profile_model, codex_profile_overrides = resolved_profile
+            if ignore_user_config:
+                refuse_codex_profile_run_settings(profile_name, codex_profile_overrides)
             progress(f"codex profile {profile_name!r} resolves to model {profile_model!r}")
             resolved_model = f"codex/{profile_model}"
             ms = ModelSpec(model=resolved_model, effort=ms.effort)
@@ -142,7 +150,9 @@ def build_imodel_from_spec(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if effort is None and provider_raw == "codex":
+    if ignore_user_config and provider_raw == "codex":
+        extra["ignore_user_config"] = True
+    if effort is None and provider_raw == "codex" and not ignore_user_config:
         effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
@@ -236,7 +246,10 @@ def build_chat_model(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if effort is None and provider == "codex":
+    if effort is None and provider == "codex" and not extra.get("ignore_user_config"):
+        # The derived default exists to keep the user config's own effort under the
+        # model's ceiling. A request that ignores the user config never loads that
+        # value, so there is nothing to derive from it.
         effort = codex_unset_effort_default(model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
