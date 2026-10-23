@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import heapq
 import json
@@ -16,6 +15,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from lionagi._errors import NotFoundError
+from lionagi.ln.concurrency import sleep
 from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
 from lionagi.state.session_naming import normalize_session_user_label, resolve_display_name
@@ -1790,7 +1790,7 @@ async def stream_session_route(
                 yield 'data: {"type":"done"}\n\n'
                 return
 
-            await asyncio.sleep(0.5)
+            await sleep(0.5)
 
     from ._sse import sse_response
 
@@ -1851,7 +1851,7 @@ async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
                 yield 'data: {"type":"done"}\n\n'
                 return
 
-            await asyncio.sleep(0.5)
+            await sleep(0.5)
 
     from ._sse import sse_response
 

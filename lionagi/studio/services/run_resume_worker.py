@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi.ln import compute_hash
+from lionagi.ln.concurrency import sleep
 from lionagi.state.db import (
     SESSION_TERMINAL_STATUSES,
     StateDB,
@@ -70,7 +71,7 @@ async def _wait_for_terminal(run_id: str) -> None:
             raise RuntimeError("source run disappeared while its resume was queued")
         if session.get("status") in SESSION_TERMINAL_STATUSES:
             return
-        await asyncio.sleep(0.25)
+        await sleep(0.25)
 
 
 async def run_worker(config: dict[str, Any]) -> int:
