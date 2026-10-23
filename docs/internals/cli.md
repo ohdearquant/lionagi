@@ -446,7 +446,7 @@ way from its own recorded `status`. Nothing on either path reads or re-checks
 the declared artifact set. The artifact root the resumed run reads is not the
 original run's: without `--save`, `allocate_run` gives it a fresh
 `<state_root>/artifacts` directory, and with `--save` it is the path `--save`
-names (`lionagi/cli/_runs.py:423-426`), neither read from the original `RunDir`
+names (`lionagi/cli/_runs.py:616-619`), neither read from the original `RunDir`
 that `resolve_checkpoint_target` returned. What a result-verifying resume would
 need — reading the persisted `artifact_contract_json`, checking the declared
 set, the completion-time digest for contract-less nodes, the byte-level check,

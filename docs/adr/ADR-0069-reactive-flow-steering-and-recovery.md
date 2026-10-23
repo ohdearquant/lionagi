@@ -571,7 +571,7 @@ against the artifact set a node declared, it does not make.
   path the resume passes comes from the replayed config, which carries the original `save_dir`
   (`lionagi/cli/orchestrate/flow.py:3046`); `allocate_run` uses `save_dir` as the artifact root when
   it is given and falls back to a fresh `<state_root>/artifacts` when it is not
-  (`lionagi/cli/_runs.py:423-426`). Either way the root is not read from the original `RunDir` the
+  (`lionagi/cli/_runs.py:616-619`). Either way the root is not read from the original `RunDir` the
   resolver returned, so without `--save` every completed node's declared artifacts are absent from
   the new root, and with a `--save` naming a directory other than the original run's they are absent
   there too. Delta row 9 covers threading the original root.

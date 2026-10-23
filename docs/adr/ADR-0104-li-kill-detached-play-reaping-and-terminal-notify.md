@@ -1,6 +1,6 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
-- **Status**: Accepted (2026-07-15), amended 2026-07-27 and 2026-10-11 — see Amendments 1 and 2
+- **Status**: Accepted (2026-07-15), amended 2026-07-27, 2026-10-11 and 2026-10-20 — see Amendments 1 to 3
 - **Kind**: Aspirational (records the target state)
 - **Implementation-status**: partial — D3/D5 (terminal-notify on kill) are on main;
   D1/D2 (play-worker reaping) shipped code that cannot reach a worker; that code is
@@ -135,6 +135,111 @@ a warning, rather than fail the run; the kill in that case leaves run.json as it
 can commit the run's session row and then fail: that row carries the process's pid and start
 time but no branch, is never completed, and stays `running` after the run ends, as it did
 before this amendment, which does not close it; that is tracked separately.
+
+## Amendment 3 (2026-10-20) — a run records the terminal write its store refused, and the reaper names it
+
+A leg whose state store refuses writes keeps going: signal persistence skips and counts what it
+could not write (`signal_persist_dropped` on run.json at teardown), and a setup that fails
+records `persistence_degraded_reason` (Amendment 2). Its end can still be lost. Teardown's
+terminal transition is a store write. When that write fails, as it does when the store refuses
+the writer lock, teardown hands back what is durable (the row's status, usually `running`, or
+`unknown` when it cannot read the row back) instead of the status the run decided. With no
+committed transition the lifecycle callback never runs, so the notify hook never records the end
+on the job record. run.json is then rewritten
+with the durable status and the decided one is gone. When the process exits, the reaper finds a
+started job with no end and reports `process_gone_without_outcome` with no detail, the answer
+for a run that said nothing about its end, although this one decided its end and lost only the
+write. A leg killed outright while its store refuses writes leaves even less: its count of
+dropped signals lives in memory and dies with it.
+
+**Decision.** Two records in the run directory, and the reaper reads them.
+
+1. When a store read or write fails teardown (teardown keeps the store error it caught: a
+   database error, or the store having no row for its write) and teardown hands back a status
+   that is not terminal for a run whose teardown decided a terminal one, the `li agent` run
+   writes `terminal_write_lost` on its run.json in the same manifest write that records
+   `status`: the decided status, its reason code, and the time. The decided status
+   and code are the outcome teardown records for its own run before its write
+   (`terminal_reason`). When teardown failed before deciding, they are the terminal status it was
+   asked to write and the code it resolved for that status, which it records before any later
+   write so that the SIGTERM latch is read once; when it failed before resolving one,
+   `resolve_run_reason` gives the code. `status` keeps saying what is durable; the new field says
+   what the run decided and that the store never got it. A run that defers its end to an
+   auto-resume, or whose teardown decided `running` because a linked engine session still runs,
+   decided no terminal status and writes nothing. A teardown that fails on anything but a
+   store error, such as an artifact removed while it was verified, reached no write the store
+   refused, and the run writes nothing either. A terminal status other than the decided one
+   is another writer's record (a concurrent teardown won the row, or the state doctor ended it),
+   not a lost write.
+2. The first time a run's signal persistence opens a skip window (the store refused the writer
+   lock), the `li agent` run writes `signal_persistence_degraded_at` on its run.json, once per
+   run, on a thread of its own under the run directory's manifest lock. The window exists so
+   that an emit never waits on the store, and this record must not make it wait on a file instead.
+   `bind_db_persistence` takes the callback that does this (`on_window_opened`) and calls it
+   once per binding, on the event loop. A run killed after that thread has written the time
+   still leaves this marker, though not its count. A whole-file write of run.json
+   (`RunDir.write_manifest`) keeps the earliest time on file, so neither the run's own setup
+   write nor one by another invocation sharing its run id (`LIONAGI_RUN_ID`) erases or moves it.
+3. An auto-resumed leg runs in a run directory of its own while the job reads the first run's
+   run.json, so the first run hands it a marker for that run.json too, and a place to leave a
+   lost terminal write, which the first run copies onto its run.json when the leg ends,
+   setting that one field under the manifest lock and leaving the rest of the file as it is,
+   except a degradation time no reader takes as one, which it drops as a whole-file write does.
+4. `reap_orphan` reads run.json through the bounded, fail-closed reader it already uses for
+   `persistence_degraded_reason`, and assigns `reason_detail` beside
+   `process_gone_without_outcome` in this order: `terminal_write_lost`, then
+   `persistence_degraded`, then `signal_persistence_degraded`. A lost terminal write's decided
+   status is copied into `terminal_evidence` as `decided_status`, also beside
+   `process_gone_notice_recorded_undelivered`, which keeps its own code and no detail. The
+   outcome stays `indeterminate` in every case: none of these is a recorded status, and a job
+   outcome taken from a run's own decision would contradict the session row the store holds.
+   The notice the reaper sends carries the detail.
+5. `job.status` lifts `signal_persist_dropped` and the two new fields to the top level beside
+   `persistence_degraded_reason`, as read-time projections, each null when absent or malformed;
+   they store nothing on the job record, whose only new stored values are decision 4's: the
+   `reason_detail` values `terminal_write_lost` and `signal_persistence_degraded`, and
+   `decided_status`.
+
+**Why the run directory.** It is the one place a run can still write when its store refuses it,
+and the reaper already reads run-directory files for the same purpose (`notify_outcome.json`,
+`persistence_degraded_reason`). A field on the job record would need the leg to take the job
+lock from teardown, which is the hook's path and is the one that did not run.
+
+**Why a detail and not new reason codes.** `reason_code` is the value readers branch on, and
+`process_gone_without_outcome` is still true of each case: the process is gone and no recorded
+status says how it ended. A `reason_detail` beside it, as `persistence_degraded` already is,
+adds the cause without changing an answer any reader keys on.
+
+**Limits.** No detail is assigned from the absence of a field: retention prunes run directories,
+and an absent field is what an older run, a pruned one and a silent one all look like. A
+malformed record reads as absent. A leg killed before its store refused anything leaves no
+marker and is reaped as before. One killed after its store refused the lock but before the
+marker's thread wrote the time leaves no marker either, and one killed after its terminal write
+failed but before the manifest write that records the loss leaves no `terminal_write_lost`. The
+count of dropped signals is still written only at teardown. A store that refuses a write in
+compatibility mode is not a lost write here: the run fails with that refusal as its reason
+(ADR-0128 D6), run.json records `failed`, and the status the run decided is not kept; a
+timed-out leg that would have auto-resumed fails the same way and is not resumed. A
+compare-and-set miss is not a lost write either: when another writer has moved the session
+row off the status this teardown read, the teardown reads the row back and returns its
+status without raising, a non-terminal status included, and nothing is recorded. Invocations
+sharing a run id share one run.json, and `terminal_write_lost` is lifecycle data like `status`:
+a later `RunDir.write_manifest` by another invocation replaces it.
+Flow, fanout and play runs write neither field, and neither do runs the Studio operator
+persists: the record is written by `li agent`'s teardown, and the operator's
+`setup_agent_persist` call passes a run id and an artifacts path but no `run` or
+`run_manifest`. They degrade without the record, as Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
+that run.json holds a real terminal status the job record never got, is a neighbouring case this
+amendment does not cover; so is a teardown that is itself interrupted part way by Ctrl-C or a
+cancellation, which records the interrupt's status on run.json without knowing whether its
+transition landed. A run cancelled before its teardown, whose teardown then runs and fails its
+terminal write, is covered: the record names the cancellation. A
+marker write that cannot start its thread, or cannot read or write run.json, is logged and
+dropped; the run's later manifest writes still carry the time, and a run that handed its end
+to an auto-resumed leg, which writes no manifest after it, writes the time again when the leg
+ends. The new run.json fields are
+additive and use names no reader keys on today; `li kill`'s run-id resolution (Amendment 2)
+still keys on `persistence_degraded_reason` alone.
 
 ## Depth contract
 
