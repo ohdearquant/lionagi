@@ -875,6 +875,21 @@ def _hand_mcp_servers(
     )
 
 
+def _worker_mcp_hand_off(servers: dict | None, *, contained: bool) -> tuple[dict | None, bool]:
+    """The server set a worker is handed, and whether it is the worker's whole set.
+
+    Once the run resolved a worker set, that set is the whole grant. Otherwise the Claude
+    CLI merges in the servers it discovers itself and codex loads every server its own
+    config declares, a withheld one included; both are what the whole set turns off. With
+    no set resolved a worker keeps what it discovers, unless it is contained: those
+    servers would start under it while ``dontAsk`` refused their tools, so it is handed
+    the empty set as its whole set.
+    """
+    if servers is None and contained:
+        return {}, True
+    return servers, servers is not None
+
+
 async def setup_orchestration(
     *,
     pattern_name: str,
@@ -1306,16 +1321,10 @@ async def build_worker_branch(
         ),
         mcp_server_names=worker_mcp_servers or (),
     )
-    _hand_mcp_servers(
-        w_imodel,
-        worker_mcp_servers,
-        label=agent_id,
-        # Once the run resolved a worker set, that set is the whole grant.
-        # Otherwise the Claude CLI merges in the servers it discovers itself and
-        # codex loads every server its own config declares, a withheld one
-        # included; both are what this turns off for the worker.
-        exclusive=worker_mcp_servers is not None,
+    servers, exclusive = _worker_mcp_hand_off(
+        worker_mcp_servers, contained=_claude_worker_contained(w_imodel)
     )
+    _hand_mcp_servers(w_imodel, servers, label=agent_id, exclusive=exclusive)
     is_cli = bool(getattr(w_imodel, "is_cli", False))
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)

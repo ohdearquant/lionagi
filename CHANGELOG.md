@@ -239,6 +239,18 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   provider did claim that cannot be a count, or that does not sum to the total of the same report,
   zeroes both and marks the usage invalid, as does a cache-write total that is not a non-negative
   integer (an integral float such as `200.0` included).
+- An agent profile can set `contain_user_settings: true` for its Claude workers in `li o flow`
+  and `li o fanout`: the CLI then loads no settings files for the worker
+  (`--setting-sources ""`), so your user, project and local settings, your own hooks and
+  permission rules among them, stop gating that worker. It runs the built-in tools Read, Glob,
+  Grep, Edit, Write, Bash, WebFetch and WebSearch and only the MCP servers the run hands it (none
+  when the run resolves no set), under `--permission-mode dontAsk`, and cannot start Agent or
+  Task subagents. The files stay on disk, where its Read and Bash tools can still open them.
+  Every agent such a worker spawns runs the same way, whatever role it names, and
+  `--retry-failed` refuses to run one again on a branch that reads the settings. A value other
+  than `true` or `false`, an empty one included, warns and contains. A profile whose
+  frontmatter does not read as YAML settings now warns that every setting in it is ignored.
+  `li agent -a` runs are unchanged.
 
 ### Changed
 

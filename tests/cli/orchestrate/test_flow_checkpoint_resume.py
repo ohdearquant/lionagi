@@ -946,6 +946,122 @@ def test_retry_failed_refuses_an_unassigned_failed_spawn_a_contained_worker_aske
     assert UUID(child_id) not in builder.get_graph().internal_nodes
 
 
+def _contained_branch(name: str) -> Branch:
+    """A branch whose model was put through the contained boundary: it reads no settings."""
+    branch = Branch(name=name)
+    branch.chat_model.endpoint.config.kwargs["setting_sources"] = ""
+    return branch
+
+
+@pytest.mark.parametrize("role_contained", [False, True])
+def test_retry_failed_reruns_a_named_spawn_a_contained_worker_asked_for_only_on_a_contained_role(
+    role_contained,
+):
+    """A node naming a role is rebuilt on that role's branch, which reads the settings files
+    the worker that asked for it ran without unless the role is contained too: then it runs
+    again there, otherwise the resume refuses."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    reviewer_branch = _contained_branch("reviewer") if role_contained else Branch(name="reviewer")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch, "reviewer": reviewer_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": "reviewer",
+            "instruction": "check the result",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-7",
+            "emitter_contains_user_settings": True,
+        }
+    ]
+
+    def _resume():
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+
+    if not role_contained:
+        with pytest.raises(FlowResumeError) as refused:
+            _resume()
+        assert f"[{child_id}]" in str(refused.value)
+        assert "the branch of a role that is not contained" in str(refused.value)
+        assert UUID(child_id) not in builder.get_graph().internal_nodes
+        return
+
+    _resume()
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.PENDING
+    assert child.branch_id == reviewer_branch.id
+
+
+def test_a_team_round_of_a_second_instance_is_rebuilt_on_that_instances_branch():
+    """Two instances of one role each have their own branch, and a round is recorded under
+    its worker's id, so it runs again on that worker's branch rather than the
+    orchestrator's, and a contained instance's round is not refused."""
+    builder, parent_id, first = _real_planned_node("reviewer")
+    first.chat_model.endpoint.config.kwargs["setting_sources"] = ""
+    second = _contained_branch("reviewer-2")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"reviewer": first},
+        worker_models=[],
+        worker_branches={"reviewer": first, "reviewer-2": second},
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("reviewer", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": "reviewer-2",
+            "instruction": "check again",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-8",
+            "emitter_contains_user_settings": True,
+        }
+    ]
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=checkpoint_spawned,
+    )
+
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.PENDING
+    assert child.branch_id == second.id
+
+
 @pytest.mark.parametrize("retry_failed", [False, True])
 def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_another_class(
     retry_failed,
