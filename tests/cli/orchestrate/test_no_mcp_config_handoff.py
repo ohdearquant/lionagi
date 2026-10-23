@@ -1295,7 +1295,7 @@ def test_a_frontmatter_that_does_not_read_contains_when_it_names_the_flag(caplog
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 @pytest.mark.parametrize(
     "prefix",
-    ["﻿", "﻿﻿", "\n﻿", " ﻿", "﻿\n", "​", "⁠\t"],
+    ["\ufeff", "\ufeff\ufeff", "\n\ufeff", " \ufeff", "\ufeff\n", "\u200b", "\u2060\t"],
 )
 def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog, newline, prefix):
     """Whitespace and invisible format characters ahead of the opening delimiter, in any
@@ -1312,7 +1312,7 @@ def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog,
 
     assert profile.model == "claude_code/sonnet"
     assert profile.contain_user_settings is True
-    assert not {"﻿", "​", "⁠"} & set(profile.raw_body)
+    assert not {"\ufeff", "\u200b", "\u2060"} & set(profile.raw_body)
     assert "every setting in it is ignored" not in caplog.text
 
 
@@ -1375,7 +1375,7 @@ def test_the_flag_is_read_from_every_form_of_a_block_that_reads(caplog, block, e
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 @pytest.mark.parametrize(
     "prefix",
-    ["️", "͏", "ㅤ", "⠀", "ᅟ", "\x00", "x", "# notes\n"],
+    ["\ufe0f", "\u034f", "\u3164", "\u2800", "\u115f", "\x00", "x", "# notes\n"],
 )
 @pytest.mark.parametrize(
     "flag",
@@ -1408,7 +1408,7 @@ def test_text_ahead_of_a_frontmatter_on_its_line_warns_that_its_settings_are_ign
 
     from lionagi.cli._providers import _parse_profile
 
-    text = "ㅤ---\nmodel: claude_code/sonnet\nyolo: true\n---\n\nWork.\n"
+    text = "\u3164---\nmodel: claude_code/sonnet\nyolo: true\n---\n\nWork.\n"
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         profile = _parse_profile("role", text)
 
@@ -1427,6 +1427,14 @@ def test_text_ahead_of_a_frontmatter_on_its_line_warns_that_its_settings_are_ign
         "Work.\ncontain_user_settings: true\n",
         "# notes\n---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
         "Work.\n\n---\n\nMore work.\n",
+        "Scope\n---\nDo not touch contain_user_settings.\n",
+        "Work.\n\n---\n\nNever set contain_user_settings here.\n\n---\n\nMore work.\n",
+        "# notes\n---\nnotes: [unclosed, contain_user_settings\n",
+        "Notes ---\nWork on the task.\n",
+        "Notes ---\nWork: do this: then that\n",
+        "Title\n-----\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n",
+        "Notes ---\nDo not touch contain_user_settings.\n",
+        "---\n# contain_user_settings: true\n---\n\nWork.\n",
     ],
 )
 def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
@@ -1442,6 +1450,46 @@ def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
     assert profile.model is None
     assert profile.contain_user_settings is False
     assert "every setting in it is ignored" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("text", "contained", "warns"),
+    [
+        ("\u3164---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n", False, True),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n",
+            False,
+            False,
+        ),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
+            "notes: [unclosed\n---\n\nWork.\n",
+            True,
+            True,
+        ),
+        (
+            "\u3164---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\nWork.\n",
+            True,
+            True,
+        ),
+        ("\u3164---\nmodel: claude_code/sonnet\n# contain_user_settings: true\n---\n", False, True),
+    ],
+)
+def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, warns):
+    """A hidden block runs to its closing ``---`` line, so a flag in the body after it is
+    prompt text; one that does not read runs to the end when it has no closing line. A block
+    after text on lines of its own counts only between two ``---`` lines."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is contained
+    assert ("hides the frontmatter after it" in caplog.text) is warns
+    assert ("its worker is contained" in caplog.text) is contained
 
 
 def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):
@@ -1471,8 +1519,8 @@ def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containmen
         "---\n# a note only\n---\n\nWork.\n",
         "---\n# a note\n\n# and another\n---\n\nWork.\n",
         "---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
-        "ㅤ---\n---\n\nWork.\n",
-        "ㅤ---\n# a note only\n---\n\nWork.\n",
+        "\u3164---\n---\n\nWork.\n",
+        "\u3164---\n# a note only\n---\n\nWork.\n",
     ],
 )
 def test_a_profile_with_no_settings_to_lose_does_not_warn(caplog, text):

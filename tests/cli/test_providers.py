@@ -25,11 +25,13 @@ def test_parse_model_spec_normalizes_mixed_case_effort_suffix():
     assert ms.effort == "max"
 
 
-def test_parse_model_spec_rejects_effort_for_bare_gemini_provider():
+@pytest.mark.parametrize("provider", ["gemini", "gemini-api", "Gemini"])
+def test_parse_model_spec_rejects_effort_for_bare_gemini_provider(provider):
     """The bare 'gemini' provider (direct Google API, not the agy CLI) still
-    does not support effort levels — ValueError is raised."""
+    does not support effort levels — ValueError is raised, for its alias and
+    any letter case of it too."""
     with pytest.raises(ValueError, match="does not support effort"):
-        parse_model_spec("gemini/gemini-3.1-pro-high")
+        parse_model_spec(f"{provider}/gemini-3.1-pro-high")
 
 
 def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch):
