@@ -7,8 +7,8 @@
   do not implement this contract
 - **Area**: studio
 - **Date**: 2026-10-23
-- **Relations**: none; standalone listing decision, with ADR-0071 D4/D5 and ADR-0087 D3 as
-  limited precedents
+- **Relations**: Refs [#3106](https://github.com/ohdearquant/lionagi/issues/3106);
+  standalone listing decision, with ADR-0071 D4/D5 and ADR-0087 D3 as limited precedents
 - **Disposition**: standalone. No decision or status of ADR-0071 or ADR-0087 is replaced or
   amended. ADR-0071 governs task claims; ADR-0087 D3 governs evidence projection receipts.
   Their bounded-scan and cursor principles inform this separate mutable-session listing.
@@ -17,6 +17,13 @@ This is a proposal for review. The caps and wire names below are engineering pro
 not accepted policy, measured workload optima, or statistical latency guarantees.
 Dependent v2 implementation waits for design sign-off. This documentation patch does not
 change either existing endpoint.
+
+For #3106, this proposal decides scope items 1 (keyset paging), 4 (bounded search), and
+5 (optional exact totals). Item 2 (page-first projection without outer regrouping or
+re-sorting) is deferred to a separate change. Item 3 (sargable status filtering) is
+already implemented at the source baseline below: `lionagi/studio/services/sessions.py`
+lines 374–375 use `status IN (...)` with the explicit NULL arm only for completed.
+This proposal does not claim that the whole issue is implemented or complete.
 
 ## Context
 
@@ -101,7 +108,7 @@ The v1 contracts remain:
 | Endpoint | Existing paging and result contract |
 | --- | --- |
 | Sessions | limit/offset/sort; sessions, numeric total, limit, offset, truncated. |
-| Runs | page/per_page plus current filters/sort; runs, page, per_page, numeric total, total_pages, has_next, has_prev. |
+| Runs | page/per_page plus current filters/sort; runs, page, per_page, numeric total, total_pages, has_next, has_prev, status_ended_at_mismatches (recomputed for every response). |
 
 V1 retains its current matching-row OFFSET semantics, uncapped legacy offset depth,
 exact totals, and existing contains behavior. This is an explicitly disclosed
@@ -396,7 +403,11 @@ Sequence:
    mandatory removal record; this proposal invokes no exception to remove v1 and sets no
    removal release/date.
 
-Acceptance is staged, with before/after evidence pinned to implementation commits:
+Acceptance is staged, with before/after evidence pinned to implementation commits;
+this proposal replaces #3106's original latency criterion — “At 20k and 200k seeded
+sessions, warm p95 for the unfiltered first 20 rows is under 25 ms on the benchmark
+host and grows at most 2x between those sizes” — with the work-counter acceptance
+below plus host-pinned timing, and accepting that replacement is the owner's decision.
 
 | Stage | Required proof |
 | --- | --- |
