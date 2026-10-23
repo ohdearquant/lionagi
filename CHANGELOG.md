@@ -26,7 +26,10 @@ from the environment, sets it again on the live config (`model.endpoint.config.c
 Nor does it keep a user and password written into its stored base URL: for a gateway that
 reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A stored base URL with an `@`
 in it that the HTTP client does not read as a URL with a host raises `ValueError` when it is
-restored, since the user and password in it cannot be removed; pass the URL the same way.
+restored, since the user and password in it cannot be removed, and so do a stored host with an
+`@` written as `%40` and stored bytes that do not decode as UTF-8 (these raised pydantic's
+`ValidationError` before, with part of the bytes in its message); pass the URL the same way,
+or a live model to `Branch.from_dict`.
 
 Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
 (a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import
@@ -674,9 +677,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   the HTTP client would send as Basic authentication to the host the URL names; a base URL the
   caller passes keeps them. A stored base URL with an `@` that the client does not read as a URL
   with a host is refused, since the user and password in it cannot be removed. What is removed
-  is what the client reads as the URL's user and password: an `@` it reads in the path, query or
-  fragment, and one written as `%40`, are kept as written, and the client sends neither as a
-  credential. A CLI model's
+  is what the client reads as the URL's user and password, a `%40` inside them included; an `@`
+  it reads in the path, query or fragment is kept as written, and the client sends none of it as
+  a credential. A stored host with an `@` written as `%40` is refused: the client reads no user
+  there and would send that text as the host name, to the resolver and in the `Host` header.
+  A CLI model's
   own settings are still restored as stored and read by the child process it starts: Codex `config_overrides` can name another provider URL and the
   environment variable its key is read from, Claude Code's `settings` and `permission_mode`
   set what that child may do, and a stored `mcp_servers` or `mcp_config` names the MCP servers
@@ -696,8 +701,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - The lockfiles move off releases with published advisories: `virtualenv` from 21.14.5 to
   21.14.13 (CVE-2026-113716, CVE-2026-113721, CVE-2026-113722, CVE-2026-113724 and
   CVE-2026-113725) and `black` from 26.3.1 to 26.10.1 (CVE-2026-114134) in `uv.lock`, and
-  `opentelemetry-api` to 1.45.1 (CVE-2026-114603), with the OpenTelemetry packages released
-  beside it, in `uv.lock` and `lion1/uv.lock`. `uv.lock` also moves `packaging` from 26.1 to 26.3
+  `opentelemetry-api` to 1.45.1 (CVE-2026-114603): in `uv.lock` with the OpenTelemetry packages
+  released beside it, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and the
+  instrumentation, semantic-conventions and util-http packages at 0.66b1, where
+  `opentelemetry-proto` and the exporter packages stay at 1.45.0 and 0.66b0. `uv.lock` also moves `packaging` from 26.1 to 26.3
   and `distlib` from 0.4.0 to 0.4.4, and adds `opentelemetry-exporter-http-transport` and
   `opentelemetry-exporter-otlp-common`, which `opentelemetry-exporter-otlp-proto-http` 1.45.1
   requires. The constraints in `pyproject.toml` keep the lock at or above `virtualenv` 21.14.9,

@@ -328,8 +328,16 @@ def test_a_callers_url_keeps_its_user_and_password(env_key):
     assert config._api_key is None
 
 
-def test_an_at_sign_after_the_host_is_kept():
-    url = "https://gateway.example/v1/@team"
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gateway.example/v1/@team",
+        "https://gateway.example/v1/%40team",
+        "https://gateway.example/v1?team=%40x",
+        "https://gateway.example/v1#%40team",
+    ],
+)
+def test_an_at_sign_after_the_host_is_kept(url):
     assert iModel.from_dict(_stored(base_url=url)).endpoint.config.base_url == url
 
 
@@ -357,6 +365,35 @@ def test_a_callers_url_replaces_stored_bytes_that_are_not_utf8():
     assert config.base_url == ELSEWHERE
 
 
+def _restore_through(entry, data):
+    """Restore stored iModel data through one of the three entry points."""
+    if entry == "imodel":
+        return iModel.from_dict(data).endpoint.config
+    if entry == "endpoint":
+        return Endpoint.from_dict(data["endpoint"]).config
+    branch = Branch(chat_model=iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key"))
+    branch_data = branch.to_dict()
+    branch_data["chat_model"] = data
+    return Branch.from_dict(branch_data).chat_model.endpoint.config
+
+
+@pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
+@pytest.mark.parametrize("cast", [bytes, bytearray])
+def test_stored_bytes_lose_their_user_and_password_on_every_restore(entry, cast):
+    data = _stored(base_url=cast(STORED_PASSWORD_URL.encode()))
+    assert _restore_through(entry, data).base_url == ELSEWHERE
+
+
+@pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
+@pytest.mark.parametrize("cast", [bytes, bytearray])
+def test_stored_bytes_that_are_not_utf8_are_refused_without_their_text(entry, cast):
+    data = _stored(base_url=cast(b"https://stored-user:stored-secret@gateway.example/v1/\xff"))
+    with pytest.raises(ValueError, match="do not decode as UTF-8") as refused:
+        _restore_through(entry, data)
+    assert "stored-se" not in str(refused.value)
+    assert "chat_model=" in str(refused.value)
+
+
 # Spellings the HTTP client reads with a host and a user, though a URL split by the
 # standard library refuses them or places the '@' elsewhere.
 @pytest.mark.asyncio
@@ -368,6 +405,7 @@ def test_a_callers_url_replaces_stored_bytes_that_are_not_utf8():
         "https://[stored-user:stored-secret@gateway.example/v1",
         "https://stored-user:stored-secret@x@gateway.example/v1",
         "HTTPS://stored-user:stored-secret@gateway.example/v1",
+        "https://stored-user%40corp:stored-secret@gateway.example/v1",
     ],
 )
 async def test_a_user_the_client_would_read_is_removed(env_key, stored):
@@ -397,9 +435,47 @@ UNPLACED_AT_SIGN = [
 
 @pytest.mark.parametrize("stored", UNPLACED_AT_SIGN)
 def test_a_stored_url_whose_at_sign_cannot_be_placed_is_refused(stored):
-    with pytest.raises(ValueError, match="does not read as a URL with a host") as refused:
+    with pytest.raises(ValueError, match="cannot be removed") as refused:
         iModel.from_dict(_stored(base_url=stored))
     assert "stored-se" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("stored", "reason"),
+    [
+        ("https://stored-user:stored-secret@", "does not read as a URL with a host"),
+        (
+            "https://stored-user:stored-secret@gateway.example/v1/\ud800",
+            "has a character the HTTP client cannot encode",
+        ),
+    ],
+)
+def test_a_refused_url_says_why_it_cannot_be_read(stored, reason):
+    with pytest.raises(ValueError, match=reason):
+        iModel.from_dict(_stored(base_url=stored))
+
+
+# A host with an '@' written as '%40': the client reads no user in it and would send the
+# text as the host name, to the resolver and in the Host header.
+ENCODED_AT_SIGN_IN_HOST = [
+    "https://stored-user%3Astored-secret%40gateway.example/v1",
+    "https://stored-user%3astored-secret%40gateway.example/v1",
+    "https://other:pass@stored-user%3Astored-secret%40gateway.example/v1",
+]
+
+
+@pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
+@pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)
+def test_a_stored_host_with_an_encoded_at_sign_is_refused(entry, stored):
+    with pytest.raises(ValueError, match="written as '%40' in its host") as refused:
+        _restore_through(entry, _stored(base_url=stored))
+    assert "stored-se" not in str(refused.value)
+
+
+@pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)
+def test_a_callers_url_replaces_a_stored_host_with_an_encoded_at_sign(stored):
+    config = iModel.from_dict(_stored(base_url=stored), base_url=ELSEWHERE).endpoint.config
+    assert config.base_url == ELSEWHERE
 
 
 @pytest.mark.parametrize("stored", UNPLACED_AT_SIGN)

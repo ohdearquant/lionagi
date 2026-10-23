@@ -1334,12 +1334,25 @@ def _without_credential_headers(headers: Any) -> Any:
     return headers
 
 
+_STORED_URL_REMEDY = (
+    "Pass the URL to iModel.from_dict or Endpoint.from_dict (base_url=), pass a live "
+    "model to Branch.from_dict (chat_model=, parse_model=), or correct the stored URL."
+)
+
+
 def _stored_base_url(config: Mapping) -> Any:
     """The stored ``base_url`` as the config reads it: bytes are decoded as UTF-8, as the
-    config's string field decodes them, and any other value is returned as it is."""
+    config's string field decodes them, and any other value is returned as it is. Bytes
+    that do not decode are refused without their text, which may hold a password."""
     value = config.get("base_url")
     if isinstance(value, (bytes, bytearray)):
-        return bytes(value).decode()
+        try:
+            return bytes(value).decode()
+        except UnicodeDecodeError:
+            raise ValueError(
+                "The stored base_url is bytes that do not decode as UTF-8, so a user and "
+                f"password in it cannot be removed. {_STORED_URL_REMEDY}"
+            ) from None
     return value
 
 
@@ -1348,22 +1361,37 @@ def _without_userinfo(url: str) -> str:
     HTTP client reads it. A URL the client reads with a host and no user is returned as
     it is. One it cannot read, or reads with no host, is refused if it has an ``@`` in
     it, since which part is a password cannot be told and the config would write the
-    URL back; without an ``@`` it is returned as it is, for the client to refuse."""
+    URL back; without an ``@`` it is returned as it is, for the client to refuse. A host
+    with an ``@`` written as ``%40`` is refused too: the client reads no user there and
+    sends that text as the host name, to the resolver and in the Host header."""
     import unicodedata
+    from urllib.parse import unquote
 
     import httpx
 
+    unencodable = False
     try:
         parsed = httpx.URL(url)
-    except (httpx.InvalidURL, UnicodeError):
+    except httpx.InvalidURL:
         parsed = None
+    except UnicodeError:
+        parsed, unencodable = None, True
     if parsed is not None and parsed.host:
+        if "@" in unquote(parsed.host):
+            raise ValueError(
+                "The stored base_url has an '@' written as '%40' in its host, so a user "
+                f"and password in it cannot be removed. {_STORED_URL_REMEDY}"
+            )
         return str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
     if "@" not in unicodedata.normalize("NFKC", url):
         return url
     # The URL is not quoted: the part that cannot be placed may be the password.
+    reason = (
+        "has a character the HTTP client cannot encode"
+        if unencodable
+        else "does not read as a URL with a host"
+    )
     raise ValueError(
-        "The stored base_url has an '@' in it but does not read as a URL with a host, "
-        "so a user and password in it cannot be removed. Restore with base_url= given, "
-        "or correct the stored URL."
+        f"The stored base_url has an '@' in it but {reason}, so a user and password "
+        f"in it cannot be removed. {_STORED_URL_REMEDY}"
     )
