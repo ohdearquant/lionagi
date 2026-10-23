@@ -707,16 +707,30 @@ class Branch(Element, Relational):
         return dict_
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        chat_model: iModel | None = None,
+        parse_model: iModel | None = None,
+    ):
+        """Rebuild a branch from ``to_dict`` output, read as trusted input.
+
+        A stored model is rebuilt by ``iModel.from_dict``, which takes no credential from
+        ``data``, and lets it turn the local-network opt-in off but never on. A model
+        given here replaces the stored one.
+        """
         # Copy first: the pops below would otherwise strip messages, chat_model,
         # and log_config out of the caller's snapshot, so it could not be reused
         # for a retry, comparison, or a second restoration.
         data = dict(data)
+        stored_chat_model = data.pop("chat_model", Unset)
+        stored_parse_model = data.pop("parse_model", Unset)
         dict_ = {
             "messages": data.pop("messages", Unset),
             "logs": data.pop("logs", Unset),
-            "chat_model": data.pop("chat_model", Unset),
-            "parse_model": data.pop("parse_model", Unset),
+            "chat_model": stored_chat_model if chat_model is None else chat_model,
+            "parse_model": stored_parse_model if parse_model is None else parse_model,
             "system": data.pop("system", Unset),
             "log_config": data.pop("log_config", Unset),
         }

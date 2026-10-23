@@ -6,11 +6,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from lionagi.service.resilience import (
     APIClientError,
@@ -21,10 +21,22 @@ from lionagi.service.resilience import (
 )
 from lionagi.service.types.stream_chunk import StreamChunk
 
-from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
+from .endpoint_config import AUTHORIZATION_KWARG_NAMES, RUNTIME_STATE_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
+
+# Header names, folded, that a restored model drops beside the credential names
+# (``_without_credential_headers``). Only restore reads this: the redaction callers of
+# credential_fields keep their own vocabulary.
+_HEADERS_NOT_RESTORED = frozenset({"cookie", "x_auth", "host"})
+
+# What ``from_dict`` never takes from a stored config: the credential source, the
+# local-network opt-in, and the kwargs a config never writes down.
+_NOT_RESTORED = frozenset(
+    ("api_key", "allow_local_network", *AUTHORIZATION_KWARG_NAMES, *RUNTIME_STATE_NAMES)
+)
+
 
 # Built on first use and shared by every client, as aiohttp shared its own.
 _VERIFIED_SSL_CONTEXT = None
@@ -1212,7 +1224,25 @@ class Endpoint:
         }
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        base_url: str | None = None,
+        api_key: str | SecretStr | None = None,
+        allow_local_network: bool | None = None,
+    ):
+        """Rebuild an endpoint from ``to_dict`` output.
+
+        The stored config never supplies a credential, the local-network opt-in, a grant
+        or runtime state. The first two come from the keyword arguments here; a grant is
+        handed to the live config again by the caller whose role names it. ``base_url``
+        given here replaces the stored one. A stored header that can carry a credential
+        or pick the server is dropped (see ``_without_credential_headers``), and of the
+        stored client options only the headers are kept. Without
+        the keyword arguments the config has no credential and the opt-in is off;
+        ``iModel.from_dict`` then applies the provider's registration.
+        """
         from lionagi.utils import to_dict
 
         data = to_dict(data, recursive=True)
@@ -1225,18 +1255,36 @@ class Endpoint:
         if circuit_breaker:
             circuit_breaker = CircuitBreaker(**circuit_breaker)
         if config:
-            # The config never writes a grant down, but this reads a stored row
-            # as it stands: one written by an older version, or by any other
-            # writer, may still carry it. A grant belongs to the role of the
-            # caller restoring the row, who hands it again if the role names it.
+            # None of these is taken from a stored row. The config writes down only the
+            # opt-in; a row written by an older version, or by any other writer, may
+            # carry the rest. A name the config has no field for is moved into kwargs,
+            # so both places are cleared. A grant belongs to the role of the caller
+            # restoring the row, who hands it again if the role names it.
+            config = {k: v for k, v in config.items() if k not in _NOT_RESTORED}
             kwargs = config.get("kwargs")
             if isinstance(kwargs, dict):
-                config = {
-                    **config,
-                    "kwargs": {
-                        k: v for k, v in kwargs.items() if k not in AUTHORIZATION_KWARG_NAMES
-                    },
+                config["kwargs"] = {k: v for k, v in kwargs.items() if k not in _NOT_RESTORED}
+            # Nor does a stored header. The endpoint merges default_headers over the
+            # credential header it writes, so a stored Authorization or x-api-key would
+            # replace the restored key, at whatever URL the model is restored to. Of the
+            # client options only the headers are kept, filtered the same way: the rest
+            # set up this process's HTTP client, and some hand it a credential (auth,
+            # proxy_auth, cookies) or let it read one here (trust_env reads .netrc).
+            if isinstance(config.get("default_headers"), Mapping):
+                config["default_headers"] = _without_credential_headers(config["default_headers"])
+            client_kwargs = config.get("client_kwargs")
+            if isinstance(client_kwargs, Mapping):
+                config["client_kwargs"] = {
+                    name: _without_credential_headers(value)
+                    for name, value in client_kwargs.items()
+                    if name == "headers"
                 }
+            if base_url is not None:
+                config["base_url"] = base_url
+            if api_key is not None:
+                config["api_key"] = api_key
+            if allow_local_network is not None:
+                config["allow_local_network"] = allow_local_network
             config = EndpointConfig(**config)
 
         return cls(
@@ -1244,3 +1292,36 @@ class Endpoint:
             circuit_breaker=circuit_breaker,
             retry_config=retry_config,
         )
+
+
+def _without_credential_headers(headers: Any) -> Any:
+    """``headers`` without each stored header a restored model must not send.
+
+    That is a header whose name the library reads as a credential, one whose name ends
+    in ``-Key`` (``Ocp-Apim-Subscription-Key``, ``X-Auth-Key``), ``Cookie``, ``X-Auth``,
+    and ``Host``, which would send the restored key to another virtual host at the
+    same address. A mapping and a list of name-value pairs are filtered; any other
+    value is returned as it is, for the config or the HTTP client to accept or refuse.
+    """
+    from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
+
+    def names_credential(name: Any) -> bool:
+        if not isinstance(name, str):
+            return False
+        folded = fold_field_name(name).strip("_")
+        return (
+            is_secret_field_name(name)
+            or folded in _HEADERS_NOT_RESTORED
+            or folded == "key"
+            or folded.endswith("_key")
+        )
+
+    if isinstance(headers, Mapping):
+        return {name: value for name, value in headers.items() if not names_credential(name)}
+    if isinstance(headers, (list, tuple)):
+        return [
+            pair
+            for pair in headers
+            if not (isinstance(pair, (list, tuple)) and pair and names_credential(pair[0]))
+        ]
+    return headers

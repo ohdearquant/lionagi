@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import nullcontext
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import Event, EventStatus, Log
@@ -706,32 +706,62 @@ class iModel:  # noqa: N801
         return data
 
     @classmethod
-    def from_dict(cls, data: dict):
-        endpoint = Endpoint.from_dict(data.get("endpoint", {}))
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        base_url: str | None = None,
+        api_key: str | SecretStr | None = None,
+        allow_local_network: bool | None = None,
+    ):
+        """Rebuild a model from ``to_dict`` output, read as trusted input.
+
+        ``data`` chooses the provider, model and settings. It never supplies a
+        credential or a header that can carry one, and can turn the local-network
+        opt-in off but not on. Without
+        ``api_key``, the environment's credential is attached only at the provider's
+        registered base URL. Without ``allow_local_network``, the provider's
+        registered setting applies. ``base_url`` replaces the stored URL.
+        """
+        endpoint = Endpoint.from_dict(
+            data.get("endpoint", {}),
+            base_url=base_url,
+            api_key=api_key,
+            allow_local_network=allow_local_network,
+        )
 
         # openai_compatible=True: rehydrating a persisted iModel must never
         # raise just because its provider isn't (or is no longer) registered.
-        # This lookup only recovers a registered subclass and a fresh
-        # env-sourced API key when one applies; `endpoint` is already complete.
+        # This lookup only recovers a registered subclass, its env-sourced API key
+        # and its local-network setting; `endpoint` is already complete.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
             openai_compatible=True,
         ):
-            # Preserve the freshly resolved (env-sourced) API key before overwriting config
-            fresh_api_key = e1.config._api_key
+            registered = e1.config
             e1.config = endpoint.config
-            if e1.config._api_key is None and fresh_api_key:
-                e1.config._api_key = fresh_api_key
+            if allow_local_network is None:
+                e1.config.allow_local_network = _restored_opt_in(registered, data)
+            # The environment's credential is for the provider's own URL only.
+            if (
+                api_key is None
+                and registered._api_key
+                and _same_base_url(e1.config.base_url, registered.base_url)
+            ):
+                e1.config._api_key = registered._api_key
         else:
             e1 = endpoint
 
+        # The executor's rate limits only: any other key would reach __init__ as an
+        # endpoint setting, such as a base_url or an env, past the rules above.
+        stored_limits = data.get("processor_config") or {}
         return cls(
             endpoint=e1,
             provider_metadata=data.get("provider_metadata"),
             id=data.get("id"),
             created_at=data.get("created_at"),
-            **data.get("processor_config", {}),
+            **{name: stored_limits[name] for name in _EXECUTOR_LIMITS if name in stored_limits},
         )
 
     @property
@@ -739,3 +769,59 @@ class iModel:  # noqa: N801
         if self.is_cli:
             return self.endpoint.session_id
         return self.provider_metadata.get("session_id")
+
+
+# The settings iModel.to_dict stores as processor_config: RateLimitedAPIExecutor's config.
+_EXECUTOR_LIMITS = (
+    "queue_capacity",
+    "capacity_refresh_time",
+    "interval",
+    "limit_requests",
+    "limit_tokens",
+    "concurrency_limit",
+)
+
+
+def _same_base_url(stored: str | None, registered: str | None) -> bool:
+    """Whether a stored base URL is the registered one, spelled another way: scheme and
+    host in any case, the scheme's default port written out, a trailing slash. A URL
+    with credentials in it, or one that does not parse, matches only itself."""
+    from urllib.parse import urlsplit
+
+    if stored == registered:
+        return True
+    if not stored or not registered:
+        return False
+    keys = []
+    for url in (stored, registered):
+        try:
+            parts = urlsplit(url)
+            port = parts.port
+        except ValueError:
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        if port == {"http": 80, "https": 443}.get(parts.scheme):
+            port = None
+        path = parts.path.rstrip("/")
+        keys.append((parts.scheme, parts.hostname, port, path, parts.query, parts.fragment))
+    return keys[0] == keys[1]
+
+
+def _restored_opt_in(registered: Any, data: Mapping) -> bool:
+    """The provider's registered local-network opt-in, unless the stored config turned it
+    off. Off, the model reaches public hosts only; on, loopback hosts only. A stored row
+    may turn it off, as its writer did for a local provider served elsewhere, but never
+    on, which would point the model at this machine. A stored value other than ``True``,
+    at the top of the config or in its ``kwargs``, reads as off: ``"false"`` and ``0``
+    were off when the config parsed them, and an unknown spelling fails closed."""
+    endpoint = data.get("endpoint")
+    config = endpoint.get("config") if isinstance(endpoint, Mapping) else None
+    if not isinstance(config, Mapping):
+        return registered.allow_local_network
+    kwargs = config.get("kwargs")
+    places = (config, kwargs) if isinstance(kwargs, Mapping) else (config,)
+    for place in places:
+        if "allow_local_network" in place and place["allow_local_network"] is not True:
+            return False
+    return registered.allow_local_network
