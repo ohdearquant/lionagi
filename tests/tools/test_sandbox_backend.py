@@ -473,3 +473,17 @@ async def test_daytona_backend_rejects_dotdot_artifact_path():
     handle = await backend.provision(ProvisionSpec(repo_root="/repo"))
     with pytest.raises(ValueError, match="traversal"):
         await backend.collect(handle, ["../secret.txt"])
+
+
+def test_require_daytona_without_the_package_names_it_and_its_floor(monkeypatch):
+    """No extra installs daytona, so the error names the package and its version floor."""
+    import sys
+
+    from lionagi.tools import daytona as daytona_module
+
+    monkeypatch.setitem(sys.modules, "daytona", None)
+    with pytest.raises(ImportError) as excinfo:
+        daytona_module._require_daytona()
+    message = str(excinfo.value)
+    assert message.endswith("pip install 'daytona>=0.171.0'")
+    assert "lionagi[sandbox]" not in message

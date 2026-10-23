@@ -22,7 +22,7 @@ def _require_daytona():
     except ImportError as e:  # pragma: no cover - exercised only without the extra
         raise ImportError(
             "Daytona support requires the 'daytona' package. "
-            "Install it with: pip install 'lionagi[sandbox]'  (or: uv add daytona)"
+            "Install it with: pip install 'daytona>=0.171.0'"
         ) from e
     return daytona
 

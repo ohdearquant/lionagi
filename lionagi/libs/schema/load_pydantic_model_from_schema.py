@@ -455,7 +455,7 @@ def load_pydantic_model_from_schema(
         raise RuntimeError(
             f"create_model could not handle this schema ({create_model_error}), and "
             "`datamodel-code-generator` is not installed for fallback. "
-            "Install it with: pip install datamodel-code-generator"
+            "Install it with: pip install 'datamodel-code-generator>=0.64.0'"
         )
 
     if DataModelType is not None:
