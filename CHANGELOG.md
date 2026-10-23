@@ -81,6 +81,55 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Added
 
+- Studio Operator can update its active conversation's title and persistent
+  description. Omitted fields retain their values, and an applied effect is
+  recorded with the saved change without duplicating the provider's tool result.
+  Descriptions appear in the conversation list, and forks preserve the source
+  description independently. The store adds nullable
+  `studio_operator_conversations.description`. Live conversation titles and
+  descriptions refresh after the tool result, or after a turn ends without one.
+  List refreshes retain conversations created while the read was pending, do not
+  undo a rename, pin or archive made during the read unless the server changed the
+  row afterwards, and respect the current list filter. A failed send is reported
+  in the conversation it was sent for: at once while it is shown, otherwise once,
+  when it is shown again with no send, Stop or decision in flight or about to
+  start under auto-allow and no other error showing, with its unsent text back in
+  the composer ahead of any text typed there since. Auto-allow sends one
+  decision per proposal, a second only when the first was refused after another
+  conversation was chosen, and none while no conversation is shown. A decision
+  auto-allow makes leaves an error already showing in place when it succeeds,
+  except a refusal of that same proposal, which the success clears; a refused
+  decision shows its own error in place of any other, and its proposal can be
+  decided again by hand. A decision's error clears once its proposal is decided
+  or the stream resolves it. A decision refused after another conversation was
+  chosen is not shown in that one: its error is kept for its own conversation,
+  one per proposal, and shown once when that conversation is shown again, after
+  any kept send failure and under the same conditions, if the proposal is still
+  pending there, and the proposal is offered again for a hand decision. Several
+  kept refusals are shown one at a time, oldest first, each once the alert
+  before it has cleared. With auto-allow on, auto-allow decides it again there
+  instead, and only that decision's outcome is shown. A reported failure shows once: a later error
+  replaces it, and its text stays in the composer. A draft whose conversation
+  could not be
+  created, including one sent while the selected conversation was still loading,
+  reports it in the conversation then shown and keeps its text; if a new
+  conversation was started during the send, the text comes back when the composer
+  is empty. A draft's new conversation is selected only if the operator has made
+  no choice of conversation (a row, a new or forked conversation, a retry) since
+  the send started; otherwise it is listed and the turn is submitted there, and
+  the conversation shown does not take on that turn. A fork counts as a choice
+  from the click, even when it then fails. The first list read selects a
+  conversation only if no choice was made while it ran, and Retry loads the
+  conversation whose load failed.
+- Studio sessions can set or clear an explicit display label through
+  `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
+  detail names without changing activity timestamps; clearing a label restores
+  the existing fallback name. Operator renames change this explicit label, and
+  search, run references, proposals and CLI displays use it. A label is
+  trimmed first, so whitespace and separators at its edges are dropped; one
+  longer than 160 characters after trimming, or still holding control, format
+  or line/paragraph-separator characters, is refused with a 422 that names
+  `user_label`. The store adds nullable `sessions.user_label`.
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
   `play.submit` accept `exclude_mcp_servers`, which removes named servers from
   the MCP config a submission resolves before its snapshot is written. Every
@@ -193,6 +242,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Changed
 
+- An approved Studio Operator `rename_run` sets the run's explicit display label
+  and no longer writes the run's system `name` or its `updated_at`.
 - `POST /api/studio/pairing-codes` now answers 410 for every admitted request, whatever its
   headers or the admission token. `li studio` mints a pairing code in process before it starts
   the daemon, or, against a daemon already running, obtains one over the daemon's new

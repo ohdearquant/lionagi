@@ -24,6 +24,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi.state.session_naming import resolve_display_name
+
 from .redact import MAX_CANDIDATES, public_project
 from .store import OperatorStore
 
@@ -217,10 +219,20 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
         return None
 
     pattern = f"%{_escape_like(ref)}%"
+    from sqlalchemy import inspect
+
+    async with db._read() as conn:
+        columns = await conn.run_sync(
+            lambda sync: {column["name"] for column in inspect(sync).get_columns("sessions")}
+        )
+    name_columns = ["name", "playbook_name"]
+    if "user_label" in columns:
+        name_columns.append("user_label")
+    matches = " OR ".join(f"{column} LIKE ? ESCAPE '\\'" for column in name_columns)
     rows = await db.fetch_all(
-        "SELECT * FROM sessions WHERE (name LIKE ? ESCAPE '\\' OR playbook_name LIKE ? ESCAPE '\\') "
+        f"SELECT * FROM sessions WHERE ({matches}) "  # noqa: S608
         "AND project = ? ORDER BY started_at DESC LIMIT 11",
-        (pattern, pattern, project),
+        (*([pattern] * len(name_columns)), project),
     )
     if not rows:
         return None
@@ -323,7 +335,7 @@ def _cancel_summary(row: dict[str, Any]) -> str:
     project_label = public_project(row.get("project"))
     if project_label:
         parts.append(f"project {project_label}")
-    name = row.get("name")
+    name = resolve_display_name(row)
     if name:
         parts.append(f"'{name}'")
     status = row.get("status")

@@ -153,7 +153,7 @@ ANTHROPIC_ACCOUNTS='[{"name":"primary","key_env":"ANTHROPIC_PRIMARY_KEY","budget
   error; invalid configuration never means an empty pool.
 - Names match `[a-z][a-z0-9_-]{0,31}`. References match
   `[A-Za-z_][A-Za-z0-9_]{0,63}`, the existing secret lookup's name rule
-  (`lionagi/providers/_secret_resolution.py:41`) with a length bound, so a lookup
+  (`lionagi/providers/_secret_resolution.py:44`) with a length bound, so a lookup
   item named in lower case is referenced as itself (D2). Both reject credential-shaped text, including `sk-ant`
   case-insensitively, without echoing rejected values. Budgets are finite positive
   decimal USD strings with at most nine fractional digits, representable as signed
@@ -203,10 +203,10 @@ mapped, so a lookup item keeps its own name and the account declares that name.
 Factor a one-name helper from `lionagi/providers/_secret_resolution.py`; retain
 the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
-(`lionagi/providers/_secret_resolution.py:85`,
-`lionagi/providers/_secret_resolution.py:201`,
-`lionagi/providers/_secret_resolution.py:287`,
-`lionagi/providers/_secret_resolution.py:345`). Reusing the
+(`lionagi/providers/_secret_resolution.py:88`,
+`lionagi/providers/_secret_resolution.py:214`,
+`lionagi/providers/_secret_resolution.py:373`,
+`lionagi/providers/_secret_resolution.py:431`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes

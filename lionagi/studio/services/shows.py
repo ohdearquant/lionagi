@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from lionagi.libs.path_safety import safe_join
 from lionagi.ln import coerce_created_at
+from lionagi.state.session_naming import resolve_display_name
 
 from ..config import SHOWS_ROOT
 from ..registry import studio_route
@@ -21,6 +22,7 @@ from ._db import (
     require_file_store,
     store_exists,
     store_path,
+    table_columns,
 )
 from ._db import open_db as _open_db
 from ._io import read_json_file as _read_json
@@ -191,14 +193,24 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                 if row:
                     show_row = dict(row)
 
+                    user_label = (
+                        "s.user_label"
+                        if "user_label" in await table_columns(db, "sessions")
+                        else "NULL"
+                    )
                     play_cur = await db.execute(
-                        """
-                        SELECT p.*, s.name AS session_name
+                        f"""
+                        SELECT p.*, s.id AS linked_session_id, s.name AS session_name,
+                               {user_label} AS session_user_label,
+                               s.show_play_name AS session_show_play_name,
+                               s.playbook_name AS session_playbook_name,
+                               s.agent_name AS session_agent_name,
+                               s.started_at AS session_started_at
                         FROM plays p
                         LEFT JOIN sessions s ON s.id = p.session_id
                         WHERE p.show_id = ?
                         ORDER BY p.sort_order, p.created_at
-                    """,
+                    """,  # noqa: S608 — label is a fixed column name or NULL
                         (show_row["id"],),
                     )
                     play_rows = await play_cur.fetchall()
@@ -267,7 +279,19 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     "meta": meta,
                     "verdict": verdict,
                     "session_id": p["session_id"],
-                    "session_name": p.get("session_name"),
+                    "session_name": resolve_display_name(
+                        {
+                            "id": p["linked_session_id"],
+                            "name": p["session_name"],
+                            "user_label": p["session_user_label"],
+                            "show_play_name": p["session_show_play_name"],
+                            "playbook_name": p["session_playbook_name"],
+                            "agent_name": p["session_agent_name"],
+                            "started_at": p["session_started_at"],
+                        }
+                    )
+                    if p["linked_session_id"] is not None
+                    else None,
                     "intent": _read_text(play_dir / "_intent.md") if dir_exists else None,
                     "updated_at": updated_at,
                     "depends_on": json.loads(p["depends_on"])

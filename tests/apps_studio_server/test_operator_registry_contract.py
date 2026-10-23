@@ -3,16 +3,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Registry contract for the Studio Operator MCP tool surface.
 
-Covers two things that the individual handler test files do not:
+Covers three things that the individual handler test files do not:
 one, that `_TOOL_HANDLERS` still contains every tool it held before this
 change plus every tool this change adds; two, that each newly added
-handler never reaches a write-shaped method on the store it is given,
+read-only handler never reaches a write-shaped method on the store it is given,
 proving the "read-only" contract by exercising the handler rather than
-by reading its source.
+by reading its source; three, that each newly added mutating handler succeeds
+for an active turn and refuses inactive turns without changing durable state.
 """
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import uuid
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -65,6 +70,13 @@ NEWLY_ADDED_TOOL_NAMES = frozenset(
     }
 )
 
+NEWLY_ADDED_MUTATING_TOOL_NAMES = frozenset({"update_conversation"})
+
+_MUTATING_TOOL_ARGUMENTS = {
+    "update_conversation": {"title": "Active title", "description": "Kept description"},
+}
+
+
 RUN_CONTROL_TOOL_NAMES = frozenset(
     {
         "pause_run",
@@ -90,7 +102,12 @@ def test_proposal_backed_run_control_tools_are_all_registered():
 
 
 def test_registry_holds_no_unexpected_tool_names():
-    expected = PRE_EXISTING_TOOL_NAMES | NEWLY_ADDED_TOOL_NAMES | RUN_CONTROL_TOOL_NAMES
+    expected = (
+        PRE_EXISTING_TOOL_NAMES
+        | NEWLY_ADDED_TOOL_NAMES
+        | NEWLY_ADDED_MUTATING_TOOL_NAMES
+        | RUN_CONTROL_TOOL_NAMES
+    )
     registered = set(application_mcp._TOOL_HANDLERS.keys())
 
     # Exact equality, deliberately. Tolerating extra names would give up the
@@ -104,7 +121,7 @@ def test_registry_holds_no_unexpected_tool_names():
         f"  listed but not registered: {sorted(expected - registered)}\n"
         "A name in the first list means a tool was added. That is not a "
         "failure on its own: confirm the tool is meant to be reachable, then "
-        "add its name to NEWLY_ADDED_TOOL_NAMES. A name in the second list "
+        "add its name to the appropriate read-only or mutating set. A name in the second list "
         "means a tool the Operator used to offer is gone, which withdraws a "
         "capability and should be a decision rather than a side effect."
     )
@@ -277,6 +294,120 @@ async def test_newly_added_handler_calls_no_write_method(
 @pytest.mark.asyncio
 async def test_every_new_handler_exerciser_is_registered_exactly_once():
     assert set(_EXERCISERS.keys()) == NEWLY_ADDED_TOOL_NAMES
+
+
+def _operator_snapshot(path: Path) -> dict[str, list[tuple[Any, ...]]]:
+    with sqlite3.connect(path) as db:
+        return {
+            table: db.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
+            for table in (
+                "studio_operator_conversations",
+                "studio_operator_views",
+                "studio_operator_turns",
+                "studio_operator_proposals",
+                "studio_operator_effects",
+                "studio_operator_frames",
+            )
+        }
+
+
+async def _dispatch_mutating_tool(
+    tool_name: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    response = await application_mcp._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    return result, json.loads(result["content"][0]["text"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", sorted(NEWLY_ADDED_MUTATING_TOOL_NAMES))
+@pytest.mark.parametrize(
+    "guard",
+    ["inactive", "active_request", "missing_turn", "turn_conversation", "turn_status", "done"],
+)
+async def test_newly_added_mutating_handler_refuses_inactive_turn_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str, guard: str
+):
+    from lionagi.studio.operator.store import OperatorStore
+
+    assert set(_MUTATING_TOOL_ARGUMENTS) == NEWLY_ADDED_MUTATING_TOOL_NAMES
+    assert tool_name in application_mcp._TOOL_HANDLERS, "exerciser/registry drift"
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation(title="Original"))["id"]
+    turn = await store.submit_turn(
+        cid,
+        instruction="Organize this conversation",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    rid = turn["requestId"]
+    assert await store.mark_running(rid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", rid)
+
+    arguments = _MUTATING_TOOL_ARGUMENTS[tool_name]
+    result, value = await _dispatch_mutating_tool(tool_name, arguments)
+    assert not result.get("isError"), value
+    assert value["updated"] is True
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT title, description FROM studio_operator_conversations WHERE id=?", (cid,)
+        ).fetchone() == (arguments["title"], arguments["description"])
+        assert db.execute(
+            "SELECT status FROM studio_operator_effects WHERE id=? AND request_id=?",
+            (value["effect"]["id"], rid),
+        ).fetchone() == ("applied",)
+
+    if guard == "done":
+        assert await store.append_frame(cid, rid, "done", {"outcome": "completed"})
+    else:
+        other = await store.create_conversation(title="Other")
+        # Change one persisted fact: finishing a turn changes several guards
+        # together and could hide an individual guard that stopped working.
+        with sqlite3.connect(path) as db:
+            if guard == "inactive":
+                db.execute(
+                    "UPDATE studio_operator_conversations SET status='archived' WHERE id=?",
+                    (cid,),
+                )
+            elif guard == "active_request":
+                db.execute(
+                    "UPDATE studio_operator_conversations SET active_request_id=NULL WHERE id=?",
+                    (cid,),
+                )
+            elif guard == "missing_turn":
+                missing = str(uuid.uuid4())
+                db.execute(
+                    "UPDATE studio_operator_conversations SET active_request_id=? WHERE id=?",
+                    (missing, cid),
+                )
+                monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", missing)
+            elif guard == "turn_conversation":
+                db.execute(
+                    "UPDATE studio_operator_turns SET conversation_id=? WHERE request_id=?",
+                    (other["id"], rid),
+                )
+            elif guard == "turn_status":
+                db.execute(
+                    "UPDATE studio_operator_turns SET status='queued' WHERE request_id=?", (rid,)
+                )
+    before = _operator_snapshot(path)
+    result, value = await _dispatch_mutating_tool(
+        tool_name, {**arguments, "title": "Must not land", "description": "Must not land"}
+    )
+    assert not result.get("isError"), value
+    assert value == {"updated": False, "reason": "turn_not_active"}
+    assert _operator_snapshot(path) == before
 
 
 def test_fleet_attention_tool_has_no_registered_handler():

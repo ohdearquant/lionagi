@@ -31,12 +31,14 @@ from lionagi.ln.types import Unset, UnsetType
 from lionagi.state import db as state_db_mod
 
 from ..services._db import open_db, require_file_store
+from .conversation_metadata import UpdateConversationInput, normalize_description
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   id                 TEXT PRIMARY KEY,
   project            TEXT,
   title              TEXT,
+  description        TEXT,
   status             TEXT NOT NULL DEFAULT 'active'
                      CHECK(status IN ('active', 'archived', 'deleted')),
   next_sequence      INTEGER NOT NULL DEFAULT 1,
@@ -270,6 +272,7 @@ class OperatorStore:
                         "resolved_model": "TEXT",
                         "pinned": "INTEGER NOT NULL DEFAULT 0",
                         "branch_id": "TEXT",
+                        "description": "TEXT",
                     },
                 )
                 await self._add_missing_columns(
@@ -377,6 +380,7 @@ class OperatorStore:
             "id": row["id"],
             "project": row["project"],
             "title": row["title"],
+            "description": row["description"],
             "status": row["status"],
             "pinned": bool(row["pinned"]),
             "nextSequence": row["next_sequence"],
@@ -595,6 +599,7 @@ class OperatorStore:
         conversation_id: str,
         *,
         title: str | None | UnsetType = Unset,
+        description: str | None | UnsetType = Unset,
         pinned: bool | UnsetType = Unset,
         status: str | UnsetType = Unset,
     ) -> dict[str, Any]:
@@ -606,7 +611,46 @@ class OperatorStore:
         restriction: it removes the conversation from the active list rather
         than interrupting work in progress.
         """
+        conversation, _ = await self._update_conversation(
+            conversation_id, title=title, description=description, pinned=pinned, status=status
+        )
+        return conversation
+
+    async def update_conversation_from_turn(
+        self,
+        conversation_id: str,
+        request_id: str,
+        *,
+        title: str | None | UnsetType = Unset,
+        description: str | None | UnsetType = Unset,
+    ) -> dict[str, Any]:
+        """Commit metadata with its applied effect; the provider owns the result frame."""
+        supplied = {}
+        if title is not Unset:
+            supplied["title"] = title
+        if description is not Unset:
+            supplied["description"] = description
+        validated = UpdateConversationInput.model_validate(supplied)
+        conversation, effect = await self._update_conversation(
+            conversation_id,
+            request_id=request_id,
+            **validated.model_dump(include=validated.model_fields_set),
+        )
+        return {"updated": True, "conversation": conversation, "effect": effect}
+
+    async def _update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None | UnsetType = Unset,
+        description: str | None | UnsetType = Unset,
+        pinned: bool | UnsetType = Unset,
+        status: str | UnsetType = Unset,
+        request_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         await self.ensure_schema()
+        if description is not Unset:
+            description = normalize_description(description)
         if status is not Unset and status not in ("active", "archived"):
             raise OperatorConflictError(f"Unsupported conversation status '{status}'")
         now = time.time()
@@ -614,14 +658,38 @@ class OperatorStore:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT status, active_request_id FROM studio_operator_conversations "
-                    "WHERE id = ?",
+                    "SELECT * FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
             if row is None or row["status"] == "deleted":
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if request_id is not None:
+                turn = await (
+                    await db.execute(
+                        "SELECT conversation_id, status FROM studio_operator_turns "
+                        "WHERE request_id=?",
+                        (request_id,),
+                    )
+                ).fetchone()
+                terminal = await (
+                    await db.execute(
+                        "SELECT 1 FROM studio_operator_frames "
+                        "WHERE request_id=? AND frame_type='done' LIMIT 1",
+                        (request_id,),
+                    )
+                ).fetchone()
+                if (
+                    row["status"] != "active"
+                    or row["active_request_id"] != request_id
+                    or turn is None
+                    or turn["conversation_id"] != conversation_id
+                    or turn["status"] != "running"
+                    or terminal is not None
+                ):
+                    await db.rollback()
+                    raise OperatorConflictError("Operator turn is not active for this conversation")
             if status == "archived" and row["active_request_id"]:
                 await db.rollback()
                 raise OperatorConflictError("Cannot archive a conversation with an active turn")
@@ -630,6 +698,9 @@ class OperatorStore:
             if title is not Unset:
                 sets.append("title=?")
                 params.append(title)
+            if description is not Unset:
+                sets.append("description=?")
+                params.append(description)
             if pinned is not Unset:
                 sets.append("pinned=?")
                 params.append(1 if pinned else 0)
@@ -647,8 +718,32 @@ class OperatorStore:
                     "WHERE id=?",
                     params,
                 )
+            updated = await (
+                await db.execute(
+                    "SELECT * FROM studio_operator_conversations WHERE id=?", (conversation_id,)
+                )
+            ).fetchone()
+            conversation = self._conversation(updated)
+            effect = None
+            if request_id is not None:
+                effect_id = str(uuid.uuid4())
+                effect = {
+                    "id": effect_id,
+                    "kind": "conversation_updated",
+                    "conversationId": conversation_id,
+                    "title": conversation["title"],
+                    "description": conversation["description"],
+                    "status": "applied",
+                    "appliedAt": now,
+                }
+                await db.execute(
+                    "INSERT INTO studio_operator_effects "
+                    "(id, conversation_id, request_id, effect_type, effect_json, status, emitted_at) "
+                    "VALUES (?, ?, ?, 'conversation_updated', ?, 'applied', ?)",
+                    (effect_id, conversation_id, request_id, self._json(effect), now),
+                )
             await db.commit()
-        return await self.get_conversation(conversation_id)
+        return conversation, effect
 
     async def fork_conversation(
         self,
@@ -699,12 +794,13 @@ class OperatorStore:
 
             await db.execute(
                 "INSERT INTO studio_operator_conversations "
-                "(id, project, title, status, next_sequence, provider, provider_model, "
-                "created_at, updated_at) VALUES (?, ?, ?, 'active', 1, ?, ?, ?, ?)",
+                "(id, project, title, description, status, next_sequence, provider, provider_model, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, 'active', 1, ?, ?, ?, ?)",
                 (
                     new_id,
                     source["project"],
                     new_title,
+                    source["description"],
                     # A pin is the provider and the model together. Copying the
                     # model alone would leave the fork resolving its provider
                     # from the environment, so a conversation pinned to one
