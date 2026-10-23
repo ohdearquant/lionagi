@@ -21,8 +21,9 @@ addresses only, so it does not go with a gateway's URL, and another private-netw
 is refused either way. `Branch.from_dict` takes live models instead: a `chat_model`, and a
 `parse_model` as well when one was stored. `li agent --resume` and `--continue-last` take
 neither, so a branch saved against such a URL is resumed from Python instead. A restored model also keeps no
-client option but its headers: one that relied on a stored `trust_env`, for proxy settings
-from the environment, sets it again on the live config (`model.endpoint.config.client_kwargs`).
+client option but its headers: one that relied on a stored `proxy`, or on `trust_env` for proxy
+settings from the environment, sets it again on the live config
+(`model.endpoint.config.client_kwargs`).
 Nor does it keep a user and password written before an `@` in its stored base URL: for a
 gateway that reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A `base_url`
 stored in the config's `kwargs`, a copy no request reads, is not restored, nor is a stored
@@ -690,10 +691,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   registration, which a stored config can turn off but not on. `iModel.from_dict` takes
   `base_url`, `api_key` and `allow_local_network` from the caller, and `Branch.from_dict` takes
   `chat_model` and `parse_model`. A grant or an environment written as a top-level key of a
-  stored config is dropped too. So is a stored header that can carry a credential: one whose
+  stored config is dropped too. So is a stored header by its name: one whose
   name names a credential (`Authorization`, `x-api-key`, `api-key` and the like), one whose name
   ends in `-Key` (`Ocp-Apim-Subscription-Key`, `X-Auth-Key`), `Cookie` and `X-Auth`, and also
-  `Host`, which would send the restored key to another virtual host. It is dropped from
+  `Host`, which would send the restored key to another virtual host. Only the name is read, so
+  a header named otherwise, such as `X-Signature` or `Passphrase`, is kept. It is dropped from
   `default_headers` and from the client options' `headers`, where before it could replace the
   restored key, a caller's key included, and from a `headers` or `extra_headers` setting; and
   no client option other than `headers` is restored (`auth`, `proxy_auth`, `cookies` and
