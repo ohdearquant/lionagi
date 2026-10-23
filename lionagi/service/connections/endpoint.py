@@ -1234,16 +1234,17 @@ class Endpoint:
     ):
         """Rebuild an endpoint from ``to_dict`` output.
 
-        The stored config never supplies a credential, the local-network opt-in, a grant
+        The stored config never supplies the API key, the local-network opt-in, a grant
         or runtime state. The first two come from the keyword arguments here; a grant is
         handed to the live config again by the caller whose role names it. ``base_url``
         given here replaces the stored one. A stored header that can carry a credential
         or pick the server is dropped (see ``_without_credential_headers``), and of the
         stored client options only the headers are kept. A user and password in the
-        stored URL are removed, and a stored URL whose ``@`` cannot be placed is refused
-        (see ``_without_userinfo``). Without the keyword arguments the config has no
-        credential and the opt-in is off; ``iModel.from_dict`` then applies the
-        provider's registration.
+        stored URL are removed, and a stored URL that is not in a form they can be
+        removed from is refused (see ``_without_userinfo``). Other stored ``kwargs``
+        are restored as written, a ``proxy`` URL with a password in it included.
+        Without the keyword arguments the config has no API key and the opt-in is off;
+        ``iModel.from_dict`` then applies the provider's registration.
         """
         from lionagi.utils import to_dict
 
@@ -1356,29 +1357,30 @@ def _stored_base_url(config: Mapping) -> Any:
         try:
             return bytes(value).decode()
         except UnicodeDecodeError:
-            raise ValueError(
-                "The stored base_url is bytes that do not decode as UTF-8, so a user and "
-                f"password in it cannot be removed. {_STORED_URL_REMEDY}"
-            ) from None
+            pass
+        # Raised here, outside the handler, so the decode error and the bytes it holds
+        # are not attached to the refusal.
+        raise ValueError(
+            "The stored base_url is bytes that do not decode as UTF-8, so a user and "
+            f"password in it cannot be removed. {_STORED_URL_REMEDY}"
+        )
     return value
 
 
 def _without_userinfo(url: str) -> str:
-    """``url`` without the ``user:password@`` part of its authority, read the way the
-    HTTP client reads it. A URL the client reads with a host and no user is returned as
-    it is. One it cannot read, or reads with no host, is refused if it has an ``@`` in
-    it, since which part is a password cannot be told and the config would write the
-    URL back; without an ``@`` it is returned as it is, for the client to refuse, unless
-    its authority has a ``:`` the client cannot read as a port, which may begin a
-    password. A host with an encoded ``@`` or ``:`` is refused too: the client reads no
-    user there and sends that text as the host name, to the resolver and in the Host
-    header. So is an ``@`` after an authority that keeps a ``:`` once its user is
-    removed, as in ``user:12/secret@host``, where the client reads a host and a port and
-    takes the rest of the password as the path. Every check reads the text with its
-    percent-encoding removed and its compatibility characters folded, such as a
-    fullwidth ``＠``, until it stops changing, so ``%2540`` and ``%EF%BC%A0`` count as an
-    ``@``."""
-    import ipaddress
+    """``url`` without the ``user:password@`` part the HTTP client reads in it, or refused.
+
+    A stored URL is restored only in a form that every URL parser splits the same way:
+    ``http://`` or ``https://`` from its first character, then a host name of letters,
+    digits, ``-``, ``.`` and ``_``, or an IPv6 address in brackets with an optional zone of
+    letters, digits and ``-._~``, then an optional port of digits, and no ``@`` anywhere
+    once the user and password the client reads are removed. Text with no ``:`` and no
+    ``@``, such as ``internal``, is returned as it is, since it has no place for a
+    password. Anything else is refused, because which part of it is a password cannot be
+    told and the config would write it back. The check for ``:`` and ``@`` reads the text
+    with its percent-encoding removed and its compatibility characters folded until it
+    stops changing, so ``%2540`` and a fullwidth ``＠`` count as an ``@``.
+    """
     import re
     import unicodedata
     from urllib.parse import unquote
@@ -1402,63 +1404,38 @@ def _without_userinfo(url: str) -> str:
         )
 
     deep = f"is still percent-encoded after {_URL_DECODE_PASSES} layers are read"
-    # The authority as the client splits it, ending at the first '/', '?' or '#'.
-    authority = re.match(r"(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//([^/?#]*)", url)
-
-    def colon_after_host() -> bool:
-        # A ':' left in the authority once its user and any IPv6 literal are removed
-        # starts a port or, in a URL whose password was not quoted, the password.
-        if authority is None:
-            return True
-        host_port = plain(authority.group(1).rpartition("@")[2])
-        return host_port is None or ":" in re.sub(r"\[[^\]]*\]", "", host_port)
-
-    unencodable = False
+    whole = plain(url)
+    if whole is not None and ":" not in whole and "@" not in whole:
+        return url
+    if re.match(r"(?i:https?)://", url) is None:
+        raise refused(deep if whole is None else "does not begin with http:// or https://")
+    # Every refusal is raised outside an exception handler: the client's error repeats
+    # the text it could not read, and a refusal raised inside would carry it.
     try:
         parsed = httpx.URL(url)
-    except httpx.InvalidURL:
+    except (httpx.InvalidURL, UnicodeError):
         parsed = None
-    except UnicodeError:
-        parsed, unencodable = None, True
-    if parsed is not None and parsed.host:
-        host = plain(parsed.host)
-        if host is None:
-            raise refused(f"has a host that {deep}")
-        if "@" in host:
-            raise refused("has an encoded '@' in its host")
-        if ":" in host:
-            try:
-                ipaddress.ip_address(parsed.host)
-            except ValueError:
-                raise refused("has an encoded ':' in its host") from None
-        if colon_after_host():
-            after = plain(url[authority.end() :] if authority else url)
-            if after is None:
-                raise refused(f"has a port and a path that {deep}")
-            if "@" in after:
-                raise refused(
-                    "has an '@' after a ':' that the HTTP client reads as the end of its host"
-                )
-        return str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
-    whole = plain(url)
-    if whole is None:
-        raise refused(deep)
-    # The URL is not quoted: the part that cannot be placed may be the password.
-    reason = (
-        "has a character the HTTP client cannot encode"
-        if unencodable
-        else "does not read as a URL with a host"
+    if parsed is None:
+        raise refused("does not read as a URL the HTTP client can send")
+    if not parsed.host:
+        raise refused("has no host")
+    restored = str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
+    authority = re.fullmatch(
+        r"(?i:https?)://"
+        r"(?:\[(?P<ipv6>[0-9A-Fa-f:.]+)(?:%25[A-Za-z0-9._~-]+)?\]|(?P<name>[^\[\]:/?#]+))"
+        r"(?::[0-9]+)?(?:[/?#].*)?",
+        restored,
+        re.DOTALL,
     )
-    if "@" in whole:
-        raise refused(f"has an '@' in it but {reason}")
-    if parsed is None and authority is not None and colon_after_host():
-        unread = (
-            "has a character the HTTP client cannot encode"
-            if unencodable
-            else "does not read as a URL"
-        )
-        raise ValueError(
-            f"The stored base_url {unread}, and the text after the ':' that ends its "
-            f"host name may be a password, so it is not restored. {_STORED_URL_REMEDY}"
-        )
-    return url
+    # The client has checked an IPv6 address already; a name it accepts may still hold
+    # percent-encoding, an '@' or other punctuation.
+    if authority is None or not (
+        authority["ipv6"] or all(char.isalnum() or char in "-._" for char in authority["name"])
+    ):
+        raise refused("has something other than a host name or IP address and a port number")
+    after = plain(restored)
+    if after is None:
+        raise refused(deep)
+    if "@" in after:
+        raise refused("has an '@' after its host")
+    return restored

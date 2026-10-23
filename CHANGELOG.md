@@ -26,16 +26,22 @@ from the environment, sets it again on the live config (`model.endpoint.config.c
 Nor does it keep a user and password written before an `@` in its stored base URL: for a
 gateway that reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A `base_url`
 stored in the config's `kwargs`, a copy no request reads, is not restored. A stored base URL
-whose user and password cannot be removed raises `ValueError` when it is restored: one with an
-`@` in it, percent-encoded, fullwidth or plain, that the HTTP client does not read as a URL with
-a host; one whose host has an encoded `@` or `:`; one with an `@` after its port, as in
-`user:12/secret@host`, where the client would read the start of a password as the port and the
-rest as the path, so a real port with an `@` in the path, such as
-`gateway.example:8443/v1/@team`, is refused too; and one the client does not read as a URL whose
-host name is followed by a `:` and text that is not a port, as in `user:secret/v1`, since that
-text may be a password. Stored bytes that do not decode as UTF-8 raise
-`ValueError` as well, without their text; they raised pydantic's `ValidationError` before, whose
-message held part of the bytes. Pass the URL the same way, or a live model to `Branch.from_dict`.
+is restored only in a form every URL parser splits the same way: `http://` or `https://` from
+its first character, a host name of letters, digits, `-`, `.` and `_` or an IPv6 address in
+brackets, an optional port number, and no `@` anywhere once the user and password are removed,
+a percent-encoded or fullwidth `@` included. Any other stored base URL with a `:` or an `@` in
+it raises `ValueError` when it is restored, since which part of it is a password cannot be
+told; text with neither, such as `internal`, is kept as it is unless it is still
+percent-encoded after 16 layers are read. That refuses some URLs the client could send: one
+with an `@` in its path, query or fragment, such as
+`gateway.example/v1/@team`; one with an empty port (`gateway.example:/v1`) or an empty user
+(`https://@gateway.example/v1`); one whose IPv6 zone is not written after `%25` in letters,
+digits and `-._~`; and one whose host holds percent-encoding or other punctuation. It also
+refuses text the client could not send, such as `localhost:8000/v1` without a scheme, a URL
+that begins with a space, and one with a character the client cannot encode. Stored bytes that
+do not decode as UTF-8 raise `ValueError` as well, without their text; they raised pydantic's
+`ValidationError` before, whose message held part of the bytes. Pass the URL the same way, or a
+live model to `Branch.from_dict`.
 
 Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
 (a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import
@@ -665,7 +671,7 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Security
 
-- `Endpoint.from_dict`, `iModel.from_dict` and `Branch.from_dict` no longer take a credential,
+- `Endpoint.from_dict`, `iModel.from_dict` and `Branch.from_dict` no longer take the API key,
   the local-network opt-in or a child process's environment from the stored data. The
   provider's credential from the environment is attached only when the stored base URL is the
   provider's registered one, and the local-network setting comes from the provider's
@@ -679,22 +685,19 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `default_headers` and from the client options' `headers`, where before it could replace the
   restored key, a caller's key included; and
   no client option other than `headers` is restored (`auth`, `proxy_auth`, `cookies` and
-  `trust_env` among them). Nor is a user and password written into a stored base URL, which
-  the HTTP client would send as Basic authentication to the host the URL names; a base URL the
-  caller passes keeps them. A stored base URL with an `@`, plain or fullwidth, that the client
-  does not read as a URL with a host is refused, since the user and password in it cannot be
-  removed. What is removed
-  is what the client reads as the URL's user and password, a `%40` inside them included; an `@`
-  it reads in the path, query or fragment is kept as written, and the client sends none of it as
-  a credential. A stored host with an `@` written as `%40`, encoded more than once, or
-  percent-encoded as a fullwidth or small `@` is refused: the client reads no user there and
-  would send that text as the host name, to the resolver and in the `Host` header. So is a host
-  with an encoded `:`, and a stored base URL with an `@` after its port, as in
-  `user:12/secret@host`, which the client reads as a host and a port with the rest of the
-  password in the path; a real port followed by an `@` in the path is refused as well. A stored
-  base URL the client does not read as a URL, whose host name is followed by a `:` and text that
-  is not a port, as in `user:secret/v1`, is refused too: it was kept, and the client named that
-  text in its error when a request was built.
+  `trust_env` among them). Any other stored `kwargs` entry is still restored as written, a
+  `proxy` URL with a password in it included. Nor is a user and password written
+  into a stored base URL, which the HTTP client would send as Basic authentication to the host
+  the URL names; a base URL the caller passes keeps them. A stored base URL is restored only in
+  a form every URL parser splits the same way: `http://` or `https://`, a host name or IP
+  address, an optional port number, and no `@` anywhere once the user and password the client
+  reads are removed, a percent-encoded or fullwidth `@` included. Any other stored base URL
+  with a `:` or an `@` in it is refused, since which part of it is a password cannot be told.
+  That covers one the client reads with a password in its host or in an IPv6 zone, which it
+  would send as part of the host; one it reads as a host and a port with
+  the rest of the password in the path, as in `user:12/secret@host`; and one it cannot read, as
+  in `user:secret/v1`, which was kept and whose text the client named in its error when a
+  request was built.
   A CLI model's
   own settings are still restored as stored and read by the child process it starts: Codex `config_overrides` can name another provider URL and the
   environment variable its key is read from, Claude Code's `settings` and `permission_mode`
