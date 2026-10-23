@@ -448,7 +448,13 @@ def _normalize_model(spec_or_model: str, provider_hint: str | None = None) -> st
 
 def _normalize_model_name(model: str, provider_hint: str | None = None) -> str:
     """Normalize bare model name (no provider prefix)."""
-    if provider_hint and provider_hint in _CLAUDE_PROVIDER_NAMES:
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    # Folded as the endpoint match folds it, so "Claude/opus-4-7" builds as "claude/opus-4-7".
+    if (
+        provider_hint
+        and EndpointRegistry.canonical_provider(provider_hint) in _CLAUDE_PROVIDER_NAMES
+    ):
         for prefix in _CLAUDE_MODEL_PREFIXES:
             if model.startswith(prefix) and model != prefix and not model.startswith("claude-"):
                 return f"claude-{model}"

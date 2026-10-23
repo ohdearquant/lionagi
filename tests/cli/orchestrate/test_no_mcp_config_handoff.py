@@ -1375,7 +1375,7 @@ def test_the_flag_is_read_from_every_form_of_a_block_that_reads(caplog, block, e
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 @pytest.mark.parametrize(
     "prefix",
-    ["\ufe0f", "\u034f", "\u3164", "\u2800", "\u115f", "\x00", "x", "# notes\n"],
+    ["\ufe0f", "\u034f", "\u3164", "\u2800", "\u115f", "\x00", "x", "Notes "],
 )
 @pytest.mark.parametrize(
     "flag",
@@ -1386,9 +1386,9 @@ def test_the_flag_is_read_from_every_form_of_a_block_that_reads(caplog, block, e
     ],
 )
 def test_text_ahead_of_a_frontmatter_that_names_the_flag_contains(caplog, newline, prefix, flag):
-    """A character ahead of the opening delimiter that is neither whitespace nor a format
-    character hides the block, and with it every setting; a block that names the flag after
-    such text, on the delimiter's line or above it, contains, whatever value it gives."""
+    """A character ahead of the opening delimiter, on its line, that is neither whitespace nor
+    a format character hides the block, and with it every setting; a block that names the flag
+    after such text contains, whatever value it gives."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
@@ -1433,13 +1433,14 @@ def test_text_ahead_of_a_frontmatter_on_its_line_warns_that_its_settings_are_ign
         "Notes ---\nWork on the task.\n",
         "Notes ---\nWork: do this: then that\n",
         "Title\n-----\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n",
-        "Notes ---\nDo not touch contain_user_settings.\n",
         "---\n# contain_user_settings: true\n---\n\nWork.\n",
+        "Work.\n\n---\n\n- contain_user_settings: true\n\n---\n\nMore work.\n",
     ],
 )
 def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
     """Text on lines of its own ahead of any delimiter makes the profile one with no block, so
-    nothing in it is a setting, as before, unless a block after a delimiter names the flag."""
+    nothing in it is a setting, as before; a list or a line of text between two delimiters
+    after it is prompt too, as is a hidden block of prose that names no flag."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
@@ -1450,6 +1451,7 @@ def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
     assert profile.model is None
     assert profile.contain_user_settings is False
     assert "every setting in it is ignored" not in caplog.text
+    assert "follows text on lines of its own" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1464,8 +1466,8 @@ def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
         (
             "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
             "notes: [unclosed\n---\n\nWork.\n",
-            True,
-            True,
+            False,
+            False,
         ),
         (
             "\u3164---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\nWork.\n",
@@ -1490,6 +1492,77 @@ def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, w
     assert profile.contain_user_settings is contained
     assert ("hides the frontmatter after it" in caplog.text) is warns
     assert ("its worker is contained" in caplog.text) is contained
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Notes ---\n- contain_user_settings: true\n---\n\nWork.\n",
+        "Notes ---\ncontain_user_settings\n---\n\nWork.\n",
+        "Notes ---\nDo not touch contain_user_settings.\n",
+        "ㅤ---\n- model: claude_code/sonnet\n- contain_user_settings: false\n---\n\nWork.\n",
+    ],
+)
+def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_flag(caplog, text):
+    """A hidden block that reads as a list or a line of text holds no settings, so it is read
+    as a frontmatter that does not read as settings is: naming the flag anywhere in it
+    contains the worker, with a warning, as the same block opening the profile does."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is True
+    assert "hides the frontmatter after it" in caplog.text
+    assert "its worker is contained" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n", 2),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n---\n\nWork.\n",
+            2,
+        ),
+        (
+            "PROSE work.\n\n---\n\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
+            "\n---\n\nMore.\n",
+            3,
+        ),
+        (
+            "# notes\r\n---\r\nmodel: claude_code/sonnet\r\ncontain_user_settings: true\r\n"
+            "---\r\n\r\nWork.\r\n",
+            2,
+        ),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n"
+            "notes: [unclosed\n---\n\nWork.\n",
+            2,
+        ),
+    ],
+)
+def test_a_block_after_text_on_lines_of_its_own_names_the_flag_without_containing(
+    caplog, text, line
+):
+    """Text on lines of its own ahead of the first ``---`` line leaves the profile all prompt,
+    as before, so a block after it sets nothing, the flag included, whatever value it gives;
+    one that names the flag warns rather than lose it in silence."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is False
+    assert f"the --- block on line {line} follows text on lines of its own" in caplog.text
+    assert "its worker is not contained, though the block names" in caplog.text
+    assert "hides the frontmatter" not in caplog.text
 
 
 def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):

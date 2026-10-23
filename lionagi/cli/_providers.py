@@ -985,10 +985,12 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     """The settings a profile keeps when no frontmatter block that reads opens it: none, with a
     warning when a block with settings in it was there to lose. The worker is contained when
     that block names ``contain_user_settings``: as a key when the block reads as YAML settings,
-    anywhere in its text when it does not read, so neither a broken line in the block nor text
-    ahead of it can turn containment off. A block that reads as no settings (empty, comments
-    only, a line of prose) has none to lose. A profile with no ``---`` line has no block, and
-    all of it is the prompt."""
+    anywhere in its text when it does not read or reads as a list or a line of text, so neither
+    a broken line in the block nor text on the delimiter's line can turn containment off. A
+    block that is empty or comments only has none to lose. Text on lines of its own ahead of
+    the first ``---`` line leaves the profile all prompt, as before: a block after it that names
+    the flag warns and does not contain. A profile with no ``---`` line has no block, and all of
+    it is the prompt."""
     import yaml
 
     from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
@@ -1034,17 +1036,33 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             return {}
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
-        if reads:
-            if not isinstance(document, dict) or not document:
+        if reads and isinstance(document, dict):
+            if not document:
                 return {}
             named = bool(_contain_flag_values(block))
-        else:
-            named = _CONTAIN_KEY in block
-            if not named and closing is None:
-                return {}
-        if not named and opening > 0:
+        elif reads and (opening > 0 or document is None):
+            # Empty or comments only, a block has no settings to lose; after text on lines of
+            # its own, a list or a line of text between two ``---`` lines is prompt.
             return {}
-        what = f"text ahead of the --- on line {opening + 1} hides the frontmatter after it"
+        else:
+            # A hidden block that reads as a list or a line of text holds no settings, and
+            # one that does not read has none to apply: either counts, as a frontmatter
+            # that does not read does, when it names the flag anywhere in its text.
+            named = _CONTAIN_KEY in block
+            if not named and (reads or closing is None):
+                return {}
+        if opening > 0:
+            # The profile is all prompt, as before, so nothing in the block applies, the flag
+            # included; a block that names the flag says so rather than lose it in silence.
+            if named:
+                warn(
+                    f"agent profile {name!r}: the --- block on line {opening + 1} follows text "
+                    "on lines of its own, so the profile is all prompt and no setting in the "
+                    "block applies; its worker is not contained, though the block names "
+                    "contain_user_settings"
+                )
+            return {}
+        what = "text ahead of the --- on line 1 hides the frontmatter after it"
     warn(
         f"agent profile {name!r}: {what}; every setting in it is ignored"
         + (", and its worker is contained, since it names contain_user_settings" if named else "")

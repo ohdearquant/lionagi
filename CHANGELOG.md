@@ -262,8 +262,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `--sandbox workspace-write`); one on any other CLI is refused, since that CLI would read its
   own user settings. `--retry-failed` refuses to run one again on a branch that reads settings
   files: the orchestrator's, or a role's that is neither a contained Claude worker, a codex
-  worker nor a model that is not a CLI. The flag is read from the block's YAML nodes, its key
-  matched as written: an indented block, a quoted or `?` key and a `<<` merge key all count, an
+  worker nor a model that is not a CLI. The flag is read from the block's top-level keys as YAML
+  parses them, its key matched as written, so a key nested under another setting is not the
+  flag: an indented block, a quoted or `?` key and a `<<` merge key all count, an
   explicit key wins over a merged one, and a key given more than once, of which YAML keeps the
   last, warns and leaves the flag off only when every one reads `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0`
   and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does
@@ -273,11 +274,18 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   comments only, neither warns nor contains, even when a comment names the flag. A byte-order mark or
   another invisible format character ahead of a profile's frontmatter no longer hides it. Any
   other character on the delimiter's line hides the block and every setting in it, with a
-  warning when the block reads as settings, or does not read and names the flag or ends at a
-  closing `---`, and contains when the block sets the flag, whatever value it gives, or does
-  not read and names it. Text on lines of its own ahead of the first line that is exactly `---`
-  leaves the profile all prompt, as before, unless a closing `---` line follows and the block
-  between them sets the flag, or does not read and names it, which then contains and warns.
+  warning when the block reads as settings, names the flag, or does not read and ends at a
+  closing `---`. Such a block contains when it sets the flag, whatever value it gives, or names
+  it anywhere while reading as a list or a line of text or not reading at all, as a frontmatter
+  that does not read does. A block that opens the profile was written as its frontmatter, and
+  none of its settings apply, so the worker is contained rather than run on your settings, which
+  is what the flag asks to prevent: the value that would turn that off is in a block that is not
+  read. The cost is that your own hooks and permission rules do not gate that worker until the
+  profile is fixed, which the warning says. Text on lines of its own ahead of the first line
+  that is exactly `---` leaves the profile all prompt, as before, and nothing in a block after
+  it applies, the flag included: when a closing `---` line follows and the block between them
+  sets the flag, or does not read and names it, the profile warns that its worker is not
+  contained.
   Containment is unchanged for `li agent -a`, which reads profiles the same way and so prints the
   same warnings.
 
@@ -550,7 +558,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   alias session stores is the one its endpoint runs, a resume onto another model re-clamps it as
   for the provider, and an effort suffix on the model name (`gpt-5.5-high`) routes to the effort.
   An effort suffix on an alias of a provider with no effort levels, `gemini-api/<model>-high`, or
-  on a letter case of its name, is refused as on `gemini/<model>-high`.
+  on a letter case of its name, is refused as on `gemini/<model>-high`: such a spec, which ran
+  before without the effort, now raises `ValueError` naming the suffix to remove. A letter case
+  of a Claude provider name, `Claude/opus-4-7`, builds as `claude/opus-4-7` does.
 
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.
