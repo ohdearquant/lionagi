@@ -390,13 +390,19 @@ def _render_template(template: str, context: dict) -> str:
 def unfilled_template_vars(schedule: dict, trigger_context: dict) -> list[str]:
     """The ``{{var}}`` names in what *schedule* sends that *trigger_context* has no value for.
 
-    A command launch sends its ``action_command_args`` and every other kind its
-    ``action_prompt``. A placeholder with no value renders as itself, so a command argument
-    holding one is refused at spawn and a prompt hands it to the agent as written.
+    A command launch sends its ``action_command_args``, a ``flow_yaml`` launch no template (its
+    spec file goes as written), a ``play`` launch its ``action_prompt`` only beside an
+    ``action_playbook``, and every other kind its ``action_prompt``. A placeholder with no value
+    renders as itself, so a command argument holding one is refused at spawn and a prompt
+    hands it to the agent as written.
     """
-    if schedule.get("action_kind") == "command":
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    if kind == "command":
         args = schedule.get("action_command_args")
         templates = [str(a) for a in args] if isinstance(args, list) else []
+    elif kind == "flow_yaml" or (kind == "play" and not schedule.get("action_playbook")):
+        templates = []
     else:
         templates = [schedule.get("action_prompt") or ""]
     return sorted(

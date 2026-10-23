@@ -550,7 +550,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
   in epoch seconds. Due schedules are considered oldest due first; a GitHub
   poll schedule is due at its next poll turn, or, while the cap holds back
-  events it found, at the turn that found them.
+  events it found, at the turn that found them. A poll's events reserve slots
+  only once its fetch returns, so a schedule that came due later can take a
+  free slot while the fetch runs.
 - A scheduled `command` child inherited the daemon's `LIONAGI_STATE_DB_URL`. When the command ran
   an interpreter with a different lionagi, that lionagi opened the daemon's store, and one on a
   newer schema migrated the file, after which the daemon could no longer open it. A command child
@@ -573,16 +575,19 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   the schedule's cursor, repository or filter has since moved past are dropped, and the next poll
   lists afresh.
 - A manual trigger (`li schedule trigger`, `POST /api/schedules/{schedule_id}/trigger`) of a
-  schedule whose command arguments or prompt name a variable only its own trigger fills, such as
-  a `github_poll` schedule's `{{pr_number}}`, is refused with a 400 that names the variable,
-  before any run is recorded or slot reserved. A manual trigger carries no event, so the
-  placeholder reached the run unfilled: a command argument holding it failed at spawn, and an
-  agent prompt received it as written. A template that names only what a manual trigger fills,
-  `{{manual}}` and `{{fired_at}}`, still fires.
+  schedule whose command arguments, or the prompt its launch sends, name a variable a manual
+  trigger has no value for, such as a `github_poll` schedule's `{{pr_number}}`, is refused with a
+  400 that names the variable, before any run is recorded or slot reserved. A manual trigger
+  carries no event, so the placeholder reached the run unfilled: a command argument holding it
+  failed at spawn, and an agent prompt received it as written. A template that names only what a
+  manual trigger fills, `{{manual}}` and `{{fired_at}}`, still fires, and so does a `flow_yaml`
+  schedule, or a `play` schedule without a playbook, whatever its `action_prompt` holds, since
+  neither launch sends it.
 - The scheduler's readiness (`/admin/readiness`, `li doctor`) read `stalled` whenever an action a
   `github_poll` schedule dispatched ran for more than 300 seconds, since a poll pass waits on each
-  action it dispatches and the check timed the whole pass. It now times a pass only until its poll
-  returns, so a poll that does not return still makes the scheduler unready.
+  action it dispatches and the check timed the whole pass. It now leaves out the time a pass
+  waits on an action, so a poll or a store write of the pass that does not return still makes the
+  scheduler unready.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so

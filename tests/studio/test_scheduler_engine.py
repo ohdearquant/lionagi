@@ -1294,6 +1294,18 @@ async def test_fire_now_returns_none_when_schedule_missing():
             {"action_prompt": "Check {{pr_title}} by {{author}} at {{fired_at}}"},
             "{{author}}, {{pr_title}}",
         ),
+        # A play launch sends its prompt beside its playbook, under either spelling of the kind.
+        *(
+            (
+                {
+                    "action_kind": kind,
+                    "action_playbook": "triage",
+                    "action_prompt": "{{pr_number}}",
+                },
+                "{{pr_number}}",
+            )
+            for kind in ("play", "playbook")
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1326,6 +1338,15 @@ async def test_fire_now_refuses_a_template_a_manual_trigger_cannot_fill(fields, 
             "action_command_args": ["run", "ci.py"],
             "action_prompt": "{{pr_number}}",
         },
+        # A flow_yaml launch sends its spec file as written, and a play launch without a playbook
+        # sends no prompt.
+        {
+            "action_kind": "flow_yaml",
+            "action_flow_yaml": "prompt: summarize\n",
+            "action_prompt": "{{pr_number}}",
+        },
+        {"action_kind": "play", "action_prompt": "{{pr_number}}"},
+        {"action_kind": "playbook", "action_prompt": "{{pr_number}}"},
     ],
 )
 @pytest.mark.asyncio
@@ -4375,8 +4396,8 @@ async def test_a_github_pass_past_the_threshold_makes_the_scheduler_unready(monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hang", ["poll", "action"])
-async def test_a_github_pass_counts_as_stalled_only_while_its_poll_has_not_returned(
+@pytest.mark.parametrize("hang", ["poll", "action", "store"])
+async def test_a_github_pass_counts_as_stalled_only_outside_the_actions_it_waits_on(
     monkeypatch, hang
 ):
     from lionagi.studio.scheduler import engine as engine_mod
@@ -4405,6 +4426,13 @@ async def test_a_github_pass_counts_as_stalled_only_while_its_poll_has_not_retur
         entered.set()
         await release.wait()
 
+    async def update_schedule(schedule_id, **fields):
+        # The store write that clears the event's refusal streak once the action returns.
+        if hang == "store" and "predispatch_refusal_count" in fields:
+            await wait_here()
+
+    engine._svc.update_schedule.side_effect = update_schedule
+
     async def poll(*args, **kwargs):
         if hang == "poll":
             await wait_here()
@@ -4420,7 +4448,11 @@ async def test_a_github_pass_counts_as_stalled_only_while_its_poll_has_not_retur
     monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
     monkeypatch.setattr(engine, "_fire", fire)
     schedule = _minimal_schedule(
-        id="github-1", trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
+        id="github-1",
+        trigger_type="github_poll",
+        github_repo="acme/widgets",
+        last_fired_at=0,
+        predispatch_refusal_count=1,
     )
     engine._start_github_tick(schedule, clock[0])
     task = engine._github_tick_tasks["github-1"]
@@ -4432,9 +4464,10 @@ async def test_a_github_pass_counts_as_stalled_only_while_its_poll_has_not_retur
 
         report = engine.health()
 
-        if hang == "poll":
+        if hang in ("poll", "store"):
             assert report["ready"] is False
-            assert "has polled for" in report["detail"]
+            stalled_for = engine_mod._TICK_STALL_AFTER + 1
+            assert f"has run for {stalled_for:.0f}s outside its actions" in report["detail"]
         else:
             assert report["ready"] is True
             assert report["status"] == "healthy"

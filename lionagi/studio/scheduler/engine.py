@@ -433,8 +433,9 @@ class SchedulerEngine:
         # poll loop, which advances the cursor per committed event, so a pass lasts as long as the
         # slowest action it dispatched; it runs off the tick so later ticks continue meanwhile.
         self._github_tick_tasks: dict[str, asyncio.Task] = {}
-        # schedule_id -> when its pass started, kept only until its poll returns: the readiness
-        # check times the poll, not the actions the pass then waits on.
+        # schedule_id -> when its pass started, cleared while the pass waits on an action it
+        # dispatched and set again when the action returns: the readiness check times the poll and
+        # the store writes of a pass, not the actions it waits on.
         self._github_tick_started_at: dict[str, float] = {}
         # schedule_id -> events a poll found while the fire cap was full, held for its next turn.
         self._github_batches: dict[str, _GithubBatch] = {}
@@ -648,8 +649,8 @@ class SchedulerEngine:
                 report["ready"] = False
                 report["status"] = "stalled"
                 report["detail"] = (
-                    f"github_poll pass for schedule {sid} has polled for {pass_age:.0f}s "
-                    f"(stall threshold {_TICK_STALL_AFTER}s)"
+                    f"github_poll pass for schedule {sid} has run for {pass_age:.0f}s outside "
+                    f"its actions (stall threshold {_TICK_STALL_AFTER}s)"
                 )
                 return report
         report["status"] = "healthy"
@@ -861,8 +862,8 @@ class SchedulerEngine:
             names = ", ".join("{{" + name + "}}" for name in unfilled)
             raise ValueError(
                 f"Schedule {schedule_id!r} has no value for {names} on a manual trigger, "
-                "which carries no event; manual trigger refused. The schedule's own trigger "
-                "fills it."
+                "which carries no event; manual trigger refused. Only a trigger that delivers an "
+                "event with that field fills it."
             )
         if await self._check_budget(schedule):
             raise ValueError(
@@ -1746,9 +1747,6 @@ class SchedulerEngine:
                         poller_consecutive_401=(schedule.get("poller_consecutive_401") or 0) + 1,
                     )
 
-            # The rest of the pass waits on each action it dispatches, however long that runs, so
-            # the stall check stops timing the pass here.
-            self._github_tick_started_at.pop(sid, None)
             if not polled:
                 return False
 
@@ -1830,6 +1828,10 @@ class SchedulerEngine:
                     }
                     run_id = short_id(12)
                     admission_handed_off = True
+                    # The pass waits on the action it dispatches, however long that runs, so the
+                    # stall check stops timing the pass while the action runs and starts again when
+                    # it returns, timing the store writes that follow.
+                    self._github_tick_started_at.pop(sid, None)
                     fired = await self._fire(
                         schedule,
                         run_id,
@@ -1848,6 +1850,7 @@ class SchedulerEngine:
                         ),
                         expect_github_cursor=claimed_cursor,
                     )
+                    self._github_tick_started_at[sid] = time.time()
                     if fired:
                         unclaimed_poll_cycle = False
                         # Only a written advance moves the claim. Skipped events move the local

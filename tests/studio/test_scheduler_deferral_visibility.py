@@ -194,8 +194,16 @@ async def test_a_held_github_event_takes_the_next_slot_in_oldest_due_order(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "moved_to"),
+    [
+        ("github_cursor", "moved-by-an-operator"),
+        ("github_repo", "acme/gadgets"),
+        ("github_filter", {"event": "pr_merged"}),
+    ],
+)
 async def test_a_held_batch_the_schedule_moved_past_is_dropped_and_polled_afresh_on_a_full_cap(
-    monkeypatch,
+    monkeypatch, field, moved_to
 ):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
@@ -205,7 +213,7 @@ async def test_a_held_batch_the_schedule_moved_past_is_dropped_and_polled_afresh
     svc.list_schedules.return_value = [poll_row]
     took, held = _holding_fires(engine, monkeypatch)
     await _hold_a_batch(engine, poll_row)
-    poll_row["github_cursor"] = "moved-by-an-operator"
+    poll_row[field] = moved_to
     # The cap is full, so a batch kept past the move would wait for a slot instead of polling.
     _, blocker = await engine._reserve_global_slot("blocker", path="manual")
     inflight_during_poll = []
@@ -266,6 +274,60 @@ async def test_a_held_batch_claims_its_poll_cycle_only_if_no_event_of_it_has(
     assert claims[0] == (expected_next, poll_row.get("github_cursor"))
     for claim in held:
         claim.release()
+    assert engine._global_inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_each_event_of_a_pass_claims_the_cursor_the_event_before_it_wrote(monkeypatch):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    engine = SchedulerEngine(svc=_make_svc())
+    poll_row = _poll_row(next_fire_at=10_300.0, github_cursor="before-the-poll")
+    first, second = _item(1, "2026-01-01T00:00:00Z"), _item(2, "2026-01-01T00:01:00Z")
+    claims, held = [], []
+
+    async def fire(schedule, run_id, *, global_slot_claim, **kwargs):
+        claims.append((kwargs["expect_next_fire_at"], kwargs["expect_github_cursor"]))
+        held.append(global_slot_claim)
+        return True
+
+    async def poll(*args, **kwargs):
+        return GithubPollResult(items=[first, second], scan_complete=True)
+
+    monkeypatch.setattr(engine, "_fire", fire)
+    with patch("lionagi.studio.scheduler.github.github_poll", new=poll):
+        await engine._tick_github(poll_row, now=10_000.0)
+
+    # The first event claims the poll cycle and the cursor the poll started from; the second
+    # claims the cursor the first one's fire wrote, not the value read before the poll.
+    assert claims == [(10_300.0, "before-the-poll"), (NO_CURSOR_CLAIM, first.cursor)]
+    for claim in held:
+        claim.release()
+    assert engine._global_inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_a_held_batch_dispatches_inside_its_schedules_poll_interval(monkeypatch):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    engine = SchedulerEngine(svc=_make_svc())
+    poll_row = _poll_row()
+    took, held = _holding_fires(engine, monkeypatch)
+    await _hold_a_batch(engine, poll_row)
+    # The row polled a second ago, so its own cadence would not poll it again yet; the held
+    # events belong to a poll cycle that already came due.
+    poll_row["last_fired_at"] = 10_029.0
+    polls = []
+
+    async def poll(*args, **kwargs):
+        polls.append(args)
+        return GithubPollResult(items=[], scan_complete=True)
+
+    with patch("lionagi.studio.scheduler.github.github_poll", new=poll):
+        await engine._tick_github(poll_row, now=10_030.0)
+
+    assert took == ["poll"]
+    assert polls == []
+    assert "poll" not in engine._github_batches
+    held.pop().release()
     assert engine._global_inflight == 0
 
 
@@ -582,16 +644,20 @@ async def test_a_github_poll_holds_no_slot_and_each_event_holds_its_own(monkeypa
         id="poller", trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
     started, resume = asyncio.Event(), asyncio.Event()
-    event_holder = []
+    holders_at_fire, claims = [], []
 
     async def poll(*args, **kwargs):
         started.set()
         await resume.wait()
-        return GithubPollResult(items=[_item(1, "2026-01-01T00:00:00Z")], scan_complete=True)
+        return GithubPollResult(
+            items=[_item(1, "2026-01-01T00:00:00Z"), _item(2, "2026-01-01T00:01:00Z")],
+            scan_complete=True,
+        )
 
     async def fire(schedule, run_id, *, global_slot_claim, **kwargs):
-        event_holder.extend(engine.global_slot_holders)
-        global_slot_claim.release()
+        # Each event keeps its slot, so the second fire sees the first one's beside its own.
+        claims.append(global_slot_claim)
+        holders_at_fire.append([(h["schedule_id"], h["path"]) for h in engine.global_slot_holders])
         return True
 
     monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
@@ -604,10 +670,16 @@ async def test_a_github_poll_holds_no_slot_and_each_event_holds_its_own(monkeypa
         assert engine._global_inflight == 0
         resume.set()
         await asyncio.wait_for(task, timeout=2)
-        assert [(h["schedule_id"], h["path"]) for h in event_holder] == [("poller", "github_event")]
+        event = ("poller", "github_event")
+        assert holders_at_fire == [[event], [event, event]]
+        assert len({id(claim) for claim in claims}) == 2
+        for claim in claims:
+            claim.release()
         assert engine.global_slot_holders == []
         assert engine._global_inflight == 0
     finally:
+        for claim in claims:
+            claim.release()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
