@@ -282,6 +282,28 @@ async def test_a_stored_credential_header_never_reaches_the_request(env_key, nam
         await session.aclose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [b"Authorization", b"x-api-key", b"Cookie"])
+@pytest.mark.parametrize("value", ["Bearer stored-secret", b"Bearer stored-secret"])
+async def test_a_stored_credential_header_named_in_bytes_never_reaches_the_request(
+    env_key, name, value
+):
+    data = _stored(default_headers={name: value, b"X-Trace": b"kept"})
+    data["endpoint"]["config"]["client_kwargs"] = {"headers": {name: value, b"X-Trace": b"kept"}}
+    endpoint = iModel.from_dict(data).endpoint
+
+    _, headers = endpoint.create_payload({"model": "gpt-4.1-mini", "messages": []})
+    assert not any("stored-secret" in str(item) for item in headers.items())
+    assert headers[b"X-Trace"] == b"kept"
+
+    session = endpoint._create_http_session()
+    try:
+        assert not any(b"stored-secret" in raw for pair in session.headers.raw for raw in pair)
+        assert session.headers["X-Trace"] == "kept"
+    finally:
+        await session.aclose()
+
+
 STORED_PASSWORD_URL = "https://stored-user:stored-secret@gateway.example/v1"
 
 
@@ -440,18 +462,107 @@ def test_a_stored_kwargs_base_url_is_not_restored():
     assert "stored-se" not in str(model.to_dict())
 
 
+CREDENTIAL_SETTINGS = [
+    "proxy",
+    "proxy_url",
+    "https_proxy",
+    "proxies",
+    "x_api_key",
+    "apikey",
+    "API_KEY",
+    "authorization",
+    "token",
+    "access_token",
+    "password",
+    "client_secret",
+    "key",
+    "cookie",
+]
+
+
 @pytest.mark.parametrize("where", ["kwargs", "config"])
-def test_a_stored_proxy_is_not_restored_or_sent(where):
+@pytest.mark.parametrize("name", CREDENTIAL_SETTINGS)
+def test_a_stored_setting_named_as_a_credential_or_a_proxy_is_not_restored_or_sent(where, name):
     data = _stored()
     config = data["endpoint"]["config"]
-    (config.setdefault("kwargs", {}) if where == "kwargs" else config)["proxy"] = (
-        STORED_PASSWORD_URL
-    )
+    (config.setdefault("kwargs", {}) if where == "kwargs" else config)[name] = STORED_PASSWORD_URL
     model = iModel.from_dict(data)
-    assert "proxy" not in model.endpoint.config.kwargs
+    assert name not in model.endpoint.config.kwargs
     payload, _ = model.endpoint.create_payload({"messages": []})
-    assert "proxy" not in payload
+    assert name not in payload
+    assert "stored-se" not in str(payload)
     assert "stored-se" not in str(model.to_dict())
+
+
+def test_a_stored_setting_named_in_bytes_is_read_as_its_text():
+    data = _stored()
+    data["endpoint"]["config"].setdefault("kwargs", {}).update(
+        {b"x_api_key": "stored-secret", b"proxy": STORED_PASSWORD_URL}
+    )
+    data["provider_metadata"] = {b"api_key": "stored-secret", "session_id": "s-1"}
+    model = iModel.from_dict(data)
+    assert not {b"x_api_key", b"proxy"} & set(model.endpoint.config.kwargs)
+    assert model.provider_metadata == {"session_id": "s-1"}
+
+
+def test_a_stored_setting_that_counts_tokens_or_names_a_cache_key_is_kept():
+    schema = {"type": "object", "properties": {"token": {"type": "string"}}}
+    kept = {
+        "max_tokens": 10,
+        "max_completion_tokens": 20,
+        "prompt_cache_key": "team-a",
+        "response_format": {"type": "json_schema", "json_schema": {"schema": schema}},
+    }
+    data = _stored(requires_tokens=True)
+    data["endpoint"]["config"].setdefault("kwargs", {}).update(kept)
+    model = iModel.from_dict(data)
+    assert model.endpoint.config.requires_tokens is True
+    payload, _ = model.endpoint.create_payload({"messages": []})
+    for name, value in kept.items():
+        assert payload[name] == value
+
+
+@pytest.mark.parametrize("where", ["kwargs", "config"])
+@pytest.mark.parametrize("name", ["headers", "extra_headers"])
+def test_a_stored_set_of_headers_kept_in_kwargs_loses_its_credential_headers(where, name):
+    data = _stored()
+    config = data["endpoint"]["config"]
+    (config.setdefault("kwargs", {}) if where == "kwargs" else config)[name] = {
+        "Authorization": "Bearer stored-secret",
+        b"x-api-key": "stored-secret",
+        "X-Trace": "kept",
+    }
+    model = iModel.from_dict(data)
+    assert model.endpoint.config.kwargs[name] == {"X-Trace": "kept"}
+    assert "stored-se" not in str(model.to_dict())
+
+
+def test_the_stored_provider_metadata_keeps_no_entry_named_as_a_credential():
+    data = _stored()
+    data["provider_metadata"] = {
+        "session_id": "s-1",
+        "api_key": "stored-secret",
+        "auth_token": "stored-secret",
+    }
+    model = iModel.from_dict(data)
+    assert model.provider_metadata == {"session_id": "s-1"}
+    assert "stored-se" not in str(model.to_dict())
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [{"base_url": [STORED_PASSWORD_URL]}, {"kwargs": ["stored-secret"]}, {"timeout": "stored-se"}],
+)
+def test_a_stored_config_that_does_not_validate_is_refused_without_its_values(stored):
+    data = _stored()
+    data["endpoint"]["config"].update(stored)
+    with pytest.raises(ValueError) as refused:
+        iModel.from_dict(data)
+    message = str(refused.value)
+    assert message.startswith("The stored endpoint config does not validate (")
+    assert "stored-se" not in message
+    assert "stored-user" not in message
+    assert refused.value.__context__ is None
 
 
 def _encoded(layers: int) -> str:
@@ -495,6 +606,7 @@ REFUSED = {
         "https://[stored-user:stored-secret]/v1",
         "https://stored-user[:stored-secret]/v1",
         "https://[fe80::1%25stored%3Astored-secret]/v1",
+        "https://cafe\u0301.example/v1",
         "https://stored-user:stored-secret@gateway.example/v1/\ud800",
         "https://stored-\ud800user:12/v1",
         "https://gateway.example/v1/\ud800",
@@ -518,13 +630,15 @@ REFUSED = {
         "https://stored-user%3A12/stored-secret@gateway.example/v1",
         "https://[fe80::1%25stored-user:stored-secret]/v1",
         "https://[fe80::1%stored-secret]/v1",
-        "https://stored-user:/stored-secret@gateway.example/v1",
-        "https://gateway.example:/v1",
         "https://@gateway.example/v1",
         "https://gateway\u3002example/v1",
+        "https://stored-user:stored-secret@gateway\u3002example/v1",
+        "https://stored-user:stored-secret@gateway.example\\x@evil.example/v1",
+        "https://gateway.example\\@evil.example/v1",
         f"https://gateway{_encoded(14)}.example/v1",
     ],
     "has an '@' after its host": [
+        "https://stored-user:/stored-secret@gateway.example/v1",
         "https://stored-user:12/stored-secret@gateway.example/v1",
         "https://stored-user:12?stored-secret@gateway.example/v1",
         "https://stored-user:12#stored-secret@gateway.example/v1",
@@ -585,6 +699,7 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
         "gateway.example/v1",
         "https://gateway.example",
         "https://gateway.example:8443/v1",
+        "https://gateway.example:/v1",
         "HTTPS://Gateway.Example/v1",
         "http://localhost:11434/v1",
         "https://127.0.0.1:8000/v1",
@@ -593,6 +708,7 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
         "https://gateway_x.example/v1",
         "https://例え.jp/v1",
         "https://नमस्ते.example/v1",
+        "https://gateway\u0967.example/v1",
         "https://[fe80::1%25en~0]/v1",
         "https://gateway.example/v1/models:list",
         "https://gateway.example/v1?team=x#y",

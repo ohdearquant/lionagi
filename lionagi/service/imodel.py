@@ -17,7 +17,11 @@ from lionagi.protocols.ids import to_uuid
 from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
-from .connections.endpoint import _event_reports_call_failure, _stored_base_url
+from .connections.endpoint import (
+    _event_reports_call_failure,
+    _names_credential_setting,
+    _stored_base_url,
+)
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -717,8 +721,9 @@ class iModel:  # noqa: N801
         """Rebuild a model from ``to_dict`` output, read as trusted input.
 
         ``data`` chooses the provider, model and settings. It never supplies the API
-        key, a header that can carry a credential, a proxy, or the user and password
-        of a stored URL; its other request settings are sent as written. It can turn
+        key, a header or a setting whose name reads as a credential, a proxy, or the
+        user and password of a stored URL, and the provider metadata keeps no entry so
+        named either; its other request settings are sent as written. It can turn
         the local-network opt-in off but not on. Without
         ``api_key``, the environment's credential is attached only at the provider's
         registered base URL. Without ``allow_local_network``, the provider's
@@ -757,9 +762,15 @@ class iModel:  # noqa: N801
         # The executor's rate limits only: any other key would reach __init__ as an
         # endpoint setting, such as a base_url or an env, past the rules above.
         stored_limits = data.get("processor_config") or {}
+        # to_dict writes the metadata back, so an entry named as a credential is not kept.
+        stored_metadata = data.get("provider_metadata")
+        if isinstance(stored_metadata, dict):
+            stored_metadata = {
+                k: v for k, v in stored_metadata.items() if not _names_credential_setting(k)
+            }
         return cls(
             endpoint=e1,
-            provider_metadata=data.get("provider_metadata"),
+            provider_metadata=stored_metadata,
             id=data.get("id"),
             created_at=data.get("created_at"),
             **{name: stored_limits[name] for name in _EXECUTOR_LIMITS if name in stored_limits},
