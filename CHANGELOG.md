@@ -673,7 +673,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `trust_env` among them). Nor is a user and password written into a stored base URL, which
   the HTTP client would send as Basic authentication to the host the URL names; a base URL the
   caller passes keeps them. A stored base URL with an `@` that the client does not read as a URL
-  with a host is refused, since the user and password in it cannot be removed. A CLI model's
+  with a host is refused, since the user and password in it cannot be removed. What is removed
+  is what the client reads as the URL's user and password: an `@` it reads in the path, query or
+  fragment, and one written as `%40`, are kept as written, and the client sends neither as a
+  credential. A CLI model's
   own settings are still restored as stored and read by the child process it starts: Codex `config_overrides` can name another provider URL and the
   environment variable its key is read from, Claude Code's `settings` and `permission_mode`
   set what that child may do, and a stored `mcp_servers` or `mcp_config` names the MCP servers
@@ -695,10 +698,15 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   CVE-2026-113725) and `black` from 26.3.1 to 26.10.1 (CVE-2026-114134) in `uv.lock`, and
   `opentelemetry-api` to 1.45.1 (CVE-2026-114603), with the OpenTelemetry packages released
   beside it, in `uv.lock` and `lion1/uv.lock`. `uv.lock` also moves `packaging` from 26.1 to 26.3
-  and `distlib` from 0.4.0 to 0.4.4. The constraints in `pyproject.toml` keep the lock at or above
-  `virtualenv` 21.14.9, `black` 26.10.1 and `opentelemetry-api` 1.45.1. The studio frontend and
-  the VS Code extension move their test runner to `vitest` 4.1.12 (CVE-2026-112949 and
-  CVE-2026-112950).
+  and `distlib` from 0.4.0 to 0.4.4, and adds `opentelemetry-exporter-http-transport` and
+  `opentelemetry-exporter-otlp-common`, which `opentelemetry-exporter-otlp-proto-http` 1.45.1
+  requires. The constraints in `pyproject.toml` keep the lock at or above `virtualenv` 21.14.9,
+  `black` 26.10.1 and `opentelemetry-api` 1.45.1. The studio frontend and the VS Code extension
+  move their test runner to `vitest` 4.1.12 and its packages with it, `@vitest/mocker` 4.1.12
+  among them (CVE-2026-112949 and CVE-2026-112950, published against `@vitest/mocker`); the
+  frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. One release with published
+  advisories stays: `uv.lock` keeps Pillow 12.3.0 for Python 3.10, since Pillow 13.0.0, the
+  release that fixes them, requires Python 3.11.
 
 ### Docs
 

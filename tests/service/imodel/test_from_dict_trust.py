@@ -351,6 +351,12 @@ def test_the_providers_url_stored_in_bytes_with_a_password_gets_no_env_key(env_k
     assert config._api_key is None
 
 
+def test_a_callers_url_replaces_stored_bytes_that_are_not_utf8():
+    stored = b"https://stored-user:stored-secret@gateway.example/v1/\xff"
+    config = iModel.from_dict(_stored(base_url=stored), base_url=ELSEWHERE).endpoint.config
+    assert config.base_url == ELSEWHERE
+
+
 # Spellings the HTTP client reads with a host and a user, though a URL split by the
 # standard library refuses them or places the '@' elsewhere.
 @pytest.mark.asyncio
@@ -385,6 +391,7 @@ UNPLACED_AT_SIGN = [
     "https://stored-user:stored-secret＠gateway.example/v1",
     " https://stored-user:stored-secret@gateway.example/v1",
     "https://stored-user:stored-secret@",
+    "https://stored-user:stored-secret@gateway.example/v1/\ud800",
 ]
 
 
@@ -401,6 +408,9 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
     assert config.base_url == ELSEWHERE
 
 
-@pytest.mark.parametrize("stored", ["internal", "", "https://gateway.example:port/v1"])
+@pytest.mark.parametrize(
+    "stored",
+    ["internal", "", "https://gateway.example:port/v1", "https://gateway.example/v1/\ud800"],
+)
 def test_a_stored_url_without_an_at_sign_is_kept_as_written(stored):
     assert iModel.from_dict(_stored(base_url=stored)).endpoint.config.base_url == stored

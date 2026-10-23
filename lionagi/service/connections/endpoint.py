@@ -1282,11 +1282,11 @@ class Endpoint:
                     if name == "headers"
                 }
             # The stored URL keeps no user and password either: the HTTP client would
-            # send them as Basic authentication to the host the URL names.
-            stored_url = _stored_base_url(config)
+            # send them as Basic authentication to the host the URL names. A URL the
+            # caller passes replaces the stored one unread.
             if base_url is not None:
                 config["base_url"] = base_url
-            elif isinstance(stored_url, str):
+            elif isinstance(stored_url := _stored_base_url(config), str):
                 config["base_url"] = _without_userinfo(stored_url)
             if api_key is not None:
                 config["api_key"] = api_key
@@ -1355,7 +1355,7 @@ def _without_userinfo(url: str) -> str:
 
     try:
         parsed = httpx.URL(url)
-    except httpx.InvalidURL:
+    except (httpx.InvalidURL, UnicodeError):
         parsed = None
     if parsed is not None and parsed.host:
         return str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
