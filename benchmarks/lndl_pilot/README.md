@@ -73,7 +73,7 @@ report version 0.35.5, which is all `header.json` records (`runner_li`), so each
 `environment.json` records the commit, read from its checkout after the run: the checkout's HEAD,
 the time its reflog last moved HEAD (before the run's `started_utc` in each run) and its count of
 changed or untracked files (0 in each). The read tree's checkout is recorded the same way.
-`aca2e2e9` is not on `main`: it is a commit of the branch merged as `d8838f28` (#3640), two commits
+`aca2e2e9` is not on `main`: it is a commit of the branch merged as `d8838f28`, two commits
 past `4d373f9c`, and the only file in the Python package it changes from `4d373f9c` is
 `lionagi/operations/lndl_middle/lndl_middle.py`.
 
@@ -185,7 +185,7 @@ line numbers at `208bcc08`. Each citation's lines, taken as one block, are prese
 `t21`'s "line 272" as a citation and not its "line 271", which is inside the `265-271` it cites, and
 read `t18`'s five citations by file name, such as `review.py:516`, as the files beside the
 `lionagi/engines/__init__.py` it cites. These counts, and where each block was found, were taken by
-hand at both commits; the tests do not read either commit, so none checks them (#3678).
+hand at both commits; the tests do not read either commit, so none checks them.
 
 | task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |
 |---|---|---|---|---|

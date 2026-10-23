@@ -402,8 +402,13 @@ def test_a_none_of_outside_the_check_is_refused_before_anything_runs(
         assert "t01: `none_of` outside `accept`\nnothing run" in capsys.readouterr().err
 
 
+def _prose(path: Path) -> str:
+    # The text a reader sees: an HTML comment is not rendered, so it cannot satisfy a check.
+    return re.sub(r"<!--.*?-->", "", path.read_text(), flags=re.S)
+
+
 def _flat(path: Path) -> str:
-    return " ".join(path.read_text().split())
+    return " ".join(_prose(path).split())
 
 
 def _figures(run: str) -> dict:
@@ -513,16 +518,30 @@ def test_adr_0132_gives_the_runs_own_figures():
         f"({r5['react']['requests']} requests)",
         f"so r5 {'meets' if r5['met'] else 'does not meet'} the rule",
     ]
-    # The decision r5 sets, in the header and in the Result, and when r5 started.
-    assert not r5["met"]
-    expected += [
-        "`lndl` stays an opt-in setting and is not recommended, and the default stays `react`",
-        "so r5 does not meet the rule: `lndl` is not recommended, and the default stays `react`",
-    ]
+    # When r5 started, what it ran, when the reading rule was adopted, and where its reading
+    # and its checks differ.
     started = json.loads((PILOT / "runs" / "r5" / "header.json").read_text())["started_utc"]
-    expected.append(f"r5 started on {started[:10]} at {started[11:16]} UTC (its `header.json`)")
+    expected += [
+        f"r5 started on {started[:10]} at {started[11:16]} UTC (its `header.json`)",
+        "ran with lionagi installed from `208bcc08` (13 commits past `d8838f28`",
+        "The rule that the reading decides was written into D4 after r5 had run, at 03:10 UTC",
+        "The two differ in one answer, the `lndl` answer to `t24`",
+    ]
     text = _flat(ADR)
     assert [line for line in expected if line not in text] == []
+    # The decision r5 sets, in the header's status and in r5's own paragraph of the Result.
+    assert not r5["met"]
+    adr = _prose(ADR)
+    status = adr.split("\n- **Implementation-status**", 1)[1].split("\n- **", 1)[0]
+    result = adr.split("\n- `r5`, the run D4 names", 1)[1].split("\n- ", 1)[0]
+    assert (
+        "`lndl` stays an opt-in setting and is not recommended, and the default stays `react`"
+        in " ".join(status.split())
+    )
+    assert (
+        "so r5 does not meet the rule: `lndl` is not recommended, and the default stays `react`"
+        in " ".join(result.split())
+    )
 
 
 def test_the_checks_as_they_now_stand_differ_from_r5s_only_on_its_lndl_t24_answer():
@@ -574,7 +593,8 @@ def test_each_reading_covers_its_runs_rows_and_the_adr_result_table_is_its_tally
 
 
 _DIFFER_ROW = re.compile(
-    r"^\| `(t\d+)` \| (r\d(?:, r\d)*) \| (both|`lndl`|`react`) \| (accepted|rejected) \| (right|wrong) \|"
+    r"^\| `(t\d+)` \| (r\d(?:, r\d)*) \| (both|`lndl`|`react`) \| (accepted|rejected) "
+    r"\| (right|wrong) \| [^|]+ \|$"
 )
 
 
@@ -605,22 +625,26 @@ def test_the_reading_and_the_checks_differ_in_the_eleven_answers_the_adr_names()
         for run in RUNS
         for r in _jsonl(PILOT / "runs" / run / "reading.jsonl")
     }
-    readme = (PILOT / "README.md").read_text()
+    readme = _prose(PILOT / "README.md")
+    after = readme.split("The reading and the checks differ in", 1)[1]
+    table = after[after.index("\n|") + 1 :].split("\n\n", 1)[0].splitlines()
+    assert table[:2] == [
+        "| task | runs | loop | check | reading | why |",
+        "|---|---|---|---|---|---|",
+    ]
     listed = {}
-    for line in readme.split("The reading and the checks differ in", 1)[1].splitlines():
-        if listed and not line.startswith("|"):
-            break
-        if m := _DIFFER_ROW.match(line):
-            loops = LOOPS if m[3] == "both" else [m[3].strip("`")]
-            for key in ((run, m[1], loop) for run in m[2].split(", ") for loop in loops):
-                assert key not in listed
-                listed[key] = (m[4], m[5])
+    for line in table[2:]:
+        m = _DIFFER_ROW.match(line)
+        assert m, line
+        loops = LOOPS if m[3] == "both" else [m[3].strip("`")]
+        for key in ((run, m[1], loop) for run in m[2].split(", ") for loop in loops):
+            assert key not in listed
+            listed[key] = (m[4], m[5])
     assert listed == {key: rows[key] for key in differ}
-    assert [run for run, _, _ in differ].count("r5") == 1
     assert "disagree: ten answers in r2, r3 and r4, and one in r5" in " ".join(readme.split())
-    assert "The README lists the eleven answers where the reading and the checks differ" in _flat(
-        ADR
-    )
+    adr = _flat(ADR)
+    assert "In these three runs the reading and the checks differ in ten answers" in adr
+    assert "The README lists the eleven answers where the reading and the checks differ" in adr
 
 
 def test_the_t05_answers_the_readme_names_say_max_tokens_does_not_fit_the_field():
@@ -1530,10 +1554,7 @@ def test_a_relative_out_from_a_removed_current_directory_is_refused(monkeypatch,
     monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", "run"])
     monkeypatch.chdir(gone)
     gone.rmdir()
-    try:
-        rc = runner.main()
-    finally:
-        os.chdir(tmp_path)
+    rc = runner.main()
 
     assert rc == 2
     assert f"--out: run cannot be made absolute: {os.strerror(errno.ENOENT)}" in (
@@ -1557,10 +1578,7 @@ def test_a_relative_tasks_file_from_a_removed_current_directory_is_refused(
     monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", "tasks.yaml", "--out", str(out)])
     monkeypatch.chdir(gone)
     gone.rmdir()
-    try:
-        rc = runner.main()
-    finally:
-        os.chdir(tmp_path)
+    rc = runner.main()
 
     assert rc == 2
     assert legs.legs == []
