@@ -112,7 +112,8 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   that slot would read free once its holder exited while the child ran, so ending the child's
   process group is attempted and the slots are released before the error reaches the caller. A
   slot written only in part is refused the same way: what the file then holds may not parse,
-  or, over a longer stale record, may parse and name another child.
+  or may parse to a record naming another child, or this child with another start time, and
+  none of them keeps the slot held once its holder exits.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
   generator's final `finally` after `end_child_group()`, so a slot frees only once the group has
   been ended. Ended here means `end_child_group()` has returned: it signals the group, sends
@@ -122,7 +123,8 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
 - A cancellation that lands while the spawn is in flight unwinds the caller before the child
   arrives, and the slots stay held. When the creation call returns, the abandoned-spawn callback
   (ADR-0030 D4) sends SIGKILL to the child's group (to the child alone when the spawn-time
-  witnesses do not prove the group is its) and then releases them. If the spawn task is itself
+  witnesses do not prove the group is its) and then releases them; if that end raises, they stay
+  held until this process exits. If the spawn task is itself
   cancelled, no pid reaches this process: asyncio closes the transport, which ends the direct
   child but not its group, and the slots are released then.
 

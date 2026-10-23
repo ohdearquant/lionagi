@@ -573,7 +573,8 @@ before admission, so an input that cannot be encoded is refused with nothing to
 give back. A spawn cancelled while the creation call runs keeps its slot until
 that call returns: the abandoned-spawn callback sends SIGKILL to the late
 child's group (to the child alone without spawn-time witnesses) and then
-releases it. A spawn task that is itself cancelled hands back no pid, so only
+releases it; if that end raises, the slot stays held until the process exits.
+A spawn task that is itself cancelled hands back no pid, so only
 the direct child's transport is closed before the slot is released.
 
 `iModel.stream()` re-raises every stream failure as a `ValueError` whose

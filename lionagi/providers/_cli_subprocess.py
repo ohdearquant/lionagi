@@ -345,11 +345,12 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
     """End the group of a child nobody is left to receive.
 
     Runs as a done-callback since the awaiting coroutine has already unwound
-    by the time this fires. A cancellation landing inside the creation call
-    is a known, unclosed hole (logged, not silently passed over): the child
-    exists but its pid was never returned to this process, so only its
-    direct-child transport gets closed, never its group.
-    See docs/internals/providers.md#cli-subprocess-lifecycle.
+    by the time this fires. The shield keeps the creation call running through
+    a cancellation of its caller, so the handle still arrives here. A spawn
+    task that is itself cancelled is a known, unclosed hole (logged, not
+    silently passed over): the child may exist but its pid was never returned
+    to this process, so only its direct-child transport gets closed, never its
+    group. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     if task.cancelled():
         log.warning(
@@ -914,7 +915,14 @@ async def ndjson_from_cli(
         def _end_then_release(task: asyncio.Future) -> None:
             try:
                 _kill_abandoned_spawn(task)
-            finally:
+            except Exception:
+                # The group is not known to have ended, so its slots stay held until
+                # this process exits; the error being raised here stays the caller's.
+                log.exception(
+                    "could not end the group of a child whose spawn was abandoned; its "
+                    "subagent slots stay held until this process exits"
+                )
+            else:
                 lease.release()
 
         if spawn.done():
