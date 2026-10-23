@@ -21,6 +21,7 @@ from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.scheduler import github as gh_mod
 from lionagi.studio.scheduler.engine import SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
+from lionagi.studio.services.schedules import _run_trigger_facts
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -180,6 +181,7 @@ async def test_single_event_poll_behavior_unchanged():
     (run_payload,), kwargs = svc.create_schedule_run_and_advance.await_args
     assert [e["pr_number"] for e in run_payload["trigger_context"]["github_events"]] == [7]
     assert run_payload["trigger_context"]["repo"] == "acme/widgets"
+    assert _run_trigger_facts(run_payload)["scheduled"] is False
     assert kwargs["schedule_fields"]["github_cursor"] == _cursor_for("2026-07-07T10:00:00Z", 7)
     svc.update_schedule.assert_any_call(
         "sched-001", github_cursor=_cursor_for("2026-07-07T10:00:00Z", 7), guard_cursor_forward=True

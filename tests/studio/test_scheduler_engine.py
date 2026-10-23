@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 
 from lionagi.state.db import NO_CURSOR_CLAIM
+from lionagi.studio.services.schedules import _run_trigger_facts
 from tests._scheduler_claims import claim_holds, fire_with_claim, persisting_update_schedule
 
 NY = ZoneInfo("America/New_York")
@@ -1915,6 +1916,7 @@ async def test_startup_missed_fire_run_once_recovers_and_advances(monkeypatch):
 
     assert len(tracked_calls) == 1, "Expected exactly one recovery fire"
     assert tracked_calls[0][1]["trigger_context"]["missed_recovery"] is True
+    assert _run_trigger_facts(tracked_calls[0][1])["scheduled"] is False
 
     update_calls = [
         c for c in svc.update_schedule.await_args_list if c.args and c.args[0] == "sched-run-once"
@@ -2010,6 +2012,7 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(
         f"fires: {[c[1].get('trigger_context') for c in tracked_calls]}"
     )
     assert tracked_calls[0][1]["trigger_context"]["missed_recovery"] is True
+    assert _run_trigger_facts(tracked_calls[0][1])["scheduled"] is False
     assert fake_db.exists(), (
         "_tick() must have opened/schema-applied the redirected StateDB "
         "(dispatch-outbox scan + D3 task-worker tick), proving isolation "
@@ -2185,6 +2188,7 @@ async def test_check_missed_fires_run_once_equality_boundary_is_due(monkeypatch)
 
     mock_tracked.assert_called_once()
     assert mock_tracked.call_args.kwargs["trigger_context"]["missed_recovery"] is True
+    assert _run_trigger_facts(mock_tracked.call_args.kwargs)["scheduled"] is False
 
 
 @pytest.mark.asyncio
