@@ -170,6 +170,7 @@ async def test_projection_does_not_regroup_page(projection_store, monkeypatch):
 async def test_projection_work_stays_bounded_as_unrelated_sessions_grow(
     projection_store, monkeypatch
 ):
+    """Recent page work stays bounded as unrelated sessions and branches grow."""
     work = []
     real_open = sessions._open_db
 
@@ -204,8 +205,16 @@ async def test_projection_work_stays_bounded_as_unrelated_sessions_grow(
                 "VALUES (?, 'session-pool', 0, ?, 'completed')",
                 [(f"background-{i}", -1000 - i) for i in range(previous, population)],
             )
+            conn.executemany(
+                "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                "VALUES (?, 0, ?, 'session-pool')",
+                [
+                    (f"background-branch-{i}", f"background-{i}")
+                    for i in range(previous, population)
+                ],
+            )
         previous = population
-        rows = await sessions.list_sessions(limit=2)
+        rows = await sessions.list_sessions(limit=2, sort="recent")
         assert [(row["id"], row["message_count"]) for row in rows] == [
             ("multi", 6),
             ("empty", 0),
