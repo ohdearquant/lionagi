@@ -264,10 +264,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   files: the orchestrator's, or a role's that is neither a contained Claude worker, a codex
   worker nor a model that is not a CLI. A value other than `true` or `false`, an empty one
   included, warns and contains. A profile whose frontmatter does not read as YAML settings now
-  warns that every setting in it is ignored, except a `contain_user_settings` line of its own,
-  which is still read; a byte-order mark at the start of a profile no longer hides its
-  frontmatter. Containment is unchanged for `li agent -a`, which reads profiles the same way and
-  so prints the same warnings.
+  warns that every setting in it is ignored, except a top-level `contain_user_settings` line of
+  its own, key quoted or not, which is still read; with more than one such line the flag is off
+  only when every one reads `false`. Whitespace or an invisible character such as a byte-order
+  mark ahead of a profile's frontmatter no longer hides it. Containment is unchanged for
+  `li agent -a`, which reads profiles the same way and so prints the same warnings.
 
 ### Changed
 
@@ -525,6 +526,13 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   hashing.
 
 ### Fixed
+
+- A CLI agent on a provider alias is treated as the provider it names: an `openai-codex` agent
+  takes the MCP servers it is handed over `-c`, as a `codex` one does, where before they were
+  reported as not reachable for it, and an `openai-codex` worker in `li o flow` and `li o fanout`
+  runs with `--ignore-user-config`, as every codex worker does, where before it read your codex
+  configuration. The same folding decides which provider's effort setting a copy of the
+  orchestrator drops.
 
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.

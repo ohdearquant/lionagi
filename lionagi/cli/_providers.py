@@ -945,7 +945,7 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
 
     kept: dict[str, Any] = {}
     for line in block.splitlines():
-        if not re.match(r"contain_user_settings[ \t]*:", line):
+        if not re.match(r"""(["']?)contain_user_settings\1[ \t]*:""", line):
             continue
         try:
             read = yaml.safe_load(line)
@@ -953,11 +953,16 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             read = None
         # A line that does not read alone keeps its text, which is not true or false and
         # so contains, as any other such value does.
-        kept["contain_user_settings"] = (
+        value = (
             read["contain_user_settings"]
             if isinstance(read, dict) and "contain_user_settings" in read
             else line.split(":", 1)[1].strip()
         )
+        # Where a block that does not read ends is not known, so a line turning
+        # containment off loses to any other: a false further down cannot undo a true
+        # above it, nor can one in the body of a profile whose block is never closed.
+        if kept.get("contain_user_settings", False) is False:
+            kept["contain_user_settings"] = value
 
     from ._logging import warn
 
@@ -973,8 +978,16 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    # A byte-order mark would hide the opening delimiter and, with it, every setting.
-    text = text.removeprefix("\ufeff")
+    import unicodedata
+
+    # Whitespace or an invisible format character (a byte-order mark, a zero-width
+    # space) ahead of the opening delimiter would hide it and, with it, every setting.
+    start = 0
+    while start < len(text) and (
+        text[start].isspace() or unicodedata.category(text[start]) == "Cf"
+    ):
+        start += 1
+    text = text[start:]
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
         frontmatter = _settings_of_unread_frontmatter(name, text)
