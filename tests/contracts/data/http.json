@@ -11706,6 +11706,23 @@
               }
             }
           ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DisableScheduleRequest"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Body"
+                }
+              }
+            }
+          },
           "responses": {
             "200": {
               "description": "Successful Response",
@@ -13950,6 +13967,26 @@
           "decision"
         ],
         "title": "DecideProposalRequest"
+      },
+      "DisableScheduleRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DisableScheduleRequest",
+        "description": "The reason an operator gives for stopping a schedule from firing, if any."
       },
       "ForkConversationRequest": {
         "properties": {

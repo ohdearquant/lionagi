@@ -493,8 +493,16 @@ def _enable(argv: list[str]) -> dict[str, Any]:
 
 
 def _disable(argv: list[str]) -> dict[str, Any]:
+    from lionagi.studio.cli import _normalize_schedule_reason
+
     known = _parse("disable", argv, unhonoured={})
-    _studio(f"/{_quote(known.id)}/disable", method="POST")
+    body = None
+    if known.reason is not None:
+        try:
+            body = {"reason": _normalize_schedule_reason(known.reason)}
+        except ValueError as exc:
+            raise MachineError("invalid_input", str(exc)) from exc
+    _studio(f"/{_quote(known.id)}/disable", method="POST", body=body)
     return {"schedule_id": known.id, "enabled": False}
 
 

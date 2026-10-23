@@ -15,12 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+from lionagi.state.lifecycle import ReasonRecord
+from lionagi.state.reasons import ScheduleDefinitionReasons
 
 from ..registry import studio_route
 from . import run_view
@@ -30,6 +32,24 @@ _log = logging.getLogger(__name__)
 
 class NameConflictError(Exception):
     """Raised when a schedule name already exists."""
+
+
+class DisableScheduleRequest(BaseModel):
+    """The reason an operator gives for stopping a schedule from firing, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
 
 
 # schedules columns declared NOT NULL — a PATCH that explicitly sets one of
@@ -1249,13 +1269,49 @@ async def enable_schedule(schedule_id: str) -> bool:
     return True
 
 
-async def disable_schedule(schedule_id: str) -> bool:
+async def disable_schedule(schedule_id: str, *, reason: str | None = None) -> bool:
+    """Disable a schedule, recording a supplied reason on the enabled-to-disabled edge.
+
+    A reason on an already-disabled schedule is refused without changing history.
+    Without a reason, repeated disable remains an idempotent success.
+    """
+    if reason is not None:
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("reason must not be blank")
+        if len(reason) > 500:
+            raise ValueError("reason must be at most 500 characters")
     async with StateDB() as db:
-        schedule = await db.get_schedule(schedule_id)
-        if not schedule:
-            return False
-        await db.update_schedule(schedule_id, enabled=0)
-    return True
+        if reason is None:
+            return await db.update_schedule(schedule_id, enabled=0)
+        # Check under the same lock/transaction as the existing lifecycle writer:
+        # a concurrent disable must not turn this explanation into a silent no-op.
+        fields = {"enabled": 0}
+        stmt, params = db._build_update_schedule_stmt(schedule_id, fields)
+        async with db.transaction() as conn:
+            schedule = await db._lifecycle_service().schedule_adapter.read_for_update(
+                conn, schedule_id
+            )
+            if schedule is None:
+                return False
+            if not schedule["enabled"]:
+                raise ValueError(
+                    f"Schedule '{schedule_id}' is already disabled; reason was not recorded"
+                )
+            return await db._update_schedule_in_tx(
+                conn,
+                schedule_id,
+                fields,
+                stmt,
+                params,
+                reason=ReasonRecord(
+                    code=ScheduleDefinitionReasons.DISABLED_MANUAL,
+                    summary=reason,
+                ),
+                # The request carries a reason and nothing about who sent it, so this
+                # edge records the same unobserved provenance as a disable without one.
+                audit_context=None,
+            )
 
 
 async def list_schedule_runs(
@@ -1530,8 +1586,14 @@ async def enable_schedule_route(schedule_id: str) -> dict[str, Any]:
     area="schedules",
     name="disable_schedule",
 )
-async def disable_schedule_route(schedule_id: str) -> dict[str, Any]:
-    ok = await disable_schedule(schedule_id)
+async def disable_schedule_route(
+    schedule_id: str,
+    body: DisableScheduleRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        ok = await disable_schedule(schedule_id, reason=body.reason if body else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True, "enabled": False}

@@ -708,7 +708,9 @@
         "lastOutcome": "last {outcome} {delta} ago",
         "neverFiredSince": "never fired since {date}",
         "noEvidenceHint": "no execution recorded"
-      }
+      },
+      "disableReason": "Reason",
+      "disableReasonHint": "Explain why this schedule should stop firing."
     },
     "run": {
       "elapsed": "{delta} elapsed",
