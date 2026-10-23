@@ -459,8 +459,11 @@ async def list_sessions(
     where: SessionFilter | None = None,
     sort: str = "recent",
 ) -> list[dict[str, Any]]:
-    """One page of sessions, newest first (or highest-cost first). Cost is
-    proportional to `limit`, not to the size of the store."""
+    """One page of sessions, newest first (or highest-cost first).
+
+    Branch and progression aggregates read only selected sessions. Filtering,
+    cost sorting, and OFFSET pagination may require work beyond the page.
+    """
     require_file_store()
     if not store_exists():
         return []
@@ -481,6 +484,8 @@ async def list_sessions(
         clause, params = (where or SessionFilter()).where(
             user_label_available=user_label != "NULL AS user_label"
         )
+        # CROSS JOIN keeps the limited page in the outer loop, rather than
+        # allowing an outer sessions scan to satisfy the final ORDER BY.
         cur = await db.execute(
             f"""
             WITH page AS (
@@ -524,15 +529,19 @@ async def list_sessions(
                 s.total_cost_usd,
                 s.input_tokens,
                 s.output_tokens,
-                COUNT(DISTINCT b.id) AS branch_count,
-                COALESCE(SUM(
-                    json_array_length(p.collection)
+                (
+                    SELECT COUNT(*)
+                    FROM branches b
+                    WHERE b.session_id = s.id
+                ) AS branch_count,
+                COALESCE((
+                    SELECT SUM(json_array_length(p.collection))
+                    FROM branches b
+                    JOIN progressions p ON p.id = b.progression_id
+                    WHERE b.session_id = s.id
                 ), 0) AS message_count
             FROM page
-            JOIN sessions s ON s.id = page.page_id
-            LEFT JOIN branches b ON b.session_id = s.id
-            LEFT JOIN progressions p ON p.id = b.progression_id
-            GROUP BY s.id
+            CROSS JOIN sessions s ON s.id = page.page_id
             ORDER BY {order_by}
             """,  # noqa: S608
             [*params, limit, offset],
