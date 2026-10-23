@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import math
+from typing import Any
 
 from pydantic import Field, PrivateAttr, model_validator
 from typing_extensions import Self
@@ -16,7 +18,7 @@ from .endpoint import Endpoint, _call_failure_detail
 logger = logging.getLogger(__name__)
 
 
-__all__ = ("APICalling",)
+__all__ = ("APICalling", "estimate_payload_input_tokens")
 
 
 class APICalling(HookedEvent):
@@ -56,7 +58,22 @@ class APICalling(HookedEvent):
         exclude=True,
     )
 
+    max_input_tokens: int | None = Field(
+        default=None,
+        description="Refuse the request when input_token_estimate exceeds this; None = no cap",
+        exclude=True,
+    )
+
+    input_token_scale: float = Field(
+        default=1.0,
+        ge=1.0,
+        description="Provider-reported input tokens per estimated token, learned by the iModel; "
+        "max_input_tokens is compared with the estimate times this",
+        exclude=True,
+    )
+
     _routing_scope: object | None = PrivateAttr(default=None)
+    _counted_input_tokens: int | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _validate_streaming(self) -> Self:
@@ -87,6 +104,60 @@ class APICalling(HookedEvent):
                 self.payload["messages"][-1]["content"] = content
 
         return self
+
+    @model_validator(mode="after")
+    def _refuse_over_input_cap(self) -> Self:
+        """Refuse, never truncate: a shortened history silently drops what the next turn reasons over.
+
+        Runs after the validator above, so the estimate covers the payload as it will be sent.
+        """
+        if self.max_input_tokens is None:
+            return self
+        counted = self.input_token_estimate
+        self._counted_input_tokens = counted
+        scale = self.input_token_scale
+        estimate = math.ceil(counted * scale) if scale > 1.0 else counted
+        if estimate > self.max_input_tokens:
+            from lionagi._errors import InputTokenCapError
+
+            scaled = (
+                f", times {scale:.3f}, the provider's own count per counted token so far"
+                if scale > 1.0
+                else ""
+            )
+            raise InputTokenCapError(
+                f"request refused before sending: estimated input {estimate:,} tokens exceeds "
+                f"max_input_tokens={self.max_input_tokens:,} (model "
+                f"{self.payload.get('model')!r}; estimate = o200k_base tokens over the request's "
+                f"system, messages and tools{scaled})",
+                details={
+                    "estimate": estimate,
+                    "cap": self.max_input_tokens,
+                    "counted": counted,
+                    "scale": scale,
+                },
+            )
+        return self
+
+    @property
+    def input_token_estimate(self) -> int:
+        """Estimated input tokens of the whole request, for max_input_tokens.
+
+        Unlike required_tokens this does not depend on the endpoint's requires_tokens, and it
+        counts every input part of the payload, the system prompt and tool schemas included
+        (an Anthropic payload carries the system prompt outside ``messages``). Each part is
+        counted as its JSON text with the o200k_base encoding; the JSON punctuation makes it
+        count somewhat high, never low on that account. tiktoken is called directly, with
+        special-token text encoded as plain text: TokenCalculator.tokenize answers 0 when
+        encoding raises (it does on text such as ``<|endoftext|>``), and a 0 here would let
+        any request through the cap.
+        """
+        return estimate_payload_input_tokens(self.payload)
+
+    @property
+    def counted_input_tokens(self) -> int | None:
+        """The estimate the cap checked when this call was built, before scaling; None without a cap."""
+        return self._counted_input_tokens
 
     @property
     def required_tokens(self) -> int | None:
@@ -169,3 +240,25 @@ class APICalling(HookedEvent):
         return {
             "required_tokens": self.required_tokens,
         }
+
+
+def estimate_payload_input_tokens(payload: dict[str, Any]) -> int:
+    """The input-token estimate max_input_tokens is checked against, for a provider payload.
+
+    APICalling.input_token_estimate counts its own payload with it; a caller that builds a
+    payload without sending it (a host-side fold deciding whether the next request fits) counts
+    the same way.
+    """
+    import json
+
+    import tiktoken
+
+    parts = [
+        payload[key]
+        for key in ("system", "instructions", "messages", "input", "prompt", "tools")
+        if payload.get(key) is not None
+    ]
+    if not parts:
+        return 0
+    text = json.dumps(parts, ensure_ascii=False, default=str)
+    return len(tiktoken.get_encoding("o200k_base").encode(text, disallowed_special=()))

@@ -20,6 +20,7 @@ from lionagi.ln import json_dumps
 from lionagi.operations.run.run import run
 from lionagi.operations.types import RunParam
 from lionagi.protocols.generic.event import EventStatus
+from lionagi.protocols.generic.progression import Progression
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
@@ -180,6 +181,28 @@ async def test_chat_emits_paired_post_call_on_cancellation_during_invoke():
     assert len(calls[HookPoint.API_PRE_CALL]) == 1
     assert len(calls[HookPoint.API_POST_CALL]) == 1
     assert calls[HookPoint.API_POST_CALL][0]["status"] == "error"
+
+
+async def test_a_view_curated_on_api_pre_call_shapes_the_request_it_precedes():
+    branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+    branch.msgs.add_message(instruction="an earlier question the view drops")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+    kept = branch.msgs.add_message(instruction="a later question")
+    answer = branch.msgs.add_message(assistant_response="a later answer")
+    bus = HookBus()
+
+    async def curate(**_kw):
+        branch.metadata["current_progression"] = Progression(order=[kept.id, answer.id])
+
+    bus.on(HookPoint.API_PRE_CALL, curate)
+    branch._hooks = bus
+
+    assert await branch.chat("hi there") == "hello"
+
+    sent = json_dumps(branch.chat_model.invoke.call_args.kwargs["messages"])
+    assert "an earlier question the view drops" not in sent
+    assert "a later question" in sent
+    assert "hi there" in sent
 
 
 async def test_chat_without_session_bus_does_not_crash():

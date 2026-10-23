@@ -68,7 +68,7 @@ still cannot do is make a caller's read-then-act sequence atomic.
 inside the type, none of those holders states what it protects or for how long. Two call sites hold a
 collection lock across an await: `Session.asplit` awaits `Branch.aclone` inside `async with
 self.branches` (`lionagi/session/session.py:279-284`), and that callee takes the message pile lock
-(`lionagi/session/branch.py:519-521`); `Pile.adapt_to_async` awaits the adapter inside the both-lock
+(`lionagi/session/branch.py:533-535`); `Pile.adapt_to_async` awaits the adapter inside the both-lock
 protocol (`pile.py:914-915`).
 
 | Concern | Decision |

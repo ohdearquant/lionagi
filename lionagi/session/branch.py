@@ -147,6 +147,7 @@ class Branch(Element, Relational):
 
         self._message_manager = MessageManager(messages=messages)
         self._message_manager._on_message_added.append(self._schedule_emit)
+        self._message_manager._on_message_added.append(self._track_message_in_view)
 
         if system_template is not None:
             import warnings
@@ -410,6 +411,19 @@ class Branch(Element, Relational):
         from lionagi.hooks.bus import HookPoint
 
         await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
+
+    def _track_message_in_view(self, msg: Any) -> None:
+        """on_message_added hook: a new message enters the curated LLM view.
+
+        Evicting and compacting curate history; they must not freeze the conversation. Without
+        this, every message added after the view exists lands in the record and is never sent
+        to the model again.
+        """
+        cp = self.metadata.get("current_progression")
+        if cp is None:
+            return
+        if msg.id not in cp:
+            cp.append(msg.id)
 
     def _schedule_emit(self, msg: Any) -> None:
         """on_message_added hook: fire-and-forget signal emission."""

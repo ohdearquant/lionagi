@@ -76,6 +76,17 @@ async def test_evict_is_non_destructive():
     assert len(b.msgs.progression) == total  # full record untouched
 
 
+async def test_a_message_added_after_the_view_exists_enters_it():
+    b = _build_branch()
+    res = await _call(b, action="evict", start=1, end=4)
+    assert res["success"]
+    later = b.msgs.add_message(instruction="a later question")
+    answer = await b.msgs.a_add_message(assistant_response="a later answer")
+
+    assert list(b.progression)[-2:] == [later.id, answer.id]
+    assert len(b.progression) == len(b.msgs.progression) - 3  # the evicted three stay out
+
+
 async def test_evict_cannot_remove_system():
     b = _build_branch()
     await _call(b, action="evict", start=0, end=1)  # start clamped to 1
@@ -162,6 +173,20 @@ async def test_compact_summary_takes_the_place_of_the_first_collapsed_message():
     assert res["success"] is True and res["compacted"] == 2
     assert b.progression[3] != first_tool_request
     assert "CONTEXT COMPACTION" in b.msgs.messages[b.progression[3]].content.assistant_response
+
+
+async def test_the_compaction_summary_is_in_the_view_once():
+    b = _build_branch()
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True
+
+    notes = [
+        u
+        for u in b.progression
+        if "CONTEXT COMPACTION"
+        in str(getattr(b.msgs.messages[u].content, "assistant_response", ""))
+    ]
+    assert notes == [b.progression[3]]
 
 
 async def test_compact_keeps_working_when_the_view_already_has_two_instructions_in_a_row(

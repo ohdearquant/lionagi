@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import nullcontext
 from typing import Any
@@ -11,6 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, SecretStr
 
+from lionagi._errors import InputTokenCapError
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import Event, EventStatus, Log
 from lionagi.protocols.ids import to_uuid
@@ -31,6 +33,78 @@ from .hooks import (
 )
 from .rate_limited_processor import RateLimitedAPIExecutor
 from .types import StreamChunk
+
+# A request under this many counted tokens does not calibrate input_token_scale.
+_CALIBRATION_FLOOR = 4_000
+
+
+def reported_input_tokens(usage: Any) -> int | None:
+    """The input tokens a provider's usage block reports for one request; None when it reports none.
+
+    Chat Completions reports ``prompt_tokens``, cached tokens included. The Messages API reports
+    ``input_tokens`` net of ``cache_read_input_tokens`` and ``cache_creation_input_tokens``, so the
+    three are summed; the Responses API reports ``input_tokens`` with cached tokens included and
+    neither cache key. A count that is not a non-negative integer is not read.
+    """
+    if not isinstance(usage, dict):
+        return None
+
+    def count(key: str) -> int | None:
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
+
+    prompt = count("prompt_tokens")
+    if prompt is not None:
+        return prompt
+    fresh = count("input_tokens")
+    if fresh is None:
+        return None
+    return fresh + sum(
+        count(key) or 0 for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
+    )
+
+
+def _merge_streamed_usage(usage: dict[str, Any], chunk: Any) -> None:
+    """Fold the usage block one streamed event carries into ``usage``.
+
+    The Messages API reports the input counts on ``message_start`` (under ``message``) and
+    cumulative counts on ``message_delta``; Chat Completions ends with a usage chunk; the
+    Responses API reports usage on ``response.completed`` (under ``response``). The counts are
+    cumulative, so a key an event leaves out keeps the count held for it: an event's input
+    counts are laid over the ones held and taken only when that total
+    (``reported_input_tokens``) can be read and is not below the one held. A later event
+    reporting less, zero included, does not erase them; a count moved from one key to another,
+    the event reporting both keys, is not added twice; an event carrying only some of the keys
+    adds to the counts held. A set with no readable total (cache keys without
+    ``input_tokens``, a count that is not a non-negative integer) is not taken. Any other value
+    is the newest one seen.
+    """
+    if isinstance(chunk, StreamChunk):
+        chunk = chunk.metadata.get("raw") if isinstance(chunk.metadata, dict) else None
+    if not isinstance(chunk, dict):
+        return
+    for holder in (chunk, chunk.get("message"), chunk.get("response")):
+        block = holder.get("usage") if isinstance(holder, dict) else None
+        if not isinstance(block, dict):
+            continue
+        new = {key: value for key, value in block.items() if value is not None}
+        held = {key: usage[key] for key in _INPUT_KEYS if key in usage}
+        laid = {**held, **{key: new.pop(key) for key in _INPUT_KEYS if key in new}}
+        reported = reported_input_tokens(laid)
+        if reported is not None and reported >= (reported_input_tokens(held) or 0):
+            usage.update(laid)
+        usage.update(new)
+        return
+
+
+_INPUT_KEYS = (
+    "prompt_tokens",
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
 
 
 def _branch_routing_context(branch_id: UUID, imodel: iModel):
@@ -85,10 +159,30 @@ class iModel:  # noqa: N801
         exit_hook: bool = False,
         id: UUID | str | None = None,  # noqa: A002
         created_at: float | None = None,
+        max_input_tokens: int | None = None,
         **kwargs,
     ) -> None:
         self.id = None
         self.created_at = None
+        if max_input_tokens is not None and (
+            isinstance(max_input_tokens, bool)
+            or not isinstance(max_input_tokens, int)
+            or max_input_tokens < 1
+        ):
+            raise ValueError("max_input_tokens must be a positive integer or None.")
+        # Every APICalling this model builds refuses a request whose estimated input exceeds
+        # it. The first refusal is kept, and every later request on this model is refused with
+        # it: callers that catch exceptions mid-loop (a ReAct final-answer turn, a parse
+        # repair) would otherwise lose it, or go on to send a smaller request after the run
+        # was already refused. A caller clears input_cap_refusal to send again.
+        self.max_input_tokens: int | None = max_input_tokens
+        self.input_cap_refusal: Exception | None = None
+        # The cap counts o200k_base tokens and a provider counts its own way: Anthropic reported
+        # about 1.37 times the count on agent transcripts. Each completed response raises this to
+        # the provider's count per counted token (_calibrate_input_scale), and the cap compares
+        # the count times this. It starts at 1.0 and only rises, so the cap never admits more
+        # than its own count.
+        self.input_token_scale: float = 1.0
         if id is not None:
             self.id = to_uuid(id)
         else:
@@ -279,6 +373,8 @@ class iModel:  # noqa: N801
         self, include_token_usage_to_model: bool = False, **kwargs
     ) -> APICalling:
         """Construct an APICalling from endpoint-specific payload."""
+        if self.input_cap_refusal is not None:
+            raise self.input_cap_refusal
         # Auto-inject session_id for CLI endpoint resume
         if (
             isinstance(self.endpoint, AgenticEndpoint)
@@ -294,14 +390,21 @@ class iModel:  # noqa: N801
         payload, headers = self.endpoint.create_payload(request=kwargs)
         cache_control = kwargs.pop("cache_control", False)
 
-        api_call = APICalling(
-            payload=payload,
-            headers=headers,
-            endpoint=self.endpoint,
-            call_kwargs=call_kwargs,
-            cache_control=cache_control,
-            include_token_usage_to_model=include_token_usage_to_model,
-        )
+        try:
+            api_call = APICalling(
+                payload=payload,
+                headers=headers,
+                endpoint=self.endpoint,
+                call_kwargs=call_kwargs,
+                cache_control=cache_control,
+                include_token_usage_to_model=include_token_usage_to_model,
+                max_input_tokens=self.max_input_tokens,
+                input_token_scale=self.input_token_scale,
+            )
+        except InputTokenCapError as exc:
+            if self.input_cap_refusal is None:
+                self.input_cap_refusal = exc
+            raise
         self._capture_routing_scope(api_call)
         return api_call
 
@@ -490,6 +593,8 @@ class iModel:  # noqa: N801
 
     async def stream(self, api_call=None, **kw) -> AsyncGenerator:
         served_model = None
+        # What the stream's events report about the request, for _calibrate_input_scale.
+        usage: dict[str, Any] = {}
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
@@ -525,6 +630,7 @@ class iModel:  # noqa: N801
                                 reported_model = self._reported_served_model(i)
                                 if reported_model is not None:
                                     served_model = reported_model
+                            _merge_streamed_usage(usage, i)
                             result = await self.process_chunk(i)
                             yield result if result is not None else i
                         # api_call.stream() captures a transport/provider failure as
@@ -547,6 +653,7 @@ class iModel:  # noqa: N801
                             reported_model = self._reported_served_model(i)
                             if reported_model is not None:
                                 served_model = reported_model
+                        _merge_streamed_usage(usage, i)
                         result = await self.process_chunk(i)
                         yield result if result is not None else i
                     stream_error = _terminal_stream_error(api_call)
@@ -567,6 +674,22 @@ class iModel:  # noqa: N801
             if self._is_routing_error(stream_error):
                 raise stream_error from None
             raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
+        if not failed and api_call.status == EventStatus.COMPLETED:
+            self._calibrate_input_scale(api_call, usage)
+
+    def _calibrate_input_scale(self, call: APICalling, usage: Any) -> None:
+        """Raise input_token_scale to the provider's reported input per token the cap counted.
+
+        Only a call the cap counted calibrates, and only from _CALIBRATION_FLOOR counted tokens up:
+        a fixed per-request overhead weighs most on a small request, and the scale never falls.
+        """
+        counted = call.counted_input_tokens
+        if counted is None or counted < _CALIBRATION_FLOOR:
+            return
+        reported = reported_input_tokens(usage)
+        if reported is None:
+            return
+        self.input_token_scale = max(self.input_token_scale, reported / counted)
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
         try:
@@ -607,6 +730,12 @@ class iModel:  # noqa: N801
                 completed_call,
                 self._reported_served_model(response),
             )
+            if (
+                completed_call is not None
+                and completed_call.status == EventStatus.COMPLETED
+                and isinstance(response, dict)
+            ):
+                self._calibrate_input_scale(completed_call, response.get("usage"))
             if response:
                 # An empty id never erases the last confirmed one: a call whose
                 # stream carried no id-bearing chunk returns the field empty,
@@ -620,6 +749,10 @@ class iModel:  # noqa: N801
                     self.endpoint.session_id = response["session_id"]
 
             return completed_call
+        except InputTokenCapError:
+            # Refused before the send: re-raising it as the generic wrapper would hide the one
+            # error whose whole content is its own type, estimate and cap.
+            raise
         except Exception as e:
             if self._is_routing_error(e):
                 raise
@@ -684,8 +817,10 @@ class iModel:  # noqa: N801
             streaming_process_func=self.streaming_process_func,
             hook_registry=self.hook_registry,
             exit_hook=self.exit_hook,
+            max_input_tokens=self.max_input_tokens,
             **self.executor.config,
         )
+        new.input_token_scale = self.input_token_scale
         if share_executor:
             new.executor = self.executor
         return new
@@ -707,6 +842,11 @@ class iModel:  # noqa: N801
         }
         if include_processor_config:
             data["processor_config"] = self.executor.config
+        if self.max_input_tokens is not None:
+            # Only when set, so a model without a cap serializes as it always has.
+            data["max_input_tokens"] = self.max_input_tokens
+        if self.input_token_scale != 1.0:
+            data["input_token_scale"] = self.input_token_scale
         return data
 
     @classmethod
@@ -775,13 +915,24 @@ class iModel:  # noqa: N801
             }
         else:
             stored_metadata = None
-        return cls(
+        model = cls(
             endpoint=e1,
             provider_metadata=stored_metadata,
             id=data.get("id"),
             created_at=data.get("created_at"),
+            max_input_tokens=data.get("max_input_tokens"),
             **{name: stored_limits[name] for name in _EXECUTOR_LIMITS if name in stored_limits},
         )
+        scale = data.get("input_token_scale")
+        if (
+            isinstance(scale, (int, float))
+            and not isinstance(scale, bool)
+            and math.isfinite(scale)
+            and scale > 1.0
+        ):
+            # A resumed run keeps what its provider has already shown about its counts.
+            model.input_token_scale = float(scale)
+        return model
 
     @property
     def provider_session_id(self):
