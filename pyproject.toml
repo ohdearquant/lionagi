@@ -351,8 +351,10 @@ constraint-dependencies = [
     "tornado>=6.5.8",       # CVE: request parsing DoS and cookie attribute injection
     "cairosvg>=2.9.1",      # CVE: recursive <use> exponential DoS; then quadratic-time <path> parsing
     # CVE: pyvenv.cfg prompt injection, unverified seed wheels, batch and bash/fish activator
-    # command injection
-    "virtualenv>=21.7.13",
+    # command injection; then a bash activate escape through the environment name, console
+    # launchers that read destination paths as shell syntax, and generated files, builtin
+    # creation and deletion recovery that follow links
+    "virtualenv>=21.14.9",
     "fsspec>=2026.6.0",     # CVE: template injection in ReferenceFileSystem
     "datamodel-code-generator>=0.81.0",  # CVE: protobuf weak-import path traversal
     # CVE: vulnerable OpenSSL bundled in wheels; then a Bleichenbacher oracle
@@ -383,4 +385,6 @@ constraint-dependencies = [
                             # files outside base_path
     "setuptools>=83.0.0",   # CVE: MANIFEST.in exclusion bypass in sdist via Unicode NFC/NFD
                             # normalization collision on case-preserving macOS filesystems
+    "black>=26.10.1",       # CVE: the GitHub Action installs an unvalidated required-version
+    "opentelemetry-api>=1.45.1",  # CVE: unbounded tracestate parsing
 ]

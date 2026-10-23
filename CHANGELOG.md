@@ -690,6 +690,15 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - Raised the `aiohttp` floor to 3.14.4, which fixes eight advisories in 3.14.3 (CVE-2026-111063 to
   CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and GHSA-2g87-pp6c-29x5). The lockfiles move
   to 3.14.4, and `uv.lock` moves `yarl` from 1.23.0 to 1.25.1, which 3.14.4 requires.
+- The lockfiles move off releases with published advisories: `virtualenv` from 21.14.5 to
+  21.14.13 (CVE-2026-113716, CVE-2026-113721, CVE-2026-113722, CVE-2026-113724 and
+  CVE-2026-113725) and `black` from 26.3.1 to 26.10.1 (CVE-2026-114134) in `uv.lock`, and
+  `opentelemetry-api` to 1.45.1 (CVE-2026-114603), with the OpenTelemetry packages released
+  beside it, in `uv.lock` and `lion1/uv.lock`. `uv.lock` also moves `packaging` from 26.1 to 26.3
+  and `distlib` from 0.4.0 to 0.4.4. The constraints in `pyproject.toml` keep the lock at or above
+  `virtualenv` 21.14.9, `black` 26.10.1 and `opentelemetry-api` 1.45.1. The studio frontend and
+  the VS Code extension move their test runner to `vitest` 4.1.12 (CVE-2026-112949 and
+  CVE-2026-112950).
 
 ### Docs
 
