@@ -176,9 +176,13 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
         if scope.cancelled_caught:
             timed_out = True
     except Exception as exc:  # noqa: BLE001
-        result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
-        result["detail"] = f"{type(exc).__name__}: {exc}"
-        return result
+        # The busy timeout set above is this deadline, so a store another connection holds can
+        # give up in SQLite's own retry loop a moment before the deadline does. That store was
+        # reached and did not answer in time: the slow status, timed_out still set.
+        if not (isinstance(exc, sqlite3.OperationalError) and "is locked" in str(exc)):
+            result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+            result["detail"] = f"{type(exc).__name__}: {exc}"
+            return result
     finally:
         if conn is not None:
             # Shielded because closing is itself an await, and this one can run

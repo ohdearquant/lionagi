@@ -601,6 +601,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   action it dispatches and the check timed the whole pass. It now leaves out only the time a
   process the pass dispatched takes to start and run, so a poll, or a store write of the pass or
   of a fire it makes, that does not return still makes the scheduler unready.
+- The store probe in `/admin/readiness` could report a store that another connection held locked
+  as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
+  and when SQLite's wait ran out first the read raised "database is locked", which the probe read
+  as a store it could not reach. A lock error now reads as `slow`; any other error still reads as
+  `unavailable`.
 - A `github_poll` schedule counted its `poll_interval_sec` from its last fire only, so once that
   interval had passed, every poll that fired nothing (a quiet repository, events its filter left
   out, a failed request) was followed by another on the next scheduler tick, every 30 seconds.

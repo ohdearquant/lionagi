@@ -338,6 +338,48 @@ class TestStoreProbe:
         assert body["store_present"] is True
         assert "did not answer" in body["detail"]
 
+    @pytest.mark.parametrize(
+        ("message", "status"),
+        [
+            ("database is locked", "slow"),
+            ("database table is locked", "slow"),
+            ("no such table: sessions", "unavailable"),
+        ],
+    )
+    def test_a_store_that_gives_up_on_a_lock_first_reports_slow(
+        self, client, monkeypatch, message, status
+    ):
+        """SQLite's busy timeout is the probe's deadline, so on a held store either can end the
+        wait first. When SQLite's does, the read raises a lock error rather than being
+        cancelled, and that store is as slow as one the deadline gave up on. Any other error
+        still means the store could not be read."""
+        import sqlite3
+
+        import aiosqlite
+
+        class _LockedConnection:
+            def __await__(self):
+                async def _connect():
+                    return self
+
+                return _connect().__await__()
+
+            async def execute(self, sql, *args):
+                if sql.startswith("PRAGMA"):
+                    return None
+                raise sqlite3.OperationalError(message)
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(aiosqlite, "connect", lambda *a, **kw: _LockedConnection())
+        body = client.get("/api/admin/readiness", params={"timeout_ms": 1000}).json()
+        assert body["status"] == status, body
+        if status == "slow":
+            assert "did not answer" in body["detail"]
+        else:
+            assert message in body["detail"]
+
     def test_a_real_lock_leaves_no_connection_running_behind_the_timeout(self, seeded, monkeypatch):
         """The probe gives up on a genuinely locked store and closes what it opened.
 
