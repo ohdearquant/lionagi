@@ -50,6 +50,7 @@ from ._orchestration import (
     _claude_worker_contained,
     _hand_mcp_servers,
     _resolve_worker_model_spec,
+    _uncontainable_cli_provider,
     _worker_mcp_hand_off,
     attribute_worker_build_failure,
     available_roles,
@@ -1291,17 +1292,32 @@ def _reconstruct_spawned_nodes(
             return None
         return dag_state.worker_branches.get(assignee) or dag_state.role_base.get(assignee)
 
-    # Likewise for a contained worker: the orchestrator's branch, and the branch of a
-    # role that is not contained, read the settings files that worker ran without.
+    def reads_user_settings(branch: Any) -> bool:
+        # The orchestrator's branch is not a worker's and keeps the settings it was built
+        # with. A role's reads none when it is a contained Claude worker, a codex one (every
+        # codex worker runs with --ignore-user-config) or a model that is not a CLI.
+        model = getattr(branch, "chat_model", None)
+        if model is None:
+            return True
+        if not getattr(model, "is_cli", False) or _claude_worker_contained(model):
+            return False
+        from lionagi.agent.factory import _canonical_provider
+
+        kwargs = model.endpoint.config.kwargs
+        return not (
+            _canonical_provider(model.endpoint.config.provider) == "codex"
+            and kwargs.get("ignore_user_config")
+        )
+
+    # Likewise for a contained worker: the orchestrator's branch, and a role's branch
+    # that reads_user_settings, read settings files that worker ran without.
     uncontained = [
         e["node_id"]
         for e in checkpoint_spawned
         if retry_failed
         and e.get("status") == "failed"
         and e.get("emitter_contains_user_settings")
-        and not _claude_worker_contained(
-            getattr(rebuild_branch(e.get("assignee")), "chat_model", None)
-        )
+        and reads_user_settings(rebuild_branch(e.get("assignee")))
     ]
     if uncontained:
         raise FlowResumeError(
@@ -1309,8 +1325,9 @@ def _reconstruct_spawned_nodes(
             f"[{', '.join(uncontained)}]: each was asked for by a worker that ran with no "
             "settings files read (contain_user_settings), or retries a node that ran so, "
             "and --retry-failed would run them again on a branch that reads them: the "
-            "orchestrator's, or the branch of a role that is not contained. Re-run the "
-            "flow from scratch."
+            "orchestrator's, or the branch of a role that is neither a contained Claude "
+            "worker, a codex worker nor a model that is not a CLI. Re-run the flow from "
+            "scratch."
         )
 
     known_ids = {str(n) for n in dag_state.node_ids}
@@ -2280,6 +2297,28 @@ async def _execute_dag(
                             "or ask for a dependent agent, which runs on the asking worker's "
                             "engine."
                         )
+            if contained:
+                # The branch the node will be cloned from, chosen as role_node_builder and
+                # _assign_injected_branch choose it: a named role's (an exact key before a
+                # team instance's alias), else the orchestrator's for an independent agent
+                # and the asking worker's own for a dependent one.
+                if req.assignee:
+                    target = role_base.get(req.assignee) or role_base.get(
+                        role_by_worker.get(req.assignee, req.assignee)
+                    )
+                elif getattr(req, "independent", False):
+                    target = env.orc_branch
+                else:
+                    target = emitter_branch
+                runs_on = _uncontainable_cli_provider(getattr(target, "chat_model", None))
+                if runs_on is not None:
+                    who = f"role {req.assignee!r}" if req.assignee else "the orchestrator"
+                    raise CLIInputRefusedError(
+                        "spawn refused: the worker that asked for it runs with no settings "
+                        f"files read (contain_user_settings), and {who} runs on {runs_on}, "
+                        "which would read its own user settings. Name a Claude or codex role, "
+                        "or ask for a dependent agent, which runs on the asking worker's engine."
+                    )
         node = _role_spawn_node(req, emitter)
         if workload is not None:
             node.metadata["emitter_workload"] = workload

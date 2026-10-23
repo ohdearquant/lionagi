@@ -376,10 +376,16 @@ under `dontAsk`, with Agent and Task disallowed. The files stay on disk, where
 its Read and Bash tools can still open them. With no worker set resolved, a
 contained worker is handed the empty set as its whole set
 (`_worker_mcp_hand_off`), so it starts none of the servers it would discover.
-A spawned node is contained when the branch it copies was, or when the worker
-that asked for it was, whatever role the request names; a checkpoint records
-the second, and `--retry-failed` refuses to rebuild such a node on a branch
-that is not contained, the orchestrator's or that of a role without the flag.
+A spawned Claude node is contained when the branch it copies was, or when the
+worker that asked for it was, whatever role the request names. A codex one runs
+with `--ignore-user-config`, as every codex worker does, and a contained worker's
+request for an agent on any other CLI is refused in `_build_spawn_node`
+(`_uncontainable_cli_provider`), since nothing here keeps that CLI's own settings
+out. A checkpoint records that the asking worker was contained, writing the key
+only then, so a node without it is rebuilt as before; `--retry-failed` refuses to
+rebuild a recorded node on a branch that reads settings files: the
+orchestrator's, or a role's that is neither a contained Claude worker, a codex
+worker nor a model that is not a CLI.
 A team round is rebuilt on its worker's own branch (`reviewer-2`), a spawn on
 the branch of the role it named. The
 synthesis branch starts from a copy of the orchestrator's model and is not

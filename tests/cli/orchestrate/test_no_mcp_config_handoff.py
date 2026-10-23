@@ -1226,15 +1226,15 @@ def test_the_profile_flag_reads_true_or_false_and_contains_otherwise(
 @pytest.mark.parametrize(
     "frontmatter",
     [
-        "model: claude_code/sonnet\ncontain_user_settings: true\nnotes: [unclosed\n",
+        "model: claude_code/sonnet\nnotes: [unclosed\n",
         "- model: claude_code/sonnet\n- contain_user_settings: true\n",
     ],
 )
 def test_a_profile_whose_frontmatter_does_not_read_warns_that_its_settings_are_ignored(
     caplog, frontmatter
 ):
-    """A frontmatter block that does not read as YAML settings gives the profile none, the
-    flag included, so loading it says so rather than run the role uncontained in silence."""
+    """A frontmatter block that does not read as YAML settings gives the profile none, so
+    loading it says so rather than run the role on defaults in silence."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
@@ -1243,8 +1243,57 @@ def test_a_profile_whose_frontmatter_does_not_read_warns_that_its_settings_are_i
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         profile = _parse_profile("role", text)
 
+    assert profile.model is None
     assert profile.contain_user_settings is False
     assert "every setting in it is ignored, contain_user_settings included" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("line", "expected", "not_true_or_false"),
+    [
+        ("contain_user_settings: true\n", True, False),
+        ("contain_user_settings : true\n", True, False),
+        ("contain_user_settings: false\n", False, False),
+        ("contain_user_settings: maybe\n", True, True),
+        ("contain_user_settings: [true\n", True, True),
+    ],
+)
+def test_the_flag_keeps_its_own_line_when_the_rest_of_the_frontmatter_does_not_read(
+    caplog, line, expected, not_true_or_false
+):
+    """A broken line elsewhere in the block does not turn containment off: the flag is read
+    from its own top-level line, by the same rule as in a block that reads."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = f"---\nmodel: claude_code/sonnet\n{line}notes: [unclosed\n---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is expected
+    assert "contain_user_settings" not in profile.extra
+    assert "every setting in it is ignored except contain_user_settings" in caplog.text
+    assert ("is not true or false; containing" in caplog.text) is not_true_or_false
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog, newline):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = "\ufeff" + newline.join(
+        ["---", "model: claude_code/sonnet", "contain_user_settings: true", "---", "", "Work."]
+    )
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model == "claude_code/sonnet"
+    assert profile.contain_user_settings is True
+    assert "\ufeff" not in profile.raw_body
+    assert "does not read as YAML settings" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1252,6 +1301,8 @@ def test_a_profile_whose_frontmatter_does_not_read_warns_that_its_settings_are_i
     [
         "Work.\n",
         "---\n---\n\nWork.\n",
+        "---\n# a note only\n---\n\nWork.\n",
+        "---\n# a note\n\n# and another\n---\n\nWork.\n",
         "---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
     ],
 )

@@ -775,6 +775,24 @@ def _claude_worker_contained(imodel) -> bool:
     return isinstance(kwargs, dict) and kwargs.get("setting_sources") == ""
 
 
+def _uncontainable_cli_provider(imodel) -> str | None:
+    """The provider of a CLI model that a contained worker's spawn cannot run on, else None.
+
+    A spawned Claude branch is contained by ``_isolate_worker_cli_config`` and a codex
+    one runs with ``--ignore-user-config``; a model that is not a CLI reads no settings
+    files. Any other CLI reads its own user settings, which nothing here removes.
+    """
+    if not getattr(imodel, "is_cli", False):
+        return None
+    from lionagi.agent.factory import _canonical_provider
+    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+
+    provider = _canonical_provider(imodel.endpoint.config.provider)
+    if provider == "codex" or provider in _CLAUDE_PROVIDER_NAMES:
+        return None
+    return provider
+
+
 def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
     """Refuse, before the run starts, a worker set a clone of the orchestrator cannot take.
 
