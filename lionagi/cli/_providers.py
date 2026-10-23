@@ -920,32 +920,64 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
-def _warn_on_unread_frontmatter(name: str, text: str) -> None:
-    """Warn when a profile opens a frontmatter block that is not read: the reader then
-    returns no settings at all, ``model`` and ``contain_user_settings`` among them."""
+def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
+    """The settings a profile keeps when its frontmatter block is not read, with a warning:
+    none, except ``contain_user_settings`` when it has a top-level line of its own, so a
+    broken line elsewhere in the block cannot turn containment off."""
+    import re
+
     import yaml
 
     from lionagi.libs.frontmatter import parse_frontmatter_strict
 
     try:
         parse_frontmatter_strict(text)
+        return {}
     except yaml.YAMLError as exc:
-        # An empty block holds no settings to lose.
-        if not text.strip()[3:].split("\n---", 1)[0].strip():
-            return
-        from ._logging import warn
-
         reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
-        warn(
-            f"agent profile {name!r}: its frontmatter does not read as YAML settings "
-            f"({reason}); every setting in it is ignored, contain_user_settings included"
+    block = text.strip()[3:].split("\n---", 1)[0]
+    # A block with no settings in it, empty or comments only, has none to lose.
+    try:
+        if yaml.safe_load(block) is None:
+            return {}
+    except yaml.YAMLError:
+        pass
+
+    kept: dict[str, Any] = {}
+    for line in block.splitlines():
+        if not re.match(r"contain_user_settings[ \t]*:", line):
+            continue
+        try:
+            read = yaml.safe_load(line)
+        except yaml.YAMLError:
+            read = None
+        # A line that does not read alone keeps its text, which is not true or false and
+        # so contains, as any other such value does.
+        kept["contain_user_settings"] = (
+            read["contain_user_settings"]
+            if isinstance(read, dict) and "contain_user_settings" in read
+            else line.split(":", 1)[1].strip()
         )
+
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: its frontmatter does not read as YAML settings ({reason}); "
+        + (
+            "every setting in it is ignored except contain_user_settings, read from its own line"
+            if kept
+            else "every setting in it is ignored, contain_user_settings included"
+        )
+    )
+    return kept
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
+    # A byte-order mark would hide the opening delimiter and, with it, every setting.
+    text = text.removeprefix("\ufeff")
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
-        _warn_on_unread_frontmatter(name, text)
+        frontmatter = _settings_of_unread_frontmatter(name, text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion

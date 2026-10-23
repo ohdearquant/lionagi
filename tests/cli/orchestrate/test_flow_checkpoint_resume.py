@@ -953,15 +953,45 @@ def _contained_branch(name: str) -> Branch:
     return branch
 
 
-@pytest.mark.parametrize("role_contained", [False, True])
-def test_retry_failed_reruns_a_named_spawn_a_contained_worker_asked_for_only_on_a_contained_role(
-    role_contained,
+def _role_branch(name: str, role: str) -> Branch:
+    """A role's branch as a run builds it: put through the worker boundary, which runs a
+    codex worker with --ignore-user-config and contains a Claude one only when asked."""
+    from lionagi import iModel
+    from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
+
+    provider, model = {
+        "claude": ("claude_code", "sonnet"),
+        "contained claude": ("claude_code", "sonnet"),
+        "codex": ("codex", "gpt-5.5"),
+        "api": ("openai", "gpt-4.1-mini"),
+        "gemini cli": ("gemini_code", "gemini-2.5-pro"),
+    }[role]
+    chat_model = iModel(
+        provider=provider, model=model, **({"api_key": "dummy-key"} if role == "api" else {})
+    )
+    _isolate_worker_cli_config(chat_model, contain_user_settings=role == "contained claude")
+    return Branch(name=name, chat_model=chat_model)
+
+
+@pytest.mark.parametrize(
+    ("role", "reruns"),
+    [
+        ("claude", False),
+        ("gemini cli", False),
+        ("contained claude", True),
+        ("codex", True),
+        ("api", True),
+    ],
+)
+def test_retry_failed_reruns_a_named_spawn_a_contained_worker_asked_for_only_on_a_role_reading_no_settings(
+    role, reruns
 ):
-    """A node naming a role is rebuilt on that role's branch, which reads the settings files
-    the worker that asked for it ran without unless the role is contained too: then it runs
-    again there, otherwise the resume refuses."""
+    """A node naming a role is rebuilt on that role's branch. It runs again there when that
+    branch reads no settings files the worker that asked for it ran without: a contained
+    Claude role's, a codex one's or one whose model is not a CLI. Otherwise the resume
+    refuses."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
-    reviewer_branch = _contained_branch("reviewer") if role_contained else Branch(name="reviewer")
+    reviewer_branch = _role_branch("reviewer", role)
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
         node_ids=[parent_id],
@@ -999,11 +1029,14 @@ def test_retry_failed_reruns_a_named_spawn_a_contained_worker_asked_for_only_on_
             checkpoint_spawned=checkpoint_spawned,
         )
 
-    if not role_contained:
+    if not reruns:
         with pytest.raises(FlowResumeError) as refused:
             _resume()
         assert f"[{child_id}]" in str(refused.value)
-        assert "the branch of a role that is not contained" in str(refused.value)
+        assert (
+            "neither a contained Claude worker, a codex worker nor a model that is not a CLI"
+            in (str(refused.value))
+        )
         assert UUID(child_id) not in builder.get_graph().internal_nodes
         return
 

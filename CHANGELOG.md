@@ -256,11 +256,18 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   Grep, Edit, Write, Bash, WebFetch and WebSearch and only the MCP servers the run hands it (none
   when the run resolves no set), under `--permission-mode dontAsk`, and cannot start Agent or
   Task subagents. The files stay on disk, where its Read and Bash tools can still open them.
-  Every agent such a worker spawns runs the same way, whatever role it names, and
-  `--retry-failed` refuses to run one again on a branch that reads the settings. A value other
-  than `true` or `false`, an empty one included, warns and contains. A profile whose
-  frontmatter does not read as YAML settings now warns that every setting in it is ignored.
-  `li agent -a` runs are unchanged.
+  An agent such a worker spawns on Claude runs the same way, whatever role it names; one on
+  codex runs with `--ignore-user-config`, as every codex worker does, under its own role's
+  sandbox and approval settings rather than `dontAsk` (`yolo` there is
+  `--sandbox workspace-write`); one on any other CLI is refused, since that CLI would read its
+  own user settings. `--retry-failed` refuses to run one again on a branch that reads settings
+  files: the orchestrator's, or a role's that is neither a contained Claude worker, a codex
+  worker nor a model that is not a CLI. A value other than `true` or `false`, an empty one
+  included, warns and contains. A profile whose frontmatter does not read as YAML settings now
+  warns that every setting in it is ignored, except a `contain_user_settings` line of its own,
+  which is still read; a byte-order mark at the start of a profile no longer hides its
+  frontmatter. Containment is unchanged for `li agent -a`, which reads profiles the same way and
+  so prints the same warnings.
 
 ### Changed
 
