@@ -419,7 +419,12 @@ async def test_a_user_the_client_would_read_is_removed(env_key, stored):
         ("https://stored-user:stored-secret@127.0.0.1:8000/v1", "https://127.0.0.1:8000/v1"),
         ("https://stored-user:stored-secret@[::1]:8080/v1", "https://[::1]:8080/v1"),
         ("https://stored-user:stored-secret@[fe80::1%25en0]/v1", "https://[fe80::1%25en0]/v1"),
+        ("https://stored-user:stored-secret@[fe80::1%25en~0]/v1", "https://[fe80::1%25en~0]/v1"),
         ("https://stored-user:stored-secret@例え.jp/v1", "https://xn--r8jz45g.jp/v1"),
+        (
+            "https://stored-user:stored-secret@नमस्ते.example/v1",
+            "https://xn--h2bhs4b8d8a.example/v1",
+        ),
         ("https://stored-user:stored-secret@gateway.example/v1?team=x#y", f"{ELSEWHERE}?team=x#y"),
     ],
 )
@@ -432,6 +437,20 @@ def test_a_stored_kwargs_base_url_is_not_restored():
     data["endpoint"]["config"].setdefault("kwargs", {})["base_url"] = STORED_PASSWORD_URL
     model = iModel.from_dict(data)
     assert "base_url" not in model.endpoint.config.kwargs
+    assert "stored-se" not in str(model.to_dict())
+
+
+@pytest.mark.parametrize("where", ["kwargs", "config"])
+def test_a_stored_proxy_is_not_restored_or_sent(where):
+    data = _stored()
+    config = data["endpoint"]["config"]
+    (config.setdefault("kwargs", {}) if where == "kwargs" else config)["proxy"] = (
+        STORED_PASSWORD_URL
+    )
+    model = iModel.from_dict(data)
+    assert "proxy" not in model.endpoint.config.kwargs
+    payload, _ = model.endpoint.create_payload({"messages": []})
+    assert "proxy" not in payload
     assert "stored-se" not in str(model.to_dict())
 
 
@@ -456,6 +475,7 @@ REFUSED = {
         "stored-user:stored-secret@gateway.example/v1",
         "stored-user%3Astored-secret",
         "ftp://stored-user:stored-secret@gateway.example/v1",
+        "http\u017f://stored-user:stored-secret@gateway.example/v1",
         "localhost:8000/v1",
     ],
     "does not read as a URL the HTTP client can send": [
@@ -501,6 +521,7 @@ REFUSED = {
         "https://stored-user:/stored-secret@gateway.example/v1",
         "https://gateway.example:/v1",
         "https://@gateway.example/v1",
+        "https://gateway\u3002example/v1",
         f"https://gateway{_encoded(14)}.example/v1",
     ],
     "has an '@' after its host": [
@@ -522,9 +543,9 @@ REFUSED = {
         "https://[::1]/v1/@team",
     ],
     "is still percent-encoded after 16 layers are read": [
-        f"internal{_encoded(15)}",
-        f"https://gateway.example/v1/{_encoded(15)}",
-        f"https://gateway.example:8443/v1/{_encoded(15)}",
+        f"internal{_encoded(16)}",
+        f"https://gateway.example/v1/{_encoded(16)}",
+        f"https://gateway.example:8443/v1/{_encoded(16)}",
     ],
 }
 REFUSED_CASES = [(reason, stored) for reason, urls in REFUSED.items() for stored in urls]
@@ -571,9 +592,12 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
         "https://[fe80::1%25en0]/v1",
         "https://gateway_x.example/v1",
         "https://例え.jp/v1",
+        "https://नमस्ते.example/v1",
+        "https://[fe80::1%25en~0]/v1",
         "https://gateway.example/v1/models:list",
         "https://gateway.example/v1?team=x#y",
-        f"https://gateway.example/v1/{_encoded(14)}",
+        f"https://gateway.example/v1/{_encoded(15)}",
+        f"internal{_encoded(15)}",
     ],
 )
 def test_a_stored_url_in_the_restorable_form_is_kept_as_written(stored):

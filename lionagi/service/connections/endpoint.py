@@ -32,9 +32,10 @@ _CONFIGURED_TIMEOUT = object()
 _HEADERS_NOT_RESTORED = frozenset({"cookie", "x_auth", "host"})
 
 # What ``from_dict`` never takes from a stored config: the credential source, the
-# local-network opt-in, and the kwargs a config never writes down.
+# local-network opt-in, the kwargs a config never writes down, and a proxy, whose URL
+# can hold a user and password and which a stored kwarg would send in the request body.
 _NOT_RESTORED = frozenset(
-    ("api_key", "allow_local_network", *AUTHORIZATION_KWARG_NAMES, *RUNTIME_STATE_NAMES)
+    ("api_key", "allow_local_network", "proxy", *AUTHORIZATION_KWARG_NAMES, *RUNTIME_STATE_NAMES)
 )
 
 
@@ -1241,8 +1242,8 @@ class Endpoint:
         or pick the server is dropped (see ``_without_credential_headers``), and of the
         stored client options only the headers are kept. A user and password in the
         stored URL are removed, and a stored URL that is not in a form they can be
-        removed from is refused (see ``_without_userinfo``). Other stored ``kwargs``
-        are restored as written, a ``proxy`` URL with a password in it included.
+        removed from is refused (see ``_without_userinfo``). A stored ``proxy`` is
+        dropped; other stored ``kwargs`` are restored as written.
         Without the keyword arguments the config has no API key and the opt-in is off;
         ``iModel.from_dict`` then applies the provider's registration.
         """
@@ -1372,7 +1373,8 @@ def _without_userinfo(url: str) -> str:
 
     A stored URL is restored only in a form that every URL parser splits the same way:
     ``http://`` or ``https://`` from its first character, then a host name of letters,
-    digits, ``-``, ``.`` and ``_``, or an IPv6 address in brackets with an optional zone of
+    digits, ``-``, ``.`` and ``_`` (outside ASCII, a letter's combining marks count as
+    letters), or an IPv6 address in brackets with an optional zone of
     letters, digits and ``-._~``, then an optional port of digits, and no ``@`` anywhere
     once the user and password the client reads are removed. Text with no ``:`` and no
     ``@``, such as ``internal``, is returned as it is, since it has no place for a
@@ -1388,7 +1390,8 @@ def _without_userinfo(url: str) -> str:
     import httpx
 
     def plain(text: str) -> str | None:
-        for _ in range(_URL_DECODE_PASSES):
+        # One pass past the limit, to see that the last layer read was the last one.
+        for _ in range(_URL_DECODE_PASSES + 1):
             once = unquote(unicodedata.normalize("NFKC", text))
             if once == text:
                 return text
@@ -1407,7 +1410,7 @@ def _without_userinfo(url: str) -> str:
     whole = plain(url)
     if whole is not None and ":" not in whole and "@" not in whole:
         return url
-    if re.match(r"(?i:https?)://", url) is None:
+    if re.match(r"(?i:https?)://", url, re.ASCII) is None:
         raise refused(deep if whole is None else "does not begin with http:// or https://")
     # Every refusal is raised outside an exception handler: the client's error repeats
     # the text it could not read, and a refusal raised inside would carry it.
@@ -1425,12 +1428,19 @@ def _without_userinfo(url: str) -> str:
         r"(?:\[(?P<ipv6>[0-9A-Fa-f:.]+)(?:%25[A-Za-z0-9._~-]+)?\]|(?P<name>[^\[\]:/?#]+))"
         r"(?::[0-9]+)?(?:[/?#].*)?",
         restored,
-        re.DOTALL,
+        re.DOTALL | re.ASCII,
     )
+
     # The client has checked an IPv6 address already; a name it accepts may still hold
-    # percent-encoding, an '@' or other punctuation.
+    # percent-encoding, an '@' or other punctuation. Outside ASCII a letter can be written
+    # with a combining mark, as in Devanagari, so a mark counts there as a letter does.
+    def name_char(char: str) -> bool:
+        if char.isascii():
+            return char.isalnum() or char in "-._"
+        return unicodedata.category(char)[0] in "LMN"
+
     if authority is None or not (
-        authority["ipv6"] or all(char.isalnum() or char in "-._" for char in authority["name"])
+        authority["ipv6"] or all(name_char(char) for char in authority["name"])
     ):
         raise refused("has something other than a host name or IP address and a port number")
     after = plain(restored)

@@ -716,8 +716,9 @@ class Branch(Element, Relational):
     ):
         """Rebuild a branch from ``to_dict`` output, read as trusted input.
 
-        A stored model is rebuilt by ``iModel.from_dict``, which takes no credential from
-        ``data``, and lets it turn the local-network opt-in off but never on. A model
+        A stored model is rebuilt by ``iModel.from_dict``, which takes from ``data`` no
+        API key, no header that can carry a credential, no proxy and no user or password
+        in a URL, and lets it turn the local-network opt-in off but never on. A model
         given here replaces the stored one.
         """
         # Copy first: the pops below would otherwise strip messages, chat_model,

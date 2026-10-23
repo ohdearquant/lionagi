@@ -716,9 +716,10 @@ class iModel:  # noqa: N801
     ):
         """Rebuild a model from ``to_dict`` output, read as trusted input.
 
-        ``data`` chooses the provider, model and settings. It never supplies a
-        credential or a header that can carry one, and can turn the local-network
-        opt-in off but not on. Without
+        ``data`` chooses the provider, model and settings. It never supplies the API
+        key, a header that can carry a credential, a proxy, or the user and password
+        of a stored URL; its other request settings are sent as written. It can turn
+        the local-network opt-in off but not on. Without
         ``api_key``, the environment's credential is attached only at the provider's
         registered base URL. Without ``allow_local_network``, the provider's
         registered setting applies. ``base_url`` replaces the stored URL.
