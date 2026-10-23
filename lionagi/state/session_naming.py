@@ -32,13 +32,13 @@ DISPLAY_NAME_MAX_LEN = 80
 _REJECTED_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
-def validate_name_characters(value: str) -> str:
+def validate_name_characters(value: str, field: str = "name") -> str:
     """Reject control and separator characters while preserving the given name."""
     for char in value:
         category = unicodedata.category(char)
         if category in _REJECTED_NAME_CATEGORIES:
             raise ValueError(
-                f"name must not contain control or line/paragraph-separator "
+                f"{field} must not contain control or line/paragraph-separator "
                 f"characters (found {char!r}, category {category})"
             )
     return value
@@ -51,7 +51,7 @@ def normalize_session_user_label(value: str | None) -> str | None:
     value = value.strip()
     if len(value) > 160:
         raise ValueError("user_label must be at most 160 characters after stripping")
-    return validate_name_characters(value) or None
+    return validate_name_characters(value, "user_label") or None
 
 
 # A run's own prompt sometimes carries the framework's system-message banner

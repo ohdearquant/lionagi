@@ -158,6 +158,8 @@ async def test_http_invalid_label_is_rejected_without_changing_the_row(label_cli
     before = _stored_row(path)
     response = await client.put("/api/sessions/labelled", json={"user_label": label})
     assert response.status_code == 422
+    if isinstance(label, str):
+        assert "user_label must" in response.text
     assert _stored_row(path) == before
 
 

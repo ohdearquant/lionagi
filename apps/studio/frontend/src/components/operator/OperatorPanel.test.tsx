@@ -1726,12 +1726,157 @@ describe("OperatorPanel", () => {
           expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
           expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
         } else {
+          // Its refusal was kept for this conversation; the proposal waits for a click.
           expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
-          expect(container.querySelector('[role="alert"]')).toBeNull();
+          expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+            "Decision refused",
+          );
           expect(buttonNamed("Allow")).toBeDefined();
         }
       },
     );
+
+    it("drops a kept refusal once auto-allow decides its proposal again", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await flushAutoAllow();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("does not report a kept refusal whose proposal is no longer pending", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-2")],
+      });
+      await selectRow(firstRow);
+
+      expect(buttonNamed("Allow")).toBeDefined();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("does not report a kept refusal once its proposal is refused again", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await flushAutoAllow();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Refused again"));
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
+
+      // A send clears the alert, and the earlier refusal does not come back after it.
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-after" });
+      const sends = api.submitOperatorTurn.mock.calls.length;
+      await sendInstruction();
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("clears a refused decision's error once the stream resolves that proposal", async () => {
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      const confirmation = (proposalId: string, sequence: number) =>
+        ({
+          version: 1,
+          conversationId: firstRow.id,
+          requestId: `request-${proposalId}`,
+          sequence,
+          type: "confirmation",
+          payload: { proposalId, state: "expired" },
+          createdAt: 2,
+        }) as unknown as OperatorFrame;
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [
+          proposalFrame(firstRow.id, "proposal-1"),
+          { ...proposalFrame(firstRow.id, "proposal-2"), sequence: 2 },
+        ],
+      });
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Proposal expired"));
+      const animationFrames: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      });
+      const emit = async (frame: OperatorFrame) => {
+        await act(async () => {
+          subscriptions.at(-1)!.onFrame(frame);
+          animationFrames.shift()?.(0);
+        });
+      };
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Proposal expired");
+
+      const allowButtons = () =>
+        [...container.querySelectorAll("button")].filter((button) => button.textContent === "Allow")
+          .length;
+      expect(allowButtons()).toBe(2);
+
+      // Another proposal resolving leaves it showing.
+      await emit(confirmation("proposal-2", 3));
+      expect(allowButtons()).toBe(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Proposal expired");
+
+      await emit(confirmation("proposal-1", 4));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
 
     it("decides a proposal appended after New conversation once its conversation is shown again", async () => {
       window.localStorage.setItem("studio:operator-auto-allow", "1");
