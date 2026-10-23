@@ -22,20 +22,40 @@ async def _seed_session(
     status: str | None,
     ended_at: float | None = None,
     started_at: float | None = None,
+    created_at: float | None = None,
 ) -> None:
+    session = {
+        "id": str(uuid.uuid4()),
+        "name": "test-session",
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
+    }
+    # Left out unless given: the store stamps a missing created_at with its own
+    # clock, and an explicit None would violate the column's NOT NULL constraint.
+    if created_at is not None:
+        session["created_at"] = created_at
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
         await db.create_progression(pid)
-        await db.create_session(
-            {
-                "id": str(uuid.uuid4()),
-                "progression_id": pid,
-                "name": "test-session",
-                "status": status,
-                "started_at": started_at,
-                "ended_at": ended_at,
-            }
-        )
+        await db.create_session({**session, "progression_id": pid})
+
+
+@pytest.fixture
+def now(monkeypatch) -> float:
+    """One instant for the seeded rows and the route's own clock read.
+
+    The route cuts its buckets from the time it reads when it answers, so a run
+    that crosses an hour (or, for the 7d window, a day) between seeding and the
+    request would count a row seeded now in the previous bucket.
+    """
+    import types
+
+    import lionagi.studio.services.stats as stats_mod
+
+    pinned = time.time()
+    monkeypatch.setattr(stats_mod, "time", types.SimpleNamespace(time=lambda: pinned))
+    return pinned
 
 
 def _make_client(monkeypatch, db_path: Path) -> TestClient:
@@ -66,9 +86,8 @@ def test_empty_db_returns_dense_zero_buckets(tmp_path, monkeypatch):
         assert b["running"] == 0
 
 
-def test_mixed_statuses_land_in_right_buckets_with_right_counts(tmp_path, monkeypatch):
+def test_mixed_statuses_land_in_right_buckets_with_right_counts(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         # Anchor timestamps in "now" hour bucket -> completed x2, failed x1
@@ -102,9 +121,8 @@ def test_mixed_statuses_land_in_right_buckets_with_right_counts(tmp_path, monkey
     assert older_bucket["cancelled"] == 1
 
 
-def test_window_7d_returns_seven_daily_buckets(tmp_path, monkeypatch):
+def test_window_7d_returns_seven_daily_buckets(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed", ended_at=now)
@@ -134,10 +152,9 @@ def test_invalid_window_returns_422(tmp_path, monkeypatch):
 
 
 def test_running_sessions_counted_in_total_and_running_not_completion_denominator(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, now
 ):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed", ended_at=now)
@@ -157,9 +174,8 @@ def test_running_sessions_counted_in_total_and_running_not_completion_denominato
     assert data["buckets"][-1]["running"] == 1
 
 
-def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch):
+def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed_empty", ended_at=now)
@@ -184,9 +200,8 @@ def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch):
     assert data["completion_rate"] == pytest.approx(0.0)
 
 
-def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):
+def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed", ended_at=now)
@@ -225,12 +240,9 @@ def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):
     assert data["completion_rate"] == pytest.approx(1.0)
 
 
-def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch):
+def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    # Avoid seeding right before an hour rollover shifts the window mid-test.
-    if time.time() % 3600 > 3590:
-        time.sleep(12)
-    oldest_start = (int(time.time()) // 3600) * 3600 - 23 * 3600
+    oldest_start = (int(now) // 3600) * 3600 - 23 * 3600
 
     async def seed():
         await _seed_session(db_path, status="failed", ended_at=float(oldest_start))
@@ -247,8 +259,75 @@ def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch):
     assert data["buckets"][0]["failed"] == 1
 
 
+def test_row_one_second_before_the_24h_window_is_excluded(tmp_path, monkeypatch, now):
+    db_path = tmp_path / "state.db"
+    oldest_start = (int(now) // 3600) * 3600 - 23 * 3600
+
+    async def seed():
+        await _seed_session(db_path, status="completed", ended_at=float(oldest_start - 1))
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    assert data["total"] == 0
+    assert data["completion_rate"] is None
+    assert all(b["completed"] == 0 for b in data["buckets"])
+
+
+def test_end_time_anchors_the_bucket_when_both_timestamps_are_set(tmp_path, monkeypatch, now):
+    db_path = tmp_path / "state.db"
+
+    async def seed():
+        await _seed_session(
+            db_path,
+            status="completed",
+            created_at=now - 5 * 3600,
+            started_at=now - 7200,
+            ended_at=now,
+        )
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    # Three timestamps in three different buckets, so a bucket anchored on the
+    # start or the creation time shows up as a count in the wrong one.
+    assert data["buckets"][-1]["completed"] == 1
+    assert data["buckets"][-3]["completed"] == 0
+    assert data["buckets"][-6]["completed"] == 0
+
+
+def test_route_buckets_from_the_clock_the_now_fixture_pins(tmp_path, monkeypatch):
+    # The `now` fixture holds only while the route reads the time through the
+    # stats module's `time` attribute. An instant two days back shows which
+    # clock the route actually read.
+    import types
+
+    import lionagi.studio.services.stats as stats_mod
+
+    pinned = float((int(time.time()) // 3600) * 3600 - 2 * 86400 + 1800)
+    monkeypatch.setattr(stats_mod, "time", types.SimpleNamespace(time=lambda: pinned))
+
+    client = _make_client(monkeypatch, tmp_path / "state.db")
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    assert data["buckets"][-1]["t"] == int(pinned) // 3600 * 3600
+
+
 def test_running_session_with_only_created_at_anchors_to_creation(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
+    # The store stamps created_at from its own clock, which the `now` fixture
+    # does not pin, so this test keeps clear of an hour rollover instead.
+    now_wall = time.time()
+    if now_wall % 3600 > 3570:
+        time.sleep(3600 - now_wall % 3600 + 1)
 
     async def seed():
         await _seed_session(db_path, status="running")
