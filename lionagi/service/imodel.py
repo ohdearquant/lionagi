@@ -17,7 +17,7 @@ from lionagi.protocols.ids import to_uuid
 from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
-from .connections.endpoint import _event_reports_call_failure
+from .connections.endpoint import _event_reports_call_failure, _stored_base_url
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -835,6 +835,6 @@ def _as_written(data: Mapping, base_url: str | None, config: Any) -> str | None:
         return base_url
     endpoint = data.get("endpoint")
     stored = endpoint.get("config") if isinstance(endpoint, Mapping) else None
-    if isinstance(stored, Mapping) and isinstance(stored.get("base_url"), str):
-        return stored["base_url"]
+    if isinstance(stored, Mapping) and isinstance(url := _stored_base_url(stored), str):
+        return url
     return config.base_url

@@ -1239,9 +1239,11 @@ class Endpoint:
         handed to the live config again by the caller whose role names it. ``base_url``
         given here replaces the stored one. A stored header that can carry a credential
         or pick the server is dropped (see ``_without_credential_headers``), and of the
-        stored client options only the headers are kept. Without
-        the keyword arguments the config has no credential and the opt-in is off;
-        ``iModel.from_dict`` then applies the provider's registration.
+        stored client options only the headers are kept. A user and password in the
+        stored URL are removed, and a stored URL whose ``@`` cannot be placed is refused
+        (see ``_without_userinfo``). Without the keyword arguments the config has no
+        credential and the opt-in is off; ``iModel.from_dict`` then applies the
+        provider's registration.
         """
         from lionagi.utils import to_dict
 
@@ -1279,12 +1281,13 @@ class Endpoint:
                     for name, value in client_kwargs.items()
                     if name == "headers"
                 }
-            # Nor a user and password written into the stored URL, which the HTTP client
-            # would send as Basic authentication to the host the URL names.
-            if isinstance(config.get("base_url"), str):
-                config["base_url"] = _without_userinfo(config["base_url"])
+            # The stored URL keeps no user and password either: the HTTP client would
+            # send them as Basic authentication to the host the URL names.
+            stored_url = _stored_base_url(config)
             if base_url is not None:
                 config["base_url"] = base_url
+            elif isinstance(stored_url, str):
+                config["base_url"] = _without_userinfo(stored_url)
             if api_key is not None:
                 config["api_key"] = api_key
             if allow_local_network is not None:
@@ -1331,15 +1334,36 @@ def _without_credential_headers(headers: Any) -> Any:
     return headers
 
 
+def _stored_base_url(config: Mapping) -> Any:
+    """The stored ``base_url`` as the config reads it: bytes are decoded as UTF-8, as the
+    config's string field decodes them, and any other value is returned as it is."""
+    value = config.get("base_url")
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode()
+    return value
+
+
 def _without_userinfo(url: str) -> str:
-    """``url`` without the ``user:password@`` part of its authority. A URL that does
-    not parse is returned as it is, for the config or the HTTP client to refuse."""
-    from urllib.parse import urlsplit, urlunsplit
+    """``url`` without the ``user:password@`` part of its authority, read the way the
+    HTTP client reads it. A URL the client reads with a host and no user is returned as
+    it is. One it cannot read, or reads with no host, is refused if it has an ``@`` in
+    it, since which part is a password cannot be told and the config would write the
+    URL back; without an ``@`` it is returned as it is, for the client to refuse."""
+    import unicodedata
+
+    import httpx
 
     try:
-        parts = urlsplit(url)
-    except ValueError:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL:
+        parsed = None
+    if parsed is not None and parsed.host:
+        return str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
+    if "@" not in unicodedata.normalize("NFKC", url):
         return url
-    if "@" not in parts.netloc:
-        return url
-    return urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
+    # The URL is not quoted: the part that cannot be placed may be the password.
+    raise ValueError(
+        "The stored base_url has an '@' in it but does not read as a URL with a host, "
+        "so a user and password in it cannot be removed. Restore with base_url= given, "
+        "or correct the stored URL."
+    )

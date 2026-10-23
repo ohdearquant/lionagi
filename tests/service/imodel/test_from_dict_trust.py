@@ -331,3 +331,76 @@ def test_a_callers_url_keeps_its_user_and_password(env_key):
 def test_an_at_sign_after_the_host_is_kept():
     url = "https://gateway.example/v1/@team"
     assert iModel.from_dict(_stored(base_url=url)).endpoint.config.base_url == url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cast", [bytes, bytearray])
+async def test_a_stored_url_in_bytes_loses_its_user_and_password(env_key, cast):
+    model = iModel.from_dict(_stored(base_url=cast(STORED_PASSWORD_URL.encode())))
+    assert model.endpoint.config.base_url == ELSEWHERE
+    assert "stored-secret" not in str(model.to_dict())
+
+    seen = await _send(model.endpoint)
+    assert seen["authorization"] is None
+
+
+def test_the_providers_url_stored_in_bytes_with_a_password_gets_no_env_key(env_key):
+    stored = b"https://stored-user:stored-secret@api.openai.com/v1"
+    config = iModel.from_dict(_stored(base_url=stored)).endpoint.config
+    assert config.base_url == OPENAI_URL
+    assert config._api_key is None
+
+
+# Spellings the HTTP client reads with a host and a user, though a URL split by the
+# standard library refuses them or places the '@' elsewhere.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "https://stored-user:stored-se[cret@gateway.example/v1",
+        "https://stored-user:stored-se]cret@gateway.example/v1",
+        "https://[stored-user:stored-secret@gateway.example/v1",
+        "https://stored-user:stored-secret@x@gateway.example/v1",
+        "HTTPS://stored-user:stored-secret@gateway.example/v1",
+    ],
+)
+async def test_a_user_the_client_would_read_is_removed(env_key, stored):
+    model = iModel.from_dict(_stored(base_url=stored))
+    assert model.endpoint.config.base_url == ELSEWHERE
+    assert "stored-se" not in str(model.to_dict())
+
+    seen = await _send(model.endpoint)
+    assert seen["authorization"] is None
+
+
+# Spellings with an '@' that the client cannot read as a URL with a host: no user can be
+# removed from them, and the config would write them back as they are.
+UNPLACED_AT_SIGN = [
+    "https:\\\\stored-user:stored-secret@gateway.example/v1",
+    "https:/\\stored-user:stored-secret@gateway.example/v1",
+    "https:stored-user:stored-secret@gateway.example/v1",
+    "https://stored-user:stored-se/cret@gateway.example/v1",
+    "https://stored-user:stored-se?cret@gateway.example/v1",
+    "https://stored-user:stored-se#cret@gateway.example/v1",
+    "https://stored-user:stored-secret＠gateway.example/v1",
+    " https://stored-user:stored-secret@gateway.example/v1",
+    "https://stored-user:stored-secret@",
+]
+
+
+@pytest.mark.parametrize("stored", UNPLACED_AT_SIGN)
+def test_a_stored_url_whose_at_sign_cannot_be_placed_is_refused(stored):
+    with pytest.raises(ValueError, match="does not read as a URL with a host") as refused:
+        iModel.from_dict(_stored(base_url=stored))
+    assert "stored-se" not in str(refused.value)
+
+
+@pytest.mark.parametrize("stored", UNPLACED_AT_SIGN)
+def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
+    config = iModel.from_dict(_stored(base_url=stored), base_url=ELSEWHERE).endpoint.config
+    assert config.base_url == ELSEWHERE
+
+
+@pytest.mark.parametrize("stored", ["internal", "", "https://gateway.example:port/v1"])
+def test_a_stored_url_without_an_at_sign_is_kept_as_written(stored):
+    assert iModel.from_dict(_stored(base_url=stored)).endpoint.config.base_url == stored
