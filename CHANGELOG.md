@@ -101,11 +101,20 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 behaviour, including accepting a write-capable submission without `cwd`.
 
 The `reader` extra and document conversion are removed (see Removed). `lionagi[reader]` no
-longer exists, so an install that names it gets a missing-extra warning from the installer, and
-`lionagi[all]` no longer installs `docling`. Code that called the reader's `open` action, built
-`ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or passed
-`reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
+longer exists: `uv sync --extra reader` fails, and pip or `uv pip install` warns and installs
+lionagi without it. `lionagi[all]` no longer installs `docling`. Code that called the reader's
+`open` action, built `ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or
+passed `reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
 `chunk(text=...)`, or a callable `reader_tool` that returns a file's text.
+
+The `schema` and `sandbox` extras are removed (see Removed): `uv sync --extra` with either
+fails, and pip or `uv pip install` warns and installs lionagi without it. Code that loads a JSON
+schema through the `datamodel-code-generator` fallback installs `datamodel-code-generator>=0.64.0`
+itself, and code that runs agents in a Daytona sandbox installs `daytona>=0.171.0`; without them
+each raises an error naming the package and the version.
+
+`lionagi[graph]` no longer installs `matplotlib` (see Removed). Code that draws a graph with
+`Graph.display()`, and `li o flow --show-graph`, installs `matplotlib` beside it.
 
 `aiohttp` is no longer a dependency (see Changed). An endpoint HTTP error that raised
 `aiohttp.ClientResponseError` raises `lionagi.service.resilience.APIClientError`, with
@@ -531,6 +540,24 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `docling` go the `torch`, `torchvision`, `accelerate` and OCR packages it pulled into
   `lionagi[all]`.
 
+- `matplotlib` from the `graph` extra, and the `imaging` extra of `mkdocs-material` from the docs
+  dependency group, whose social-card plugin the docs do not enable. They were the last two
+  packages that brought Pillow into `uv.lock`, so Pillow leaves the lock, with `contourpy`,
+  `cycler`, `fonttools`, `kiwisolver` and `pyparsing` under matplotlib and `cairosvg`,
+  `cairocffi`, `cssselect2`, `tinycss2`, `webencodings` and `defusedxml` under the imaging
+  extra. `Graph.display()` and `li o flow --show-graph` still draw with matplotlib when it is
+  installed, and raise `ImportError` naming it when it is not.
+
+- The `schema` extra (`datamodel-code-generator`) and the `sandbox` extra (`daytona`, with
+  `ag2[openai]` and `uvicorn`, which the `ag2` and `studio` extras still provide). With
+  `daytona` go the OpenTelemetry exporter and instrumentation packages it pulled into the lock,
+  and with `datamodel-code-generator` go `black` and the generator's own dependencies. The
+  `[tool.uv]` constraints for packages the lock no longer contains are removed with them.
+
+- `pre-commit` from the dev dependency group, and `virtualenv`, `nodeenv`, `identify`, `cfgv`,
+  `distlib`, `filelock` and `python-discovery` with it. CI already runs the hooks with
+  `uvx pre-commit`, and so do the contributing docs now.
+
 - `msgspec` is no longer a dependency. lionagi still accepts a `msgspec.Struct` value wherever it
   accepted one before, when `msgspec` is installed; code that passes one installs `msgspec`
   itself.
@@ -740,25 +767,23 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.
-- Raised the `aiohttp` floor to 3.14.4, which fixes eight advisories in 3.14.3 (CVE-2026-111063 to
-  CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and GHSA-2g87-pp6c-29x5). The lockfiles move
-  to 3.14.4, and `uv.lock` moves `yarl` from 1.23.0 to 1.25.1, which 3.14.4 requires.
-- The lockfiles move off releases with published advisories: `virtualenv` from 21.14.5 to
-  21.14.13 (CVE-2026-113716, CVE-2026-113721, CVE-2026-113722, CVE-2026-113724 and
-  CVE-2026-113725) and `black` from 26.3.1 to 26.10.1 (CVE-2026-114134) in `uv.lock`, and
-  `opentelemetry-api` to 1.45.1 (CVE-2026-114603): in `uv.lock` with the OpenTelemetry packages
-  released beside it, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and the
-  instrumentation, semantic-conventions and util-http packages at 0.66b1, where
-  `opentelemetry-proto` and the exporter packages stay at 1.45.0 and 0.66b0. `uv.lock` also moves `packaging` from 26.1 to 26.3
-  and `distlib` from 0.4.0 to 0.4.4, and adds `opentelemetry-exporter-http-transport` and
-  `opentelemetry-exporter-otlp-common`, which `opentelemetry-exporter-otlp-proto-http` 1.45.1
-  requires. The constraints in `pyproject.toml` keep the lock at or above `virtualenv` 21.14.9,
-  `black` 26.10.1 and `opentelemetry-api` 1.45.1. The studio frontend and the VS Code extension
+- `lion1/uv.lock` moves `aiohttp` to 3.14.4, which fixes eight advisories in 3.14.3
+  (CVE-2026-111063 to CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and
+  GHSA-2g87-pp6c-29x5), with `yarl` 1.25.1, which 3.14.4 requires. `uv.lock` no longer contains
+  `aiohttp` (see Changed and Removed).
+- The lockfiles move off releases with published advisories: `opentelemetry-api` to 1.45.1
+  (CVE-2026-114603), in `uv.lock`, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and
+  the instrumentation, semantic-conventions and util-http packages at 0.66b1, where
+  `opentelemetry-proto` and the exporter packages stay at 1.45.0 and 0.66b0. `uv.lock` also
+  moves `packaging` from 26.1 to 26.3. A constraint in `pyproject.toml` keeps the lock at or
+  above `opentelemetry-api` 1.45.1. `virtualenv` (CVE-2026-113716, CVE-2026-113721,
+  CVE-2026-113722, CVE-2026-113724 and CVE-2026-113725) and `black` (CVE-2026-114134) are no
+  longer in `uv.lock` (see Removed). The studio frontend and the VS Code extension
   move their test runner to `vitest` 4.1.12 and its packages with it, `@vitest/mocker` 4.1.12
   among them (CVE-2026-112949 and CVE-2026-112950, published against `@vitest/mocker`); the
-  frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. One release with published
-  advisories stays: `uv.lock` keeps Pillow 12.3.0 for Python 3.10, since Pillow 13.0.0, the
-  release that fixes them, requires Python 3.11.
+  frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. Pillow, whose published
+  advisories are fixed only in 13.0.0, a release that requires Python 3.11, is no longer in
+  `uv.lock` (see Removed).
 - An endpoint's private-address check before a request now resolves the host name as the
   HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
   differ (`straße.example` resolves as `strasse.example` but the client connects to
