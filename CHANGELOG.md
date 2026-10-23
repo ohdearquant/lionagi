@@ -613,6 +613,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read
   as a store it could not reach. A lock error now reads as `slow`; any other error still reads as
   `unavailable`.
+- `/admin/readiness` and `li doctor` read a scheduler that was shutting down as ready, beside its
+  `stopping` status. It now reads as not ready.
 - A `github_poll` schedule counted its `poll_interval_sec` from its last fire only, so once that
   interval had passed, every poll that fired nothing (a quiet repository, events its filter left
   out, a failed request) was followed by another on the next scheduler tick, every 30 seconds.
