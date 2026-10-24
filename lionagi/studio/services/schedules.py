@@ -41,11 +41,13 @@ class DisableScheduleRequest(BaseModel):
 
     reason: str | None = Field(default=None, max_length=500)
 
-    @field_validator("reason")
+    # Before the field's own checks, so the length limit applies to the stripped reason, as in
+    # disable_schedule and the CLI.
+    @field_validator("reason", mode="before")
     @classmethod
-    def _reason_must_not_be_blank(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def _reason_must_not_be_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         value = value.strip()
         if not value:
             raise ValueError("reason must not be blank")
