@@ -606,10 +606,12 @@ class Branch(Element, Relational):
             if clipped_from is not None and str(clipped_from) in id_map:
                 message.metadata["clipped_from"] = str(id_map[str(clipped_from)])
             content = message.content
-            for field in ("action_request_id", "action_response_id"):
-                linked = getattr(content, field, None)
-                if linked is not None and str(linked) in id_map:
-                    setattr(content, field, str(id_map[str(linked)]))
+            request_id = getattr(content, "action_request_id", None)
+            if request_id is not None and str(request_id) in id_map:
+                content.action_request_id = str(id_map[str(request_id)])
+            response_id = getattr(content, "action_response_id", None)
+            if response_id is not None and str(response_id) in id_map:
+                content.action_response_id = str(id_map[str(response_id)])
         if "context_delivered" in self.metadata:
             branch_clone.metadata["context_delivered"] = [
                 str(id_map[str(uid)])
