@@ -223,13 +223,13 @@ SCHEDULE_SIMPLE_SUBCOMMAND_POSITIONALS = {
     "limits": [],
     "get": ["id"],
     "enable": ["id"],
-    "disable": ["id"],
     "delete": ["id"],
 }
 
 # Phase 1 observability subcommands (RunView): carry extra flags beyond
 # --help/-h, so they get their own golden rather than the "simple" shape.
 SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES = {
+    "disable": (["--help", "--reason", "-h"], ["id"]),
     "trigger": (["--help", "--wait", "-h"], ["id"]),
     "runs": (["--help", "--json", "--limit", "--status", "-h"], ["id"]),
     "run": (["--help", "--json", "-h"], ["id"]),

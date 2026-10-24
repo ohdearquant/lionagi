@@ -708,7 +708,9 @@
         "lastOutcome": "terakhir {outcome} {delta} lalu",
         "neverFiredSince": "belum pernah berjalan sejak {date}",
         "noEvidenceHint": "tidak ada eksekusi tercatat"
-      }
+      },
+      "disableReason": "Alasan",
+      "disableReasonHint": "Jelaskan mengapa jadwal ini dijeda."
     },
     "run": {
       "elapsed": "{delta} berlalu",
