@@ -85,7 +85,7 @@ def _is_assignment_shaped_synthesis(value: object) -> bool:
     )
 
 
-async def _fresh_synthesis_branch(env: OrchestrationEnv):
+async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"):
     """Build a clean synthesizer branch without the planner conversation."""
     from lionagi.agent import AgentSpec, create_agent
 
@@ -125,7 +125,7 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv):
         chat_model=chat_model,
         resolved_mcp_servers=worker_servers,
     )
-    branch.name = "synthesis"
+    branch.name = name
     env.session.include_branches(branch)
     if env._live_persist:
         register_branch_hook(env._live_persist, branch)
@@ -581,6 +581,8 @@ async def _run_fanout_inner(
         _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
 
     synthesis_result = None
+    synth_node = None
+    synth_name = None
     if with_synthesis and not contexts:
         # An empty context means either "every worker failed" or "no worker ran
         # at all". Only the first one has failures to report, so name the
@@ -599,9 +601,14 @@ async def _run_fanout_inner(
             synthesis_prompt or f"{SYNTHESIS_INSTRUCTION}\n\nOriginal task: {prompt}"
         )
 
-        synth_branch = await _fresh_synthesis_branch(env)
+        # One name for the node, its branch and the persisted record: a queued
+        # signal carries the node's reference id, a started or terminal signal
+        # the branch name, and Studio joins node status by that name.
+        synth_name = env.assign_name("synthesis")
+        synth_branch = await _fresh_synthesis_branch(env, name=synth_name)
         synth_node = env.builder.add_operation(
             "operate",
+            node_id=synth_name,
             branch=synth_branch,
             depends_on=fanned_nodes,
             instruction=synth_instruction,
@@ -673,6 +680,24 @@ async def _run_fanout_inner(
         progress(f"  li team receive -t {env.team_data['id']} --as orchestrator")
         progress(f"  li team show {env.team_data['id']}")
 
+    # Transitional v1 Session projection. Delete this writer only after
+    # Run detail derives from ADR-0123's ExecutionPlan (the per-Run resolved
+    # plan, not the planner output in casts/emission.py), PlanDelta and
+    # OperationAttempt records, with existing client payload compatibility
+    # verified. It is not the canonical graph or lifecycle authority.
+    # Preserve the graph that actually ran, including failed workers and a
+    # synthesis leg only when it was built. Every node is recorded under the
+    # name its lifecycle signals carry, the synthesis leg included.
+    node_agents = dict(zip(fanned_nodes, worker_names, strict=True))
+    agents_meta = [
+        {"id": name, "name": name, "model": model}
+        for name, model in zip(worker_names, fanned_labels, strict=True)
+    ]
+    if synth_node is not None:
+        node_agents[synth_node] = synth_name
+        agents_meta.append(
+            {"id": synth_name, "name": synth_name, "model": synthesis_result["model"]}
+        )
     finalize_orchestration(
         env,
         kind="fanout",
@@ -680,6 +705,17 @@ async def _run_fanout_inner(
         extras={
             "workers": fanned_labels,
             "synthesis_model": (synthesis_result["model"] if synthesis_result else None),
+            "agents": agents_meta,
+            "operations": [
+                {
+                    "id": agent_id,
+                    "agent_id": agent_id,
+                    "control": False,
+                    "spawned": False,
+                    "depends_on": list(worker_names) if node_id == synth_node else [],
+                }
+                for node_id, agent_id in node_agents.items()
+            ],
         },
     )
 

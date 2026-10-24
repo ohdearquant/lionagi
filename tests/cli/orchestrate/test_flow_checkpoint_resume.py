@@ -31,6 +31,7 @@ from lionagi.cli.orchestrate.flow import (
     _apply_checkpoint_precompletion,
     _build_dag,
     _DagState,
+    _escalation_retry_workload,
     _execute_dag,
     _PlanResult,
     _reconstruct_spawned_nodes,
@@ -811,6 +812,344 @@ def test_reconstruct_spawned_nodes_marks_failed_child_terminal_not_rerun():
     assert child.execution.response == {"error": "boom"}
 
 
+def test_retry_failed_accepts_an_unassigned_failed_spawn_with_no_recorded_class():
+    """A failed spawn with no assignee and no recorded class is still reconstructible at the
+    same class: neither a worker class nor a retried node's class is being replaced."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-4",
+            "emitter_workload": None,
+        }
+    ]
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=checkpoint_spawned,
+    )
+
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.PENDING
+
+
+def test_retry_failed_refuses_an_unassigned_failed_spawn_with_a_recorded_worker_class():
+    """A recorded worker class means the retry would run at the orchestrator's class, so the
+    resume refuses rather than silently lifting that worker's confinement."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-5",
+            "emitter_workload": "heavy",
+        }
+    ]
+
+    with pytest.raises(FlowResumeError, match=rf"{child_id} \(heavy\)"):
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+
+    assert UUID(child_id) not in builder.get_graph().internal_nodes
+
+
+def test_retry_failed_refuses_an_unassigned_failed_spawn_a_contained_worker_asked_for():
+    """Rebuilt with no assignee, the node would run on the orchestrator's branch, which reads
+    the settings files the worker that asked for it ran without, so the resume refuses."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-6",
+            "emitter_contains_user_settings": True,
+        }
+    ]
+
+    with pytest.raises(FlowResumeError) as refused:
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+
+    assert f"[{child_id}]" in str(refused.value)
+    assert str(refused.value).endswith("Re-run the flow from scratch.")
+    assert UUID(child_id) not in builder.get_graph().internal_nodes
+
+
+def _contained_branch(name: str) -> Branch:
+    """A branch whose model was put through the contained boundary: it reads no settings."""
+    branch = Branch(name=name)
+    branch.chat_model.endpoint.config.kwargs["setting_sources"] = ""
+    return branch
+
+
+def _role_branch(name: str, role: str) -> Branch:
+    """A role's branch as a run builds it: put through the worker boundary, which runs a
+    codex worker with --ignore-user-config and contains a Claude one only when asked."""
+    from lionagi import iModel
+    from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
+
+    provider, model = {
+        "claude": ("claude_code", "sonnet"),
+        "contained claude": ("claude_code", "sonnet"),
+        "codex": ("codex", "gpt-5.5"),
+        "openai codex": ("openai-codex", "gpt-5.5"),
+        "api": ("openai", "gpt-4.1-mini"),
+        "gemini cli": ("gemini_code", "gemini-2.5-pro"),
+    }[role]
+    chat_model = iModel(
+        provider=provider, model=model, **({"api_key": "dummy-key"} if role == "api" else {})
+    )
+    _isolate_worker_cli_config(chat_model, contain_user_settings=role == "contained claude")
+    return Branch(name=name, chat_model=chat_model)
+
+
+@pytest.mark.parametrize(
+    ("role", "reruns"),
+    [
+        ("claude", False),
+        ("gemini cli", False),
+        ("contained claude", True),
+        ("codex", True),
+        ("openai codex", True),
+        ("api", True),
+    ],
+)
+def test_retry_failed_reruns_a_named_spawn_a_contained_worker_asked_for_only_on_a_role_reading_no_settings(
+    role, reruns
+):
+    """A node naming a role is rebuilt on that role's branch. It runs again there when that
+    branch reads no settings files the worker that asked for it ran without: a contained
+    Claude role's, a codex one's or one whose model is not a CLI. Otherwise the resume
+    refuses."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    reviewer_branch = _role_branch("reviewer", role)
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch, "reviewer": reviewer_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": "reviewer",
+            "instruction": "check the result",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-7",
+            "emitter_contains_user_settings": True,
+        }
+    ]
+
+    def _resume():
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+
+    if not reruns:
+        with pytest.raises(FlowResumeError) as refused:
+            _resume()
+        assert f"[{child_id}]" in str(refused.value)
+        assert (
+            "neither a contained Claude worker, a codex worker nor a model that is not a CLI"
+            in (str(refused.value))
+        )
+        assert UUID(child_id) not in builder.get_graph().internal_nodes
+        return
+
+    _resume()
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.PENDING
+    assert child.branch_id == reviewer_branch.id
+
+
+def test_a_team_round_of_a_second_instance_is_rebuilt_on_that_instances_branch():
+    """Two instances of one role each have their own branch, and a round is recorded under
+    its worker's id, so it runs again on that worker's branch rather than the
+    orchestrator's, and a contained instance's round is not refused."""
+    builder, parent_id, first = _real_planned_node("reviewer")
+    first.chat_model.endpoint.config.kwargs["setting_sources"] = ""
+    second = _contained_branch("reviewer-2")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"reviewer": first},
+        worker_models=[],
+        worker_branches={"reviewer": first, "reviewer-2": second},
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("reviewer", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": "reviewer-2",
+            "instruction": "check again",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-8",
+            "emitter_contains_user_settings": True,
+        }
+    ]
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=checkpoint_spawned,
+    )
+
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.PENDING
+    assert child.branch_id == second.id
+
+
+@pytest.mark.parametrize("retry_failed", [False, True])
+def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_another_class(
+    retry_failed,
+):
+    """Rebuilt with no assignee, the node would run again on the orchestrator's branch with
+    the orchestrator's class, so --retry-failed refuses it, and a resume without the flag
+    refuses every failed node. The retry refusal says to re-run the flow from scratch."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-3",
+            "emitter_workload": "light",
+        }
+    ]
+
+    with pytest.raises(FlowResumeError) as refused:
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=retry_failed,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+    assert UUID(child_id) not in builder.get_graph().internal_nodes
+    message = str(refused.value)
+    if retry_failed:
+        assert f"{child_id} (light)" in message
+        assert message.endswith("Re-run the flow from scratch.")
+    else:
+        assert f"recorded [{child_id}] as failed" in message
+
+
 def test_reconstruct_spawned_nodes_chains_through_another_reconstructed_spawn():
     """A grandchild spawn resolves its parent against the other entries in the same checkpoint_spawned batch, not just the statically planned nodes."""
     builder = OperationGraphBuilder()
@@ -1220,8 +1559,10 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
     ]
 
 
+@pytest.mark.parametrize("contained", [False, True])
+@pytest.mark.parametrize("emitter_workload", [None, "light"])
 async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_node(
-    tmp_path: Path,
+    tmp_path: Path, emitter_workload, contained
 ):
     """Write-side counterpart: role_node_builder stamps spawn_id unconditionally on a spawned node's metadata, so _checkpoint_record must capture it off the live graph node the same way it captures assignee, for reconstruction's assignee-without-spawn_id check."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
@@ -1254,6 +1595,10 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
     spawned_node.metadata["assignee"] = "worker"
     spawned_node.metadata["spawn_id"] = "spawn-7"
     spawned_node.metadata["reference_id"] = "spawn-7"
+    if emitter_workload is not None:
+        spawned_node.metadata["emitter_workload"] = emitter_workload
+    if contained:
+        spawned_node.metadata["emitter_contains_user_settings"] = True
     builder.get_graph().add_node(spawned_node)
     spawned_id_str = str(spawned_node.id)
 
@@ -1306,8 +1651,153 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
             "parent_id": str(parent_id),
             "spawn_id": "spawn-7",
             "context": None,
+            **({"emitter_workload": emitter_workload} if emitter_workload else {}),
+            **({"emitter_contains_user_settings": True} if contained else {}),
         }
     ]
+
+
+@pytest.mark.parametrize("contained", [False, True])
+@pytest.mark.parametrize("workload", ["light", None])
+async def test_a_failed_escalation_retry_records_the_class_it_ran_at(
+    tmp_path: Path, workload, contained
+):
+    """An escalation retry is built with no class of its own and runs on a clone of the branch
+    of the node it retries. Its record carries the class that branch ran at, so --retry-failed,
+    which would rebuild it on the orchestrator's branch, refuses a light one; a heavy one
+    records none. A branch that read no settings files is recorded and refused the same way."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = _make_resume_env(tmp_path)
+    env.builder = builder
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="write the brief", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={parent_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=["codex"],
+    )
+
+    from lionagi.operations.node import create_operation
+
+    retry = create_operation(
+        "operate", parameters={"instruction": "[escalation] stuck\nOriginal: write the brief"}
+    )
+    retry.metadata["escalated_from"] = str(parent_id)
+    builder.get_graph().add_node(retry)
+    retry_id = str(retry.id)
+    ran_on_kwargs = {"workload": workload} if workload else {}
+    if contained:
+        ran_on_kwargs["setting_sources"] = ""
+    ran_on = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs=ran_on_kwargs))
+        )
+    )
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        executor_ref["executor"] = SimpleNamespace(
+            context=SimpleNamespace(content={}),
+            results={},
+            operation_branches={retry.id: ran_on},
+        )
+        await env.session.emit(
+            NodeFailed(
+                op_id=retry_id,
+                name="worker escalation retry",
+                elapsed=0.1,
+                parent_id=str(parent_id),
+                depends_on=[str(parent_id)],
+            )
+        )
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "codex"},
+        )
+
+    (entry,) = load_checkpoint(env.run.checkpoint_path)["spawned"]
+    assert entry["node_id"] == retry_id
+    assert entry["status"] == "failed"
+    assert entry["assignee"] is None
+    assert entry.get("emitter_workload") == workload
+    assert entry.get("emitter_contains_user_settings") is (True if contained else None)
+    if workload is None and not contained:
+        return
+
+    resume_builder, resume_parent, resume_branch = _real_planned_node("worker")
+    resume_plan, checkpoint_ops = _terminal_plan_and_ops("worker", resume_parent)
+    resume_state = _DagState(
+        node_ids=[resume_parent],
+        known_nodes={resume_parent},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": resume_branch},
+        worker_models=[],
+    )
+    with pytest.raises(FlowResumeError) as refused:
+        _apply_checkpoint_precompletion(
+            SimpleNamespace(builder=resume_builder),
+            resume_plan,
+            resume_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=[entry],
+        )
+    if workload is not None:
+        assert f"{retry_id} (light)" in str(refused.value)
+    else:
+        assert retry_id in str(refused.value)
+        assert "contain_user_settings" in str(refused.value)
+    assert UUID(retry_id) not in resume_builder.get_graph().internal_nodes
+
+
+def test_an_escalation_retry_with_no_operation_branch_entry_raises_naming_the_node():
+    """An escalation retry reads its class off the branch it ran on. With no recorded
+    branch, writing no class would let a resume accept a light retry as heavy."""
+    node = SimpleNamespace(id=uuid4())
+    executor = SimpleNamespace(operation_branches={})
+
+    with pytest.raises(RuntimeError, match=str(node.id)):
+        _escalation_retry_workload(executor, node)
+
+
+def test_an_escalation_retry_reads_the_class_off_its_recorded_branch():
+    node = SimpleNamespace(id=uuid4())
+    ran_on = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={"workload": "light"}))
+        )
+    )
+
+    executor = SimpleNamespace(operation_branches={node.id: ran_on})
+    assert _escalation_retry_workload(executor, node) == "light"
 
 
 async def test_checkpoint_record_captures_context_from_live_graph_node_parameters(
@@ -2000,8 +2490,11 @@ async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_comp
     assert data["flow_context"] == {"shared_note": "value-from-completed-op"}
 
 
-async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
-    """Replaying reactively spawned work on resume isn't implemented, so a checkpoint recording any must refuse outright rather than silently drop that completed spawned work."""
+async def test_resume_refuses_checkpoint_with_version_1_spawned_entries(tmp_path: Path):
+    """Version-1 spawned entries lack the operation and parent evidence needed
+    for reconstruction. Refuse this incomplete checkpoint rather than drop
+    completed work; reconstructable version-2 entries are covered separately.
+    """
     env = _make_resume_env(tmp_path)
     checkpoint = {
         "version": 1,

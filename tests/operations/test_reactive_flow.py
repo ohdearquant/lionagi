@@ -501,6 +501,42 @@ def test_duplicate_request_recorded_as_dropped_spawn():
     assert set(dropped[0]) == {"reason", "assignee", "emitter_id"}
 
 
+@pytest.mark.parametrize("independent", [False, True])
+def test_a_spawn_is_cloned_from_its_emitters_branch_unless_it_is_independent(independent):
+    """A dependent spawn continues the branch of the node that asked for it, and an
+    independent one starts from the session's default branch."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+    from lionagi.session.branch import Branch
+
+    class _DummyTG:
+        def start_soon(self, *a, **k):
+            pass
+
+    session = _session_with_ops()
+    emitter_branch = Branch(name="emitter")
+    session.include_branches(emitter_branch)
+    emitter = create_operation("op", parameters={})
+    graph = Graph()
+    graph.add_node(emitter)
+    executor = ReactiveExecutor(
+        session, graph, node_builder=lambda req, emitter: create_operation("op", parameters={})
+    )
+    executor._running = True
+    executor._tg = _DummyTG()
+    executor.operation_branches[emitter.id] = emitter_branch
+
+    assert executor._inject_request(
+        SpawnRequest(instruction="x", independent=independent), emitter=emitter
+    )
+
+    (child_id,) = executor._spawned_ids
+    clone = executor.operation_branches[child_id]
+    assert clone.metadata["clone_from"] is (
+        session.default_branch if independent else emitter_branch
+    )
+
+
 @pytest.mark.asyncio
 async def test_no_spawn_behaves_like_normal_flow():
     """With no SpawnRequest emitted, reactive flow == normal flow."""

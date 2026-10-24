@@ -113,6 +113,18 @@ def provider_status(exc: BaseException) -> tuple[str, int | None]:
         return ("unreadable", None)
 
 
+def _provider_error_in(exc: BaseException) -> BaseException:
+    """*exc*, or the provider error it wraps. iModel re-raises every stream failure as a
+    ``ValueError`` whose ``__cause__`` is the provider's typed error, so this is the same
+    walk the run row's reason takes (``lionagi/cli/_runs.py``)."""
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and not isinstance(cause, ProviderError) and id(cause) not in seen:
+        seen.add(id(cause))
+        cause = cause.__cause__
+    return cause if isinstance(cause, ProviderError) else exc
+
+
 def write_terminal_cause(exc: BaseException) -> None:
     """Record *exc*'s class, retry hint and provider status, if this run has a cause file.
 
@@ -129,6 +141,7 @@ def write_terminal_cause(exc: BaseException) -> None:
     if not target:
         return
     try:
+        exc = _provider_error_in(exc)
         # Read off the class, never the instance: `retryable` is a ClassVar
         # classification hint, and an instance attribute shadowing it would be
         # some other subsystem's runtime state, not this classification.

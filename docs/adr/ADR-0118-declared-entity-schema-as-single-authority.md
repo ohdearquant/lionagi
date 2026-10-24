@@ -44,7 +44,7 @@ written down in these hand-maintained forms:
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
-6. `ALL_TABLES` in `tests/state/test_engine_schema.py:192`: a hand-typed set of all 32 table
+6. `ALL_TABLES` in `tests/state/test_engine_schema.py:193`: a hand-typed set of all 32 table
    names, which is the population every parity assertion iterates over. A table added to the
    package and not to this set is not checked by any of them.
 

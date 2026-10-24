@@ -282,9 +282,11 @@ async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home):
+@pytest.mark.parametrize("model", ["codex/gpt-5", "openai-codex/gpt-5"])
+async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home, model):
     """The worker gets the run's set over `-c` and loads no user config, so the
-    job-control server the user config declares is neither forwarded nor loaded."""
+    job-control server the user config declares is neither forwarded nor loaded.
+    The provider's alias is the same provider."""
     servers = {
         "lion-control": {"command": "li", "args": ["mcp"]},
         "knowledge": {"command": "kkernel", "args": ["mcp"]},
@@ -297,7 +299,7 @@ async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home
         env,
         agent_id="w1",
         role="implementer",
-        model_override="codex/gpt-5",
+        model_override=model,
     )
     args = await _codex_cli_args(branch.chat_model)
 
@@ -970,6 +972,641 @@ async def test_a_claude_worker_keeps_its_settings_sources(tmp_run):
     assert "--setting-sources" not in args
 
 
+def _claude_roles(**roles: dict):
+    """A profile loader answering each named role with a Claude profile setting its fields."""
+
+    def _load_profile(name):
+        if name in roles:
+            body = "Use the configured provider."
+            return AgentProfile(
+                name=name,
+                model="claude_code/sonnet",
+                system_prompt=body,
+                raw_body=body,
+                **roles[name],
+            )
+        raise FileNotFoundError(name)
+
+    return _load_profile
+
+
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    """The values one flag carries: the args after it, up to the next flag."""
+    start = args.index(flag) + 1
+    end = next((i for i in range(start, len(args)) if args[i].startswith("--")), len(args))
+    return args[start:end]
+
+
+_CONTAINED_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"]
+_CONTAINMENT_FLAGS = (
+    "--setting-sources",
+    "--tools",
+    "--allowedTools",
+    "--disallowedTools",
+    "--permission-mode",
+    "--disable-slash-commands",
+)
+
+
+async def _worker_args(env, role: str) -> list[str]:
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id=role, role=role, model_override="claude_code/sonnet"
+    )
+    return await _cli_args(branch.chat_model)
+
+
+@pytest.mark.asyncio
+async def test_a_contained_claude_worker_reads_no_settings_and_runs_a_fixed_tool_set(
+    tmp_run, monkeypatch
+):
+    """With ``contain_user_settings`` the worker reads no settings file, so the operator's
+    hooks and permission rules do not gate it. What gates it is on its command line: the
+    built-in tools it may use, the servers the run handed it, ``dontAsk`` for anything
+    else, and no Agent or Task. A role without the flag, in the same run, keeps its
+    settings sources and none of those flags."""
+    (tmp_run / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"knowledge": {"command": "kkernel", "args": ["mcp"]}}})
+    )
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(implementer={"contain_user_settings": True}, plain={}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "implementer")
+    control = await _worker_args(env, "plain")
+
+    assert _flag_values(args, "--setting-sources") == [""]
+    assert _flag_values(args, "--tools") == [",".join(_CONTAINED_TOOLS)]
+    assert _flag_values(args, "--allowedTools") == [*_CONTAINED_TOOLS, "mcp__knowledge__*"]
+    assert _flag_values(args, "--disallowedTools") == ["Agent", "Task"]
+    assert _flag_values(args, "--permission-mode") == ["dontAsk"]
+    assert "--disable-slash-commands" in args
+    assert "--dangerously-skip-permissions" not in args
+    assert "--strict-mcp-config" in args
+    assert [flag for flag in _CONTAINMENT_FLAGS if flag in control] == []
+    assert "--strict-mcp-config" in control
+
+
+@pytest.mark.asyncio
+async def test_a_contained_claude_worker_with_no_server_set_starts_none_it_discovers(
+    tmp_run, monkeypatch
+):
+    """With no server set resolved, a worker's CLI discovers servers itself. A contained one
+    would start them while ``dontAsk`` refused their tools, so it is handed the empty set as
+    its whole set; a role without the flag keeps what it discovers."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(implementer={"contain_user_settings": True}, plain={}),
+    )
+    env = await _setup(no_mcp_config=False)
+    assert env.mcp_servers is None
+
+    args = await _worker_args(env, "implementer")
+    control = await _worker_args(env, "plain")
+
+    assert "--strict-mcp-config" in args
+    assert _flag_values(args, "--allowedTools") == _CONTAINED_TOOLS
+    assert "--strict-mcp-config" not in control
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_bypass", [False, True])
+async def test_yolo_and_bypass_do_not_reach_a_contained_claude_worker(
+    tmp_run, monkeypatch, run_bypass
+):
+    """``yolo`` or ``--bypass`` would skip every permission check; a contained worker runs
+    under ``dontAsk``, which refuses any tool its allow list does not name. The same
+    settings on a role without the flag still skip the checks."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(
+            implementer={"contain_user_settings": True, "yolo": True},
+            plain={"yolo": True},
+        ),
+    )
+    env = await _setup(no_mcp_config=False)
+    env.bypass = run_bypass
+
+    args = await _worker_args(env, "implementer")
+    control = await _worker_args(env, "plain")
+
+    assert _flag_values(args, "--permission-mode") == ["dontAsk"]
+    assert "--dangerously-skip-permissions" not in args
+    assert "--allow-dangerously-skip-permissions" not in args
+    assert "--dangerously-skip-permissions" in control
+
+
+@pytest.mark.asyncio
+async def test_a_contained_light_claude_worker_keeps_its_class(tmp_run, monkeypatch):
+    """The light class still takes the file-writing tools away, in the one deny list."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(implementer={"contain_user_settings": True, "workload": "light"}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "implementer")
+
+    assert args.count("--disallowedTools") == 1
+    assert _flag_values(args, "--disallowedTools") == [
+        "Agent",
+        "Task",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+    ]
+    assert _flag_values(args, "--setting-sources") == [""]
+
+
+def test_the_contained_boundary_keeps_what_a_worker_denies_and_is_idempotent():
+    """Settings, agents and a skipped permission check the model already carries are
+    dropped; tools it already denies stay denied; applying the boundary twice changes
+    nothing."""
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    claude = build_imodel_from_spec("claude_code/sonnet")
+    kwargs = claude.endpoint.config.kwargs
+    kwargs.update(
+        settings="settings.json",
+        agent="helper",
+        agents={"helper": {"description": "d", "prompt": "p"}},
+        disallowed_tools=["WebFetch", "Task"],
+        permission_mode="bypassPermissions",
+    )
+    assert not orch_mod._claude_worker_contained(claude)
+
+    orch_mod._isolate_worker_cli_config(
+        claude, contain_user_settings=True, mcp_server_names=["b", "a"]
+    )
+    once = dict(kwargs)
+    orch_mod._isolate_worker_cli_config(
+        claude, contain_user_settings=True, mcp_server_names=["b", "a"]
+    )
+
+    assert kwargs == once
+    assert kwargs["disallowed_tools"] == ["WebFetch", "Task", "Agent"]
+    assert (kwargs["settings"], kwargs["agent"], kwargs["agents"]) == (None, None, None)
+    assert kwargs["allowed_tools"] == [*_CONTAINED_TOOLS, "mcp__a__*", "mcp__b__*"]
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert orch_mod._claude_worker_contained(claude)
+
+
+@pytest.mark.parametrize(
+    ("spelling", "contained"),
+    [
+        ("CODEX", False),
+        (" codex ", False),
+        ("CLAUDE_CODE", True),
+        (" claude ", True),
+        ("claude-code", True),
+    ],
+)
+def test_the_contained_boundary_folds_provider_spellings_and_leaves_codex_as_it_was(
+    spelling, contained
+):
+    imodel = SimpleNamespace(
+        is_cli=True,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider=spelling, kwargs={})),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel, contain_user_settings=True)
+
+    kwargs = imodel.endpoint.config.kwargs
+    if contained:
+        assert kwargs["setting_sources"] == ""
+        assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+    else:
+        assert kwargs == {"ignore_user_config": True, "profile": None}
+
+
+def test_the_contained_boundary_leaves_a_claude_model_with_no_cli_alone():
+    kwargs = {"temperature": 0.1}
+    imodel = SimpleNamespace(
+        is_cli=False,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider="claude_code", kwargs=kwargs)),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel, contain_user_settings=True)
+
+    assert kwargs == {"temperature": 0.1}
+
+
+@pytest.mark.parametrize(
+    ("line", "expected", "warned"),
+    [
+        ("", False, False),
+        ("contain_user_settings: false\n", False, False),
+        ("contain_user_settings: true\n", True, False),
+        ("contain_user_settings: maybe\n", True, True),
+        ("contain_user_settings: 0\n", True, True),
+        ("contain_user_settings:\n", True, True),
+        ("contain_user_settings: null\n", True, True),
+        ("contain_user_settings: True\n", True, False),
+        ("contain_user_settings: FALSE\n", False, False),
+        ("contain_user_settings: off\n", True, True),
+        ("contain_user_settings: no\n", True, True),
+        ("contain_user_settings: yes\n", True, True),
+        ('contain_user_settings: "false"\n', True, True),
+    ],
+)
+def test_the_profile_flag_reads_true_or_false_and_contains_otherwise(
+    caplog, line, expected, warned
+):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile, profile_config
+
+    text = f"---\nmodel: claude_code/sonnet\n{line}---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.contain_user_settings is expected
+    assert profile_config(profile).get("contain_user_settings") is (True if expected else None)
+    assert "contain_user_settings" not in profile.extra
+    assert ("is not true or false; containing" in caplog.text) is warned
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "contained"),
+    [
+        ("model: claude_code/sonnet\nnotes: [unclosed\n", False),
+        ("- model: claude_code/sonnet\n- contain_user_settings: true\n", True),
+    ],
+)
+def test_a_profile_whose_frontmatter_does_not_read_warns_that_its_settings_are_ignored(
+    caplog, frontmatter, contained
+):
+    """A frontmatter block that does not read as YAML settings gives the profile none, so
+    loading it says so rather than run the role on defaults in silence."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = f"---\n{frontmatter}---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is contained
+    assert "does not read as YAML settings" in caplog.text
+    assert "every setting in it is ignored" in caplog.text
+    assert ("its worker is contained" in caplog.text) is contained
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["contain_user_settings: true"],
+        ["contain_user_settings : true"],
+        ["contain_user_settings: false"],
+        ["contain_user_settings: maybe"],
+        ["contain_user_settings: [true"],
+        ["  contain_user_settings: false"],
+        ["? contain_user_settings", ": false"],
+        ['"contain_user_settings": false'],
+        ["'contain_user_settings': false"],
+        ["contain_user_settings: false", "contain_user_settings: false"],
+        ["# contain_user_settings: false"],
+    ],
+)
+def test_a_frontmatter_that_does_not_read_contains_when_it_names_the_flag(caplog, lines):
+    """A block that does not read has no value of the flag to trust, so naming it anywhere in
+    the block, in any form, contains the worker: a broken line cannot turn containment off."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    flag = "".join(f"{line}\n" for line in lines)
+    text = f"---\nmodel: claude_code/sonnet\n{flag}notes: [unclosed\n---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is True
+    assert "contain_user_settings" not in profile.extra
+    assert "every setting in it is ignored, and its worker is contained" in caplog.text
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize(
+    "prefix",
+    ["\ufeff", "\ufeff\ufeff", "\n\ufeff", " \ufeff", "\ufeff\n", "\u200b", "\u2060\t"],
+)
+def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog, newline, prefix):
+    """Whitespace and invisible format characters ahead of the opening delimiter, in any
+    order, do not hide the frontmatter."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = prefix + newline.join(
+        ["---", "model: claude_code/sonnet", "contain_user_settings: true", "---", "", "Work."]
+    )
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model == "claude_code/sonnet"
+    assert profile.contain_user_settings is True
+    assert not {"\ufeff", "\u200b", "\u2060"} & set(profile.raw_body)
+    assert "every setting in it is ignored" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (["contain_user_settings: true", "contain_user_settings: false"], True),
+        (["contain_user_settings: false", "contain_user_settings: true"], True),
+        (["contain_user_settings: maybe", "contain_user_settings: false"], True),
+        (['"contain_user_settings": true', "contain_user_settings: false"], True),
+        (["contain_user_settings: true", "? contain_user_settings", ": false"], True),
+        (["contain_user_settings: false", "contain_user_settings: null"], True),
+        (["contain_user_settings: false", "contain_user_settings: 0"], True),
+        (["contain_user_settings: false", "contain_user_settings: off"], True),
+        (["contain_user_settings: false", "contain_user_settings: false"], False),
+    ],
+)
+def test_no_key_of_a_frontmatter_that_reads_turns_containment_off_alone(caplog, lines, expected):
+    """YAML keeps the last of a repeated key, so the flag is read from every key naming it,
+    in any spelling of the key: it is off only when every one reads false."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    flag = "".join(f"{line}\n" for line in lines)
+    text = f"---\nmodel: claude_code/sonnet\n{flag}---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model == "claude_code/sonnet"
+    assert profile.contain_user_settings is expected
+    assert "contain_user_settings is set 2 times" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        ("  model: claude_code/sonnet\n  contain_user_settings: true\n", True),
+        ("base: &base\n  contain_user_settings: true\n<<: *base\n", True),
+        ("base: &base\n  contain_user_settings: off\n<<: *base\n", True),
+        ("<<: {contain_user_settings: false}\n", False),
+        ("<<: [{contain_user_settings: false}, {contain_user_settings: off}]\n", True),
+        ("<<: {contain_user_settings: true}\ncontain_user_settings: false\n", False),
+    ],
+)
+def test_the_flag_is_read_from_every_form_of_a_block_that_reads(caplog, block, expected):
+    """An indented block and a merge key give the flag as YAML does, an explicit key winning
+    over a merged one; a merged ``off`` reads as neither true nor false, and contains."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", f"---\n{block}---\n\nWork.\n")
+
+    assert profile.contain_user_settings is expected
+    assert "every setting in it is ignored" not in caplog.text
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize(
+    "prefix",
+    ["\ufe0f", "\u034f", "\u3164", "\u2800", "\u115f", "\x00", "x", "Notes "],
+)
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "contain_user_settings: true",
+        "contain_user_settings: false",
+        "  contain_user_settings: true",
+    ],
+)
+def test_text_ahead_of_a_frontmatter_that_names_the_flag_contains(caplog, newline, prefix, flag):
+    """A character ahead of the opening delimiter, on its line, that is neither whitespace nor
+    a format character hides the block, and with it every setting; a block that names the flag
+    after such text contains, whatever value it gives."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = prefix + newline.join(["---", "model: claude_code/sonnet", flag, "---", "", "Work."])
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is True
+    assert "hides the frontmatter after it" in caplog.text
+    assert "its worker is contained" in caplog.text
+
+
+def test_text_ahead_of_a_frontmatter_on_its_line_warns_that_its_settings_are_ignored(caplog):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = "\u3164---\nmodel: claude_code/sonnet\nyolo: true\n---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.yolo is False
+    assert profile.contain_user_settings is False
+    assert "text ahead of the --- on line 1 hides the frontmatter after it" in caplog.text
+    assert "every setting in it is ignored" in caplog.text
+    assert "its worker is contained" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Work.\n\n```yaml\ncontain_user_settings: true\n```\n",
+        "Work.\ncontain_user_settings: true\n",
+        "# notes\n---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
+        "Work.\n\n---\n\nMore work.\n",
+        "Scope\n---\nDo not touch contain_user_settings.\n",
+        "Work.\n\n---\n\nNever set contain_user_settings here.\n\n---\n\nMore work.\n",
+        "# notes\n---\nnotes: [unclosed, contain_user_settings\n",
+        "Notes ---\nWork on the task.\n",
+        "Notes ---\nWork: do this: then that\n",
+        "Title\n-----\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n",
+        "---\n# contain_user_settings: true\n---\n\nWork.\n",
+        "Work.\n\n---\n\n- contain_user_settings: true\n\n---\n\nMore work.\n",
+    ],
+)
+def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
+    """Text on lines of its own ahead of any delimiter makes the profile one with no block, so
+    nothing in it is a setting, as before; a list or a line of text between two delimiters
+    after it is prompt too, as is a hidden block of prose that names no flag."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is False
+    assert "every setting in it is ignored" not in caplog.text
+    assert "follows text on lines of its own" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("text", "contained", "warns"),
+    [
+        ("\u3164---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n", False, True),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\n---\n\ncontain_user_settings: true\n",
+            False,
+            False,
+        ),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
+            "notes: [unclosed\n---\n\nWork.\n",
+            False,
+            False,
+        ),
+        (
+            "\u3164---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\nWork.\n",
+            True,
+            True,
+        ),
+        ("\u3164---\nmodel: claude_code/sonnet\n# contain_user_settings: true\n---\n", False, True),
+    ],
+)
+def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, warns):
+    """A hidden block runs to its closing ``---`` line, so a flag in the body after it is
+    prompt text; one that does not read runs to the end when it has no closing line. A block
+    after text on lines of its own counts only between two ``---`` lines."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is contained
+    assert ("hides the frontmatter after it" in caplog.text) is warns
+    assert ("its worker is contained" in caplog.text) is contained
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Notes ---\n- contain_user_settings: true\n---\n\nWork.\n",
+        "Notes ---\ncontain_user_settings\n---\n\nWork.\n",
+        "Notes ---\nDo not touch contain_user_settings.\n",
+        "ㅤ---\n- model: claude_code/sonnet\n- contain_user_settings: false\n---\n\nWork.\n",
+    ],
+)
+def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_flag(caplog, text):
+    """A hidden block that reads as a list or a line of text holds no settings, so it is read
+    as a frontmatter that does not read as settings is: naming the flag anywhere in it
+    contains the worker, with a warning, as the same block opening the profile does."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is True
+    assert "hides the frontmatter after it" in caplog.text
+    assert "its worker is contained" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n", 2),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: false\n---\n\nWork.\n",
+            2,
+        ),
+        (
+            "PROSE work.\n\n---\n\nmodel: claude_code/sonnet\ncontain_user_settings: false\n"
+            "\n---\n\nMore.\n",
+            3,
+        ),
+        (
+            "# notes\r\n---\r\nmodel: claude_code/sonnet\r\ncontain_user_settings: true\r\n"
+            "---\r\n\r\nWork.\r\n",
+            2,
+        ),
+        (
+            "# notes\n---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n"
+            "notes: [unclosed\n---\n\nWork.\n",
+            2,
+        ),
+    ],
+)
+def test_a_block_after_text_on_lines_of_its_own_names_the_flag_without_containing(
+    caplog, text, line
+):
+    """Text on lines of its own ahead of the first ``---`` line leaves the profile all prompt,
+    as before, so a block after it sets nothing, the flag included, whatever value it gives;
+    one that names the flag warns rather than lose it in silence."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is False
+    assert f"the --- block on line {line} follows text on lines of its own" in caplog.text
+    assert "its worker is not contained, though the block names" in caplog.text
+    assert "hides the frontmatter" not in caplog.text
+
+
+def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):
+    """With no closing delimiter, where the block ends is not known, so it runs to the end and
+    a line in the body cannot undo the flag the block set."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = (
+        "---\nmodel: claude_code/sonnet\ncontain_user_settings: true\n\n"
+        "Work.\ncontain_user_settings: false\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is True
+    assert "every setting in it is ignored, and its worker is contained" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Work.\n",
+        "---\n---\n\nWork.\n",
+        "---\n# a note only\n---\n\nWork.\n",
+        "---\n# a note\n\n# and another\n---\n\nWork.\n",
+        "---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
+        "\u3164---\n---\n\nWork.\n",
+        "\u3164---\n# a note only\n---\n\nWork.\n",
+    ],
+)
+def test_a_profile_with_no_settings_to_lose_does_not_warn(caplog, text):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        _parse_profile("role", text)
+
+    assert "every setting in it is ignored" not in caplog.text
+
+
 def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(codex_home):
     """A `-p` profile is part of the codex user config and does not reach a
     worker; a Claude settings file does."""
@@ -994,8 +1631,11 @@ def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(co
     [
         ("CODEX", {"ignore_user_config": True, "profile": None}),
         (" codex ", {"ignore_user_config": True, "profile": None}),
+        ("openai-codex", {"ignore_user_config": True, "profile": None}),
+        ("OpenAI-Codex", {"ignore_user_config": True, "profile": None}),
         ("CLAUDE_CODE", {}),
         (" claude_code ", {}),
+        ("claude", {}),
     ],
 )
 def test_the_boundary_folds_provider_spellings(spelling, expected):

@@ -16,32 +16,6 @@ from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
 
 T = TypeVar("T")
 
-_CREDENTIAL_SCHEMES = frozenset(
-    {
-        "postgresql",
-        "postgresql+asyncpg",
-        "postgresql+psycopg2",
-        "postgresql+psycopg",
-        "mysql",
-        "mysql+pymysql",
-        "mysql+aiomysql",
-        "mongodb",
-        "mongodb+srv",
-        "redis",
-        "rediss",
-        "amqp",
-        "amqps",
-        "http",
-        "https",
-        "neo4j",
-        "neo4j+s",
-        "neo4j+ssc",
-        "bolt",
-        "bolt+s",
-        "bolt+ssc",
-    }
-)
-
 _SENSITIVE_KEYS = frozenset(
     {
         "password",

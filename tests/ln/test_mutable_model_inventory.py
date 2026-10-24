@@ -207,7 +207,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.messages.instruction:147:17": "a declared field set by name",
     "lionagi.protocols.messages.message:181:9": "a declared field set by name",
     "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
-    "lionagi.providers.anthropic.claude_code:1118:17": "a runtime field copied by name",
+    "lionagi.providers.anthropic.claude_code:1143:17": "a runtime field copied by name",
     "lionagi.service.connections.endpoint_config:224:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:85:9": "a probe attribute set on an exception",
     "lionagi.state.compat:1702:13": (
@@ -215,8 +215,8 @@ _ALLOWLIST: dict[str, str] = {
     ),
     # A class base the scan cannot read: a base subscripted by a type parameter. Each
     # declares no hash authority of its own; the refused node is the subscript.
-    "lionagi.adapters._base:331:15": "``Protocol[T]``, a protocol parameterized by a type",
-    "lionagi.adapters._base:508:20": "``Protocol[T]``, a protocol parameterized by a type",
+    "lionagi.adapters._base:305:15": "``Protocol[T]``, a protocol parameterized by a type",
+    "lionagi.adapters._base:482:20": "``Protocol[T]``, a protocol parameterized by a type",
     "lionagi.adapters.async_postgres_adapter:21:39": "``AsyncPostgresAdapter[T]``, an imported adapter",
     "lionagi.adapters.csv_:26:31": "``Adapter[T]``, the runtime-checkable protocol base",
     "lionagi.adapters.json_:26:32": "``Adapter[T]``, the runtime-checkable protocol base",

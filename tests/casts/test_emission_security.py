@@ -28,6 +28,13 @@ class TestSpawnRequestOperationAllowlist:
         req = SpawnRequest(instruction="x")
         assert req.operation == "operate"
 
+    def test_field_and_routing_guard_share_one_vocabulary(self):
+        expected = {"operate", "chat", "communicate", "ReAct"}
+        assert SPAWN_ALLOWED_OPERATIONS == expected
+        schema = SpawnRequest.model_json_schema()["properties"]["operation"]
+        assert set(schema["enum"]) == expected
+        assert schema["default"] == "operate"
+
     @pytest.mark.parametrize(
         "bad_op",
         [

@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
@@ -226,6 +227,31 @@ class _ThresholdCooldownClaim:
         self._engine._threshold_pending.discard(self._schedule_id)
 
 
+@dataclass
+class _GithubBatch:
+    """Events a poll found that the fire cap kept it from dispatching, kept for its next turn.
+
+    The next turn dispatches them as found, without polling, at the due instant of the poll that
+    found them. ``row_cursor``, ``repo`` and ``github_filter`` are the schedule's values once that
+    poll ended; a schedule that no longer holds them has moved on, and the batch is dropped.
+    """
+
+    due_at: float
+    items: list[Any]
+    row_cursor: Any
+    repo: Any
+    github_filter: Any
+    cycle_claimed: bool
+    slot_claim: _GlobalSlotClaim | None = None
+
+    def matches(self, schedule: dict) -> bool:
+        return (
+            schedule.get("github_cursor") == self.row_cursor
+            and schedule.get("github_repo") == self.repo
+            and schedule.get("github_filter") == self.github_filter
+        )
+
+
 @dataclass(frozen=True)
 class ScheduleTimezone:
     """The zone one schedule's cron fields are interpreted in, plus its provenance."""
@@ -408,7 +434,16 @@ class SchedulerEngine:
         # poll loop, which advances the cursor per committed event, so a pass lasts as long as the
         # slowest action it dispatched; it runs off the tick so later ticks continue meanwhile.
         self._github_tick_tasks: dict[str, asyncio.Task] = {}
+        # schedule_id -> when its pass started, cleared while a process the pass dispatched runs
+        # and set again when it exits: the readiness check times the poll and every store write of
+        # a pass, those of its fires included, not the actions it waits on.
         self._github_tick_started_at: dict[str, float] = {}
+        # schedule_id -> events a poll found while the fire cap was full, held for its next turn.
+        self._github_batches: dict[str, _GithubBatch] = {}
+        # schedule_id -> when this scheduler last polled GitHub for it. The poll cadence counts
+        # from the later of this and the schedule's last fire, so a poll that fires nothing, or
+        # fails, still waits out poll_interval_sec before the next one.
+        self._github_polled_at: dict[str, float] = {}
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
         # Starts unresolved rather than at 0.0, which would make a prune due on the first tick. It
@@ -567,6 +602,7 @@ class SchedulerEngine:
                     report["detail"] = "scheduler stopped after starting in this process"
             return report
         if self._stopping:
+            report["ready"] = False
             report["status"] = "stopping"
             report["detail"] = "scheduler is shutting down"
             return report
@@ -619,8 +655,8 @@ class SchedulerEngine:
                 report["ready"] = False
                 report["status"] = "stalled"
                 report["detail"] = (
-                    f"github_poll pass for schedule {sid} has run for {pass_age:.0f}s "
-                    f"(stall threshold {_TICK_STALL_AFTER}s)"
+                    f"github_poll pass for schedule {sid} has run for {pass_age:.0f}s outside "
+                    f"its actions (stall threshold {_TICK_STALL_AFTER}s)"
                 )
                 return report
         report["status"] = "healthy"
@@ -800,6 +836,9 @@ class SchedulerEngine:
                 await asyncio.gather(*self._github_tick_tasks.values(), return_exceptions=True)
                 self._github_tick_tasks.clear()
                 self._github_tick_started_at.clear()
+            # A held batch's events stay ahead of the cursor, so the next run's poll re-lists them.
+            for sid in list(self._github_batches):
+                self._drop_github_batch(sid)
             if self._fire_tasks:
                 for ft in list(self._fire_tasks):
                     ft.cancel()
@@ -819,6 +858,57 @@ class SchedulerEngine:
         schedule = await self._svc.get_schedule(schedule_id)
         if not schedule:
             return None
+        now = time.time()
+        trigger_context = {"manual": True, "fired_at": now}
+        # A manual trigger carries no event, so a template naming an event's field, such as a poll
+        # row's {{pr_number}}, would reach the run unfilled. Refuse before anything is reserved or
+        # recorded, and refuse a schedule that cannot launch at all for that reason first.
+        _subprocess.validate_launch_fields(schedule)
+        # Each refusal is raised outside its handler, so neither its cause nor its context
+        # carries the original error, whose text can name the daemon's working directory.
+        refusal = None
+        try:
+            await _resolve_action_cwd(schedule)
+        except SchedulerCwdInheritRefusedError as exc:
+            # The caller is told the schedule's own root, never the daemon's working directory.
+            refusal = (
+                f"Schedule {exc.schedule_id!r}: configured execution root "
+                f"{exc.configured_root!r} could not be resolved to an existing directory; manual "
+                "trigger refused. Point the schedule at an existing action_cwd or action_project."
+            )
+        except sqlite3.Error as exc:
+            # A fault of this store, not of the request: the operator's log keeps the error.
+            _log.warning(
+                "manual trigger of schedule %s: the project registry could not be read",
+                schedule_id,
+                exc_info=True,
+            )
+            refusal = (
+                f"Schedule {schedule_id!r}: the project registry its action_project is read from "
+                f"could not be read ({type(exc).__name__}); manual trigger refused."
+            )
+        except OSError as exc:
+            # The registry file or a configured root the daemon may not read (a permission
+            # error, say): also a fault of this host, not of the request, so it is logged too.
+            _log.warning(
+                "manual trigger of schedule %s: its execution root could not be resolved",
+                schedule_id,
+                exc_info=True,
+            )
+            refusal = (
+                f"Schedule {schedule_id!r}: its execution root could not be resolved "
+                f"({type(exc).__name__}); manual trigger refused."
+            )
+        if refusal is not None:
+            raise ValueError(refusal)
+        unfilled = _subprocess.unfilled_template_vars(schedule, trigger_context)
+        if unfilled:
+            names = ", ".join("{{" + name + "}}" for name in unfilled)
+            raise ValueError(
+                f"Schedule {schedule_id!r} has no value for {names} on a manual trigger, "
+                "which fills only {{manual}} and {{fired_at}}; manual trigger refused. Only a "
+                "trigger that supplies that name fills it, such as a poll whose event carries it."
+            )
         if await self._check_budget(schedule):
             raise ValueError(
                 f"Schedule {schedule_id!r} has exhausted its budget; manual trigger refused."
@@ -827,7 +917,6 @@ class SchedulerEngine:
         claim: _MaxRunsClaim | None = None
         slot_claim: _GlobalSlotClaim | None = None
         handed_off = False
-        now = time.time()
         try:
             rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
             if not rate_allowed:
@@ -855,7 +944,7 @@ class SchedulerEngine:
             self._tracked_fire(
                 schedule,
                 run_id,
-                trigger_context={"manual": True, "fired_at": now},
+                trigger_context=trigger_context,
                 rate_limit_claim=rate_claim,
                 max_runs_claim=claim,
                 global_slot_claim=slot_claim,
@@ -1266,9 +1355,9 @@ class SchedulerEngine:
             now = time.time()
             for s in schedules:
                 if s.get("trigger_type") == "github_poll":
-                    # github_poll's cadence is last_fired_at + poll_interval_sec, not next_fire_at,
-                    # so a stale or legacy-persisted value here is not a missed scheduled
-                    # occurrence.
+                    # github_poll's cadence is its last fire or poll + poll_interval_sec, not
+                    # next_fire_at, so a stale or legacy-persisted value here is not a missed
+                    # scheduled occurrence.
                     continue
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at > now:
@@ -1456,25 +1545,30 @@ class SchedulerEngine:
         self._maybe_start_worker_pass(now)
 
         schedules = await self._svc.list_schedules(enabled=True)
+        polled = {s.get("id") for s in schedules if s.get("trigger_type") == "github_poll"}
+        for sid in [sid for sid in self._github_batches if sid not in polled]:
+            self._drop_github_batch(sid)
+        for sid in [sid for sid in self._github_polled_at if sid not in polled]:
+            del self._github_polled_at[sid]
 
-        def schedule_order(schedule: dict) -> tuple[int, float]:
-            # Poll passes acquire slots asynchronously and use last_fired_at for their cadence.
-            # Start them after timed rows have had their admission checks in oldest-due order.
+        def schedule_order(schedule: dict) -> float:
+            # Every row is admitted in oldest-due order, a poll row at the due instant of its next
+            # turn. The sort runs outside the per-row guard below, so a value that is not a number
+            # sorts last instead of raising here; that row then fails alone in its own evaluation.
             if schedule.get("trigger_type") == "github_poll":
-                return 1, 0.0
-            # The sort runs outside the per-row guard below, so a value that is not a number sorts
-            # last instead of raising here; that row then fails alone in its own evaluation.
-            next_at = schedule.get("next_fire_at")
+                next_at = self._github_due_at(schedule)
+            else:
+                next_at = schedule.get("next_fire_at")
             if isinstance(next_at, int | float):
-                return 0, float(next_at)
-            return 0, float("inf")
+                return float(next_at)
+            return float("inf")
 
         failed_schedules = 0
         last_schedule_error: Exception | None = None
         for s in sorted(schedules, key=schedule_order):
             try:
                 if s["trigger_type"] == "github_poll":
-                    self._start_github_tick(s, now)
+                    await self._admit_github_tick(s, now)
                 else:
                     nfa = s.get("next_fire_at")
                     if nfa is not None and nfa <= now:
@@ -1496,6 +1590,57 @@ class SchedulerEngine:
             raise RuntimeError("every enabled schedule failed during evaluation") from (
                 last_schedule_error
             )
+
+    def _github_due_at(self, schedule: dict) -> Any:
+        """When *schedule*'s next poll turn is due: its held batch's instant, else its cadence's."""
+        batch = self._github_batches.get(schedule.get("id"))
+        if batch is not None:
+            return batch.due_at
+        last = self._github_cadence_start(schedule)
+        interval = resolve_schedule_cadence_seconds(schedule)
+        if isinstance(last, int | float) and isinstance(interval, int | float):
+            return last + interval
+        return None
+
+    def _github_cadence_start(self, schedule: dict) -> Any:
+        """When *schedule*'s poll cadence counts from: its last fire or last poll, the later."""
+        last = schedule.get("last_fired_at") or 0
+        if not isinstance(last, int | float):
+            return last
+        return max(last, self._github_polled_at.get(schedule.get("id"), 0))
+
+    async def _admit_github_tick(self, schedule: dict, now: float) -> None:
+        """Start *schedule*'s poll turn; a batch the fire cap held back takes its slot here.
+
+        The tick reaches the row at the batch's due instant, so the slot reserved here goes to the
+        batch ahead of every younger row and behind every older one, as a timed row's does. The
+        turn then dispatches the batch without polling, so the slot is never held over a fetch. A
+        batch the schedule has moved past is dropped, holding no slot, and the schedule polls afresh
+        once the interval since its last fire has passed, at this turn if it already has.
+        """
+        sid = schedule["id"]
+        batch = self._github_batches.get(sid)
+        active = self._github_tick_tasks.get(sid)
+        if batch is not None and (active is None or active.done()):
+            if not batch.matches(schedule):
+                self._drop_github_batch(sid)
+                # The poll cycle that found the dropped events was never served, so the cadence
+                # counts from the last fire alone and the schedule re-lists from where it stands.
+                self._github_polled_at.pop(sid, None)
+            elif batch.slot_claim is None:
+                allowed, batch.slot_claim = await self._reserve_global_slot(
+                    sid, path="github_event"
+                )
+                if not allowed:
+                    await self._maybe_record_deferred(schedule, now)
+                    return
+        self._start_github_tick(schedule, now)
+
+    def _drop_github_batch(self, sid: str) -> None:
+        batch = self._github_batches.pop(sid, None)
+        if batch is not None and batch.slot_claim is not None:
+            batch.slot_claim.release()
+            batch.slot_claim = None
 
     def _start_github_tick(self, schedule: dict, now: float) -> None:
         """Run this schedule's poll-and-fire pass as a tracked task, one at a time per schedule.
@@ -1523,6 +1668,28 @@ class SchedulerEngine:
         if self._github_tick_tasks.get(sid) is done:
             del self._github_tick_tasks[sid]
             self._github_tick_started_at.pop(sid, None)
+
+    def _current_github_pass(self) -> str | None:
+        """The schedule id of the github_poll pass that is the running task, if any: a fire
+        awaited inside a pass, chained fires included, runs in the pass's own task."""
+        task = asyncio.current_task()
+        for sid, pass_task in self._github_tick_tasks.items():
+            if pass_task is task:
+                return sid
+        return None
+
+    def _github_pass_clock(self, pass_sid: str | None, *, running: bool) -> None:
+        """Start or stop the stall clock of the pass ``_current_github_pass`` found when the fire
+        began, never the one the running task belongs to, since ``spawn_and_wait`` awaits
+        ``on_launched`` inside ``asyncio.wait_for``, which runs it in a task of its own on Python
+        3.10 and 3.11. The pass is still registered at every call: it awaits the fire, and a
+        pass leaves the registry only once it is done."""
+        if pass_sid is None:
+            return
+        if running:
+            self._github_tick_started_at[pass_sid] = time.time()
+        else:
+            self._github_tick_started_at.pop(pass_sid, None)
 
     async def _tick_github_guarded(self, schedule: dict, now: float) -> None:
         try:
@@ -1572,22 +1739,42 @@ class SchedulerEngine:
             )
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
+        # A held batch is due at once: its events belong to a poll cycle that already came due.
+        batch = self._github_batches.pop(schedule["id"], None)
         poll_interval = resolve_schedule_cadence_seconds(schedule)
-        last = schedule.get("last_fired_at") or 0
-        if now - last < poll_interval:
+        last = self._github_cadence_start(schedule)
+        if batch is None and now - last < poll_interval:
             return
         deferred = False
         try:
-            deferred = await self._github_due_pass(schedule, now)
+            deferred = await self._github_due_pass(schedule, now, batch)
         finally:
+            if batch is not None and batch.slot_claim is not None:
+                # The slot the tick reserved for the batch, which no event of it went on to take.
+                batch.slot_claim.release()
+                batch.slot_claim = None
             # Any outcome of a due pass but a capacity deferral, a raise included, ends the
             # schedule's deferral episode, so the next deferral logs and records as a new one.
             if not deferred:
                 self._deferred_log_counts.pop(schedule["id"], None)
             self._end_rate_limit_pass(schedule["id"])
 
-    async def _github_due_pass(self, schedule: dict, now: float) -> bool:
-        """Run one due poll-and-fire pass; True only when the fire cap deferred it."""
+    async def _github_due_pass(
+        self, schedule: dict, now: float, batch: _GithubBatch | None = None
+    ) -> bool:
+        """Run one due poll-and-fire pass; True only when the fire cap deferred it.
+
+        *batch* holds events an earlier pass found while the cap was full. This pass dispatches
+        them instead of polling, the first on the slot the tick reserved for it, if it holds one.
+        """
+        if batch is not None and not batch.matches(schedule):
+            # The schedule moved on while the events waited, so the poll re-lists what is still
+            # due from where it now stands, and it holds no slot while it does.
+            if batch.slot_claim is not None:
+                batch.slot_claim.release()
+                batch.slot_claim = None
+            batch = None
+        due_at = batch.due_at if batch is not None else self._github_due_at(schedule)
         if await self._check_budget(schedule):
             await self._disable_for_budget_exhausted(schedule, now)
             return False
@@ -1599,17 +1786,9 @@ class SchedulerEngine:
 
         # The poll is a trigger check, not a fire, so it holds no global slot while it fetches: a
         # slow or rate-limited poll would otherwise keep a slot from every other schedule for its
-        # whole duration. A full cap is read here only to spare a fetch whose events could not
-        # run; the read takes nothing. Each event below reserves its own slot, and one that finds
-        # none stays ahead of the cursor for the next poll.
-        from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
-
-        if 0 < MAX_SCHEDULED_CONCURRENT <= self._global_inflight:
-            if pre_rate_claim is not None:
-                pre_rate_claim.release()
-            await self._maybe_record_deferred(schedule, now)
-            return True
-
+        # whole duration. It polls even when the cap is full, since only the events it finds can
+        # compete for the next free slot: each event below reserves its own, and those that find
+        # none are held, ahead of the cursor, for the poll's next turn.
         from .github import github_poll
 
         sid = schedule["id"]
@@ -1618,31 +1797,35 @@ class SchedulerEngine:
         # permanently. It is nulled the moment it is handed off or released inline, so this finally
         # only fires for the untouched case.
         try:
-            poll_result = await github_poll(schedule)
-            polled = poll_result.items
-            if not poll_result.scan_complete:
-                _log.info(
-                    "Schedule %s (%s): merged-PR scan truncated this poll "
-                    "(page cap reached or a pagination fetch error) -- "
-                    "event(s) too close to the unproven boundary are held "
-                    "back for a later poll",
-                    schedule.get("name"),
-                    sid,
-                )
+            if batch is not None:
+                polled = batch.items
+            else:
+                self._github_polled_at[sid] = now
+                poll_result = await github_poll(schedule)
+                polled = poll_result.items
+                if not poll_result.scan_complete:
+                    _log.info(
+                        "Schedule %s (%s): merged-PR scan truncated this poll "
+                        "(page cap reached or a pagination fetch error) -- "
+                        "event(s) too close to the unproven boundary are held "
+                        "back for a later poll",
+                        schedule.get("name"),
+                        sid,
+                    )
 
-            # Observer self-health: stamp the health columns from this poll's outcome whether or not
-            # it returned items, so a healthy-empty poll resets the blind clock exactly like one
-            # that found PRs and a quiet repo never false-alarms. An error leaves both columns
-            # untouched, so the age metric climbs on its own.
-            if poll_result.poll_status == "ok":
-                await self._svc.update_schedule(
-                    sid, last_healthy_poll_at=now, poller_consecutive_401=0
-                )
-            elif poll_result.poll_status == "auth_error":
-                await self._svc.update_schedule(
-                    sid,
-                    poller_consecutive_401=(schedule.get("poller_consecutive_401") or 0) + 1,
-                )
+                # Observer self-health: stamp the health columns from this poll's outcome whether
+                # or not it returned items, so a healthy-empty poll resets the blind clock exactly
+                # like one that found PRs and a quiet repo never false-alarms. An error leaves both
+                # columns untouched, so the age metric climbs on its own.
+                if poll_result.poll_status == "ok":
+                    await self._svc.update_schedule(
+                        sid, last_healthy_poll_at=now, poller_consecutive_401=0
+                    )
+                elif poll_result.poll_status == "auth_error":
+                    await self._svc.update_schedule(
+                        sid,
+                        poller_consecutive_401=(schedule.get("poller_consecutive_401") or 0) + 1,
+                    )
 
             if not polled:
                 return False
@@ -1659,10 +1842,11 @@ class SchedulerEngine:
             # per event, in the same transaction as that event's occurrence. Claiming it per event
             # is what stops a second scheduler that polled after this one committed an earlier
             # event from dispatching a later one this scheduler has not reached yet.
-            unclaimed_poll_cycle = True
+            unclaimed_poll_cycle = batch is None or not batch.cycle_claimed
             claimed_cursor = schedule.get("github_cursor")
             slot_reserved = False
             cap_deferred = False
+            held_back: list[Any] | None = None
 
             for idx, item in enumerate(polled):
                 if not item.dispatchable:
@@ -1691,18 +1875,22 @@ class SchedulerEngine:
                             ]
                             break
 
-                    slot_allowed, slot_claim = await self._reserve_global_slot(
-                        sid, path="github_event"
-                    )
-                    if not slot_allowed:
-                        drop_reason = "global concurrent-fire cap reached"
-                        dropped_prs = [
-                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
-                        ]
-                        # Before any event of this pass took a slot, the cap deferred the whole
-                        # pass, the same as a cap found full before polling.
-                        cap_deferred = not slot_reserved
-                        break
+                    if batch is not None and batch.slot_claim is not None:
+                        slot_claim, batch.slot_claim = batch.slot_claim, None
+                    else:
+                        slot_allowed, slot_claim = await self._reserve_global_slot(
+                            sid, path="github_event"
+                        )
+                        if not slot_allowed:
+                            drop_reason = "global concurrent-fire cap reached"
+                            held_back = polled[idx:]
+                            dropped_prs = [
+                                e.event.get("pr_number") for e in held_back if e.dispatchable
+                            ]
+                            # Before any event of this pass took a slot, the cap deferred the
+                            # whole pass.
+                            cap_deferred = not slot_reserved
+                            break
                     slot_reserved = True
 
                     allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
@@ -1720,6 +1908,9 @@ class SchedulerEngine:
                     }
                     run_id = short_id(12)
                     admission_handed_off = True
+                    # The pass waits on the action it dispatches, however long that runs: _fire_inner
+                    # stops the pass's stall clock while the process runs and starts it again when
+                    # the process exits, so the store writes on either side stay timed.
                     fired = await self._fire(
                         schedule,
                         run_id,
@@ -1794,12 +1985,15 @@ class SchedulerEngine:
             if drop_reason and dropped_prs:
                 _log.info(
                     "Schedule %s (%s): %d github event(s) not dispatched this "
-                    "poll (%s); PR(s) %s deferred to the next poll",
+                    "poll (%s); PR(s) %s %s",
                     schedule.get("name"),
                     sid,
                     len(dropped_prs),
                     drop_reason,
                     dropped_prs,
+                    "held for the next free slot"
+                    if held_back is not None
+                    else "deferred to the next poll",
                 )
 
             # Safety-net batched write: every dispatched event already advanced github_cursor
@@ -1811,6 +2005,17 @@ class SchedulerEngine:
                 # it must not undo a cursor an operator moved forward while the poll was in flight.
                 await self._svc.update_schedule(
                     sid, github_cursor=cursor, guard_cursor_forward=True
+                )
+            if held_back is not None:
+                # The events the cap held back compete again at this poll's own due instant, ahead
+                # of every younger row, without a second poll.
+                self._github_batches[sid] = _GithubBatch(
+                    due_at=due_at,
+                    items=held_back,
+                    row_cursor=cursor,
+                    repo=schedule.get("github_repo"),
+                    github_filter=schedule.get("github_filter"),
+                    cycle_claimed=not unclaimed_poll_cycle,
                 )
             if cap_deferred:
                 await self._maybe_record_deferred(schedule, now)
@@ -2807,6 +3012,11 @@ class SchedulerEngine:
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
             )
 
+            # A github_poll pass waits on each process it dispatches, so its stall clock stops
+            # while the process runs; the store writes before and after it, the dispatched_at
+            # stamp among them, stay timed.
+            pass_sid = self._current_github_pass()
+
             async def _on_launched() -> None:
                 # Stamps dispatched_at the instant the OS process is confirmed to exist, the signal
                 # that tells 'committed but never launched', safe to re-fire, apart from 'launched,
@@ -2814,16 +3024,24 @@ class SchedulerEngine:
                 # paths running before a restart could read the column.
                 nonlocal dispatched
                 dispatched = True
-                await self._mark_dispatched(run_id)
+                self._github_pass_clock(pass_sid, running=True)
+                try:
+                    await self._mark_dispatched(run_id)
+                finally:
+                    self._github_pass_clock(pass_sid, running=False)
 
-            exit_code, stderr_tail = await _subprocess.spawn_and_wait(
-                argv,
-                inv_id,
-                tmp_path=_tmp_path,
-                cwd=action_cwd,
-                action_kind=schedule.get("action_kind"),
-                on_launched=_on_launched,
-            )
+            self._github_pass_clock(pass_sid, running=False)
+            try:
+                exit_code, stderr_tail = await _subprocess.spawn_and_wait(
+                    argv,
+                    inv_id,
+                    tmp_path=_tmp_path,
+                    cwd=action_cwd,
+                    action_kind=schedule.get("action_kind"),
+                    on_launched=_on_launched,
+                )
+            finally:
+                self._github_pass_clock(pass_sid, running=True)
             # spawn_and_wait returns only once it has an exit code, so a process existed;
             # on_launched flips the flag earlier so a mid-run cancellation classifies the same.
             dispatched = True

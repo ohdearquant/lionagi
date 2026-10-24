@@ -331,14 +331,32 @@ async def test_cancelled_run_is_recorded_as_cancelled(patched_env, monkeypatch):
     assert row["status"] == "cancelled"
 
 
-async def test_workflow_run_not_found_raises(patched_env):
+@pytest.fixture
+def unstarted_workflow(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    import lionagi.session.session as session_mod
+    import lionagi.studio.services.workflow_run as workflow_run
+
+    constructor = Mock(side_effect=AssertionError("Session created before validation finished"))
+    setup = AsyncMock(side_effect=AssertionError("Persistence started before validation finished"))
+    monkeypatch.setattr(session_mod, "Session", constructor)
+    monkeypatch.setattr(workflow_run, "_setup_run_persist", setup)
+    return constructor, setup
+
+
+async def test_workflow_run_not_found_raises(patched_env, unstarted_workflow):
     from lionagi.studio.services.workflow_run import WorkflowNotFoundError, run_workflow_def
 
     with pytest.raises(WorkflowNotFoundError):
         await run_workflow_def("does-not-exist")
 
+    constructor, setup = unstarted_workflow
+    constructor.assert_not_called()
+    setup.assert_not_awaited()
 
-async def test_workflow_run_compile_error_surfaces_node_id(patched_env):
+
+async def test_workflow_run_compile_error_surfaces_node_id(patched_env, unstarted_workflow):
     wf_svc, engine_defs_svc = patched_env
     from lionagi.studio.services.workflow_compile import WorkflowCompileError
     from lionagi.studio.services.workflow_run import run_workflow_def
@@ -352,6 +370,10 @@ async def test_workflow_run_compile_error_surfaces_node_id(patched_env):
     with pytest.raises(WorkflowCompileError) as exc_info:
         await run_workflow_def(created["id"])
     assert exc_info.value.edge_id == "e2"
+
+    constructor, setup = unstarted_workflow
+    constructor.assert_not_called()
+    setup.assert_not_awaited()
 
 
 async def test_run_route_returns_structured_422_on_compile_error(patched_env):

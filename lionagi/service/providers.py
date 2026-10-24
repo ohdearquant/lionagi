@@ -161,10 +161,14 @@ def reclamp_effort_for_model(provider: str, effort: str | None, model: str | Non
     A persisted effort carries the ceiling of the model it was resolved for;
     replaying it onto another model can exceed that model's ceiling (an
     ``ultra`` resolved for gpt-5.6-sol replayed on gpt-5.3-codex-spark).
-    Callers that swap a model under an existing effort re-clamp here.
+    Callers that swap a model under an existing effort re-clamp here. An alias
+    (``openai-codex``) is clamped as the provider it names.
     """
     if effort is None:
         return None
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    provider = EndpointRegistry.canonical_provider(provider or "")
     if provider == "codex":
         return _clamp_codex_effort(effort, model)
     if provider in _CLAUDE_PROVIDER_NAMES:
@@ -444,7 +448,13 @@ def _normalize_model(spec_or_model: str, provider_hint: str | None = None) -> st
 
 def _normalize_model_name(model: str, provider_hint: str | None = None) -> str:
     """Normalize bare model name (no provider prefix)."""
-    if provider_hint and provider_hint in _CLAUDE_PROVIDER_NAMES:
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    # Folded as the endpoint match folds it, so "Claude/opus-4-7" builds as "claude/opus-4-7".
+    if (
+        provider_hint
+        and EndpointRegistry.canonical_provider(provider_hint) in _CLAUDE_PROVIDER_NAMES
+    ):
         for prefix in _CLAUDE_MODEL_PREFIXES:
             if model.startswith(prefix) and model != prefix and not model.startswith("claude-"):
                 return f"claude-{model}"
@@ -467,7 +477,12 @@ def parse_model_spec(spec: str) -> ModelSpec:
         name, raw_effort = split
         effort = normalize_effort(raw_effort)
 
-        if provider_raw in PROVIDERS_NO_EFFORT:
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        # Folded as the endpoint match folds it, so an alias such as "gemini-api" is refused
+        # as the provider it names.
+        provider = EndpointRegistry.canonical_provider(provider_raw) if has_provider else None
+        if provider in PROVIDERS_NO_EFFORT:
             raise ValueError(
                 f"Provider '{provider_raw}' does not support effort levels. "
                 f"Remove '-{effort}' from '{spec}'."

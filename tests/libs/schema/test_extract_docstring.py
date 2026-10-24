@@ -189,9 +189,25 @@ class TestExtractDocstringRest:
 
         description, params = extract_docstring(multiline_func, style="rest")
 
-        assert "x" in params
-        # The implementation joins multiline descriptions with spaces
-        assert "This is a parameter" in params["x"]
+        assert params["x"] == (
+            "This is a parameter with a multiline description that spans multiple lines."
+        )
+
+    def test_rest_continuation_after_another_field_is_not_a_param(self):
+        def func(x: int, y: int):
+            """Function with fields between parameters.
+
+            :param x: The first parameter.
+            :returns: The sum,
+                computed exactly.
+            :param y:
+                The second parameter.
+            """
+            pass
+
+        _, params = extract_docstring(func, style="rest")
+
+        assert params == {"x": "The first parameter.", "y": "The second parameter."}
 
     def test_rest_no_docstring(self):
         def no_doc():

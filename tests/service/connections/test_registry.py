@@ -65,6 +65,37 @@ class TestProviderAliasCanonicalization:
         assert providers == {"dup-provider"}
 
 
+class TestCanonicalProvider:
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("codex", "codex"),
+            ("openai-codex", "codex"),
+            ("OpenAI-Codex", "codex"),
+            ("Codex", "codex"),
+            ("claude", "claude_code"),
+            ("gemini-cli", "gemini_code"),
+            ("pi_code", "pi"),
+            ("openai", "openai"),
+            ("not-a-provider", "not-a-provider"),
+        ],
+    )
+    def test_a_name_resolves_to_the_provider_it_matches(self, name, expected):
+        assert EndpointRegistry.canonical_provider(name) == expected
+
+    def test_a_padded_name_is_not_trimmed_into_a_provider(self):
+        # The endpoint match does not trim a name either, so " codex " runs no codex.
+        assert EndpointRegistry.canonical_provider(" codex ") == " codex "
+        assert EndpointRegistry._match_registered(" codex ", "", {}) is None
+
+
+def test_a_padded_provider_name_is_not_trimmed_into_the_generic_endpoint():
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    with pytest.raises(ProviderNotFoundError, match=" codex"):
+        EndpointRegistry.match(" codex", "chat/completions")
+
+
 class TestProviderAliasCollision:
     def test_alias_colliding_with_another_providers_canonical_name_raises(self):
         @EndpointRegistry.register(provider="owner-provider", endpoint="chat")

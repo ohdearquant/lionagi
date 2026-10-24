@@ -1380,6 +1380,21 @@ def test_agent_submit_advertises_and_checks_the_idle_timeout(submitted):
     assert "--idle-timeout=90" in submitted["flags"]
 
 
+def test_agent_submit_takes_only_the_two_workload_classes(submitted):
+    schema = call(help="agent.submit")["schema"]
+    assert schema["properties"]["workload"]["enum"] == ["light", "heavy"]
+
+    answer = call(ops=[spawn_op("agent.submit", {"model": "m/p", "prompt": "x", "workload": "x"})])
+    assert answer["ops"][0]["ok"] is False
+    assert submitted == {}
+
+    accepted = call(
+        ops=[spawn_op("agent.submit", {"query": ["m/p"], "prompt": "x", "workload": "light"})]
+    )
+    assert accepted["ops"][0]["ok"] is True, accepted
+    assert "--workload=light" in submitted["flags"]
+
+
 # ── one copy of a schema per response ───────────────────────────────────────
 
 
@@ -1427,3 +1442,68 @@ def test_one_refused_op_carries_no_reference():
     answer = call(ops=[spawn_op("agent.submit", {"nope": 1})])
     assert "schema" in answer["ops"][0]["error"]
     assert "schema_ref" not in answer["ops"][0]["error"]
+
+
+# ── an agent lionagi started cannot start another through this server ───────
+
+
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit"])
+def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypatch, tmp_path):
+    # Refused in the server, not left to the detached run: a server that exits first
+    # would leave that run outside the agent's process tree.
+    import lionagi.cli._providers as providers
+    from lionagi.mcp import config
+    from lionagi.providers import _subagent_admission
+
+    monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
+    monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["true"])
+
+    def no_spawn(*args, **kwargs):
+        raise AssertionError("a run was started")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", no_spawn)
+
+    answer = call(ops=[spawn_op(verb, {"query": ["m", "do it"]})])
+
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "conflict"
+    assert "nested agent refused" in op["error"]["message"]
+    assert not (tmp_path / "jobs").exists() or not any((tmp_path / "jobs").iterdir())
+
+
+def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, monkeypatch, tmp_path):
+    import lionagi.cli._providers as providers
+    from lionagi.mcp import config
+    from lionagi.providers import _subagent_admission
+
+    monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
+    monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["true"])
+
+    def no_spawn(*args, **kwargs):
+        raise AssertionError("a run was started")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", no_spawn)
+
+    qualified = call(help={"verb": "play.submit", "playbook": a_playbook})
+    answer = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": a_playbook},
+                "schema_fingerprint": qualified["schema_fingerprint"],
+            }
+        ]
+    )
+
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "conflict"
+    assert "nested agent refused" in op["error"]["message"]
+    assert not (tmp_path / "jobs").exists() or not any((tmp_path / "jobs").iterdir())
