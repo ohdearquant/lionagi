@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import json
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -18,6 +21,59 @@ from ..base import LionTool
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
+_automatic_summary: ContextVar[bool] = ContextVar("context_automatic_summary", default=False)
+
+
+@dataclass(frozen=True)
+class _ResultBody:
+    key: object
+    start: int
+    end: int
+    is_json: bool = False
+    protected: bool = False
+
+
+def _result_json(value) -> str:
+    """Use the signed encoder acceptance, with sorted keys and no fallback."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _result_text(output) -> tuple[str, tuple[_ResultBody, ...]]:
+    """Original-derived recovery text and exact global Unicode body spans.
+
+    Outer mapping order is preserved. Raw strings are never JSON-escaped; labels and
+    separators count toward offsets. The returned string/spans are immutable snapshots.
+    """
+    if isinstance(output, str):
+        return output, (_ResultBody(None, 0, len(output)),)
+    if not isinstance(output, dict):
+        text = _result_json(output)
+        return text, (_ResultBody(None, 0, len(text), is_json=True),)
+    pieces: list[str] = []
+    bodies: list[_ResultBody] = []
+    position = 0
+    for ordinal, (key, value) in enumerate(output.items()):
+        is_json = not isinstance(value, str)
+        try:
+            body = _result_json(value) if is_json else value
+        except (TypeError, ValueError):
+            # YAML-renderable values without JSON text stay whole, outside the bodies.
+            continue
+        try:
+            label_key = _result_json(key)
+        except (TypeError, ValueError):
+            # The mapping key is retained verbatim in the output. An ordinal label
+            # needs no stringification of a YAML-only key and adds no API selector.
+            label_key = _result_json({"entry": ordinal})
+        label = f"[body key={label_key} kind={'json' if is_json else 'raw'} chars={len(body)}]\n"
+        start = position + len(label)
+        bodies.append(
+            _ResultBody(key, start, start + len(body), is_json, key in ("success", "error"))
+        )
+        pieces.extend((label, body, "\n"))
+        position = start + len(body) + 1
+    return "".join(pieces), tuple(bodies)
+
 
 class ContextAction(str, Enum):
     status = "status"
@@ -26,6 +82,7 @@ class ContextAction(str, Enum):
     evict_action_results = "evict_action_results"
     restore = "restore"
     compact = "compact"
+    read_result = "read_result"
 
 
 class ContextRequest(BaseModel):
@@ -45,6 +102,9 @@ class ContextRequest(BaseModel):
             "messages — the best way to reclaim space from verbose tool outputs.\n"
             "- 'restore': pull evicted messages back into your active view by their index "
             "in the FULL record (use get_messages scope='all' to find them).\n"
+            "- 'read_result': recover stored original tool-result text by its full-record "
+            "index and character offset; reads at most 16,000 characters without changing "
+            "the view or running the tool again.\n"
             "- 'compact': replace a span [start:end) of your active view with a single "
             "`summary` you write yourself (no extra model call). By default only verbose "
             "tool requests/results in the span are collapsed; your own reasoning, the task, "
@@ -109,6 +169,9 @@ class ContextRequest(BaseModel):
             "for when you can't, and it can fail if the model call errors."
         ),
     )
+    index: int | None = Field(None, ge=0, description="Original result's full-record index.")
+    offset: int = Field(0, ge=0, description="Character offset for read_result.")
+    limit: int = Field(16000, ge=1, description="Characters to recover, capped at 16,000.")
 
 
 class ContextTool(LionTool):
@@ -185,6 +248,13 @@ class ContextTool(LionTool):
             c = c[:120].replace("\n", " ") + ("..." if len(c) > 120 else "")
             return f"[{idx}]{tag} {role}: {c}"
 
+        def _chronology(uid) -> int:
+            message = msgs.messages[uid]
+            original = message.metadata.get("clipped_from")
+            if original is not None and original in msgs.messages:
+                return msgs.progression.index(msgs.messages[original].id)
+            return message.metadata.get("context_first_index", msgs.progression.index(uid))
+
         async def _auto_summarize(uids: list, pile) -> str | None:
             """Generate a compact summary over `uids` with one direct model call.
             Never raises — returns None on failure so the caller can fall back to writing the summary itself.
@@ -217,7 +287,11 @@ class ContextTool(LionTool):
                 "\n\n" + joined
             )
             try:
-                text = await branch.chat(instruction=prompt)
+                token = _automatic_summary.set(True)
+                try:
+                    text = await branch.chat(instruction=prompt)
+                finally:
+                    _automatic_summary.reset(token)
             except Exception:
                 return None
             if not isinstance(text, str):
@@ -234,6 +308,10 @@ class ContextTool(LionTool):
             mode: str | None = None,
             scope: str | None = None,
             auto: bool = False,
+            index: int | None = None,
+            offset: int = 0,
+            limit: int = 16000,
+            _keep: set | None = None,
         ) -> dict:
             """Engineer your own conversation context — check usage, browse, evict, restore, and compact messages.
             Evicted/compacted messages stay in the full conversation record and can be restored at any time.
@@ -241,6 +319,42 @@ class ContextTool(LionTool):
             active = branch.progression  # current view (respects evictions)
             full = msgs.progression  # complete durable record
             pile = msgs.messages
+
+            if action == "read_result":
+                if (
+                    not isinstance(index, int)
+                    or isinstance(index, bool)
+                    or not 0 <= index < len(full)
+                    or not isinstance(offset, int)
+                    or isinstance(offset, bool)
+                    or offset < 0
+                    or not isinstance(limit, int)
+                    or isinstance(limit, bool)
+                    or limit < 1
+                ):
+                    return {"success": False, "error": "Invalid result index, offset or limit."}
+                original = pile[full[index]]
+                if not isinstance(original, ActionResponse) or original.metadata.get(
+                    "clipped_from"
+                ):
+                    return {
+                        "success": False,
+                        "error": "Index must address an original tool result.",
+                    }
+                try:
+                    text, _bodies = _result_text(original.content.output)
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "Result has no JSON recovery text."}
+                stop = min(len(text), offset + min(limit, 16000))
+                if stop > offset:
+                    ranges = branch.metadata.setdefault("context_read_results", {})
+                    ranges.setdefault(str(original.id), []).append([offset, stop])
+                return {
+                    "success": True,
+                    "text": text[offset:stop],
+                    "total": len(text),
+                    "next_offset": stop if stop < len(text) else None,
+                }
 
             if action == "status":
                 by_type: dict[str, int] = {}
@@ -323,30 +437,52 @@ class ContextTool(LionTool):
                 }
 
             if action == "restore":
-                cp = _ensure_cp()
-                active_set = set(cp)
+                view = list(active)
                 s = max(0, start or 0)
                 e = end if end is not None else s + 1
                 e = min(len(full), e)
                 restored = 0
+                originals = []
+                clipped_originals = {
+                    str(message.metadata["clipped_from"])
+                    for message in pile
+                    if message.metadata.get("clipped_from") is not None
+                }
+
                 for i in range(s, e):
                     uid = full[i]
-                    if uid in active_set:
+                    message = pile[uid]
+                    if message.metadata.get("clipped_from") or uid in view:
                         continue
-                    # find the active slot to keep chronological order: first
-                    # active uid whose full-index exceeds i, else append.
-                    insert_at = len(cp)
-                    for j, au in enumerate(cp):
-                        if full.index(au) > i:
-                            insert_at = j
-                            break
-                    cp.insert(insert_at, uid)
-                    active_set.add(uid)
+                    copies = [
+                        au for au in view if pile[au].metadata.get("clipped_from") == str(uid)
+                    ]
+                    if copies:
+                        insert_at = view.index(copies[0])
+                        view = [au for au in view if au not in copies]
+                    else:
+                        key = _chronology(uid)
+                        insert_at = next(
+                            (j for j, au in enumerate(view) if _chronology(au) > key), len(view)
+                        )
+                    view.insert(insert_at, uid)
+                    if isinstance(message, ActionResponse) and str(uid) in clipped_originals:
+                        originals.append(uid)
                     restored += 1
+                if originals and branch._context_restore_check is not None:
+                    if not branch._context_restore_check(view):
+                        return {
+                            "success": False,
+                            "error": "Restore exceeds the input ceiling; use read_result for the original text.",
+                        }
+                branch.metadata["current_progression"] = Progression(order=view)
+                if originals:
+                    protected = branch.metadata.setdefault("context_restored_results", [])
+                    protected.extend(str(uid) for uid in originals if str(uid) not in protected)
                 return {
                     "success": True,
                     "restored": restored,
-                    "active": len(cp),
+                    "active": len(view),
                     "total": len(full),
                 }
 
@@ -381,6 +517,10 @@ class ContextTool(LionTool):
                         "error": "Nothing to compact in range (no tool messages; "
                         "use mode='all' to collapse reasoning too).",
                     }
+                if _keep:
+                    collapse = [uid for uid in collapse if uid not in _keep]
+                    if not collapse:
+                        return {"success": False, "error": "No delivered messages to compact."}
 
                 # The summary takes the place of the first message it replaces,
                 # so a kept message at the start of the span stays ahead of it.
@@ -414,8 +554,12 @@ class ContextTool(LionTool):
                     return {"success": False, "error": "compact requires a non-empty `summary`."}
 
                 tokens_freed = sum(_tokens(pile[u]) for u in collapse if u in pile)
+                first_index = min(_chronology(uid) for uid in collapse)
                 note = await msgs.a_add_message(
-                    assistant_response=f"[CONTEXT COMPACTION] {summary.strip()}"
+                    assistant_response=AssistantResponse(
+                        content={"assistant_response": f"[CONTEXT COMPACTION] {summary.strip()}"},
+                        metadata={"context_first_index": first_index},
+                    )
                 )
                 # A new message joins the end of the view; the summary belongs where the
                 # first collapsed message was, then the collapsed uids are dropped.

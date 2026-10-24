@@ -39,6 +39,66 @@ async def _call(branch, **kw) -> dict:
     return await ContextTool().bind(branch).func_callable(**kw)
 
 
+async def test_read_result_recovers_two_raw_mapping_bodies_and_json_list_after_roundtrip():
+    from lionagi.protocols.messages import ActionResponse, Message
+
+    first = 'Aé🦁 "alpha"\n' * 1700 + "A-END\n"
+    second = '雪B "beta"\nnext 🧭\n' * 1400 + 'B-END "fin"\n'
+    output = {
+        "result": first,
+        "notes": second,
+        "items": ["é", 'quoted "item"', "line\nitem", {"z": 2, "a": "🦁"}],
+        "success": True,
+        "error": None,
+    }
+    original = ActionResponse(content={"function": "reader", "output": output})
+    stored = Message.from_dict(original.to_dict())
+    branch = _make_branch_with_messages()
+    await branch.msgs._a_add_built_response(stored)
+    before_ids = list(branch.progression)
+    before_record = stored.to_dict()
+    index = branch.msgs.progression.index(stored.id)
+    for start, stop, expected in ((809, 20191, first[768:-256]), (21256, 44044, second[768:-256])):
+        recovered = ""
+        offset = start
+        while offset < stop:
+            page = await _call(
+                branch,
+                action="read_result",
+                index=index,
+                offset=offset,
+                limit=min(16000, stop - offset),
+            )
+            assert page["success"] is True
+            assert page["total"] == 44478
+            recovered += page["text"]
+            offset = page["next_offset"]
+        assert recovered == expected
+    page = await _call(branch, action="read_result", index=index, offset=809, limit=20000)
+    assert len(page["text"]) == 16000
+    assert page["text"] == first[768:16768]
+    listed = await _call(branch, action="read_result", index=index, offset=44339, limit=52)
+    assert listed["text"] == r'["é","quoted \"item\"","line\nitem",{"a":"🦁","z":2}]'
+    assert list(branch.progression) == before_ids
+    assert stored.to_dict() == before_record
+    cloned = branch.clone()
+    clone_page = await _call(cloned, action="read_result", index=index, offset=809, limit=16000)
+    assert clone_page == page
+
+
+async def test_read_result_string_offsets_are_characters_and_never_change_the_view():
+    from lionagi.protocols.messages import ActionResponse
+
+    branch = _make_branch_with_messages()
+    response = ActionResponse(content={"function": "bash", "output": 'é🦁 "yes"\nnext'})
+    await branch.msgs._a_add_built_response(response)
+    before = list(branch.progression)
+    index = branch.msgs.progression.index(response.id)
+    result = await _call(branch, action="read_result", index=index, offset=1, limit=3)
+    assert result == {"success": True, "text": '🦁 "', "total": 13, "next_offset": 4}
+    assert list(branch.progression) == before
+
+
 async def test_unknown_action_returns_structured_error():
     res = await _call(_make_branch_with_messages(), action="bogus")
     assert res["success"] is False and "bogus" in res["error"]

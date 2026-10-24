@@ -86,7 +86,7 @@ Neither a successful outer operation nor its final response accounts for every
 attempt that might have reached the provider.
 
 **P3 — Shared models are not conversation identities.** API Branch clones share
-their models (`lionagi/session/branch.py:566`). Binding a credential on that
+their models (`lionagi/session/branch.py:576`). Binding a credential on that
 shared endpoint would couple independent conversations. Switching accounts per
 call would instead disrupt cache reuse. The Claude API isolates caches by
 workspace, so keys of different organizations never share a cache

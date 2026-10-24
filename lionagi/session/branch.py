@@ -103,6 +103,7 @@ class Branch(Element, Relational):
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
+    _context_restore_check: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
     _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
     _hook_bus_synced_to: Any = PrivateAttr(None)
@@ -559,7 +560,16 @@ class Branch(Element, Relational):
                 raise ValueError(f"Cannot clone Branch: '{sender}' is not a valid sender ID.")
             sender = ID.get_id(sender)
 
-        system = self.msgs.system.clone() if self.msgs.system else None
+        cloned_messages = [message.clone() for message in self.msgs.messages]
+        system = next(
+            (
+                message
+                for message in cloned_messages
+                if self.msgs.system is not None
+                and message.metadata.get("clone_from") == str(self.msgs.system.id)
+            ),
+            None,
+        )
         tools = (
             list(self._action_manager.registry.values()) if self._action_manager.registry else None
         )
@@ -572,17 +582,62 @@ class Branch(Element, Relational):
             parse_model = self.parse_model.copy() if self.parse_model.is_cli else self.parse_model
 
         branch_clone = Branch(
-            system=system,
             user=self.user,
-            messages=[msg.clone() for msg in self.msgs.messages],
+            messages=cloned_messages,
             tools=tools,
             chat_model=chat_model,
             parse_model=parse_model,
             metadata={"clone_from": self},
         )
+        # Reuse the system already cloned in record order; constructing a second system
+        # would shift full-record indexes and break index-only result recovery.
+        branch_clone.msgs.system = system
         for message in branch_clone.msgs.messages:
             message.sender = sender or self.id
             message.recipient = branch_clone.id
+
+        id_map = {
+            clone_from: msg.id
+            for msg in branch_clone.msgs.messages
+            if (clone_from := msg.metadata.get("clone_from")) is not None
+        }
+        for message in branch_clone.msgs.messages:
+            clipped_from = message.metadata.get("clipped_from")
+            if clipped_from is not None and str(clipped_from) in id_map:
+                message.metadata["clipped_from"] = str(id_map[str(clipped_from)])
+            content = message.content
+            request_id = getattr(content, "action_request_id", None)
+            if request_id is not None and str(request_id) in id_map:
+                content.action_request_id = str(id_map[str(request_id)])
+            response_id = getattr(content, "action_response_id", None)
+            if response_id is not None and str(response_id) in id_map:
+                content.action_response_id = str(id_map[str(response_id)])
+        if "context_delivered" in self.metadata:
+            branch_clone.metadata["context_delivered"] = [
+                str(id_map[str(uid)])
+                for uid in self.metadata["context_delivered"]
+                if str(uid) in id_map
+            ]
+        if "context_restored_results" in self.metadata:
+            branch_clone.metadata["context_restored_results"] = [
+                str(id_map[str(uid)])
+                for uid in self.metadata["context_restored_results"]
+                if str(uid) in id_map
+            ]
+        if "context_read_results" in self.metadata:
+            branch_clone.metadata["context_read_results"] = {
+                str(id_map[str(uid)]): [list(pair) for pair in ranges]
+                for uid, ranges in self.metadata["context_read_results"].items()
+                if str(uid) in id_map
+            }
+        if "context_fold_calls" in self.metadata:
+            from lionagi.ln import copy
+
+            branch_clone.metadata["context_fold_calls"] = {
+                str(id_map[str(uid)]): copy(calls, deep=True)
+                for uid, calls in self.metadata["context_fold_calls"].items()
+                if str(uid) in id_map
+            }
 
         current_progression = self.metadata.get("current_progression")
         if current_progression is not None:
@@ -590,11 +645,6 @@ class Branch(Element, Relational):
             # metadata["clone_from"] = str(original_id); use that to map the
             # source's active-context subset onto the clone's messages so
             # messages evicted from view are not fed back into the clone.
-            id_map = {
-                clone_from: msg.id
-                for msg in branch_clone.msgs.messages
-                if (clone_from := msg.metadata.get("clone_from")) is not None
-            }
             cloned_progression = Progression(
                 order=[
                     id_map[str(old_id)] for old_id in current_progression if str(old_id) in id_map

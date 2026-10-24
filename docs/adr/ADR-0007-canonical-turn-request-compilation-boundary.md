@@ -566,19 +566,19 @@ lines:
   dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
   and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
-  exposes one turn's names (`lionagi/session/branch.py:293-305`). Those are event counts: they
+  exposes one turn's names (`lionagi/session/branch.py:294-306`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
-  (`lionagi/tools/context/context.py:290-304`, `:306-323`) by excluding them from
-  `metadata["current_progression"]` (`:144-149`), which `Branch.progression` returns in place of
-  the manager's progression when it is present (`lionagi/session/branch.py:250-256`). An evicted
+  (`lionagi/tools/context/context.py:404-418`, `:420-437`) by excluding them from
+  `metadata["current_progression"]` (`:207-212`), which `Branch.progression` returns in place of
+  the manager's progression when it is present (`lionagi/session/branch.py:251-257`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py:353-432`, the summary at `:417-425`).
+  from the active view (`lionagi/tools/context/context.py:489-576`, the summary at `:558-569`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
