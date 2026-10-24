@@ -140,6 +140,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Added
 
+- `ln.concurrency.retry` accepts an optional `exclude` tuple. Matching exceptions, including subclasses, propagate immediately without another attempt or backoff delay; existing calls keep the same retry behavior.
+
 - Studio Operator can update its active conversation's title and persistent
   description. Omitted fields retain their values, and an applied effect is
   recorded with the saved change without duplicating the provider's tool result.
