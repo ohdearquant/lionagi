@@ -19,6 +19,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   as offload controls. For a callable that takes either keyword, prebind its
   arguments with `functools.partial` and pass that callable to `run_sync`.
 
+### Fixed
+
+- A tool call denied by an agent's security control now reaches the tool post hooks
+  registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
+  hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for
+  every denied call; it now copies and pickles with its GateResult intact.
+
 ## [0.36.0] - 2026-10-24
 
 `httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
