@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
@@ -440,9 +441,10 @@ async def test_cross_task_launch_before_dispatch_stamp_survives_cancellation(
     task = engine._github_tick_tasks["poll"]
     try:
         await asyncio.wait_for(mark_started.wait(), timeout=5)
-        assert callback_tasks[0] is not task
-        # The real spawn_and_wait awaits its callback in wait_for's child task. Cancel before
-        # the dispatch-stamp await or exit-code fallback can establish any further evidence.
+        if sys.version_info < (3, 12):
+            assert callback_tasks[0] is not task
+        # Cancel before the dispatch-stamp await or exit-code fallback can establish
+        # any further evidence; wait_for uses a separate task only before Python 3.12.
         task.cancel()
         outcomes = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
         assert isinstance(outcomes[0], asyncio.CancelledError)
