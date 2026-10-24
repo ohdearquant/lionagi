@@ -99,7 +99,7 @@ def _parse(argv: list[str]) -> argparse.Namespace:
         ["schedule", "get", "sched-abc"],
         ["schedule", "create", "my-sched", "--cron", "0 * * * *", "--prompt", "ping"],
         ["schedule", "enable", "sched-abc"],
-        ["schedule", "disable", "sched-abc"],
+        ["schedule", "disable", "sched-abc", "--reason", "planned maintenance"],
         ["schedule", "trigger", "sched-abc"],
         ["schedule", "delete", "sched-abc"],
         ["schedule", "runs", "sched-abc"],

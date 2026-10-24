@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 import warnings
 from dataclasses import dataclass, replace
@@ -26,7 +27,7 @@ from lionagi.providers._provider_errors import ProviderError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from lionagi import Branch
     from lionagi.cli._mcp_resolve import McpResolution
@@ -54,6 +55,10 @@ _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
+# The terminal status a run decided and its store did not take, with the reason code and the time
+TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
+# When the run's signal persistence first stopped waiting on a store that refused the writer lock
+SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
 
 
 def _new_run_id() -> str:
@@ -231,6 +236,11 @@ class RunDir:
         ``UnicodeDecodeError``, or a ``ValueError`` the JSON parser raises for
         JSON it will not read, such as an integer over its digit limit) stops
         the write with that error.
+
+        The file's signal persistence degradation time stays when *data* has
+        none or a later one (ADR-0104 Amendment 3). A run bound to its
+        execution provenance reads the file for that time alone, and writes
+        without it when the file cannot be read.
         """
         ensure_lionagi_dir(self.state_root)
         with _run_manifest_lock(self.state_root, required=False):
@@ -265,6 +275,12 @@ class RunDir:
                     "mcp_config_reason": self.mcp_config_reason,
                 }
             )
+            try:
+                existing = self.read_manifest()
+            except (OSError, ValueError, RecursionError):
+                # Only the degradation time below is read back on this path, and a file this
+                # read cannot take yields none to keep.
+                existing = {}
         else:
             # A manifest that is gone, or that is malformed JSON (JSONDecodeError), holds
             # nothing this code can read back, and one that is JSON but not an object holds
@@ -284,6 +300,11 @@ class RunDir:
                 ):
                     if key in existing:
                         payload[key] = existing[key]
+        # The signal persistence degradation time is once per run (ADR-0104 Amendment 3): the
+        # earliest on file stays, so neither the run's own setup write nor the whole-file write of
+        # another invocation sharing its run id erases or moves it.
+        if isinstance(existing, dict):
+            _carry_earliest_time(payload, existing.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD))
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
@@ -391,8 +412,11 @@ def _record_persistence_degraded(
             manifest = json.loads(manifest_path.read_text())
             if not isinstance(manifest, dict):
                 raise TypeError("run manifest is not a JSON object")
+            kept = manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
             if run_manifest is not None:
                 manifest.update(run_manifest)
+            _carry_earliest_time(manifest, kept)
+            _drop_a_time_that_is_not_one(manifest)
             manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
             _atomic_write_json(manifest_path, manifest)
     except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
@@ -403,6 +427,175 @@ def _record_persistence_degraded(
             exc_info=True,
         )
     return reason
+
+
+def lost_terminal_write(
+    live: dict | None,
+    *,
+    requested: str,
+    exception: BaseException | None,
+    returned: str,
+) -> dict[str, Any] | None:
+    """The terminal status a run decided that its store did not take, or None.
+
+    *returned* is what teardown handed back: the row's status when its terminal write failed
+    (usually `running`), `unknown` when even that read failed. The record exists only when a
+    store read or write failed teardown (the store error teardown kept in *live*), the run
+    decided a terminal status and *returned* is not terminal. Teardown that failed for any
+    other reason, such as an artifact removed while it was being verified, never reached a
+    write the store could refuse. A terminal *returned* that differs from the decision is
+    another writer's record, not a lost write, and a run that decided `running` (a linked
+    engine session still runs) decided no end. The decision is the outcome teardown recorded in
+    *live* before its write, or, when teardown failed before deciding, the terminal status it
+    was asked to write, with the code teardown resolved for it, or the one `resolve_run_reason`
+    gives when teardown failed before resolving one. The caller leaves out a leg that defers
+    its end to an auto-resume.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    if not live or returned in SESSION_TERMINAL_STATUSES:
+        return None
+    if live.get("teardown_store_error") is None:
+        return None
+    decision = live.get("terminal_reason")
+    if decision:
+        status = decision[0]
+        code = decision[2] if len(decision) > 2 else None
+    else:
+        status, code = requested, live.get("requested_reason_code")
+    if status not in SESSION_TERMINAL_STATUSES:
+        return None
+    if code is None:
+        code = resolve_run_reason(status=status, exception=exception)[0]
+    return {"status": status, "reason_code": code, "at": time.time()}
+
+
+def _store_error_in(error: BaseException | None) -> BaseException | None:
+    """The store error *error* is, raises from, or carries inside exception groups.
+
+    A database error, or the store having no row for its write, anywhere in nested exception
+    groups. An error raised while another was being handled is not taken as caused by it.
+    """
+    import sqlite3
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+    from lionagi.state.lifecycle import LifecycleNotFoundError
+
+    seen: set[int] = set()
+    pending: list[BaseException] = [error] if error is not None else []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, sqlite3.Error | SQLAlchemyError | LifecycleNotFoundError):
+            return current
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+    return None
+
+
+def _is_time(value: Any) -> bool:
+    """A finite number that is not a bool, the only value a reader of run.json takes as a time.
+
+    `math.isfinite` converts to float first, and an integer past float range (JSON's integers
+    are unbounded) makes that conversion raise; such a value is not a time either.
+    """
+    import math
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _drop_a_time_that_is_not_one(manifest: dict[str, Any]) -> None:
+    """Remove a degradation time no reader takes as one from *manifest*, read from run.json, as
+    `RunDir.write_manifest` leaves it out: a NaN or an infinity there would make the write fail."""
+    if not _is_time(manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)):
+        manifest.pop(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD, None)
+
+
+def _carry_earliest_time(payload: dict[str, Any], kept: Any) -> None:
+    """Put *kept*, the degradation time on file, into *payload* unless *payload* has one no later."""
+    mine = payload.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+    if _is_time(kept) and not (_is_time(mine) and mine <= kept):
+        payload[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = kept
+
+
+def _write_signal_persistence_degraded_at(state_root: Path, at: float) -> None:
+    """Add *at* to the run.json in *state_root* unless it already holds a time no later.
+
+    Runs on its own thread and takes only the run directory's manifest lock, never the state
+    store's writer. A failure is logged, since nothing above this frame can catch it.
+    """
+    manifest_path = state_root / "run.json"
+    try:
+        with _run_manifest_lock(state_root, required=False):
+            manifest = json.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                raise TypeError("run manifest is not a JSON object")
+            kept = manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            if not (_is_time(kept) and kept <= at):
+                manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = at
+                _atomic_write_json(manifest_path, manifest)
+    except Exception as exc:  # noqa: BLE001 — a marker that cannot be written must not fail the run
+        _log.warning(
+            "could not record signal persistence degradation in %s: %r", manifest_path, exc
+        )
+
+
+def _write_terminal_write_lost(state_root: Path, record: dict[str, Any]) -> None:
+    """Set `terminal_write_lost` to *record* on the run.json in *state_root*, under its manifest
+    lock, and leave every other field as the file holds it, but drop a malformed degradation time.
+
+    For a run copying its auto-resumed leg's record onto its own run.json: the run has nothing
+    else left to say there, and what another invocation sharing its run id wrote since the run's
+    last write stays.
+    """
+    manifest_path = state_root / "run.json"
+    with _run_manifest_lock(state_root, required=False):
+        manifest = json.loads(manifest_path.read_text())
+        if not isinstance(manifest, dict):
+            raise TypeError("run manifest is not a JSON object")
+        manifest[TERMINAL_WRITE_LOST_FIELD] = record
+        _drop_a_time_that_is_not_one(manifest)
+        _atomic_write_json(manifest_path, manifest)
+
+
+def _signal_window_marker(run_manifest: dict[str, Any], state_root: Path) -> Callable[[], None]:
+    """The callback a signal persistence binding calls on the event loop when its skip window opens.
+
+    It sets the time on *run_manifest*, so the run's later whole-file writes carry it, and hands
+    the file write to a thread of its own: the window exists so that an emit never waits on the
+    store, and the manifest lock another writer may hold must not make it wait on a file. The
+    thread is a daemon, so a lock held at exit cannot hold the process; a run that exits normally
+    writes the field with its manifest anyway. Once per run: a time already on *run_manifest* is
+    kept.
+    """
+
+    def mark() -> None:
+        if run_manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD) is not None:
+            return
+        at = time.time()
+        run_manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = at
+        try:
+            threading.Thread(
+                target=_write_signal_persistence_degraded_at,
+                args=(state_root, at),
+                name="lionagi-signal-window-marker",
+                daemon=True,
+            ).start()
+        except Exception as exc:  # noqa: BLE001 — the run's own manifest write still carries it
+            _log.warning("could not hand off the signal persistence degradation record: %r", exc)
+
+    return mark
 
 
 def allocate_run(
@@ -871,6 +1064,10 @@ async def _teardown_common(
     reason_code, reason_summary, evidence_refs = resolve_run_reason(
         status=status, exception=exception
     )
+    if reason_out is not None:
+        # Resolving consumes the SIGTERM latch, so a write below that fails before the outcome is
+        # decided leaves the run this code for the status it asked for rather than a second read.
+        reason_out["requested_reason_code"] = reason_code
     metadata: dict | None = None
     if exception is not None:
         metadata = {"exception_class": type(exception).__name__}
@@ -879,6 +1076,22 @@ async def _teardown_common(
     contract = artifact_contract or session_row.get("artifact_contract_json")
     artifacts_root = artifacts_path or session_row.get("artifacts_path")
     verification = verify_artifact_contract(contract, artifacts_root=artifacts_root)
+    if (
+        reason_out is not None
+        and status == "completed"
+        and verification
+        and verification["status"] == "failed"
+    ):
+        from lionagi.state.reasons import RunReasons
+
+        # A completed request whose required artifact is missing is decided here: nothing below
+        # turns a `failed` status back or changes its code, so a write the store refuses from
+        # here on leaves this decision, not the request.
+        reason_out["terminal_reason"] = (
+            "failed",
+            missing_artifact_summary(verification["missing_required"]),
+            RunReasons.FAILED_MISSING_ARTIFACT,
+        )
     await _teardown_write(
         committed,
         "update_artifact_verification",
@@ -1135,7 +1348,8 @@ async def _teardown_common(
         # The outcome this teardown decided for its own run, whether or not the write it
         # makes below lands: a row already terminal, or a write that loses its compare-and-set,
         # keeps the status and reason another run left on it (a resume reuses the session row).
-        reason_out["terminal_reason"] = (final_status, final_reason_summary)
+        # The code rides third, for a run whose write is then lost to say what it decided.
+        reason_out["terminal_reason"] = (final_status, final_reason_summary, final_reason_code)
 
     decision = _TerminalStatus(
         status=final_status,
@@ -1432,6 +1646,13 @@ async def teardown_persist(
             ctx["store_refusal"] = refusal
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
+        # Only a store error (a database error, or no row for the write) says the store failed
+        # teardown, so only that one leaves a terminal write the store may not have taken; a
+        # failure from anywhere else (an artifact removed while it was verified) stopped
+        # teardown before any refused write (ADR-0104 Amendment 3).
+        store_error = _store_error_in(exc)
+        if store_error is not None:
+            ctx["teardown_store_error"] = store_error
         # A failure anywhere in the block above (any of _teardown_common's
         # separate write transactions, or the bookkeeping around them) must
         # not make this return the *requested* terminal status as if it had
@@ -1756,8 +1977,10 @@ async def setup_agent_persist(
     project: str | None = None,
     run_id: str | None = None,
     run_manifest: dict[str, Any] | None = None,
+    run: RunDir | None = None,
     share_db: bool = True,
     drains_controls: bool = False,
+    parent_marker: Callable[[], None] | None = None,
 ) -> dict | None:
     from lionagi.session.session import Session
     from lionagi.state import provenance as _provenance
@@ -1985,8 +2208,30 @@ async def setup_agent_persist(
         )
 
         # Bind through the already-open DB so signals land in session_signals
-        # without opening a new connection per signal.
-        session.observer.bind_db_persistence(session_id, db=db)
+        # without opening a new connection per signal. A run that owns a manifest and a run
+        # directory records on it when its signal persistence first stops waiting on the store,
+        # and a leg resumed for another run (*parent_marker*) records on that run's too: its
+        # run.json is the one the job reads.
+        markers = [
+            mark
+            for mark in (
+                _signal_window_marker(run_manifest, run.state_root)
+                if run_manifest is not None and run is not None
+                else None,
+                parent_marker,
+            )
+            if mark is not None
+        ]
+
+        def _mark_every_run() -> None:
+            for mark in markers:
+                mark()
+
+        session.observer.bind_db_persistence(
+            session_id,
+            db=db,
+            on_window_opened=_mark_every_run if markers else None,
+        )
 
         from lionagi.hooks import route_message_persistence
 

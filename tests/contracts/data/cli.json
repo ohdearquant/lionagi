@@ -4706,6 +4706,17 @@
               "default": null,
               "choices": null,
               "help": "Id of the schedule, as returned by `li schedule list` in its `id` field."
+            },
+            {
+              "option_strings": [
+                "--reason"
+              ],
+              "dest": "reason",
+              "required": false,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Optional explanation recorded when an enabled schedule is disabled. Refused if already disabled; no reason or history entry is added."
             }
           ],
           "subparsers": {}

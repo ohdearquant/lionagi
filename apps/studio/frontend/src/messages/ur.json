@@ -708,7 +708,9 @@
         "lastOutcome": "آخری بار {outcome} {delta} پہلے",
         "neverFiredSince": "{date} سے کبھی نہیں چلی",
         "noEvidenceHint": "کوئی عملدرآمد ریکارڈ نہیں"
-      }
+      },
+      "disableReason": "وجہ",
+      "disableReasonHint": "اس شیڈول کو روکنے کی وجہ لکھیں۔"
     },
     "run": {
       "elapsed": "⁨{delta}⁩ گزر چکا",

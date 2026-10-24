@@ -10,11 +10,11 @@ def __getattr__(name: str):
     if name in _lazy_type_cache:
         return _lazy_type_cache[name]
 
-    import importlib
+    from lionagi.ln import import_module
 
     for mod_path in _SOURCE_MODULES:
         try:
-            mod = importlib.import_module(f".{mod_path}", __name__.rpartition(".")[0])
+            mod = import_module(f".{mod_path}", package=__name__.rpartition(".")[0])
             if hasattr(mod, name):
                 obj = getattr(mod, name)
                 _lazy_type_cache[name] = obj

@@ -9,7 +9,9 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, field_validator
 
@@ -68,10 +70,16 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
+    TERMINAL_WRITE_LOST_FIELD,
     RunDir,
+    _signal_window_marker,
+    _write_signal_persistence_degraded_at,
+    _write_terminal_write_lost,
     allocate_run,
     find_branch,
     load_last_branch,
+    lost_terminal_write,
     resolve_run_reason,
     save_last_branch_pointer,
     setup_agent_persist,
@@ -1026,10 +1034,16 @@ async def _run_agent(
     _injection_totals: dict[str, int] | None = None,
     # Last, so every parameter before it keeps the position it had
     idle_timeout: int | None = None,
+    *,
+    _parent_marker: Callable[[], None] | None = None,
+    _lost_write_out: dict[str, Any] | None = None,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
-    session_id is None whenever live persistence never started.
+    session_id is None whenever live persistence never started. An auto-resumed leg runs in a
+    run directory of its own while the job reads the first run's run.json, so the first run hands
+    it *_parent_marker*, which records a signal persistence skip window on that run.json too, and
+    *_lost_write_out*, where the leg leaves a terminal write its store refused.
     """
     prompt = _apply_detached_execution_boundary(prompt)
     seed_injection_totals = _injection_totals is None
@@ -1303,10 +1317,6 @@ async def _run_agent(
             )
         if api_launch is not None and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
-        if api_launch is not None and chat_model.endpoint.config.provider == "anthropic":
-            from lionagi.agent.factory import ANTHROPIC_DEFAULT_MAX_TOKENS
-
-            chat_model.endpoint.config.kwargs.setdefault("max_tokens", ANTHROPIC_DEFAULT_MAX_TOKENS)
         # Two spawn shapes hand the set over in two different places, so the
         # message has to read the one that applies. A plain leg gets only what
         # build_chat_model already put on the request, which is knowable here;
@@ -1652,10 +1662,12 @@ async def _run_agent(
             project=project,
             run_id=run.run_id,
             run_manifest=run_manifest,
+            run=run if isinstance(run, RunDir) else None,
             # This runner drains queued operator messages at turn end and
             # tombstones whatever it did not take, so controls aimed at it have a
             # consumer.
             drains_controls=True,
+            parent_marker=_parent_marker,
         )
     except StateCompatibilityRefused as exc:
         # The run stops before it starts (ADR-0128 D6), and its run.json says so rather than
@@ -1993,10 +2005,28 @@ async def _run_agent(
                         await _tombstone_pending_steers({**live, "db": _sweep_db})
                 except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
                     log_error(f"steer tombstone write failed: {_sweep_exc!r}")
+            # Read before the status below is replaced by the one teardown handed back: a run
+            # whose store did not take its terminal write records what it decided in the same
+            # write as the status that is durable. A leg that defers its end to an auto-resume
+            # decided none.
+            _lost_write = (
+                None
+                if will_auto_resume
+                else lost_terminal_write(
+                    live,
+                    requested=_terminal_status,
+                    exception=_terminal_exc,
+                    returned=effective_status,
+                )
+            )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
+            if _lost_write is not None:
+                run_manifest[TERMINAL_WRITE_LOST_FIELD] = _lost_write
+                if _lost_write_out is not None:
+                    _lost_write_out[TERMINAL_WRITE_LOST_FIELD] = _lost_write
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
@@ -2095,29 +2125,57 @@ async def _run_agent(
         # model silently re-apply on the resumed leg, switching models.
         _effective_cfg = branch.chat_model.endpoint.config
         _effective_model_str = f"{_effective_cfg.provider}/{_effective_cfg.kwargs.get('model')}"
-        return await _run_agent(
-            _effective_model_str,
-            "continue and conclude the task",
-            yolo=yolo,
-            verbose=verbose,
-            theme=theme,
-            resume=branch_id,
-            effort=effort,
-            agent_name=agent_name,
-            cwd=cwd,
-            timeout=timeout,
-            fast=fast,
-            invocation_id=invocation_id,
-            project=project,
-            bypass=bypass,
-            resume_on_timeout=resume_on_timeout,
-            idle_timeout=idle_timeout,
-            notify=notify,
-            mcp_config=mcp_config,
-            no_mcp_config=no_mcp_config,
-            _auto_resumed=True,
-            _injection_totals=_injection_totals,
-        )
+        # The resumed leg allocates a run directory of its own, while the job reads this run's
+        # run.json: a skip window the leg opens is marked here too, and a terminal write its
+        # store refused is copied here when it ends.
+        _resumed_lost: dict[str, Any] = {}
+        try:
+            return await _run_agent(
+                _effective_model_str,
+                "continue and conclude the task",
+                yolo=yolo,
+                verbose=verbose,
+                theme=theme,
+                resume=branch_id,
+                effort=effort,
+                agent_name=agent_name,
+                cwd=cwd,
+                timeout=timeout,
+                fast=fast,
+                invocation_id=invocation_id,
+                project=project,
+                bypass=bypass,
+                resume_on_timeout=resume_on_timeout,
+                idle_timeout=idle_timeout,
+                notify=notify,
+                mcp_config=mcp_config,
+                no_mcp_config=no_mcp_config,
+                _auto_resumed=True,
+                _injection_totals=_injection_totals,
+                _parent_marker=(
+                    _signal_window_marker(run_manifest, run.state_root)
+                    if isinstance(run, RunDir)
+                    else None
+                ),
+                _lost_write_out=_resumed_lost,
+            )
+        finally:
+            # The marker's own write runs on a daemon thread that can fail or not finish, and this
+            # run writes no manifest after its leg, so the time it holds is written again here.
+            _degraded_at = run_manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            if _degraded_at is not None and isinstance(run, RunDir):
+                _write_signal_persistence_degraded_at(run.state_root, _degraded_at)
+            if _resumed_lost.get(TERMINAL_WRITE_LOST_FIELD) is not None:
+                run_manifest[TERMINAL_WRITE_LOST_FIELD] = _resumed_lost[TERMINAL_WRITE_LOST_FIELD]
+                if isinstance(run, RunDir):
+                    try:
+                        _write_terminal_write_lost(
+                            run.state_root, run_manifest[TERMINAL_WRITE_LOST_FIELD]
+                        )
+                    except Exception as _copy_exc:  # noqa: BLE001 — the leg's own answer stands
+                        log_error(
+                            f"could not record the resumed leg's lost terminal write: {_copy_exc!r}"
+                        )
 
     # Past every line that can still move the status, and past the recursion
     # that would have made this leg an interim one, so this is the run's answer.

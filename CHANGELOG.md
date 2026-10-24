@@ -303,6 +303,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Changed
 
+- Lazy type resolution, provider token-window lookup and built-in role/mode loading
+  use the shared import helper. Pattern loading preserves original missing-module
+  errors; other import errors name the target module and retain the original cause.
 - Generated schema modules now use a 16-character SHA256 suffix of the serialized generator input, giving repeated inputs stable temporary module names instead of Python's process-specific hash. Code generation remains an explicit opt-in for trusted schemas.
 
 - Flow deserialization resolves UUIDs, UUID strings and objects exposing an id through the canonical identity helper. Objects with only a UUID-producing string representation are rejected, and unsupported ID inputs use the helper error message.
@@ -777,10 +780,19 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.
+- Raised the `fastmcp` floor in the `mcp` extra to 3.4.10 and `uv.lock` to 3.4.11
+  (GHSA-7xgj-8392-5q4r: a component's authorization is skipped when a transformed component is
+  called directly). fastmcp 3.4.11 depends on `fastmcp-slim` 3.4.11, which the lock adds.
+  `li mcp` configures no component authorization; the floor keeps installs off the affected
+  releases.
 - `lion1/uv.lock` moves `aiohttp` to 3.14.4, which fixes eight advisories in 3.14.3
   (CVE-2026-111063 to CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and
   GHSA-2g87-pp6c-29x5), with `yarl` 1.25.1, which 3.14.4 requires. `uv.lock` no longer contains
   `aiohttp` (see Changed and Removed).
+- `lion1/uv.lock` moves `filelock` from 4.0.6 to 4.2.4 (CVE-2026-112940, CVE-2026-112913 and
+  CVE-2026-112907) and `setuptools` from 84.0.0 to 84.2.1 (GHSA-xmj3-9gf7-h52w). Both reach
+  lion1 only through the CLI's `voice` extra, by way of `mlx-whisper`, `torch` and
+  `huggingface-hub`.
 - The lockfiles move off releases with published advisories: `opentelemetry-api` to 1.45.1
   (CVE-2026-114603), in `uv.lock`, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and
   the instrumentation, semantic-conventions and util-http packages at 0.66b1, where
@@ -794,6 +806,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. Pillow, whose published
   advisories are fixed only in 13.0.0, a release that requires Python 3.11, is no longer in
   `uv.lock` (see Removed).
+- The VS Code extension's lockfile moves `@azure/msal-node` from 5.2.5 to 7.1.1
+  (CVE-2026-109461), `undici` from 7.30.0 to 7.30.1 (CVE-2026-109869) and `fast-uri` from 3.1.8
+  to 3.1.9 (CVE-2026-110306, CVE-2026-110095, CVE-2026-110180 and CVE-2026-110725), all
+  development dependencies. `@vscode/vsce` reaches msal-node through `@azure/identity`, whose
+  newest release still requires msal-node 6, so an override in `package.json` sets 7.1.0 or
+  later; the undici and fast-uri overrides raise their floors.
 - An endpoint's private-address check before a request now resolves the host name as the
   HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
   differ (`straße.example` resolves as `strasse.example` but the client connects to

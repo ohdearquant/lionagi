@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+import threading
 import time
 from types import SimpleNamespace
 
@@ -714,3 +715,97 @@ async def test_a_second_binding_replaces_the_first_instead_of_writing_twice():
 
     assert first.attempts == []
     assert second.attempts == ["once"]
+
+
+async def test_the_first_skip_window_of_a_binding_calls_back_once_on_the_event_loop(
+    tmp_path, monkeypatch, clock
+):
+    calls: list[int] = []
+    async with _store(tmp_path, monkeypatch) as store:
+        observer = SessionObserver()
+        observer.bind_db_persistence(
+            SESSION_ID, db=store.db, on_window_opened=lambda: calls.append(threading.get_ident())
+        )
+        store.blocker.execute("BEGIN IMMEDIATE")
+        await observer.emit(NodeStarted(op_id="held", name="step"))
+        await observer.emit(NodeStarted(op_id="inside", name="step"))
+        assert calls == [threading.get_ident()]
+
+        store.blocker.rollback()
+        clock.now += 3600
+        await observer.emit(NodeStarted(op_id="lands", name="step"))  # the window closes
+        store.blocker.execute("BEGIN IMMEDIATE")
+        await observer.emit(NodeStarted(op_id="held-again", name="step"))  # and opens again
+        store.blocker.rollback()
+        persisted = await _signal_op_ids(store.db)
+
+    assert persisted == ["lands"]
+    assert _writer_open_failures(store) == 2
+    assert calls == [threading.get_ident()]
+
+
+async def test_a_new_binding_calls_back_for_its_own_first_window(tmp_path, monkeypatch):
+    first: list[str] = []
+    second: list[str] = []
+    async with _store(tmp_path, monkeypatch) as store:
+        observer = SessionObserver()
+        observer.bind_db_persistence(
+            SESSION_ID, db=store.db, on_window_opened=lambda: first.append("opened")
+        )
+        store.blocker.execute("BEGIN IMMEDIATE")
+        await observer.emit(NodeStarted(op_id="held", name="step"))
+        observer.bind_db_persistence(
+            SESSION_ID, db=store.db, on_window_opened=lambda: second.append("opened")
+        )
+        await observer.emit(NodeStarted(op_id="held-by-the-new-binding", name="step"))
+        store.blocker.rollback()
+
+    assert first == ["opened"]
+    assert second == ["opened"]
+
+
+async def test_no_callback_without_a_window(tmp_path, monkeypatch):
+    calls: list[str] = []
+    async with _store(tmp_path, monkeypatch) as store:
+        observer = SessionObserver()
+        observer.bind_db_persistence(
+            SESSION_ID, db=store.db, on_window_opened=lambda: calls.append("opened")
+        )
+        await observer.emit(NodeStarted(op_id="clean", name="step"))
+        persisted = await _signal_op_ids(store.db)
+
+    failing = _FailsOnce(sqlite3.OperationalError("disk I/O error"))
+    other = SessionObserver()
+    other.bind_db_persistence(
+        SESSION_ID, db=failing, on_window_opened=lambda: calls.append("opened")
+    )
+    await other.emit(NodeStarted(op_id="fails", name="step"))  # a failure that is not the lock
+
+    assert persisted == ["clean"]
+    assert other.persist_dropped == 1
+    assert calls == []
+
+
+async def test_a_failing_window_callback_changes_nothing_in_persistence(
+    tmp_path, monkeypatch, caplog, clock
+):
+    def broken() -> None:
+        raise RuntimeError("callback broke")
+
+    async with _store(tmp_path, monkeypatch) as store:
+        observer = SessionObserver()
+        observer.bind_db_persistence(SESSION_ID, db=store.db, on_window_opened=broken)
+        store.blocker.execute("BEGIN IMMEDIATE")
+        with caplog.at_level(logging.WARNING):
+            for i in range(SIGNALS):
+                await observer.emit(NodeStarted(op_id=f"held-{i}", name="step"))
+            store.blocker.rollback()
+            clock.now += 3600
+            await observer.emit(NodeStarted(op_id="after", name="step"))
+        persisted = await _signal_op_ids(store.db)
+
+    assert persisted == ["after"]
+    assert observer.persist_dropped == SIGNALS
+    assert _writer_open_failures(store) == 1
+    warnings = _observer_warnings(caplog)
+    assert len(warnings) == 1 and "writer lock" in warnings[0], warnings
