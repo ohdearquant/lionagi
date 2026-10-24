@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -175,3 +176,115 @@ async def test_resume_with_unreadable_degradation_state_keeps_generic_error(
 
     with pytest.raises(FlowResumeError, match=r"No run, session, invocation, or play found"):
         await _checkpoint.resolve_checkpoint_target(run_id)
+
+
+# --- the run.json records of a lost terminal write and of refused signal persistence ---
+
+_LOST = {"status": "failed", "reason_code": "run.failed.exception", "at": 1_700_000_100.0}
+
+
+def _status_with_run_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, payload: object, run_id: str
+) -> dict:
+    runs_root = tmp_path / "runs"
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", runs_root)
+    monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
+    run = _run_dir(runs_root, run_id)
+    if payload is not None:
+        run.manifest_path.write_text(json.dumps(payload))
+    _write_terminal_job(run_id)
+    return jobs.status(run_id)
+
+
+def test_status_lifts_the_three_run_json_records_beside_the_degraded_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    st = _status_with_run_json(
+        monkeypatch,
+        tmp_path,
+        {
+            "status": "running",
+            "persistence_degraded_reason": "OSError()",
+            "signal_persist_dropped": 7,
+            "terminal_write_lost": _LOST,
+            "signal_persistence_degraded_at": 1_700_000_050.5,
+        },
+        "20261009T000001-000001",
+    )
+
+    assert st["persistence_degraded_reason"] == "OSError()"
+    assert st["signal_persist_dropped"] == 7
+    assert st["terminal_write_lost"] == _LOST
+    assert st["signal_persistence_degraded_at"] == 1_700_000_050.5
+    assert st["run"]["signal_persist_dropped"] == 7  # the raw manifest is still handed back
+
+
+@pytest.mark.parametrize("payload", [None, {"status": "running"}], ids=["no-run-json", "no-fields"])
+def test_status_lifts_none_for_records_a_run_did_not_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, payload: object
+) -> None:
+    st = _status_with_run_json(monkeypatch, tmp_path, payload, "20261009T000002-000002")
+
+    assert st["signal_persist_dropped"] is None
+    assert st["terminal_write_lost"] is None
+    assert st["signal_persistence_degraded_at"] is None
+
+
+def test_status_lifts_zero_dropped_signals_as_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    st = _status_with_run_json(
+        monkeypatch, tmp_path, {"signal_persist_dropped": 0}, "20261009T000003-000003"
+    )
+
+    assert st["signal_persist_dropped"] == 0
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [-1, True, 1.5, "3", None, [3]],
+    ids=["negative", "bool", "float", "str", "null", "list"],
+)
+def test_status_lifts_none_for_a_malformed_dropped_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dropped: object
+) -> None:
+    st = _status_with_run_json(
+        monkeypatch, tmp_path, {"signal_persist_dropped": dropped}, "20261009T000004-000004"
+    )
+
+    assert st["signal_persist_dropped"] is None
+    assert st["run"]["signal_persist_dropped"] == dropped
+
+
+@pytest.mark.parametrize(
+    "lost",
+    [
+        "failed",
+        {"status": "running", "reason_code": "x", "at": 1.0},
+        {"status": "failed", "reason_code": "", "at": 1.0},
+        {"status": "failed", "reason_code": "x", "at": "now"},
+        {"status": "failed", "reason_code": "x"},
+    ],
+    ids=["string", "non-terminal-status", "empty-code", "at-string", "no-time"],
+)
+def test_status_lifts_none_for_a_malformed_lost_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, lost: object
+) -> None:
+    st = _status_with_run_json(
+        monkeypatch, tmp_path, {"terminal_write_lost": lost}, "20261009T000005-000005"
+    )
+
+    assert st["terminal_write_lost"] is None
+    assert st["run"]["terminal_write_lost"] == lost
+
+
+@pytest.mark.parametrize("at", ["now", True, None, [1.0]], ids=["str", "bool", "null", "list"])
+def test_status_lifts_none_for_a_malformed_degraded_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, at: object
+) -> None:
+    st = _status_with_run_json(
+        monkeypatch, tmp_path, {"signal_persistence_degraded_at": at}, "20261009T000006-000006"
+    )
+
+    assert st["signal_persistence_degraded_at"] is None
