@@ -17,7 +17,7 @@ from pydantic import BaseModel, field_validator
 
 from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi._errors import ConfigurationError
+from lionagi._errors import ConfigurationError, InputTokenCapError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
@@ -27,6 +27,7 @@ from lionagi.ln.concurrency import (
     cancelled_exc_classes,
     fail_after,
     run_async,
+    sleep,
 )
 from lionagi.mcp.config import JOB_MARKER_ENV_VAR
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -125,8 +126,18 @@ _API_LNDL_GUIDANCE = (
     "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
     "tool result is never the answer."
 )
-# The Anthropic messages endpoint refuses a request that names no output limit.
-_ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
+# A profile's `max_input_tokens` for an API leg: a positive integer, "auto" (the model's first
+# price-tier boundary, none for a model priced flat) or "none". Unset reads as "auto".
+_API_INPUT_CAP_WORDS = ("auto", "none")
+_API_DEFAULT_INPUT_CAP = "auto"
+# How many times one turn (the task, or one queued message) folds and continues after the
+# input cap refused a request.
+_API_FOLD_RESUMES = 2
+_API_FOLD_RESUME_PROMPT = (
+    "The host folded part of your context: the next request would have passed the input cap. "
+    "The task instruction above is unchanged, and a note in the history lists what was folded "
+    "and how to list or restore it. Continue the task from where you stopped."
+)
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
 This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
@@ -250,18 +261,21 @@ def _profile_api_launch(profile) -> dict | None:
     """The API tool loop a profile declares, or None when it declares none.
 
     `api_tools` names the tool set; `max_extensions` bounds the rounds after the
-    first (1 to 100); `api_loop` picks the loop, `react` or `lndl`. A value outside
-    any of them, or `api_loop` without `api_tools`, is refused here, before a run exists.
+    first (1 to 100); `api_loop` picks the loop, `react` or `lndl`; `max_input_tokens`
+    caps each request's estimated input, a positive integer, `auto` or `none`. A value
+    outside any of them, or `api_loop` or `max_input_tokens` without `api_tools`, is
+    refused here, before a run exists.
     """
     extra = (getattr(profile, "extra", None) or {}) if profile is not None else {}
     name = getattr(profile, "name", "<unknown>")
     if "api_tools" not in extra:
-        if "api_loop" in extra:
-            raise ConfigurationError(
-                f"agent profile {name!r} sets api_loop but no api_tools; the loop runs only "
-                "for an API model with the read set ('api_tools: read'), and a CLI "
-                "provider runs its own."
-            )
+        for key in ("api_loop", "max_input_tokens"):
+            if key in extra:
+                raise ConfigurationError(
+                    f"agent profile {name!r} sets {key} but no api_tools; it applies only "
+                    "to the tool loop of an API model with the read set ('api_tools: "
+                    "read'), and a CLI provider runs its own."
+                )
         return None
     tools = extra["api_tools"]
     if not isinstance(tools, str) or tools not in _API_TOOL_SETS:
@@ -283,11 +297,23 @@ def _profile_api_launch(profile) -> dict | None:
             f"agent profile {name!r} sets api_loop to {loop!r}; an API model runs "
             f"{' or '.join(repr(choice) for choice in _API_LOOPS)}."
         )
-    return {"tools": tools, "max_extensions": rounds, "loop": loop}
+    cap = extra.get("max_input_tokens", _API_DEFAULT_INPUT_CAP)
+    if not _is_input_cap_policy(cap):
+        raise ConfigurationError(
+            f"agent profile {name!r} sets max_input_tokens to {cap!r}; it must be a "
+            "positive whole number of tokens, 'auto' or 'none'."
+        )
+    return {"tools": tools, "max_extensions": rounds, "loop": loop, "max_input_tokens": cap}
 
 
 def _is_round_bound(rounds: object) -> bool:
     return not isinstance(rounds, bool) and isinstance(rounds, int) and 1 <= rounds <= 100
+
+
+def _is_input_cap_policy(cap: object) -> bool:
+    if isinstance(cap, str):
+        return cap in _API_INPUT_CAP_WORDS
+    return not isinstance(cap, bool) and isinstance(cap, int) and cap >= 1
 
 
 def _recorded_api_launch(recorded: object) -> dict:
@@ -299,18 +325,21 @@ def _recorded_api_launch(recorded: object) -> dict:
     if isinstance(recorded, dict):
         tools, rounds = recorded.get("tools"), recorded.get("max_extensions")
         loop = recorded.get("loop", _API_DEFAULT_LOOP)
+        # A record written before the cap existed carries none and reads as unset.
+        cap = recorded.get("max_input_tokens", _API_DEFAULT_INPUT_CAP)
         if (
             isinstance(tools, str)
             and tools in _API_TOOL_SETS
             and _is_round_bound(rounds)
             and isinstance(loop, str)
             and loop in _API_LOOPS
+            and _is_input_cap_policy(cap)
         ):
-            return {"tools": tools, "max_extensions": rounds, "loop": loop}
+            return {"tools": tools, "max_extensions": rounds, "loop": loop, "max_input_tokens": cap}
     raise ConfigurationError(
         f"this branch was launched on an API model's tool loop, but its stored launch "
-        f"record {recorded!r} names a tool set, a round bound or a loop this version "
-        "does not run; start a new branch."
+        f"record {recorded!r} names a tool set, a round bound, a loop or an input cap this "
+        "version does not run; start a new branch."
     )
 
 
@@ -354,6 +383,69 @@ class _LndlAnswer(BaseModel):
         return value
 
 
+def _resolve_api_input_cap(policy: object, chat_model) -> tuple[int | None, str]:
+    """The input cap an API leg runs under, and where it came from.
+
+    `auto` is the first price-tier boundary of a model the pricing table prices by prompt
+    length; a model priced flat, or not in the table, gets no cap and the source says so.
+    """
+    if policy == "none":
+        return None, "max_input_tokens: none"
+    if isinstance(policy, int):
+        return policy, "max_input_tokens"
+    model = getattr(chat_model, "model_name", "") or ""
+    config = getattr(getattr(chat_model, "endpoint", None), "config", None)
+    if getattr(config, "provider", None) == "anthropic":
+        from lionagi.service.accounts._pricing import CURRENT_REVISION
+
+        price = CURRENT_REVISION.models.get(model)
+        if price is not None and len(price.tiers) > 1:
+            return price.tiers[0].max_prompt_tokens, f"auto: {model}'s first price tier"
+    return None, f"auto: {model or 'this model'} is not priced by prompt length"
+
+
+def _api_models(branch) -> list:
+    """The branch's chat model, and its parse model when that is another object: parse
+    repairs send through the parse model, so its refusals belong to the run too."""
+    models = [branch.chat_model]
+    parse_model = getattr(branch, "parse_model", None)
+    if parse_model is not None and parse_model is not branch.chat_model:
+        models.append(parse_model)
+    return models
+
+
+def _first_input_cap_refusal(branch) -> Exception | None:
+    for api_model in _api_models(branch):
+        refusal = getattr(api_model, "input_cap_refusal", None)
+        if refusal is not None:
+            return refusal
+    return None
+
+
+def _install_api_input_cap(branch, policy: object):
+    """Put the leg's input cap on its models and fold its context under it.
+
+    Returns the branch's ContextFold, or None when the leg runs without a cap.
+    """
+    cap, source = _resolve_api_input_cap(policy, branch.chat_model)
+    if cap is None:
+        hint(f"[api] no input cap ({source})")
+        return None
+    for api_model in _api_models(branch):
+        api_model.max_input_tokens = cap
+        # The cap is the leg's working context: the branch token budget, and the context
+        # nudges with it, measure against the cap rather than the model's whole window.
+        api_model.endpoint.config.context_window = cap
+    from lionagi.agent.context_fold import install_context_fold
+
+    fold = install_context_fold(branch, cap=cap, log=hint)
+    hint(
+        f"[api] input cap {cap:,} tokens ({source}); the host folds the context at "
+        f"{int(fold.fold_at * cap):,} down to {int(fold.target * cap):,}"
+    )
+    return fold
+
+
 def _calls_sent(branch) -> dict[int, int]:
     """Calls sent so far by each model this branch uses, keyed by instance."""
     models = (getattr(branch, "chat_model", None), getattr(branch, "parse_model", None))
@@ -374,6 +466,7 @@ async def _run_api_turn(
     max_extensions: int,
     snapshot_dir: str,
     loop: str = _API_DEFAULT_LOOP,
+    fold=None,
 ) -> str:
     """One turn of an API-model leg: lionagi's tool loop over the branch's tools.
 
@@ -383,6 +476,13 @@ async def _run_api_turn(
     ``spend``, the invocation's total, and printed, and then the branch is written
     to *snapshot_dir*, so a resume and a reader of the run directory find both.
     Returns the answer's text.
+
+    A refusal by the input cap fails the turn even when the loop caught it: a refused
+    request must never hand back an earlier round's text as the answer. With a *fold*
+    (lionagi.agent.context_fold), a request the cap refused despite the fold's own
+    threshold is folded instead, calibrated by the refusal's estimate, and the loop
+    continues, at most ``_API_FOLD_RESUMES`` times; a refusal the fold cannot get under the
+    cap fails the turn as before.
     """
     import contextlib
 
@@ -392,31 +492,41 @@ async def _run_api_turn(
     tools_before = _tool_results(branch)
     started = time.monotonic()
     deadline = fail_after(timeout) if timeout is not None else contextlib.nullcontext()
+    result = None
     try:
         with deadline:
-            if loop == "lndl":
-                from lionagi.operations.lndl_middle import build_lndl_middle
-
-                schemas = branch.acts.get_tool_schema(tools=True)
-                result = await branch.operate(
-                    instruction=instruction,
-                    guidance=_API_LNDL_GUIDANCE,
-                    response_format=_LndlAnswer,
-                    tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
-                    invoke_actions=False,
-                    handle_validation="raise",
-                    middle=build_lndl_middle(
-                        round_budget=1 + max_extensions,
-                        max_actions=_API_LNDL_MAX_ACTIONS,
-                        lacts_with_out=False,
-                    ),
-                )
-            else:
-                result = await branch.ReAct(
-                    instruction=instruction,
-                    tools=True,
-                    max_extensions=max_extensions,
-                )
+            resumes = 0
+            while True:
+                try:
+                    result = await _api_loop_pass(branch, instruction, loop, max_extensions)
+                except InputTokenCapError:
+                    # The model keeps the refusal, so it is folded below or raised after the
+                    # snapshot like one the loop caught.
+                    if _first_input_cap_refusal(branch) is None:
+                        raise
+                    result = None
+                refusal = _first_input_cap_refusal(branch)
+                if refusal is None or fold is None or resumes >= _API_FOLD_RESUMES:
+                    break
+                observed = (getattr(refusal, "details", None) or {}).get("estimate")
+                # Cleared before the fold so its summary request is sent; put back when the
+                # fold cannot land, so the refusal still fails the turn below.
+                refused = [(m, m.input_cap_refusal) for m in _api_models(branch)]
+                for api_model, _ in refused:
+                    api_model.input_cap_refusal = None
+                try:
+                    landed = await fold.fold(reason="refused", observed=observed)
+                except Exception as exc:  # noqa: BLE001 — the refusal below is the outcome
+                    log_error(f"context fold after a refusal failed: {exc!r}")
+                    landed = False
+                # The estimate is calibrated by the refusal's own count: still over the cap,
+                # another pass would only be refused again.
+                if not landed or fold.estimate() > fold.cap:
+                    for api_model, kept in refused:
+                        api_model.input_cap_refusal = kept
+                    break
+                resumes += 1
+                instruction = _API_FOLD_RESUME_PROMPT
     finally:
         with CancelScope(shield=True):
             calls_after = _calls_sent(branch)
@@ -440,8 +550,37 @@ async def _run_api_turn(
                 f"call(s), {spend['wall_seconds']:.1f}s"
             )
             await _write_branch_snapshot(branch, snapshot_dir)
+    refusal = _first_input_cap_refusal(branch)
+    if refusal is not None:
+        raise refusal
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
+
+
+async def _api_loop_pass(branch, instruction: str, loop: str, max_extensions: int):
+    """One pass of an API leg's tool loop: ReAct, or LNDL rounds for ``loop="lndl"``."""
+    if loop == "lndl":
+        from lionagi.operations.lndl_middle import build_lndl_middle
+
+        schemas = branch.acts.get_tool_schema(tools=True)
+        return await branch.operate(
+            instruction=instruction,
+            guidance=_API_LNDL_GUIDANCE,
+            response_format=_LndlAnswer,
+            tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
+            invoke_actions=False,
+            handle_validation="raise",
+            middle=build_lndl_middle(
+                round_budget=1 + max_extensions,
+                max_actions=_API_LNDL_MAX_ACTIONS,
+                lacts_with_out=False,
+            ),
+        )
+    return await branch.ReAct(
+        instruction=instruction,
+        tools=True,
+        max_extensions=max_extensions,
+    )
 
 
 # WorkForm loading helpers (for --form).
@@ -1209,10 +1348,6 @@ async def _run_agent(
             )
         if api_launch is not None and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
-        if api_launch is not None and chat_model.endpoint.config.provider == "anthropic":
-            chat_model.endpoint.config.kwargs.setdefault(
-                "max_tokens", _ANTHROPIC_DEFAULT_MAX_TOKENS
-            )
         # Two spawn shapes hand the set over in two different places, so the
         # message has to read the one that applies. A plain leg gets only what
         # build_chat_model already put on the request, which is knowable here;
@@ -1461,6 +1596,8 @@ async def _run_agent(
             )
         if declared is not None:
             api_launch["max_extensions"] = declared["max_extensions"]
+            api_launch["max_input_tokens"] = declared["max_input_tokens"]
+            branch.metadata[_API_LAUNCH_KEY]["max_input_tokens"] = declared["max_input_tokens"]
         if is_resumed_branch and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
         if is_resumed_branch:
@@ -1722,7 +1859,7 @@ async def _run_agent(
 
     async def _heartbeat_loop():
         while True:
-            await _asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            await sleep(_HEARTBEAT_INTERVAL_S)
             line = _hb_report.line(_hb_time.monotonic())
             # Steer receipt ack: a queued operator message cannot land
             # mid-turn, so tell the operator it was received and when it
@@ -1744,7 +1881,11 @@ async def _run_agent(
 
     _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
     _api_turn = None
+    _api_fold = None
     if api_launch is not None:
+        # Folds the active view before a request reaches the cap, and after a refusal in
+        # _run_api_turn, so a long leg continues instead of being refused.
+        _api_fold = _install_api_input_cap(branch, api_launch["max_input_tokens"])
 
         async def _api_turn(instruction: str, turn_timeout: float | None):
             return await _run_api_turn(
@@ -1754,6 +1895,7 @@ async def _run_agent(
                 max_extensions=api_launch["max_extensions"],
                 snapshot_dir=str(run.branches_dir),
                 loop=api_launch["loop"],
+                fold=_api_fold,
             )
 
     # Passed only when set: an absent key is what lets the run fall back to
@@ -1926,6 +2068,10 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if api_launch is not None:
+                # Every fold of the leg's context: what was folded, the estimate before and
+                # after, the cap. Empty when nothing was folded or the leg has no cap.
+                run_manifest["context_folds"] = list(_api_fold.records) if _api_fold else []
             if live and "signal_persist_dropped" in live:
                 # Signals this run's persistence could not confirm it wrote, 0 included; the field is
                 # absent when teardown had no session of this run to unbind.
@@ -2425,6 +2571,10 @@ def run_agent(args: argparse.Namespace) -> int:
     except NestedAgentRefusedError as exc:
         # Refused before any run exists; not retryable, so not the admission exit code.
         log_error(str(exc))
+        return EXIT_CODE_BY_STATUS["failed"]
+    except InputTokenCapError:
+        # The run logged it and recorded it in run.json as failed: exit with that status
+        # rather than a traceback.
         return EXIT_CODE_BY_STATUS["failed"]
     except KeyboardInterrupt:
         return EXIT_CODE_BY_STATUS["aborted"]

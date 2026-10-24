@@ -527,6 +527,39 @@ async def test_a_refused_write_records_the_status_and_code_teardown_decided_not_
 
 
 @pytest.mark.asyncio
+async def test_a_refused_verification_write_records_the_missing_artifact_failure_already_decided(
+    monkeypatch, tmp_path
+):
+    """The store refuses the verification write of a completed request whose required report is
+    missing. The verification already decided `failed`, so the record carries it and its code,
+    not the request."""
+    from lionagi.state.db import StateDB
+
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: contract)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
+    refused: list[str] = []
+
+    async def update_artifact_verification(self, session_id, verification):
+        refused.append(verification["status"])
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(StateDB, "update_artifact_verification", update_artifact_verification)
+    run = _run(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("claude/sonnet", "go")
+
+    assert refused == ["failed"]
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["status"] == "running"
+    lost = manifest[TERMINAL_WRITE_LOST_FIELD]
+    assert (lost["status"], lost["reason_code"]) == ("failed", RunReasons.FAILED_MISSING_ARTIFACT)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("store_failed", [True, False], ids=["store-error", "other-error"])
 async def test_a_teardown_that_failed_before_deciding_records_the_status_it_was_asked_to_write(
     monkeypatch, tmp_path, store_failed

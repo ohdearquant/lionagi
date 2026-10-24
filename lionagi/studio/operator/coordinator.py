@@ -12,6 +12,7 @@ from dataclasses import replace
 from typing import Any
 
 from lionagi.ln import short_id
+from lionagi.ln.concurrency import sleep
 
 from ..config import (
     OperatorExecutionRootResolution,
@@ -61,7 +62,7 @@ async def _link_engine_child(db: Any, session_uid: str, *, parent_run_id: str) -
 
     for attempt in range(_ENGINE_LINK_RETRIES):
         if attempt:
-            await asyncio.sleep(_ENGINE_LINK_RETRY_INTERVAL)
+            await sleep(_ENGINE_LINK_RETRY_INTERVAL)
         try:
             linked = await link_engine_child_session(
                 db,
@@ -207,7 +208,7 @@ async def _execute_application_command(
             if sessions:
                 run_id = sessions[0].get("id")
                 break
-            await asyncio.sleep(0.1)
+            await sleep(0.1)
     except Exception as exc:  # noqa: BLE001
         # The invocation itself is durable even though polling it failed --
         # carry its id forward so the failure can still point at it.
@@ -474,7 +475,7 @@ class OperatorCoordinator:
                         "conflict",
                     }:
                         return PermissionDecision(False, current["id"])
-                    await asyncio.sleep(0.05)
+                    await sleep(0.05)
 
             conversation_row = await self.store.get_conversation(conversation_id)
             context_project = turn_row["context"].get("project")

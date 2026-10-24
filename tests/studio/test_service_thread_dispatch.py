@@ -5,6 +5,7 @@
 import asyncio
 import sys
 from contextvars import ContextVar
+from functools import partial
 from threading import get_ident
 from types import ModuleType, SimpleNamespace
 
@@ -226,6 +227,87 @@ async def test_service_routes_propagate_the_original_worker_exception(monkeypatc
 
     _assert_worker_observations(probe)
     assert caught.value is failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ("agents", "playbooks", "version", "placeholders"))
+@pytest.mark.parametrize("fails", (False, True))
+async def test_operator_catalog_reads_preserve_worker_context_and_failures(
+    monkeypatch, kind, fails
+):
+    from lionagi.studio.operator import application_mcp
+    from lionagi.studio.services import agents, playbooks, redaction
+
+    context = ContextVar("operator-catalog-context", default=None)
+    marker = object()
+    origin = get_ident()
+    calls = []
+    failure = LookupError("test-local catalog failure")
+    payload = {
+        "agents": [{"name": "test-agent", "description": "agent description"}],
+        "playbooks": [{"name": "test-play", "description": "play description"}],
+        "version": "test-fingerprint",
+        "placeholders": "test-local unresolved placeholder",
+    }[kind]
+    expected_args = {
+        "agents": (),
+        "playbooks": (),
+        "version": ("test-play",),
+        "placeholders": ("test-play", "test instruction", {"topic": "test topic"}),
+    }[kind]
+
+    def worker(*args):
+        calls.append((args, get_ident(), context.get()))
+        if fails:
+            raise failure
+        return payload
+
+    if kind == "agents":
+        monkeypatch.setattr(agents, "list_agents", worker)
+        monkeypatch.setattr(redaction, "demo_mode_enabled", lambda: False)
+        invoke = partial(application_mcp.list_agents, {})
+    elif kind == "playbooks":
+        monkeypatch.setattr(playbooks, "list_playbooks", worker)
+        invoke = partial(application_mcp.list_playbooks, {})
+    elif kind == "version":
+        monkeypatch.setattr(playbooks, "fingerprint_playbook", worker)
+        invoke = partial(application_mcp.resolve_playbook_version, "test-play")
+    else:
+
+        async def version(_playbook):
+            return "test-fingerprint"
+
+        monkeypatch.setattr(application_mcp, "resolve_playbook_version", version)
+        monkeypatch.setattr(application_mcp, "_identity", lambda: (None, "conversation", "turn"))
+        monkeypatch.setattr(application_mcp, "_playbook_placeholder_problems", worker)
+        invoke = partial(
+            application_mcp.launch_playbook,
+            {"playbook": "test-play", "input": "test instruction", "args": {"topic": "test topic"}},
+        )
+
+    token = context.set(marker)
+    try:
+        if fails:
+            with pytest.raises(LookupError) as caught:
+                await invoke()
+            assert caught.value is failure
+        else:
+            result = await invoke()
+            if kind in {"agents", "playbooks"}:
+                assert result["count"] == 1
+                assert result[kind][0]["name"] == payload[0]["name"]
+            elif kind == "version":
+                assert result is payload
+            else:
+                assert result == {"status": "refused", "reason": payload}
+    finally:
+        context.reset(token)
+
+    assert len(calls) == 1
+    args, thread, received_context = calls[0]
+    assert args == expected_args
+    assert thread != origin
+    assert received_context is marker
 
 
 def _connection_probe(monkeypatch, behavior):

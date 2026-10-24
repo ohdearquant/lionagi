@@ -35,6 +35,7 @@ class HookEvent(Event):
     async def invoke(self):
         start = current_time()
         self.execution.status = EventStatus.PROCESSING
+        final_status = EventStatus.PROCESSING
         try:
             with fail_after(self.timeout):
                 (res, se, st), meta = await self.registry.call(
@@ -46,7 +47,13 @@ class HookEvent(Event):
 
                 self.associated_event_info = AssociatedEventInfo(**meta)
                 self._should_exit = se
-                self.execution.status = st
+                if not (
+                    isinstance(st, EventStatus)
+                    or (isinstance(st, str) and st in EventStatus.allowed())
+                ):
+                    # Preserve invalid-status precedence over response interpretation.
+                    self.status = st
+                final_status = st
                 if isinstance(res, tuple) and len(res) == 2:
                     self.execution.response = None
                     self.execution.error = str(res[1])
@@ -63,12 +70,20 @@ class HookEvent(Event):
             raise
 
         except Exception as e:
-            self.execution.status = EventStatus.FAILED
-            self.execution.response = None
-            self.execution.error = str(e)
-            # Registry/wiring failures should obey the configured policy
-            self._exit_cause = e
-            self._should_exit = bool(self.exit)
+            final_status = EventStatus.FAILED
+            self._record_failure(e)
 
         finally:
             self.execution.duration = current_time() - start
+            try:
+                self.status = final_status
+            except Exception as e:
+                # Preserve setter validation for custom registry results.
+                self._record_failure(e)
+                self.status = EventStatus.FAILED
+
+    def _record_failure(self, error: Exception) -> None:
+        self.execution.response = None
+        self.execution.error = str(error)
+        self._exit_cause = error
+        self._should_exit = bool(self.exit)

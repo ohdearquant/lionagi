@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -13,6 +12,7 @@ from fastapi import HTTPException
 
 from lionagi.libs.path_safety import safe_join
 from lionagi.ln import coerce_created_at
+from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name
 
 from ..config import SHOWS_ROOT
@@ -797,7 +797,7 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
-        await asyncio.sleep(0.5)
+        await sleep(0.5)
 
 
 @studio_route("/shows/", method="GET", area="shows", name="list_shows")

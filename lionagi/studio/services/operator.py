@@ -4,14 +4,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 
-from lionagi.ln.concurrency import current_time
+from lionagi.ln.concurrency import current_time, sleep
 
 from ..launch_access import (
     DECISION_TOKEN_HEADER,
@@ -304,7 +303,7 @@ async def stream_operator_conversation(
             if now >= heartbeat_at:
                 yield ": heartbeat\n\n"
                 heartbeat_at = now + 5
-            await asyncio.sleep(0.05)
+            await sleep(0.05)
 
     return sse_response(events())
 

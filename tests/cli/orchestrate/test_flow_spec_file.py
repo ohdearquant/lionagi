@@ -5,8 +5,10 @@
 
 import argparse
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import yaml
 
 from lionagi.cli.orchestrate import (
@@ -774,6 +776,71 @@ class TestPlaybookEndToEnd:
 
 
 class TestPlaybookArtifactsPassThrough:
+    @pytest.mark.parametrize(
+        ("flags", "rendered"),
+        [
+            (["--labels", "regression"], "Candidate labels: regression"),
+            (["--limit", "12"], "Candidate limit: 12"),
+        ],
+    )
+    def test_bundled_resolver_dispatches_with_existing_arguments(
+        self, monkeypatch, tmp_path, flags, rendered
+    ):
+        source = (
+            Path(__file__).resolve().parents[3]
+            / "lionagi/studio/builtin_playbooks/resolve-issues.playbook.yaml"
+        )
+        playbooks_dir = tmp_path / ".lionagi/playbooks"
+        playbooks_dir.mkdir(parents=True)
+        (playbooks_dir / source.name).write_text(source.read_text())
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        args = _parse_flow_args(["-p", "resolve-issues", *flags, "example/project"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("done", "completed")),
+        ) as run_flow:
+            assert run_orchestrate(args) == 0
+
+        options = run_flow.call_args.kwargs
+        assert rendered in options["prompt"]
+        assert "example/project" in options["prompt"]
+        assert options["agent_name"] == "orchestrator"
+        assert options["model_spec"] == ""
+        assert options["max_ops"] == 8
+        assert options["reactive_spec"] == "implementer,tester"
+        assert "gh issue comment" not in options["prompt"]
+        assert options["playbook_artifacts"] is not None
+
+    @pytest.mark.parametrize(
+        "missing", ["root_cause", "implementation", "test_results", "assessment"]
+    )
+    def test_bundled_resolver_requires_each_workers_evidence(self, tmp_path, missing):
+        from lionagi.state.artifact_verifier import verify_artifact_contract
+
+        source = (
+            Path(__file__).resolve().parents[3]
+            / "lionagi/studio/builtin_playbooks/resolve-issues.playbook.yaml"
+        )
+        contract = _load_flow_spec(str(source)).get("artifacts")
+        assert contract is not None
+        expected = {entry["id"]: entry for entry in contract["expected"]}
+        assert set(expected) == {"root_cause", "implementation", "test_results", "assessment"}
+        for index, entry in enumerate(expected.values()):
+            worker_dir = tmp_path / f"worker-{index}"
+            worker_dir.mkdir()
+            (worker_dir / Path(entry["path"]).name).write_text("Evidence from this worker.\n")
+
+        assert (
+            verify_artifact_contract(contract, artifacts_root=str(tmp_path))["status"] == "passed"
+        )
+        missing_path = next(tmp_path.glob(f"*/{Path(expected[missing]['path']).name}"))
+        missing_path.unlink()
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+        assert result["status"] == "failed"
+        assert [entry["id"] for entry in result["missing_required"]] == [missing]
+
     def test_artifacts_block_passed_to_run_flow(self, monkeypatch, tmp_path):
         """A playbook with artifacts: block passes playbook_artifacts to _run_flow."""
         playbooks_dir = tmp_path / ".lionagi" / "playbooks"

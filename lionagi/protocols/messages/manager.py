@@ -61,6 +61,10 @@ class MessageManager(Manager):
     ):
         super().__init__()
         self._on_message_added: list = on_message_added or []
+        # Called with no argument after set_system or clear_messages removes messages from the
+        # pile or puts a system message at its head, so a holder of a subset of the pile's ids
+        # can reconcile it. Additions are reported through _on_message_added.
+        self._on_pile_rewritten: list = []
         m_ = []
         if isinstance(messages, list):
             for i in messages:
@@ -97,6 +101,8 @@ class MessageManager(Manager):
             self.system = system
             self.messages.insert(0, self.system)
             self.messages.exclude(old_system)
+        for callback in list(self._on_pile_rewritten):
+            callback()
 
     async def aclear_messages(self):
         async with self.messages:
@@ -436,6 +442,8 @@ class MessageManager(Manager):
         self.messages.clear()
         if self.system:
             self.messages.insert(0, self.system)
+        for callback in list(self._on_pile_rewritten):
+            callback()
 
     @property
     def last_response(self) -> AssistantResponse | None:

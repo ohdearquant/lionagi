@@ -22,7 +22,7 @@ from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, Lio
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln import coerce_created_at
-from lionagi.ln.concurrency import CancelScope, current_time, move_on_after
+from lionagi.ln.concurrency import CancelScope, current_time, move_on_after, sleep
 from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
@@ -1930,7 +1930,7 @@ async def _execute_dag(
     async def _heartbeat_loop() -> None:
         previous_cpu_sample: _DescendantCpuSample | None = None
         while True:
-            await _asyncio.sleep(heartbeat_interval)
+            await sleep(heartbeat_interval)
             _now = time.time()
             current_cpu_sample = _sample_descendant_cpu(heartbeat_pid)
             for _seg in _op_segments:
@@ -2103,7 +2103,7 @@ async def _execute_dag(
 
             for attempt in range(_ESCALATION_LINK_RETRIES):
                 if attempt:
-                    await _asyncio.sleep(_ESCALATION_LINK_RETRY_INTERVAL)
+                    await sleep(_ESCALATION_LINK_RETRY_INTERVAL)
                 try:
                     linked = await link_escalation_session(
                         db,
@@ -2136,7 +2136,7 @@ async def _execute_dag(
 
     async def _control_poll_loop() -> None:
         while True:
-            await _asyncio.sleep(_CONTROL_POLL_INTERVAL)
+            await sleep(_CONTROL_POLL_INTERVAL)
             ctx = getattr(env, "_live_persist", None)
             if not ctx or not ctx.get("db"):
                 continue
