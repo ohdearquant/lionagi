@@ -429,6 +429,14 @@
          <lastmod>2026-10-24</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0133-machine-wide-admission-for-cli-agents/</loc>
+         <lastmod>2026-10-24</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0134-hooks-for-spawned-cli-agents/</loc>
+         <lastmod>2026-10-24</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0135-bounded-opt-in-session-and-run-listing/</loc>
          <lastmod>2026-10-24</lastmod>
     </url>
