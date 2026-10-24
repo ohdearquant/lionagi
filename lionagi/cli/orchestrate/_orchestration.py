@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from uuid import UUID
 
     from lionagi.casts.pack import Pack
@@ -31,6 +32,7 @@ from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 
 from .. import team as _team_module
@@ -38,6 +40,7 @@ from .._logging import hint, warn
 from .._providers import (
     AgentProfile,
     AgentProfileNotFoundError,
+    _is_light_codex,
     build_imodel_from_spec,
     list_agents,
     load_agent_profile,
@@ -701,7 +704,12 @@ def _worker_mcp_policy_section(env: OrchestrationEnv, *, grant_spawn: bool) -> s
     )
 
 
-def _isolate_worker_cli_config(imodel) -> None:
+def _isolate_worker_cli_config(
+    imodel,
+    *,
+    contain_user_settings: bool = False,
+    mcp_server_names: Iterable[str] = (),
+) -> None:
     """Keep the user's own codex configuration out of a codex worker's process.
 
     A worker is started by the run, not by the person whose interactive CLI config
@@ -710,17 +718,79 @@ def _isolate_worker_cli_config(imodel) -> None:
     Its MCP set, model and effort are handed to it explicitly, and the user
     config's sandbox settings and its hook and project trust records ride beside
     the flag (codex.py names which), so what it trusts stays trusted. A Claude worker
-    is not isolated here and keeps its settings sources.
+    keeps its settings sources, unless its role sets ``contain_user_settings``
+    (``_contain_claude_worker``).
     Applied before the MCP hand-off, which reads the codex flag.
     """
     if not getattr(imodel, "is_cli", False):
         return
     from lionagi.agent.factory import _canonical_provider
+    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 
     kwargs = imodel.endpoint.config.kwargs
-    if _canonical_provider(imodel.endpoint.config.provider) == "codex":
+    provider = _canonical_provider(imodel.endpoint.config.provider)
+    if provider == "codex":
         kwargs["ignore_user_config"] = True
         kwargs["profile"] = None
+    elif provider in _CLAUDE_PROVIDER_NAMES and contain_user_settings:
+        _contain_claude_worker(kwargs, mcp_server_names)
+
+
+# The built-in tools a contained Claude worker is given. Agent and Task, which start
+# subagents inside the worker's own process, are not among them.
+_CONTAINED_CLAUDE_TOOLS = ("Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch")
+
+
+def _contain_claude_worker(kwargs: dict, mcp_server_names: Iterable[str]) -> None:
+    """Run a Claude worker with no settings files and a tool list the run names.
+
+    ``--setting-sources ""`` reads none of the user, project or local settings, so the
+    hooks, permission rules, plugins and subagent definitions they hold do not reach
+    the worker, and neither does a settings file or agent the request names. Without
+    those rules something else must decide what a tool call may do: ``--tools``
+    names the built-in tools that exist, ``--allowedTools`` grants them and every
+    tool of the MCP servers the run hands the worker, ``dontAsk`` refuses the rest,
+    and Agent and Task are disallowed outright. That replaces a yolo or bypass
+    permission mode too. A class's own denials (``workload: light``) are kept.
+    """
+    grants = [f"mcp__{name}__*" for name in sorted(mcp_server_names)]
+    kwargs["setting_sources"] = ""
+    kwargs["settings"] = None
+    kwargs["agent"] = None
+    kwargs["agents"] = None
+    kwargs["disable_slash_commands"] = True
+    # Two vocabularies: --tools takes built-in tool names only, so the MCP grants go
+    # to --allowedTools alone.
+    kwargs["tools"] = ",".join(_CONTAINED_CLAUDE_TOOLS)
+    kwargs["allowed_tools"] = [*_CONTAINED_CLAUDE_TOOLS, *grants]
+    kwargs["permission_mode"] = "dontAsk"
+    kwargs["allow_dangerously_skip_permissions"] = False
+    denied = list(kwargs.get("disallowed_tools") or [])
+    kwargs["disallowed_tools"] = denied + [t for t in ("Agent", "Task") if t not in denied]
+
+
+def _claude_worker_contained(imodel) -> bool:
+    """Whether a Claude model was put through ``_contain_claude_worker``."""
+    kwargs = getattr(getattr(getattr(imodel, "endpoint", None), "config", None), "kwargs", None)
+    return isinstance(kwargs, dict) and kwargs.get("setting_sources") == ""
+
+
+def _uncontainable_cli_provider(imodel) -> str | None:
+    """The provider of a CLI model that a contained worker's spawn cannot run on, else None.
+
+    A spawned Claude branch is contained by ``_isolate_worker_cli_config`` and a codex
+    one runs with ``--ignore-user-config``; a model that is not a CLI reads no settings
+    files. Any other CLI reads its own user settings, which nothing here removes.
+    """
+    if not getattr(imodel, "is_cli", False):
+        return None
+    from lionagi.agent.factory import _canonical_provider
+    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+
+    provider = _canonical_provider(imodel.endpoint.config.provider)
+    if provider == "codex" or provider in _CLAUDE_PROVIDER_NAMES:
+        return None
+    return provider
 
 
 def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
@@ -772,7 +842,7 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     if _canonical_provider(imodel.endpoint.config.provider) != "codex":
         return
     provider, _, name = parse_model_spec(env.default_model_spec).model.partition("/")
-    if provider != "codex" or not name:
+    if _canonical_provider(provider) != "codex" or not name:
         return
     resolved = resolve_codex_config_profile(name)
     if resolved is None:
@@ -821,6 +891,21 @@ def _hand_mcp_servers(
     warn(
         f"{label}: the {provider} provider takes no MCP server set through its request, so {lost}."
     )
+
+
+def _worker_mcp_hand_off(servers: dict | None, *, contained: bool) -> tuple[dict | None, bool]:
+    """The server set a worker is handed, and whether it is the worker's whole set.
+
+    Once the run resolved a worker set, that set is the whole grant. Otherwise the Claude
+    CLI merges in the servers it discovers itself and codex loads every server its own
+    config declares, a withheld one included; both are what the whole set turns off. With
+    no set resolved a worker keeps what it discovers, unless it is contained: those
+    servers would start under it while ``dontAsk`` refused their tools, so it is handed
+    the empty set as its whole set.
+    """
+    if servers is None and contained:
+        return {}, True
+    return servers, servers is not None
 
 
 async def setup_orchestration(
@@ -932,6 +1017,7 @@ async def setup_orchestration(
         contain_account_integrations=bool(
             getattr(orc_profile, "contain_account_integrations", False)
         ),
+        workload=getattr(orc_profile, "workload", None) or DEFAULT_WORKLOAD,
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -1237,21 +1323,26 @@ async def build_worker_branch(
         contain_account_integrations=bool(
             not env.bare and getattr(w_profile, "contain_account_integrations", False)
         ),
+        workload=(
+            getattr(w_profile, "workload", None) or DEFAULT_WORKLOAD
+            if not env.bare
+            else DEFAULT_WORKLOAD
+        ),
         # Isolated below, so no effort is derived from the user config either.
         ignore_user_config=True,
     )
-    _isolate_worker_cli_config(w_imodel)
     worker_mcp_servers = getattr(env, "mcp_servers", None)
-    _hand_mcp_servers(
+    _isolate_worker_cli_config(
         w_imodel,
-        worker_mcp_servers,
-        label=agent_id,
-        # Once the run resolved a worker set, that set is the whole grant.
-        # Otherwise the Claude CLI merges in the servers it discovers itself and
-        # codex loads every server its own config declares, a withheld one
-        # included; both are what this turns off for the worker.
-        exclusive=worker_mcp_servers is not None,
+        contain_user_settings=bool(
+            not env.bare and getattr(w_profile, "contain_user_settings", False)
+        ),
+        mcp_server_names=worker_mcp_servers or (),
     )
+    servers, exclusive = _worker_mcp_hand_off(
+        worker_mcp_servers, contained=_claude_worker_contained(w_imodel)
+    )
+    _hand_mcp_servers(w_imodel, servers, label=agent_id, exclusive=exclusive)
     is_cli = bool(getattr(w_imodel, "is_cli", False))
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -1261,11 +1352,14 @@ async def build_worker_branch(
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
-        if project_root not in add_dir:
+        if not _is_light_codex(w_imodel) and project_root not in add_dir:
             add_dir.append(project_root)
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        # An alias ("openai-codex") is the same provider, and gets the same grant.
         if (
             getattr(env, "team_data", None)
-            and w_imodel.endpoint.config.provider == "codex"
+            and EndpointRegistry.canonical_provider(w_imodel.endpoint.config.provider) == "codex"
             and (teams_dir := str(_team_module.TEAMS_DIR.resolve())) not in add_dir
         ):
             add_dir.append(teams_dir)

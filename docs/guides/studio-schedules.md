@@ -70,6 +70,28 @@ the daemon's schedules service, `lionagi/studio/services/schedules.py`; CLI
 flags and output are defined in `lionagi/studio/cli.py`. Keep the daemon
 running for automatic fires.
 
+Run lists, recent-run summaries, the status view's `latest_run` and single-run
+records include `scheduled` and `missed_fire_at`. `scheduled` is true only for a
+fire of the schedule's own timer
+(cron, interval or `at`), including that fire dispatched again after a daemon
+restart; manual fires, repository-event fires (`github_poll`), the late run of a
+missed fire under `missed_fire_policy=run_once`, chain children, and the rows a
+timer tick records without firing (a missed-fire skip, an overlap skip, a deferral
+at the concurrent-fire cap, a budget refusal) are false. A timer fire refused before
+it starts a process (a working directory the daemon refuses, a command argument that
+renders to a leading `-` or to characters outside the allowed set, a `play` prompt that
+renders to a leading `-`, no resolvable `li`) is recorded `failed` and reads true, as
+does a threshold alert the timer fires; a fire whose rendered prompt is past the length
+cap or exactly `--` records no run. The
+run a restart replaces is marked `failed` and still reads true, so that one timer
+fire shows as two runs. For a missed-fire skip, `missed_fire_at` is the stored
+intended fire time as epoch seconds, including its fractional part. A stored integer
+past 2**53 is null, and a stored decimal with more digits than a float holds is
+served as the nearest float. The underlying trigger payload remains private as a
+field; the single-run record still serves a run's stored failure text
+(`error_detail`, `reason_summary` and `outcome`) as before, and that text can quote
+part of the payload when the error or command output that produced it did.
+
 ## Other trigger and safety options
 
 The live schedule API supports:

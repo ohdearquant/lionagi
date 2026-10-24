@@ -17,6 +17,8 @@ from pydantic import Field
 
 from lionagi.casts.emission import Finding, Gap, Verdict
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.ln.types import TypeFilter
+from lionagi.session.signal import Signal
 
 from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun, role_profile_route
 
@@ -448,12 +450,12 @@ def render_evidence(run: HypothesisRun) -> str:
     parts = [f"# Evidence chains ({len(chains)})"]
     for chain in chains:
         parts.append("\n- " + " -> ".join(_label(e) for e in chain))
-    dedups = run.events_of(DedupChecked)
+    dedups = run._dedup_events()
     if dedups:
         parts.append(f"\n\n# Novelty verdicts ({len(dedups)})")
-        for d in dedups:
+        for position, d in enumerate(dedups):
             issue = f" #{d.issue_number} ({d.issue_state})" if d.issue_number else ""
-            held = "" if _accepted_verdict(run, d) else " (not accepted)"
+            held = "" if _accepted_verdict(run, d, position) else " (not accepted)"
             parts.append(f"\n- {d.finding_ref}: {d.verdict}{issue}{held} — {d.rationale}")
         queue = filing_queue(run)
         if queue:
@@ -482,29 +484,22 @@ def render_evidence(run: HypothesisRun) -> str:
     return "".join(parts)
 
 
-def _accepted_verdict(run: HypothesisRun, d: DedupChecked) -> bool:
-    """Whether *d* is the verdict the dedup stage acted on for its finding.
-
-    Every emitted verdict is stored, including one naming an agent-sourced
-    finding whose judge has not passed, and a later verdict for a finding that
-    already has one; neither is acted on. A run assembled with ``collect()``
-    dispatches no observers, so nothing is recorded there: a seed's first stored
-    verdict stands, and an agent-sourced finding's does not, since nothing shows
-    its judge passed. For verdicts stored after their seed that is the verdict a
-    live run acts on. A verdict stored before its seed names no finding when it
-    arrives, so a live run does not act on it, but with no later verdict
-    recorded this fallback accepts it, in a live run as in a collected one.
-    """
+def _accepted_verdict(run: HypothesisRun, d: DedupChecked, position: int) -> bool:
+    """Acceptance belongs to a stored occurrence, not a mutable payload object."""
     f = run.find(d.finding_ref)
     if not isinstance(f, FindingPosted) or run._finding_refused(f):
         return False
-    accepted = run.dedup_verdicts.get(f.eid)
+    accepted = run._dedup_accepted.get(f.eid)
     if accepted is not None:
-        return accepted is d
-    if f.gen != 0:
+        return accepted == position
+    if position in run._dedup_live or f.gen != 0:
         return False
-    first = next((e for e in run.events_of(DedupChecked) if run.find(e.finding_ref) is f), None)
-    return first is d
+    # Explicit historical collect() dispatches no stage. Preserve its first
+    # seed verdict, while live untrusted emissions never certify themselves.
+    first = next(
+        (i for i, e in enumerate(run._dedup_events()) if run.find(e.finding_ref) is f), None
+    )
+    return first == position
 
 
 def filing_queue(run: HypothesisRun) -> list[dict[str, Any]]:
@@ -512,8 +507,8 @@ def filing_queue(run: HypothesisRun) -> list[dict[str, Any]]:
     conclusions = run.events_of(ConclusionDrawn)
     questions = {q.eid: q for q in run.events_of(QuestionRaised)}
     out: list[dict[str, Any]] = []
-    for d in run.events_of(DedupChecked):
-        if d.verdict not in ("new", "extends") or not _accepted_verdict(run, d):
+    for position, d in enumerate(run._dedup_events()):
+        if d.verdict not in ("new", "extends") or not _accepted_verdict(run, d, position):
             continue
         f = run.find(d.finding_ref)
         if not isinstance(f, FindingPosted):
@@ -573,6 +568,11 @@ class HypothesisRun(ChainRun):
         # was not an orphan. Later verdicts for the same finding are ignored,
         # and only these count as a finding's search having answered.
         self.dedup_verdicts: dict[str, DedupChecked] = {}
+        self._dedup_agents: dict[str, tuple[FindingPosted, Any]] = {}
+        self._dedup_accepted: dict[str, int] = {}
+        self._dedup_snapshots: list[DedupChecked] = []
+        self._dedup_live: set[int] = set()
+        self._collecting_dedup = False
         # Only the exact finding dispatched by this caller task is a seed.
         # Spawned tasks inherit context, but not the caller task's identity.
         self._caller_finding: ContextVar[tuple[FindingPosted, Any] | None] = ContextVar(
@@ -586,6 +586,37 @@ class HypothesisRun(ChainRun):
 
     def collect(self, event: ChainEvent) -> ChainEvent:
         return super().collect(event)  # type: ignore[return-value]
+
+    def _collect_emitted(self, event: ChainEvent) -> ChainEvent:
+        previous = self._collecting_dedup
+        self._collecting_dedup = isinstance(event, DedupChecked)
+        try:
+            return self.collect(event)
+        finally:
+            self._collecting_dedup = previous
+
+    def _on_collect(self, event: ChainEvent) -> None:
+        if not isinstance(event, DedupChecked):
+            return
+        position = len(self._dedup_snapshots)
+        self._dedup_snapshots.append(event.model_copy(deep=True))
+        dispatched = self._collecting_dedup
+        # Consume before notify: an explicit reentrant collect is a different
+        # stored occurrence, not the observer collector's receipt.
+        self._collecting_dedup = False
+        dispatch = self.session.observer.emit
+        origin = getattr(dispatch, "current", None)
+        origin = origin.get() if origin is not None else None
+        if origin is None or self._emission_origin(origin.event) is None:
+            return
+        payload = origin.event.data if isinstance(origin.event, Signal) else origin.event
+        if any(value is event for value in TypeFilter(DedupChecked).matches(payload)):
+            self._dedup_live.add(position)
+            if dispatched:
+                origin.collections.setdefault(self._emission_owner, []).append((event, position))
+
+    def _dedup_events(self) -> list[DedupChecked]:
+        return self._dedup_snapshots
 
     async def emit(self, event: Any) -> list[Any]:
         if not isinstance(event, FindingPosted):
@@ -606,7 +637,11 @@ class HypothesisRun(ChainRun):
         """Write chains.json (event graph) and report.md (synthesis + evidence trail) to *dir_path*; returns paths dict."""
         d = Path(dir_path)
         d.mkdir(parents=True, exist_ok=True)
-        events = [e for evs in self.store.values() for e in evs]
+        events = [
+            e
+            for kind, evs in self.store.items()
+            for e in (self._dedup_events() if kind is DedupChecked else evs)
+        ]
         chains = trace_chains(events)
         concluded = {c.question_ref for c in self.events_of(ConclusionDrawn)}
         payload = {
@@ -856,9 +891,9 @@ class HypothesisEngine(Engine):
         run.root = " | ".join(seeds)
 
         # Collector first: stamps eids before any reaction reads them.
-        run.observe(ChainEvent, lambda e, _c: run.collect(e))
+        run.observe(ChainEvent, lambda e, _c: run._collect_emitted(e))
         run.observe(FindingPosted, lambda f, _c: self._on_finding(run, f))
-        run.observe(DedupChecked, lambda d, _c: self._on_dedup(run, d))
+        run.observe(run._agent_events(DedupChecked), lambda d, _c: self._on_dedup(run, d))
         run.observe(QuestionRaised, lambda q, _c: self._on_question(run, q))
         run.observe(HypothesisFormed, lambda h, _c: self._on_hypothesis(run, h))
         run.observe(ExperimentDesigned, lambda x, _c: self._on_experiment(run, x))
@@ -914,7 +949,11 @@ class HypothesisEngine(Engine):
         else:
             run.spawn(self._guard(run, "extract", self._extract, f))
 
-    def _on_dedup(self, run: HypothesisRun, d: DedupChecked) -> None:
+    def _on_dedup(self, run: HypothesisRun, receipt: Any) -> None:
+        if receipt.position is None:
+            run.notify("dedup_orphan", eid=receipt.value.eid, finding_ref=receipt.value.finding_ref)
+            return
+        d = run._dedup_snapshots[receipt.position]
         f = run.find(d.finding_ref)
         if not isinstance(f, FindingPosted) or run._finding_refused(f):
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
@@ -929,10 +968,15 @@ class HypothesisEngine(Engine):
             # finding's search.
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
+        expected = run._dedup_agents.get(f.eid)
+        if expected is None or expected[0] is not f or expected[1] is not receipt.branch:
+            run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
+            return
         if f.eid in run.dedup_verdicts:
             # The first verdict decided; a later one (a `new` after a
             # `duplicate`, say) does not reopen the finding.
             return
+        run._dedup_accepted[f.eid] = receipt.position
         run.dedup_verdicts[f.eid] = d
         if d.verdict == "duplicate":
             run.notify(
@@ -1040,6 +1084,8 @@ class HypothesisEngine(Engine):
                 cwd=cwd,
                 emits=emits,
             )
+            run._bind_agent_emitter(agent)
+            run._dedup_agents[f.eid] = (f, agent)
             await run.operate_with_repair(
                 agent,
                 _dedup_instruction(f, self.dedup_repo or "", self.dedup_seed_issues, bool(cwd)),

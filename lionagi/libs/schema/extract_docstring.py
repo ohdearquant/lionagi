@@ -78,15 +78,19 @@ def _extract_docstring_details_rest(
 
     params_description = {}
     current_param = None
-    for line in lines[1:]:
-        line = line.strip()
+    for raw in lines[1:]:
+        line = raw.strip()
         if line.startswith(":param"):
             param_desc = line.split(":", 2)
             _, param, desc = param_desc
             param = param.split()[-1].strip()
             params_description[param] = desc.strip()
             current_param = param
-        elif line.startswith(" "):
-            params_description[current_param] += f" {line}"
+        elif line and raw[:1].isspace() and current_param is not None:
+            params_description[current_param] = (
+                f"{params_description[current_param]} {line}".lstrip()
+            )
+        elif line:
+            current_param = None
 
     return func_description, params_description

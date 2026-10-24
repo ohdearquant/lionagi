@@ -324,6 +324,10 @@ async def test_maybe_fire_breach_fires_with_trigger_context():
     assert ctx["value"] == 9.0
     assert ctx["threshold"] == 5
     assert ctx["window_minutes"] == 30
+    # A threshold alert is a fire of the schedule's own timer, so its run reads as scheduled.
+    from lionagi.studio.services.schedules import _run_trigger_facts
+
+    assert _run_trigger_facts({"trigger_context": ctx})["scheduled"] is True
 
     # last_alert_at is NOT stamped by _maybe_fire itself -- _tracked_fire is
     # mocked here (the actual _fire_inner never runs), and the real stamp

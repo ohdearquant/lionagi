@@ -300,8 +300,61 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   provider did claim that cannot be a count, or that does not sum to the total of the same report,
   zeroes both and marks the usage invalid, as does a cache-write total that is not a non-negative
   integer (an integral float such as `200.0` included).
+- An agent profile can set `contain_user_settings: true` for its Claude workers in `li o flow`
+  and `li o fanout`: the CLI then loads no settings files for the worker
+  (`--setting-sources ""`), so your user, project and local settings, your own hooks and
+  permission rules among them, stop gating that worker. It runs the built-in tools Read, Glob,
+  Grep, Edit, Write, Bash, WebFetch and WebSearch and only the MCP servers the run hands it (none
+  when the run resolves no set), under `--permission-mode dontAsk`, and cannot start Agent or
+  Task subagents. The files stay on disk, where its Read and Bash tools can still open them.
+  An agent such a worker spawns on Claude runs the same way, whatever role it names; one on
+  codex runs with `--ignore-user-config`, as every codex worker does, under its own role's
+  sandbox and approval settings rather than `dontAsk` (`yolo` there is
+  `--sandbox workspace-write`); one on any other CLI is refused, since that CLI would read its
+  own user settings. `--retry-failed` refuses to run one again on a branch that reads settings
+  files: the orchestrator's, or a role's that is neither a contained Claude worker, a codex
+  worker nor a model that is not a CLI. The flag is read from the block's top-level keys as YAML
+  parses them, its key matched as written, so a key nested under another setting, or spelled in
+  another letter case or with dashes, is not the flag, and when no top-level key sets the flag
+  such a key warns that it does not: an indented block, a quoted or `?` key and a `<<` merge key
+  all count, an explicit key wins over a merged one, and a key given more than once, of which YAML keeps the
+  last, warns and leaves the flag off only when every one reads `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0`
+  and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does
+  not read as YAML settings now warns that every setting in it is ignored, and contains its
+  worker when the block names `contain_user_settings` anywhere, whatever value it gives; a block
+  with no closing `---` runs to the end of the file. A block with no settings in it, empty or
+  comments only, neither warns nor contains, even when a comment names the flag. A byte-order mark or
+  another invisible format character ahead of a profile's frontmatter no longer hides it. Any
+  other character on the delimiter's line hides the block and every setting in it, with a
+  warning when the block reads as settings, names the flag, or does not read and ends at a
+  closing `---`. Such a block contains when it sets the flag, whatever value it gives, or names
+  it anywhere while reading as a list or a line of text or not reading at all, as a frontmatter
+  that does not read does. A block that opens the profile was written as its frontmatter, and
+  none of its settings apply, so the worker is contained rather than run on your settings, which
+  is what the flag asks to prevent: the value that would turn that off is in a block that is not
+  read. The cost is that your own hooks and permission rules do not gate that worker until the
+  profile is fixed. Text on lines of its own ahead of the first line that is exactly `---`
+  leaves the profile all prompt, as before, and nothing after it applies, the flag included, so
+  its worker runs on your settings even where a block after that text sets the flag to `true`:
+  containing it would drop your hooks and permission rules for a profile that earlier releases
+  ran as a prompt, on a block that is not read. Every block after that text, closed or not, that
+  has a line setting the flag as a key, reads as settings that set it, or does not read and
+  names it, warns that its worker is not contained; a block there runs from a line of three or
+  more dashes to the next such line.
+  Containment is unchanged for `li agent -a`, which reads profiles the same way and so prints the
+  same warnings.
+- The scheduler's readiness (`/admin/readiness`, `li doctor`) reads `stalled` when a
+  `github_poll` schedule's poll pass has run for more than 300 seconds. The time a process the
+  pass dispatched takes to start and run is left out, so a long action does not read as a stall,
+  while a poll, or a store write of the pass or of a fire it makes, that does not return makes
+  the scheduler unready.
 
 ### Changed
+
+- Lazy type resolution, provider token-window lookup and built-in role/mode loading
+  use the shared import helper. Pattern loading preserves original missing-module
+  errors; other import errors name the target module and retain the original cause.
+- Generated schema modules now use a 16-character SHA256 suffix of the serialized generator input, giving repeated inputs stable temporary module names instead of Python's process-specific hash. Code generation remains an explicit opt-in for trusted schemas.
 
 - Flow deserialization resolves UUIDs, UUID strings and objects exposing an id through the canonical identity helper. Objects with only a UUID-producing string representation are rejected, and unsupported ID inputs use the helper error message.
 
@@ -580,6 +633,34 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Fixed
 
+- A CLI agent on a provider alias is treated as the provider it names: an `openai-codex` agent
+  takes the MCP servers it is handed over `-c`, as a `codex` one does, where before they were
+  reported as not reachable for it, and an `openai-codex` worker in `li o flow` and `li o fanout`
+  runs with `--ignore-user-config`, as every codex worker does, where before it read your codex
+  configuration. A `provider/model` spec on an alias also builds as its provider's does (a bare
+  name such as `openai-codex` is a model name, as before): in `li agent` and
+  `li o flow`, `openai-codex/<name>` resolves a codex config profile, and there and in
+  `create_agent` an alias takes its provider's effort, the effort it derives from the global
+  codex config, and its `yolo`, bypass and fast settings, which it lost before. The effort an
+  alias session stores is the one its endpoint runs, a resume onto another model re-clamps it as
+  for the provider, and an effort suffix on the model name (`gpt-5.5-high`) routes to the effort.
+  An effort suffix on an alias of a provider with no effort levels, `gemini-api/<model>-high`, or
+  on a letter case of its name, is refused as on `gemini/<model>-high`: such a spec, which ran
+  before without the effort, now raises `ValueError` naming the suffix to remove. A letter case
+  of a Claude provider name, `Claude/opus-4-7`, builds as `claude/opus-4-7` does, and the model
+  an orchestrator's session row records for such a spec gains the prefix too
+  (`Claude/claude-opus-4-7`, where it recorded the spec as written).
+
+- `extract_docstring(func, style="rest")`, and `function_to_schema(..., style="rest")` with it,
+  keeps a parameter's whole description. Indented lines after `:param x:` were dropped, so a
+  description kept only its first line, and one that starts on the indented line below
+  `:param x:` read as empty; both now read in full. A field such as `:returns:` or `:type:`
+  ends the parameter before it, so that field's own continuation lines are not added to it. A
+  tool schema built from a reST docstring can therefore carry longer parameter descriptions
+  than before.
+
+- Typed judge and novelty verdicts are bound to the branch that emitted them, so one agent cannot decide another item by naming its ID. Replayed or mutated novelty payloads keep distinct acceptance records for evidence reports and filing queues.
+
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.
   Health now counts the schedule's last healthy poll as liveness, as it counts a threshold
@@ -595,8 +676,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   episode starts; the episode ends at the schedule's first due evaluation the
   cap does not defer. Schedule limits list
   `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
-  in epoch seconds. Timed schedules are considered oldest due first, before
-  GitHub poll passes, whose cadence is separate and asynchronous.
+  in epoch seconds. Due schedules are considered oldest due first; a GitHub
+  poll schedule is due at its next poll turn, or, while the cap holds back
+  events it found, at the turn that found them. A poll's events reserve slots
+  only once its fetch returns, so a schedule that came due later can take a
+  free slot while the fetch runs.
 - A scheduled `command` child inherited the daemon's `LIONAGI_STATE_DB_URL`. When the command ran
   an interpreter with a different lionagi, that lionagi opened the daemon's store, and one on a
   newer schema migrated the file, after which the daemon could no longer open it. A command child
@@ -611,9 +695,68 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - A `github_poll` schedule held one of the scheduler's global concurrent-fire slots for the whole
   of its GitHub poll, before it had any event to run. A slow or rate-limited poll kept that slot
   from every other schedule for as long as it ran, so under the default cap of four, two slow
-  polls left due cron and interval schedules two slots to share. The poll now holds no slot: it skips the fetch when the cap is already
-  full, and each event it finds reserves its own slot; an event that finds the cap full stays
-  ahead of the cursor and is offered again by the next poll.
+  polls left due cron and interval schedules two slots to share. The poll now holds no slot: it
+  polls even when the cap is full, and each event it finds reserves its own slot. Events that find
+  the cap full stay ahead of the cursor and are kept with the instant their poll was due, then take
+  the next free slot in oldest-due order, ahead of younger cron and interval schedules, so timed
+  schedules that keep the cap full no longer hold a poll's events back indefinitely. Kept events
+  the schedule's cursor, repository or filter has since moved past are dropped, and the next poll
+  lists afresh.
+- A manual trigger (`li schedule trigger`, `POST /api/schedules/{schedule_id}/trigger`) of a
+  schedule whose command arguments, or the prompt its launch sends, name a variable a manual
+  trigger has no value for, such as a `github_poll` schedule's `{{pr_number}}`, is refused with a
+  400 that names the variable, before any run is recorded or slot reserved. A manual trigger
+  carries no event, so the placeholder reached the run unfilled: a command argument holding it
+  failed at spawn, and an agent prompt received it as written. A template that names only what a
+  manual trigger fills, `{{manual}}` and `{{fired_at}}`, still fires, and so does a `flow_yaml`
+  schedule, or a `play` schedule without a playbook, whatever its `action_prompt` holds, since
+  neither launch sends it. The scheduler fills templates in those two fields only: others, such as
+  `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
+  checked. A schedule whose stored fields cannot launch, such as one with an unknown action kind,
+  an invalid playbook name, a `play` playbook named `list`, `check` or `status` (which `li play`
+  runs as its own subcommands) or a `play` schedule with no playbook whose `action_extra_args`
+  start with one of them, a command outside the allowlist, an `engine` schedule with no engine
+  kind, a `play` schedule whose stored prompt, sent beside its playbook, starts with `-`, or an
+  `action_cwd` or `action_project` that no longer resolves to a directory, is refused for that
+  reason first, with a refusal naming that reason. A manual trigger's refusal for a root names the
+  schedule and its root, never the daemon's working directory, and a project registry that cannot
+  be read, or a root the daemon is not allowed to check, is refused with a 400 naming the error's
+  class and logged; on a store that is not a local
+  SQLite file, which cannot read the registry, the trigger answers 501, as the store's other
+  local-only routes do. A value that only a filled template makes
+  invalid, such as a sent prompt that renders to a flag, is still refused when the launch is
+  built; a launch that sends no prompt no longer fills or checks it, and its run record no longer
+  shows its `action_prompt`.
+- Creating or updating a `play` schedule with a playbook is refused with a 400 when the
+  `action_prompt` it sends starts with `-`: `li play` takes no `--` separator, so the prompt
+  re-parsed as one of its flags at every fire. An update is checked when it sets the kind, the
+  prompt or the playbook, so a row stored before the check can still be edited in its other
+  fields. A manual trigger of such a row is refused before a run is recorded; when it fires on
+  its schedule or as a chained run, the run is recorded, as every such fire's is, and fails
+  naming the refusal (or, when `li` itself cannot be resolved, that resolution error), and no
+  process starts. The same holds for a `play` schedule whose playbook is named `list`, `check` or
+  `status`, and for one with no playbook whose `action_extra_args` start with one of those words,
+  which the launch passes to `li play` first: creating or updating one is refused (an update is
+  also checked when it sets the extra arguments), a schedule set member or a
+  `li schedule create playbook` naming one is refused when the set is validated or applied, a
+  stored one is refused when it fires, and the default export reports a stored member naming one
+  as blocked rather than ready, since applying it again is refused.
+- The store probe in `/admin/readiness` could report a store that another connection held locked
+  as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
+  and when SQLite's wait ran out first the read raised "database is locked", which the probe read
+  as a store it could not reach. A lock error now reads as `slow`; any other error still reads as
+  `unavailable`.
+- `/admin/readiness` and `li doctor` read a scheduler that was shutting down as ready, beside its
+  `stopping` status. It now reads as not ready.
+- A `github_poll` schedule counted its `poll_interval_sec` from its last fire only, so once that
+  interval had passed, every poll that fired nothing (a quiet repository, events its filter left
+  out, a failed request) was followed by another on the next scheduler tick, every 30 seconds.
+  The interval now counts from the later of the last fire and the last poll, so the schedule
+  polls once per interval whatever the poll found. The exception is a poll whose kept events are
+  dropped because the schedule has moved past them: the poll that found them counts as never
+  made, so the interval counts from the last fire alone, and the schedule lists afresh once that
+  has passed, at the tick that drops them if it already has. A restarted scheduler polls at
+  its first tick if the interval has passed since the last fire.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so
@@ -773,10 +916,19 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.
+- Raised the `fastmcp` floor in the `mcp` extra to 3.4.10 and `uv.lock` to 3.4.11
+  (GHSA-7xgj-8392-5q4r: a component's authorization is skipped when a transformed component is
+  called directly). fastmcp 3.4.11 depends on `fastmcp-slim` 3.4.11, which the lock adds.
+  `li mcp` configures no component authorization; the floor keeps installs off the affected
+  releases.
 - `lion1/uv.lock` moves `aiohttp` to 3.14.4, which fixes eight advisories in 3.14.3
   (CVE-2026-111063 to CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and
   GHSA-2g87-pp6c-29x5), with `yarl` 1.25.1, which 3.14.4 requires. `uv.lock` no longer contains
   `aiohttp` (see Changed and Removed).
+- `lion1/uv.lock` moves `filelock` from 4.0.6 to 4.2.4 (CVE-2026-112940, CVE-2026-112913 and
+  CVE-2026-112907) and `setuptools` from 84.0.0 to 84.2.1 (GHSA-xmj3-9gf7-h52w). Both reach
+  lion1 only through the CLI's `voice` extra, by way of `mlx-whisper`, `torch` and
+  `huggingface-hub`.
 - The lockfiles move off releases with published advisories: `opentelemetry-api` to 1.45.1
   (CVE-2026-114603), in `uv.lock`, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and
   the instrumentation, semantic-conventions and util-http packages at 0.66b1, where
@@ -790,6 +942,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. Pillow, whose published
   advisories are fixed only in 13.0.0, a release that requires Python 3.11, is no longer in
   `uv.lock` (see Removed).
+- The VS Code extension's lockfile moves `@azure/msal-node` from 5.2.5 to 7.1.1
+  (CVE-2026-109461), `undici` from 7.30.0 to 7.30.1 (CVE-2026-109869) and `fast-uri` from 3.1.8
+  to 3.1.9 (CVE-2026-110306, CVE-2026-110095, CVE-2026-110180 and CVE-2026-110725), all
+  development dependencies. `@vscode/vsce` reaches msal-node through `@azure/identity`, whose
+  newest release still requires msal-node 6, so an override in `package.json` sets 7.1.0 or
+  later; the undici and fast-uri overrides raise their floors.
 - An endpoint's private-address check before a request now resolves the host name as the
   HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
   differ (`straße.example` resolves as `strasse.example` but the client connects to

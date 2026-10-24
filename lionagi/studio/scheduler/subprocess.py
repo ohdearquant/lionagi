@@ -45,6 +45,10 @@ _VALID_ACTION_KINDS = frozenset(
     {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
 )
 _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
+# Names `li play` reads as its own subcommands before any playbook name (cli/main.py
+# _handle_play_shortcut): a play launch whose first word after `li play` is one of them, as its
+# playbook or, with no playbook, as its first extra argument, runs that subcommand and no playbook.
+_PLAY_SUBCOMMANDS: frozenset[str] = frozenset({"list", "check", "status"})
 
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
 # colons, hyphens and underscores only.  Values starting with '-' are rejected
@@ -241,14 +245,15 @@ def _render_command_arg(template: str, context: dict) -> str:
     rendered = _render_template(template, context)
     if rendered.startswith("-"):
         raise ValueError(
-            f"action_command_args template {template!r} rendered to "
-            f"{rendered!r}, which starts with '-' and would inject a flag "
-            "into the spawned command."
+            # The rendered value is left out: it can carry a trigger event's payload, and this
+            # message is stored on the run and served with it.
+            f"action_command_args template {template!r} rendered to a value that starts "
+            "with '-' and would inject a flag into the spawned command."
         )
     if not _ENGINE_OPT_VALUE_RE.match(rendered):
         raise ValueError(
-            f"action_command_args template {template!r} rendered to "
-            f"{rendered!r}, which contains characters not allowed. Allowed "
+            f"action_command_args template {template!r} rendered to a value that "
+            "contains characters not allowed. Allowed "
             f"charset: {_ENGINE_OPT_VALUE_RE.pattern}"
         )
     return rendered
@@ -362,34 +367,75 @@ def _validate_prompt(prompt: str) -> None:
         )
 
 
+def _template_value(key: str, context: dict) -> str | None:
+    """The value a ``{{key}}`` placeholder takes from *context*, or None when it has none."""
+    events = context.get("github_events", [])  # check github events first
+    if events and isinstance(events, list) and isinstance(events[0], dict):
+        val = events[0].get(key)
+        if val is not None:
+            return str(val)
+    # Stringify non-string values too (e.g. numeric threshold-alert
+    # fields) -- re.sub's replacement callback requires a str return.
+    if key in context:
+        return str(context[key])
+    return None
+
+
 def _render_template(template: str, context: dict) -> str:
     """Replace {{var}} placeholders with values from trigger context."""
 
     def _replace(m: re.Match) -> str:
-        key = m.group(1)
-        events = context.get("github_events", [])  # check github events first
-        if events and isinstance(events, list) and isinstance(events[0], dict):
-            val = events[0].get(key)
-            if val is not None:
-                return str(val)
-        # Stringify non-string values too (e.g. numeric threshold-alert
-        # fields) -- re.sub's replacement callback requires a str return.
-        if key in context:
-            return str(context[key])
-        return m.group(0)
+        val = _template_value(m.group(1), context)
+        return m.group(0) if val is None else val
 
     return _TEMPLATE_RE.sub(_replace, template)
+
+
+def _sends_prompt(schedule: dict, kind: str | None) -> bool:
+    # A command launch sends its arguments, a flow_yaml launch its spec file as written and a play
+    # launch its prompt only beside a playbook; every other kind sends its action_prompt.
+    if kind in ("command", "flow_yaml"):
+        return False
+    return kind != "play" or bool(schedule.get("action_playbook"))
+
+
+def unfilled_template_vars(schedule: dict, trigger_context: dict) -> list[str]:
+    """The ``{{var}}`` names in what *schedule* sends that *trigger_context* has no value for.
+
+    The templates a launch fills are a command launch's ``action_command_args`` and, for a kind
+    that sends one, the ``action_prompt``; other fields, a ``flow_yaml`` spec among them, go as
+    written. A placeholder with no value renders as itself, so a command argument holding one is
+    refused at spawn and a prompt hands it to the agent as written.
+    """
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    if kind == "command":
+        args = schedule.get("action_command_args")
+        templates = [str(a) for a in args] if isinstance(args, list) else []
+    elif _sends_prompt(schedule, kind):
+        templates = [schedule.get("action_prompt") or ""]
+    else:
+        templates = []
+    return sorted(
+        {
+            m.group(1)
+            for template in templates
+            for m in _TEMPLATE_RE.finditer(template)
+            if _template_value(m.group(1), trigger_context) is None
+        }
+    )
 
 
 def render_action_prompt(schedule: dict, trigger_context: dict) -> str | None:
     """Render a schedule's ``action_prompt`` with the trigger context.
 
-    Returns ``None`` when the schedule has no prompt template, so callers can
-    fall back to another field (e.g. ``action_playbook``) without confusing
+    Returns ``None`` when the schedule has no prompt template or its launch sends none, so
+    callers can fall back to another field (e.g. ``action_playbook``) without confusing
     "no prompt" with "empty rendered prompt".
     """
+    kind = schedule.get("action_kind")
     prompt = schedule.get("action_prompt") or ""
-    if not prompt:
+    if not prompt or not _sends_prompt(schedule, _ALIAS_ACTION_KINDS.get(kind, kind)):
         return None
     rendered = _render_template(prompt, trigger_context)
     _validate_prompt(rendered)
@@ -465,6 +511,111 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     return None, "; ".join(tried)
 
 
+def validate_launch_fields(schedule: dict) -> str:
+    """Check every field a launch reads as stored, and return its action kind with a legacy
+    alias resolved. ``build_argv`` runs this before it renders anything, and a manual trigger
+    runs it before its placeholder check, so a schedule whose stored fields cannot launch is
+    refused for that. The prompt as rendered is checked by ``build_argv`` after rendering.
+    """
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)  # normalize legacy alias
+    if kind not in _VALID_ACTION_KINDS:
+        raise ValueError(
+            f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
+        )
+    agent = schedule.get("action_agent")
+    playbook = schedule.get("action_playbook")
+    project = schedule.get("action_project")
+    extra = schedule.get("action_extra_args") or []
+
+    # Reject flag-injection vectors before touching argv (defense-in-depth,
+    # mirrors services/schedules.py). action_prompt is validated AFTER
+    # rendering in build_argv since a templated '{{payload}}' can render to the
+    # forbidden '--' sentinel; other fields aren't templated.
+    _validate_action_model(schedule.get("action_model") or "")
+    if agent:
+        _validate_identifier(agent, "action_agent")
+    if project:
+        _validate_identifier(project, "action_project")
+    if playbook:
+        _validate_identifier(playbook, "action_playbook")
+        if kind == "play" and playbook in _PLAY_SUBCOMMANDS:
+            raise ValueError(
+                f"action_playbook {playbook!r} names a `li play` subcommand, not a playbook"
+            )
+    if isinstance(extra, list):
+        _validate_extra_args(extra)
+    if kind == "play":
+        _validate_playbook_args(_playbook_args(schedule))
+        # `li play` has no '--' separator, so a sent prompt that starts with '-' re-parses as a
+        # flag. A stored one is refused here: a manual trigger reads this before a run is
+        # recorded, and a scheduled or chained fire records the refusal as its run's failure.
+        # One that only its rendering makes start with '-' is refused in build_argv.
+        if _sends_prompt(schedule, kind) and str(schedule.get("action_prompt") or "").startswith(
+            "-"
+        ):
+            raise ValueError("action_prompt for a play launch must not start with '-'")
+        # With no playbook, the first extra argument is the first word after `li play`.
+        if (
+            not playbook
+            and isinstance(extra, list)
+            and extra
+            and str(extra[0]) in _PLAY_SUBCOMMANDS
+        ):
+            raise ValueError(
+                f"action_extra_args starts with {str(extra[0])!r}, which a play launch with no "
+                "playbook passes to `li play` as its subcommand"
+            )
+    if kind == "engine":
+        _validate_engine_options(schedule.get("action_engine_options"))
+
+    if kind == "agent" and not schedule.get("action_model") and isinstance(extra, list) and extra:
+        # Omitting the model positional when unset lets `li agent` fall through to the profile
+        # default. But with model omitted, a single extra-args token brings arity back to
+        # [model, prompt] and would silently misroute the prompt as MODEL.
+        raise ValueError(
+            "action_extra_args is not supported together with an empty "
+            "action_model for kind='agent': omitting the model "
+            "positional makes the extra-args token(s) indistinguishable "
+            "from an explicit [model, prompt] pair, which would silently "
+            "misroute action_prompt as the model. Set action_model "
+            "explicitly, or clear action_extra_args."
+        )
+    elif kind == "flow_yaml" and isinstance(extra, list) and extra:
+        # No positionals here (spec file carries prompt/model), so extra tokens would soak into
+        # flow's optional slots.
+        raise ValueError(
+            "flow_yaml launches do not accept action_extra_args; "
+            "set model/prompt inside the flow spec instead"
+        )
+    elif kind == "engine":
+        # action_agent = engine kind (e.g. "research"); action_prompt = spec.
+        if not agent:
+            raise ValueError("engine launches require action_agent (the engine kind)")
+        if not schedule.get("action_prompt"):
+            raise ValueError("engine launches require action_prompt (the engine spec)")
+        # The engine CLI exits nonzero for 'coding' without --test-cmd (and a blank command
+        # splits into an empty argv downstream); fail here so no invocation row is created for a
+        # launch that cannot run.
+        engine_opts = schedule.get("action_engine_options") or {}
+        if agent == "coding" and not str(engine_opts.get("test_cmd") or "").strip():
+            raise ValueError(
+                "the 'coding' engine kind requires a non-blank action_engine_options.test_cmd"
+            )
+    elif kind == "command":
+        command = schedule.get("action_command") or ""
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+        if isinstance(extra, list) and extra:
+            raise ValueError(
+                "command launches do not accept action_extra_args; set "
+                "arguments via action_command_args instead"
+            )
+        if not isinstance(schedule.get("action_command_args") or [], list):
+            raise ValueError("action_command_args must be a list of strings")
+    return kind
+
+
 def build_argv(
     schedule: dict,
     trigger_context: dict,
@@ -481,40 +632,22 @@ def build_argv(
     Returns ``(argv, tmp_path)`` where ``tmp_path`` is a temporary file that
     must be deleted after the subprocess exits (only set for ``flow_yaml``).
     """
-    kind = schedule["action_kind"]
-    kind = _ALIAS_ACTION_KINDS.get(kind, kind)  # normalize legacy alias
-    if kind not in _VALID_ACTION_KINDS:
-        raise ValueError(
-            f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
-        )
+    kind = validate_launch_fields(schedule)
     model = schedule.get("action_model") or ""
     prompt = schedule.get("action_prompt") or ""
     agent = schedule.get("action_agent")
     playbook = schedule.get("action_playbook")
     project = schedule.get("action_project")
     extra = schedule.get("action_extra_args") or []
-
-    # Reject flag-injection vectors before touching argv (defense-in-depth,
-    # mirrors services/schedules.py). action_prompt is validated AFTER
-    # rendering below since a templated '{{payload}}' can render to the
-    # forbidden '--' sentinel; other fields aren't templated.
-    _validate_action_model(model)
-    if agent:
-        _validate_identifier(agent, "action_agent")
-    if project:
-        _validate_identifier(project, "action_project")
-    if playbook:
-        _validate_identifier(playbook, "action_playbook")
-    if isinstance(extra, list):
-        _validate_extra_args(extra)
     play_args: dict = {}
     if kind == "play":
         stored_args = _playbook_args(schedule)
-        _validate_playbook_args(stored_args)
         play_args = stored_args if isinstance(stored_args, dict) else {}
-    if kind == "engine":
-        _validate_engine_options(schedule.get("action_engine_options"))
 
+    # A kind that does not send its prompt neither renders nor checks it: a command launch sends
+    # its arguments only, whatever its stored prompt would render to.
+    if not _sends_prompt(schedule, kind):
+        prompt = ""
     # Render template variables from trigger context FIRST, then validate the
     # rendered prompt so that template-injected values (e.g. '{{payload}}' →
     # '--') are caught before argv construction.
@@ -540,19 +673,7 @@ def build_argv(
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
-        # Omitting the model positional when unset lets `li agent` fall
-        # through to the profile default. But with model omitted, a single
-        # extra-args token brings arity back to [model, prompt] and would
-        # silently misroute the prompt as MODEL -- reject that combination.
-        if not model and isinstance(extra, list) and extra:
-            raise ValueError(
-                "action_extra_args is not supported together with an empty "
-                "action_model for kind='agent': omitting the model "
-                "positional makes the extra-args token(s) indistinguishable "
-                "from an explicit [model, prompt] pair, which would silently "
-                "misroute action_prompt as the model. Set action_model "
-                "explicitly, or clear action_extra_args."
-            )
+        # validate_launch_fields refused extra args beside an empty model.
         positionals = [model, prompt] if model else [prompt]
         argv += ["agent", *flags, "--", *positionals]
 
@@ -588,13 +709,7 @@ def build_argv(
                 argv.append(prompt)
 
     elif kind == "flow_yaml":
-        # No positionals here (spec file carries prompt/model), so extra
-        # tokens would soak into flow's optional slots; fail at build time.
-        if isinstance(extra, list) and extra:
-            raise ValueError(
-                "flow_yaml launches do not accept action_extra_args; "
-                "set model/prompt inside the flow spec instead"
-            )
+        # validate_launch_fields refused extra args, which would soak into flow's optional slots.
         # Caller deletes tmp_path after the subprocess exits.
         yaml_text = schedule.get("action_flow_yaml") or ""
         if model:
@@ -625,9 +740,8 @@ def build_argv(
 
     elif kind == "engine":
         # argv shape: uv run li engine run [named flags] -- <engine_kind> <spec>
-        # action_agent = engine kind (e.g. "research"); action_prompt = spec.
-        if not agent:
-            raise ValueError("engine launches require action_agent (the engine kind)")
+        # action_agent = engine kind (e.g. "research"); action_prompt = spec. The stored fields
+        # are checked in validate_launch_fields; a spec that renders empty is refused here.
         if not prompt:
             raise ValueError("engine launches require action_prompt (the engine spec)")
         engine_kind = agent
@@ -635,13 +749,6 @@ def build_argv(
         if model:
             flags += ["--model", model]
         engine_opts = schedule.get("action_engine_options") or {}
-        # The engine CLI exits nonzero for 'coding' without --test-cmd (and a
-        # blank command splits into an empty argv downstream); fail here so no
-        # invocation row is created for a launch that cannot run.
-        if engine_kind == "coding" and not str(engine_opts.get("test_cmd") or "").strip():
-            raise ValueError(
-                "the 'coding' engine kind requires a non-blank action_engine_options.test_cmd"
-            )
         max_depth = engine_opts.get("max_depth")
         max_agents = engine_opts.get("max_agents")
         test_cmd = engine_opts.get("test_cmd")
@@ -660,17 +767,10 @@ def build_argv(
         # This kind spawns the allow-listed executable DIRECTLY -- it never
         # goes through `li`, so the executable_prefix/uv-run-li argv built
         # above is discarded entirely rather than extended.
+        # The command, its allowlisting and its argument list are checked in
+        # validate_launch_fields.
         command = schedule.get("action_command") or ""
-        _validate_action_command(command)
-        _validate_command_allowlisted(command)
-        if isinstance(extra, list) and extra:
-            raise ValueError(
-                "command launches do not accept action_extra_args; set "
-                "arguments via action_command_args instead"
-            )
         command_args = schedule.get("action_command_args") or []
-        if not isinstance(command_args, list):
-            raise ValueError("action_command_args must be a list of strings")
         rendered_args = [_render_command_arg(str(a), trigger_context) for a in command_args]
         argv = [command, *rendered_args]
 

@@ -365,10 +365,29 @@ child's environment at spawn is not seen by them, since the fill comes after,
 so set it in the worker's `env` or in this process's environment. A
 `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an absolute
 path is refused before either read or any process starts, from either
-environment.
+environment. A worker therefore has none of the servers its CLI would load
+from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them.
 A Claude worker is not isolated here and keeps its settings sources, as an
-interactive run does. A worker therefore has none of the servers its CLI would load
-from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
+interactive run does, unless its role sets `contain_user_settings`
+(`_contain_claude_worker`): then the CLI loads no settings files for it, so the
+operator's hooks and permission rules do not gate it, and it runs only the
+built-in tools named in `_CONTAINED_CLAUDE_TOOLS` and the servers it is handed,
+under `dontAsk`, with Agent and Task disallowed. The files stay on disk, where
+its Read and Bash tools can still open them. With no worker set resolved, a
+contained worker is handed the empty set as its whole set
+(`_worker_mcp_hand_off`), so it starts none of the servers it would discover.
+A spawned Claude node is contained when the branch it copies was, or when the
+worker that asked for it was, whatever role the request names. A codex one runs
+with `--ignore-user-config`, as every codex worker does, and a contained worker's
+request for an agent on any other CLI is refused in `_build_spawn_node`
+(`_uncontainable_cli_provider`), since nothing here keeps that CLI's own settings
+out. A checkpoint records that the asking worker was contained, writing the key
+only then, so a node without it is rebuilt as before; `--retry-failed` refuses to
+rebuild a recorded node on a branch that reads settings files: the
+orchestrator's, or a role's that is neither a contained Claude worker, a codex
+worker nor a model that is not a CLI.
+A team round is rebuilt on its worker's own branch (`reviewer-2`), a spawn on
+the branch of the role it named. The
 synthesis branch starts from a copy of the orchestrator's model and is not
 isolated, so the same exclusive hand-over is what takes the orchestrator's
 servers off it: on codex, with a non-empty set, or an allowlist naming a server its
@@ -1115,7 +1134,7 @@ LION system text. The post-factory `add_message` on the preset path is skipped t
 
 **`_run_agent` raw_body vs system_prompt** — uses `profile.raw_body` (not
 `profile.system_prompt`) to avoid duplicating `LION_SYSTEM_MESSAGE`: `_parse_profile` prepends
-it into `system_prompt` when `lion_system=True`, and `factory.py:297-300` also prepends it
+it into `system_prompt` when `lion_system=True`, and `factory.py:300-303` also prepends it
 because `spec.lion_system` remains `True`. `raw_body` is the profile body before that expansion;
 the factory adds the header exactly once. When `lion_system=False`, `raw_body == system_prompt`
 so both paths are consistent.
@@ -1123,7 +1142,7 @@ so both paths are consistent.
 **`_run_agent` add_message skip guard** — the profile system prompt `add_message` only fires
 for a brand-new, non-preset branch. On the preset/role path the profile extension was already
 composed into the spec before `create_agent` ran (`add_message` would call `set_system` and
-replace the preset system message — see `protocols/messages/manager.py:385`). A resumed or
+replace the preset system message — see `protocols/messages/manager.py:391`). A resumed or
 continued branch (`-r` / `--continue-last` / the automatic timeout-resume leg) already carries
 its persisted system message — which, for a role/preset branch, is the composed role+policy
 block, not the bare profile body — so `add_message` must not run for it either, or it clobbers
@@ -1237,21 +1256,30 @@ from a subprocess.
 
 ## `_agent_depth.py` — inherited agent-depth env marker
 
-`LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = spawned worker) lets an
-external policy hook distinguish a seat session from a worker it spawned, using process
-ancestry-independent env inheritance — ancestry breaks under `nohup`/`setsid` detachment and
-launchd reparenting, but env inheritance survives it. `LIONAGI_SEAT_PROFILES` is an
-operator-configured, comma-separated set of `-a` profile names that reset depth to 0 instead of
-incrementing it; the set is empty by default and no profile name is hardcoded in source.
+`LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = inside an agent lionagi
+started) lets lionagi refuse to start an agent from inside one, and lets an external policy hook
+tell a top-level session from a worker it spawned. `LIONAGI_SEAT_PROFILES` is an
+operator-configured, comma-separated set of `-a` profile names that stamp depth 0 instead of 1;
+the set is empty by default and no profile name is hardcoded in source.
 
 `stamp_agent_depth(agent_name)` (called from `_run_agent`) and `stamp_worker_depth()` (called
-from `_run_fanout` and `_run_flow`, which also covers `li play`) both set
-`os.environ["LIONAGI_AGENT_DEPTH"]` before any engine spawn. `_cli_subprocess.py`'s
-`ndjson_from_cli` passes `env=None` to `create_subprocess_exec` for all three CLI-backed engines
-(`claude_code`, `codex`, `gemini_code`), so the child inherits this process's `os.environ`
-verbatim — the stamp propagates with zero endpoint changes. `inherited_depth()` is captured once
-at import as a module constant rather than read live, so `_run_agent`'s in-process auto-resume
-recursion re-stamps to the same depth instead of double-incrementing.
+from `_run_fanout` and `_run_flow`, which also covers `li play`) first call
+`refuse_nested_agent()` (`providers/_subagent_admission.py`), then stamp through
+`set_child_agent_depth`: `os.environ["LIONAGI_AGENT_DEPTH"]` for anything this process starts, and
+the depth `ndjson_from_cli` hands every CLI child, which it sets over whatever the environment
+holds. An interactive shell can carry `0`, so a CLI agent a program in that shell starts through
+the Python API is handed `1`; only a `LIONAGI_SEAT_PROFILES` profile `li agent` launched gets `0`.
+
+`refuse_nested_agent` reads the depth this process inherited, captured once at import, and, when
+that is `0`, the environment each ancestor started with (psutil, walking parents). The import
+snapshot is why `_run_agent`'s in-process auto-resume recursion is not refused by its own first
+stamp. The ancestor read covers what env inheritance cannot: codex starts an MCP server with only
+the variables its config names, so a `li agent` that server runs inherits no depth while the codex
+process above it does. Env inheritance covers what ancestry cannot: `nohup`/`setsid` detachment
+and launchd reparenting cut the parent chain. An ancestor whose environment cannot be read is
+passed over; on macOS that includes platform binaries such as `/bin/sh`, but not the agent CLIs,
+whose environment stays readable. The refusal raises `NestedAgentRefusedError`, which `li agent`
+and `li o` report on one line with exit `1`.
 
 ## `kill.py`
 

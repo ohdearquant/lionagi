@@ -325,6 +325,8 @@ async def test_exact_resume_id_does_not_emit_prefix_hint(monkeypatch, tmp_path, 
     ("provider", "model", "requested", "effort_kwarg", "expected"),
     [
         ("codex", "gpt-5.4", "max", "reasoning_effort", "xhigh"),
+        # an alias is clamped as the provider it names
+        ("openai-codex", "gpt-5.4", "max", "reasoning_effort", "xhigh"),
         # a Claude model with no xhigh tier clamps to high
         ("claude_code", "claude-sonnet-4-5", "xhigh", "effort", "high"),
         # bare `sonnet` is on the xhigh list
@@ -361,3 +363,48 @@ async def test_resume_effort_uses_provider_model_clamp(
 
     assert terminal_status == "completed"
     assert captured == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["codex", "openai-codex"])
+async def test_a_resume_onto_another_model_reclamps_the_stored_effort(
+    monkeypatch, tmp_path, provider
+):
+    """An ultra stored for gpt-5.6-sol is past gpt-5.3-codex-spark's ceiling, so a resume that
+    moves to spark replays it clamped, on an alias as on codex."""
+    from lionagi import Branch, iModel
+
+    branch = Branch(
+        chat_model=iModel(
+            provider=provider,
+            endpoint="query_cli",
+            model="gpt-5.6-sol",
+            reasoning_effort="ultra",
+            api_key="dummy",
+        )
+    )
+    branch_id = str(branch.id)
+    branch_path = tmp_path / f"{branch_id}.json"
+    branch_path.write_text(json.dumps(branch.to_dict()))
+
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", branch_path))
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+
+    captured: list[str | None] = []
+
+    async def capture_operate(self, instruction=None, **kw):
+        captured.append(self.chat_model.endpoint.config.kwargs.get("reasoning_effort"))
+        return "ok"
+
+    monkeypatch.setattr(Branch, "operate", capture_operate)
+
+    from lionagi.cli.agent import _run_agent
+
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
+        f"{provider}/gpt-5.3-codex-spark", "continue", resume=branch_id
+    )
+
+    assert terminal_status == "completed"
+    assert captured == ["xhigh"]

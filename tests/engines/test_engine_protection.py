@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from lionagi import Branch
 from lionagi.casts.emission import build_emission_operable
 from lionagi.engines.engine import Engine, EngineBudgetError, JudgeVerdict
 from lionagi.engines.hypothesis import (
@@ -94,18 +95,17 @@ async def test_deadline_blocks_spawning():
 # -- judge gate ---------------------------------------------------------------
 
 
-class _FakeJudge:
-    name = "judge"
-
+class _FakeJudge(Branch):
     def __init__(self, run, verdict: JudgeVerdict | None, text: str = ""):
-        self._run = run
-        self._verdict = verdict
-        self._text = text
+        super().__init__(name="judge")
+        object.__setattr__(self, "_verdict", verdict)
+        object.__setattr__(self, "_text", text)
+        run.session.include_branches(self)
 
     async def operate(self, *, instruction):
         assert "Root objective" in instruction
         if self._verdict is not None:
-            await self._run.emit(self._verdict)
+            await self.emit(self._verdict)
         return self._text
 
 
@@ -130,6 +130,25 @@ async def test_judge_verdict_gates_expansion():
     run.make_agent = fake_make
     assert await eng.judge(run, "Q-1", "tangent question") is False
     assert any(e["type"] == "gated" and e["eid"] == "Q-1" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_foreign_session_deny_does_not_gate_expansion(monkeypatch):
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+
+    async def foreign(_judge, *, instruction):
+        await run.emit(JudgeVerdict(subject="Q-1", allow=False, reason="foreign deny"))
+        return ""
+
+    monkeypatch.setattr(_FakeJudge, "operate", foreign)
+
+    async def fake_make(role, **kw):
+        return _FakeJudge(run, None)
+
+    run.make_agent = fake_make
+    assert await eng.judge(run, "Q-1", "tangent question") is True
+    assert len(run.by_type(JudgeVerdict)) == 1
 
 
 @pytest.mark.asyncio

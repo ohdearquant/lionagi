@@ -37,9 +37,9 @@ def _wire(engine, run, monkeypatch):
 
     for stage in ("dedup", "extract", "research"):
         monkeypatch.setattr(engine, f"_{stage}", record(stage))
-    run.observe(ChainEvent, lambda event, _ctx: run.collect(event))
+    run.observe(ChainEvent, lambda event, _ctx: run._collect_emitted(event))
     run.observe(FindingPosted, lambda event, _ctx: engine._on_finding(run, event))
-    run.observe(DedupChecked, lambda event, _ctx: engine._on_dedup(run, event))
+    run.observe(run._agent_events(DedupChecked), lambda event, _ctx: engine._on_dedup(run, event))
     run.observe(QuestionRaised, lambda event, _ctx: engine._on_question(run, event))
     return calls
 

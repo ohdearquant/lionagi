@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.providers.openai._codex_profile import (
     refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
@@ -93,6 +95,26 @@ def _add_codex_account_integration_kwargs(
         extra["contain_account_integrations"] = True
 
 
+def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
+    # Only a CLI endpoint spawns an agent process to count or sandbox; left out at the
+    # default, so a heavy leg's request is the one it was before workloads existed. The
+    # endpoint decides, not the name: a slashless "openai-codex" is an API model.
+    if workload != DEFAULT_WORKLOAD and endpoint.is_cli:
+        extra["workload"] = workload
+
+
+def _is_light_codex(imodel: iModel) -> bool:
+    # A light codex worker writes only its working directory and the artifact directory
+    # the run gives it, and codex refuses it any other writable root.
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    config = imodel.endpoint.config
+    return (
+        EndpointRegistry.canonical_provider(config.provider) == "codex"
+        and config.kwargs.get("workload") == "light"
+    )
+
+
 def build_imodel_from_spec(
     spec: str,
     *,
@@ -104,6 +126,7 @@ def build_imodel_from_spec(
     fast: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    workload: str = DEFAULT_WORKLOAD,
     ignore_user_config: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
@@ -114,16 +137,23 @@ def build_imodel_from_spec(
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
 
+    from lionagi.service.connections.registry import EndpointRegistry
+
     extra: dict = {}
 
-    # Resolve provider for yolo/effort kwarg lookup
+    # Resolve provider for yolo/effort kwarg lookup, folded as the endpoint match folds it, so
+    # an alias such as "openai-codex" takes its provider's settings; the spec keeps the name as
+    # written. A slashless name is a model, not a provider.
     provider_raw = ms.model.split("/")[0] if "/" in ms.model else ms.model
+    provider = (
+        EndpointRegistry.canonical_provider(provider_raw) if "/" in ms.model else provider_raw
+    )
     resolved_model = ms.model
 
     # Before the effort clamp below, whose ceilings are keyed on the model: a
     # profile names a different model than the spec did.
     codex_profile_overrides: dict[str, Any] = {}
-    if provider_raw == "codex" and "/" in ms.model:
+    if provider == "codex" and "/" in ms.model:
         from ._logging import progress
 
         profile_name = ms.model.split("/", 1)[1]
@@ -137,32 +167,28 @@ def build_imodel_from_spec(
             ms = ModelSpec(model=resolved_model, effort=ms.effort)
 
     if bypass:
-        extra.update(PROVIDER_BYPASS_KWARGS.get(provider_raw, {}))
+        extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
     elif yolo:
-        extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
+        extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
-        extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
-    if provider_raw == "codex":
-        _add_codex_account_integration_kwargs(
-            extra, account_connectors, contain_account_integrations
-        )
+        extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if ignore_user_config and provider_raw == "codex":
+    if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
-    if effort is None and provider_raw == "codex" and not ignore_user_config:
+    if effort is None and provider == "codex" and not ignore_user_config:
         effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
     if effort is not None:
-        kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
+        kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
-            if provider_raw == "codex":
+            if provider == "codex":
                 effort = _clamp_codex_effort(effort, ms.model)
-            elif provider_raw in _CLAUDE_PROVIDER_NAMES:
+            elif provider in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, ms.model)
             extra[kwarg] = effort
-        elif provider_raw in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
             from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -175,12 +201,28 @@ def build_imodel_from_spec(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    return iModel(
+    model_instance = iModel(
         model=resolved_model,
         endpoint="query_cli",
         api_key="dummy",
         **extra,
     )
+    if account_connectors or contain_account_integrations:
+        # Keyed on the endpoint, like the workload: a slashless "openai-codex" is an API
+        # model, whose request would carry these settings as payload keys, and a slashless
+        # name takes the default chat provider, which can be codex.
+        endpoint = model_instance.endpoint
+        if (
+            endpoint.is_cli
+            and EndpointRegistry.canonical_provider(endpoint.config.provider) == "codex"
+        ):
+            _add_codex_account_integration_kwargs(
+                endpoint.config.kwargs, account_connectors, contain_account_integrations
+            )
+    if workload != DEFAULT_WORKLOAD:
+        endpoint = model_instance.endpoint
+        _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
+    return model_instance
 
 
 def build_chat_model(
@@ -196,6 +238,7 @@ def build_chat_model(
     mcp_exclusive: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
@@ -203,13 +246,18 @@ def build_chat_model(
     given or derived (a codex request may derive one from the global config);
     any such setting needs an iModel to carry it.
     """
+    from lionagi.service.connections.registry import EndpointRegistry
+
     effort = normalize_effort(effort)
     extra: dict = {}
+    # Settings are looked up under the provider the name resolves to, so an alias such as
+    # "openai-codex" takes its provider's; the model is built under the name as written.
+    canonical = EndpointRegistry.canonical_provider(provider)
     # Before anything keyed on the model — the effort clamp below included,
     # since its ceilings belong to specific models and a profile names a
     # different one than the spec did.
     codex_profile_overrides: dict[str, Any] = {}
-    if provider == "codex":
+    if canonical == "codex":
         from ._logging import progress
 
         resolved_profile = resolve_codex_config_profile(model)
@@ -233,12 +281,12 @@ def build_chat_model(
             exclusive=mcp_exclusive or not mcp_servers,
         )
     if bypass:
-        extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+        extra.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
     elif yolo:
-        extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+        extra.update(PROVIDER_YOLO_KWARGS.get(canonical, {}))
     if fast:
-        extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
-    if provider == "codex":
+        extra.update(PROVIDER_FAST_KWARGS.get(canonical, {}))
+    if canonical == "codex":
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
@@ -246,20 +294,20 @@ def build_chat_model(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if effort is None and provider == "codex" and not extra.get("ignore_user_config"):
+    if effort is None and canonical == "codex" and not extra.get("ignore_user_config"):
         # The derived default exists to keep the user config's own effort under the
         # model's ceiling. A request that ignores the user config never loads that
         # value, so there is nothing to derive from it.
         effort = codex_unset_effort_default(model, codex_profile_overrides)
     if effort is not None:
-        kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+        kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
         if kwarg is not None:
-            if provider == "codex":
+            if canonical == "codex":
                 effort = _clamp_codex_effort(effort, model)
-            elif provider in _CLAUDE_PROVIDER_NAMES:
+            elif canonical in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, model)
             extra[kwarg] = effort
-        elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
             from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -274,14 +322,18 @@ def build_chat_model(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    if extra:
-        return iModel(
+    if extra or workload != DEFAULT_WORKLOAD:
+        model_instance = iModel(
             provider=provider,
             endpoint="query_cli",
             model=model,
             api_key="dummy",
             **extra,
         )
+        if workload != DEFAULT_WORKLOAD:
+            endpoint = model_instance.endpoint
+            _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
+        return model_instance
     return f"{provider}/{model}"
 
 
@@ -290,7 +342,11 @@ def resolve_persisted_effort(
     chat_model: Any,
     requested_effort: str | None,
 ) -> str | None:
-    """Return the post-clamp effort to persist; None for providers in PROVIDERS_NO_EFFORT."""
+    """Return the post-clamp effort to persist; None for providers in PROVIDERS_NO_EFFORT. An
+    alias (``openai-codex``) is read as the provider it names, whose effort kwarg it carries."""
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    provider = EndpointRegistry.canonical_provider(provider or "")
     effort = requested_effort
     if isinstance(chat_model, iModel):
         _ep_kwargs = chat_model.endpoint.config.kwargs or {}
@@ -501,6 +557,12 @@ class AgentProfile:
     """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
     idle_timeout: int | None = None
     """Default --idle-timeout (seconds) used when the CLI flag is not given."""
+    workload: str = DEFAULT_WORKLOAD
+    """'light' (held to what its engine can enforce, counted against the total and engine caps)
+    or 'heavy' (also counted against the heavy cap); see ``li agent --workload``."""
+    contain_user_settings: bool = False
+    """Run a Claude flow or fan-out worker of this role with no settings files read, so the
+    operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:
@@ -660,6 +722,10 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["contain_account_integrations"] = True
     if profile.account_connectors:
         config["account_connectors"] = list(profile.account_connectors)
+    if profile.workload != DEFAULT_WORKLOAD:
+        config["workload"] = profile.workload
+    if profile.contain_user_settings:
+        config["contain_user_settings"] = True
     return config
 
 
@@ -821,6 +887,20 @@ def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
     return True
 
 
+def _parse_profile_contain_user_settings(name: str, frontmatter: dict) -> bool:
+    """Validate the profile flag. Absent, it is off; a value other than true or false, an
+    empty one included, warns and defaults to contained."""
+    if "contain_user_settings" not in frontmatter:
+        return False
+    raw = frontmatter["contain_user_settings"]
+    if isinstance(raw, bool):
+        return raw
+    from ._logging import warn
+
+    warn(f"agent profile {name!r}: contain_user_settings {raw!r} is not true or false; containing")
+    return True
+
+
 def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
     """Validate the profile 'account_connectors' list; warn and grant none when it does not
     read as connector names, rather than read it as all."""
@@ -837,8 +917,232 @@ def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
     return ()
 
 
+def _parse_profile_workload(name: str, raw: Any) -> str:
+    """Validate the profile 'workload'; warn and read anything else as heavy, the class
+    that keeps the configured sandbox and counts against both caps."""
+    if raw is None:
+        return DEFAULT_WORKLOAD
+    if isinstance(raw, str) and raw in WORKLOADS:
+        return raw
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: workload {raw!r} is not one of {', '.join(WORKLOADS)}; "
+        f"reading it as {DEFAULT_WORKLOAD}"
+    )
+    return DEFAULT_WORKLOAD
+
+
+_CONTAIN_KEY = "contain_user_settings"
+# A line that sets the flag as a key, in a mapping or a list item, quoted or not.
+_FLAG_KEY_LINE = re.compile(rf"^[ \t]*(?:-[ \t]+)*[\"']?{_CONTAIN_KEY}[\"']?[ \t]*:", re.M)
+_DASHES = re.compile(r"-{3,}")
+
+
+def _contain_flag_values(block: str) -> list[Any]:
+    """The value each top-level ``contain_user_settings`` key of *block*, a frontmatter block
+    that reads as YAML, gives the flag. Keys are found on the parsed nodes, so a quoted key, an
+    indented block, ``? contain_user_settings`` and a merge key all count; an explicit key wins
+    over a merged one, as it does in YAML. A boolean spelled other than ``true`` or ``false``,
+    such as ``off`` or ``no``, keeps its spelling, which reads as neither and so contains."""
+    import yaml
+
+    def value_nodes(node: Any, seen: set[int]) -> list[Any]:
+        if id(node) in seen or not isinstance(node, yaml.MappingNode):
+            return []
+        seen.add(id(node))
+        explicit: list[Any] = []
+        merged: list[Any] = []
+        for key, value in node.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                for source in sources:
+                    merged.extend(value_nodes(source, seen))
+            elif isinstance(key, yaml.ScalarNode) and key.value == _CONTAIN_KEY:
+                explicit.append(value)
+        return explicit or merged
+
+    loader = yaml.SafeLoader(block)
+    try:
+        values: list[Any] = []
+        for node in value_nodes(loader.get_single_node(), set()):
+            if (
+                isinstance(node, yaml.ScalarNode)
+                and node.tag == "tag:yaml.org,2002:bool"
+                and node.value.lower() not in ("true", "false")
+            ):
+                values.append(node.value)
+            else:
+                values.append(loader.construct_object(node, deep=True))
+        return values
+    finally:
+        loader.dispose()
+
+
+def _contain_flag_of(values: list[Any]) -> Any:
+    """The flag several keys give it: a key turning containment off loses to any other, so
+    it is off only when every one reads false."""
+    return next((value for value in values if value is not False), False)
+
+
+def _keys_like_the_contain_flag(document: Any) -> list[str]:
+    """The keys of a parsed frontmatter, at any depth, that read as ``contain_user_settings``
+    once case and dashes are set aside, each named by its path. Asked of a frontmatter no
+    top-level key of which sets the flag, every one it names is a key that does not."""
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def walk(node: Any, path: str) -> None:
+        if id(node) in seen or not isinstance(node, (dict, list)):
+            return
+        seen.add(id(node))
+        if isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+            return
+        for key, value in node.items():
+            where = f"{path}.{key}" if path else str(key)
+            if isinstance(key, str) and key.casefold().replace("-", "_") == _CONTAIN_KEY:
+                found.append(where)
+            walk(value, where)
+
+    walk(document, "")
+    return found
+
+
+def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
+    """The settings a profile keeps when no frontmatter block that reads opens it: none, with a
+    warning when a block with settings in it was there to lose. The worker is contained when
+    that block names ``contain_user_settings``: as a key when the block reads as YAML settings,
+    anywhere in its text when it does not read or reads as a list or a line of text, so neither
+    a broken line in the block nor text on the delimiter's line can turn containment off. A
+    block that is empty or comments only has none to lose. Text on lines of its own ahead of
+    the first ``---`` line leaves the profile all prompt, as before, and contains nothing: any
+    block after it, closed or not, that sets the flag as a key or does not read and names it
+    warns that its worker is not contained. A profile with no line of dashes has no block, and
+    all of it is the prompt."""
+    from itertools import pairwise
+
+    import yaml
+
+    from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
+
+    from ._logging import warn
+
+    def read(block: str) -> tuple[bool, Any]:
+        try:
+            return True, yaml.safe_load(block)
+        except yaml.YAMLError:
+            return False, None
+
+    if text.startswith("---"):
+        try:
+            parse_frontmatter_strict(text)
+            return {}
+        except yaml.YAMLError as exc:
+            reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        parts = _FM_SPLIT.split(text, maxsplit=2)
+        # An unclosed block runs to the end, since where it was meant to end is not known.
+        block = parts[1] if len(parts) == 3 else text[3:]
+        reads, document = read(block)
+        # A block with no settings in it, empty or comments only, has none to lose.
+        if reads and document is None:
+            return {}
+        named = _CONTAIN_KEY in block
+        what = f"its frontmatter does not read as YAML settings ({reason})"
+    else:
+        lines = text.splitlines()
+        if not (lines and lines[0].rstrip().endswith("---")):
+            # Text on lines of its own ahead of a ``---`` line is the prompt of a profile with
+            # no block, as before, so nothing after it applies, the flag included. A block after
+            # that text that names the flag says so rather than lose it in silence: one with a
+            # line setting it as a key, one that reads as settings and sets it, or one that does
+            # not read and names it anywhere. A block runs from a line of three or more dashes
+            # to the next such line or, unclosed, to the end.
+            delimiters = [i for i, line in enumerate(lines) if _DASHES.fullmatch(line.rstrip())]
+            for opening, end in pairwise([*delimiters, len(lines)]):
+                block = "\n".join(lines[opening + 1 : end])
+                reads, document = read(block)
+                if (
+                    _FLAG_KEY_LINE.search(block)
+                    or (reads and isinstance(document, dict) and _contain_flag_values(block))
+                    or (not reads and _CONTAIN_KEY in block)
+                ):
+                    warn(
+                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
+                        "text on lines of its own, so the profile is all prompt and no setting "
+                        "in the block applies; its worker is not contained, though the block "
+                        "names contain_user_settings"
+                    )
+                    break
+            return {}
+        # Text on the line of the opening delimiter hides the block it opens, which runs to
+        # the next ``---`` line or, unclosed, to the end.
+        rest = lines[1:]
+        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
+        block = "\n".join(rest if closing is None else rest[:closing])
+        reads, document = read(block)
+        if reads and isinstance(document, dict):
+            if not document:
+                return {}
+            named = bool(_contain_flag_values(block))
+        elif reads and document is None:
+            # Empty or comments only, a block has no settings to lose.
+            return {}
+        else:
+            # A hidden block that reads as a list or a line of text holds no settings, and
+            # one that does not read has none to apply: either counts, as a frontmatter
+            # that does not read does, when it names the flag anywhere in its text.
+            named = _CONTAIN_KEY in block
+            if not named and (reads or closing is None):
+                return {}
+        what = "text ahead of the --- on line 1 hides the frontmatter after it"
+    warn(
+        f"agent profile {name!r}: {what}; every setting in it is ignored"
+        + (", and its worker is contained, since it names contain_user_settings" if named else "")
+    )
+    return {_CONTAIN_KEY: True} if named else {}
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
+    import unicodedata
+
+    # Whitespace or an invisible format character (a byte-order mark, a zero-width
+    # space) ahead of the opening delimiter would hide it and, with it, every setting.
+    start = 0
+    while start < len(text) and (
+        text[start].isspace() or unicodedata.category(text[start]) == "Cf"
+    ):
+        start += 1
+    text = text[start:]
     frontmatter, body = _parse_frontmatter(text)
+    if not frontmatter:
+        frontmatter = _settings_of_unread_frontmatter(name, text)
+    else:
+        from lionagi.libs.frontmatter import _FM_SPLIT
+
+        values = _contain_flag_values(_FM_SPLIT.split(text.strip(), maxsplit=2)[1])
+        if len(values) > 1:
+            # YAML keeps the last of a repeated key; the flag is off only when every one reads
+            # false, so moving a line cannot turn containment off.
+            from ._logging import warn
+
+            warn(
+                f"agent profile {name!r}: contain_user_settings is set {len(values)} times; "
+                "it is off only when every one reads false"
+            )
+        if values:
+            frontmatter = {**frontmatter, _CONTAIN_KEY: _contain_flag_of(values)}
+        elif misplaced := _keys_like_the_contain_flag(frontmatter):
+            # A key spelled like the flag, or the flag under another setting, does not set it;
+            # say so rather than leave the worker on your settings in silence.
+            from ._logging import warn
+
+            warn(
+                f"agent profile {name!r}: contain_user_settings counts only as a top-level key "
+                f"spelled exactly so; it is not set by {', '.join(map(repr, misplaced))}, and "
+                "its worker is not contained"
+            )
 
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion
@@ -874,6 +1178,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         idle_timeout=_parse_profile_timeout(
             name, frontmatter.get("idle_timeout"), field="idle_timeout"
         ),
+        workload=_parse_profile_workload(name, frontmatter.get("workload")),
+        contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -892,6 +1198,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "idle_timeout",
                 "contain_account_integrations",
                 "account_connectors",
+                "workload",
+                "contain_user_settings",
             )
         },
     )

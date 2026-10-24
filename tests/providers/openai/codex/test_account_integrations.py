@@ -317,13 +317,13 @@ def captor(monkeypatch):
     return captor
 
 
-def test_build_imodel_from_spec_hands_both_fields_to_codex(captor):
-    build_imodel_from_spec(
+def test_build_imodel_from_spec_hands_both_fields_to_codex():
+    model = build_imodel_from_spec(
         "codex/gpt-5.5",
         account_connectors=("github",),
         contain_account_integrations=True,
     )
-    kw = captor.captures[-1]
+    kw = model.endpoint.config.kwargs
     assert kw["account_connectors"] == ["github"]
     assert kw["contain_account_integrations"] is True
 
@@ -335,13 +335,13 @@ def test_build_imodel_from_spec_leaves_both_out_when_unset(captor):
     assert "contain_account_integrations" not in kw
 
 
-def test_build_imodel_from_spec_hands_neither_to_another_provider(captor):
-    build_imodel_from_spec(
+def test_build_imodel_from_spec_hands_neither_to_another_provider():
+    model = build_imodel_from_spec(
         "claude_code/sonnet",
         account_connectors=("github",),
         contain_account_integrations=True,
     )
-    kw = captor.captures[-1]
+    kw = model.endpoint.config.kwargs
     assert "account_connectors" not in kw
     assert "contain_account_integrations" not in kw
 

@@ -32,6 +32,12 @@ from lionagi.ln.concurrency import (
 from lionagi.mcp.config import JOB_MARKER_ENV_VAR
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
+from lionagi.providers._subagent_admission import (
+    DEFAULT_WORKLOAD,
+    WORKLOADS,
+    NestedAgentRefusedError,
+    SubagentAdmissionRefusedError,
+)
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
@@ -59,6 +65,7 @@ from ._providers import (
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
     _add_codex_account_integration_kwargs,
+    _add_workload_kwarg,
     _clamp_claude_effort,
     _clamp_codex_effort,
     add_common_cli_args,
@@ -85,7 +92,12 @@ from ._runs import (
     setup_agent_persist,
     teardown_agent_persist,
 )
-from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
+from ._util import (
+    EXIT_CODE_BY_STATUS,
+    EXIT_CODE_SUBAGENT_REFUSED,
+    classify_exception,
+    validate_cwd_exists,
+)
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
@@ -1006,6 +1018,19 @@ async def _tombstone_pending_steers(
         log_error(f"steer tombstone write failed: {exc!r}")
 
 
+def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | None:
+    """The admission refusal *exc* is or wraps: iModel re-raises a stream failure as a
+    ``ValueError`` caused by the provider's own error."""
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, SubagentAdmissionRefusedError):
+            return cause
+        seen.add(id(cause))
+        cause = cause.__cause__
+    return None
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -1032,8 +1057,9 @@ async def _run_agent(
     no_mcp_config: bool = False,
     _auto_resumed: bool = False,
     _injection_totals: dict[str, int] | None = None,
-    # Last, so every parameter before it keeps the position it had
+    # Last, so every parameter before them keeps the position it had
     idle_timeout: int | None = None,
+    workload: str | None = None,
     *,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
@@ -1142,6 +1168,10 @@ async def _run_agent(
     # neither field, the leg's argv is what it was before these fields existed.
     account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
     contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+    # The flag wins over the role; with neither the leg is heavy, which keeps its configured
+    # sandbox and counts against both machine-wide caps.
+    if workload is None:
+        workload = getattr(profile, "workload", None) or DEFAULT_WORKLOAD
 
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".
@@ -1263,18 +1293,21 @@ async def _run_agent(
             "or use --resume / --continue-last to reopen an existing one."
         )
 
-    from lionagi.agent.factory import _reject_unforwardable_explicit_mcp
+    from lionagi.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
     _reject_unforwardable_explicit_mcp(
         provider,
         named_explicitly=mcp_resolution.explicit,
         asked_for_servers=bool(mcp_resolution.servers),
     )
+    # Settings are looked up under the provider the name resolves to, so an alias such as
+    # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
+    canonical = _canonical_provider(provider)
 
     if branch is None:
         # Codex blocks tool calls until file access is enabled. Surface this
         # even without verbose output; CLI or profile approval flags suppress it.
-        if provider == "codex" and not yolo and not bypass:
+        if canonical == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(
@@ -1296,6 +1329,7 @@ async def _run_agent(
             mcp_exclusive=mcp_resolution.declared_empty,
             account_connectors=account_connectors,
             contain_account_integrations=contain_account_integrations,
+            workload=workload,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
         if not isinstance(chat_model, str) and not chat_model.is_cli:
@@ -1448,9 +1482,9 @@ async def _run_agent(
                 # on a spark resume).
                 from lionagi.service.providers import reclamp_effort_for_model
 
-                kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+                kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                 if kwarg and cfg.get(kwarg) is not None:
-                    cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
+                    cfg[kwarg] = reclamp_effort_for_model(canonical, cfg[kwarg], model)
         # The display flags are CLI endpoint options; an API model sends its
         # config's kwargs with each request, so a branch on the tool loop is
         # handed neither.
@@ -1462,14 +1496,14 @@ async def _run_agent(
         if theme is not None and not on_tool_loop:
             cfg["cli_display_theme"] = theme
         if effort is not None:
-            kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+            kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
             if kwarg:
-                if provider == "codex":
+                if canonical == "codex":
                     effort = _clamp_codex_effort(effort, cfg.get("model"))
-                elif provider in _CLAUDE_PROVIDER_NAMES:
+                elif canonical in _CLAUDE_PROVIDER_NAMES:
                     effort = _clamp_claude_effort(effort, cfg.get("model") or "")
                 cfg[kwarg] = effort
-            elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+            elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                 # agy (Antigravity CLI) has no effort kwarg — fold effort into
                 # the resolved --model name instead (see resolve_agy_model).
                 from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -1480,18 +1514,22 @@ async def _run_agent(
                     reapply_effort=model_str is None,
                 )
         if bypass:
-            cfg.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
         elif yolo:
-            cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_YOLO_KWARGS.get(canonical, {}))
         if fast:
-            cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_FAST_KWARGS.get(canonical, {}))
         # The stored row never carries a connector grant; its containment value also belongs
         # to the previous role, so both settings come from the current role.
-        if provider == "codex":
+        if canonical == "codex":
             cfg.pop("contain_account_integrations", None)
-            _add_codex_account_integration_kwargs(
-                cfg, account_connectors, contain_account_integrations
-            )
+            if branch.chat_model.endpoint.is_cli:
+                _add_codex_account_integration_kwargs(
+                    cfg, account_connectors, contain_account_integrations
+                )
+        # Like the connectors: the class belongs to this launch, not to the stored row.
+        cfg.pop("workload", None)
+        _add_workload_kwarg(cfg, branch.chat_model.endpoint, workload)
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
         # not the caller's directory. Which providers can be given a set, and
@@ -1931,7 +1969,8 @@ async def _run_agent(
         if _terminal_status == "failed":
             # Default traceback printing is unreliable under SIGTERM/process
             # death — leave a one-line diagnostic before it propagates.
-            log_error(f"{type(exc).__name__}: {exc}")
+            shown = _admission_refusal(exc) or exc
+            log_error(f"{type(shown).__name__}: {shown}")
         raise
     finally:
         # See docs/internals/cli.md for why an about-to-auto-resume leg must
@@ -2147,6 +2186,7 @@ async def _run_agent(
                 bypass=bypass,
                 resume_on_timeout=resume_on_timeout,
                 idle_timeout=idle_timeout,
+                workload=workload,
                 notify=notify,
                 mcp_config=mcp_config,
                 no_mcp_config=no_mcp_config,
@@ -2240,7 +2280,8 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "then a trusted+enabled plugin's declared profile "
             "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
-            "timeout, idle_timeout, resume_on_timeout. CLI flags override profile settings."
+            "timeout, idle_timeout, resume_on_timeout, workload. CLI flags override "
+            "profile settings."
         ),
     )
     agent.add_argument(
@@ -2344,6 +2385,21 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "By default the nearest .mcp.json at or above the directory this "
             "command was run in is used, so the leg's tools come from the "
             "submission rather than from --cwd. The file is read once at spawn."
+        ),
+    )
+    agent.add_argument(
+        "--workload",
+        choices=WORKLOADS,
+        default=None,
+        help=(
+            "How the leg counts against the machine-wide agent caps "
+            "(LIONAGI_MAX_SUBAGENTS, LIONAGI_MAX_SUBAGENTS_HEAVY and the engine's own) and "
+            "what it is held to. 'light' holds a CLI worker to what its engine can enforce "
+            "(codex: workspace-write sandbox with no network; gemini: --sandbox; claude: "
+            "without the Edit, Write and NotebookEdit tools, Bash kept, no sandbox; pi: "
+            "refused) and counts against the total cap and its engine cap. 'heavy' keeps the "
+            "configured sandbox and also counts against the heavy cap. Defaults to the "
+            "profile's 'workload', else heavy."
         ),
     )
     agent.add_argument(
@@ -2496,6 +2552,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 preset=getattr(args, "preset", None),
                 resume_on_timeout=getattr(args, "resume_on_timeout", False),
                 idle_timeout=getattr(args, "idle_timeout", None),
+                workload=getattr(args, "workload", None),
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
@@ -2512,6 +2569,10 @@ def run_agent(args: argparse.Namespace) -> int:
     except ContextFromError as exc:
         log_error(str(exc))
         return 2
+    except NestedAgentRefusedError as exc:
+        # Refused before any run exists; not retryable, so not the admission exit code.
+        log_error(str(exc))
+        return EXIT_CODE_BY_STATUS["failed"]
     except InputTokenCapError:
         # The run logged it and recorded it in run.json as failed: exit with that status
         # rather than a traceback.
@@ -2526,6 +2587,9 @@ def run_agent(args: argparse.Namespace) -> int:
     except BaseException as exc:
         if isinstance(exc, cancelled_exc_classes()):
             return EXIT_CODE_BY_STATUS["cancelled"]
+        if _admission_refusal(exc) is not None:
+            # The run already printed the one refusal line and recorded the cause on its row.
+            return EXIT_CODE_SUBAGENT_REFUSED
         log_error(f"{type(exc).__name__}: {exc}")
         raise
 

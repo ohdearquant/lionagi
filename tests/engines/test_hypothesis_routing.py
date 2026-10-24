@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import patch
 
 import pydantic
 import pytest
 
 import lionagi.engines.engine as engine_mod
 import lionagi.engines.hypothesis as hyp_mod
+from lionagi import Branch
 from lionagi._errors import ContainmentRefusedError
 from lionagi.engines.hypothesis import (
     ChainEvent,
@@ -41,10 +43,30 @@ def _no_local_profiles(monkeypatch):
 
 
 def _wire(eng, run):
-    run.observe(ChainEvent, lambda e, _c: run.collect(e))
+    run.observe(ChainEvent, lambda e, _c: run._collect_emitted(e))
     run.observe(FindingPosted, lambda f, _c: eng._on_finding(run, f))
-    run.observe(DedupChecked, lambda d, _c: eng._on_dedup(run, d))
+    run.observe(run._agent_events(DedupChecked), lambda d, _c: eng._on_dedup(run, d))
     run.observe(QuestionRaised, lambda q, _c: eng._on_question(run, q))
+
+
+async def _search_verdict(run, verdict):
+    """Run the real search stage, replacing only its provider-facing calls."""
+    finding = run.find(verdict.finding_ref)
+    previous = run._dedup_agents.get(finding.eid)
+    branch = previous[1] if previous is not None else run.session.new_branch(name="search")
+
+    async def make_agent(*_args, **_kwargs):
+        return branch
+
+    async def operate(agent, *_args, **_kwargs):
+        assert agent is branch
+        await agent.emit(verdict)
+
+    with (
+        patch.object(run, "make_agent", make_agent),
+        patch.object(run, "operate_with_repair", operate),
+    ):
+        await HypothesisEngine._dedup_search(run.engine, run, finding)
 
 
 def _mute(eng, *stages):
@@ -164,13 +186,14 @@ async def test_duplicate_verdict_stops_extraction():
     events: list[dict] = []
     run.on_event = lambda e: events.append(e)
     f = run.collect(FindingPosted(description="already tracked"))
-    await run.emit(
+    await _search_verdict(
+        run,
         DedupChecked(
             finding_ref=f.eid,
             verdict="duplicate",
             issue_number=42,
             issue_state="closed",
-        )
+        ),
     )
     await run.wait_quiescence()
     assert not [s for s, _ in calls if s == "extract"]
@@ -186,7 +209,7 @@ async def test_new_and_extends_verdicts_proceed_to_extract(verdict):
     calls = _mute(eng, "dedup", "extract")
     _wire(eng, run)
     f = run.collect(FindingPosted(description="novel mechanism"))
-    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict))
+    await _search_verdict(run, DedupChecked(finding_ref=f.eid, verdict=verdict))
     await run.wait_quiescence()
     assert [s for s, _ in calls] == ["extract"]
     assert f.eid in run.dedup_cleared
@@ -199,8 +222,8 @@ async def test_second_dedup_verdict_does_not_double_extract():
     calls = _mute(eng, "dedup", "extract")
     _wire(eng, run)
     f = run.collect(FindingPosted(description="novel mechanism"))
-    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
-    await run.emit(DedupChecked(finding_ref=f.eid, verdict="extends", issue_number=7))
+    await _search_verdict(run, DedupChecked(finding_ref=f.eid, verdict="new"))
+    await _search_verdict(run, DedupChecked(finding_ref=f.eid, verdict="extends", issue_number=7))
     await run.wait_quiescence()
     assert [s for s, _ in calls] == ["extract"]
 
@@ -346,6 +369,7 @@ async def test_a_tracker_search_that_answers_nothing_releases_the_finding_once()
 
     async def make_agent(role, *, name=None, **kwargs):
         agent = _StubAgent(name, None)
+        run.session.include_branches(agent)
         built.append(agent)
         return agent
 
@@ -364,9 +388,8 @@ async def test_a_tracker_search_that_answers_nothing_releases_the_finding_once()
     await run.wait_quiescence()
 
     assert [agent.name.split("-")[0] for agent in built] == ["dedup"]
-    # _StubAgent has no __eq__, so this compares identity: the search operated
-    # exactly the agent it built.
-    assert operated == built
+    assert len(operated) == len(built) == 1
+    assert operated[0] is built[0]
     assert [s for s, _ in calls] == ["extract"]
     assert sum(e["type"] == "dedup_missing" for e in events) == 1
     assert not any(e["type"] == "stage_error" for e in events)
@@ -382,7 +405,7 @@ async def test_dedup_stage_exception_does_not_double_release_with_late_verdict()
     _wire(eng, run)
 
     async def dedup_then_boom(run, f):
-        await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+        await _search_verdict(run, DedupChecked(finding_ref=f.eid, verdict="new"))
         raise TimeoutError("post-verdict cleanup failed")
 
     eng._dedup_search = dedup_then_boom
@@ -393,10 +416,10 @@ async def test_dedup_stage_exception_does_not_double_release_with_late_verdict()
     assert [s for s, _ in calls] == ["extract"]
 
 
-class _StubAgent:
+class _StubAgent(Branch):
     def __init__(self, name, judge_error):
-        self.name = name
-        self._judge_error = judge_error
+        super().__init__(name=name)
+        object.__setattr__(self, "_judge_error", judge_error)
 
     async def operate(self, **kwargs):
         if self._judge_error is not None and self.name.startswith("judge-"):
@@ -432,7 +455,9 @@ async def test_a_judge_that_raises_in_the_dedup_stage_ends_the_finding(
 
     async def make_agent(role, *, name=None, **kwargs):
         built.append(name)
-        return _StubAgent(name, judge_error)
+        agent = _StubAgent(name, judge_error)
+        run.session.include_branches(agent)
+        return agent
 
     async def operate_with_repair(*args, **kwargs):
         return None
@@ -512,13 +537,15 @@ async def test_a_finding_its_judge_passed_is_extracted_without_a_second_judge():
         return True
 
     async def search(_run, f):
-        await _run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+        await _search_verdict(_run, DedupChecked(finding_ref=f.eid, verdict="new"))
 
     extracted: list[str] = []
 
     async def make_agent(role, *, name=None, **kwargs):
         extracted.append(name)
-        return _StubAgent(name, None)
+        agent = _StubAgent(name, None)
+        run.session.include_branches(agent)
+        return agent
 
     async def operate_with_repair(*args, **kwargs):
         return None
@@ -577,7 +604,9 @@ async def test_a_verdict_while_the_judge_decides_does_not_answer_the_search(verd
         return True
 
     async def make_agent(role, *, name=None, **kwargs):
-        return _StubAgent(name, None)
+        agent = _StubAgent(name, None)
+        run.session.include_branches(agent)
+        return agent
 
     async def operate_with_repair(*args, **kwargs):
         return None
@@ -608,10 +637,11 @@ async def test_a_later_verdict_does_not_reopen_a_duplicate():
     calls = _mute(eng, "dedup", "extract")
     _wire(eng, run)
     f = run.collect(FindingPosted(description="already tracked"))
-    await run.emit(
-        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    await _search_verdict(
+        run,
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open"),
     )
-    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+    await _search_verdict(run, DedupChecked(finding_ref=f.eid, verdict="new"))
     await run.wait_quiescence()
 
     assert calls == []
@@ -627,11 +657,13 @@ async def test_a_search_that_records_a_duplicate_and_then_fails_does_not_release
     _wire(eng, run)
 
     async def make_agent(role, *, name=None, **kwargs):
-        return _StubAgent(name, None)
+        agent = _StubAgent(name, None)
+        run.session.include_branches(agent)
+        return agent
 
-    async def operate_with_repair(*args, **kwargs):
+    async def operate_with_repair(agent, *args, **kwargs):
         f = run.events_of(FindingPosted)[-1]
-        await run.emit(
+        await agent.emit(
             DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
         )
         raise TimeoutError("timed out after the verdict")
@@ -685,7 +717,9 @@ async def _released_on_an_empty_search(eng):
     _wire(eng, run)
 
     async def make_agent(role, *, name=None, **kwargs):
-        return _StubAgent(name, None)
+        agent = _StubAgent(name, None)
+        run.session.include_branches(agent)
+        return agent
 
     async def operate_with_repair(*args, **kwargs):
         return None
@@ -708,8 +742,9 @@ async def test_a_duplicate_after_a_release_is_reported_and_extracts_nothing_more
     run, calls, f = await _released_on_an_empty_search(eng)
     events: list[dict] = []
     run.on_event = events.append
-    await run.emit(
-        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    await _search_verdict(
+        run,
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open"),
     )
     await run.wait_quiescence()
 
@@ -726,7 +761,9 @@ async def test_a_duplicate_after_a_release_is_reported_and_extracts_nothing_more
 async def test_a_new_after_a_release_reaches_the_filing_queue_once():
     eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
     run, calls, f = await _released_on_an_empty_search(eng)
-    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new", source_confirmed=True))
+    await _search_verdict(
+        run, DedupChecked(finding_ref=f.eid, verdict="new", source_confirmed=True)
+    )
     await run.wait_quiescence()
 
     assert [stage for stage, _ in calls] == ["extract"]

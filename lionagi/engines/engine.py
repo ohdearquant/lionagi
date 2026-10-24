@@ -11,7 +11,9 @@ import logging
 import os
 from collections import deque
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +27,9 @@ from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
 )
-from lionagi.ln.types import TypeFilter
+from lionagi.ln.types import RoleFilter, TypeFilter
+from lionagi.protocols._concepts import Observable
+from lionagi.session.observer import SessionObserver
 from lionagi.session.session import Session
 from lionagi.session.signal import Signal
 
@@ -319,6 +323,120 @@ def _namespaced_injection(injection: Any, namespace: str) -> Any:
     return injection
 
 
+@dataclass(slots=True)
+class _EmissionOrigin:
+    owner: object | None
+    branch: Any
+    event: Any
+    task: Any
+    active: bool = True
+    collections: dict[Any, list[tuple[Any, int]]] = dataclass_field(default_factory=dict)
+
+
+class _EngineDispatch:
+    """Keep branch provenance at the actual observer entry, never in payloads."""
+
+    def __init__(self, emit: Callable) -> None:
+        self._emit = emit
+        self.current: ContextVar[_EmissionOrigin | None] = ContextVar(
+            "engine_emission_origin", default=None
+        )
+
+    async def __call__(self, event: Any) -> list[Any]:
+        # Session emissions, including nested replays of the same envelope,
+        # cannot borrow the branch whose handlers or gate invoked them.
+        return await self._dispatch(event, None, None)
+
+    async def _from_branch(self, event: Any, owner: object, branch: Any) -> list[Any]:
+        return await self._dispatch(event, owner, branch)
+
+    async def _dispatch(self, event: Any, owner: object | None, branch: Any) -> list[Any]:
+        if not isinstance(event, Observable):
+            event = Signal(data=event)
+        origin = _EmissionOrigin(owner, branch, event, asyncio.current_task())
+        token = self.current.set(origin)
+        try:
+            return await self._emit(event)
+        finally:
+            origin.active = False
+            self.current.reset(token)
+
+
+def _engine_dispatch(observer: Any) -> _EngineDispatch | None:
+    # Unknown observers keep their existing protocol and carry no authority.
+    if not isinstance(observer, SessionObserver):
+        return None
+    if not isinstance(observer.emit, _EngineDispatch):
+        observer.emit = _EngineDispatch(observer.emit)
+    return observer.emit
+
+
+class _BranchObserver:
+    def __init__(self, observer: SessionObserver, owner: object, branch: Any) -> None:
+        self.observer, self.owner, self.branch = observer, owner, branch
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.observer, name)
+
+    async def emit(self, event: Any) -> list[Any]:
+        dispatch = _engine_dispatch(self.observer)
+        return await dispatch._from_branch(event, self.owner, self.branch)
+
+
+class _BranchEmitter:
+    def __init__(self, emit: Callable, owner: object, branch: Any) -> None:
+        self.emit, self.owner, self.branch = emit, owner, branch
+
+    async def __call__(self, event: Any) -> list[Any]:
+        observer = getattr(self.branch, "_observer", None)
+        if isinstance(observer, _BranchObserver):
+            observer = observer.observer
+        if isinstance(observer, SessionObserver):
+            # include_branches restores the observer, so bind at each emission.
+            self.branch._observer = _BranchObserver(observer, self.owner, self.branch)
+        return await self.emit(event)
+
+
+@dataclass(frozen=True, slots=True)
+class _AgentEmission:
+    value: Any
+    branch: Any
+    position: int | None
+
+
+class _AgentEventFilter(RoleFilter):
+    """Use the existing typed traversal, with the post-gate envelope intact."""
+
+    def __init__(self, run: Any, event_type: type, capture: Callable | None = None) -> None:
+        self.run, self.event_type, self.capture = run, event_type, capture
+
+    def matches(self, event: Any) -> list[Any]:
+        observer = self.run.session.observer
+        payload = event.data if isinstance(event, Signal) else event
+        origin = self.run._emission_origin(event)
+        branch = (
+            origin.branch
+            if origin is not None and origin.owner is self.run._emission_owner
+            else None
+        )
+        collected = iter(
+            origin.collections.get(self.run._emission_owner, ()) if origin is not None else ()
+        )
+        receipts = []
+        for value in observer._match(TypeFilter(self.event_type), event, payload):
+            position = next((i for stored, i in collected if stored is value), None)
+            receipts.append(_AgentEmission(value, branch, position))
+        if self.capture is not None:
+            for receipt in receipts:
+                self.capture(receipt)
+            # Capturing a judge decision must not add a handler result.
+            return []
+        return receipts
+
+    def __repr__(self) -> str:
+        return f"_AgentEventFilter({self.event_type.__name__})"
+
+
 class EngineRun:
     """Per-run context: session, dedup set, in-flight tasks, semaphore, and hard budget (agents + deadline)."""
 
@@ -332,6 +450,8 @@ class EngineRun:
     ) -> None:
         self.engine = engine
         self.session = session if session is not None else Session()
+        self._emission_owner = object()
+        _engine_dispatch(self.session.observer)
         self.on_event = on_event
         self._on_branch_created = on_branch_created
         self.root: str = ""
@@ -392,6 +512,51 @@ class EngineRun:
             payload = e.data if isinstance(e, Signal) else e
             out.extend(obs._match(flt, e, payload))
         return out
+
+    def _emission_origin(self, event: Any) -> _EmissionOrigin | None:
+        dispatch = self.session.observer.emit
+        if not isinstance(dispatch, _EngineDispatch):
+            return None
+        origin = dispatch.current.get()
+        if (
+            origin is not None
+            and origin.active
+            and origin.event is event
+            and origin.task is asyncio.current_task()
+        ):
+            return origin
+        return None
+
+    def _agent_events(self, event_type: type) -> _AgentEventFilter:
+        return _AgentEventFilter(self, event_type)
+
+    def _bind_agent_emitter(self, branch: Any) -> None:
+        emit = getattr(branch, "emit", None)
+        if emit is None:
+            return
+        if isinstance(emit, _BranchEmitter):
+            if emit.owner is self._emission_owner:
+                return
+            emit = emit.emit
+        object.__setattr__(branch, "emit", _BranchEmitter(emit, self._emission_owner, branch))
+
+    @contextlib.contextmanager
+    def _agent_verdicts(self, branch: Any, event_type: type):
+        verdicts: list[Any] = []
+
+        def capture(receipt: _AgentEmission) -> None:
+            if receipt.branch is branch:
+                verdicts.append(receipt.value.model_copy(deep=True))
+
+        def unused(_event: Any, _ctx: Any) -> None:
+            pass
+
+        observer = self.session.observer
+        observer.observe(_AgentEventFilter(self, event_type, capture), handler=unused)
+        try:
+            yield verdicts
+        finally:
+            observer.unobserve(unused)
 
     # -- resource budget --------------------------------------------------------
 
@@ -537,6 +702,7 @@ class EngineRun:
         self.session.include_branches(branch)
         if self._on_branch_created is not None:
             self._on_branch_created(branch)
+        self._bind_agent_emitter(branch)
         return branch
 
     async def operate_with_repair(
@@ -1264,6 +1430,9 @@ class ChainRun(EngineRun):
         self._eid_counts: dict[str, int] = {}
         self._index: dict[str, Any] = {}
 
+    def _on_collect(self, event: Any) -> None:
+        """Record private occurrence data before notification can reenter collection."""
+
     def collect(self, event: Any) -> Any:
         """Stamp the engine-assigned eid, store the event, and notify on_event; the single notification path for all chain events."""
         prefix = self._event_prefix_map.get(type(event), "N")
@@ -1272,6 +1441,7 @@ class ChainRun(EngineRun):
         event.eid = f"{prefix}-{n}"
         self.store.setdefault(type(event), []).append(event)
         self._index[event.eid] = event
+        self._on_collect(event)
         self.notify(type(event).__name__, **_safe_event_dict(event))
         return event
 
@@ -1438,8 +1608,12 @@ class Engine:
                     # a recall round-trip per verdict is pure overhead.
                     khive_injection=False,
                 )
-                res = await agent.operate(instruction=_judge_instruction(eid, subject, run.root))
-            for v in run.by_type(JudgeVerdict):
+                run._bind_agent_emitter(agent)
+                with run._agent_verdicts(agent, JudgeVerdict) as verdicts:
+                    res = await agent.operate(
+                        instruction=_judge_instruction(eid, subject, run.root)
+                    )
+            for v in verdicts:
                 if v.subject == eid:
                     if not v.allow:
                         run.notify("gated", eid=eid, reason=v.reason)
