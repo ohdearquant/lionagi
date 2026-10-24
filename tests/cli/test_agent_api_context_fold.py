@@ -1647,3 +1647,49 @@ async def test_amendment2_busy_main_request_still_marks_its_actual_view_delivere
         release.set()
         await folding
     assert fold._busy is False
+
+
+@pytest.mark.parametrize("value", [Path("notes-é.txt"), object()], ids=["path", "object"])
+def test_fold_note_text_keeps_default_str_as_its_last_fallback(value):
+    from lionagi.agent.context_fold import _short, _size
+    from lionagi.agent.context_fold import _text as fold_text
+
+    expected = json.dumps(value, ensure_ascii=False, default=str)
+    assert fold_text(value) == expected
+    assert json.loads(_short({"result": value})) == {"result": str(value)}
+    assert _size(value) == len(expected)
+
+
+def test_fold_note_text_keeps_yaml_values_before_the_string_fallback():
+    import datetime
+
+    import yaml
+
+    from lionagi.agent.context_fold import _text as fold_text
+
+    value = {"date": datetime.date(2026, 10, 24)}
+    assert yaml.safe_load(fold_text(value)) == value
+
+
+@pytest.mark.asyncio
+async def test_fold_pre_call_refusal_retains_the_group_and_its_sibling(monkeypatch):
+    from lionagi.agent.context_fold import ContextFold
+    from lionagi.ln.concurrency import ExceptionGroup
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    branch, _task = _branch_with_reasoning(cap=1000000, turns=1)
+    fold = ContextFold(branch, cap=6000, estimate=lambda _branch: 6000)
+    refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+    sibling = ValueError("another persistence callback failed")
+    group = ExceptionGroup("fold persistence failures", [refusal, sibling])
+
+    async def refuse(**_kwargs):
+        raise group
+
+    monkeypatch.setattr(fold, "fold", refuse)
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await fold.on_api_pre_call()
+    assert caught.value is refusal
+    assert caught.value.__cause__ is group
+    assert group.exceptions == (refusal, sibling)
+    assert fold._request_views.get() == ()

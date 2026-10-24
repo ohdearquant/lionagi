@@ -3,7 +3,7 @@
 
 """Host-side context fold for an API-model agent with an input cap.
 
-Before a request is compiled, the fold estimates its input; at ``fold_at`` of the model's
+Before a chat request is compiled, the fold estimates its input; at ``fold_at`` of the model's
 ``max_input_tokens`` it curates the branch's active view with the context tool's own
 ``compact``, the mutation the model makes when it compacts, so durable history is never
 deleted. The first stage replaces older tool calls and results with a host-written list of the
@@ -151,9 +151,14 @@ def _text(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError):
+        from yaml import YAMLError
+
         from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
-        return minimal_yaml(value)
+        try:
+            return minimal_yaml(value)
+        except YAMLError:
+            return json.dumps(value, ensure_ascii=False, default=str)
 
 
 class ContextFold:
@@ -252,7 +257,7 @@ class ContextFold:
             if refusal is exc:
                 raise
             if refusal is not None:
-                raise refusal from refusal.__cause__
+                raise refusal from exc
             self._log(f"context fold failed: {exc!r}")
         self._request_views.set(
             (*self._request_views.get(), tuple(str(uid) for uid in self.branch.progression))
@@ -765,6 +770,10 @@ def install_context_fold(
     branch: Branch, *, cap: int, log: Callable[[str], None] | None = None
 ) -> ContextFold:
     """Attach a ContextFold to the branch's API_PRE_CALL hook point and return it.
+
+    This fold supports chat and operate requests using the chat path, which compiles after
+    API_PRE_CALL. The streaming run path compiles before that hook and is outside this fold's
+    supported request scope.
 
     A branch with no HookBus yet gets one of its own; a Session joined later takes the handler
     over through ``attach_hook_bus``, as it does for every queued branch handler. A branch keeps

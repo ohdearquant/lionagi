@@ -284,6 +284,10 @@ back:
    one model call carrying only the folded span, beside the call lists of stage 1 and of earlier notes.
    If that call fails, the list stands alone.
 
+This fold supports `chat` and `operate` requests using the chat path, which compiles after
+`API_PRE_CALL`. The streaming `run` path compiles before that hook and is outside this fold's
+supported request scope.
+
 The task instruction and the first message of the view are never folded, and no other branch is
 changed. If the cap still refuses a request, the loop calibrates the fold by the refused estimate,
 folds at least once more and continues, at most twice per turn (the task, or one queued message). A
@@ -353,7 +357,8 @@ request.**
    summary, which does, carries a marker the fold skips. A failed or refused request marks nothing.
    The delivered ids are kept in branch metadata beside the curated view, persist with the branch, and
    `Branch.clone` maps them to the clone's ids as it maps the curated view. A branch that has no such
-   record counts every message created before its newest assistant response other than a compaction note as delivered.
+   record counts every message created before its newest assistant response that is not a
+   compaction note as delivered.
    `tool_io` and `all` fold only delivered messages: the fold's compaction takes a set of messages to
    keep, which the model's tool schema does not expose, and a kept message inside the folded span
    stays where it is. An undelivered result, and the call it answers, stays in view wherever it sits;
@@ -363,8 +368,8 @@ request.**
    and the tail of two, with the clips already made. If the floor view is over the ceiling, no fold
    can make the request sendable, `all` does not run and no summary request is sent. If it is over 60%
    of the ceiling but under the ceiling, `all` runs once, with the tail of two. Otherwise `all` runs
-   with the tail of six, then two. The fold stops at the first pass that reaches the target, and each
-   pass runs at most once per fold.
+   with the tail of six, then two. The fold stops at the first pass that reaches the target.
+   Each ordered tail step and the clip stage runs at most once per fold.
 3. *`clip` cuts by the deficit.* It shortens tool result bodies in the view, the kept tail and
    undelivered results included. Its budget is the estimate minus 60% of the ceiling, both measured
    on the compiled request at the current scale. A text output is one body. In a mapping output each string value is a body of its own and is cut in place, so the mapping keeps
@@ -373,7 +378,7 @@ request.**
    a date) is not a body and stays whole; the `success` and `error` fields are never cut. A value the request
    cannot render at all (an object with no YAML form, a cycle) never reaches the clip, because compiling the
    view refuses it first. Bodies are taken largest first by
-   character length, ties to the oldest. Each body is cut just enough to cover the remaining deficit,
+   current kept character length, ties to the oldest. Each body is cut just enough to cover the remaining deficit,
    using that body's own measured tokens per character, keeps a head and a tail of the original in a
    three-to-one ratio, and is never cut below 1,024 characters; a shorter body stays whole. After each
    cut the candidate view is compiled and counted, and the next body is taken only if the count is
