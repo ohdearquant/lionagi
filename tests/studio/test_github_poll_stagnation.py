@@ -18,6 +18,7 @@ from lionagi.studio.scheduler import github as github_module
 from lionagi.studio.scheduler import subprocess as subprocess_module
 from lionagi.studio.scheduler.engine import SchedulerEngine
 from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+from lionagi.studio.services.schedules import compute_schedule_health
 
 _COUNTER = "poller_consecutive_cap_no_dispatch"
 _NOW = 2_000_000_000.0
@@ -248,6 +249,51 @@ async def test_filtered_cursor_progress_is_not_dispatch(stores, client, operator
     else:
         assert row["github_cursor"] == github_module._cursor_for("2026-10-24T10:05:00Z", 1)
     assert await db.list_schedule_runs("poll") == []
+
+
+@pytest.mark.asyncio
+async def test_capped_filtered_cursor_advance_still_counts_as_stagnation(
+    stores, client, process, monkeypatch
+):
+    db, _, reader = stores
+    initial_cursor = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
+    await _schedule(
+        db,
+        streak=2,
+        github_cursor=initial_cursor,
+        github_filter={"event": "pr_merged", "draft": False},
+    )
+    before = await _row(reader)
+    assert before["github_cursor"] == initial_cursor
+    assert before[_COUNTER] == 2
+    client.response = _Response([_pr(1, draft=True), _pr(2, safe=False)], more=True)
+    poll_results = []
+    github_poll = github_module.github_poll
+
+    async def observe_poll(schedule):
+        result = await github_poll(schedule)
+        poll_results.append(result)
+        return result
+
+    monkeypatch.setattr(github_module, "github_poll", observe_poll)
+    engine = SchedulerEngine(svc=_Service(db))
+    await engine._tick_github(await _row(db), _NOW)
+
+    assert len(poll_results) == 1
+    result = poll_results[0]
+    assert result.poll_status == "ok"
+    assert result.scan_complete is False
+    assert [item.event["pr_number"] for item in result.items] == [1]
+    assert all(not item.dispatchable for item in result.items)
+    row = await _row(reader)
+    assert row["github_cursor"] == github_module._cursor_for("2026-10-24T10:05:00Z", 1)
+    assert row["github_cursor"] > initial_cursor
+    assert row[_COUNTER] == 3
+    assert row["last_healthy_poll_at"] == _NOW
+    assert await reader.list_schedule_runs("poll") == []
+    assert engine._global_inflight == 0
+    assert client.calls == 1
+    assert compute_schedule_health(row, {}, now=_NOW)["health_state"] == "overdue"
 
 
 @pytest.mark.asyncio
