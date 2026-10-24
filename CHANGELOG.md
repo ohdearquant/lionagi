@@ -732,8 +732,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `status`, and for one with no playbook whose `action_extra_args` start with one of those words,
   which the launch passes to `li play` first: creating or updating one is refused (an update is
   also checked when it sets the extra arguments), a schedule set member or a
-  `li schedule create playbook` naming one is refused when the set is validated or applied, and a
-  stored one is refused when it fires.
+  `li schedule create playbook` naming one is refused when the set is validated or applied, a
+  stored one is refused when it fires, and the default export reports a stored member naming one
+  as blocked rather than ready, since applying it again is refused.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read

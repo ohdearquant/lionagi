@@ -545,6 +545,42 @@ async def test_default_export_is_deterministically_name_sorted(temp_db_path, age
     assert report_lines == ["demo/aaa-first", "demo/zzz-last"]
 
 
+@pytest.mark.asyncio
+async def test_default_export_blocks_a_stored_playbook_member_that_apply_refuses(temp_db_path):
+    """A row stored before the playbook name was checked exports BLOCKED, not READY."""
+    async with StateDB() as db:
+        for schedule_id, name, playbook in (
+            ("p1", "demo/listing", "list"),
+            ("p2", "demo/nightly", "nightly"),
+        ):
+            await db.create_schedule(
+                {
+                    "id": schedule_id,
+                    "name": name,
+                    "trigger_type": "cron",
+                    "cron_expr": "0 2 * * *",
+                    "action_kind": "play",
+                    "action_playbook": playbook,
+                    "managed_by": "cli",
+                    "authored_spec": {
+                        "description": None,
+                        "enabled": True,
+                        "trigger": {"cron": {"expression": "0 2 * * *", "timezone": "UTC"}},
+                        "target": {"kind": "playbook", "name": playbook, "args": {}},
+                    },
+                }
+            )
+        rows = await db.list_schedules()
+
+    docs, lines = build_managed_export_document(rows)
+
+    by_name = {line.qualified_name: line for line in lines}
+    assert by_name["demo/listing"].status == "BLOCKED"
+    assert "names a `li play` subcommand" in by_name["demo/listing"].message
+    assert by_name["demo/nightly"].status == "READY"
+    assert [list(doc.schedules) for doc in docs] == [["nightly"]]
+
+
 # CLI surface — --output vs stdout, never writes the database
 
 
