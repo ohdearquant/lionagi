@@ -708,7 +708,9 @@
         "lastOutcome": "última vez {outcome} há {delta}",
         "neverFiredSince": "nunca executada desde {date}",
         "noEvidenceHint": "nenhuma execução registrada"
-      }
+      },
+      "disableReason": "Motivo",
+      "disableReasonHint": "Por que este agendamento deve ser pausado?"
     },
     "run": {
       "elapsed": "{delta} decorridos",

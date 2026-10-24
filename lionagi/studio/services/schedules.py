@@ -15,12 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
 from lionagi.ln import json_dumps, short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+from lionagi.state.lifecycle import ReasonRecord
+from lionagi.state.reasons import ScheduleDefinitionReasons, ScheduleReasons
 
 from ..registry import studio_route
 from . import run_view
@@ -30,6 +32,26 @@ _log = logging.getLogger(__name__)
 
 class NameConflictError(Exception):
     """Raised when a schedule name already exists."""
+
+
+class DisableScheduleRequest(BaseModel):
+    """The reason an operator gives for stopping a schedule from firing, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=500)
+
+    # Before the field's own checks, so the length limit applies to the stripped reason, as in
+    # disable_schedule and the CLI.
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _reason_must_not_be_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
 
 
 # schedules columns declared NOT NULL — a PATCH that explicitly sets one of
@@ -310,6 +332,37 @@ def _svc_validate_prompt(prompt: str | None) -> None:
     _validate_prompt(prompt)
 
 
+def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
+    """Service-boundary check: a play launch has no '--' separator, so a prompt it sends that
+    starts with '-' would re-parse as a flag of `li play`."""
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _sends_prompt
+
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    prompt = schedule.get("action_prompt")
+    if (
+        kind == "play"
+        and _sends_prompt(schedule, kind)
+        and isinstance(prompt, str)
+        and prompt.startswith("-")
+    ):
+        raise ValueError("action_prompt for a play launch must not start with '-'")
+
+
+def _svc_validate_play_playbook(schedule: dict[str, Any]) -> None:
+    """Service-boundary check: `li play` reads list, check and status as its own subcommands,
+    so a play schedule naming one of them as its playbook would never run a playbook."""
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _PLAY_SUBCOMMANDS
+
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    playbook = schedule.get("action_playbook")
+    if kind == "play" and isinstance(playbook, str) and playbook in _PLAY_SUBCOMMANDS:
+        raise ValueError(
+            f"action_playbook {playbook!r} names a `li play` subcommand, not a playbook"
+        )
+
+
 def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     """Parse and validate an inline YAML flow spec; returns an error message on
     failure or None on success. Mirrors _validate_spec_fields() in the CLI —
@@ -509,8 +562,8 @@ async def list_schedules(
 #
 # trigger_context and error_detail are content-bearing and are not on it. trigger_context
 # carries whole external event payloads; error_detail carries subprocess stderr and
-# exception text. Neither is a summary fact, so this surface serves a classification of
-# the failure instead of the text that produced it.
+# exception text. This surface derives only whether a run is its schedule's timer fire and
+# the intended time of a skipped missed fire from the trigger payload, and classifies failure text.
 _RUN_SUMMARY_FIELDS = (
     "id",
     "schedule_id",
@@ -580,13 +633,62 @@ def _error_class_for(row: dict[str, Any]) -> str | None:
     return _error_class(row.get("error_detail"))
 
 
+def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
+    """Project two typed trigger facts, keeping all other event payload private."""
+    context = row.get("trigger_context")
+    if isinstance(context, str):
+        try:
+            context = json.loads(context)
+        except (ValueError, RecursionError) as exc:
+            # ValueError: malformed JSON, or an integer past the digit limit. The C scanner's depth
+            # guard names what it was decoding; a bare RecursionError is raised again. On 3.10 and
+            # 3.11 it counts the caller's depth too; near the limit shallow text fails either way.
+            if isinstance(exc, RecursionError) and "while decoding a JSON" not in str(exc):
+                raise
+            context = None
+    if not isinstance(context, dict):
+        context = {}
+    scheduled = (
+        context.get("scheduled") is True
+        and not row.get("chain_depth")
+        and not row.get("chain_parent_id")
+    )
+    missed_fire_at = None
+    value = context.get("missed_fire_at")
+    if (
+        row.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
+        and isinstance(value, int | float)
+        and not isinstance(value, bool)
+        # An integer past 2**53 is null, even one a float holds exactly; a stored decimal
+        # is already read as the nearest float.
+        and (isinstance(value, float) or abs(value) <= 2**53)
+        and math.isfinite(value)
+    ):
+        missed_fire_at = float(value)
+    return {"scheduled": scheduled, "missed_fire_at": missed_fire_at}
+
+
 def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
     summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
+    summary.update(_run_trigger_facts(row))
     summary["error_class"] = _error_class_for(row)
     return summary
 
 
 _RECENT_RUN_LIMIT = 25
+
+# The batch ships an occurrence's trigger context when its stored text matches one of the two
+# keys _run_trigger_facts reads, and NULL otherwise, which projects the same two defaults. LIKE
+# reads `_` as any character and SQLite ignores ASCII case, so a few other texts ship too and
+# project as before; a repository event's payload ships when it names a key or a value such as
+# a label. The match parses nothing; a context that ships is decoded by _run_trigger_facts,
+# which under the pure-Python scanner fails on nesting past its depth. The scheduler writes
+# contexts with json.dumps, so both keys appear literally; a JSON-escaped key is not matched.
+_RECENT_RUN_CONTEXT = (
+    " CASE WHEN CAST(occurrence.trigger_context AS TEXT) LIKE '%\"scheduled\"%'"
+    " OR CAST(occurrence.trigger_context AS TEXT) LIKE '%\"missed_fire_at\"%'"
+    " THEN occurrence.trigger_context END AS trigger_context"
+)
 
 
 def _recent_run_keys_sql(dialect: str) -> str:
@@ -595,7 +697,8 @@ def _recent_run_keys_sql(dialect: str) -> str:
     Both forms select up to ``_RECENT_RUN_LIMIT + 1`` keys per requested
     definition, newest first by ``fired_at DESC, id DESC``, and leave the row
     past the limit without an occurrence payload. The extra key detects longer
-    history without reading its error payload or counting every run.
+    history without reading its error payload or counting every run. Both read
+    the trigger context through ``_RECENT_RUN_CONTEXT``.
 
     SQLite aggregates each definition's keys with ``json_group_array`` and
     expands them with ``json_each``; ``recent.key`` is the 0-based position, so
@@ -610,10 +713,11 @@ def _recent_run_keys_sql(dialect: str) -> str:
     """
     if dialect == "sqlite":
         return (
-            "SELECT recent.value AS id, definition.value AS schedule_id,"
+            "SELECT recent.value AS id, definition.value AS schedule_id,"  # noqa: S608
             " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
             " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
-            " occurrence.ended_at, occurrence.error_detail"
+            " occurrence.ended_at, occurrence.error_detail,"
+            f"{_RECENT_RUN_CONTEXT}"
             " FROM json_each(?) AS definition"
             " JOIN json_each((SELECT json_group_array(id) FROM ("
             " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
@@ -623,10 +727,11 @@ def _recent_run_keys_sql(dialect: str) -> str:
             " ORDER BY definition.value, recent.key"
         )
     return (
-        "SELECT recent.id AS id, definition.value AS schedule_id,"
+        "SELECT recent.id AS id, definition.value AS schedule_id,"  # noqa: S608
         " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
         " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
-        " occurrence.ended_at, occurrence.error_detail"
+        " occurrence.ended_at, occurrence.error_detail,"
+        f"{_RECENT_RUN_CONTEXT}"
         " FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS definition(value)"
         " JOIN LATERAL ("
         " SELECT jsonb_agg(ordered.id ORDER BY ordered.fired_at DESC, ordered.id DESC) AS ids"
@@ -669,14 +774,15 @@ _RunBatch = tuple[
 async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     """Read a set of definitions' occurrence rows and the evidence they project with.
 
-    Up to three set reads, none per run: the bounded key read, then the
-    invocation and session evidence for the displayed rows only. A read failure raises to
-    the caller, which uses it to decide what to attribute the failure to.
+    Bounded set reads, none per run: the key read, any skipped-run reasons, then
+    invocation and session evidence for the displayed rows only. A read failure raises
+    to the caller, which uses it to decide what to attribute the failure to.
     """
     rows = await db.fetch_all(
         _recent_run_keys_sql(db.dialect),
         (json_dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
     )
+    rows = await run_view._with_skip_reasons(db, rows)
     grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
     for row in rows:
         grouped[row["schedule_id"]].append(row)
@@ -854,6 +960,7 @@ def _reported_summary_class(outcome: Any) -> str | None:
 
 def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
+    view.update(_run_trigger_facts(row))
     reason_summary = row.get("reason_summary")
     public_skip_reason = (
         row.get("status") == "skipped"
@@ -877,8 +984,9 @@ def _run_view(row: dict[str, Any]) -> dict[str, Any]:
 
 # The single-run route is the documented reader of the raw failure text -- the list
 # surfaces serve a classification instead -- which is why error_detail is here and off
-# _RUN_SUMMARY_FIELDS. trigger_context stays private on the list surfaces' reasoning:
-# whole external event payloads, and no client reads it.
+# _RUN_SUMMARY_FIELDS. trigger_context stays private here as on the list surfaces, since it
+# carries whole external event payloads; only the two facts derived from it are served:
+# whether a run is its schedule's timer fire, and the intended time of a skipped missed fire.
 _RUN_RECORD_FIELDS = _RUN_VIEW_FIELDS + ("error_detail",)
 
 
@@ -896,6 +1004,7 @@ def _run_record(row: dict[str, Any]) -> dict[str, Any]:
     projection; absent rather than empty on a run that is itself a child.
     """
     record = {name: row[name] for name in _RUN_RECORD_FIELDS if name in row}
+    record.update(_run_trigger_facts(row))
     record["error_class"] = _error_class_for(row)
     if "outcome" in row:
         record["outcome"] = row["outcome"]
@@ -1040,6 +1149,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
 
     _svc_validate_action_model(data.get("action_model"))
     _svc_validate_prompt(data.get("action_prompt"))
+    _svc_validate_play_prompt(data)
+    _svc_validate_play_playbook(data)
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
@@ -1176,6 +1287,11 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_threshold_config(fields["threshold_config"])
 
         effective = {**schedule, **fields}
+        # Checked only when the update sets a field it reads, so a row stored before the check
+        # can still be paused or edited elsewhere.
+        if {"action_kind", "action_prompt", "action_playbook"} & set(fields):
+            _svc_validate_play_prompt(effective)
+            _svc_validate_play_playbook(effective)
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:
             _svc_validate_github_repo(effective_repo)
@@ -1249,13 +1365,49 @@ async def enable_schedule(schedule_id: str) -> bool:
     return True
 
 
-async def disable_schedule(schedule_id: str) -> bool:
+async def disable_schedule(schedule_id: str, *, reason: str | None = None) -> bool:
+    """Disable a schedule, recording a supplied reason on the enabled-to-disabled edge.
+
+    A reason on an already-disabled schedule is refused without changing history.
+    Without a reason, repeated disable remains an idempotent success.
+    """
+    if reason is not None:
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("reason must not be blank")
+        if len(reason) > 500:
+            raise ValueError("reason must be at most 500 characters")
     async with StateDB() as db:
-        schedule = await db.get_schedule(schedule_id)
-        if not schedule:
-            return False
-        await db.update_schedule(schedule_id, enabled=0)
-    return True
+        if reason is None:
+            return await db.update_schedule(schedule_id, enabled=0)
+        # Check under the same lock/transaction as the existing lifecycle writer:
+        # a concurrent disable must not turn this explanation into a silent no-op.
+        fields = {"enabled": 0}
+        stmt, params = db._build_update_schedule_stmt(schedule_id, fields)
+        async with db.transaction() as conn:
+            schedule = await db._lifecycle_service().schedule_adapter.read_for_update(
+                conn, schedule_id
+            )
+            if schedule is None:
+                return False
+            if not schedule["enabled"]:
+                raise ValueError(
+                    f"Schedule '{schedule_id}' is already disabled; reason was not recorded"
+                )
+            return await db._update_schedule_in_tx(
+                conn,
+                schedule_id,
+                fields,
+                stmt,
+                params,
+                reason=ReasonRecord(
+                    code=ScheduleDefinitionReasons.DISABLED_MANUAL,
+                    summary=reason,
+                ),
+                # The request carries a reason and nothing about who sent it, so this
+                # edge records the same unobserved provenance as a disable without one.
+                audit_context=None,
+            )
 
 
 async def list_schedule_runs(
@@ -1530,8 +1682,14 @@ async def enable_schedule_route(schedule_id: str) -> dict[str, Any]:
     area="schedules",
     name="disable_schedule",
 )
-async def disable_schedule_route(schedule_id: str) -> dict[str, Any]:
-    ok = await disable_schedule(schedule_id)
+async def disable_schedule_route(
+    schedule_id: str,
+    body: DisableScheduleRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        ok = await disable_schedule(schedule_id, reason=body.reason if body else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True, "enabled": False}

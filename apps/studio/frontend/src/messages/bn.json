@@ -708,7 +708,9 @@
         "lastOutcome": "সর্বশেষ {outcome} {delta} আগে",
         "neverFiredSince": "{date} থেকে কখনো চলেনি",
         "noEvidenceHint": "কোনো এক্সিকিউশন রেকর্ড করা হয়নি"
-      }
+      },
+      "disableReason": "কারণ",
+      "disableReasonHint": "এই সময়সূচি বন্ধ করার কারণ লিখুন।"
     },
     "run": {
       "elapsed": "{delta} কেটেছে",

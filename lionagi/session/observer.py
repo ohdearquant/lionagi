@@ -210,6 +210,8 @@ class _SignalPersistState:
     skip_until: float | None = None
     # Whether the one try at a window's end is in flight.
     try_in_flight: bool = False
+    # Whether this binding has told its caller that a skip window opened; it does so once.
+    window_reported: bool = False
     # Writes go one at a time, so a write queued behind one the store refused
     # finds the window that refusal opened instead of waiting out its own.
     lock: Lock = field(default_factory=Lock)
@@ -431,6 +433,7 @@ class SessionObserver(Observer):
         self,
         session_id: str,
         db: Any = None,
+        on_window_opened: Callable[[], None] | None = None,
     ) -> None:
         """Register a subscription persisting every Signal to StateDB; pass db to reuse an open connection.
 
@@ -446,6 +449,10 @@ class SessionObserver(Observer):
         The cancelled and in-flight writes may have committed or may still land, so
         the count can exceed what the store is missing by those. A new binding
         starts its own count and window.
+
+        *on_window_opened*, when given, is called once per binding, on the event loop, the
+        first time a skip window opens. It runs inside the sink's own guard: an error it
+        raises is logged at debug level and goes no further, and it must not block.
         """
         _bound_db = db
         # One sink at a time: a new binding replaces the previous one instead of
@@ -548,6 +555,15 @@ class SessionObserver(Observer):
                             opening = state.skip_until is None
                             state.skip_until = time.monotonic() + _PERSIST_SKIP_WINDOW_SECONDS
                             if opening:
+                                if on_window_opened is not None and not state.window_reported:
+                                    state.window_reported = True
+                                    try:
+                                        on_window_opened()
+                                    except Exception:  # noqa: BLE001 — the caller's record never touches the sink
+                                        logger.debug(
+                                            "signal persistence window callback failed",
+                                            exc_info=True,
+                                        )
                                 logger.warning(
                                     "signal persistence for session %s paused for %.0fs: the state "
                                     "store refused the writer lock (%r); signals emitted meanwhile "

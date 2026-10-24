@@ -43,14 +43,8 @@ def parse_to_representation(
 
     if isinstance(choices, dict):
         keys = list(choices.keys())
-        contents = list(choices.values())
         contents = [get_choice_representation(v) for k, v in choices.items()]
         return keys, contents
-
-    if isinstance(choices, tuple | set | list):
-        choices = list(choices)
-        if is_same_dtype(choices, str):
-            return choices, choices
 
     raise TypeError(
         f"Unsupported choices type: {type(choices).__name__!r}. "

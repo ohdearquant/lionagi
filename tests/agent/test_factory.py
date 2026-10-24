@@ -2002,6 +2002,40 @@ async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_un
         await create_agent(config, load_settings=False)
 
 
+@pytest.mark.parametrize("effort", ["high", None])
+@pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+async def test_create_agent_builds_a_provider_alias_as_its_provider(
+    monkeypatch, tmp_path, alias, effort
+):
+    import lionagi.service.imodel as imodel_mod
+
+    # Unset, codex derives the effort from the global config, clamped to the model's ceiling.
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    captured: dict[str, dict] = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured[kwargs["provider"]] = {k: v for k, v in kwargs.items() if k != "provider"}
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    for provider in ("codex", alias):
+        config = AgentSpec.compose(
+            "implementer", model=f"{provider}/gpt-5.5", effort=effort, yolo=True, cwd=str(tmp_path)
+        )
+        await create_agent(config, load_settings=False)
+
+    assert captured[alias] == captured["codex"]
+    assert captured["codex"]["reasoning_effort"] == (effort or "xhigh")
+    assert captured["codex"]["api_key"] == "dummy"
+    assert captured["codex"]["repo"] == str(tmp_path)
+
+
 async def test_an_anthropic_api_agent_names_an_output_limit(monkeypatch):
     """The Anthropic messages request requires `max_tokens`, and an agent built here
     reached it with none set: every call failed in validate_payload ("Invalid payload")

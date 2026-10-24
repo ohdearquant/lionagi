@@ -29,6 +29,7 @@ except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4
 __all__ = (
     "CODEX_MCP_PROFILE_PREFIX",
     "codex_config_defining_profile",
+    "codex_config_setting_default_permissions",
     "codex_home_for_env",
     "configured_codex_profile",
     "global_codex_reasoning_effort",
@@ -395,5 +396,23 @@ def codex_config_defining_profile(
         data = _read_codex_config(config_path)
         profiles = None if data is None else data.get("profiles")
         if isinstance(profiles, dict) and name in profiles:
+            return config_path
+    return None
+
+
+def codex_config_setting_default_permissions(
+    env: Mapping[str, str] | None, cwd: Path
+) -> Path | None:
+    """The first codex config that sets a root ``default_permissions`` key, or None.
+
+    The key names a permissions profile codex applies in place of ``sandbox_mode``. The configs
+    read are those :func:`codex_config_defining_profile` reads. A file that cannot be read or
+    parsed raises ValueError.
+    """
+    paths = [codex_home_for_env(env) / "config.toml"]
+    paths += [directory / ".codex" / "config.toml" for directory in _project_config_dirs(cwd)]
+    for config_path in paths:
+        data = _read_codex_config(config_path)
+        if data is not None and data.get("default_permissions") is not None:
             return config_path
     return None

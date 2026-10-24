@@ -9,7 +9,9 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, field_validator
 
@@ -30,6 +32,12 @@ from lionagi.ln.concurrency import (
 from lionagi.mcp.config import JOB_MARKER_ENV_VAR
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
+from lionagi.providers._subagent_admission import (
+    DEFAULT_WORKLOAD,
+    WORKLOADS,
+    NestedAgentRefusedError,
+    SubagentAdmissionRefusedError,
+)
 from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
@@ -59,6 +67,7 @@ from ._providers import (
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
     _add_codex_account_integration_kwargs,
+    _add_workload_kwarg,
     _clamp_claude_effort,
     _clamp_codex_effort,
     add_common_cli_args,
@@ -70,16 +79,27 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
+    TERMINAL_WRITE_LOST_FIELD,
     RunDir,
+    _signal_window_marker,
+    _write_signal_persistence_degraded_at,
+    _write_terminal_write_lost,
     allocate_run,
     find_branch,
     load_last_branch,
+    lost_terminal_write,
     resolve_run_reason,
     save_last_branch_pointer,
     setup_agent_persist,
     teardown_agent_persist,
 )
-from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
+from ._util import (
+    EXIT_CODE_BY_STATUS,
+    EXIT_CODE_SUBAGENT_REFUSED,
+    classify_exception,
+    validate_cwd_exists,
+)
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
@@ -1000,6 +1020,19 @@ async def _tombstone_pending_steers(
         log_error(f"steer tombstone write failed: {exc!r}")
 
 
+def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | None:
+    """The admission refusal *exc* is or wraps: iModel re-raises a stream failure as a
+    ``ValueError`` caused by the provider's own error."""
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, SubagentAdmissionRefusedError):
+            return cause
+        seen.add(id(cause))
+        cause = cause.__cause__
+    return None
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -1026,12 +1059,19 @@ async def _run_agent(
     no_mcp_config: bool = False,
     _auto_resumed: bool = False,
     _injection_totals: dict[str, int] | None = None,
-    # Last, so every parameter before it keeps the position it had
+    # Last, so every parameter before them keeps the position it had
     idle_timeout: int | None = None,
+    workload: str | None = None,
+    *,
+    _parent_marker: Callable[[], None] | None = None,
+    _lost_write_out: dict[str, Any] | None = None,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
-    session_id is None whenever live persistence never started.
+    session_id is None whenever live persistence never started. An auto-resumed leg runs in a
+    run directory of its own while the job reads the first run's run.json, so the first run hands
+    it *_parent_marker*, which records a signal persistence skip window on that run.json too, and
+    *_lost_write_out*, where the leg leaves a terminal write its store refused.
     """
     prompt = _apply_detached_execution_boundary(prompt)
     seed_injection_totals = _injection_totals is None
@@ -1130,6 +1170,10 @@ async def _run_agent(
     # neither field, the leg's argv is what it was before these fields existed.
     account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
     contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+    # The flag wins over the role; with neither the leg is heavy, which keeps its configured
+    # sandbox and counts against both machine-wide caps.
+    if workload is None:
+        workload = getattr(profile, "workload", None) or DEFAULT_WORKLOAD
 
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".
@@ -1251,18 +1295,21 @@ async def _run_agent(
             "or use --resume / --continue-last to reopen an existing one."
         )
 
-    from lionagi.agent.factory import _reject_unforwardable_explicit_mcp
+    from lionagi.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
     _reject_unforwardable_explicit_mcp(
         provider,
         named_explicitly=mcp_resolution.explicit,
         asked_for_servers=bool(mcp_resolution.servers),
     )
+    # Settings are looked up under the provider the name resolves to, so an alias such as
+    # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
+    canonical = _canonical_provider(provider)
 
     if branch is None:
         # Codex blocks tool calls until file access is enabled. Surface this
         # even without verbose output; CLI or profile approval flags suppress it.
-        if provider == "codex" and not yolo and not bypass:
+        if canonical == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(
@@ -1284,6 +1331,7 @@ async def _run_agent(
             mcp_exclusive=mcp_resolution.declared_empty,
             account_connectors=account_connectors,
             contain_account_integrations=contain_account_integrations,
+            workload=workload,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
         if not isinstance(chat_model, str) and not chat_model.is_cli:
@@ -1436,9 +1484,9 @@ async def _run_agent(
                 # on a spark resume).
                 from lionagi.service.providers import reclamp_effort_for_model
 
-                kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+                kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                 if kwarg and cfg.get(kwarg) is not None:
-                    cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
+                    cfg[kwarg] = reclamp_effort_for_model(canonical, cfg[kwarg], model)
         # The display flags are CLI endpoint options; an API model sends its
         # config's kwargs with each request, so a branch on the tool loop is
         # handed neither.
@@ -1450,14 +1498,14 @@ async def _run_agent(
         if theme is not None and not on_tool_loop:
             cfg["cli_display_theme"] = theme
         if effort is not None:
-            kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+            kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
             if kwarg:
-                if provider == "codex":
+                if canonical == "codex":
                     effort = _clamp_codex_effort(effort, cfg.get("model"))
-                elif provider in _CLAUDE_PROVIDER_NAMES:
+                elif canonical in _CLAUDE_PROVIDER_NAMES:
                     effort = _clamp_claude_effort(effort, cfg.get("model") or "")
                 cfg[kwarg] = effort
-            elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+            elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                 # agy (Antigravity CLI) has no effort kwarg — fold effort into
                 # the resolved --model name instead (see resolve_agy_model).
                 from lionagi.providers.google.gemini_code import resolve_agy_model
@@ -1468,18 +1516,22 @@ async def _run_agent(
                     reapply_effort=model_str is None,
                 )
         if bypass:
-            cfg.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
         elif yolo:
-            cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_YOLO_KWARGS.get(canonical, {}))
         if fast:
-            cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+            cfg.update(PROVIDER_FAST_KWARGS.get(canonical, {}))
         # The stored row never carries a connector grant; its containment value also belongs
         # to the previous role, so both settings come from the current role.
-        if provider == "codex":
+        if canonical == "codex":
             cfg.pop("contain_account_integrations", None)
-            _add_codex_account_integration_kwargs(
-                cfg, account_connectors, contain_account_integrations
-            )
+            if branch.chat_model.endpoint.is_cli:
+                _add_codex_account_integration_kwargs(
+                    cfg, account_connectors, contain_account_integrations
+                )
+        # Like the connectors: the class belongs to this launch, not to the stored row.
+        cfg.pop("workload", None)
+        _add_workload_kwarg(cfg, branch.chat_model.endpoint, workload)
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
         # not the caller's directory. Which providers can be given a set, and
@@ -1657,10 +1709,12 @@ async def _run_agent(
             project=project,
             run_id=run.run_id,
             run_manifest=run_manifest,
+            run=run if isinstance(run, RunDir) else None,
             # This runner drains queued operator messages at turn end and
             # tombstones whatever it did not take, so controls aimed at it have a
             # consumer.
             drains_controls=True,
+            parent_marker=_parent_marker,
         )
     except StateCompatibilityRefused as exc:
         # The run stops before it starts (ADR-0128 D6), and its run.json says so rather than
@@ -1932,7 +1986,8 @@ async def _run_agent(
         if _terminal_status == "failed":
             # Default traceback printing is unreliable under SIGTERM/process
             # death — leave a one-line diagnostic before it propagates.
-            log_error(f"{type(exc).__name__}: {exc}")
+            shown = _admission_refusal(exc) or exc
+            log_error(f"{type(shown).__name__}: {shown}")
         raise
     finally:
         # See docs/internals/cli.md for why an about-to-auto-resume leg must
@@ -2008,10 +2063,28 @@ async def _run_agent(
                         await _tombstone_pending_steers({**live, "db": _sweep_db})
                 except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
                     log_error(f"steer tombstone write failed: {_sweep_exc!r}")
+            # Read before the status below is replaced by the one teardown handed back: a run
+            # whose store did not take its terminal write records what it decided in the same
+            # write as the status that is durable. A leg that defers its end to an auto-resume
+            # decided none.
+            _lost_write = (
+                None
+                if will_auto_resume
+                else lost_terminal_write(
+                    live,
+                    requested=_terminal_status,
+                    exception=_terminal_exc,
+                    returned=effective_status,
+                )
+            )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
+            if _lost_write is not None:
+                run_manifest[TERMINAL_WRITE_LOST_FIELD] = _lost_write
+                if _lost_write_out is not None:
+                    _lost_write_out[TERMINAL_WRITE_LOST_FIELD] = _lost_write
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
@@ -2110,29 +2183,58 @@ async def _run_agent(
         # model silently re-apply on the resumed leg, switching models.
         _effective_cfg = branch.chat_model.endpoint.config
         _effective_model_str = f"{_effective_cfg.provider}/{_effective_cfg.kwargs.get('model')}"
-        return await _run_agent(
-            _effective_model_str,
-            "continue and conclude the task",
-            yolo=yolo,
-            verbose=verbose,
-            theme=theme,
-            resume=branch_id,
-            effort=effort,
-            agent_name=agent_name,
-            cwd=cwd,
-            timeout=timeout,
-            fast=fast,
-            invocation_id=invocation_id,
-            project=project,
-            bypass=bypass,
-            resume_on_timeout=resume_on_timeout,
-            idle_timeout=idle_timeout,
-            notify=notify,
-            mcp_config=mcp_config,
-            no_mcp_config=no_mcp_config,
-            _auto_resumed=True,
-            _injection_totals=_injection_totals,
-        )
+        # The resumed leg allocates a run directory of its own, while the job reads this run's
+        # run.json: a skip window the leg opens is marked here too, and a terminal write its
+        # store refused is copied here when it ends.
+        _resumed_lost: dict[str, Any] = {}
+        try:
+            return await _run_agent(
+                _effective_model_str,
+                "continue and conclude the task",
+                yolo=yolo,
+                verbose=verbose,
+                theme=theme,
+                resume=branch_id,
+                effort=effort,
+                agent_name=agent_name,
+                cwd=cwd,
+                timeout=timeout,
+                fast=fast,
+                invocation_id=invocation_id,
+                project=project,
+                bypass=bypass,
+                resume_on_timeout=resume_on_timeout,
+                idle_timeout=idle_timeout,
+                workload=workload,
+                notify=notify,
+                mcp_config=mcp_config,
+                no_mcp_config=no_mcp_config,
+                _auto_resumed=True,
+                _injection_totals=_injection_totals,
+                _parent_marker=(
+                    _signal_window_marker(run_manifest, run.state_root)
+                    if isinstance(run, RunDir)
+                    else None
+                ),
+                _lost_write_out=_resumed_lost,
+            )
+        finally:
+            # The marker's own write runs on a daemon thread that can fail or not finish, and this
+            # run writes no manifest after its leg, so the time it holds is written again here.
+            _degraded_at = run_manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            if _degraded_at is not None and isinstance(run, RunDir):
+                _write_signal_persistence_degraded_at(run.state_root, _degraded_at)
+            if _resumed_lost.get(TERMINAL_WRITE_LOST_FIELD) is not None:
+                run_manifest[TERMINAL_WRITE_LOST_FIELD] = _resumed_lost[TERMINAL_WRITE_LOST_FIELD]
+                if isinstance(run, RunDir):
+                    try:
+                        _write_terminal_write_lost(
+                            run.state_root, run_manifest[TERMINAL_WRITE_LOST_FIELD]
+                        )
+                    except Exception as _copy_exc:  # noqa: BLE001 — the leg's own answer stands
+                        log_error(
+                            f"could not record the resumed leg's lost terminal write: {_copy_exc!r}"
+                        )
 
     # Past every line that can still move the status, and past the recursion
     # that would have made this leg an interim one, so this is the run's answer.
@@ -2197,7 +2299,8 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "then a trusted+enabled plugin's declared profile "
             "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
-            "timeout, idle_timeout, resume_on_timeout. CLI flags override profile settings."
+            "timeout, idle_timeout, resume_on_timeout, workload. CLI flags override "
+            "profile settings."
         ),
     )
     agent.add_argument(
@@ -2301,6 +2404,21 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "By default the nearest .mcp.json at or above the directory this "
             "command was run in is used, so the leg's tools come from the "
             "submission rather than from --cwd. The file is read once at spawn."
+        ),
+    )
+    agent.add_argument(
+        "--workload",
+        choices=WORKLOADS,
+        default=None,
+        help=(
+            "How the leg counts against the machine-wide agent caps "
+            "(LIONAGI_MAX_SUBAGENTS, LIONAGI_MAX_SUBAGENTS_HEAVY and the engine's own) and "
+            "what it is held to. 'light' holds a CLI worker to what its engine can enforce "
+            "(codex: workspace-write sandbox with no network; gemini: --sandbox; claude: "
+            "without the Edit, Write and NotebookEdit tools, Bash kept, no sandbox; pi: "
+            "refused) and counts against the total cap and its engine cap. 'heavy' keeps the "
+            "configured sandbox and also counts against the heavy cap. Defaults to the "
+            "profile's 'workload', else heavy."
         ),
     )
     agent.add_argument(
@@ -2453,6 +2571,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 preset=getattr(args, "preset", None),
                 resume_on_timeout=getattr(args, "resume_on_timeout", False),
                 idle_timeout=getattr(args, "idle_timeout", None),
+                workload=getattr(args, "workload", None),
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),
@@ -2469,6 +2588,10 @@ def run_agent(args: argparse.Namespace) -> int:
     except ContextFromError as exc:
         log_error(str(exc))
         return 2
+    except NestedAgentRefusedError as exc:
+        # Refused before any run exists; not retryable, so not the admission exit code.
+        log_error(str(exc))
+        return EXIT_CODE_BY_STATUS["failed"]
     except InputTokenCapError:
         # The run logged it and recorded it in run.json as failed: exit with that status
         # rather than a traceback.
@@ -2483,6 +2606,9 @@ def run_agent(args: argparse.Namespace) -> int:
     except BaseException as exc:
         if isinstance(exc, cancelled_exc_classes()):
             return EXIT_CODE_BY_STATUS["cancelled"]
+        if _admission_refusal(exc) is not None:
+            # The run already printed the one refusal line and recorded the cause on its row.
+            return EXIT_CODE_SUBAGENT_REFUSED
         log_error(f"{type(exc).__name__}: {exc}")
         raise
 

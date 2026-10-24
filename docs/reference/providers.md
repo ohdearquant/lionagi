@@ -297,15 +297,25 @@ MyProviderConfigs._PROVIDER_ALIASES = ["my-provider"]
 **Step 3 — write `chat.py` using the config member's registration decorator**
 
 ```python
-from lionagi.service.connections import Endpoint, EndpointConfig
-from ._config import MyProviderConfigs  # noqa: F401 — side effect: registers
+from pydantic import BaseModel
+
+from lionagi.service.connections import Endpoint
+from ._config import MyProviderConfigs
 
 __all__ = ("MyProviderChatEndpoint", "MyChatRequest")
+
+class MyChatRequest(BaseModel):
+    model: str
+    messages: list[dict[str, str]]
 
 @MyProviderConfigs.CHAT.register
 class MyProviderChatEndpoint(Endpoint):
     pass  # config is auto-created from _ENDPOINT_META injected by the decorator
 ```
+
+Importing `_config.py` defines the config members; importing the decorated endpoint
+module registers the endpoint. The registration decorator resolves the member's
+`LazyType` request-options reference when it builds the registry arguments.
 
 List the endpoint and request classes in `__all__` — the `__init__.py` lazy map derives
 its export set from each module's `__all__`.
@@ -317,19 +327,19 @@ In `lionagi/service/connections/registry.py`, add the module to `_modules` insid
 
 ```python
 def _import_all_providers():
-    import importlib
-
     _modules: list[str] = [
         # ... existing entries ...
-        "lionagi.providers.myprovider._config",
         "lionagi.providers.myprovider.chat",
     ]
     for mod in _modules:
-        try:
-            importlib.import_module(mod)
-        except ImportError:
-            pass
+        _import_provider_module(mod)
 ```
+
+Keep the shared `_import_provider_module` helper in this loop. If the endpoint module
+needs an optional third-party dependency at module scope, declare it in
+`_PROVIDER_OPTIONAL_DEPENDENCIES`. A missing declared dependency skips the import with
+a debug diagnostic. Once dependencies resolve, any `ImportError` is reported as a
+provider-load failure at warning level; it is not silently discarded.
 
 `EndpointRegistry.match(provider="myprovider", endpoint="chat")` will then find the
 endpoint automatically. This registry edit is for built-in providers. Third-party

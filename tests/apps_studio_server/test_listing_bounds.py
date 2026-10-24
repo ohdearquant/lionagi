@@ -338,6 +338,70 @@ class TestStoreProbe:
         assert body["store_present"] is True
         assert "did not answer" in body["detail"]
 
+    @pytest.mark.parametrize(
+        ("message", "status"),
+        [
+            ("database is locked", "slow"),
+            ("database table is locked", "slow"),
+            ("no such table: sessions", "unavailable"),
+        ],
+    )
+    def test_a_store_that_gives_up_on_a_lock_first_reports_slow(
+        self, client, monkeypatch, message, status
+    ):
+        """SQLite's busy timeout is the probe's deadline, so on a held store either can end the
+        wait first. When SQLite's does, the read raises a lock error rather than being
+        cancelled, and that store is as slow as one the deadline gave up on. Any other error
+        still means the store could not be read."""
+        import contextvars
+        import sqlite3
+
+        import aiosqlite
+
+        class _LockedConnection:
+            def __await__(self):
+                async def _connect():
+                    return self
+
+                return _connect().__await__()
+
+            async def execute(self, sql, *args):
+                if sql.startswith("PRAGMA"):
+                    return None
+                raise sqlite3.OperationalError(message)
+
+            async def close(self):
+                return None
+
+        from lionagi.studio.services import admin as admin_svc
+
+        # Only the probe's own connection is the locked one: the app opens the store for its
+        # startup work as well, which must get the real driver.
+        probing = contextvars.ContextVar("probing", default=False)
+        real_connect = aiosqlite.connect
+        real_probe = admin_svc.store_probe
+
+        async def _probe(**kwargs):
+            token = probing.set(True)
+            try:
+                return await real_probe(**kwargs)
+            finally:
+                probing.reset(token)
+
+        def _connect(*args, **kwargs):
+            if probing.get():
+                return _LockedConnection()
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(admin_svc, "store_probe", _probe)
+        monkeypatch.setattr(aiosqlite, "connect", _connect)
+        body = client.get("/api/admin/readiness", params={"timeout_ms": 1000}).json()
+        assert body["status"] == status, body
+        if status == "slow":
+            assert "did not answer" in body["detail"]
+        else:
+            assert message in body["detail"]
+
     def test_a_real_lock_leaves_no_connection_running_behind_the_timeout(self, seeded, monkeypatch):
         """The probe gives up on a genuinely locked store and closes what it opened.
 

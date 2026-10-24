@@ -77,6 +77,10 @@ class TestReclampOnModelChange:
         """A sol-derived ultra replayed on spark is the 400 this guards."""
         assert reclamp_effort_for_model("codex", "ultra", "gpt-5.3-codex-spark") == "xhigh"
 
+    @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+    def test_an_alias_reclamps_as_the_provider_it_names(self, alias):
+        assert reclamp_effort_for_model(alias, "ultra", "gpt-5.3-codex-spark") == "xhigh"
+
     def test_a_within_ceiling_effort_survives_the_reclamp(self):
         assert reclamp_effort_for_model("codex", "ultra", "gpt-5.6-sol") == "ultra"
 

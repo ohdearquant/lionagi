@@ -1,0 +1,18 @@
+{
+  "tasks_file": "runs/tasks.r2-r4.yaml",
+  "runner_sha256": "911c41cd91a63cc7ad370266bf946020e2bcdb1f8be5985860bd95ad9a737a07",
+  "tasks_sha256": "3c29864db68aa8ce315632de7aa63fd0dcc4d7f6e69d2965e3e331e669854ee3",
+  "task_count": 24,
+  "read_tree_head": "6fa69b196f45f65fe63ba640b8acc248e8c7cb5e",
+  "runner_li": "li 0.35.5",
+  "profiles": {
+    "react": "b1f8e044b3c39ea00e0d0475d8cb5b605fac52d9ef9dce1bf2d22c0ff2cbd558",
+    "lndl": "a3aba12aee8469bcfab3c33a58f4cfe778f2cd218da17f235df45bc3b739d893"
+  },
+  "loops": [
+    "react",
+    "lndl"
+  ],
+  "concurrency": 4,
+  "started_utc": "2026-10-18T10:34:18Z"
+}

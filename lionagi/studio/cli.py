@@ -33,6 +33,16 @@ from lionagi.studio._host import admitted_host_names, is_unspecified_host, norma
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
 
+
+def _normalize_schedule_reason(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("--reason must not be blank")
+    if len(value) > 500:
+        raise ValueError("--reason must be at most 500 characters")
+    return value
+
+
 # Keys the scheduler engine's chain-fire merge actually understands;
 # anything else would shallow-merge into the fired child row and clobber columns.
 _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
@@ -175,6 +185,9 @@ def run_studio(args: argparse.Namespace) -> int:
     if not getattr(args, "studio_action", None):
         args.studio_action = "start"
     _validate_mode_flags(args)
+    # A daemon started here would start its runs outside this process's tree.
+    if _refused_inside_an_agent():
+        return 1
     return _studio_start(args)
 
 
@@ -1533,7 +1546,14 @@ def _cmd_enable(args: argparse.Namespace) -> int:
 
 
 def _cmd_disable(args: argparse.Namespace) -> int:
-    result = _api(f"/{args.id}/disable", method="POST")
+    body = None
+    if args.reason is not None:
+        try:
+            body = {"reason": _normalize_schedule_reason(args.reason)}
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    result = _api(f"/{args.id}/disable", method="POST", body=body)
     if result is None:
         return 1
     print(f"Disabled: {args.id}")
@@ -2262,6 +2282,8 @@ def _quick_create_target(kind: str, args: argparse.Namespace) -> Any:
 
 def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
     """`li schedule create <kind> <name> ...` entry point."""
+    if _refused_inside_an_agent():
+        return 1
     from pydantic import ValidationError
 
     from lionagi.state.db import StateDB
@@ -2728,7 +2750,11 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     # enable / disable / delete
     for sub_name, sub_help, example in (
         ("enable", "Enable a schedule.", "li schedule enable sched-abc123"),
-        ("disable", "Disable a schedule.", "li schedule disable sched-abc123"),
+        (
+            "disable",
+            "Disable a schedule.",
+            'li schedule disable sched-abc123 --reason "planned maintenance"',
+        ),
         ("delete", "Delete a schedule.", "li schedule delete sched-abc123"),
     ):
         p = sched_sub.add_parser(
@@ -2740,6 +2766,15 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         p.add_argument(
             "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
         )
+        if sub_name == "disable":
+            p.add_argument(
+                "--reason",
+                default=None,
+                help=(
+                    "Optional explanation recorded when an enabled schedule is disabled. "
+                    "Refused if already disabled; no reason or history entry is added."
+                ),
+            )
 
     # trigger
     trigger_p = sched_sub.add_parser(
@@ -2823,6 +2858,26 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     return sched
 
 
+# The schedule subcommands that can have the Studio daemon start a run. The daemon runs
+# outside the asking process's tree, so no check at spawn can see that the request came
+# from inside an agent; the refusal happens here, before the request leaves.
+_STARTS_RUNS = frozenset({"create", "enable", "trigger", "apply"})
+
+
+def _refused_inside_an_agent() -> bool:
+    """Print the refusal and return True when this process runs inside an agent lionagi
+    started (see refuse_nested_agent)."""
+    from lionagi.providers._provider_errors import NestedAgentRefusedError
+    from lionagi.providers._subagent_admission import refuse_nested_agent
+
+    try:
+        refuse_nested_agent()
+    except NestedAgentRefusedError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return True
+    return False
+
+
 _ACTION_MAP = {
     "list": _cmd_list,
     "get": _cmd_get,
@@ -2855,5 +2910,7 @@ def run_schedule(args: argparse.Namespace) -> int:
         return 1
     if action == "runs" and not (1 <= args.limit <= 200):
         print(f"Error: --limit must be between 1 and 200, got {args.limit}.", file=sys.stderr)
+        return 1
+    if action in _STARTS_RUNS and _refused_inside_an_agent():
         return 1
     return fn(args)

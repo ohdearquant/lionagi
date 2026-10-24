@@ -53,10 +53,10 @@ terminal fact being announced that no reader can find.
 
 #### reap-reason-code-split
 
-Four ways a run can end with nobody around to say what happened, as classified
+Six ways a run can end with nobody around to say what happened, as classified
 by `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`). Only the first two
-assign a distinct `reason_code`; the third keeps the pre-existing
-`process_gone_without_outcome` and adds a finer `reason_detail` beside it:
+assign a distinct `reason_code`; the next three keep the pre-existing
+`process_gone_without_outcome` and add a finer `reason_detail` beside it:
 
 - **Spawn never started doing work** — `spawn_state == "failed"`, caught and
   recorded synchronously by `_record_spawn_failure` before this run ever did
@@ -75,12 +75,37 @@ assign a distinct `reason_code`; the third keeps the pre-existing
   checks, only as a refinement of which reason code the reap writes.
   `reason_code=process_gone_notice_recorded_undelivered`
   (`LOST_REASON_NOTICE_RECORDED_UNDELIVERED`).
+- **Terminal write lost**: a store read or write failed the run's teardown,
+  so the terminal status it decided (or, when teardown failed before
+  deciding, the one it was asked to write) never reached the store. Its
+  `run.json` carries `terminal_write_lost`
+  (`{status, reason_code, at}`, written by the `li agent` run in the same
+  manifest write that records the durable `status`, which is `running`, or
+  `unknown` when teardown could not read the row back). A teardown that
+  failed on anything but a store error (a database error, or no row for the
+  write), such as an artifact removed while it was verified, writes no
+  record: the store refused nothing. The reap keeps
+  `reason_code=process_gone_without_outcome` (`LOST_REASON`), reports
+  `reason_detail=terminal_write_lost` (`REASON_DETAIL_TERMINAL_WRITE_LOST`)
+  and copies the decided status into `terminal_evidence["decided_status"]`.
+  The outcome stays `indeterminate`: the decided status is the run's own
+  account, and the session row the store holds may say otherwise.
 - **Persistence degraded** — the run's own `run.json` carries a non-empty
   `persistence_degraded_reason`: its live persistence setup failed and it ran
   with persistence turned off, so it had no store to record an outcome in. The
   reap keeps `reason_code=process_gone_without_outcome` (`LOST_REASON`) and
   reports `reason_detail=persistence_degraded`
   (`REASON_DETAIL_PERSISTENCE_DEGRADED`). Any other value assigns nothing.
+- **Signal persistence degraded**: the run's signal persistence stopped
+  waiting on a store that refused the writer lock, and its `run.json` carries
+  `signal_persistence_degraded_at` (epoch seconds, written once per run when
+  the first skip window opens, off the emit path). Once written, the marker
+  outlives a run killed while the store was refusing writes, which its count
+  of dropped signals does not; a run killed before the write leaves none. A
+  whole-file write of `run.json` keeps the earliest time on file, so an
+  invocation sharing the run id does not erase it.
+  `reason_detail=signal_persistence_degraded`
+  (`REASON_DETAIL_SIGNAL_PERSISTENCE_DEGRADED`), reason code unchanged.
 - **True silence** — no spawn failure, no recorded notice either way, process
   conclusively gone. `reason_code=process_gone_without_outcome` (`LOST_
   REASON`), with `reason_detail=null`.
@@ -88,10 +113,16 @@ assign a distinct `reason_code`; the third keeps the pre-existing
 `run.json` is read for the detail case through one bounded reader: absent,
 unreadable, larger than `_MAX_RUN_MANIFEST_BYTES`, not JSON, not an object, or
 naming another run assigns nothing, so a damaged or misplaced file never becomes
-a claim about how the run ended. Precedence is the order above — an undelivered
-notice, then degraded persistence, then silence — and each step reads only what
-the run wrote, never an absence. The undelivered-notice case keeps its own
-reason code and outranks the detail-only case.
+a claim about how the run ended. A `terminal_write_lost` is taken whole or not
+at all: a status that is not a terminal session status, a reason code that is
+not a non-empty string of at most 256 characters, or a time that is not a
+finite number reads as absent, and so does a `signal_persistence_degraded_at`
+that is not a finite number. Precedence is the order above: an undelivered
+notice keeps its own reason code and outranks every detail; beside
+`LOST_REASON` the detail is a lost terminal write, then degraded persistence,
+then degraded signal persistence, then none. A lost terminal write's decided
+status is copied into `terminal_evidence` whatever the code. Each step reads
+only what the run wrote, never an absence.
 
 The file read for the second case is best-effort and one-directional: found
 and parseable with `ok: false` upgrades the reason code; anything else (file
@@ -421,9 +452,19 @@ is surfaced rather than left for a reader to notice two fields disagree.
   applied — and every listed name was present in the resolved config, since a
   name that was not is refused before the run starts.
 - `reason_detail` refines an orphan-reaper `reason_code` without replacing it:
-  `persistence_degraded` when the run recorded that its persistence was turned
-  off, null otherwise. It appears beside the same fields on the job record,
-  the notice payload, and a `job.list` row.
+  `terminal_write_lost`, `persistence_degraded` or `signal_persistence_degraded`
+  as described in [reap-reason-code-split](#reap-reason-code-split), null
+  otherwise. It appears beside the same fields on the job record, the notice
+  payload, and a `job.list` row.
+- `persistence_degraded_reason`, `signal_persist_dropped`, `terminal_write_lost`
+  and `signal_persistence_degraded_at` are read-time projections of the run's
+  `run.json`, each null when absent or malformed: the reason its persistence
+  setup failed, how many signals it could not confirm it wrote (written at
+  teardown, 0 included), the terminal status its store did not take, and when
+  its signal persistence first stopped waiting on a refusing store. These
+  store nothing on the job record; the values this record gains are the reaper's
+  two new `reason_detail` values, `terminal_write_lost` and
+  `signal_persistence_degraded`, and its `terminal_evidence.decided_status`.
 - `child_actor` / `child_actor_config` / `submitting_actor` are set only when a
   write-capable submission runs under a server configured with
   `LIONAGI_MCP_CHILD_ACTOR_SUFFIX`. They name the run's own actor (the

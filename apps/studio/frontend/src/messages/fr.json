@@ -708,7 +708,9 @@
         "lastOutcome": "dernière fois {outcome} il y a {delta}",
         "neverFiredSince": "jamais exécutée depuis {date}",
         "noEvidenceHint": "aucune exécution enregistrée"
-      }
+      },
+      "disableReason": "Motif",
+      "disableReasonHint": "Pourquoi cette planification doit-elle être suspendue ?"
     },
     "run": {
       "elapsed": "{delta} écoulé",

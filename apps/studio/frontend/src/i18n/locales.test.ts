@@ -260,8 +260,10 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // 1116 = 1113 + operator.truncation (title, summary, limit), the notice shown
   // when a turn hit its durable retention limit. Natively translated in all 16,
   // so it adds nothing to the identity-leak baseline.
-  it("en.json has 1116 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1116);
+  // 1118 = 1116 + the schedule-disable reason and its hint, both natively
+  // translated in all 16 locales.
+  it("en.json has 1118 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1118);
   });
 
   it.each(LOCALES.map((l) => l.code))(

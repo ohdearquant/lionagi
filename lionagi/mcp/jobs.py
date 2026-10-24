@@ -37,6 +37,7 @@ from lionagi.ln._proc import (
     start_time_matches,
 )
 from lionagi.ln.concurrency import current_time, sleep
+from lionagi.providers._subagent_admission import refuse_nested_agent
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -122,6 +123,16 @@ LOST_REASON_NOTICE_RECORDED_UNDELIVERED = "process_gone_notice_recorded_undelive
 # directories, and an absent field is also what a silent run looks like.
 REASON_DETAIL_PERSISTENCE_DEGRADED = "persistence_degraded"
 
+# Two more finer causes from the same run.json. The run decided a terminal status
+# and its store did not take the write (``terminal_write_lost``, which also puts
+# the decided status in the reap's evidence), or its signal persistence stopped
+# waiting on a store that refused the writer lock
+# (``signal_persistence_degraded_at``). Neither is a recorded status, so the
+# outcome stays OUTCOME_INDETERMINATE, and neither is assigned from the absence of
+# a field, for the same reason as above.
+REASON_DETAIL_TERMINAL_WRITE_LOST = "terminal_write_lost"
+REASON_DETAIL_SIGNAL_PERSISTENCE_DEGRADED = "signal_persistence_degraded"
+
 # Outcome values valid to report back from a job record.
 _OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
 
@@ -204,6 +215,9 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 # The most the lifecycle command may write on its result channel.
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 _PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
+_SIGNAL_PERSIST_DROPPED_FIELD = "signal_persist_dropped"
+_TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
+_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
 
 # The most of a run.json the reaper reads to pick a reason code. An agent run's
 # file is a few kilobytes (its largest field is free-text error), so a larger
@@ -1289,6 +1303,10 @@ def submit(
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
+    # Checked in this server, which is alive and inside the tree of whatever started it: the
+    # detached run checks again, but a server that exits first leaves it outside that tree
+    # (ADR-0133 D7).
+    refuse_nested_agent()
 
     exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
     if not isinstance(exclusions, list) or any(
@@ -1972,21 +1990,57 @@ def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
     return loaded
 
 
-def _orphan_reason(run_id: str) -> tuple[str, str | None]:
-    """The reason code and finer detail for a conclusively gone run.
+def _terminal_write_lost_record(value: Any) -> dict[str, Any] | None:
+    """The ``terminal_write_lost`` record of a run.json, or None unless every field has its shape.
 
-    In order: its directory records a terminal notice it never delivered; its
-    run.json records that its persistence was turned off; otherwise silence.
-    Each step reads only what the run wrote, never an absence. The reason code
-    keeps the value main reported for every case; the detail carries the
+    The status must be a terminal session status, the reason code a non-empty
+    short string and the time a finite number. A record is taken whole or not at
+    all, so a malformed one reads as absent and assigns nothing.
+    """
+    if not isinstance(value, dict):
+        return None
+    from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+
+    status = value.get("status")
+    code = value.get("reason_code")
+    at = value.get("at")
+    if (
+        not isinstance(status, str)
+        or status not in DEFAULT_REGISTRY.get("session").terminal_statuses
+    ):
+        return None
+    if not isinstance(code, str) or not code or len(code) > 256:
+        return None
+    if not _is_plain_number(at):
+        return None
+    return {"status": status, "reason_code": code, "at": at}
+
+
+def _orphan_reason(run_id: str) -> tuple[str, str | None, str | None]:
+    """The reason code, finer detail and decided status for a conclusively gone run.
+
+    The code, in order: its directory records a terminal notice it never
+    delivered; otherwise silence. The detail, only beside silence, in order: its
+    run.json records a terminal write its store did not take; its persistence
+    was turned off; its signal persistence stopped waiting on a refusing store.
+    The decided status is the one a lost terminal write names, whatever the
+    code. Each step reads only what the run wrote, never an absence. The reason
+    code keeps the value main reported for every case; the detail carries the
     distinction beside it.
     """
+    run_json = _read_run_json_bounded(run_id) or {}
+    lost = _terminal_write_lost_record(run_json.get(_TERMINAL_WRITE_LOST_FIELD))
+    decided_status = lost["status"] if lost is not None else None
     if _notice_recorded_undelivered(run_id):
-        return LOST_REASON_NOTICE_RECORDED_UNDELIVERED, None
-    degraded = (_read_run_json_bounded(run_id) or {}).get(_PERSISTENCE_DEGRADED_REASON_FIELD)
+        return LOST_REASON_NOTICE_RECORDED_UNDELIVERED, None, decided_status
+    if lost is not None:
+        return LOST_REASON, REASON_DETAIL_TERMINAL_WRITE_LOST, decided_status
+    degraded = run_json.get(_PERSISTENCE_DEGRADED_REASON_FIELD)
     if isinstance(degraded, str) and degraded:
-        return LOST_REASON, REASON_DETAIL_PERSISTENCE_DEGRADED
-    return LOST_REASON, None
+        return LOST_REASON, REASON_DETAIL_PERSISTENCE_DEGRADED, None
+    if _is_plain_number(run_json.get(_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)):
+        return LOST_REASON, REASON_DETAIL_SIGNAL_PERSISTENCE_DEGRADED, None
+    return LOST_REASON, None, None
 
 
 # Per-key type check for `evidence=` on `reap_orphan`: this is a record any
@@ -2137,9 +2191,13 @@ def reap_orphan(
             return ReapResult(False, job, "spawn_state_is_not_started")
         if job.get("finished_at") is not None:
             return ReapResult(False, job, "already_ended")
-        reason_code, reason_detail = _orphan_reason(run_id)
+        reason_code, reason_detail, decided_status = _orphan_reason(run_id)
         terminal_evidence = {"kind": EVIDENCE_PROCESS_GONE, "finding": finding}
         terminal_evidence.update(validated_evidence)
+        if decided_status is not None:
+            # The status the run decided, copied from its run.json; the outcome stays
+            # indeterminate, since it is not a recorded status.
+            terminal_evidence["decided_status"] = decided_status
         job.update(
             {
                 "status": "exited",
@@ -2308,6 +2366,18 @@ def status(run_id: str) -> dict[str, Any]:
     )
     if not isinstance(persistence_degraded_reason, str) or not persistence_degraded_reason:
         persistence_degraded_reason = None
+    # Read-time projections of the same manifest: each is None when absent or malformed.
+    run_json = manifest if isinstance(manifest, dict) else {}
+    signal_persist_dropped = run_json.get(_SIGNAL_PERSIST_DROPPED_FIELD)
+    if (
+        not isinstance(signal_persist_dropped, int)
+        or isinstance(signal_persist_dropped, bool)
+        or signal_persist_dropped < 0
+    ):
+        signal_persist_dropped = None
+    signal_persistence_degraded_at = run_json.get(_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+    if not _is_plain_number(signal_persistence_degraded_at):
+        signal_persistence_degraded_at = None
 
     return {
         "run_id": run_id,
@@ -2345,6 +2415,11 @@ def status(run_id: str) -> dict[str, Any]:
         "mcp_config_servers": declared_mcp_servers,
         "excluded_mcp_servers": (job or {}).get("excluded_mcp_servers"),
         _PERSISTENCE_DEGRADED_REASON_FIELD: persistence_degraded_reason,
+        _SIGNAL_PERSIST_DROPPED_FIELD: signal_persist_dropped,
+        _TERMINAL_WRITE_LOST_FIELD: _terminal_write_lost_record(
+            run_json.get(_TERMINAL_WRITE_LOST_FIELD)
+        ),
+        _SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: signal_persistence_degraded_at,
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,

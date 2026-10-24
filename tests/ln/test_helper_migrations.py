@@ -24,11 +24,13 @@ def test_string_digest_families_keep_serialization_and_chain_format():
     expected = hashlib.sha256(canonical.encode()).hexdigest()
     assert compute_params_hash(value) == expected
     assert _compute_content_hash(value) == expected
-    assert content_sha256(value) == hashlib.sha256(canonical_json(value).encode()).hexdigest()
-    assert (
-        OperatorStore.canonical_hash(value)
-        == hashlib.sha256(OperatorStore._json(value).encode()).hexdigest()
-    )
+    unicode_json = '{"a":[1,true,null],"z":"café 🦁"}'
+    unicode_digest = hashlib.sha256(unicode_json.encode("utf-8")).hexdigest()
+    assert canonical_json(value) == unicode_json
+    assert OperatorStore._json(value) == unicode_json
+    assert content_sha256(value) == unicode_digest
+    assert OperatorStore.canonical_hash(value) == unicode_digest
+    assert unicode_digest != expected
     assert (
         _compute_chain_hash(expected, "0" * 64)
         == hashlib.sha256((expected + "0" * 64).encode()).hexdigest()

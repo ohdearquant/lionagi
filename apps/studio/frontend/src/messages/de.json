@@ -708,7 +708,9 @@
         "lastOutcome": "zuletzt {outcome} vor {delta}",
         "neverFiredSince": "seit {date} nie ausgeführt",
         "noEvidenceHint": "keine Ausführung aufgezeichnet"
-      }
+      },
+      "disableReason": "Grund",
+      "disableReasonHint": "Warum soll dieser Zeitplan pausiert werden?"
     },
     "run": {
       "elapsed": "{delta} verstrichen",

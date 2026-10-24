@@ -1,0 +1,531 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Schedule run projections expose trigger facts without their source payload."""
+
+import json
+import sqlite3
+
+import pytest
+
+from lionagi.state.db import StateDB
+from lionagi.studio.services import schedules
+
+
+def _past_the_parsers_depth(opener: str) -> str:
+    """Nesting the C scanner refuses with its depth error, found on this interpreter: from
+    Python 3.14 that limit is measured in stack bytes, so the depth it allows differs by platform
+    and thread. Call it at the depth of the code under test or shallower, never deeper."""
+    for depth in (100_000, 1_000_000, 10_000_000):
+        text = opener * depth
+        try:
+            json.loads(text)
+        except RecursionError as exc:
+            assert "while decoding a JSON" in str(exc)
+            return text
+        except ValueError:
+            pass
+    raise AssertionError(f"{opener!r} nested 10,000,000 deep never reached the parser's depth")
+
+
+@pytest.mark.parametrize(
+    "project", [schedules._run_view, schedules._run_summary, schedules._run_record]
+)
+@pytest.mark.parametrize("encoded", [False, True], ids=["native-json", "sqlite-text"])
+@pytest.mark.parametrize(
+    "context,fields,expected",
+    [
+        pytest.param({"scheduled": True}, {}, (True, None), id="tick"),
+        pytest.param({"manual": True}, {}, (False, None), id="manual"),
+        pytest.param({"missed_recovery": True}, {}, (False, None), id="recovery"),
+        pytest.param({"scheduled": True}, {"chain_depth": 1}, (False, None), id="chain-depth"),
+        pytest.param(
+            {"scheduled": True}, {"chain_parent_id": "parent"}, (False, None), id="chain-parent"
+        ),
+        pytest.param({"scheduled": 1}, {}, (False, None), id="integer-is-not-true"),
+        pytest.param({"scheduled": "true"}, {}, (False, None), id="string-is-not-true"),
+        pytest.param(
+            {"missed_fire_at": 1700000000.125},
+            {"reason_code": "schedule.skipped.missed_fire"},
+            (False, 1700000000.125),
+            id="missed-fraction",
+        ),
+        pytest.param(
+            {"missed_fire_at": 1700000000.1234567},
+            {"reason_code": "schedule.skipped.missed_fire"},
+            (False, 1700000000.1234567),
+            id="missed-seven-fraction-digits",
+        ),
+        pytest.param(
+            {"missed_fire_at": 1700000000},
+            {"reason_code": "schedule.skipped.missed_fire"},
+            (False, 1700000000.0),
+            id="missed-integer",
+        ),
+        pytest.param(
+            {"missed_fire_at": 2**53},
+            {"reason_code": "schedule.skipped.missed_fire"},
+            (False, float(2**53)),
+            id="missed-largest-exact-integer",
+        ),
+        pytest.param(
+            {"missed_fire_at": 1700000000.125},
+            {"reason_code": "schedule.skipped.overlap"},
+            (False, None),
+            id="wrong-reason",
+        ),
+        pytest.param(None, {}, (False, None), id="null"),
+        pytest.param([], {}, (False, None), id="list"),
+    ],
+)
+def test_trigger_facts_are_identical_for_native_and_text_context(
+    project, encoded, context, fields, expected
+):
+    row = {"id": "run", "trigger_context": json.dumps(context) if encoded else context, **fields}
+    result = project(row)
+    assert (result["scheduled"], result["missed_fire_at"]) == expected
+    assert type(result["scheduled"]) is bool
+    if expected[1] is not None:
+        assert type(result["missed_fire_at"]) is float
+    assert "trigger_context" not in result
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        True,
+        "1700000000",
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        None,
+        10**400,
+        2**53 + 1,
+        2**53 + 2,
+        -(2**53 + 2),
+        2**60,
+    ],
+)
+@pytest.mark.parametrize("encoded", [False, True], ids=["native-json", "sqlite-text"])
+def test_invalid_missed_fire_times_are_null_and_json_safe(value, encoded):
+    context = {"missed_fire_at": value}
+    row = {
+        "reason_code": "schedule.skipped.missed_fire",
+        "trigger_context": json.dumps(context) if encoded else context,
+    }
+    for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
+        result = project(row)
+        assert result["scheduled"] is False
+        assert result["missed_fire_at"] is None
+        json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"trigger_context": "{"},
+        {"trigger_context": '"text"'},
+        # An integer past the interpreter's digit limit, and nesting past the parser's depth:
+        # neither text is a context, and neither may fail the read.
+        {"trigger_context": '{"n": 1' + "0" * 4999 + "}"},
+        {"trigger_context": _past_the_parsers_depth("[")},
+        {"trigger_context": _past_the_parsers_depth('{"a": ')},
+    ],
+    ids=["absent", "truncated", "string", "digit-limit", "nesting", "object-nesting"],
+)
+def test_absent_and_malformed_context_has_both_default_facts(row):
+    for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
+        result = project(row)
+        assert result["scheduled"] is False
+        assert result["missed_fire_at"] is None
+
+
+def test_a_caller_already_at_the_recursion_limit_still_gets_its_error(monkeypatch):
+    """The parser's depth guard names what it was decoding. The error a caller already at the
+    recursion limit gets is the interpreter's bare one, which says nothing about the text, so
+    neither the projection nor the row read turns it into an empty context or raw text."""
+
+    def at_the_limit(*args, **kwargs):
+        def down():
+            down()
+
+        down()
+
+    monkeypatch.setattr(json, "loads", at_the_limit)
+    row = {"trigger_context": '{"scheduled": true}'}
+    for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
+        with pytest.raises(RecursionError) as caught:
+            project(row)
+        assert "while decoding a JSON" not in str(caught.value)
+    with pytest.raises(RecursionError):
+        StateDB._row_to_dict(row)
+
+
+def test_only_the_trigger_context_column_keeps_text_past_the_parsers_depth():
+    """On Python 3.10 and 3.11 the parser's depth error also fires for a caller near the
+    recursion limit, so the row read keeps text past that depth only in trigger_context, whose
+    projection reads it as no context; every other JSON column raises it as before. An integer
+    past the digit limit is a property of the text alone, so every column keeps that text."""
+    nested = _past_the_parsers_depth("[")
+    assert StateDB._row_to_dict({"trigger_context": nested})["trigger_context"] == nested
+    for key in ("node_metadata", "payload", "action_args"):
+        with pytest.raises(RecursionError, match="while decoding a JSON"):
+            StateDB._row_to_dict({key: nested})
+    digits = '{"n": 1' + "0" * 4999 + "}"
+    for key in ("trigger_context", "payload"):
+        assert StateDB._row_to_dict({key: digits})[key] == digits
+
+
+def test_trigger_payload_does_not_leak_from_any_projection_or_chain_child():
+    parent = {
+        "id": "parent",
+        "trigger_context": {"scheduled": True, "event": {"token": "private-payload-value"}},
+    }
+    child = {**parent, "id": "child", "chain_depth": 1, "chain_parent_id": "parent"}
+    for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
+        result = project(parent)
+        assert result["scheduled"] is True
+        assert result["missed_fire_at"] is None
+        assert set(result) == {"id", "error_class", "scheduled", "missed_fire_at"}
+    record = schedules._run_record({**parent, "chain_children": [child]})
+    assert record["chain_children"][0]["scheduled"] is False
+    assert record["chain_children"][0]["missed_fire_at"] is None
+    for private in ("trigger_context", "event", "token", "private-payload-value"):
+        assert private not in json.dumps(record)
+
+
+@pytest.mark.parametrize("value", ["--payload-value", "Fix: x_y!"], ids=["flag", "charset"])
+def test_a_refused_command_arg_render_does_not_carry_the_rendered_value(value):
+    """The refusal is stored on the run as its error and served with it, so it names the
+    template and never the trigger value it rendered to."""
+    from lionagi.studio.scheduler.subprocess import _render_command_arg
+
+    with pytest.raises(ValueError) as raised:
+        _render_command_arg("{{title}}", {"title": value})
+    assert "{{title}}" in str(raised.value)
+    assert value not in str(raised.value)
+
+
+@pytest.fixture
+def isolated_db(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    return path
+
+
+async def _seed_run(db, rid, context, **fields):
+    await db.create_schedule_run(
+        {
+            "id": rid,
+            "schedule_id": "nightly",
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "completed",
+            "fired_at": 1700000000.0,
+            "trigger_context": context,
+            **fields,
+        }
+    )
+
+
+async def test_database_rows_match_across_run_routes_and_recent_summaries(isolated_db):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+                "next_fire_at": 1700000000.125,
+                "missed_fire_policy": "skip",
+            }
+        )
+        await _seed_run(
+            db, "tick", {"scheduled": True, "event": {"token": "private-payload-value"}}
+        )
+        await _seed_run(db, "manual", {"manual": True})
+        await _seed_run(
+            db,
+            "child",
+            {"scheduled": True, "chain_from": "tick"},
+            chain_depth=1,
+            chain_parent_id="tick",
+        )
+        schedule = await db.get_schedule("nightly")
+    await SchedulerEngine()._record_missed_fire_skip(schedule, now=1700000100.0)
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    detail = await schedules.get_schedule_route("nightly")
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    slices = [
+        views["runs"],
+        detail["recent_runs"],
+        listed["schedules"][0]["recent_runs_summary"]["runs"],
+    ]
+    assert all(len(rows) == 4 for rows in slices)
+    expected = {"tick": (True, None), "manual": (False, None), "child": (False, None)}
+    missed = next(row for row in views["runs"] if row["id"] not in expected)
+    expected[missed["id"]] = (False, 1700000000.125)
+    for rows in slices:
+        assert {r["id"]: (r["scheduled"], r["missed_fire_at"]) for r in rows} == expected
+        assert type(next(r for r in rows if r["id"] == missed["id"])["missed_fire_at"]) is float
+        assert "private-payload-value" not in json.dumps(rows)
+    for rid, facts in expected.items():
+        record = await schedules.get_schedule_run_route(rid)
+        assert (record["scheduled"], record["missed_fire_at"]) == facts
+    parent = await schedules.get_schedule_run_route("tick")
+    assert parent["chain_children"][0]["scheduled"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"n": 1' + "0" * 4999 + "}",
+        "[" * 100_000,
+        # Naming the key, the text also ships in the recent-run batch, which decodes it itself.
+        '{"scheduled": true, "n": 1' + "0" * 4999 + "}",
+        '{"scheduled": ' + "[" * 100_000,
+        '{"scheduled": tru',
+        '{"a": ' * 100_000,
+        '{"scheduled": ' + '{"a": ' * 100_000,
+    ],
+    ids=[
+        "digit-limit",
+        "nesting",
+        "digit-limit-key",
+        "nesting-key",
+        "malformed-key",
+        "object-nesting",
+        "object-nesting-key",
+    ],
+)
+async def test_a_stored_context_text_that_does_not_parse_fails_no_run_read(isolated_db, text):
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+        await _seed_run(db, "odd", {"scheduled": True})
+    # No writer stores such text, so it is put in place of the written context directly.
+    with sqlite3.connect(isolated_db) as connection:
+        connection.execute("UPDATE schedule_runs SET trigger_context = ? WHERE id = 'odd'", (text,))
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    detail = await schedules.get_schedule_route("nightly")
+    status = await schedules.get_schedule_status_route("nightly")
+    record = await schedules.get_schedule_run_route("odd")
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    served = [
+        *views["runs"],
+        *detail["recent_runs"],
+        status["latest_run"],
+        record,
+        *listed["schedules"][0]["recent_runs_summary"]["runs"],
+    ]
+    assert len(served) == 5
+    for row in served:
+        assert row["id"] == "odd"
+        assert (row["scheduled"], row["missed_fire_at"]) == (False, None)
+
+
+def test_machine_runs_preserves_trigger_facts_from_the_studio_response(monkeypatch):
+    from lionagi.cli import machine_schedule
+
+    row = schedules._run_view({"id": "tick", "trigger_context": {"scheduled": True}})
+    requests = []
+
+    def studio(path):
+        requests.append(path)
+        return {"runs": [row], "limit": 25, "offset": 0, "has_next": False}
+
+    monkeypatch.setattr(machine_schedule, "_studio", studio)
+    result = machine_schedule._runs(["nightly", "--limit", "25"])
+    assert requests == ["/nightly/runs?limit=25"]
+    assert result["runs"][0]["scheduled"] is True
+    assert result["runs"][0]["missed_fire_at"] is None
+
+
+def _captured_trigger_context(tracked):
+    tracked.assert_called_once()
+    return tracked.call_args.kwargs["trigger_context"]
+
+
+def _served_scheduled(context):
+    row = {"id": "run", "trigger_context": context}
+    return [
+        project(row)["scheduled"]
+        for project in (schedules._run_view, schedules._run_summary, schedules._run_record)
+    ]
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "cron", "cron_expr": "0 * * * *"},
+        {"trigger_type": "interval", "cron_expr": None, "interval_sec": 60},
+        {"trigger_type": "at", "cron_expr": None},
+    ],
+    ids=["cron", "interval", "at"],
+)
+async def test_a_timer_fire_is_written_and_served_as_scheduled(trigger):
+    from unittest.mock import patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+
+    engine = SchedulerEngine(svc=_make_svc())
+    with patch.object(engine, "_tracked_fire") as tracked:
+        await engine._maybe_fire(_minimal_schedule(next_fire_at=1000.0, **trigger), now=1000.0)
+    assert _served_scheduled(_captured_trigger_context(tracked)) == [True, True, True]
+
+
+async def test_a_manual_fire_is_written_and_served_as_not_scheduled():
+    from unittest.mock import patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(next_fire_at=1000.0)
+    engine = SchedulerEngine(svc=svc)
+    with patch.object(engine, "_tracked_fire") as tracked:
+        await engine.fire_now("sched-001")
+    context = _captured_trigger_context(tracked)
+    assert context["manual"] is True
+    assert _served_scheduled(context) == [False, False, False]
+
+
+async def test_a_timer_fire_dispatched_again_after_a_restart_is_still_served_as_scheduled():
+    from unittest.mock import patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(enabled=True)
+    svc.list_undispatched_schedule_runs.return_value = [
+        {
+            "id": "orphan",
+            "schedule_id": "sched-001",
+            "chain_depth": 0,
+            "trigger_context": {"scheduled": True, "fired_at": 1000.0},
+        }
+    ]
+    engine = SchedulerEngine(svc=svc)
+    with patch.object(engine, "_tracked_fire") as tracked:
+        await engine._recover_undispatched_fires()
+    assert tracked.call_args.kwargs["supersedes_run_id"] == "orphan"
+    assert _served_scheduled(_captured_trigger_context(tracked)) == [True, True, True]
+
+
+async def test_the_batch_read_ships_a_context_only_when_it_names_a_fact_key(isolated_db):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    event = {"repo": "acme/widgets", "github_events": [{"pr_body": "x" * 200_000}]}
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+                "next_fire_at": 1700000000.125,
+                "missed_fire_policy": "skip",
+            }
+        )
+        await _seed_run(db, "event", event)
+        await _seed_run(db, "named-in-a-value", {"action": "scheduled", "note": "missed_fire_at"})
+        await _seed_run(db, "tick", {"scheduled": True, "fired_at": 1700000000.0})
+        schedule = await db.get_schedule("nightly")
+    await SchedulerEngine()._record_missed_fire_skip(schedule, now=1700000100.0)
+
+    async with StateDB() as db:
+        grouped, _, _ = await schedules._read_run_batch(db, ["nightly"])
+    shipped = {row["id"]: row["trigger_context"] for row in grouped["nightly"]}
+    assert len(shipped) == 4
+    assert shipped["event"] is None
+    assert shipped["named-in-a-value"] is not None
+    assert shipped["tick"] is not None
+    missed = next(rid for rid in shipped if rid not in {"event", "named-in-a-value", "tick"})
+    assert shipped[missed] is not None
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    expected = {
+        "event": (False, None),
+        "named-in-a-value": (False, None),
+        "tick": (True, None),
+        missed: (False, 1700000000.125),
+    }
+    for rows in (views["runs"], listed["schedules"][0]["recent_runs_summary"]["runs"]):
+        assert {r["id"]: (r["scheduled"], r["missed_fire_at"]) for r in rows} == expected
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "cron", "cron_expr": "0 * * * *"},
+        {"trigger_type": "interval", "interval_sec": 60},
+        {"trigger_type": "at"},
+    ],
+    ids=["cron", "interval", "at"],
+)
+async def test_a_timer_fire_recorded_in_the_database_is_served_as_scheduled(isolated_db, trigger):
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+                "action_cwd": "/",
+                "next_fire_at": 1000.0,
+                **trigger,
+            }
+        )
+        schedule = await db.get_schedule("nightly")
+    engine = SchedulerEngine()
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._maybe_fire(schedule, now=1000.0)
+        await asyncio.gather(*list(engine._fire_tasks))
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    assert [(r["status"], r["scheduled"]) for r in views["runs"]] == [("completed", True)]
+    detail = await schedules.get_schedule_route("nightly")
+    assert [r["scheduled"] for r in detail["recent_runs"]] == [True]
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    summary = listed["schedules"][0]["recent_runs_summary"]["runs"]
+    assert [r["scheduled"] for r in summary] == [True]
+    record = await schedules.get_schedule_run_route(views["runs"][0]["id"])
+    assert record["scheduled"] is True

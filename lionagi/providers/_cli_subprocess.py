@@ -34,6 +34,13 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency.utils import maybe_await
 
 from ._secret_resolution import fill_declared_secrets_and_names
+from ._subagent_admission import (
+    AGENT_DEPTH_ENV,
+    DEFAULT_WORKLOAD,
+    admit_subagent,
+    child_agent_depth,
+    refuse_nested_agent,
+)
 
 log = logging.getLogger(__name__)
 
@@ -338,11 +345,12 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
     """End the group of a child nobody is left to receive.
 
     Runs as a done-callback since the awaiting coroutine has already unwound
-    by the time this fires. A cancellation landing inside the creation call
-    is a known, unclosed hole (logged, not silently passed over): the child
-    exists but its pid was never returned to this process, so only its
-    direct-child transport gets closed, never its group.
-    See docs/internals/providers.md#cli-subprocess-lifecycle.
+    by the time this fires. The shield keeps the creation call running through
+    a cancellation of its caller, so the handle still arrives here. A spawn
+    task that is itself cancelled is a known, unclosed hole (logged, not
+    silently passed over): the child may exist but its pid was never returned
+    to this process, so only its direct-child transport gets closed, never its
+    group. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     if task.cancelled():
         log.warning(
@@ -812,6 +820,8 @@ async def ndjson_from_cli(
     stdin_data: str | bytes | None = None,
     tail_repair: Callable[[str], dict | None] | None = None,
     on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
+    engine: str | None = None,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
     malformed final chunks. ``stdin_data`` overrides ``stdin`` and is written
@@ -819,8 +829,13 @@ async def ndjson_from_cli(
     child sees EOF. ``on_spawn`` is awaited (may be a coroutine function)
     before any output is read, and its failure is not swallowed — it
     propagates through the teardown below, which ends the child's group.
-    See docs/internals/providers.md#cli-subprocess-lifecycle.
+    Before the spawn the agent takes a machine-wide slot for ``engine`` and
+    ``workload`` (see ``_subagent_admission``), held until the child's group
+    has ended. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
+    # An agent lionagi started cannot start another through lionagi, by its shell or by an
+    # MCP server it was given; refused here, before any slot is waited for.
+    refuse_nested_agent(engine)
     # A request copied with model_copy(update=...) skips validation, and the spawn's own
     # encode error would hold the whole key or value, so the environment is read and
     # checked here, once, and that copy is what the fill and the spawn receive.
@@ -837,6 +852,10 @@ async def ndjson_from_cli(
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
+    # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
+    # another (refuse_nested_agent). Set over whatever the environment held: only a
+    # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
+    spawn_env[AGENT_DEPTH_ENV] = str(child_agent_depth())
     redaction_env: Mapping[str, str] = {
         **_secret_candidates(spawn_env, declared),
         **_cmd_secret_values(cmd),
@@ -850,8 +869,12 @@ async def ndjson_from_cli(
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    # Encoded before the slot is taken and the child started, so an input that cannot be
+    # encoded is refused while nothing has to be given back.
+    stdin_payload: bytes | None = None
     if stdin_data is not None:
         kwargs["stdin"] = asyncio.subprocess.PIPE
+        stdin_payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
     elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
 
@@ -879,37 +902,99 @@ async def ndjson_from_cli(
             raise
         return child, observed
 
+    # Taken last before the spawn, so a refused agent has started nothing, and given
+    # back only once the child's group has ended (the finally at the bottom).
+    lease = await admit_subagent(engine=engine, workload=workload)
     spawn = asyncio.ensure_future(_spawn_and_observe())
     try:
         proc, spawned = await asyncio.shield(spawn)
     except BaseException:
-        spawn.add_done_callback(_kill_abandoned_spawn)
-        raise
+        # A cancellation can land while the creation call still runs, so the child may
+        # arrive after this unwinds. The slots stay held until the callback has ended
+        # that child's group; a spawn that already finished is ended and released now.
+        def _end_then_release(task: asyncio.Future) -> None:
+            if not task.cancelled() and task.exception() is None:
+                late = task.result()[1]
+                try:
+                    # Named before its group is ended, so if that end fails the slots
+                    # can be kept for this child by a record with its start time.
+                    lease.record_child(late.pid, late.create_time)
+                except Exception:
+                    log.exception("could not record the child whose spawn was abandoned")
+            try:
+                _kill_abandoned_spawn(task)
+            except Exception:
+                # The group is not known to have ended. The caller already has its own
+                # error; this one is logged, and the slots stay held.
+                if not lease.slots:
+                    log.exception("could not end the group of a child whose spawn was abandoned")
+                elif lease.keep_for_child():
+                    log.exception(
+                        "could not end the group of a child whose spawn was abandoned; its "
+                        "subagent slots stay held while that child runs"
+                    )
+                else:
+                    log.exception(
+                        "could not end the group of a child whose spawn was abandoned; its "
+                        "subagent slots stay held until this process exits"
+                    )
+            else:
+                lease.release()
 
-    # Read the identity here, not at teardown: once the child is reaped its pid
-    # and group id are both recyclable. The run observer receives the live
-    # handle privately; the caller callback keeps its existing identity-only
-    # contract. Both are awaited before output is consumed, and failed
-    # accounting tears down the child.
-    observers = (
-        (_RUN_CLI_SPAWN_OBSERVER.get(), (proc, spawned)),
-        (on_spawn, (spawned,)),
-    )
-    for observer, args in observers:
-        if observer is None:
-            continue
+        if spawn.done():
+            _end_then_release(spawn)
+        else:
+            spawn.add_done_callback(_end_then_release)
+        raise
+    # From here the child runs and holds the lease. A failure in this try ends the
+    # child's group and gives the slots back here; the statements between it and the
+    # stream's own try only define closures and create tasks, and the stdin payload was
+    # encoded before the spawn, so nothing a caller passes can raise in that span.
+    try:
+        if lease.slots and spawned.create_time is None:
+            # A slot records the child's start time so it stays held after this process
+            # exits. Without one, the child's pid could later name an unrelated process,
+            # so the slot would read free while the child still runs. Look once more;
+            # if identity still cannot be read, refuse rather than outlive the cap.
+            spawned = observe_spawned(proc.pid, expected_marker=spawn_marker)
+            if spawned.create_time is None:
+                from ._provider_errors import SubagentAdmissionRefusedError
+
+                raise SubagentAdmissionRefusedError(
+                    "subagent admission refused: the agent's start time could not be read, "
+                    "so its slot could not be kept past this process; the agent was killed, "
+                    "and any processes it had started were left running"
+                )
+        lease.record_child(spawned.pid, spawned.create_time)
+
+        # Read the identity here, not at teardown: once the child is reaped its pid
+        # and group id are both recyclable. The run observer receives the live
+        # handle privately; the caller callback keeps its existing identity-only
+        # contract. Both are awaited before output is consumed, and failed
+        # accounting tears down the child.
+        observers = (
+            (_RUN_CLI_SPAWN_OBSERVER.get(), (proc, spawned)),
+            (on_spawn, (spawned,)),
+        )
+        for observer, args in observers:
+            if observer is not None:
+                await maybe_await(observer(*args))
+
+        if proc.stdout is None:
+            raise RuntimeError("Failed to capture stdout from subprocess")
+    except BaseException:
         try:
-            await maybe_await(observer(*args))
-        except BaseException:
             await end_child_group(proc, spawned=spawned)
+        except BaseException:
+            # Not known to have ended: the slots stay held while the child runs.
+            lease.keep_for_child()
             raise
+        lease.release()
+        raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
     buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from subprocess")
 
     # Bounded stderr drain — without this a stderr-heavy session deadlocks
     # when the OS pipe buffer fills before stdout EOF.
@@ -976,9 +1061,8 @@ async def ndjson_from_cli(
                 proc.stdin.close()
 
     stdin_task: asyncio.Task | None = None
-    if stdin_data is not None:
-        payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
-        stdin_task = asyncio.create_task(_write_stdin(payload))
+    if stdin_payload is not None:
+        stdin_task = asyncio.create_task(_write_stdin(stdin_payload))
 
     # Guards against orphan-held pipes leaving stdout open forever; see
     # docs/internals/providers.md#cli-subprocess-lifecycle.
@@ -1107,7 +1191,13 @@ async def ndjson_from_cli(
             sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
         )
 
-        await end_child_group(proc, spawned=spawned)
+        try:
+            await end_child_group(proc, spawned=spawned)
+        except BaseException:
+            # Not known to have ended: the slots stay held while the child runs.
+            lease.keep_for_child()
+            raise
+        lease.release()
 
         if abandoned_silently:
             # Drain first, or the warning reports "said nothing" about a child

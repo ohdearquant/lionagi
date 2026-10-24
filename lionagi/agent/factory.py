@@ -209,11 +209,14 @@ async def create_agent(
 
             provider = settings.LIONAGI_CHAT_PROVIDER
             model_name = ms.model
+        # Settings are looked up under the provider the name resolves to, so an alias such as
+        # "openai-codex" takes its provider's; the model is built under the name as written.
+        provider_key = _canonical_provider(provider)
 
         extra = {}
         effort = spec.effort or ms.effort
         derived = False
-        if not effort and provider == "codex":
+        if not effort and provider_key == "codex":
             # Unset is not "no opinion": codex would read the global config's
             # effort, tuned for that config's own model, and 400 when it
             # exceeds this one's ceiling. Same seam the CLI builders use.
@@ -222,23 +225,23 @@ async def create_agent(
             effort = codex_unset_effort_default(model_name)
             derived = effort is not None
         if effort:
-            kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+            kwarg = PROVIDER_EFFORT_KWARG.get(provider_key)
             if kwarg:
                 extra[kwarg] = effort
                 if derived:
                     derived_effort_kwarg = kwarg
         if spec.yolo:
-            extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+            extra.update(PROVIDER_YOLO_KWARGS.get(provider_key, {}))
 
         # CLI providers auth via subprocess, so a placeholder api_key is fine;
         # API providers need their real key or auth silently breaks.
-        if provider in CLI_PROVIDERS:
+        if provider_key in CLI_PROVIDERS:
             extra["api_key"] = "dummy"
 
         # CLI providers default their repo/workspace field to the calling
         # process cwd, so spec.cwd must be forwarded explicitly.
         if spec.cwd:
-            repo_kwarg = PROVIDER_REPO_KWARG.get(provider)
+            repo_kwarg = PROVIDER_REPO_KWARG.get(provider_key)
             if repo_kwarg:
                 extra[repo_kwarg] = spec.cwd
 
@@ -762,9 +765,14 @@ _ANTIGRAVITY_PROVIDER_NAMES = frozenset({"gemini-cli", "gemini_cli", "gemini-cod
 
 
 def _canonical_provider(provider: str | None) -> str:
-    """Fold a provider string the way endpoint resolution does, so a spelling that
-    resolves to an endpoint is never one these predicates fail to recognise."""
-    return provider.strip().lower() if isinstance(provider, str) else ""
+    """Fold a provider string the way endpoint resolution does, aliases included
+    ("openai-codex" is codex), so a spelling that resolves to an endpoint is never
+    one these predicates fail to recognise."""
+    if not isinstance(provider, str):
+        return ""
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    return EndpointRegistry.canonical_provider(provider.strip())
 
 
 def provider_accepts_forwarded_mcp(provider: str | None) -> bool:

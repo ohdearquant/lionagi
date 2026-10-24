@@ -25,11 +25,26 @@ def test_parse_model_spec_normalizes_mixed_case_effort_suffix():
     assert ms.effort == "max"
 
 
-def test_parse_model_spec_rejects_effort_for_bare_gemini_provider():
+@pytest.mark.parametrize("provider", ["gemini", "gemini-api", "Gemini"])
+def test_parse_model_spec_rejects_effort_for_bare_gemini_provider(provider):
     """The bare 'gemini' provider (direct Google API, not the agy CLI) still
-    does not support effort levels — ValueError is raised."""
+    does not support effort levels — ValueError is raised, for its alias and
+    any letter case of it too."""
     with pytest.raises(ValueError, match="does not support effort"):
-        parse_model_spec("gemini/gemini-3.1-pro-high")
+        parse_model_spec(f"{provider}/gemini-3.1-pro-high")
+
+
+@pytest.mark.parametrize("provider", ["claude", "Claude", "CLAUDE_CODE", "Claude-Code"])
+@pytest.mark.parametrize(("model", "effort"), [("opus-4-7", None), ("opus-4-7-high", "high")])
+def test_parse_model_spec_names_a_claude_model_in_any_letter_case_of_its_provider(
+    provider, model, effort
+):
+    """A bare Claude model name gains its ``claude-`` prefix under any letter case of a Claude
+    provider name, as the endpoint match folds the provider."""
+    ms = parse_model_spec(f"{provider}/{model}")
+
+    assert ms.model == f"{provider}/claude-opus-4-7"
+    assert ms.effort == effort
 
 
 def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch):
