@@ -89,7 +89,7 @@ ollama = [
 ]
 
 mcp = [
-    "fastmcp>=3.2.0",
+    "fastmcp>=3.4.10",
     # fastmcp -> mcp pulls Starlette transitively but mcp only pins
     # starlette>=0.27, so floor the patched version here too (mirrors [studio]).
     "starlette>=1.3.1",
