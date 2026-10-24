@@ -576,8 +576,8 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
     )
     _in_span(
         _BRANCH,
-        249,
-        255,
+        250,
+        256,
         "agent-managed subset",
         'cp = self.metadata.get("current_progression")',
     )
@@ -706,7 +706,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"blocks_injected": 0,',
         '"writeback_failed": 0,',
     )
-    _in_span(_BRANCH, 292, 304, "def last_context_report(self):", "``skipped``")
+    _in_span(_BRANCH, 293, 305, "def last_context_report(self):", "``skipped``")
     _in_span("lionagi/cli/monitor.py", 668, 679, '"blocks_injected",')
 
 
