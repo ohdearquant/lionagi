@@ -17,7 +17,7 @@ from typing import Any, Optional, TypeVar, Union
 from pydantic import BaseModel, Field, PydanticUserError, create_model
 
 from lionagi.libs.nested import deep_merge as _deep_merge
-from lionagi.ln import is_pydantic_model_class
+from lionagi.ln import compute_hash, is_pydantic_model_class
 from lionagi.utils import is_import_installed
 
 logger = logging.getLogger(__name__)
@@ -329,7 +329,7 @@ def _load_via_codegen(
         temporary_directory = Path(temporary_directory_name)
         output_file = (
             temporary_directory
-            / f"{resolved_model_name.lower()}_model_{hash(schema_input_data)}.py"
+            / f"{resolved_model_name.lower()}_model_{compute_hash(schema_input_data, max_bytes=None)[:16]}.py"
         )
         module_name = output_file.stem
 

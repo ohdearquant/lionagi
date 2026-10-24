@@ -303,6 +303,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Changed
 
+- Generated schema modules now use a 16-character SHA256 suffix of the serialized generator input, giving repeated inputs stable temporary module names instead of Python's process-specific hash. Code generation remains an explicit opt-in for trusted schemas.
+
 - Flow deserialization resolves UUIDs, UUID strings and objects exposing an id through the canonical identity helper. Objects with only a UUID-producing string representation are rejected, and unsupported ID inputs use the helper error message.
 
 - An approved Studio Operator `rename_run` sets the run's explicit display label
