@@ -303,6 +303,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Changed
 
+- Lazy type resolution, provider token-window lookup and built-in role/mode loading
+  use the shared import helper. Pattern loading preserves original missing-module
+  errors; other import errors name the target module and retain the original cause.
 - Generated schema modules now use a 16-character SHA256 suffix of the serialized generator input, giving repeated inputs stable temporary module names instead of Python's process-specific hash. Code generation remains an explicit opt-in for trusted schemas.
 
 - Flow deserialization resolves UUIDs, UUID strings and objects exposing an id through the canonical identity helper. Objects with only a UUID-producing string representation are rejected, and unsupported ID inputs use the helper error message.
