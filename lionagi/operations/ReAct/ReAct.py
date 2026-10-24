@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel
 
-from lionagi._errors import ExecutionError
+from lionagi._errors import ExecutionError, InputTokenCapError
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
 from lionagi.models.field_model import FieldModel
@@ -650,8 +650,9 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
                     "This might be due to a failed response. "
                     "Set `continue_after_failed_response=True` to ignore this error."
                 )
-    except (ExecutionError, ProviderError):
-        # The provider refused the final call; an earlier round's reply is not its answer.
+    except (ExecutionError, ProviderError, InputTokenCapError):
+        # The provider, or the input cap before the send, refused the final call; an earlier
+        # round's reply is not its answer.
         raise
     except Exception as exc:
         from lionagi.state.compat import refusal_in  # noqa: PLC0415

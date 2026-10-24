@@ -37,6 +37,15 @@ The following statements supersede conflicting historical text below:
 - ADR-0121, not this retrospective ADR or the proposed ADR-0044 alone, owns the future
   non-bypassable ActionExecutor and transform/revalidation sequence.
 
+## Amendment (2026-10-23)
+
+`chat` now emits `API_PRE_CALL` before it compiles the request from the branch's active view;
+`run` still emits it once the request is compiled, before the stream starts. A handler can
+therefore change what the request it precedes carries by curating the branch's view, which the
+host-side context fold of ADR-0130 does. The adapter is still observation-only in the sense below:
+it cannot replace, abort or exit the invocation, and it never touches `HookRegistry` or
+`HookedEvent`.
+
 ## Context
 
 LionAGI has three public in-process families called hooks. They intercept different operations, have different

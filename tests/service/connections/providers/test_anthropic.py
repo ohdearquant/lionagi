@@ -167,7 +167,7 @@ class TestAnthropicIntegration:
             assert payload["model"] == model
 
     def test_anthropic_error_handling(self, anthropic_imodel):
-        # max_tokens is required for Anthropic
+        # An output limit below 1 is refused; one left unset is supplied by the endpoint.
         with pytest.raises(
             ValueError
         ):  # endpoint wraps pydantic ValidationError as ValueError("Invalid payload")
@@ -175,7 +175,7 @@ class TestAnthropicIntegration:
                 {
                     "messages": [{"role": "user", "content": "Hello"}],
                     "model": "claude-3-opus-20240229",
-                    # Missing max_tokens
+                    "max_tokens": 0,
                 }
             )
 

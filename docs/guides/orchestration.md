@@ -161,6 +161,28 @@ an MCP `play.submit` can return a run ID before that type error ends the run.
 Source: `lionagi/cli/orchestrate/__init__.py`, `lionagi/mcp/dispatch.py`, and
 `lionagi/mcp/jobs.py`.
 
+## Resolve issues independently
+
+The bundled `resolve-issues` template selects one issue per run and prepares a
+dedicated fix branch. Its `--labels` filter and `--limit` argument remain
+available; `--limit` now bounds the candidate issues inspected during selection.
+An empty label filter includes issues with any label. A larger backlog can be
+split across separate checkouts, with overlapping files assigned to one writer.
+
+Before planning a fix, the template requires the complete issue and comments,
+current specification status and an acceptance checklist that distinguishes
+shipped subsets from remaining work. Project instructions govern authorization;
+merging a proposed design document does not authorize its implementation.
+
+Investigation, implementation, independent testing, and a final assessment each
+produce a required evidence file. The template uses configured role profiles
+and reserves part of its operation budget for concrete follow-up work. It
+leaves publication and issue closure to the caller. Preparing a branch or
+passing artifact verification alone does not establish that an issue is fixed.
+
+Studio installs a built-in template only when the destination does not exist.
+Existing customized copies remain unchanged when the bundled template updates.
+
 ## Playbook field reference
 
 The runtime fields below are the ones `_validate_spec_fields` in

@@ -680,7 +680,7 @@ exit of the invocation owning this subscription, including failure or cancellati
 cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
 `ReactiveExecutor` invokes each node's operation through `Operation.invoke`
 (`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
-(`lionagi/session/branch.py:441-469`, `:1080-1133`; `lionagi/operations/run/run.py:835-846`), all
+(`lionagi/session/branch.py:474-502`, `:1147-1200`; `lionagi/operations/run/run.py:835-846`), all
 before the enclosing flow returns (`lionagi/operations/flow.py:1717`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
@@ -692,7 +692,7 @@ batch are minted; closure wakes only for remaining admitted facts. Closure drain
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py:597-614`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1681`,
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1697`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -804,7 +804,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:298-322`, `:359-396`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionagi/engines/hypothesis.py:887-958`, `lionagi/engines/review.py:616`,
+  (`lionagi/engines/hypothesis.py:948-1028`, `lionagi/engines/review.py:616`,
   `lionagi/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1164-1165`, `:1457-1501`), under ADR-0023 D6, which decides that the
@@ -832,7 +832,7 @@ everything since; facts past the range belong to the next wake.
   observer (`lionagi/engines/review.py:281`, `:842`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
   reading (`lionagi/service/token_budget.py:140`); the nearest crossing is the engine's
-  `budget_exhausted` notification (`lionagi/engines/engine.py:404-412`), whose `kind` is a bare
+  `budget_exhausted` notification (`lionagi/engines/engine.py:569-577`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary
   is closed at registration; the emit site still missing for each is row 7 of the delta, not
   current behavior.

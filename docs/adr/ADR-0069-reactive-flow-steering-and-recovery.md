@@ -586,7 +586,7 @@ against the artifact set a node declared, it does not make.
   `MAX_HASH_INPUT_BYTES = 10 * 1024 * 1024` by default (`lionagi/ln/_hash.py:254,300-301`), and
   ADR-0050 records that a caller hashing larger content either opts out with `max_bytes=None` or
   streams a file through `hash_file()` rather than reading it whole
-  (`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:882-885`).
+  (`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:886-889`).
 
 **Builder notes for the rows.** A check that re-reads the declared set would read it through the
 same verifier a live run uses (`verify_artifact_contract`, `lionagi/state/artifact_verifier.py:215`),

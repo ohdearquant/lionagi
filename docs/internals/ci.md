@@ -142,8 +142,11 @@ not performance and not flaky_quarantine
 
 CI runs every failure on non-coverage legs (`MAXFAIL=0`). The coverage leg uses
 a catastrophic-failure ceiling of 25 because it is the critical path. Local
-commands retain the faster defaults of 3 and 1. Worker restarts remain disabled
-so a hard crash names the test that owned the worker.
+commands retain the faster defaults of 3 and 1. The Python runner (`scripts/ci.sh`)
+defaults `MAX_WORKER_RESTART` to 4 in all three test commands; CI does not override it.
+Worker crashes still identify the owning test. The JUnit census rejects missing
+collected test IDs after an early stop, and the test-step and job timeouts in
+`.github/workflows/ci.yml` bound a controller stalled on worker replacement.
 
 `performance` tests run serially in `ci.yml`'s advisory `performance` job,
 outside the required matrix. Tests marked `slow_timing` exercise real deadline

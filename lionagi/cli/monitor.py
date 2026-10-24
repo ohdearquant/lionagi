@@ -16,6 +16,7 @@ from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
+from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
@@ -1328,8 +1329,6 @@ async def _resolve_watched_runs(
     """Resolve every requested id, retrying not-yet-found ones for a bounded
     grace period. Ids that aren't schedule_runs are also tried against
     sessions (`li monitor run <session_id>` support)."""
-    import asyncio
-
     if grace_seconds is None:
         grace_seconds = _RESOLVE_GRACE_SECONDS
     pending: dict[str, dict[str, Any]] = {}
@@ -1351,7 +1350,7 @@ async def _resolve_watched_runs(
         remaining = still_missing
         if not remaining or deadline is None or time.monotonic() >= deadline:
             break
-        await asyncio.sleep(_RESOLVE_GRACE_POLL_SECONDS)
+        await sleep(_RESOLVE_GRACE_POLL_SECONDS)
     return pending, session_pending, remaining
 
 

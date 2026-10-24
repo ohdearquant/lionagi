@@ -808,19 +808,12 @@ async def test_the_wait_for_a_decision_backs_off_instead_of_polling_at_one_rate(
     intervals: list[float] = []
     real_sleep = asyncio.sleep
 
-    class _RecordingAsyncio:
-        # Scoped to this module's name for asyncio so the helpers in this file
-        # keep sleeping for real -- patching the shared module would record
-        # their intervals too.
-        def __getattr__(self, name: str):
-            return getattr(asyncio, name)
+    async def record_sleep(delay: float):
+        intervals.append(delay)
+        # Yield without waiting: the schedule is the subject, not the clock.
+        await real_sleep(0)
 
-        async def sleep(self, delay: float, *args, **kwargs):
-            intervals.append(delay)
-            # Yield without waiting: the schedule is the subject, not the clock.
-            return await real_sleep(0, *args, **kwargs)
-
-    monkeypatch.setattr(run_control_mod, "asyncio", _RecordingAsyncio())
+    monkeypatch.setattr(run_control_mod, "sleep", record_sleep)
 
     task = asyncio.create_task(pause_run({"run": session_id}))
     proposal = await _wait_proposal(store, request_id)

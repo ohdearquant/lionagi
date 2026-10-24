@@ -179,7 +179,7 @@ def test_roled_message_content_always_message_content():
 
 
 def test_roled_message_role_classvar():
-    """Role is a ClassVar property, not an instance field."""
+    """Subclass roles are ClassVars; the base message keeps its UNSET default."""
     from typing import ClassVar
 
     class _UserMessage(RoledMessage):
@@ -212,12 +212,6 @@ def test_roled_message_role_in_serialization():
     message = _MockMessage(content=_MockContent(text="test"))
     d = message.to_dict()
     assert d["role"] == "unset"
-
-
-def test_roled_message_role_default():
-    """Default role is UNSET."""
-    message = _MockMessage(content=_MockContent(text="test"))
-    assert message.role == MessageRole.UNSET
 
 
 def test_roled_message_sender_recipient_validation():

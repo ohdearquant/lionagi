@@ -18,11 +18,12 @@ un-pausing a paused or cancelled run, and accepts a run in any status.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from lionagi.ln.concurrency import sleep
 
 from .redact import scrub_text
 from .run_progress import MissingOwnerContextError, resolve_run
@@ -237,7 +238,7 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
             status = proposal["status"]
         if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
             return _redacted_resume_result(proposal, run_id)
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:

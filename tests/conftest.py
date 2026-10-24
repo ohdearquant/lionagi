@@ -352,7 +352,7 @@ def _reset_plugin_registry():
 
 _MISSING_DEP_HINTS = ("not installed", "is required for", "no module named")
 
-# Optional extras whose absence should be skipped (not failed) under --skip-missing-deps.
+# Optional packages whose absence should be skipped (not failed) under --skip-missing-deps.
 # Bounds the captured-output scan so an unrelated assertion can't be silently masked.
 _OPTIONAL_DEPS = (
     "pandas",
