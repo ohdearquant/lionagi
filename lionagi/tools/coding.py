@@ -391,19 +391,17 @@ class CodingToolkit(LionTool):
                 engine = NudgeEngine(branch, rules=rules)
         self._bound_nudge_engine = engine
 
-        def _invalidate_stale_reads() -> None:
+        dormant_reads: dict[str, float] = {}
+
+        def _invalidate_stale_reads(*, only_recorded: bool = False) -> None:
             """Drop file_state entries whose backing read was evicted/compacted —
             otherwise the read-before-edit guard stays satisfied for a read the model can no longer see."""
-            if not read_tracked:
-                return
-            active = branch.progression
+            active = set(branch.progression)
             pile = msgs.messages
             active_paths: set[str] = set()
-            for uid in active:
-                if uid not in pile:
-                    continue
-                m = pile[uid]
-                if not isinstance(m, ActionResponse):
+            recorded_paths: set[str] = set()
+            for m in pile:
+                if not isinstance(m, ActionResponse) or m.metadata.get("clipped_from"):
                     continue
                 c = m.content
                 if getattr(c, "function", None) != "reader":
@@ -415,14 +413,26 @@ class CodingToolkit(LionTool):
                 if not p:
                     continue
                 try:
-                    active_paths.add(str(_resolve_workspace_path(p, workspace_root).resolve()))
+                    resolved = str(_resolve_workspace_path(p, workspace_root).resolve())
+                    recorded_paths.add(resolved)
+                    if m.id in active:
+                        active_paths.add(resolved)
                 except PermissionError:
                     continue
-            for p in [p for p in read_tracked if p not in active_paths]:
+            for p in [p for p in dormant_reads if p in active_paths]:
+                file_state[p] = dormant_reads.pop(p)
+                read_tracked.add(p)
+            for p in [
+                p
+                for p in read_tracked
+                if p not in active_paths and (not only_recorded or p in recorded_paths)
+            ]:
                 read_tracked.discard(p)
-                file_state.pop(p, None)
+                if p in file_state:
+                    dormant_reads[p] = file_state.pop(p)
 
         def _check_read_guard(path: str) -> str | None:
+            _invalidate_stale_reads(only_recorded=True)
             try:
                 resolved_path = _resolve_workspace_path(path, workspace_root)
             except PermissionError as e:
@@ -442,6 +452,7 @@ class CodingToolkit(LionTool):
             resolved = result.pop("_resolved", None)
             mtime = result.pop("_mtime", None)
             if resolved and mtime is not None:
+                dormant_reads.pop(resolved, None)
                 file_state[resolved] = mtime
                 if is_read:
                     read_tracked.add(resolved)
@@ -628,10 +639,15 @@ class CodingToolkit(LionTool):
             mode: str | None = None,
             scope: str | None = None,
             auto: bool = False,
+            index: int | None = None,
+            offset: int = 0,
+            limit: int = 16000,
         ) -> dict:
             """Manage your conversation context — check usage, list messages, evict/restore/compact them.
             Evicted or compacted messages are hidden from your view but preserved in the full conversation record.
             """
+            if action == "status":
+                _invalidate_stale_reads(only_recorded=True)
             result = await _ctx_func(
                 action=action,
                 start=start,
@@ -641,6 +657,9 @@ class CodingToolkit(LionTool):
                 mode=mode,
                 scope=scope,
                 auto=auto,
+                index=index,
+                offset=offset,
+                limit=limit,
             )
             if (
                 action in ("evict", "evict_action_results", "compact")

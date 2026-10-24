@@ -457,7 +457,10 @@ def _calls_sent(branch) -> dict[int, int]:
 def _tool_results(branch) -> int:
     from lionagi.protocols.messages import ActionResponse
 
-    return sum(isinstance(m, ActionResponse) for m in branch.msgs.messages)
+    return sum(
+        isinstance(m, ActionResponse) and not m.metadata.get("clipped_from")
+        for m in branch.msgs.messages
+    )
 
 
 async def _run_api_turn(

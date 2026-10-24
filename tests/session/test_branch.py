@@ -344,6 +344,47 @@ def test_clone_preserves_evicted_active_context(branch_with_mock_imodel: Branch)
 
 
 @pytest.mark.asyncio
+async def test_clone_maps_delivery_and_clipped_original_links_across_two_clones():
+    from lionagi.protocols.messages import ActionResponse
+
+    source = Branch(system="preserve this system at record index zero")
+    request = await source.msgs.a_add_message(
+        action_function="reader", action_arguments={"path": "a.py"}
+    )
+    original = await source.msgs.a_add_message(action_request=request, action_output="original")
+    copy = ActionResponse(
+        content={"function": "reader", "arguments": {"path": "a.py"}, "output": "clip"},
+        metadata={"clipped_from": str(original.id)},
+    )
+    await source.msgs._a_add_built_response(copy)
+    source.metadata["current_progression"] = Progression(order=[source.system.id, copy.id])
+    source.metadata["context_delivered"] = [str(request.id), str(original.id)]
+    before = source.to_dict()
+    previous = source
+    for _ in range(2):
+        cloned = previous.clone()
+        assert len(cloned.msgs.progression) == len(source.msgs.progression) == 4
+        system, cloned_request, cloned_original, cloned_copy = list(cloned.msgs.messages)
+        assert cloned.system is system
+        assert cloned_copy.metadata["clipped_from"] == str(cloned_original.id)
+        assert cloned_copy.content.action_request_id is None
+        assert cloned_request.content.action_response_id == str(cloned_original.id)
+        assert cloned_original.content.action_request_id == str(cloned_request.id)
+        assert cloned.metadata["context_delivered"] == [
+            str(cloned_request.id),
+            str(cloned_original.id),
+        ]
+        assert list(cloned.progression) == [system.id, cloned_copy.id]
+        restored = Branch.from_dict(cloned.to_dict())
+        assert restored.metadata["context_delivered"] == cloned.metadata["context_delivered"]
+        assert restored.msgs.messages[cloned_copy.id].metadata["clipped_from"] == str(
+            cloned_original.id
+        )
+        previous = cloned
+    assert source.to_dict() == before
+
+
+@pytest.mark.asyncio
 async def test_aclone(branch_with_mock_imodel: Branch):
     msg = Instruction(
         content={"instruction": "Async test"},
