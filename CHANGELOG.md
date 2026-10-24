@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- API-model agent runs record per-request provider, requested model, prompt character
+  count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy
+  refusal counts and safe routed-account selections. Decisions, API dispatches and routed
+  attempts remain distinct; credentials and prompt text are excluded.
+
+### Fixed
+
+- Mark GitHub schedules overdue after three settled capped polls with no dispatch or retained batch, while preserving successful-read and authentication health tracking.
+
+## [0.36.0] - 2026-10-24
+
+`httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
+longer takes an API key or a local-network opt-in from that data, and several optional extras
+and dependencies are removed. Schedules, Studio, the MCP server and `li agent` gain new controls
+and records, with a long list of fixes. If you restore saved models or branches, read
+"Upgrading from 0.35.5" first.
+
 ### Upgrading from 0.35.5
 
 A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not

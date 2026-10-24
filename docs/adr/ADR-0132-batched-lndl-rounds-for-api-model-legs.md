@@ -38,7 +38,7 @@ from it and the run's results (`d4_rule_by_checks` and `d4_rule_by_substance` in
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py:579-583`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionagi/cli/agent.py:581-585`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request, and a reply that fails to parse costs more, since it is sent back to
 the model to be reformatted (`lionagi/operations/communicate/communicate.py:119-128`,
 `lionagi/operations/parse/parse.py:187-218`). A round's tool calls run through `act()`, concurrently

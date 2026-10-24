@@ -224,6 +224,11 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.adapters.toml_:33:32": "``Adapter[T]``, the runtime-checkable protocol base",
     "lionagi.ln._cache:19:23": "``Generic[K, V]``, the typing generic base",
     "lionagi.ln.concurrency.primitives:126:13": "``Generic[T]``, the typing generic base",
+    "lionagi.ln.types.registry:95:29": "``Generic[ItemT]``, the typing generic base",
+    "lionagi.ln.types.registry:108:32": "``Generic[ItemT]``, the typing generic base",
+    "lionagi.ln.types.registry:193:30": "``Generic[ItemT]``, the typing generic base",
+    "lionagi.ln.types.registry:208:32": "``Generic[ItemT]``, the typing generic base",
+    "lionagi.ln.types.registry:381:24": "``Generic[ItemT]``, the typing generic base",
     "lionagi.protocols._concepts:110:21": "``Generic[E]``, the typing generic base",
     "lionagi.protocols._concepts:98:23": "``Generic[E]``, the typing generic base",
     "lionagi.protocols.generic.element:286:10": "``Generic[E]``, the typing generic base",
@@ -262,7 +267,7 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",
-    "lionagi.service.accounts._router:589:13": (
+    "lionagi.service.accounts._router:602:13": (
         "a counter on a held character popped from a list, not a class attribute"
     ),
     "lionagi.studio.scheduler.signals:221:17": "a counter field on a dict-held object",
