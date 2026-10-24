@@ -579,3 +579,147 @@ async def test_same_object_twice_in_one_bundle_accepts_its_first_occurrence(
     )
     assert rows == expected
     assert [item["finding_ref"] for item in filing_queue(run)] == [target.eid]
+
+
+async def test_handed_off_judge_branch_is_foreign_until_the_new_stage_binds_it(agents, monkeypatch):
+    scripts, _ = agents
+    engine = Engine(judge_model="openai/scripted")
+    first_run = engine.new_run()
+    handed_off = await first_run.make_agent("critic", name="old judge")
+    await handed_off.emit(JudgeVerdict(subject="old", allow=False))
+    first_count = len(first_run.by_type(JudgeVerdict))
+    first_run.session.remove_branch(handed_off.id)
+    second_run = engine.new_run()
+    second_run.session.include_branches(handed_off)
+
+    async def other_judge(branch, _instruction):
+        await handed_off.emit(JudgeVerdict(subject="B", allow=False))
+        await branch.emit(JudgeVerdict(subject="B", allow=True))
+        return "REJECT"
+
+    scripts["judge-B"] = other_judge
+    assert await engine.judge(second_run, "B", "new session item") is True
+    assert len(first_run.by_type(JudgeVerdict)) == first_count
+    assert len(second_run.by_type(JudgeVerdict)) == 2
+
+    async def reuse(_spec, **_kwargs):
+        return handed_off
+
+    monkeypatch.setattr(engine_mod, "create_agent", reuse)
+
+    async def rebound(branch, _instruction):
+        assert branch is handed_off
+        await branch.emit(JudgeVerdict(subject="C", allow=False))
+        return "PASS"
+
+    scripts["judge-C"] = rebound
+    assert await engine.judge(second_run, "C", "activated handed-off judge") is False
+    assert len(first_run.by_type(JudgeVerdict)) == first_count
+
+
+async def test_handed_off_search_branch_is_foreign_until_the_new_stage_binds_it(
+    agents, monkeypatch
+):
+    scripts, made = agents
+    first_engine, first_run, first, _unused, _out, _notices = _dedup_run(monkeypatch)
+
+    async def old_search(branch, _instruction):
+        await branch.emit(DedupChecked(finding_ref=first.eid, verdict="duplicate"))
+        return ""
+
+    scripts[f"dedup-{first.eid}"] = old_search
+    await first_engine._dedup_search(first_run, first)
+    handed_off = made[-1]
+    first_count = len(first_run.events_of(DedupChecked))
+    first_run.session.remove_branch(handed_off.id)
+    engine, run, other, target, extracted, _notices = _dedup_run(monkeypatch)
+    run.session.include_branches(handed_off)
+
+    async def other_search(branch, _instruction):
+        await handed_off.emit(DedupChecked(finding_ref=target.eid, verdict="new"))
+        await branch.emit(DedupChecked(finding_ref=other.eid, verdict="duplicate"))
+        return ""
+
+    scripts[f"dedup-{other.eid}"] = other_search
+    await engine._dedup_search(run, other)
+    assert target.eid not in run.dedup_verdicts
+    assert f"{target.eid}: new (not accepted)" in render_evidence(run)
+
+    async def reuse(_spec, **_kwargs):
+        return handed_off
+
+    monkeypatch.setattr(engine_mod, "create_agent", reuse)
+
+    async def rebound(branch, _instruction):
+        assert branch is handed_off
+        await branch.emit(DedupChecked(finding_ref=target.eid, verdict="duplicate"))
+        return ""
+
+    scripts[f"dedup-{target.eid}"] = rebound
+    await engine._dedup_search(run, target)
+    await run.wait_quiescence()
+    assert run.dedup_verdicts[target.eid].verdict == "duplicate"
+    assert extracted == []
+    assert filing_queue(run) == []
+    assert len(first_run.events_of(DedupChecked)) == first_count
+
+
+@pytest.mark.parametrize("stage", ["judge", "dedup"])
+@pytest.mark.parametrize("path", ["background_message", "async_handler", "async_gate"])
+async def test_async_branch_emission_paths_preserve_typed_authority(
+    agents, monkeypatch, stage, path
+):
+    scripts, _ = agents
+    if stage == "judge":
+        engine = Engine(judge_model="openai/scripted")
+        run = engine.new_run()
+        subject, key = "B", "judge_verdict"
+        fields = {"subject": subject, "allow": False}
+    else:
+        engine, run, _other, finding, extracted, _notices = _dedup_run(monkeypatch)
+        subject, key = finding.eid, "dedup_checked"
+        fields = {"finding_ref": subject, "verdict": "duplicate"}
+    suspended = []
+
+    if path == "async_gate":
+
+        async def gate(_payload):
+            await asyncio.sleep(0)
+            suspended.append("gate")
+            return True
+
+        run.session.gate(gate)
+
+    async def operate(branch, _instruction):
+        if path == "background_message":
+            reply = AssistantResponse.from_response(
+                "```json\n" + json.dumps({key: fields}) + "\n```"
+            )
+            await branch.msgs.a_add_message(assistant_response=reply)
+            await branch.drain_signals()
+        elif path == "async_handler":
+
+            async def emit_after_await(_event, _ctx):
+                await asyncio.sleep(0)
+                suspended.append("handler")
+                await _emit_model(branch, key, **fields)
+
+            run.observe(_Trigger, emit_after_await)
+            await branch.emit(_Trigger(text="emit from an awaited child handler"))
+        else:
+            await _emit_model(branch, key, **fields)
+        return "PASS"
+
+    scripts[f"{stage}-{subject}"] = operate
+    if stage == "judge":
+        assert await engine.judge(run, subject, "item") is False
+    else:
+        await engine._dedup_search(run, finding)
+        await run.wait_quiescence()
+        assert run.dedup_verdicts[subject].verdict == "duplicate"
+        assert extracted == []
+        assert filing_queue(run) == []
+    if path == "async_gate":
+        assert suspended == ["gate", "gate"]
+    elif path == "async_handler":
+        assert suspended == ["handler"]
