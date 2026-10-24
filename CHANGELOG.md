@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- API-model agent runs record per-request provider, requested model, prompt character
+  count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy
+  refusal counts and safe routed-account selections. Decisions, API dispatches and routed
+  attempts remain distinct; credentials and prompt text are excluded.
+
 ### Changed
 
 - `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
