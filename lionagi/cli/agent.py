@@ -1303,10 +1303,6 @@ async def _run_agent(
             )
         if api_launch is not None and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
-        if api_launch is not None and chat_model.endpoint.config.provider == "anthropic":
-            from lionagi.agent.factory import ANTHROPIC_DEFAULT_MAX_TOKENS
-
-            chat_model.endpoint.config.kwargs.setdefault("max_tokens", ANTHROPIC_DEFAULT_MAX_TOKENS)
         # Two spawn shapes hand the set over in two different places, so the
         # message has to read the one that applies. A plain leg gets only what
         # build_chat_model already put on the request, which is knowable here;

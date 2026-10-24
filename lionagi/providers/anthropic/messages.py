@@ -14,7 +14,11 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from ._config import AnthropicConfigs
 
-__all__ = ("CreateMessageRequest", "AnthropicMessagesEndpoint")
+__all__ = ("ANTHROPIC_DEFAULT_MAX_TOKENS", "CreateMessageRequest", "AnthropicMessagesEndpoint")
+
+# The output limit a request is sent with when nothing names one: the messages API refuses a
+# request without `max_tokens`.
+ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 
 # Delta fields a consumer joins, each kind across the whole message. A citations_delta is not
 # here because its text is the cited_text of the citation it carries; the quoted texts of a
@@ -1159,6 +1163,15 @@ class AnthropicMessagesEndpoint(Endpoint):
                 system = first_message["content"]
                 request_dict["messages"] = request_dict["messages"][1:]
                 request = request_dict
+
+        # The layers merge in this order, a later one replacing an earlier. The call sends the
+        # limit named last, a None naming none, so a None in the request leaves the model's limit
+        # in place; when no layer names one, the default is sent.
+        max_tokens = None
+        for layer in (self.config.kwargs, request_dict, kwargs):
+            if layer.get("max_tokens") is not None:
+                max_tokens = layer["max_tokens"]
+        kwargs["max_tokens"] = ANTHROPIC_DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
 
         payload, headers = super().create_payload(request, extra_headers=extra_headers, **kwargs)
 
