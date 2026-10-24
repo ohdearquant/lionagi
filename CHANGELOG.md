@@ -26,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for
   every denied call; it now copies and pickles with its GateResult intact.
 
+- Fenced Markdown examples in profile prompts no longer trigger a misplaced
+  frontmatter warning.
+
 - Mark GitHub schedules overdue after three settled capped polls with no dispatch or retained batch, while preserving successful-read and authentication health tracking.
 
 ## [0.36.0] - 2026-10-24
