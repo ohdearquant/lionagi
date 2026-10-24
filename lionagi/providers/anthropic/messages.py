@@ -1164,15 +1164,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                 request_dict["messages"] = request_dict["messages"][1:]
                 request = request_dict
 
-        # The layers merge in this order, a later one replacing an earlier; when the request they
-        # build would carry no output limit, the default is sent, and a value any of them names
-        # is kept.
+        # The layers merge in this order, a later one replacing an earlier. The call sends the
+        # limit named last, a None naming none, so a None in the request leaves the model's limit
+        # in place; when no layer names one, the default is sent.
         max_tokens = None
         for layer in (self.config.kwargs, request_dict, kwargs):
-            if "max_tokens" in layer:
+            if layer.get("max_tokens") is not None:
                 max_tokens = layer["max_tokens"]
-        if max_tokens is None:
-            kwargs["max_tokens"] = ANTHROPIC_DEFAULT_MAX_TOKENS
+        kwargs["max_tokens"] = ANTHROPIC_DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
 
         payload, headers = super().create_payload(request, extra_headers=extra_headers, **kwargs)
 
