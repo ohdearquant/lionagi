@@ -1618,7 +1618,7 @@ class Engine:
                     if not v.allow:
                         run.notify("gated", eid=eid, reason=v.reason)
                     return v.allow
-            allow = "reject" not in str(res or "").lower()
+            allow = isinstance(res, str) and res.strip().lower() == "pass"
             if not allow:
                 run.notify("gated", eid=eid, reason="text-reject")
             return allow

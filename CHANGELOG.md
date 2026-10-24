@@ -13,6 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed
   attempts remain distinct; credentials and prompt text are excluded.
 
+### Fixed
+
+- Engine judges accept an untyped reply only when it is the whole token `PASS`,
+  ignoring letter case and surrounding whitespace. Empty, malformed and non-string
+  replies stop the item and emit the existing gate notification.
+
 ## [0.36.0] - 2026-10-24
 
 `httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no

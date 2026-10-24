@@ -61,6 +61,39 @@ remains in issue #3569: a judge reply that carries no verdict passes unless its
 text contains "reject". An engine that needs the judge to be optional leaves
 `judge_model` unset.
 
+## Amendment 2 (proposed 2026-10-24) — explicit untyped judge decisions
+
+- **Status**: Proposed; the accepted D3 fallback remains in force until this
+  amendment is accepted.
+- **Scope**: Partial amendment of D3's untyped judge-response rule and the
+  remaining text-policy gap recorded in Amendment 1. The accepted base and the
+  other Amendment 1 decisions remain standing.
+
+When the item's actual judge emits no authoritative matching typed verdict, the
+proposed fallback returns `True` only when `isinstance(res, str)` and
+`res.strip().lower() == "pass"`. Whole-reply `PASS`, `pass` and `Pass` tokens
+allow, including surrounding whitespace. A bare `REJECT`, punctuated or Markdown
+tokens such as `PASS.` or `**PASS**`, empty or missing replies, explanatory prose,
+mixed tokens, and non-string values return `False`. Non-string replies are not
+converted to text to obtain a verdict.
+
+An untyped refusal uses the existing `gated` notification with the requested
+`eid` and `reason="text-reject"`; the notification does not copy the raw reply.
+An authoritative typed verdict is checked first, so its allow/deny value and
+reason continue to decide even when the reply text disagrees.
+
+A successfully returned off-contract reply is a negative gate result, not an
+exception: it must not enter the infrastructure-error fail-open path. This
+proposal leaves disabled judging, budget exhaustion, provider/build failures,
+containment refusals, emitter authority and caller-seed admission unchanged.
+Ordinary infrastructure failures still follow D3 and Amendment 1, including the
+existing behavior if an event callback itself raises.
+
+The compatibility cost is intentional: weak judges that returned prose or no
+verdict previously allowed expansion; they would now stop that item. Callers can
+use a matching typed verdict, return the explicit text token, or leave
+`judge_model` unset when judging is optional.
+
 ## Context
 
 Domain engines encode reusable reaction topology for work whose decomposition is
@@ -349,6 +382,8 @@ async def Engine.judge(
   but do not decide the gate.
   In its absence, response text containing `reject` fails the gate; other text
   passes.
+  Proposed Amendment 2 defines a narrower replacement for this text fallback;
+  the replacement is pending acceptance.
 - Judge `EngineBudgetError` returns `False`: no budget means no expansion.
 - Other judge exceptions emit `judge_error` and return `True`: infrastructure
   failure is fail-open while D2 remains authoritative. Amendment 1 raises three
