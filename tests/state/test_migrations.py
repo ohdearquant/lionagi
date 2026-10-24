@@ -1461,3 +1461,77 @@ def test_schema_sql_seed_version_matches_constant():
 
     seed = f"INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '{SCHEMA_VERSION}');"
     assert seed in _SCHEMA_PATH.read_text()
+
+
+async def test_stagnation_column_matches_raw_and_metadata_schema_defaults(tmp_path):
+    """Both fresh-schema paths expose the same non-null zero-default counter."""
+    from lionagi.state.db import _SCHEMA_PATH, StateDB
+
+    raw_path = tmp_path / "raw-schema.db"
+    fresh_path = tmp_path / "metadata-schema.db"
+    with sqlite3.connect(raw_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+    async with StateDB(fresh_path):
+        pass
+
+    columns = []
+    for path in (raw_path, fresh_path):
+        with sqlite3.connect(path) as conn:
+            info = {row[1]: row for row in conn.execute("PRAGMA table_info(schedules)")}
+            counter = info["poller_consecutive_cap_no_dispatch"]
+            assert counter[2:4] == ("INTEGER", 1)
+            assert counter[4] in ("0", "'0'")
+            columns.append(set(info))
+            conn.execute(
+                "INSERT INTO schedules "
+                "(id, name, trigger_type, action_kind, created_at, updated_at) "
+                "VALUES ('github', 'github', 'github_poll', 'agent', 10.0, 10.0)"
+            )
+            assert conn.execute(
+                "SELECT poller_consecutive_cap_no_dispatch FROM schedules WHERE id='github'"
+            ).fetchone() == (0,)
+            with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+                conn.execute(
+                    "UPDATE schedules SET poller_consecutive_cap_no_dispatch=NULL WHERE id='github'"
+                )
+    assert columns[0] == columns[1]
+
+
+async def test_old_schedules_gain_zero_stagnation_without_history_backfill(tmp_path):
+    """Existing HTTP stamps and dispatch history do not invent a new streak."""
+    from lionagi.state.db import _SCHEMA_PATH, StateDB
+
+    path = tmp_path / "pre-stagnation.db"
+    schema = _SCHEMA_PATH.read_text()
+    declaration = "  poller_consecutive_cap_no_dispatch INTEGER NOT NULL DEFAULT 0,\n"
+    assert schema.count(declaration) == 1
+    with sqlite3.connect(path) as conn:
+        conn.executescript(schema.replace(declaration, ""))
+        conn.execute(
+            "INSERT INTO schedules "
+            "(id, name, trigger_type, action_kind, created_at, updated_at, "
+            "last_healthy_poll_at, poller_consecutive_401, last_fired_at, next_fire_at) "
+            "VALUES ('old', 'old', 'github_poll', 'agent', 10.0, 20.0, 100.0, 7, 80.0, 200.0)"
+        )
+        conn.row_factory = sqlite3.Row
+        before = dict(conn.execute("SELECT * FROM schedules WHERE id='old'").fetchone())
+        assert "poller_consecutive_cap_no_dispatch" not in before
+
+    async with StateDB(path) as state:
+        row = await state.get_schedule("old")
+        assert row["poller_consecutive_cap_no_dispatch"] == 0
+        assert row["poller_consecutive_401"] == 7
+        assert row["last_healthy_poll_at"] == 100.0
+        assert row["updated_at"] == 20.0
+
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        after = dict(conn.execute("SELECT * FROM schedules WHERE id='old'").fetchone())
+        assert after.pop("poller_consecutive_cap_no_dispatch") == 0
+        assert after == before
+
+    async with StateDB(path) as reopened:
+        assert (await reopened.get_schedule("old"))["poller_consecutive_cap_no_dispatch"] == 0
+        assert await reopened.record_github_poll_stagnation("old", reset=False)
+    async with StateDB(path) as reopened_again:
+        assert (await reopened_again.get_schedule("old"))["poller_consecutive_cap_no_dispatch"] == 1

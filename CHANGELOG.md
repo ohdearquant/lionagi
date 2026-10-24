@@ -13,6 +13,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed
   attempts remain distinct; credentials and prompt text are excluded.
 
+- API chat and chat-based `operate` calls can fold earlier tool records and clip
+  oversized tool results under a per-request input ceiling, while retaining full
+  tool content outside the request view.
+
 ### Changed
 
 - `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
@@ -20,6 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   arguments with `functools.partial` and pass that callable to `run_sync`.
 
 ### Fixed
+
+- Pilot summaries select reading citations from the recorded source commit and name
+  task or loop subset refusals; pilot documentation records the checked historical
+  source mappings.
 
 - Engine judges accept an untyped reply only when it is the whole token `PASS`,
   ignoring letter case and surrounding whitespace. Empty, malformed and non-string
@@ -32,6 +40,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Fenced Markdown examples in profile prompts no longer trigger a misplaced
   frontmatter warning.
+
+- Mark GitHub schedules overdue after three settled capped polls with no dispatch or retained batch, while preserving successful-read and authentication health tracking.
 
 ## [0.36.0] - 2026-10-24
 
