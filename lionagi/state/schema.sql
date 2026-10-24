@@ -525,6 +525,9 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- github_poll_consecutive_401 threshold metrics.
   last_healthy_poll_at    REAL,
   poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
+  -- Settled capped reads that neither dispatched nor retained an engine batch.
+  -- A qualified launch or an unheld complete read resets this separate streak.
+  poller_consecutive_cap_no_dispatch INTEGER NOT NULL DEFAULT 0,
   -- Bounded retry for a github_poll fire that refuses before it dispatches
   -- anything. Such a refusal holds github_cursor back so the event is
   -- re-offered, but the refusal can be a property of that one event's

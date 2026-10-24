@@ -228,6 +228,26 @@ budget-exhausted with open un-reviewed heads. A blind poller that silently stops
 reviewing is the failure mode this exists to surface; Studio-only surfacing was
 rejected because no one watches a UI overnight.
 
+**Proposed addition to D7(c) — settled cap/no-dispatch health (pending sign-off).**
+Also report a review schedule whose separate
+`poller_consecutive_cap_no_dispatch` streak reaches three. Successful HTTP
+liveness can coexist with capped scanning that dispatches nothing, so this
+axis supplements the accepted stale-HTTP, authentication-blind and
+budget-exhaustion reporting above. Backend health uses generic `overdue`
+after disabled; no explicit counter field is added to list/detail payloads.
+
+The streak counts normally settled fresh capped OK polls without a confirmed
+launch or held batch. Complete OK with no hold resets it, as does a qualified
+confirmed launch from a fresh OK poll or matched batch. Fresh error/auth-error
+takes precedence and is neutral; held/no-launch and no-poll/no-launch passes
+are neutral. Interrupted zero-witness work is neutral; an interrupted
+qualified positive launch permits best-effort reset without replacing the
+original failure. Persistence occurs at settlement, with atomic commit-order
+increment/reset semantics across schedulers: attempts are counted, not unique
+cycles or global progress epochs. The HTTP/authentication columns retain
+their existing meaning. This proposed sweep addition requires sign-off before
+merge and does not revise the accepted reporting requirements above.
+
 ## D8 — Same-repo diffs are still untrusted data
 
 Fork exclusion does not make same-repo content trustworthy: a leaked token or

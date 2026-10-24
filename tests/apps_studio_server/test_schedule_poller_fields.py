@@ -18,6 +18,7 @@ prompt, which the record view widens to and the list view does not, and
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def _make_client() -> TestClient:
     return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
-async def _seed_poller(*, polled: bool) -> str:
+async def _seed_poller(*, polled: bool, healthy_at: float = HEALTHY_AT, stagnation: int = 0) -> str:
     created = await create_schedule(
         {
             "name": f"poller-fields-{uuid.uuid4().hex[:8]}",
@@ -58,10 +59,12 @@ async def _seed_poller(*, polled: bool) -> str:
         async with StateDB() as db:
             await db.update_schedule(
                 created["id"],
-                last_healthy_poll_at=HEALTHY_AT,
+                last_healthy_poll_at=healthy_at,
                 poller_consecutive_401=3,
                 github_cursor="sha-deadbeef",
             )
+            for _ in range(stagnation):
+                assert await db.record_github_poll_stagnation(created["id"], reset=False)
     return created["id"]
 
 
@@ -107,3 +110,29 @@ def test_never_polled_serves_null_rather_than_omitting_the_field(tmp_path, monke
     assert "last_healthy_poll_at" in row
     assert row["last_healthy_poll_at"] is None
     assert row["poller_consecutive_401"] == 0
+
+
+@pytest.mark.parametrize("surface", ["list", "record"])
+def test_stagnation_changes_generic_health_without_projecting_the_counter(
+    tmp_path, monkeypatch, surface
+):
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    healthy_at = time.time()
+    sid = asyncio.run(_seed_poller(polled=True, healthy_at=healthy_at, stagnation=3))
+    response = _make_client().get(
+        "/api/schedules/" if surface == "list" else f"/api/schedules/{sid}"
+    )
+
+    assert response.status_code == 200
+    row = (
+        next(item for item in response.json()["schedules"] if item["id"] == sid)
+        if surface == "list"
+        else response.json()
+    )
+    assert row["health_state"] == "overdue"
+    assert row["last_healthy_poll_at"] == healthy_at
+    assert row["poller_consecutive_401"] == 3
+    assert row["health_last_outcome"] is None
+    assert "poller_consecutive_cap_no_dispatch" not in row
+    assert "github_cursor" not in row
+    assert ("action_prompt" in row) == (surface == "record")
