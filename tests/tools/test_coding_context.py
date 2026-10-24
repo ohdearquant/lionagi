@@ -21,6 +21,27 @@ def _tool_fn(tools, name):
     raise KeyError(f"tool '{name}' not found")
 
 
+async def test_coding_context_forwards_original_result_index_offset_and_clamped_limit(tmp_path):
+    from lionagi.protocols.messages import ActionResponse
+
+    branch, _toolkit, tools = _make_toolkit(tmp_path)
+    text = 'é🦁 "quoted"\n' * 2000
+    response = ActionResponse(content={"function": "bash", "output": text})
+    await branch.msgs._a_add_built_response(response)
+    index = branch.msgs.progression.index(response.id)
+    before = list(branch.progression)
+    result = await _tool_fn(tools, "context")(
+        action="read_result", index=index, offset=3, limit=20000
+    )
+    assert result == {
+        "success": True,
+        "text": text[3:16003],
+        "total": len(text),
+        "next_offset": 16003,
+    }
+    assert list(branch.progression) == before
+
+
 async def test_search_grep_finds_pattern(tmp_path):
     (tmp_path / "source.py").write_text("def hello():\n    pass\n")
     _, _, tools = _make_toolkit(tmp_path)
