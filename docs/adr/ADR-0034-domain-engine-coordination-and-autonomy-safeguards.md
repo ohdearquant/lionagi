@@ -49,13 +49,17 @@ that raises does not bring a run to that point. Nor can a dedup verdict carry a
 finding past its judge: the hypothesis engine treats a dedup verdict that names an
 agent-sourced finding (one of generation 1 or more) whose judge has not passed as
 one naming no finding, whichever agent emitted it. Nothing acts on it, it does not
-answer that finding's search, and the filing queue leaves it out. Three gaps
-remain, recorded in issue #3569: which agent emitted a verdict is not checked, so
-a judge or dedup verdict naming another item can still decide it; a finding an
-agent posts with no parent is taken as a seed (generation 0), so it skips the
-judge; and a judge reply that carries no verdict passes unless its text contains
-"reject". An engine that needs the judge to be optional leaves `judge_model`
-unset.
+answer that finding's search, and the filing queue leaves it out. Typed verdicts
+also require their actual emitting branch: only the judge created for the item
+can decide it, and only the finding's own search agent can answer its novelty
+check. Run-local, post-gate emission receipts distinguish concurrent agents and
+replayed payload occurrences; text fields and role labels do not establish
+origin. Reports and filing use each verdict occurrence's accepted state. Only
+an explicit caller emission can introduce a parentless seed; a parentless
+agent emission cannot skip the judge by claiming generation 0. One policy gap
+remains in issue #3569: a judge reply that carries no verdict passes unless its
+text contains "reject". An engine that needs the judge to be optional leaves
+`judge_model` unset.
 
 ## Context
 
@@ -339,7 +343,10 @@ async def Engine.judge(
   one rather than zero or two is recorded in source; it is a bounded compatibility
   default.
 - No `judge_model`: judging is a no-op and returns `True`.
-- A typed `JudgeVerdict` whose subject matches the requested id is authoritative.
+- A typed `JudgeVerdict` whose subject matches the requested id is authoritative
+  only when dispatched after the governance gate by that item's actual judge
+  branch in this run. Session emissions and another branch's verdict are evidence,
+  but do not decide the gate.
   In its absence, response text containing `reject` fails the gate; other text
   passes.
 - Judge `EngineBudgetError` returns `False`: no budget means no expansion.

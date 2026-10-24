@@ -144,6 +144,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed
   attempts remain distinct; credentials and prompt text are excluded.
+- `ln.concurrency.retry` accepts an optional `exclude` tuple. Matching exceptions, including subclasses, propagate immediately without another attempt or backoff delay; existing calls keep the same retry behavior.
+
 - Studio Operator can update its active conversation's title and persistent
   description. Omitted fields retain their values, and an applied effect is
   recorded with the saved change without duplicating the provider's tool result.
@@ -304,6 +306,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   integer (an integral float such as `200.0` included).
 
 ### Changed
+
+- Generated schema modules now use a 16-character SHA256 suffix of the serialized generator input, giving repeated inputs stable temporary module names instead of Python's process-specific hash. Code generation remains an explicit opt-in for trusted schemas.
 
 - Flow deserialization resolves UUIDs, UUID strings and objects exposing an id through the canonical identity helper. Objects with only a UUID-producing string representation are rejected, and unsupported ID inputs use the helper error message.
 
@@ -536,6 +540,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   given as `client_kwargs["timeout"]`, which aiohttp refused beside the configured timeout with
   `TypeError`, is read the same way.
 
+- `ln.import_module` resolves dotted and relative names to the leaf module and accepts a keyword-only `package` anchor. List selectors stay lists, including empty and single-item lists; only `import_name=None` selects the module. Missing modules retain `ModuleNotFoundError` and its metadata, while other import errors keep the existing prefix. Package attributes retain child-module fallback.
+
 ### Removed
 
 - The `reader` optional dependency group and document conversion through `docling`. The reader
@@ -579,6 +585,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   hashing.
 
 ### Fixed
+
+- Typed judge and novelty verdicts are bound to the branch that emitted them, so one agent cannot decide another item by naming its ID. Replayed or mutated novelty payloads keep distinct acceptance records for evidence reports and filing queues.
 
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.
