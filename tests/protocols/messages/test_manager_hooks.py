@@ -403,3 +403,81 @@ async def test_async_path_delays_emitter_cancellation_until_callbacks_drain(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert later_calls == ["later"]
+
+
+async def test_built_clipped_response_preserves_output_links_and_callback_snapshot(mm):
+    from lionagi.protocols.messages import ActionResponse
+
+    request = await mm.a_add_message(action_function="reader", action_arguments={"path": "a"})
+    original = await mm.a_add_message(action_request=request, action_output="original")
+    request_before = request.to_dict()
+    copy = ActionResponse(
+        content={"function": "reader", "arguments": {"path": "a"}, "output": "head...tail"},
+        metadata={"clipped_from": str(original.id)},
+    )
+    fired = []
+
+    async def late(message):
+        fired.append(("late", message))
+
+    async def first(message):
+        assert mm.messages[message.id] is message
+        fired.append(("first", message))
+        mm._on_message_added.append(late)
+
+    def second(message):
+        fired.append(("second", message))
+
+    mm._on_message_added.extend((first, second))
+    assert await mm._a_add_built_response(copy) is copy
+    assert fired == [("first", copy), ("second", copy)]
+    assert copy.content.output == "head...tail"
+    assert copy.content.action_request_id is None
+    assert copy.metadata["clipped_from"] == str(original.id)
+    assert "extra" not in copy.metadata
+    assert request.to_dict() == request_before
+    assert original.content.output == "original"
+
+
+async def test_built_response_callback_failure_drains_remaining_callbacks(mm):
+    from lionagi.protocols.messages import ActionResponse
+
+    response = ActionResponse(content={"function": "reader", "output": "kept"})
+    fired = []
+
+    async def fail(_message):
+        raise RuntimeError("persist failed")
+
+    def later(message):
+        fired.append(message)
+
+    mm._on_message_added.extend((fail, later))
+    with pytest.raises(RuntimeError, match="persist failed"):
+        await mm._a_add_built_response(response)
+    assert fired == [response]
+    assert mm.messages[response.id] is response
+
+
+async def test_built_response_callback_refusal_keeps_priority_and_drains_callbacks(mm):
+    from lionagi.protocols.messages import ActionResponse
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    response = ActionResponse(content={"function": "reader", "output": "kept"})
+    refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+    fired = []
+
+    async def refuse(_message):
+        raise refusal
+
+    def fail(_message):
+        raise RuntimeError("another callback failed")
+
+    def later(message):
+        fired.append(message)
+
+    mm._on_message_added.extend((refuse, fail, later))
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await mm._a_add_built_response(response)
+    assert caught.value is refusal
+    assert fired == [response]
+    assert mm.messages[response.id] is response

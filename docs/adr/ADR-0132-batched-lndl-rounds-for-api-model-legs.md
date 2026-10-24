@@ -38,7 +38,7 @@ from it and the run's results (`d4_rule_by_checks` and `d4_rule_by_substance` in
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py:581-585`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionagi/cli/agent.py:584-588`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request, and a reply that fails to parse costs more, since it is sent back to
 the model to be reformatted (`lionagi/operations/communicate/communicate.py:119-128`,
 `lionagi/operations/parse/parse.py:187-218`). A round's tool calls run through `act()`, concurrently
@@ -85,7 +85,7 @@ Middle's own rule, such a round would run only the calls its `OUT{}` binds and d
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
-return mappings (`lionagi/tools/coding.py:451-653`, `lionagi/tools/context/context.py:228-434`),
+return mappings (`lionagi/tools/coding.py:462-672`, `lionagi/tools/context/context.py:302-578`),
 so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the

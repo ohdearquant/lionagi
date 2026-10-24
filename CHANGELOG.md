@@ -13,6 +13,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed
   attempts remain distinct; credentials and prompt text are excluded.
 
+- API chat and chat-based `operate` calls can fold earlier tool records and clip
+  oversized tool results under a per-request input ceiling, while retaining full
+  tool content outside the request view.
+
 ### Changed
 
 - `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
