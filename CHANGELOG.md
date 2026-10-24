@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fenced Markdown examples in profile prompts no longer trigger a misplaced
+  frontmatter warning.
+
+## [0.36.0] - 2026-10-24
+
+`httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
+longer takes an API key or a local-network opt-in from that data, and several optional extras
+and dependencies are removed. Schedules, Studio, the MCP server and `li agent` gain new controls
+and records, with a long list of fixes. If you restore saved models or branches, read
+"Upgrading from 0.35.5" first.
+
 ### Upgrading from 0.35.5
 
 A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not
