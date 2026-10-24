@@ -25,13 +25,14 @@ The keyword-only controls belong to the offload:
   thread continues, and its later result or exception is ignored by that
   caller. This option does not stop the function or undo its effects.
 - `limiter=None` uses AnyIO's default thread limiter. Supplying an
-  `ln.CapacityLimiter` uses its underlying limiter instead of the default.
+  `lionagi.ln.concurrency.CapacityLimiter` uses its underlying limiter instead of the default.
   Native AnyIO limiter objects are not part of this wrapper's public contract.
 
 These cancellation rules are AnyIO cancel-scope behavior; they do not promise
 the same shielding for arbitrary direct `asyncio.Task.cancel()` calls. A
-limiter is also not a hard bound on every still-running abandoned worker:
-abandoning a wait can release its token before that thread exits.
+limiter is also not a hard bound on every still-running abandoned worker on
+asyncio: abandoning a wait releases its token while that worker may still run.
+On Trio, the token stays borrowed until the worker finishes.
 
 ## Callable keyword names
 

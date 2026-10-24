@@ -259,3 +259,69 @@ async def test_run_sync_custom_limiter_replaces_default_and_none_uses_default():
     finally:
         default.total_tokens = old_total
     assert default_entered.is_set()
+
+
+@pytest.mark.parametrize(
+    ("anyio_backend", "expected_borrowed"),
+    [("asyncio", 0), ("trio", 1)],
+    ids=["asyncio-releases-wait-token", "trio-keeps-worker-token"],
+)
+async def test_abandoned_wait_retains_the_backend_token_lifetime(anyio_backend, expected_borrowed):
+    limiter = CapacityLimiter(1)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    host_exited = anyio.Event()
+    scopes = []
+
+    def worker():
+        started.set()
+        try:
+            assert release.wait(_WAIT_SECONDS), "test did not release worker"
+        finally:
+            finished.set()
+
+    async def host():
+        try:
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                await run_sync(worker, abandon_on_cancel=True, limiter=limiter)
+        finally:
+            host_exited.set()
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(host)
+        try:
+            await _wait_thread_event(started)
+            scopes[0].cancel()
+            with anyio.fail_after(_WAIT_SECONDS):
+                await host_exited.wait()
+            assert not finished.is_set()
+            assert limiter.borrowed_tokens == expected_borrowed
+            assert limiter.available_tokens == 1 - expected_borrowed
+        finally:
+            release.set()
+            for scope in scopes:
+                scope.cancel()
+            with anyio.CancelScope(shield=True):
+                with anyio.fail_after(_WAIT_SECONDS):
+                    await host_exited.wait()
+                if started.is_set():
+                    await _wait_thread_event(finished)
+                with anyio.fail_after(_WAIT_SECONDS):
+                    await limiter.acquire()
+                limiter.release()
+
+    assert limiter.borrowed_tokens == 0
+
+
+@pytest.mark.parametrize("kind", ["object", "native"])
+async def test_run_sync_rejects_wrong_limiter_type_before_worker_starts(kind):
+    entered = threading.Event()
+    limiter = object() if kind == "object" else anyio.CapacityLimiter(1)
+    with pytest.raises(
+        TypeError,
+        match=r"limiter must be a lionagi\.ln\.concurrency\.CapacityLimiter or None",
+    ):
+        await run_sync(entered.set, limiter=limiter)
+    assert not entered.is_set()

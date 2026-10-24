@@ -64,8 +64,11 @@ async def run_sync(
     waiting for admission can still be cancelled. With ``abandon_on_cancel=True``,
     cancellation stops waiting but leaves the thread running, discarding its
     eventual result or error. ``limiter`` selects an ln capacity limiter instead
-    of AnyIO's default. It does not impose a hard bound on abandoned threads.
+    of AnyIO's default. On asyncio, abandoning the wait releases its token; on
+    Trio, the token stays borrowed until the worker finishes.
     """
+    if limiter is not None and not isinstance(limiter, CapacityLimiter):
+        raise TypeError("limiter must be a lionagi.ln.concurrency.CapacityLimiter or None")
     if kwargs:
         func = partial(func, **kwargs)
     return await anyio.to_thread.run_sync(

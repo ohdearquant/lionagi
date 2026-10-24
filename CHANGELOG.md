@@ -347,6 +347,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Changed
 
+- `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
+  as offload controls. For a callable that takes either keyword, prebind its
+  arguments with `functools.partial` and pass that callable to `run_sync`.
+
 - Lazy type resolution, provider token-window lookup and built-in role/mode loading
   use the shared import helper. Pattern loading preserves original missing-module
   errors; other import errors name the target module and retain the original cause.
