@@ -35,6 +35,7 @@ from lionagi.studio.services.schedule_declaration import (
     ScheduleSetMetadata,
     Target,
     Trigger,
+    _resolve_playbook_target,
     resolve_member,
     row_cron_timezone,
 )
@@ -496,6 +497,10 @@ def build_managed_export_document(
         authored["execution"] = execution
         try:
             member = ScheduleMember.model_validate(authored)
+            # Apply refuses a playbook the launch would refuse, a `li play` subcommand among them,
+            # so a stored row naming one is not reported as a member that re-applies.
+            if isinstance(member.target, PlaybookTarget):
+                _resolve_playbook_target(member.target)
         except Exception as exc:  # noqa: BLE001 - reported per-row, never raised
             lines.append(
                 ExportReportLine(name, "BLOCKED", f"authored_spec failed validation: {exc}")
