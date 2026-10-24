@@ -18,6 +18,7 @@ import socket
 import sys
 import time
 import warnings
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,18 @@ def _load(name: str):
 
 def _sorted_json(value):
     return json.dumps(value, indent=2, sort_keys=True)
+
+
+@pytest.fixture(scope="module")
+def _specialized_snapshot():
+    """Capture each CLI case in its own process once for this module."""
+    return _capture.capture_specialized()
+
+
+@pytest.fixture
+def specialized_cases(_specialized_snapshot):
+    """Keep each assertion's live snapshot independent of other consumers."""
+    return deepcopy(_specialized_snapshot)
 
 
 def test_http_route_count_is_145():
@@ -194,13 +207,13 @@ def _assert_stderr_matches_baseline(
     )
 
 
-def test_cli_specialized_paths_match_baseline():
+def test_cli_specialized_paths_match_baseline(specialized_cases):
     """Committable cases capture argparse's own rendered text verbatim, which
     CPython's HelpFormatter changed across this project's CI-tested Python
     versions (see _capture.specialized_baseline_name); the baseline loaded
     here is pinned to the running interpreter rather than a single file."""
     expected = {tuple(c["argv"]): c for c in _load(_capture.specialized_baseline_name())}
-    live = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
+    live = {tuple(c["argv"]): c for c in specialized_cases}
     # Every frozen case must still be present and, modulo known volatility
     # (W-02, below), unchanged.
     assert set(expected) <= set(live), f"missing from live: {set(expected) - set(live)}"
@@ -491,8 +504,8 @@ _NEW_SPECIALIZED_EXPECTED_EXIT: dict[tuple[str, ...], int] = {
 }
 
 
-def test_specialized_new_branches_have_expected_exit_codes():
-    live = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
+def test_specialized_new_branches_have_expected_exit_codes(specialized_cases):
+    live = {tuple(c["argv"]): c for c in specialized_cases}
     for argv, expected_exit in _NEW_SPECIALIZED_EXPECTED_EXIT.items():
         assert argv in live, f"{argv} missing from capture_specialized() output"
         got_exit = live[argv]["exit_code"]
@@ -502,18 +515,18 @@ def test_specialized_new_branches_have_expected_exit_codes():
         )
 
 
-def test_schedule_did_you_mean_suggests_synonym():
-    live = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
+def test_schedule_did_you_mean_suggests_synonym(specialized_cases):
+    live = {tuple(c["argv"]): c for c in specialized_cases}
     case = live[("schedule", "create", "capture-test", "--every", "15m")]
     assert "did you mean '--interval'?" in case["stderr"]
 
 
-def test_schedule_quick_create_validates_before_any_network_call():
+def test_schedule_quick_create_validates_before_any_network_call(specialized_cases):
     """Both quick-create negative cases must fail through argparse/local
     validation alone — no DB or HTTP state may be created by this contract
     test. Asserted implicitly: both stderr messages name the missing
     argument/flag rather than any connection or server error."""
-    live = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
+    live = {tuple(c["argv"]): c for c in specialized_cases}
     agent_case = live[("schedule", "create", "agent", "capture-test")]
     assert "--profile" in agent_case["stderr"]
     command_case = live[("schedule", "create", "command", "capture-test", "--every", "15m")]
@@ -877,14 +890,14 @@ def test_identity_hits_matches_a_path_roots_descendant():
     )
 
 
-def test_committable_case_output_has_no_known_machine_identity():
+def test_committable_case_output_has_no_known_machine_identity(specialized_cases):
     """Every committable case's LIVE stdout/stderr must not contain this
     machine's own hostname, real username, home directory, or repo checkout
     path -- the one class of identifying value that is constant rather than
     cross-run variant, and so invisible to
     test_committable_case_output_is_env_and_clock_invariant above."""
     identity = _capture.known_machine_identity()
-    live_specialized = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
+    live_specialized = {tuple(c["argv"]): c for c in specialized_cases}
     live_machine = {tuple(c["argv"]): c for c in _capture.capture_machine()}
 
     offenders: dict[str, list[str]] = {}

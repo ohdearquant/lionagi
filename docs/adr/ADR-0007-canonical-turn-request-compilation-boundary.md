@@ -554,7 +554,7 @@ lines:
   `TurnRequest`, `ContextBlock`, `CompiledMessage`, `CompiledChatRequest`, `compile_chat_request`
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
-  (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:62`
+  (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:66`
   and `lionagi/operations/run/run.py:484`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
@@ -565,20 +565,20 @@ lines:
   (`:335-338`). The prompt therefore shows the kept state alone and never says material was
   dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
-  and render per session (`lionagi/cli/monitor.py:668-679`), and `branch.last_context_report`
-  exposes one turn's names (`lionagi/session/branch.py:291-303`). Those are event counts: they
+  and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
+  exposes one turn's names (`lionagi/session/branch.py:293-305`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
   (`lionagi/tools/context/context.py:290-304`, `:306-323`) by excluding them from
   `metadata["current_progression"]` (`:144-149`), which `Branch.progression` returns in place of
-  the manager's progression when it is present (`lionagi/session/branch.py:248-254`). An evicted
+  the manager's progression when it is present (`lionagi/session/branch.py:250-256`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py:353-430`, the summary at `:417-423`).
+  from the active view (`lionagi/tools/context/context.py:353-432`, the summary at `:417-425`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters

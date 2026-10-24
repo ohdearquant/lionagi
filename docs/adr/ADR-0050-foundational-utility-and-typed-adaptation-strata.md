@@ -746,6 +746,7 @@ async def retry(
     backoff_factor: float = 2.0,
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     jitter: float = 0.1,
+    exclude: tuple[type[BaseException], ...] = (),
 ) -> T: ...
 ```
 
@@ -858,6 +859,9 @@ async def retry(
   `delay *= 1 + random() * jitter`. When an effective deadline is active (a
   surrounding `move_on_at`/`fail_at` scope), a delay that would cross the deadline
   raises immediately instead of sleeping past it.
+  An exception matching `exclude` is re-raised unchanged before checking attempt
+  exhaustion, without another attempt or delay. The default `exclude=()` excludes
+  nothing; matching includes subclasses and preserves the error's cause and context.
 
 **Why this way**: centralizing retry, timeout, throttling, and ordering in
 `alcall`/`bcall` keeps that logic out of every call site that needs to apply one

@@ -9,6 +9,7 @@ import sqlite3
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from lionagi.state.db import StateDB
 from lionagi.studio.services import schedules
@@ -224,6 +225,17 @@ async def test_concurrent_reasoned_disables_report_only_the_recorded_winner(tmp_
     assert len(history) == 2  # Creation plus the one state edge.
     disabled = next(event for event in history if event["status"] == "disabled")
     assert disabled["reason_summary"] == reasons[results.index(True)]
+
+
+def test_the_request_body_takes_the_reasons_the_service_takes():
+    """The body strips before it measures, as the service and the CLI do, so a reason the
+    service would record is not refused over HTTP for its surrounding whitespace."""
+    padded = "  " + "x" * 500 + "\n"
+    assert schedules.DisableScheduleRequest(reason=padded).reason == "x" * 500
+    assert schedules.DisableScheduleRequest().reason is None
+    for refused in ("", "   ", "x" * 501, 5):
+        with pytest.raises(ValidationError):
+            schedules.DisableScheduleRequest(reason=refused)
 
 
 @pytest.mark.parametrize("reason", ["", "   ", "x" * 501])

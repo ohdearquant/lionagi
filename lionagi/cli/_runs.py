@@ -1076,6 +1076,22 @@ async def _teardown_common(
     contract = artifact_contract or session_row.get("artifact_contract_json")
     artifacts_root = artifacts_path or session_row.get("artifacts_path")
     verification = verify_artifact_contract(contract, artifacts_root=artifacts_root)
+    if (
+        reason_out is not None
+        and status == "completed"
+        and verification
+        and verification["status"] == "failed"
+    ):
+        from lionagi.state.reasons import RunReasons
+
+        # A completed request whose required artifact is missing is decided here: nothing below
+        # turns a `failed` status back or changes its code, so a write the store refuses from
+        # here on leaves this decision, not the request.
+        reason_out["terminal_reason"] = (
+            "failed",
+            missing_artifact_summary(verification["missing_required"]),
+            RunReasons.FAILED_MISSING_ARTIFACT,
+        )
     await _teardown_write(
         committed,
         "update_artifact_verification",

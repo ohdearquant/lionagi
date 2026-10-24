@@ -228,8 +228,11 @@ async def test_start_create_session_failure_closes_db(
     # No persistence is wired after the DB failure. Persistence rides the hook
     # bus (ADR-0047) and its emit hook (_persist_via_bus) is registered only by
     # route_message_persistence — never reached here — so on_message_added holds
-    # just the branch's baseline signal-emission hook (_schedule_emit).
-    assert env.orc_branch.on_message_added == [env.orc_branch._schedule_emit]
+    # just the branch's baseline hooks (_schedule_emit, _track_message_in_view).
+    assert env.orc_branch.on_message_added == [
+        env.orc_branch._schedule_emit,
+        env.orc_branch._track_message_in_view,
+    ]
 
     for _ in range(20):
         if _aiosqlite_thread_count() <= before:

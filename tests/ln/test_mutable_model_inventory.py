@@ -235,7 +235,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
-    "lionagi.service.connections.endpoint:91:36": "``httpx.ConnectError``, imported lazily",
+    "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
@@ -249,10 +249,10 @@ _ALLOWLIST: dict[str, str] = {
     # An assignment to a class authority outside a class body; here it rebinds one
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
-    "lionagi.state.engine:238:9": "a connection object taking a runtime subclass",
+    "lionagi.state.engine:241:9": "a connection object taking a runtime subclass",
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
-    "lionagi.state.engine:176:30": "a subclass of a caller-supplied connection class",
+    "lionagi.state.engine:179:30": "a subclass of a caller-supplied connection class",
     "lionagi.testing.helpers:228:22": "a subclass of the class a classmethod is called on",
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather

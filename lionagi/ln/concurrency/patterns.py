@@ -228,8 +228,12 @@ async def retry(
     backoff_factor: float = 2.0,
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     jitter: float = 0.1,
+    exclude: tuple[type[BaseException], ...] = (),
 ) -> T:
-    """Retry fn up to attempts times with exponential backoff; deadline-aware, never retries cancellation."""
+    """Retry fn with backoff and ambient deadlines; never retry cancellation.
+
+    Exceptions matching exclude propagate immediately without another attempt or delay.
+    """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
     if base_delay <= 0:
@@ -250,7 +254,9 @@ async def retry(
     while True:
         try:
             return await fn()
-        except retry_on:
+        except retry_on as exc:
+            if isinstance(exc, exclude):
+                raise
             attempt += 1
             if attempt >= attempts:
                 raise

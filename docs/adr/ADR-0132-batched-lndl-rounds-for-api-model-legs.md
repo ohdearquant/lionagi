@@ -12,7 +12,7 @@
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py:415-419`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionagi/cli/agent.py:579-583`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request (a reply that fails to parse is asked for again), and a round's tool
 calls run through `act()`, concurrently unless the model asks for them in sequence
 (`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always
@@ -55,7 +55,7 @@ Middle's own rule, such a round would run only the calls its `OUT{}` binds and d
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
-return mappings (`lionagi/tools/coding.py:451-653`, `lionagi/tools/context/context.py:228-432`),
+return mappings (`lionagi/tools/coding.py:451-653`, `lionagi/tools/context/context.py:228-434`),
 so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
