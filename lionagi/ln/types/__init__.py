@@ -1,3 +1,8 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 from .._structural import UnhashableStructuralValueError
 from ._sentinel import (
     MaybeSentinel,
@@ -24,6 +29,19 @@ from .filters import (
     resolve_path,
 )
 from .operable import Operable
+from .registry import (
+    DuplicateRegistryKeyError,
+    DuplicateRegistryOwnerError,
+    Registry,
+    RegistryCompositionError,
+    RegistryEntry,
+    RegistryFragment,
+    RegistryOverride,
+    RegistryOverrideRule,
+    RegistryRecord,
+    RegistrySource,
+    RegistryValueError,
+)
 from .spec import CommonMeta, Spec
 
 __all__ = (
@@ -48,6 +66,17 @@ __all__ = (
     "KeysDict",
     "KeysLike",
     "T",
+    "Registry",
+    "RegistryEntry",
+    "RegistryFragment",
+    "RegistryOverrideRule",
+    "RegistrySource",
+    "RegistryRecord",
+    "RegistryOverride",
+    "RegistryCompositionError",
+    "DuplicateRegistryOwnerError",
+    "DuplicateRegistryKeyError",
+    "RegistryValueError",
     # Spec system
     "Spec",
     "CommonMeta",

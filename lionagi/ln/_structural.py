@@ -39,6 +39,19 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
+class _RegistryAdmissionError(TypeError):
+    """A declaration payload cannot provide an immutable typed value key."""
+
+    def __init__(self, path: str, value_type: type[Any], reason: str) -> None:
+        self.path = path
+        self.value_type = value_type
+        self.reason = reason
+        super().__init__(
+            f"registry payload at {path} ({value_type.__module__}.{value_type.__qualname__}): "
+            f"{reason}"
+        )
+
+
 # ``memoryview`` is the one built-in whose hash refusals are ``ValueError`` rather than
 # ``TypeError``: for a writable view, for a view whose format is not a byte format, and
 # for a released view. The messages are the interpreter's own and are stable across
@@ -505,8 +518,48 @@ def _project(
     active: set[int],
     *,
     value_semantics: bool = False,
+    _registry_admission: bool = False,
 ) -> _StructuralKey:
     value_type = type(value)
+
+    if _registry_admission:
+        typing_form = typing.get_origin(value) is not None
+        enum_member = isinstance(value, Enum)
+        typing_singleton = any(value is singleton for _, singleton in _TYPING_SINGLETONS)
+        reason = None
+        if _lion_sentinel_name(value) is not None:
+            reason = "sentinel"
+        elif value_type is memoryview:
+            reason = "memoryview"
+        elif _is_pydantic_model(value) or _is_msgspec_struct(value):
+            reason = "model"
+        elif value_type in (dict, list, set, bytearray):
+            reason = "mutable"
+        elif (
+            callable(value)
+            and not (typing_form or enum_member or typing_singleton)
+            and not (
+                isinstance(value, (type, types.FunctionType))
+                or (
+                    isinstance(value, types.BuiltinFunctionType)
+                    and isinstance(getattr(value, "__self__", None), types.ModuleType)
+                )
+            )
+        ):
+            reason = "unstable_identity"
+        elif (
+            dataclasses.is_dataclass(value)
+            and not isinstance(value, type)
+            and not typing_form
+            and not enum_member
+            and (
+                "__dataclass_params__" not in value_type.__dict__
+                or not value_type.__dataclass_params__.frozen
+            )
+        ):
+            reason = "mutable"
+        if reason is not None:
+            raise _RegistryAdmissionError(path, value_type, reason)
 
     if value is None:
         return _StructuralKey((_NONE,), True, True, b"n")
@@ -568,17 +621,28 @@ def _project(
         )
 
     if isinstance(value, Enum):
-        projected = _project(value.value, f"{path}.value", active, value_semantics=value_semantics)
-        type_key = _IdentityKey(value_type)
-        return _StructuralKey(
-            (_ENUM, type_key, projected.value),
-            projected.cache_stable,
-            projected.hash_safe,
-            _frame(b"e", _identity_token(value_type), projected._sort_token),
-            projected._unsafe_path,
-            projected._unsafe_type,
-            _pins=projected._pins,
-        )
+        identity = _enter(value, path, active, registry=True) if _registry_admission else None
+        try:
+            projected = _project(
+                value.value,
+                f"{path}.value",
+                active,
+                value_semantics=value_semantics,
+                _registry_admission=_registry_admission,
+            )
+            type_key = _IdentityKey(value_type)
+            return _StructuralKey(
+                (_ENUM, type_key, projected.value),
+                projected.cache_stable,
+                projected.hash_safe,
+                _frame(b"e", _identity_token(value_type), projected._sort_token),
+                projected._unsafe_path,
+                projected._unsafe_type,
+                _pins=projected._pins,
+            )
+        finally:
+            if identity is not None:
+                active.remove(identity)
 
     if any(value_type is path_type for path_type in _PATH_TYPES):
         # pathlib paths are immutable value objects.  Preserve pathlib's
@@ -613,41 +677,60 @@ def _project(
 
     origin = typing.get_origin(value)
     if origin is not None:
-        raw_arguments = typing.get_args(value)
-        # typing represents Callable's parameter specification as a fresh list.
-        # That list is interpreter-owned syntax, not mutable user state.
-        if origin is Callable and raw_arguments and isinstance(raw_arguments[0], list):
-            raw_arguments = (tuple(raw_arguments[0]), *raw_arguments[1:])
-        arguments = tuple(
-            _project(argument, f"{path}.args[{index}]", active, value_semantics=value_semantics)
-            for index, argument in enumerate(raw_arguments)
-        )
-        combined = _combine(
-            _TYPING,
-            arguments,
-            b"g",
-            prefix=(_IdentityKey(value_type), _IdentityKey(origin)),
-        )
-        return dataclasses.replace(
-            combined,
-            _sort_token=_frame(
+        identity = _enter(value, path, active, registry=True) if _registry_admission else None
+        try:
+            raw_arguments = typing.get_args(value)
+            # typing represents Callable's parameter specification as a fresh list.
+            # That list is interpreter-owned syntax, not mutable user state.
+            if origin is Callable and raw_arguments and isinstance(raw_arguments[0], list):
+                raw_arguments = (tuple(raw_arguments[0]), *raw_arguments[1:])
+            arguments = tuple(
+                _project(
+                    argument,
+                    f"{path}.args[{index}]",
+                    active,
+                    value_semantics=value_semantics,
+                    _registry_admission=_registry_admission,
+                )
+                for index, argument in enumerate(raw_arguments)
+            )
+            combined = _combine(
+                _TYPING,
+                arguments,
                 b"g",
-                _identity_token(value_type),
-                _identity_token(origin),
-                combined._sort_token,
-            ),
-        )
+                prefix=(_IdentityKey(value_type), _IdentityKey(origin)),
+            )
+            return dataclasses.replace(
+                combined,
+                _sort_token=_frame(
+                    b"g",
+                    _identity_token(value_type),
+                    _identity_token(origin),
+                    combined._sort_token,
+                ),
+            )
+        finally:
+            if identity is not None:
+                active.remove(identity)
 
     if value_type is dict or (value_semantics and isinstance(value, dict)):
-        identity = _enter(value, path, active)
+        identity = _enter(value, path, active, registry=_registry_admission)
         try:
             entries: list[tuple[_StructuralKey, _StructuralKey]] = []
             for index, (key, item) in enumerate(value.items()):
                 key_projection = _project(
-                    key, f"{path}.keys[{index}]", active, value_semantics=value_semantics
+                    key,
+                    f"{path}.keys[{index}]",
+                    active,
+                    value_semantics=value_semantics,
+                    _registry_admission=_registry_admission,
                 )
                 value_projection = _project(
-                    item, f"{path}.values[{index}]", active, value_semantics=value_semantics
+                    item,
+                    f"{path}.values[{index}]",
+                    active,
+                    value_semantics=value_semantics,
+                    _registry_admission=_registry_admission,
                 )
                 entries.append((key_projection, value_projection))
             ordered = _ordered_mapping_entries(entries, path)
@@ -672,10 +755,16 @@ def _project(
             active.remove(identity)
 
     if value_type in (list, tuple) or (value_semantics and isinstance(value, list | tuple)):
-        identity = _enter(value, path, active)
+        identity = _enter(value, path, active, registry=_registry_admission)
         try:
             children = tuple(
-                _project(item, f"{path}[{index}]", active, value_semantics=value_semantics)
+                _project(
+                    item,
+                    f"{path}[{index}]",
+                    active,
+                    value_semantics=value_semantics,
+                    _registry_admission=_registry_admission,
+                )
                 for index, item in enumerate(value)
             )
             marker = _LIST if isinstance(value, list) else _TUPLE
@@ -693,11 +782,17 @@ def _project(
             active.remove(identity)
 
     if value_type in (set, frozenset) or (value_semantics and isinstance(value, set | frozenset)):
-        identity = _enter(value, path, active)
+        identity = _enter(value, path, active, registry=_registry_admission)
         try:
             children = _unordered(
                 [
-                    _project(item, f"{path}[{index}]", active, value_semantics=value_semantics)
+                    _project(
+                        item,
+                        (f"{path}[*]" if _registry_admission else f"{path}[{index}]"),
+                        active,
+                        value_semantics=value_semantics,
+                        _registry_admission=_registry_admission,
+                    )
                     for index, item in enumerate(value)
                 ],
                 path,
@@ -718,10 +813,14 @@ def _project(
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         identity_key = _IdentityKey(value)
-        cached = None if value_semantics else _stable_dataclass_keys.get(identity_key)
+        cached = (
+            None
+            if value_semantics or _registry_admission
+            else _stable_dataclass_keys.get(identity_key)
+        )
         if cached is not None:
             return cached
-        identity = _enter(value, path, active)
+        identity = _enter(value, path, active, registry=_registry_admission)
         try:
             fields = dataclasses.fields(value)
             children = tuple(
@@ -730,6 +829,7 @@ def _project(
                     f"{path}.{field_info.name}",
                     active,
                     value_semantics=value_semantics,
+                    _registry_admission=_registry_admission,
                 )
                 for field_info in fields
             )
@@ -759,6 +859,7 @@ def _project(
                     and result._weight <= _MAX_CACHED_WEIGHT
                     and identity_key.holds_weakly
                     and not value_semantics
+                    and not _registry_admission
                 ):
                     # The queue's own append rather than `forget`, a bound method that would
                     # hold the cache and put every stored key in a cycle with it.
@@ -777,12 +878,18 @@ def _project(
             active.remove(identity)
 
     if _is_pydantic_model(value):
-        identity = _enter(value, path, active)
+        identity = _enter(value, path, active, registry=_registry_admission)
         try:
             dumped = _serialized(
                 value, path, lambda: typing.cast(Any, value).model_dump(mode="python")
             )
-            projected = _project(dumped, path, active, value_semantics=value_semantics)
+            projected = _project(
+                dumped,
+                path,
+                active,
+                value_semantics=value_semantics,
+                _registry_admission=_registry_admission,
+            )
             return _StructuralKey(
                 (_PYDANTIC, _IdentityKey(value_type), projected.value),
                 cache_stable=False,
@@ -800,7 +907,7 @@ def _project(
             active.remove(identity)
 
     if _is_msgspec_struct(value):
-        identity = _enter(value, path, active)
+        identity = _enter(value, path, active, registry=_registry_admission)
         try:
             import msgspec
 
@@ -809,6 +916,7 @@ def _project(
                 path,
                 active,
                 value_semantics=value_semantics,
+                _registry_admission=_registry_admission,
             )
             return _StructuralKey(
                 (_MSGSPEC, _IdentityKey(value_type), projected.value),
@@ -835,8 +943,11 @@ def _project(
             cache_stable,
             True,
             _frame(b"a", _identity_token(value)),
-            _pins=not _reachable_by_name(value),
+            _pins=not _registry_admission and not _reachable_by_name(value),
         )
+
+    if _registry_admission:
+        raise _RegistryAdmissionError(path, value_type, "unsupported_type")
 
     if not isinstance(value, Hashable):
         identity = _IdentityKey(value)
@@ -877,12 +988,19 @@ def _project(
     )
 
 
-def _enter(value: Any, path: str, active: set[int]) -> int:
+def _enter(value: Any, path: str, active: set[int], *, registry: bool = False) -> int:
     identity = id(value)
     if identity in active:
+        if registry:
+            raise _RegistryAdmissionError(path, type(value), "cycle")
         raise UnhashableStructuralValueError(path, type(value))
     active.add(identity)
     return identity
+
+
+def _registry_structural_key(value: Any) -> _StructuralKey:
+    """Freshly admit an immutable payload through the existing typed projector."""
+    return _project(value, "$", set(), value_semantics=False, _registry_admission=True)
 
 
 def _structural_key(value: Any) -> _StructuralKey:

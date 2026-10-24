@@ -351,15 +351,24 @@ def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
 
 def _svc_validate_play_playbook(schedule: dict[str, Any]) -> None:
     """Service-boundary check: `li play` reads list, check and status as its own subcommands,
-    so a play schedule naming one of them as its playbook would never run a playbook."""
+    so a play schedule naming one of them as its playbook, or starting its extra arguments
+    with one when it has no playbook, would never run a playbook."""
     from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _PLAY_SUBCOMMANDS
 
     kind = schedule.get("action_kind")
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    if kind != "play":
+        return
     playbook = schedule.get("action_playbook")
-    if kind == "play" and isinstance(playbook, str) and playbook in _PLAY_SUBCOMMANDS:
+    if isinstance(playbook, str) and playbook in _PLAY_SUBCOMMANDS:
         raise ValueError(
             f"action_playbook {playbook!r} names a `li play` subcommand, not a playbook"
+        )
+    extra = schedule.get("action_extra_args")
+    if not playbook and isinstance(extra, list) and extra and str(extra[0]) in _PLAY_SUBCOMMANDS:
+        raise ValueError(
+            f"action_extra_args starts with {str(extra[0])!r}, which a play launch with no "
+            "playbook passes to `li play` as its subcommand"
         )
 
 
@@ -1291,6 +1300,7 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         # can still be paused or edited elsewhere.
         if {"action_kind", "action_prompt", "action_playbook"} & set(fields):
             _svc_validate_play_prompt(effective)
+        if {"action_kind", "action_prompt", "action_playbook", "action_extra_args"} & set(fields):
             _svc_validate_play_playbook(effective)
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:

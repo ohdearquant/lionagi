@@ -891,13 +891,13 @@ class SchedulerEngine:
             # The registry file or a configured root the daemon may not read (a permission
             # error, say): also a fault of this host, not of the request, so it is logged too.
             _log.warning(
-                "manual trigger of schedule %s: its execution root could not be resolved",
+                "manual trigger of schedule %s: project registry or execution root unreadable",
                 schedule_id,
                 exc_info=True,
             )
             refusal = (
-                f"Schedule {schedule_id!r}: its execution root could not be resolved "
-                f"({type(exc).__name__}); manual trigger refused."
+                f"Schedule {schedule_id!r}: the project registry or the execution root its "
+                f"launch reads could not be read ({type(exc).__name__}); manual trigger refused."
             )
         if refusal is not None:
             raise ValueError(refusal)
