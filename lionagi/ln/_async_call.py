@@ -3,9 +3,12 @@
 
 """Async batch processing with retry, timeout, and concurrency control."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncGenerator, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, ClassVar
 
 from ._lazy_init import LazyInit
@@ -110,7 +113,7 @@ async def _call_with_timeout(
         if is_coro:
             result = await func(item, **kwargs)
         else:
-            result = await run_sync(func, item, **kwargs)
+            result = await run_sync(partial(func, item, **kwargs))
     if cancel_scope is not None and cancel_scope.cancelled_caught:
         raise TimeoutError(f"Function call timed out after {timeout}s")
     return result

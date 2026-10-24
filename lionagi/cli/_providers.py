@@ -1059,7 +1059,25 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # line setting it as a key, one that reads as settings and sets it, or one that does
             # not read and names it anywhere. A block runs from a line of three or more dashes
             # to the next such line or, unclosed, to the end.
-            delimiters = [i for i, line in enumerate(lines) if _DASHES.fullmatch(line.rstrip())]
+            delimiters = []
+            # Fenced examples are prompt text, not misplaced frontmatter.
+            fence: str | None = None
+            for i, line in enumerate(lines):
+                marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
+                if fence is not None:
+                    if (
+                        marker
+                        and marker[1][0] == fence[0]
+                        and len(marker[1]) >= len(fence)
+                        and not marker[2].strip()
+                    ):
+                        fence = None
+                    continue
+                if marker and (marker[1][0] == "~" or "`" not in marker[2]):
+                    fence = marker[1]
+                    continue
+                if _DASHES.fullmatch(line.rstrip()):
+                    delimiters.append(i)
             for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)
