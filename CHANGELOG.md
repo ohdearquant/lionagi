@@ -29,6 +29,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   task or loop subset refusals; pilot documentation records the checked historical
   source mappings.
 
+- Engine judges accept an untyped reply only when it is the whole token `PASS`,
+  ignoring letter case and surrounding whitespace. Empty, malformed and non-string
+  replies stop the item and emit the existing gate notification.
+
 - A tool call denied by an agent's security control now reaches the tool post hooks
   registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
   hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for

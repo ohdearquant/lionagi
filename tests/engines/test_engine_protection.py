@@ -139,7 +139,7 @@ async def test_foreign_session_deny_does_not_gate_expansion(monkeypatch):
 
     async def foreign(_judge, *, instruction):
         await run.emit(JudgeVerdict(subject="Q-1", allow=False, reason="foreign deny"))
-        return ""
+        return "PASS"
 
     monkeypatch.setattr(_FakeJudge, "operate", foreign)
 
