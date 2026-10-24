@@ -27,7 +27,7 @@ meanings, which is the same failure ADR-0105 fixed one column over.
 ### Three consequences
 
 **1. Consumers read a live agent as finished.** Verified at
-`lionagi/studio/services/sessions.py:1629-1637`: `is_session_stream_done` closes a
+`lionagi/studio/services/sessions.py:1638-1646`: `is_session_stream_done` closes a
 session's live stream once the status is terminal and has been stable for
 `SESSION_DONE_STABLE_SECS`. A mirrored session that goes quiet for five minutes
 is marked `completed`, and sixty seconds later the Studio stops following it.
@@ -346,16 +346,16 @@ second name from it at `lionagi/state/db.py:451`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
-| `studio/services/sessions.py:1629` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
+| `studio/services/sessions.py:1638` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `studio/services/run_resume.py:245` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
 | `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:74` | Unverified | not driven |
-| `studio/services/run_resume_worker.py:71` | Unverified | not driven |
-| `cli/monitor.py:1199,1211,1269` | Unverified | not driven |
+| `studio/services/run_resume_worker.py:72` | Unverified | not driven |
+| `cli/monitor.py:1240,1252,1310` | Unverified | not driven |
 | `cli/machine.py:539` | Unverified, display flag | not driven |
-| `cli/_runs.py:1131,1392,1584,1886` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:855-881`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:1131` branches on that row's terminal status while `:1150` handles it being `running`. An earlier draft wrote "the claude/codex-mirror row" and that is wrong: the resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:870`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:79-81`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `lionagi/cli/_runs.py:1995-2006` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
-| `cli/agent.py:978,2034` | Probably not: own run's session | not driven |
-| `cli/orchestrate/_orchestration.py:2203` | Probably not: own run's session | not driven |
+| `cli/_runs.py:1131,1392,1584,1886` | **Yes, by construction** | read at the source: `_linked_engine_session` (`:855-881`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:1131` branches on that row's terminal status while `:1150` handles it being `running`. `:1392` is different: it is the terminal guard in `_write_terminal_session_status` (`:1374`), its `observed_status` is the run's own session row (`:1370`, `:1619-1621`), and that row is a mirror row only when a resumed branch adopts the mirror session (`:2024`), through the reopen path named at the end of this cell. `:1584` tests the status `_teardown_common` returned to `teardown_persist` (`:1519`), which is the one `:1131` resolved, so it follows that branch. `:1886` is the reopen check in `_reopen_session_for_resume` (`:1865`): the row it reads is a mirror row only when the resumed branch adopted the mirror session, and any status outside the terminal set, `idle` included, reads there as a live leg that is not reopened. The resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:870`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:79-81`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, the ADR-0105 reopen path at `lionagi/cli/_runs.py:1995-2006` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
+| `cli/agent.py:990,2073` | Probably not: own run's session | not driven |
+| `cli/orchestrate/_orchestration.py:2297` | Probably not: own run's session | not driven |
 | `hooks/builtins.py:71,131` | Probably not: own run's session | not driven |
 
 The unverified rows are not a claim that they are safe. Each must be driven

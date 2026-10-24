@@ -1488,6 +1488,7 @@ async def test_a_bytes_value_is_read_as_the_spawn_reads_it_not_by_its_own_bytes_
     calls."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
+    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1503,9 +1504,12 @@ async def test_a_bytes_value_is_read_as_the_spawn_reads_it_not_by_its_own_bytes_
         async for _ in codex_mod._ndjson_from_cli(copied):
             pass
 
-    assert {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER} == (
-        _the_copy_the_spawn_reads(env)
-    )
+    assert {
+        key: val
+        for key, val in given.items()
+        if key not in (_PROCESS_GROUP_MARKER, AGENT_DEPTH_ENV)
+    } == (_the_copy_the_spawn_reads(env))
+    assert given[AGENT_DEPTH_ENV] == "1"
 
 
 @pytest.mark.asyncio
@@ -1515,6 +1519,7 @@ async def test_a_bytes_value_beside_its_text_twin_is_taken_as_one_entry(tmp_path
     equal entries, the pair is admitted, and the child receives one entry."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
+    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1533,9 +1538,11 @@ async def test_a_bytes_value_beside_its_text_twin_is_taken_as_one_entry(tmp_path
 
     twin_entries = _the_entries_the_spawn_builds(env)
     assert twin_entries[1] == twin_entries[2] == b"\xc3\xa9=x"
-    assert {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER} == (
-        _the_copy_the_spawn_reads(env)
-    )
+    assert {
+        key: val
+        for key, val in given.items()
+        if key not in (_PROCESS_GROUP_MARKER, AGENT_DEPTH_ENV)
+    } == (_the_copy_the_spawn_reads(env))
     assert list(_the_copy_the_spawn_reads(env)).count("\u00e9") == 1
 
 
@@ -1656,6 +1663,7 @@ async def test_keys_and_values_spelled_two_ways_that_encode_alike_are_taken(tmp_
     with equal sides, so the pair is admitted and the child receives that one entry."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
+    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1674,9 +1682,11 @@ async def test_keys_and_values_spelled_two_ways_that_encode_alike_are_taken(tmp_
 
     entries = _the_entries_the_spawn_builds(env)
     assert entries[0] == entries[1] == b"\xc3\xa9=\xc3\xa9"
-    assert {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER} == {
-        "\u00e9": "\u00e9"
-    }
+    assert {
+        key: val
+        for key, val in given.items()
+        if key not in (_PROCESS_GROUP_MARKER, AGENT_DEPTH_ENV)
+    } == {"\u00e9": "\u00e9"}
 
 
 @pytest.mark.asyncio
@@ -1920,6 +1930,7 @@ async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_pl
     a second time."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
+    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1938,7 +1949,11 @@ async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_pl
         async for _ in codex_mod._ndjson_from_cli(copied):
             pass
 
-    handed = {key: val for key, val in given.items() if key != _PROCESS_GROUP_MARKER}
+    handed = {
+        key: val
+        for key, val in given.items()
+        if key not in (_PROCESS_GROUP_MARKER, AGENT_DEPTH_ENV)
+    }
     assert handed == {"HOME": "/h", "OPENAI_API_KEY": _SECRET_IN_A_VALUE}
     assert os.fsencode(handed["OPENAI_API_KEY"]) == _SECRET_IN_A_VALUE.encode("utf-8")
     assert _TextWhoseOwnEncoderAnswersOtherBytes.encodes == 0

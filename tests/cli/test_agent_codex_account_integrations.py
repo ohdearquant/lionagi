@@ -106,6 +106,30 @@ async def test_a_resume_runs_with_the_roles_grant_not_the_stored_one(
     assert captured[-1].get("contain_account_integrations", False) is expected_containment
 
 
+@pytest.mark.asyncio
+async def test_a_resumed_api_branch_takes_no_account_integration_settings(monkeypatch, tmp_path):
+    """A model override spelled with the codex alias does not make an API branch a codex
+    agent; the resumed branch's endpoint decides, so the role's grant does not reach its
+    request."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch, iModel
+    from lionagi.cli.agent import _run_agent
+
+    branch = Branch(chat_model=iModel(provider="openai", model="gpt-4.1-mini", api_key="dummy"))
+    path = tmp_path / f"{branch.id}.json"
+    path.write_text(json.dumps(branch.to_dict()))
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, _GRANTING_ROLE)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent(
+        "openai-codex/gpt-4.1-mini", "continue", resume=str(branch.id), agent_name="role"
+    )
+
+    assert not ({"contain_account_integrations", "account_connectors"} & set(captured[-1]))
+
+
 class _Reached(Exception):
     pass
 

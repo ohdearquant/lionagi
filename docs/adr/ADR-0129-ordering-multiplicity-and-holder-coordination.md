@@ -44,7 +44,7 @@ with `prog.append(uid)` and change the collection's order without touching the c
 
 **P4 — every collection type carries locks its holder cannot see the cost of.** `Pile` owns an RLock
 and an AnyIO lock (`pile.py:220-221`) and reaches them through three shapes: `@synchronized`
-(`lionagi/ln/_utils.py:450-459`) takes the RLock alone, `@async_synchronized` (`:462-491`) takes the
+(`lionagi/ln/_utils.py:475-484`) takes the RLock alone, `@async_synchronized` (`:487-516`) takes the
 AnyIO lock and then spins on the RLock with a non-blocking acquire and a 0.5 ms sleep, and the
 `_both_locks` context manager (`pile.py:567-576`) does the same for an unscoped region. The two
 locks therefore do exclude each other: an async method and a `@synchronized` method on the same
@@ -57,7 +57,7 @@ locks therefore do exclude each other: an async method and a `@synchronized` met
 (`:587`), `aremove` (`:596`), `ainclude` (`:604`), `aexclude` (`:614`), `aclear` (`:622`), `aupdate`
 (`:626`), and `aget` (`:634`). The undecorated helpers `_setitem` (`:719`), `_get` (`:761`), `_pop`
 (`:794`), and `_insert` (`:838`) are not lock sites of their own. `Flow` owns a third RLock for its
-own methods (`lionagi/protocols/generic/flow.py:36-41`, rebuilt at `:132`). What a per-method lock
+own methods (`lionagi/protocols/generic/flow.py:36-41`, rebuilt at `:136`). What a per-method lock
 still cannot do is make a caller's read-then-act sequence atomic.
 
 **P5 — the holders are invisible in the type, and two sites await inside it.** `Session` holds

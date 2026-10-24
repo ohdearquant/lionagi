@@ -153,6 +153,8 @@ its area block.
 - 0031-0032 — unused (intentional gaps)
 - [ADR-0126](ADR-0126-provider-credential-routing-and-monthly-account-budgets.md) — Provider
   credential routing and monthly account budgets (sequential number; see Numbering)
+- [ADR-0133](ADR-0133-machine-wide-admission-for-cli-agents.md) — Machine-wide admission for
+  CLI agents (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 
@@ -195,6 +197,8 @@ its area block.
 - 0049 — unused (intentional gap)
 - [ADR-0120](ADR-0120-interception-observation-and-durable-delivery-planes.md) — Interception,
   observation, and durable delivery planes (sequential number; see Numbering)
+- [ADR-0134](ADR-0134-hooks-for-spawned-cli-agents.md) — Hooks for spawned CLI agents: one
+  registry, rendered at the spawn seam (sequential number; see Numbering)
 
 ### utilities (0050-0054)
 

@@ -1,0 +1,32 @@
+{
+  "react": {
+    "runs": 24,
+    "accepted": 23,
+    "requests": 94,
+    "tool_calls": 56,
+    "wall_seconds": 295.9,
+    "missing_spend": 0,
+    "requests_per_accepted": 4.087
+  },
+  "lndl": {
+    "runs": 24,
+    "accepted": 18,
+    "requests": 119,
+    "tool_calls": 34,
+    "wall_seconds": 330.4,
+    "missing_spend": 0,
+    "requests_per_accepted": 6.611
+  },
+  "d4_rule_by_checks": {
+    "lndl_fewer_requests_per_accepted": false,
+    "lndl_accepts_no_fewer": false
+  },
+  "d4_rule_by_substance": {
+    "react_accepted": 24,
+    "lndl_accepted": 18,
+    "react_requests_per_accepted": 3.917,
+    "lndl_requests_per_accepted": 6.611,
+    "lndl_fewer_requests_per_accepted": false,
+    "lndl_accepts_no_fewer": false
+  }
+}

@@ -5,6 +5,29 @@ import threading
 import pytest
 
 
+@pytest.mark.parametrize("nullable", [False, True])
+def test_listable_action_required_uses_last_validator_and_explicit_defaults(nullable):
+    from lionagi.models import OperableModel
+    from lionagi.operations.fields import get_default_field
+
+    field = get_default_field("action_required", listable=True, nullable=nullable)
+    info = field.create_field()
+    model = OperableModel(extra_fields=[field]).new_model("ListableActionRequired")
+
+    assert info.annotation == (list[bool] | None if nullable else list[bool])
+    assert not info.is_required()
+    if nullable:
+        assert info.default is None
+        assert info.default_factory is None
+        assert model().action_required is None
+    else:
+        assert info.default_factory is list
+        assert model().action_required == []
+    assert model(action_required=[True, True, False]).action_required == [True, False]
+    with pytest.raises(ValueError, match="Duplicate metadata key: validator"):
+        field.to_spec()
+
+
 class TestImports:
     """Test that all exports are importable."""
 
@@ -130,20 +153,33 @@ class TestErrorHandling:
 class TestFieldGeneration:
     """Test dynamic field generation using get_default_field."""
 
-    def test_action_requests_field_uses_correct_params(self):
-        from lionagi.operations.fields import ACTION_REQUESTS_FIELD, get_default_field
+    @pytest.mark.parametrize(
+        ("constant", "name", "base", "listable"),
+        [
+            ("ACTION_REQUESTS_FIELD", "action_requests", "ActionRequestModel", True),
+            ("ACTION_RESPONSES_FIELD", "action_responses", "ActionResponseModel", True),
+            ("ACTION_REQUIRED_FIELD", "action_required", "bool", False),
+            ("INSTRUCT_FIELD", "instruct_model", "Instruct", False),
+            ("LIST_INSTRUCT_FIELD_MODEL", "instruct_model", "Instruct", True),
+            ("REASON_FIELD", "reason", "Reason", False),
+        ],
+    )
+    def test_field_constants_have_explicit_golden_shape(self, constant, name, base, listable):
+        import lionagi.operations.fields as fields
 
-        manual_field = get_default_field("action_requests")
-        assert type(ACTION_REQUESTS_FIELD) == type(manual_field)
+        field = getattr(fields, constant)
+        expected = bool if base == "bool" else getattr(fields, base)
+        if listable:
+            expected = list[expected]
+        info = field.create_field()
 
-    def test_list_instruct_field_uses_listable_param(self):
-        from lionagi.operations.fields import (
-            LIST_INSTRUCT_FIELD_MODEL,
-            get_default_field,
-        )
-
-        manual_field = get_default_field("instruct", listable=True)
-        assert type(LIST_INSTRUCT_FIELD_MODEL) == type(manual_field)
+        assert field.name == name
+        assert field.is_listable is listable
+        assert field.is_nullable is True
+        assert info.annotation == expected | None
+        assert info.default is None
+        assert info.default_factory is None
+        assert not info.is_required()
 
     def test_all_field_constants_created(self):
         from lionagi.operations.fields import (

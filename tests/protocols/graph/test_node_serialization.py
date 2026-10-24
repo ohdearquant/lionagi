@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from lionagi.ln import compute_hash
@@ -245,3 +247,67 @@ class TestManualSubclassWithConfig:
         ro = ReadOnly()
         with pytest.raises(RuntimeError):
             ro.restore()
+
+
+@pytest.fixture(params=["field", "metadata"])
+def _hashed_node_type(request):
+    if request.param == "field":
+        return create_node("DigestCharacterizationNode", content_hashing=True), True
+
+    class MetadataDigestCharacterizationNode(Node):
+        node_config = NodeConfig(content_hashing=True)
+
+    return MetadataDigestCharacterizationNode, False
+
+
+@pytest.mark.parametrize(
+    "content,encoded",
+    [
+        (None, b"null"),
+        ("café 🦁", "café 🦁".encode()),
+        ({"b": [1, True], "a": None}, b'{"a":null,"b":[1,true]}'),
+    ],
+)
+def test_rehash_uses_content_bytes_and_preserves_storage_layout(
+    _hashed_node_type, content, encoded
+):
+    node_type, uses_field = _hashed_node_type
+    node = node_type(content=content, metadata={"label": "original"})
+    expected = hashlib.sha256(encoded).hexdigest()
+
+    assert node.rehash() == expected
+    node.metadata["label"] = "changed"
+    node.embedding = [0.5]
+    assert node.rehash() == expected
+    if uses_field:
+        assert node.content_hash == expected
+        assert "content_hash" not in node.metadata
+    else:
+        assert node.metadata["content_hash"] == expected
+        assert "content_hash" not in node_type.model_fields
+
+
+@pytest.mark.parametrize("mode", ["python", "json", "db"])
+def test_node_roundtrip_preserves_stale_hash_until_rehash(_hashed_node_type, mode):
+    node_type, uses_field = _hashed_node_type
+    node = node_type(content={"value": 1}, metadata={"label": "retained"})
+    original_hash = hashlib.sha256(b'{"value":1}').hexdigest()
+    assert node.rehash() == original_hash
+    node.content = {"value": 2}
+
+    wire = node.to_dict(mode=mode)
+    metadata_key = "node_metadata" if mode == "db" else "metadata"
+    carrier = wire if uses_field else wire[metadata_key]
+    assert carrier["content_hash"] == original_hash
+    restored = Node.from_dict(wire)
+    assert type(restored) is node_type
+    assert restored.content == {"value": 2}
+    assert restored.metadata["label"] == "retained"
+    stored = restored.content_hash if uses_field else restored.metadata["content_hash"]
+    assert stored == original_hash
+
+    changed_hash = hashlib.sha256(b'{"value":2}').hexdigest()
+    assert restored.rehash() == changed_hash
+    stored = restored.content_hash if uses_field else restored.metadata["content_hash"]
+    assert stored == changed_hash
+    assert carrier["content_hash"] == original_hash

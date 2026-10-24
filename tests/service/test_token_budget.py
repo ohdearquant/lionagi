@@ -343,6 +343,29 @@ class TestCanonicalContextWindowRegistry:
     Changing a value here requires a deliberate update with justification.
     """
 
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            (None, "gemini-2.5-pro", 2_097_152),
+            ("gemini", "gemini-2.5-pro", 1_048_576),
+            ("GeMiNi", "gemini-2.5-pro", 1_048_576),
+            ("gemini-api", "gemini-2.5-pro", 2_097_152),
+            (" gemini ", "gemini-2.5-pro", 2_097_152),
+            ("gemini", "routing/GEMINI-2.5-PRO-release", 1_048_576),
+        ],
+        ids=["global", "hint", "case", "alias", "whitespace", "substring"],
+    )
+    def test_gemini_lookup_preserves_hint_and_global_precedence(
+        self, monkeypatch, provider, model, expected
+    ):
+        """Context lookup has its own hint matching and provider scan order."""
+        import lionagi.service.token_budget as token_budget
+
+        # Use the production dictionaries and lookup with an isolated cold cache.
+        monkeypatch.setattr(token_budget, "_provider_cache", {})
+
+        assert token_budget.lookup_context_window(model, provider=provider) == expected
+
     def test_gpt_4_1_canonical_value_is_openai(self):
         """gpt-4.1 from the openai provider must match openai/_config.py (primary path)."""
         result = lookup_context_window("gpt-4.1", provider="openai")

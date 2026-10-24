@@ -98,10 +98,10 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1488)
+        _line("lionagi/cli/orchestrate/_orchestration.py", 1582)
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1524)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1992)
+    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1618)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2083)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
@@ -144,7 +144,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:475-503" in flat
-    assert "lionagi/operations/run/run.py:817-828" in flat
+    assert "lionagi/operations/run/run.py:835-846" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:597-614" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
@@ -248,7 +248,7 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1488" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py:1582" in flat
     assert "lionagi/state/schema.sql:464" in flat
     assert "lionagi/state/db.py:5368-5370" in flat
     assert (
@@ -260,7 +260,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1992-2037" in flat
+    assert "lionagi/cli/orchestrate/flow.py:2083-2128" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
