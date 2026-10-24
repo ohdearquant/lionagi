@@ -46,8 +46,8 @@ _VALID_ACTION_KINDS = frozenset(
 )
 _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 # Names `li play` reads as its own subcommands before any playbook name (cli/main.py
-# _handle_play_shortcut): a play schedule whose playbook has one of them would run that
-# subcommand at every fire, exit 0, and never run a playbook.
+# _handle_play_shortcut): a play launch whose first word after `li play` is one of them, as its
+# playbook or, with no playbook, as its first extra argument, runs that subcommand and no playbook.
 _PLAY_SUBCOMMANDS: frozenset[str] = frozenset({"list", "check", "status"})
 
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
@@ -555,6 +555,17 @@ def validate_launch_fields(schedule: dict) -> str:
             "-"
         ):
             raise ValueError("action_prompt for a play launch must not start with '-'")
+        # With no playbook, the first extra argument is the first word after `li play`.
+        if (
+            not playbook
+            and isinstance(extra, list)
+            and extra
+            and str(extra[0]) in _PLAY_SUBCOMMANDS
+        ):
+            raise ValueError(
+                f"action_extra_args starts with {str(extra[0])!r}, which a play launch with no "
+                "playbook passes to `li play` as its subcommand"
+            )
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 

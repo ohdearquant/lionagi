@@ -991,6 +991,39 @@ def test_a_playbook_target_arg_the_launch_would_refuse_is_refused_at_declaration
     assert "starts with '-'" in message
 
 
+@pytest.mark.parametrize("subcommand", ["list", "check", "status"])
+def test_a_playbook_target_named_for_a_play_subcommand_is_refused_at_declaration(
+    agent_profile, subcommand
+):
+    # `li play list` runs the listing, so the row would never run a playbook.
+    target = f"    target:\n      kind: playbook\n      name: {subcommand}\n"
+    doc = parse_schedule_set(_manifest_with_target("nightly", cwd=agent_profile, target=target))
+    with pytest.raises(ScheduleSetError) as excinfo:
+        resolve_schedule_set(doc, agent_profile)
+    ((name, message),) = excinfo.value.errors
+    assert name == "demo/nightly"
+    assert "names a `li play` subcommand" in message
+
+
+@pytest.mark.parametrize(
+    ("row", "current", "undeclarable"),
+    [
+        ({"action_kind": "play"}, "list", True),
+        ({"action_kind": "playbook"}, "status", True),
+        ({"action_kind": "play"}, "health-audit", False),
+        # Only a play launch reads the playbook name.
+        ({"action_kind": "agent"}, "check", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_stored_playbook_named_for_a_play_subcommand_is_undeclarable(
+    row, current, undeclarable
+):
+    assert (
+        await _adopt_undeclarable(row, "action_playbook", current, is_global=False)
+    ) is undeclarable
+
+
 # cwd / project resolution
 
 

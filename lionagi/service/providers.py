@@ -456,7 +456,7 @@ def _normalize_model_name(model: str, provider_hint: str | None = None) -> str:
         and EndpointRegistry.canonical_provider(provider_hint) in _CLAUDE_PROVIDER_NAMES
     ):
         for prefix in _CLAUDE_MODEL_PREFIXES:
-            if model.startswith(prefix) and model != prefix and not model.startswith("claude-"):
+            if model.startswith(prefix) and model != prefix:
                 return f"claude-{model}"
     return model
 
