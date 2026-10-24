@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fenced Markdown examples in profile prompts no longer trigger a misplaced
+  frontmatter warning.
+
 ## [0.36.0] - 2026-10-24
 
 `httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
