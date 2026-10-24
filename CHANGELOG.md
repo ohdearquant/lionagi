@@ -530,6 +530,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   given as `client_kwargs["timeout"]`, which aiohttp refused beside the configured timeout with
   `TypeError`, is read the same way.
 
+- `ln.import_module` resolves dotted and relative names to the leaf module and accepts a keyword-only `package` anchor. List selectors stay lists, including empty and single-item lists; only `import_name=None` selects the module. Missing modules retain `ModuleNotFoundError` and its metadata, while other import errors keep the existing prefix. Package attributes retain child-module fallback.
+
 ### Removed
 
 - The `reader` optional dependency group and document conversion through `docling`. The reader
