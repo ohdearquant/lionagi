@@ -47,6 +47,8 @@ class SchedulerStateService(Protocol):
         **fields: Any,
     ) -> bool: ...
 
+    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool: ...
+
     async def count_schedule_runs(
         self,
         schedule_id: str,
@@ -207,6 +209,10 @@ class _DBSchedulerStateService:
                 reason=reason,
                 **fields,
             )
+
+    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool:
+        async with self._db_context() as db:
+            return await db.record_github_poll_stagnation(schedule_id, reset=reset)
 
     async def count_schedule_runs(
         self,

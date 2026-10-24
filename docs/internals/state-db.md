@@ -407,6 +407,48 @@ moved: a capacity deferral records a `skipped` row and deliberately leaves
 further restricted to `EXECUTED_RUN_STATUSES`, because `skipped`, `queued`,
 `waiting_dependency` and `retry_wait` are all recorded without a run happening.
 
+GitHub poll progress is tracked separately in
+`schedules.poller_consecutive_cap_no_dispatch`, an integer defaulting to zero
+on fresh and additively migrated stores, without historical backfill. The
+existing `last_healthy_poll_at` and `poller_consecutive_401` retain their HTTP
+health and authentication-recovery meanings. A successful HTTP read can
+therefore refresh liveness while capped scanning makes no dispatch progress.
+
+`record_github_poll_stagnation(schedule_id, reset=...)` updates only an existing
+`github_poll` row. It atomically increments the current stored value or resets
+it to zero, returning false for a deleted row or changed trigger type. It uses
+the existing runtime-write transaction convention, advancing `updated_at`
+without adding a definition audit event or changing authored fields.
+ScheduleSet adoption and reapply preserve this runtime column.
+
+Accounting settles once per due pass. Fresh `error`/`auth_error` results take
+precedence and leave the counter unchanged, even with a safe-prefix launch,
+held batch, or completeness flag. A normally settled fresh OK poll with a
+confirmed launch resets it, as does a no-poll matched-batch pass that launches.
+A fresh OK pass ending with a held batch and no launch is neutral, including
+a complete scan. A matched-batch pass without a poll or launch, including a
+re-hold, is neutral. Complete OK with neither hold nor launch resets, including
+empty 200/304 reads. Capped OK with neither hold nor launch increments once;
+filtered-only or producer-withheld scans can qualify. A stale batch uses the
+actual fresh poll outcome. Cadence, admission, budget and pre-rate exits that
+perform no poll are neutral.
+
+Interrupted work with no launch witness is neutral. An interrupted qualified
+positive launch permits a best-effort reset without masking the original
+exception or cancellation. The launch witness is recorded before the existing
+dispatch-stamp await; there is no accounting I/O inside the launch callback.
+Until settlement, the column describes the last settled accounting. Atomic
+transaction commit order defines the recurrence: two qualifying attempts that
+both read 2 can commit 3 then 4; if a reset commits between them, the sequence
+is 3, 0, 1. It counts settled attempts, not unique cycles, elapsed time or
+global progress epochs, and provides no exactly-once journal across crashes.
+
+Backend health reports a GitHub streak of at least three as generic `overdue`,
+after `disabled` and before never-fired, no-evidence or latest-run verdicts.
+Missing values default to zero and other trigger types ignore the column.
+Outcome metadata remains intact. The counter itself is not projected into
+schedule list/detail responses; existing HTTP/auth gauges remain available.
+
 `schedule_run_exists_since` distinguishes "never fired" from "fired but
 crashed before follow-up bookkeeping" for missed-fire recovery. It excludes
 `skipped` rows, so a capacity-deferred skip (whose `next_fire_at` is

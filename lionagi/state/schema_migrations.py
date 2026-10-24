@@ -127,6 +127,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # and the consecutive-401 counter (resets only on a healthy read).
         ("last_healthy_poll_at", "REAL"),
         ("poller_consecutive_401", "INTEGER NOT NULL DEFAULT 0"),
+        # New accounting starts at zero; prior HTTP/dispatch history is not inferred.
+        ("poller_consecutive_cap_no_dispatch", "INTEGER NOT NULL DEFAULT 0"),
         # Bounded retry for a fire that refuses before dispatching: which
         # event the streak applies to, and how many times it has refused.
         ("predispatch_refusal_event", "TEXT"),

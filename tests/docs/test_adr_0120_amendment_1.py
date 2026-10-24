@@ -105,9 +105,9 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5368)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7207)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7232)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5386)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7225)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7250)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -126,9 +126,9 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:798-802" in flat
-    assert "lionagi/state/db.py:7207-7217" in flat
-    assert "lionagi/state/db.py:7232-7249" in flat
+    assert "lionagi/state/schema.sql:801-805" in flat
+    assert "lionagi/state/db.py:7225-7235" in flat
+    assert "lionagi/state/db.py:7250-7267" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -250,7 +250,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1582" in flat
     assert "lionagi/state/schema.sql:464" in flat
-    assert "lionagi/state/db.py:5368-5370" in flat
+    assert "lionagi/state/db.py:5386-5388" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )

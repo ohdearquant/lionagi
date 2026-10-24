@@ -5321,6 +5321,24 @@ class StateDB:
                 conn, schedule_id, fields, stmt, params, audit_context=audit_context, reason=reason
             )
 
+    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool:
+        """Account for one settled observation against the current GitHub schedule.
+
+        The transaction's commit orders independent observations. A late increment after
+        a reset starts at one instead of restoring a caller's earlier snapshot.
+        """
+        stmt = text(
+            "UPDATE schedules SET poller_consecutive_cap_no_dispatch = "
+            "CASE WHEN :reset THEN 0 ELSE poller_consecutive_cap_no_dispatch + 1 END, "
+            "updated_at = :updated_at WHERE id = :id AND trigger_type = 'github_poll'"
+        )
+        params = {"id": schedule_id, "reset": reset, "updated_at": time.time()}
+        context = _ScheduleAuditContext(origin="scheduler", source="scheduler", assurance="system")
+        async with self._tx() as conn:
+            return await self._update_schedule_in_tx(
+                conn, schedule_id, {}, stmt, params, audit_context=context, reason=None
+            )
+
     @classmethod
     def _build_update_schedule_stmt(
         cls,
