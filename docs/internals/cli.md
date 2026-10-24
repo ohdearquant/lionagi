@@ -1275,7 +1275,9 @@ model, not a claim about the model the provider served.
 
 `guard_refusal_count`, with coverage `act_policy_denial_v1`, counts explicit session
 authorization refusals and direct typed governance errors caught by action execution.
-It excludes blocking `TOOL_PRE` errors, ordinary tool failures and text that happens to say
+These include tool-pre-hook `deny` and `ask` decisions, unsupported decisions or return
+values, and hook exceptions converted into typed refusals. It excludes errors from
+blocking `TOOL_PRE` HookBus handlers, ordinary tool failures and text that happens to say
 "denied". Compatibility-store refusals retain priority. The record covers the initial
 turn and queued turns of this invocation; a resume starts a new record. A prepared call
 constructed outside that scope is unrecorded. Missing `api_usage` on an older manifest

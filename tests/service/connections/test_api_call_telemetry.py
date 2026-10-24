@@ -271,3 +271,59 @@ async def test_closed_owner_and_cancelled_endpoint_do_not_borrow_later_run(endpo
     assert caught.value is cancellation
     assert a.snapshot() == sealed
     assert b.snapshot()["requests"] == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_stream_close_reaches_consumer(endpoint, monkeypatch):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class Source:
+        yielded = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.yielded:
+                raise StopAsyncIteration
+            self.yielded = True
+            return "first"
+
+        async def aclose(self):
+            close_started.set()
+            await release_close.wait()
+
+    iterator = Source()
+    monkeypatch.setattr(endpoint, "stream", lambda **kwargs: iterator)
+    call = APICalling(endpoint=endpoint, payload=_payload())
+    stream = call._core_stream()
+    after_close = False
+    cancel_seen = False
+
+    async def consume():
+        nonlocal after_close, cancel_seen
+        try:
+            assert await stream.__anext__() == "first"
+            await stream.aclose()
+            after_close = True
+        except asyncio.CancelledError:
+            cancel_seen = True
+            raise
+
+    consumer = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(close_started.wait(), timeout=5)
+        consumer.cancel()
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(consumer, return_exceptions=True), timeout=5
+        )
+        assert cancel_seen is True
+        assert after_close is False
+        assert isinstance(outcomes[0], asyncio.CancelledError)
+    finally:
+        release_close.set()
+        if not consumer.done():
+            consumer.cancel()
+        await asyncio.wait_for(asyncio.gather(consumer, return_exceptions=True), timeout=5)
+        await asyncio.wait_for(stream.aclose(), timeout=5)

@@ -237,6 +237,7 @@ async def test_teardown_failure_cannot_leave_inherited_observation_scope_live(
 
     collectors = []
     contexts = []
+    teardown_usage = []
     original_call = AnthropicMessagesEndpoint.call
 
     def collect(**kwargs):
@@ -251,6 +252,13 @@ async def test_teardown_failure_cannot_leave_inherited_observation_scope_live(
     error = RuntimeError("teardown unavailable")
 
     async def teardown(*args, **kwargs):
+        _, manifest = _only_record(tmp_path)
+        usage = manifest["api_usage"]
+        assert len(usage["requests"]) == 2
+        (collector,) = collectors
+        assert collector.closed is True
+        assert usage == collector.snapshot()
+        teardown_usage.append(usage)
         raise error
 
     monkeypatch.setattr(agent, "APIUsageCollector", collect)
@@ -264,6 +272,10 @@ async def test_teardown_failure_cannot_leave_inherited_observation_scope_live(
     assert collector.closed is True
     snapshot = collector.snapshot()
     assert len(snapshot["requests"]) == 2
+    _, manifest = _only_record(tmp_path)
+    assert manifest["api_usage"] == teardown_usage[0] == snapshot
+    assert manifest["status"] == "running"
+    assert manifest["ended_at"] is None
     assert contexts
     contexts[0].run(record_guard_refusal, call_id="late-action")
     assert collector.snapshot() == snapshot

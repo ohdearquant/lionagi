@@ -1994,6 +1994,8 @@ async def _run_agent(
         # not stamp a terminal status here (ADR-0035 terminal guard).
         if _api_usage is not None:
             run_manifest["api_usage"] = _api_usage.close()
+            if _write_run_manifest is not None:
+                _write_run_manifest(run_manifest)
         will_auto_resume = (
             _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed
         )

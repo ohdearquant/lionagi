@@ -315,7 +315,7 @@ class APICalling(HookedEvent):
                 if close := getattr(source, "aclose", None):
                     with activate_request(self._telemetry_frame):
                         await close()
-            except BaseException:
+            except Exception:
                 if not unwinding:
                     raise
         if failure is not None:
