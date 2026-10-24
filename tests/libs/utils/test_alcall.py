@@ -72,6 +72,46 @@ class TestAlcallBasic:
         func = add_index_async if is_coro else add_index_sync
         assert await alcall([1, 2], func, index=40) == [41, 42]
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    @pytest.mark.parametrize("keyword", ["limiter", "abandon_on_cancel", "cancellable"])
+    async def test_alcall_preserves_offload_named_callable_keywords(self, is_coro, keyword):
+        business_value = object()
+        ordinary_value = object()
+
+        def sync_target(value, *, ordinary, **kwargs):
+            return value, ordinary, kwargs[keyword]
+
+        async def async_target(value, *, ordinary, **kwargs):
+            return value, ordinary, kwargs[keyword]
+
+        target = async_target if is_coro else sync_target
+        results = await alcall([1, 2], target, ordinary=ordinary_value, **{keyword: business_value})
+        assert results == [(1, ordinary_value, business_value), (2, ordinary_value, business_value)]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    async def test_alcall_preserves_target_error_with_offload_named_keywords(self, is_coro):
+        error = ValueError("target failed")
+
+        def sync_target(value, **kwargs):
+            raise error
+
+        async def async_target(value, **kwargs):
+            raise error
+
+        target = async_target if is_coro else sync_target
+        results = await alcall(
+            [1],
+            target,
+            return_exceptions=True,
+            limiter=object(),
+            abandon_on_cancel=object(),
+            cancellable=object(),
+        )
+        assert len(results) == 1
+        assert results[0] is error
+
 
 class TestAlcallFuncValidation:
     @pytest.mark.anyio
