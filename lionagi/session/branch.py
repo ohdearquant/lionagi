@@ -148,6 +148,7 @@ class Branch(Element, Relational):
         self._message_manager = MessageManager(messages=messages)
         self._message_manager._on_message_added.append(self._schedule_emit)
         self._message_manager._on_message_added.append(self._track_message_in_view)
+        self._message_manager._on_pile_rewritten.append(self._sync_view_with_pile)
 
         if system_template is not None:
             import warnings
@@ -422,15 +423,26 @@ class Branch(Element, Relational):
         cp = self.metadata.get("current_progression")
         if cp is None:
             return
-        if isinstance(msg, System):
-            # A replacement system message heads the view in place of the one it replaced.
-            # That one has already left the pile, and a view naming it refuses compaction.
-            pile = self.msgs.messages
-            cp.exclude([uid for uid in cp if uid not in pile or uid == msg.id])
-            cp.insert(0, msg.id)
-            return
         if msg.id not in cp:
             cp.append(msg.id)
+
+    def _sync_view_with_pile(self) -> None:
+        """on_pile_rewritten hook: the curated view keeps only messages still in the record,
+        headed by the current system message.
+
+        Replacing the system message drops the old one from the record, and clearing drops all
+        but the system message. A view still naming them makes compaction refuse and restore
+        raise.
+        """
+        cp = self.metadata.get("current_progression")
+        if cp is None:
+            return
+        pile = self.msgs.messages
+        cp.exclude([uid for uid in cp if uid not in pile])
+        system = self.msgs.system
+        if system is not None:
+            cp.exclude(system.id)
+            cp.insert(0, system.id)
 
     def _schedule_emit(self, msg: Any) -> None:
         """on_message_added hook: fire-and-forget signal emission."""
@@ -524,14 +536,12 @@ class Branch(Element, Relational):
             base = _strip_capability_block(self._system_text())
             combined = f"{base.rstrip()}\n\n{block}" if base.strip() else block
             self.msgs.set_system(self.msgs.create_system(system=combined))
-            self._track_message_in_view(self.msgs.system)
 
     def revoke_capabilities(self) -> None:
         self._capabilities = None
         base = _strip_capability_block(self._system_text())
         if self.msgs.system is not None:
             self.msgs.set_system(self.msgs.create_system(system=base or None))
-            self._track_message_in_view(self.msgs.system)
 
     def _system_text(self) -> str:
         sys_msg = self.msgs.system
@@ -789,7 +799,7 @@ class Branch(Element, Relational):
         # the fields a branch has and the reasons. It is raised outside the handler, so the
         # original error is not attached to it.
         try:
-            return cls(**{k: v for k, v in params.items() if v is not Unset})
+            branch = cls(**{k: v for k, v in params.items() if v is not Unset})
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False, include_input=False)
             problems = "; ".join(
@@ -798,6 +808,10 @@ class Branch(Element, Relational):
                 for error in errors
                 for loc in (error["loc"],)
             )
+        else:
+            # A stored view can name a message its stored record does not hold.
+            branch._sync_view_with_pile()
+            return branch
         raise ValueError(
             f"The stored branch does not validate ({problems}). Its values are left out of "
             "this message. Correct the stored data, or pass a live model (chat_model=, "

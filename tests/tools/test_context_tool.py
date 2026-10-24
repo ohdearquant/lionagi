@@ -201,6 +201,42 @@ async def test_a_replacement_system_message_heads_the_view_in_place_of_the_old_o
     assert res["success"] is True, res
 
 
+async def test_a_system_message_set_directly_heads_the_view_and_restore_still_works():
+    b = _build_branch()
+    await _call(b, action="evict", start=1, end=4)
+    old = b.msgs.system.id
+    b.msgs.set_system(b.msgs.create_system(system="You are a reviewing agent."))
+
+    assert b.progression[0] == b.msgs.system.id
+    assert old not in b.progression
+    assert all(uid in b.msgs.messages for uid in b.progression)
+    res = await _call(b, action="restore", start=1, end=4)
+    assert res["success"] is True, res
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True, res
+
+
+async def test_clearing_the_messages_leaves_the_system_message_as_the_view():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=3)
+    b.msgs.clear_messages()
+
+    assert list(b.progression) == [b.msgs.system.id]
+    msg = b.msgs.add_message(instruction="start over")
+    assert list(b.progression) == [b.msgs.system.id, msg.id]
+
+
+async def test_a_restored_view_keeps_only_messages_the_stored_record_holds():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=5)
+    view = list(b.progression)
+    stray = b.msgs.create_message(instruction="never added")
+    b.metadata["current_progression"].append(stray.id)
+
+    restored = Branch.from_dict(b.to_dict())
+    assert list(restored.progression) == view
+
+
 async def test_a_restored_branch_keeps_its_view_and_admits_new_messages():
     b = _build_branch()
     await _call(b, action="evict", start=2, end=5)
