@@ -794,6 +794,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. Pillow, whose published
   advisories are fixed only in 13.0.0, a release that requires Python 3.11, is no longer in
   `uv.lock` (see Removed).
+- The VS Code extension's lockfile moves `@azure/msal-node` from 5.2.5 to 7.1.1
+  (CVE-2026-109461), `undici` from 7.30.0 to 7.30.1 (CVE-2026-109869) and `fast-uri` from 3.1.8
+  to 3.1.9 (CVE-2026-110306, CVE-2026-110095, CVE-2026-110180 and CVE-2026-110725), all
+  development dependencies. `@vscode/vsce` reaches msal-node through `@azure/identity`, whose
+  newest release still requires msal-node 6, so an override in `package.json` sets 7.1.0 or
+  later; the undici and fast-uri overrides raise their floors.
 - An endpoint's private-address check before a request now resolves the host name as the
   HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
   differ (`straße.example` resolves as `strasse.example` but the client connects to
