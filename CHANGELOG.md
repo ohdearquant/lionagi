@@ -789,6 +789,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   (CVE-2026-111063 to CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and
   GHSA-2g87-pp6c-29x5), with `yarl` 1.25.1, which 3.14.4 requires. `uv.lock` no longer contains
   `aiohttp` (see Changed and Removed).
+- `lion1/uv.lock` moves `filelock` from 4.0.6 to 4.2.4 (CVE-2026-112940, CVE-2026-112913 and
+  CVE-2026-112907) and `setuptools` from 84.0.0 to 84.2.1 (GHSA-xmj3-9gf7-h52w). Both reach
+  lion1 only through the CLI's `voice` extra, by way of `mlx-whisper`, `torch` and
+  `huggingface-hub`.
 - The lockfiles move off releases with published advisories: `opentelemetry-api` to 1.45.1
   (CVE-2026-114603), in `uv.lock`, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and
   the instrumentation, semantic-conventions and util-http packages at 0.66b1, where
