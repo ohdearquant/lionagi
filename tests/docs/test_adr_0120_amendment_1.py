@@ -163,7 +163,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py:1681" in flat
+    assert "lionagi/cli/_runs.py:1697" in flat
     assert "lionagi/studio/services/workflow_run.py:110" in flat
 
 
