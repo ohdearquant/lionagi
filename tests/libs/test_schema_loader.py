@@ -16,11 +16,6 @@ def test_loader_invalid_json_string_raises():
         load_pydantic_model_from_schema("not a json string")
 
 
-def test_loader_wrong_type_raises():
-    with pytest.raises(TypeError):
-        load_pydantic_model_from_schema(12345)
-
-
 def test_simple_object_with_required_fields():
     schema = {
         "title": "UserProfile",

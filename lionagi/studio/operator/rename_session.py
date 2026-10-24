@@ -10,46 +10,38 @@ tool's catalog name says *run* like every sibling (``cancel_run``,
 a name that suggests otherwise invites the caller to refuse the rename
 while hunting for a "session id" that is the id it already has.
 
-Gives one Studio run (a `sessions` row) a human name through the Operator,
+Writes one Studio run's explicit display label through the dedicated setter,
+preserving its system name and activity timestamps. The Operator command is
 gated on the same durable human allow/deny proposal flow `cancel_run` and
 `resume_run` use. Deliberately distinct from renaming the Operator's own
-*conversation* (`store.py::update_conversation`, a direct human UI/REST
-action) -- see docs/internals/studio.md ("Turn identity and the
+*conversation* (`store.py::update_conversation`, presentation metadata) -- see docs/internals/studio.md ("Turn identity and the
 propose/poll/execute pattern"). Reuses `run_progress.py::resolve_run` for
 reference resolution rather than a third private copy of that logic.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
-import unicodedata
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from lionagi.ln.concurrency import sleep
+from lionagi.state.session_naming import resolve_display_name, validate_name_characters
 
 from .redact import public_project
 from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
 
-# Cc/Cf: C0/C1 controls (incl. NUL, DEL) and Unicode formatting chars (incl.
-# bidi overrides) -- not printable characters a human ever intends to type
-# into a name. Zl/Zp: line/paragraph separators -- structurally the same
-# problem as an embedded newline. Deliberately category-based rather than an
-# enumerated blocklist so it does not need updating as new control code
-# points are assigned. Zs (ordinary space) is NOT included -- an internal
-# space is a normal, expected part of a name.
-_REJECTED_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
-
 RENAME_SESSION_COMMAND_TYPE = "rename_session"
 
 RENAME_SESSION_DESCRIPTION = (
     "Give one Studio run a human name. A run and its session are the same "
-    "record here, so this renames the run itself -- it is not the Operator "
+    "record here, so this sets the run's own label -- it is not the Operator "
     "conversation's own name, which has a "
     "separate rename path outside this tool. Goes through a human approval "
     "flow; it is never automatic, and a denied proposal leaves the run's "
-    "name untouched. Accepts a run UUID, an id prefix, a name "
+    "name untouched. Accepts a run UUID, an id prefix, a label or name "
     "substring (minimum 3 characters), or 'current' for the run open when "
     "this instruction was sent. Ambiguous references return candidates "
     "rather than guessing."
@@ -67,14 +59,7 @@ class RenameSessionInput(_StrictInput):
     @field_validator("name")
     @classmethod
     def _reject_control_characters(cls, value: str) -> str:
-        for char in value:
-            category = unicodedata.category(char)
-            if category in _REJECTED_NAME_CATEGORIES:
-                raise ValueError(
-                    f"name must not contain control or line/paragraph-separator "
-                    f"characters (found {char!r}, category {category})"
-                )
-        return value
+        return validate_name_characters(value)
 
 
 def _identity() -> tuple[OperatorStore, str, str]:
@@ -96,7 +81,7 @@ def _rename_summary(row: dict[str, Any], new_name: str) -> str:
     project_label = public_project(row.get("project"))
     if project_label:
         parts.append(f"project {project_label}")
-    old_name = row.get("name")
+    old_name = resolve_display_name(row)
     if old_name:
         parts.append(f"from '{old_name}'")
     parts.append(f"to '{new_name}'")
@@ -192,7 +177,7 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
             status = proposal["status"]
         if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
             return _redacted_rename_result(proposal, run_id)
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 async def execute_rename_session_command(command: dict[str, Any]) -> dict[str, Any]:
@@ -235,6 +220,7 @@ async def execute_rename_session_command(command: dict[str, Any]) -> dict[str, A
                 return {"status": "not_found", "id": run_id}
         elif isinstance(row_project, str) and row_project:
             return {"status": "not_found", "id": run_id}
-        await db.update_session(run_id, name=name)
+        if not await db.set_session_user_label(run_id, name):
+            return {"status": "not_found", "id": run_id}
 
     return {"status": "renamed", "id": run_id, "name": name}

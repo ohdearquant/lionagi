@@ -881,6 +881,321 @@ def test_start_local_propagates_selected_backend_to_vite(tmp_path, monkeypatch):
     )
 
 
+class _ViteProc:
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _dev_launch(
+    tmp_path, monkeypatch, frontend_url, *, host="127.0.0.1", health=None, probe=None, served=None
+):
+    import lionagi.studio.cli as studio_mod
+
+    monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
+    monkeypatch.setattr(
+        studio_mod,
+        "_daemon_health",
+        probe or (lambda port, challenge=None, *, host="127.0.0.1": health),
+    )
+    with (
+        patch("uvicorn.run") as run,
+        patch.object(
+            studio_mod, "_launch_vite_dev", return_value=(_ViteProc(), frontend_url)
+        ) as launch,
+    ):
+        result = studio_mod._start_local(host, 8765, 3000, tmp_path, dev_mode=True)
+    if served is not None:
+        served.extend([run, launch])
+    return result
+
+
+def test_a_dev_launch_prints_a_link_that_pairs_only_the_page_vite_reported(
+    tmp_path, monkeypatch, capsys, fresh_launch
+):
+    page = "http://127.0.0.1:3000"
+    assert _dev_launch(tmp_path, monkeypatch, page) == 0
+
+    line = next(text for text in capsys.readouterr().out.splitlines() if "#pair=" in text)
+    assert f"{page}/#pair=" in line
+    assert "it works once" in line
+    code = line.split("#pair=", 1)[1]
+    assert fresh_launch.is_launch_origin(page)
+    assert fresh_launch.redeem_pairing_grant(code, origin="http://localhost:3000") is None
+    assert fresh_launch.redeem_pairing_grant(code, origin=page) is not None
+
+
+@pytest.mark.parametrize(
+    ("reported", "origin"),
+    [
+        ("http://LocalHost:3000", "http://localhost:3000"),
+        ("http://127.0.0.1:80", "http://127.0.0.1"),
+        ("http://127.0.0.1:3000/", "http://127.0.0.1:3000"),
+        ("http://[::1]:3000", "http://[::1]:3000"),
+    ],
+)
+def test_a_dev_link_carries_the_origin_a_browser_sends_for_the_page_vite_reported(
+    tmp_path, monkeypatch, capsys, fresh_launch, reported, origin
+):
+    monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    assert _dev_launch(tmp_path, monkeypatch, reported) == 0
+
+    line = next(text for text in capsys.readouterr().out.splitlines() if "#pair=" in text)
+    assert f"once: {origin}/#pair=" in line
+    code = line.split("#pair=", 1)[1]
+    assert fresh_launch.is_launch_origin(origin)
+    assert fresh_launch.redeem_pairing_grant(code, origin=origin) is not None
+
+
+def test_a_dev_launch_refuses_when_a_daemon_already_answers_on_its_port(
+    tmp_path, monkeypatch, caplog, fresh_launch
+):
+    served = []
+    with caplog.at_level(logging.WARNING):
+        result = _dev_launch(
+            tmp_path, monkeypatch, "http://127.0.0.1:3000", health={"status": "ok"}, served=served
+        )
+
+    run, launch = served
+    assert result == 1
+    assert "already running at http://127.0.0.1:8765" in caplog.text
+    launch.assert_not_called()
+    run.assert_not_called()
+    assert fresh_launch._codes == {}
+
+
+@pytest.mark.parametrize(
+    ("bind", "running_at", "refused"),
+    [("::1", "::1", True), ("127.0.0.2", "127.0.0.1", False)],
+)
+def test_a_dev_launch_looks_for_a_running_daemon_on_the_host_it_binds(
+    tmp_path, monkeypatch, caplog, fresh_launch, bind, running_at, refused
+):
+    asked = []
+
+    def probe(port, challenge=None, *, host="127.0.0.1"):
+        asked.append((host, port))
+        return {"status": "ok"} if host == running_at else None
+
+    with caplog.at_level(logging.WARNING):
+        result = _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000", host=bind, probe=probe)
+
+    assert asked == [(bind, 8765)]
+    assert result == (1 if refused else 0)
+    assert ("already running at http://[::1]:8765" in caplog.text) is refused
+
+
+@pytest.mark.parametrize(
+    ("host", "url"),
+    [
+        (None, "http://127.0.0.1:8765/health"),
+        ("127.0.0.1", "http://127.0.0.1:8765/health"),
+        ("0.0.0.0", "http://127.0.0.1:8765/health"),
+        ("::", "http://[::1]:8765/health"),
+        ("0:0:0:0:0:0:0:1", "http://[::1]:8765/health"),
+    ],
+)
+def test_the_health_probe_asks_where_a_client_reaches_the_bind_host(monkeypatch, host, url):
+    import urllib.request
+
+    import lionagi.studio.cli as studio_mod
+
+    asked = []
+
+    def refuse(target, timeout=None):
+        asked.append(target)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    kwargs = {} if host is None else {"host": host}
+
+    assert studio_mod._daemon_health(8765, **kwargs) is None
+    assert asked == [url]
+
+
+@pytest.mark.parametrize(
+    ("host", "proxy", "pairs"),
+    [
+        ("127.0.0.1", "http://127.0.0.1:9999", False),
+        ("127.0.0.1", "http://127.0.0.1:8765/", True),
+        ("127.0.0.1", "http://127.0.0.1:8765/subpath", False),
+        ("127.0.0.1", "http://127.0.0.1:8765/?x=1", False),
+        ("127.0.0.1", "http://user@127.0.0.1:8765", False),
+        ("127.0.0.1", "http://localhost:8765", False),
+        ("0.0.0.0", "http://127.0.0.1:8765", True),
+        ("0.0.0.0", None, True),
+        ("::", "http://[::1]:8765", True),
+        ("::", None, True),
+        ("0:0:0:0:0:0:0:1", "http://[::1]:8765", True),
+        ("::1", "http://[0:0:0:0:0:0:0:1]:8765", True),
+    ],
+)
+def test_a_dev_launch_prints_a_link_only_when_its_page_reaches_this_daemon(
+    tmp_path, monkeypatch, capsys, caplog, fresh_launch, host, proxy, pairs
+):
+    if proxy is None:
+        monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    else:
+        monkeypatch.setenv("STUDIO_API_URL", proxy)
+    with caplog.at_level(logging.WARNING):
+        assert _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000", host=host) == 0
+
+    assert ("#pair=" in capsys.readouterr().out) is pairs
+    assert bool(fresh_launch._codes) is pairs
+    assert ("no pairing link" in caplog.text) is not pairs
+
+
+def test_a_dev_launch_serves_in_one_process(tmp_path, monkeypatch, fresh_launch):
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    served = []
+    assert _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000", served=served) == 0
+
+    run, _launch = served
+    assert run.call_args.kwargs["workers"] == 1
+
+
+def test_a_dev_launch_whose_page_address_is_unknown_mints_no_code(
+    tmp_path, monkeypatch, capsys, fresh_launch
+):
+    assert _dev_launch(tmp_path, monkeypatch, None) == 0
+
+    assert "#pair=" not in capsys.readouterr().out
+    assert fresh_launch._codes == {}
+    assert not fresh_launch._launch_origins
+
+
+def _host_guard_status(host_header: str) -> int:
+    """The status the daemon's Host guard gives *host_header* under the bind in the env."""
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    import asyncio
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from lionagi.studio.app import validate_host_header
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/pair",
+            "headers": [(b"host", host_header.encode())],
+        }
+    )
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    return asyncio.run(validate_host_header(request, call_next)).status_code
+
+
+@pytest.mark.parametrize(
+    ("bind", "reported", "origin"),
+    [
+        ("0.0.0.0", "http://192.168.1.5:3000/", "http://localhost:3000"),
+        ("::", "http://192.168.1.5:3000/", "http://localhost:3000"),
+        ("::", "http://[fe80::1]:3000/", "http://localhost:3000"),
+        ("0.0.0.0", "http://127.0.0.1:3000/", "http://127.0.0.1:3000"),
+        ("192.168.1.5", "http://192.168.1.5:3000/", "http://192.168.1.5:3000"),
+        ("192.168.1.5", "http://10.0.0.7:3000/", None),
+    ],
+)
+def test_a_dev_link_opens_its_page_at_a_host_the_daemon_answers(
+    tmp_path, monkeypatch, capsys, caplog, fresh_launch, bind, reported, origin
+):
+    from urllib.parse import urlsplit
+
+    monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind)
+    with caplog.at_level(logging.WARNING):
+        assert _dev_launch(tmp_path, monkeypatch, reported, host=bind) == 0
+
+    links = [text for text in capsys.readouterr().out.splitlines() if "#pair=" in text]
+    reported_host = urlsplit(reported).netloc
+    if origin is None:
+        assert links == []
+        assert fresh_launch._codes == {}
+        assert "no pairing link" in caplog.text
+        assert _host_guard_status(reported_host) == 400
+        return
+    (line,) = links
+    assert f"once: {origin}/#pair=" in line
+    assert _host_guard_status(urlsplit(origin).netloc) == 200
+    if origin != reported.rstrip("/"):
+        assert _host_guard_status(reported_host) == 400
+    code = line.split("#pair=", 1)[1]
+    assert fresh_launch.redeem_pairing_grant(code, origin=origin) is not None
+
+
+# A probe that waited for the whole body would block here, so the test bounds itself.
+@pytest.mark.timeout(10, method="signal")
+def test_the_health_probe_gives_up_on_a_daemon_that_trickles_its_answer():
+    import threading
+
+    import lionagi.studio.cli as studio_mod
+
+    stop = threading.Event()
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def trickle():
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        with conn:
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n")
+            while not stop.wait(0.2):
+                try:
+                    conn.sendall(b" ")
+                except OSError:
+                    return
+
+    feeder = threading.Thread(target=trickle, daemon=True)
+    feeder.start()
+    try:
+        started = time.monotonic()
+        assert studio_mod._daemon_health(port, deadline_s=0.5) is None
+        assert time.monotonic() - started < 2.0
+    finally:
+        stop.set()
+        server.close()
+        feeder.join(5)
+
+
+def test_the_health_probe_reads_a_malformed_http_answer_as_no_daemon(monkeypatch):
+    import http.client
+    import urllib.request
+
+    import lionagi.studio.cli as studio_mod
+
+    def malformed(target, timeout=None):
+        raise http.client.BadStatusLine("not http")
+
+    monkeypatch.setattr(urllib.request, "urlopen", malformed)
+
+    assert studio_mod._daemon_health(8765) is None
+
+
+def test_the_health_probe_still_raises_an_error_it_does_not_expect(monkeypatch):
+    import urllib.request
+
+    import lionagi.studio.cli as studio_mod
+
+    def broken(target, timeout=None):
+        raise RuntimeError("not a network failure")
+
+    monkeypatch.setattr(urllib.request, "urlopen", broken)
+
+    with pytest.raises(RuntimeError, match="not a network failure"):
+        studio_mod._daemon_health(8765)
+
+
 def test_launch_vite_dev_passes_selected_backend_to_proxy_env(tmp_path, monkeypatch):
     """The backend selected by ``li studio --dev`` must become Vite's proxy target."""
     import lionagi.studio.cli as studio_mod
@@ -1113,6 +1428,8 @@ def test_host_is_loopback_classifies_numeric_and_named_loopback_hosts():
     assert _host_is_loopback("127.0.0.2") is True
     assert _host_is_loopback("::1") is True
     assert _host_is_loopback("localhost") is True
+    assert _host_is_loopback("LocalHost") is True
+    assert _host_is_loopback("Studio.LOCALHOST") is True
 
 
 def test_host_is_loopback_rejects_wildcard_lan_and_hostname():
@@ -1170,6 +1487,8 @@ def fresh_launch(monkeypatch):
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
+    monkeypatch.setattr(launch_access, "_launch_codes", {})
+    monkeypatch.setattr(launch_access, "_launch_origins", set())
     return launch_access
 
 

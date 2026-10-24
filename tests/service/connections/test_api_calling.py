@@ -94,7 +94,7 @@ class TestAPICalling:
             endpoint=mock_endpoint,
         )
 
-        with patch.object(mock_endpoint, "call", return_value=mock_response.json.return_value):
+        with patch.object(mock_endpoint, "call", return_value=mock_response.json()):
             await api_call.invoke()
 
         assert api_call.status == EventStatus.COMPLETED

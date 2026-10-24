@@ -6,7 +6,7 @@
 import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, NoReturn, TypeVar
 
 from lionagi.ln.concurrency import Lock
@@ -15,20 +15,18 @@ from lionagi.ln.types import Enum
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
+_RESPONSE_DATA_UNSET = object()
 
 _default_retry_exceptions_cache: tuple[type[Exception], ...] | None = None
 
 
 def _default_retry_exceptions() -> tuple[type[Exception], ...]:
-    # aiohttp is lazily imported (matches connections/endpoint.py's convention)
-    # so module import stays cheap; aiohttp.ClientError covers the
-    # aiohttp.ClientResponseError(429/5xx) and connector errors that
-    # production code actually raises.
+    # httpx is imported lazily so importing the resilience module stays cheap.
     global _default_retry_exceptions_cache
     if _default_retry_exceptions_cache is None:
         import asyncio
 
-        import aiohttp
+        import httpx
 
         # asyncio.TimeoutError is a distinct class from the builtin
         # TimeoutError before Python 3.11, and it is what timed-out awaits
@@ -40,7 +38,7 @@ def _default_retry_exceptions() -> tuple[type[Exception], ...]:
             ConnectionError,
             TimeoutError,
             asyncio.TimeoutError,
-            aiohttp.ClientError,
+            httpx.RequestError,
         )
     return _default_retry_exceptions_cache
 
@@ -52,13 +50,13 @@ class APIClientError(Exception):
         self,
         message: str,
         status_code: int | None = None,
-        headers: dict[str, str] | None = None,
-        response_data: dict[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        response_data: Any = _RESPONSE_DATA_UNSET,
     ):
         self.message = message
         self.status_code = status_code
-        self.headers = headers or {}
-        self.response_data = response_data or {}
+        self.headers = headers if headers is not None else {}
+        self.response_data = {} if response_data is _RESPONSE_DATA_UNSET else response_data
         super().__init__(message)
 
 

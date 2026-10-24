@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -578,10 +579,11 @@ class TestCLIHostWiring:
 
         captured: dict[str, str] = {}
 
-        def _fake_uvicorn_run(_app: str, *, host: str, port: int) -> None:
+        def _fake_uvicorn_run(_app: str, *, host: str, port: int, workers: int) -> None:
             # The export must have happened before uvicorn.run is invoked.
             captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
             captured["bind_host"] = host
+            captured["workers"] = workers
 
         import uvicorn
 
@@ -591,6 +593,8 @@ class TestCLIHostWiring:
 
         assert rc == 0
         assert captured["bind_host"] == "0.0.0.0"
+        # One process: a code minted before serving lives only in this one.
+        assert captured["workers"] == 1
         assert captured["env_host"] == "0.0.0.0", (
             "CLI must export the resolved bind host into LIONAGI_STUDIO_HOST "
             "before uvicorn.run so the app's security warning sees it"
@@ -614,7 +618,7 @@ class TestCLIHostWiring:
 
         captured: dict[str, str] = {}
 
-        def _fake_uvicorn_run(_app: str, *, host: str, port: int) -> None:
+        def _fake_uvicorn_run(_app: str, *, host: str, port: int, workers: int) -> None:
             captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
             captured["bind_host"] = host
 
@@ -630,3 +634,56 @@ class TestCLIHostWiring:
             "_start_local must overwrite a stale LIONAGI_STUDIO_HOST with the "
             "actual resolved bind host before uvicorn.run"
         )
+
+
+def test_the_lifespan_prints_a_schedule_firing_however_the_app_is_served(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``uvicorn lionagi.studio.app:app`` (the container image's command) runs no CLI code, only
+    the lifespan. A scheduler record from its start, from a tick while the app serves and from its
+    stop each prints one timestamped line even with ``lionagi`` at WARNING, and the scheduler logger
+    is as it was once the app stops. ``scheduler.start()`` only spawns the tick loop, so the line
+    that matters is the one emitted while serving."""
+    import lionagi.studio.app as app_mod
+    import lionagi.studio.scheduler.engine as engine_mod
+
+    engine_log = logging.getLogger("lionagi.studio.scheduler.engine")
+    started = "Scheduler engine starting"
+    fire = "Firing schedule nightly (run r1, chain_depth=0)"
+    stopped = "Scheduler engine stopped"
+
+    async def _start() -> None:
+        engine_log.info(started)
+
+    async def _stop() -> None:
+        engine_log.info(stopped)
+
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    app = app_mod.create_app()
+    _neutralize_heavy_lifespan(monkeypatch)
+    monkeypatch.setattr(engine_mod.scheduler, "start", _start)
+    monkeypatch.setattr(engine_mod.scheduler, "stop", _stop)
+    lionagi_logger = logging.getLogger("lionagi")
+    scheduler_logger = logging.getLogger("lionagi.studio.scheduler")
+    before = (scheduler_logger.level, scheduler_logger.propagate, list(scheduler_logger.handlers))
+    lionagi_level = lionagi_logger.level
+    lionagi_logger.setLevel(logging.WARNING)  # what `li` sets outside verbose mode
+    try:
+        with TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"):
+            engine_log.info(fire)
+        after = (
+            scheduler_logger.level,
+            scheduler_logger.propagate,
+            list(scheduler_logger.handlers),
+        )
+    finally:
+        lionagi_logger.setLevel(lionagi_level)
+    assert after == before
+    err = capsys.readouterr().err.splitlines()
+    for message in (started, fire, stopped):
+        lines = [line for line in err if message in line]
+        assert len(lines) == 1, (message, lines)
+        assert re.match(
+            r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z INFO:lionagi\.studio\.scheduler\.engine:",
+            lines[0],
+        ), lines[0]

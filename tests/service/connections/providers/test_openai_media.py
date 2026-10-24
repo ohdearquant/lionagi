@@ -1,23 +1,18 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wire-level contract tests for the OpenAI media endpoints (TTS, transcription, image edit).
-
-These tests drive the endpoints against an ephemeral local aiohttp server (local
-network access explicitly enabled on the endpoint config) so the retry, multipart,
-and response-decoding contract restored in Endpoint._call_aiohttp is exercised
-end to end rather than through a mocked session.
-"""
+"""Wire-level contract tests for the OpenAI media endpoints."""
 
 from __future__ import annotations
 
 import io
-from unittest.mock import AsyncMock, MagicMock, patch
+import json
+from email import policy
+from email.parser import BytesParser
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
-import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi.providers.openai.audio import (
     OpenaiAudioSpeechEndpoint,
@@ -32,10 +27,78 @@ from lionagi.providers.openai.images import (
 from lionagi.providers.openai.images import (
     _replayable_file_factory as image_file_factory,
 )
+from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
-from lionagi.service.resilience import RetryConfig
+from lionagi.service.resilience import APIClientError, RetryConfig
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_media_upload_builders_return_httpx_data_and_files():
+    from lionagi.providers.groq.audio_transcription import GroqAudioTranscriptionEndpoint
+
+    cases = [
+        (
+            OpenaiAudioTranscriptionEndpoint,
+            _config("openai_stt", "audio/transcriptions", "https://api.openai.com/v1"),
+            {"model": "whisper-1"},
+            {"file": b"audio", "filename": "clip.wav"},
+            {"file": ("clip.wav", b"audio", "application/octet-stream")},
+        ),
+        (
+            OpenaiImageEditEndpoint,
+            _config("openai_image_edit", "images/edits", "https://api.openai.com/v1"),
+            {"prompt": "edit", "model": "dall-e-2", "n": 1},
+            {"image": b"image", "image_filename": "image.png", "mask": b"mask"},
+            {
+                "image": ("image.png", b"image", "image/png"),
+                "mask": ("mask.png", b"mask", "image/png"),
+            },
+        ),
+        (
+            GroqAudioTranscriptionEndpoint,
+            EndpointConfig(
+                name="groq_audio_transcription",
+                provider="groq",
+                endpoint="audio/transcriptions",
+                base_url="https://api.groq.com/openai/v1",
+                auth_type="bearer",
+                api_key="test-key",
+                max_retries=1,
+            ),
+            {"model": "whisper-large-v3"},
+            {"file": b"audio", "filename": "clip.wav"},
+            {"file": ("clip.wav", b"audio", "application/octet-stream")},
+        ),
+    ]
+
+    for endpoint_type, config, payload, upload_kwargs, expected_files in cases:
+        endpoint = endpoint_type(config=config)
+        captured = {}
+
+        async def capture(**kwargs):
+            captured["headers"] = kwargs["headers"]
+            captured["body"] = kwargs["request_body_factory"]()
+            return {"ok": True}
+
+        endpoint._call_http = capture
+        result = await endpoint._call(
+            payload=payload,
+            headers={"Content-Type": "application/json"},
+            **upload_kwargs,
+        )
+
+        assert result == {"ok": True}
+        for name, expected in expected_files.items():
+            filename, file_data, content_type = captured["body"]["files"][name]
+            expected_filename, expected_data, expected_content_type = expected
+            assert filename == expected_filename
+            assert content_type == expected_content_type
+            actual_data = file_data if isinstance(file_data, bytes) else file_data.getvalue()
+            assert actual_data == expected_data
+        assert captured["body"]["data"] == {key: str(value) for key, value in payload.items()}
+        assert "Content-Type" not in captured["headers"]
 
 
 @pytest.mark.parametrize("factory", [audio_file_factory, image_file_factory])
@@ -67,40 +130,44 @@ def _config(name: str, endpoint: str, base_url: str, **overrides) -> EndpointCon
     return EndpointConfig(**kwargs)
 
 
-@pytest_asyncio.fixture
-async def run_server():
-    servers = []
+@pytest.fixture
+def run_server(monkeypatch):
+    async def _run(handler):
+        def transport_handler(request):
+            return handler(request)
 
-    async def _run(handler) -> TestServer:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", handler)
-        server = TestServer(app)
-        await server.start_server()
-        servers.append(server)
-        return server
+        def create_client(self, *args, **kwargs):
+            return httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
 
-    yield _run
+        monkeypatch.setattr(Endpoint, "_create_http_session", create_client)
+        monkeypatch.setattr(Endpoint, "_assert_ssrf_safe_url", lambda self: None)
+        return object()
 
-    for server in servers:
-        await server.close()
+    return _run
 
 
-async def _base_url(server: TestServer) -> str:
-    return str(server.make_url("/")).rstrip("/")
+async def _base_url(server) -> str:
+    return "https://api.example.test"
 
 
-async def _read_multipart(request: web.Request) -> dict:
-    reader = await request.multipart()
+def _read_multipart(request: httpx.Request) -> dict:
+    content_type = request.headers["content-type"]
+    message = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: "
+        + content_type.encode()
+        + b"\r\nMIME-Version: 1.0\r\n\r\n"
+        + request.content
+    )
     fields: dict[str, object] = {}
-    while True:
-        part = await reader.next()
-        if part is None:
-            break
-        if part.filename:
-            fields[part.name] = await part.read(decode=False)
-        else:
-            fields[part.name] = (await part.read()).decode()
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        value = part.get_payload(decode=True) or b""
+        fields[name] = value if part.get_filename() else value.decode()
     return fields
+
+
+def _json_response(request: httpx.Request, body: dict, status: int = 200) -> httpx.Response:
+    return httpx.Response(status, json=body, request=request)
 
 
 class TestImageEditMultipartRetry:
@@ -108,12 +175,12 @@ class TestImageEditMultipartRetry:
     async def test_429_then_200_sends_two_complete_bodies_with_identical_bytes(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
-            fields = await _read_multipart(request)
+        def handler(request: httpx.Request):
+            fields = _read_multipart(request)
             received.append(fields)
             if len(received) == 1:
-                return web.json_response({"error": {"message": "rate limited"}}, status=429)
-            return web.json_response({"data": [{"url": "https://example.com/out.png"}]})
+                return _json_response(request, {"error": {"message": "rate limited"}}, status=429)
+            return _json_response(request, {"data": [{"url": "https://example.com/out.png"}]})
 
         server = await run_server(handler)
         config = _config("openai_image_edit", "images/edits", await _base_url(server))
@@ -144,10 +211,10 @@ class TestImageEditMultipartRetry:
     async def test_non_429_4xx_sends_exactly_one_request(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
-            fields = await _read_multipart(request)
+        def handler(request: httpx.Request):
+            fields = _read_multipart(request)
             received.append(fields)
-            return web.json_response({"error": {"message": "bad prompt"}}, status=400)
+            return _json_response(request, {"error": {"message": "bad prompt"}}, status=400)
 
         server = await run_server(handler)
         config = _config("openai_image_edit", "images/edits", await _base_url(server))
@@ -161,20 +228,18 @@ class TestImageEditMultipartRetry:
                     image=b"\x89PNG",
                 )
 
-        import aiohttp
-
-        assert isinstance(exc_info.value, aiohttp.ClientResponseError)
-        assert exc_info.value.status == 400
+        assert isinstance(exc_info.value, APIClientError)
+        assert exc_info.value.status_code == 400
         assert len(received) == 1
 
     @pytest.mark.asyncio
     async def test_5xx_respects_total_attempt_cap(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
-            await _read_multipart(request)
+        def handler(request: httpx.Request):
+            _read_multipart(request)
             received.append(1)
-            return web.json_response({"error": "boom"}, status=500)
+            return _json_response(request, {"error": "boom"}, status=500)
 
         server = await run_server(handler)
         config = _config(
@@ -199,14 +264,12 @@ class TestImageEditMultipartRetry:
     @pytest.mark.asyncio
     async def test_no_nested_retry_with_explicit_retry_config(self, run_server):
         """An explicit RetryConfig owns retries; the native max_retries cap must not also apply."""
-        import aiohttp
-
         received = []
 
-        async def handler(request: web.Request):
-            await _read_multipart(request)
+        def handler(request: httpx.Request):
+            _read_multipart(request)
             received.append(1)
-            return web.json_response({"error": "boom"}, status=500)
+            return _json_response(request, {"error": "boom"}, status=500)
 
         server = await run_server(handler)
         # Native cap set high; if it were nested with the outer RetryConfig, the
@@ -220,12 +283,12 @@ class TestImageEditMultipartRetry:
         retry_config = RetryConfig(
             max_retries=1,
             base_delay=0.01,
-            retry_exceptions=(aiohttp.ClientError,),
+            retry_exceptions=(APIClientError,),
         )
         endpoint = OpenaiImageEditEndpoint(config=config, retry_config=retry_config)
 
         with _NO_SLEEP:
-            with pytest.raises(aiohttp.ClientError):
+            with pytest.raises(APIClientError):
                 await endpoint.call(
                     {"prompt": "x", "model": "dall-e-2"},
                     extra_headers={"Content-Type": "application/json"},
@@ -241,10 +304,10 @@ class TestOpenaiTranscription:
     async def test_wire_contract_filename_bytes_model_and_transcript(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
-            fields = await _read_multipart(request)
+        def handler(request: httpx.Request):
+            fields = _read_multipart(request)
             received.append((request.headers.get("Content-Type", ""), fields))
-            return web.json_response({"text": "hello world"})
+            return _json_response(request, {"text": "hello world"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
@@ -271,12 +334,12 @@ class TestOpenaiTranscription:
     async def test_retryable_failure_rebuilds_multipart_body(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
-            fields = await _read_multipart(request)
+        def handler(request: httpx.Request):
+            fields = _read_multipart(request)
             received.append(fields)
             if len(received) == 1:
-                return web.json_response({"error": "rate limited"}, status=429)
-            return web.json_response({"text": "second attempt"})
+                return _json_response(request, {"error": "rate limited"}, status=429)
+            return _json_response(request, {"text": "second attempt"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
@@ -301,10 +364,10 @@ class TestOpenaiTranscription:
     async def test_non_seekable_stream_fails_before_network_io(self, run_server):
         request_count = 0
 
-        async def handler(request: web.Request):
+        def handler(request: httpx.Request):
             nonlocal request_count
             request_count += 1
-            return web.json_response({"text": "should not get here"})
+            return _json_response(request, {"text": "should not get here"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
@@ -325,28 +388,25 @@ class TestOpenaiTranscription:
         assert request_count == 0
 
     async def test_4xx_with_retry_config_raises_client_response_error(self, run_server):
-        """Through the public call() surface a RetryConfig that retries every
-        aiohttp.ClientError must still treat non-429 4xx as single-shot, and the
-        caller must see the aiohttp exception type, not the internal sentinel."""
-        import aiohttp
+        """A RetryConfig that retries API errors must still treat other 4xx as single-shot."""
 
         request_count = 0
 
-        async def handler(request: web.Request):
+        def handler(request: httpx.Request):
             nonlocal request_count
             request_count += 1
-            return web.json_response({"error": "bad request"}, status=400)
+            return _json_response(request, {"error": "bad request"}, status=400)
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
         endpoint = OpenaiAudioTranscriptionEndpoint(
             config=config,
             retry_config=RetryConfig(
-                max_retries=2, base_delay=0.001, retry_exceptions=(aiohttp.ClientError,)
+                max_retries=2, base_delay=0.001, retry_exceptions=(APIClientError,)
             ),
         )
 
-        with pytest.raises(aiohttp.ClientResponseError), _NO_SLEEP:
+        with pytest.raises(APIClientError), _NO_SLEEP:
             await endpoint.call(
                 {"model": "whisper-1"},
                 file=b"audio",
@@ -358,12 +418,12 @@ class TestOpenaiTranscription:
     async def test_payload_field_kwargs_are_not_sent_as_request_kwargs(self, run_server):
         """Endpoint.call passes the same kwargs to create_payload and _call; API
         fields like language must land in the multipart body only, never be
-        forwarded to aiohttp.ClientSession.request."""
+        forwarded to httpx.AsyncClient.request."""
         received: dict = {}
 
-        async def handler(request: web.Request):
-            received.update(await _read_multipart(request))
-            return web.json_response({"text": "ok"})
+        def handler(request: httpx.Request):
+            received.update(_read_multipart(request))
+            return _json_response(request, {"text": "ok"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
@@ -384,23 +444,23 @@ class TestOpenaiTranscription:
         """An explicit RetryConfig retries by re-invoking _call; the seekable
         stream is snapshotted so the second attempt does not upload an empty
         file from an EOF position."""
-        import aiohttp
+        import httpx
 
         bodies: list[bytes] = []
 
-        async def handler(request: web.Request):
-            fields = await _read_multipart(request)
+        def handler(request: httpx.Request):
+            fields = _read_multipart(request)
             bodies.append(fields.get("file", b""))
             if len(bodies) == 1:
-                return web.json_response({"error": "boom"}, status=500)
-            return web.json_response({"text": "ok"})
+                return _json_response(request, {"error": "boom"}, status=500)
+            return _json_response(request, {"text": "ok"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
         endpoint = OpenaiAudioTranscriptionEndpoint(
             config=config,
             retry_config=RetryConfig(
-                max_retries=2, base_delay=0.001, retry_exceptions=(aiohttp.ClientError,)
+                max_retries=2, base_delay=0.001, retry_exceptions=(APIClientError,)
             ),
         )
 
@@ -412,14 +472,14 @@ class TestOpenaiTranscription:
         assert bodies == [b"full-audio-content", b"full-audio-content"]
 
     async def test_transport_kwargs_are_forwarded(self, run_server):
-        """aiohttp transport options (params here) must reach the HTTP layer
+        """httpx transport options (params here) must reach the HTTP layer
         while API fields stay confined to the multipart body."""
         seen: dict = {}
 
-        async def handler(request: web.Request):
-            seen["query"] = dict(request.query)
-            seen.update(await _read_multipart(request))
-            return web.json_response({"text": "ok"})
+        def handler(request: httpx.Request):
+            seen["query"] = dict(request.url.params)
+            seen.update(_read_multipart(request))
+            return _json_response(request, {"text": "ok"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
@@ -443,9 +503,9 @@ class TestOpenaiTranscription:
         occur, so a non-seekable stream must be accepted."""
         received: dict = {}
 
-        async def handler(request: web.Request):
-            received.update(await _read_multipart(request))
-            return web.json_response({"text": "ok"})
+        def handler(request: httpx.Request):
+            received.update(_read_multipart(request))
+            return _json_response(request, {"text": "ok"})
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
@@ -477,12 +537,12 @@ class TestOpenaiTranscription:
 
     async def test_single_shot_endpoint_accepts_non_seekable_stream(self, run_server):
         """With max_retries=1 and no RetryConfig no replay can occur, so a
-        non-seekable stream is handed to aiohttp once, as before."""
+        non-seekable stream is handed to HTTPX once, as before."""
         received: dict = {}
 
-        async def handler(request: web.Request):
-            received.update(await _read_multipart(request))
-            return web.json_response({"text": "single shot ok"})
+        def handler(request: httpx.Request):
+            received.update(_read_multipart(request))
+            return _json_response(request, {"text": "single shot ok"})
 
         server = await run_server(handler)
         config = _config(
@@ -523,10 +583,15 @@ class TestOpenaiTTS:
     async def test_byte_round_trip_and_json_request(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
-            body = await request.json()
+        def handler(request: httpx.Request):
+            body = json.loads(request.content)
             received.append(body)
-            return web.Response(body=b"\xff\xfb\x90audio-bytes", content_type="audio/mpeg")
+            return httpx.Response(
+                200,
+                content=b"\xff\xfb\x90audio-bytes",
+                headers={"content-type": "audio/mpeg"},
+                request=request,
+            )
 
         server = await run_server(handler)
         config = _config("openai_tts", "audio/speech", await _base_url(server))
@@ -546,10 +611,10 @@ class TestOpenaiTTS:
     async def test_5xx_respects_total_attempt_cap(self, run_server):
         request_count = 0
 
-        async def handler(request: web.Request):
+        def handler(request: httpx.Request):
             nonlocal request_count
             request_count += 1
-            return web.json_response({"error": "boom"}, status=500)
+            return _json_response(request, {"error": "boom"}, status=500)
 
         server = await run_server(handler)
         config = _config(
@@ -573,70 +638,45 @@ class TestOpenaiTTS:
     async def test_non_429_4xx_sends_exactly_one_request(self, run_server):
         request_count = 0
 
-        async def handler(request: web.Request):
+        def handler(request: httpx.Request):
             nonlocal request_count
             request_count += 1
-            return web.json_response({"error": "bad request"}, status=400)
+            return _json_response(request, {"error": "bad request"}, status=400)
 
         server = await run_server(handler)
         config = _config("openai_tts", "audio/speech", await _base_url(server))
         endpoint = OpenaiAudioSpeechEndpoint(config=config)
 
-        import aiohttp
-
         with _NO_SLEEP:
-            with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+            with pytest.raises(APIClientError) as exc_info:
                 await endpoint._call(
                     payload={"model": "tts-1", "input": "hello", "voice": "nova"},
                     headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
                 )
 
-        assert exc_info.value.status == 400
+        assert exc_info.value.status_code == 400
         assert request_count == 1
 
 
-class TestResponseRelease:
-    """Every attempt's response must be released, including retried ones."""
+class TestResponseClientLifecycle:
+    """Each retry closes its HTTP client and its response stream."""
 
     @pytest.mark.asyncio
-    async def test_transcription_releases_every_attempt_response(self):
-        import aiohttp
+    async def test_transcription_closes_each_attempt_client(self):
+        responses = iter(
+            [
+                httpx.Response(429, json={"error": "rate limited"}),
+                httpx.Response(200, json={"text": "ok"}),
+            ]
+        )
+        clients = []
 
-        r429 = AsyncMock(spec=aiohttp.ClientResponse)
-        r429.status = 429
-        r429.closed = False
-        r429.release = MagicMock()
-        r429.request_info = MagicMock()
-        r429.history = []
-        r429.headers = {}
-
-        def _raise_for_status():
-            raise aiohttp.ClientResponseError(
-                request_info=r429.request_info,
-                history=r429.history,
-                status=429,
-                message="rate limited",
-                headers=r429.headers,
+        def create_client(*args, **kwargs):
+            client = httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda request: next(responses))
             )
-
-        r429.raise_for_status = _raise_for_status
-
-        ok = AsyncMock(spec=aiohttp.ClientResponse)
-        ok.status = 200
-        ok.closed = False
-        ok.release = MagicMock()
-        ok.json = AsyncMock(return_value={"text": "ok"})
-
-        responses = iter([r429, ok])
-
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        async def _request(*args, **kwargs):
-            return next(responses)
-
-        mock_session.request = _request
+            clients.append(client)
+            return client
 
         config = _config(
             "openai_stt",
@@ -647,7 +687,7 @@ class TestResponseRelease:
         endpoint = OpenaiAudioTranscriptionEndpoint(config=config)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", side_effect=create_client):
                 with _NO_SLEEP:
                     result = await endpoint._call(
                         payload={"model": "whisper-1"},
@@ -657,5 +697,5 @@ class TestResponseRelease:
                     )
 
         assert result == {"text": "ok"}
-        r429.release.assert_called_once()
-        ok.release.assert_called_once()
+        assert len(clients) == 2
+        assert all(client.is_closed for client in clients)

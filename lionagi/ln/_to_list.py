@@ -102,7 +102,7 @@ def _dataclass_content_key(value: DataClass) -> int | None:
         return None
 
 
-def _own_content_key(value: DataClass) -> int | None:
+def _own_content_key(value: Any) -> int | None:
     """A value's own hash, or ``None`` when the value reports itself unhashable.
 
     Only ``TypeError`` means "unhashable, use the equality path", exactly as the ``i not
@@ -195,7 +195,7 @@ def _dedupe_operation_fields(values: Iterable) -> list:
         if id(value) in processed_ids:
             continue
         processed_ids.add(id(value))
-        key = _operation_content_key(value)
+        key = None if isinstance(value, _MAP_LIKE) else _own_content_key(value)
         compared: Iterable = (
             chain(buckets.get(key, ()), unkeyed)
             if key is not None
@@ -209,27 +209,6 @@ def _dedupe_operation_fields(values: Iterable) -> list:
             buckets.setdefault(key, []).append(value)
         out.append(value)
     return out
-
-
-def _operation_content_key(value: Any) -> int | None:
-    """A value's own hash, or ``None`` when it must be compared pairwise.
-
-    A mapping or model value has no key here, because its hash would follow mutable
-    contents; it is compared by identity and equality instead. A value that reports
-    itself unhashable with ``TypeError`` has no key and is compared the same way, as is
-    one whose hash reaches a ``memoryview`` that refuses with ``ValueError``; any other
-    error from a value's own ``__hash__`` is a bug in that ``__hash__`` and propagates.
-    """
-    if isinstance(value, _MAP_LIKE):
-        return None
-    try:
-        return hash(value)
-    except TypeError:
-        return None
-    except ValueError as exc:
-        if _is_memoryview_hash_refusal(exc):
-            return None
-        raise
 
 
 def to_list(

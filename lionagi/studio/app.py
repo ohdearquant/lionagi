@@ -20,7 +20,7 @@ from starlette.staticfiles import StaticFiles
 from lionagi._errors import LionError
 from lionagi.version import __version__
 
-from ._host import normalize_host
+from ._host import admitted_host_names, normalize_host
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
 from .launch_access import (
@@ -348,6 +348,7 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 async def lifespan(app_instance):
     from lionagi.cli._code_identity import snapshot_git_position
 
+    from .daemon_log import daemon_log_handler
     from .scheduler.engine import scheduler
     from .services.lifecycle import run_startup_reconciliation
     from .services.operator import operator_shutdown, operator_startup
@@ -371,33 +372,36 @@ async def lifespan(app_instance):
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     register_settings_terminal_callback()
-    await scheduler.start()
-    # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
-    await run_startup_reconciliation()
-    # Recover any accepted Operator turn that was interrupted by a prior daemon
-    # exit before accepting new submissions.
-    await operator_startup()
-    # Codes and decision capabilities belong to the daemon that issued them.
-    # Serving starts a new epoch unless a launcher minted this launch's code
-    # just before starting this daemon in the same process.
-    begin_serving()
-    reconnect = _start_reconnect_channel()
-    app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
-    mirror_stop, mirror_task = _start_claude_mirror()
-    # Pure maintenance; deferred so readiness isn't gated on it.
-    warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
-    yield
-    from .services.launches import shutdown_launches
+    # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
+    # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
+    with daemon_log_handler():
+        await scheduler.start()
+        # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
+        await run_startup_reconciliation()
+        # Recover any accepted Operator turn that was interrupted by a prior daemon
+        # exit before accepting new submissions.
+        await operator_startup()
+        # Codes and decision capabilities belong to the daemon that issued them.
+        # Serving starts a new epoch unless a launcher minted this launch's code
+        # just before starting this daemon in the same process.
+        begin_serving()
+        reconnect = _start_reconnect_channel()
+        app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
+        mirror_stop, mirror_task = _start_claude_mirror()
+        # Pure maintenance; deferred so readiness isn't gated on it.
+        warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
+        yield
+        from .services.launches import shutdown_launches
 
-    disarm_traceback_dump()
-    app_instance.state.reconnect_key = None
-    if reconnect is not None:
-        await asyncio.to_thread(reconnect.stop)
-    await _finalize_warmup(warmup_task)
-    await _stop_claude_mirror(mirror_stop, mirror_task)
-    await operator_shutdown()
-    await shutdown_launches()
-    await scheduler.stop()
+        disarm_traceback_dump()
+        app_instance.state.reconnect_key = None
+        if reconnect is not None:
+            await asyncio.to_thread(reconnect.stop)
+        await _finalize_warmup(warmup_task)
+        await _stop_claude_mirror(mirror_stop, mirror_task)
+        await operator_shutdown()
+        await shutdown_launches()
+        await scheduler.stop()
 
 
 # Strict Host-header authority grammar, deliberately stricter than
@@ -423,26 +427,6 @@ def _parse_host_authority(raw_host: str) -> str | None:
     return host.lower() if host else None
 
 
-def _is_unspecified_bind_host(bind_host: str) -> bool:
-    """Whether *bind_host* names every interface rather than one address.
-
-    A wildcard (`0.0.0.0`, `::`, or an IPv6 spelling of one) binds all of them, so
-    it is not an address a page is opened at and must not widen the admitted Host
-    set. Judged by `ipaddress` on the canonical form, not by matching the literal
-    `0.0.0.0`: `::` binds the same interfaces and the string test let it through.
-    A blank value is unspecified too -- there is no name to admit. A value that is
-    not an address at all is left to the caller, which admits it as the operator's
-    chosen name.
-    """
-    host = normalize_host(bind_host)
-    if not host:
-        return True
-    try:
-        return ipaddress.ip_address(host).is_unspecified
-    except ValueError:
-        return False
-
-
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value —
     defends against DNS rebinding; see docs/internals/studio.md.
@@ -455,10 +439,7 @@ async def validate_host_header(request: Request, call_next):
     # for that very address was refused.
     if hostname is not None:
         hostname = normalize_host(hostname)
-    bind_host = normalize_host(os.getenv("LIONAGI_STUDIO_HOST", HOST))
-    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    if not _is_unspecified_bind_host(bind_host):
-        allowed_hosts.add(bind_host)
+    allowed_hosts = admitted_host_names(os.getenv("LIONAGI_STUDIO_HOST", HOST))
     if hostname is None or hostname not in allowed_hosts:
         return JSONResponse(
             {"detail": f"Invalid Host header: {request.headers.get('host', '')!r}"},

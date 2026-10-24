@@ -11,6 +11,7 @@ route, so each seam gets an arm here.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from lionagi.service.providers import codex_unset_effort_default, reclamp_effort_for_model
 
@@ -193,17 +194,13 @@ class TestTheRequestModelBackstop:
 
         assert CodexCodeRequest(prompt="hi", model="work").model == "gpt-5.6-sol"
 
-    def test_a_tilde_in_the_childs_codex_home_expands_against_the_childs_home(
+    def test_a_tilde_in_the_childs_codex_home_is_refused_rather_than_resolved(
         self, tmp_path, monkeypatch
     ):
-        """`~` is expanded by whoever reads it, and that is the child.
+        """A `~` names a different directory depending on whose home expands it.
 
-        The home resolution deliberately avoids `Path.home()` because it honours
-        OUR `$HOME` -- and then expanded a tilde with `Path.expanduser()`, which
-        honours exactly the same thing. So an env naming `CODEX_HOME=~/codex`
-        resolved against the parent's home while the child resolved it against
-        its own, and the profile that decides the model was read from a
-        directory the child never opens.
+        Resolving it here could read the profile that decides the model from a
+        directory the child never opens, so the request is refused instead.
         """
         parent = tmp_path / "parent"
         child = tmp_path / "child"
@@ -215,21 +212,50 @@ class TestTheRequestModelBackstop:
 
         from lionagi.providers.openai.codex import CodexCodeRequest
 
-        req = CodexCodeRequest(
-            prompt="hi",
-            model="work",
-            env={"HOME": str(child), "CODEX_HOME": "~/codex"},
-        )
-        assert req.model == "gpt-5.3-codex-spark"
+        with pytest.raises(ValidationError, match="CODEX_HOME '~/codex' is not an absolute path"):
+            CodexCodeRequest(
+                prompt="hi",
+                model="work",
+                env={"HOME": str(child), "CODEX_HOME": "~/codex"},
+            )
 
-        # The control: an absolute child home was never affected by the tilde
-        # path, so the arm above is about the expansion and not about the env.
+        # The control: an absolute child home is read from the child's env, so
+        # the arm above is about the tilde and not about the env.
         absolute = CodexCodeRequest(
             prompt="hi",
             model="work",
             env={"HOME": str(parent), "CODEX_HOME": str(child / "codex")},
         )
         assert absolute.model == "gpt-5.3-codex-spark"
+
+    def test_a_relative_home_in_the_childs_env_is_refused_rather_than_resolved(self):
+        """A HOME that is not absolute names a different codex home depending on where it
+        is resolved, so the model-spec lookup refuses it before reading a profile there."""
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        with pytest.raises(ValidationError, match="HOME 'rel' is not an absolute path"):
+            CodexCodeRequest(prompt="hi", model="work", env={"HOME": "rel"})
+
+    def test_a_codex_home_in_the_childs_env_wins_over_a_relative_home(self, tmp_path):
+        """CODEX_HOME is the home when it is set; a HOME beside it is not read."""
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        (tmp_path / "work.config.toml").write_text('model = "gpt-5.5"\n')
+        req = CodexCodeRequest(
+            prompt="hi", model="work", env={"HOME": "rel", "CODEX_HOME": str(tmp_path)}
+        )
+        assert req.model == "gpt-5.5"
+
+    def test_a_relative_process_home_is_refused_when_codex_home_is_unset(self, monkeypatch):
+        """The process case goes through the same refusal: an environment naming no
+        CODEX_HOME reads its HOME, and a relative one names no fixed directory."""
+        from lionagi._errors import ConfigurationError
+        from lionagi.providers.openai._codex_profile import codex_home_for_env
+
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        monkeypatch.setenv("HOME", "rel")
+        with pytest.raises(ConfigurationError, match="HOME 'rel' is not an absolute path"):
+            codex_home_for_env(None)
 
     def test_a_malformed_effort_is_rejected_rather_than_replaced(self, global_ultra):
         """Unset means absent, not "any value that is not a string".

@@ -67,7 +67,7 @@ outside what it pins. Two divergences are live in the tree right now and green:
   declares none that `schema.sql` does not: the metadata is a strict subset. The four are
   `idx_def_unique_version`, `idx_plays_show_name`, `idx_session_signals_seq` and
   `idx_sessions_run_id`. Absolute counts on 2026-08-15: 87 and 83.
-- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,198,204,283,311,378,…`);
+- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,203,209,303,331,398,…`);
   `schema_meta.py` declares zero. Production databases, built by `create_all`, therefore have
   none of those descending indexes. (SQLite and PostgreSQL can both scan an ascending index
   backwards, so the query-plan consequence is unmeasured; the definitional drift is proven.)
@@ -113,7 +113,7 @@ sequence runs that reconciliation before writing `SCHEMA_VERSION`
 (`state/db.py:1719-1721,1768-1774`). This hardening does not make the version integer
 a fingerprint of the complete physical catalog. The schedules rebuilds already derive their
 target table from `schema_meta.py` via `to_metadata`
-(`state/db.py:2330,2418,2502`), and so does the definitions rebuild (`:2916`), so that generated
+(`state/db.py:2331,2419,2503`), and so does the definitions rebuild (`:2917`), so that generated
 path already exists on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
@@ -386,7 +386,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`state/db.py:2163-2175`, `:2254-2268`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`state/db.py:2163-2175`, `:2255-2269`, and the same shape in the six other rebuild paths).
 That faithfully preserves whatever the database happens to contain, including objects nothing
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
 old DDL path keeps its 15 descending indexes through every future migration. It is also the one

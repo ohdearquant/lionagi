@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ from lionagi.cli._providers import AgentProfile
 from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
 from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+from lionagi.providers.openai.codex import CodexCodeRequest
 
 
 @pytest.fixture
@@ -61,7 +63,11 @@ def tmp_run(monkeypatch, tmp_path):
 
 
 async def _setup(
-    *, no_mcp_config: bool, mcp_config: str | None = None, model_spec: str = "claude_code/sonnet"
+    *,
+    no_mcp_config: bool,
+    mcp_config: str | None = None,
+    model_spec: str = "claude_code/sonnet",
+    effort: str | None = None,
 ):
     return await setup_orchestration(
         pattern_name="Fanout",
@@ -71,7 +77,7 @@ async def _setup(
         cwd=None,
         yolo=False,
         verbose=False,
-        effort=None,
+        effort=effort,
         theme=None,
         mcp_config=mcp_config,
         no_mcp_config=no_mcp_config,
@@ -83,6 +89,13 @@ async def _cli_args(imodel) -> list[str]:
     api_call = await imodel.create_event(prompt="hi")
     request = api_call.payload["request"]
     assert isinstance(request, ClaudeCodeRequest)
+    return request.as_cmd_args()
+
+
+async def _codex_cli_args(imodel) -> list[str]:
+    api_call = await imodel.create_event(prompt="hi")
+    request = api_call.payload["request"]
+    assert isinstance(request, CodexCodeRequest)
     return request.as_cmd_args()
 
 
@@ -269,7 +282,9 @@ async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_worker_disables_withheld_job_control_by_name(tmp_run, codex_home):
+async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home):
+    """The worker gets the run's set over `-c` and loads no user config, so the
+    job-control server the user config declares is neither forwarded nor loaded."""
     servers = {
         "lion-control": {"command": "li", "args": ["mcp"]},
         "knowledge": {"command": "kkernel", "args": ["mcp"]},
@@ -284,15 +299,21 @@ async def test_codex_worker_disables_withheld_job_control_by_name(tmp_run, codex
         role="implementer",
         model_override="codex/gpt-5",
     )
+    args = await _codex_cli_args(branch.chat_model)
 
-    overrides = branch.chat_model.endpoint.config.kwargs["config_overrides"]
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    overrides = kwargs["config_overrides"]
+    assert kwargs["ignore_user_config"] is True
     assert overrides["mcp_servers.knowledge.command"] == "kkernel"
-    assert overrides["mcp_servers.lion-control.enabled"] is False
+    assert not [key for key in overrides if key.startswith("mcp_servers.lion-control.")]
+    assert "--ignore-user-config" in args
+    assert not [arg for arg in args if "lion-control" in arg]
 
 
-def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home):
+def test_refusal_reaches_a_codex_worker_as_an_ignored_user_config(caplog, codex_home):
     """codex has no per-request server set and no wholesale clear, so a refusal
-    reaches it as every server it would have loaded, disabled by name."""
+    reaches it as a run that loads no user config, and with it none of the
+    servers that config declares."""
     import logging
 
     from lionagi.cli._providers import build_imodel_from_spec
@@ -302,7 +323,9 @@ def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home)
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         orch_mod._hand_mcp_servers(imodel, {}, label="reviewer-2")
 
-    assert imodel.endpoint.config.kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    kwargs = imodel.endpoint.config.kwargs
+    assert kwargs["ignore_user_config"] is True
+    assert "config_overrides" not in kwargs
     assert caplog.text == ""
 
 
@@ -631,6 +654,34 @@ async def test_a_codex_synthesis_branch_drops_the_orchestrators_job_control(tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "low"])
+async def test_a_codex_synthesis_branch_handed_an_empty_set_takes_no_effort_from_the_ignored_config(
+    tmp_run, codex_home, effort
+):
+    """When the run found only job control, the orchestrator keeps it and loads the
+    user config, while the synthesis copy is handed the empty worker set and loads
+    none. The effort the orchestrator derived from that config stays its own; an
+    effort the run asked for reaches both."""
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    control = {"control": _CONTROL_AND_KNOWLEDGE["control"]}
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": control}))
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark", effort=effort)
+    assert env.mcp_servers == {}
+    orchestrator = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert not orchestrator.get("ignore_user_config")
+    assert orchestrator["reasoning_effort"] == (effort or "high")
+
+    branch = await _fresh_synthesis_branch(env)
+
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert kwargs["ignore_user_config"] is True
+    assert kwargs.get("reasoning_effort") == effort
+    assert orchestrator["reasoning_effort"] == (effort or "high")
+
+
+@pytest.mark.asyncio
 async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(tmp_run, codex_home):
     from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
     from lionagi.providers.openai.codex import CodexCodeRequest
@@ -737,3 +788,258 @@ def test_job_control_is_recognised_through_launchers(config):
 )
 def test_other_servers_are_not_taken_for_job_control(config):
     assert not orch_mod._is_job_control_server(config)
+
+
+# The worker's own CLI configuration. A worker is started by the run, and the
+# user config of the person running it carries servers, hooks and permissions
+# the worker was never handed.
+
+
+def _pair_follows(args: list[str], flag: str, value: str) -> bool:
+    return any(args[i : i + 2] == [flag, value] for i in range(len(args) - 1))
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_with_no_run_set_still_ignores_the_user_config(tmp_run, codex_home):
+    """No run set hands the worker nothing, and the user config stays out anyway."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    env = await _setup(no_mcp_config=False)
+    assert env.mcp_servers is None
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5"
+    )
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert "--ignore-user-config" in args
+    assert "-p" not in args
+    assert not [arg for arg in args if "ambient" in arg]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_keeps_the_sandbox_and_the_hooks_the_user_config_trusts(
+    tmp_run, codex_home
+):
+    """The user config's servers stay out, while its sandbox mode, the trust records
+    of its hooks.json hooks and its project trust decisions reach the worker beside
+    the flag."""
+    hook_key = f"{codex_home.path / 'hooks.json'}:pre_tool_use:0:0"
+    (codex_home.path / "config.toml").write_text(
+        'sandbox_mode = "workspace-write"\n'
+        "[mcp_servers.ambient]\n"
+        'command = "ambient-mcp"\n'
+        f'[hooks.state."{hook_key}"]\n'
+        'trusted_hash = "sha256:abc"\n'
+        '[projects."/home/u/work.repo"]\n'
+        'trust_level = "trusted"\n'
+    )
+    env = await _setup(no_mcp_config=False)
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5"
+    )
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert "--ignore-user-config" in args
+    assert _pair_follows(args, "-s", "workspace-write")
+    assert [arg for arg in args if arg.startswith("hooks.state=") and hook_key in arg]
+    assert [arg for arg in args if arg.startswith("projects=") and "work.repo" in arg]
+    assert not [arg for arg in args if "ambient" in arg]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_takes_no_effort_from_the_user_config(tmp_run, codex_home):
+    """The user config's effort is read only to keep it under the model's ceiling,
+    and a worker never loads that config, so no effort is derived from it."""
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark")
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
+    )
+
+    assert branch.chat_model.endpoint.config.kwargs["ignore_user_config"] is True
+    assert "reasoning_effort" not in branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrators_derived_effort_stays_its_own(tmp_run, codex_home):
+    """A codex orchestrator asked for no effort derives one from the user config it
+    loads. The run record keeps that effort; it is not a run-wide effort, so a
+    worker, which loads no user config, does not take it."""
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark")
+
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "high"
+    assert env.orc_effort == "high"
+    assert env.effort is None
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
+    )
+    assert "reasoning_effort" not in branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_requested_run_effort_still_reaches_a_codex_worker(tmp_run, codex_home):
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark", effort="low")
+
+    assert env.effort == env.orc_effort == "low"
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
+    )
+    assert branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_spec", "effort", "expected"),
+    [
+        ("codex/gpt-5.3-codex-spark", None, None),
+        ("codex/gpt-5.3-codex-spark", "low", "low"),
+        ("codex/gpt-5.3-codex-spark-low", None, "low"),
+    ],
+)
+async def test_a_codex_orchestrator_handed_an_empty_set_takes_no_effort_from_the_ignored_config(
+    tmp_run, codex_home, model_spec, effort, expected
+):
+    """An empty set leaves the orchestrator's own request carrying the flag, so it
+    loads no user config and the effort it derived from that config goes. An
+    effort the run asked for stays, whether passed or named on the model spec."""
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=True, model_spec=model_spec, effort=effort)
+
+    kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert kwargs["ignore_user_config"] is True
+    assert kwargs.get("reasoning_effort") == expected
+    assert env.orc_effort == expected
+    assert env.effort == expected
+
+
+class _RecordReached(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["flow", "fanout"])
+@pytest.mark.parametrize(("effort", "recorded_effort"), [(None, "high"), ("low", "low")])
+async def test_the_run_record_stores_the_orchestrators_own_effort(
+    tmp_run, codex_home, monkeypatch, pattern, effort, recorded_effort
+):
+    """The record keeps the effort the orchestrator runs at: the one a codex
+    orchestrator derived when the run asked for none, which no worker takes, and
+    the one the run asked for."""
+    from unittest.mock import AsyncMock
+
+    from lionagi.cli.orchestrate import fanout, flow
+
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark", effort=effort)
+    recorded: dict = {}
+
+    async def _start(env, **kwargs):
+        recorded.update(kwargs)
+        raise _RecordReached
+
+    module = flow if pattern == "flow" else fanout
+    monkeypatch.setattr(module, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(module, "start_live_persist", _start)
+    monkeypatch.setattr(module, "stamp_worker_depth", lambda: 1)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        lambda *args, **kwargs: None,
+    )
+    run = flow._run_flow if pattern == "flow" else fanout._run_fanout
+    with pytest.raises(_RecordReached):
+        await run("codex/gpt-5.3-codex-spark", "work")
+
+    assert recorded["effort"] == recorded_effort
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_keeps_its_settings_sources(tmp_run):
+    """The hooks and permissions in a Claude worker's settings are what gate its
+    tool calls, so the boundary leaves its settings sources as they are."""
+    env = await _setup(no_mcp_config=False)
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="claude_code/sonnet"
+    )
+    args = await _cli_args(branch.chat_model)
+
+    assert "--setting-sources" not in args
+
+
+def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(codex_home):
+    """A `-p` profile is part of the codex user config and does not reach a
+    worker; a Claude settings file does."""
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    codex = build_imodel_from_spec("codex/gpt-5")
+    codex.endpoint.config.kwargs["profile"] = "work"
+    claude = build_imodel_from_spec("claude_code/sonnet")
+    claude.endpoint.config.kwargs["settings"] = "settings.json"
+    claude_before = dict(claude.endpoint.config.kwargs)
+
+    orch_mod._isolate_worker_cli_config(codex)
+    orch_mod._isolate_worker_cli_config(claude)
+
+    assert codex.endpoint.config.kwargs["ignore_user_config"] is True
+    assert codex.endpoint.config.kwargs["profile"] is None
+    assert claude.endpoint.config.kwargs == claude_before
+
+
+@pytest.mark.parametrize(
+    ("spelling", "expected"),
+    [
+        ("CODEX", {"ignore_user_config": True, "profile": None}),
+        (" codex ", {"ignore_user_config": True, "profile": None}),
+        ("CLAUDE_CODE", {}),
+        (" claude_code ", {}),
+    ],
+)
+def test_the_boundary_folds_provider_spellings(spelling, expected):
+    imodel = SimpleNamespace(
+        is_cli=True,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider=spelling, kwargs={})),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel)
+
+    assert imodel.endpoint.config.kwargs == expected
+
+
+def test_the_boundary_leaves_a_model_with_no_cli_alone():
+    kwargs = {"temperature": 0.1}
+    imodel = SimpleNamespace(
+        is_cli=False,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider="codex", kwargs=kwargs)),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel)
+
+    assert kwargs == {"temperature": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_refuses_a_server_whose_secrets_it_could_not_carry(
+    tmp_run, codex_home
+):
+    """`env` and `http_headers` reach codex only through a profile file, which a
+    run that ignores the user config does not load: the server would start
+    without them. The worker is refused, and the value is not in the refusal."""
+    from lionagi._errors import ConfigurationError
+
+    secret = "secret-value-do-not-print-me"
+    servers = {"knowledge": {"command": "kkernel", "env": {"KNOWLEDGE_KEY": secret}}}
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+    codex_home.write_config({})
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError, match="ignores the user config") as refused:
+        await build_worker_branch(
+            env, agent_id="w1", role="implementer", model_override="codex/gpt-5"
+        )
+
+    assert secret not in str(refused.value)
+    assert not list(codex_home.path.glob("lionagi-mcp-*.config.toml"))

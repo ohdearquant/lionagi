@@ -833,6 +833,8 @@ def _classify_phantom(
 
 
 async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, Any]]:
+    from .sessions import _user_label_selection
+
     require_file_store()
     if not store_exists():
         return []
@@ -840,14 +842,16 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
     stale_seconds = stale_hours * 3600
     phantoms: list[dict[str, Any]] = []
     async with _open_db(store_path()) as db:
+        user_label = await _user_label_selection(db)
         cur = await db.execute(
-            """
-            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path,
+            f"""
+            SELECT id, name, {user_label}, playbook_name, agent_name, show_play_name,
+                   started_at, updated_at, artifacts_path,
                    status, node_metadata
             FROM sessions
             WHERE status = 'running'
             ORDER BY updated_at DESC
-            """
+            """  # noqa: S608 — selection is a fixed column name or NULL
         )
         rows = await cur.fetchall()
     # One scan, one answer per artifact root: sessions repeat their roots
@@ -876,7 +880,7 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
             phantoms.append(
                 {
                     "session_id": row["id"],
-                    "playbook": row["playbook_name"] or row["name"],
+                    "playbook": resolve_display_name(dict(row)),
                     "started_at": row["started_at"],
                     "updated_at": row["updated_at"] or 0.0,
                     "artifacts_path": row["artifacts_path"],
@@ -936,6 +940,8 @@ async def health_report() -> dict[str, Any]:
     )
     from lionagi.studio.config import scheduler_timezone_report
 
+    from .sessions import _user_label_selection
+
     require_file_store()
     if not store_exists():
         return {
@@ -952,6 +958,7 @@ async def health_report() -> dict[str, Any]:
         total_cur = await db.execute("SELECT COUNT(*) AS n FROM sessions")
         total_row = await total_cur.fetchone()
         total_sessions = int(total_row["n"]) if total_row else 0
+        user_label = await _user_label_selection(db, alias="s")
         # Classifying a session stats its artifact tree and can shell out to
         # `ps`, so the pass is bounded to the most recent window and the
         # response says how much of the store it covered. Reporting on every
@@ -959,7 +966,7 @@ async def health_report() -> dict[str, Any]:
         # daemon -- and a health check that can hurt a sick store is worse
         # than no health check.
         cur = await db.execute(
-            """
+            f"""
             WITH page AS (
                 SELECT id AS page_id FROM sessions ORDER BY updated_at DESC LIMIT ?
             )
@@ -969,7 +976,7 @@ async def health_report() -> dict[str, Any]:
             -- session is named one way here and another way in the API and
             -- UI. Selecting a column short of what the resolver reads is the
             -- same two-names-for-one-session defect, one layer down.
-            SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
+            SELECT s.id, s.name, {user_label}, s.status, s.invocation_kind, s.agent_name,
                    s.playbook_name, s.show_play_name, s.started_at, s.ended_at,
                    s.updated_at,
                    s.last_message_at, s.artifacts_path, s.node_metadata,
@@ -980,7 +987,7 @@ async def health_report() -> dict[str, Any]:
             LEFT JOIN progressions p ON p.id = b.progression_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC
-            """,
+            """,  # noqa: S608
             (HEALTH_SCAN_LIMIT,),
         )
         rows = await cur.fetchall()

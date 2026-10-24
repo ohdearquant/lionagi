@@ -307,15 +307,21 @@ async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[
     report the same rows and the same counts rather than two readings of the
     store taken by two pieces of code.
     """
-    from sqlalchemy import text
+    from sqlalchemy import inspect, text
 
-    # Same columns resolve_display_name reads for the Studio API (see
-    # studio/services/sessions.py) so `li state list` names agree with the
-    # Studio UI instead of showing the raw `name` column.
-    select_cols = (
-        "id, name, status, updated_at, playbook_name, agent_name, show_play_name, started_at"
-    )
     async with db._read() as conn:
+        # Machine reads open the store read-only and cannot migrate an older
+        # schema. A missing label column means there is no explicit label yet.
+        columns = await conn.run_sync(
+            lambda sync: {col["name"] for col in inspect(sync).get_columns("sessions")}
+        )
+        user_label = "user_label" if "user_label" in columns else "NULL AS user_label"
+        # Same fields resolve_display_name reads for the Studio API, so all
+        # surfaces agree instead of exposing the raw system name here.
+        select_cols = (
+            f"id, name, {user_label}, status, updated_at, playbook_name, agent_name, "
+            "show_play_name, started_at"
+        )
         if status:
             rows = (
                 (

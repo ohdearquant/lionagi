@@ -4,14 +4,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 
-from lionagi.ln.concurrency import current_time
+from lionagi.ln.concurrency import current_time, sleep
 
 from ..launch_access import (
     DECISION_TOKEN_HEADER,
@@ -127,6 +126,8 @@ async def update_operator_conversation(
     kwargs: dict[str, Any] = {}
     if "title" in fields:
         kwargs["title"] = body.title
+    if "description" in fields:
+        kwargs["description"] = body.description
     if "pinned" in fields:
         kwargs["pinned"] = body.pinned
     if "status" in fields:
@@ -302,7 +303,7 @@ async def stream_operator_conversation(
             if now >= heartbeat_at:
                 yield ": heartbeat\n\n"
                 heartbeat_at = now + 5
-            await asyncio.sleep(0.05)
+            await sleep(0.05)
 
     return sse_response(events())
 

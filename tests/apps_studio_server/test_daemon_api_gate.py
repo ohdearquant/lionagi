@@ -199,6 +199,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/api/operator/hooks"),
     ("PUT", "/api/playbooks/{name}"),
     ("PUT", "/api/projects/{name}"),
+    ("PUT", "/api/sessions/{session_id}"),
     ("PUT", "/api/workflow-defs/{def_id}"),
 )
 
@@ -278,7 +279,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 140
+    assert len(_GOLDEN_ROUTES) == 141
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -617,6 +618,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "status_reason_summary",
         "total_cost_usd",
         "updated_at",
+        "user_label",
     ]
 )
 

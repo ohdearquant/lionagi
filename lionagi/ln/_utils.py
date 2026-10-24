@@ -291,22 +291,47 @@ def import_module(
     package_name: str,
     module_name: str | None = None,
     import_name: str | list | None = None,
+    *,
+    package: str | None = None,
 ) -> Any:
+    """Import a leaf module or its attributes; a list selector returns a list.
+
+    Relative module names use ``package`` as their anchor. Missing package
+    attributes retain child-module import fallback. Missing modules preserve
+    their original exception; other import errors keep the helper's prefix.
+    """
+    import sys
+
     try:
         full_import_path = f"{package_name}.{module_name}" if module_name else package_name
+        module = importlib.import_module(full_import_path, package=package)
+        if import_name is None:
+            return module
 
-        if import_name:
-            import_name = [import_name] if not isinstance(import_name, list) else import_name
-            a = __import__(
-                full_import_path,
-                fromlist=import_name,
-            )
-            if len(import_name) == 1:
-                return getattr(a, import_name[0])
-            return [getattr(a, name) for name in import_name]
-        else:
-            return __import__(full_import_path)
+        def _resolve(name: str) -> Any:
+            try:
+                return getattr(module, name)
+            except AttributeError as exc:
+                missing_attribute = exc
 
+            if not hasattr(module, "__path__"):
+                raise missing_attribute
+
+            child_name = f"{module.__name__}.{name}"
+            try:
+                importlib.import_module(child_name)
+            except ModuleNotFoundError as exc:
+                if exc.name != child_name or sys.modules.get(child_name, module) is None:
+                    raise
+            else:
+                return getattr(module, name)
+            raise missing_attribute
+
+        if isinstance(import_name, list):
+            return [_resolve(name) for name in import_name]
+        return _resolve(import_name)
+    except ModuleNotFoundError:
+        raise
     except ImportError as e:
         raise ImportError(f"Failed to import module {full_import_path}: {e}") from e
 
@@ -375,15 +400,7 @@ def extract_types(item_type: Any) -> set[type]:
 
     extracted: set[type] = set()
 
-    if isinstance(item_type, set):
-        for t in item_type:
-            if is_union(t):
-                extracted.update(get_args(t))
-            else:
-                extracted.add(t)
-        return extracted
-
-    if isinstance(item_type, list):
+    if isinstance(item_type, set | list):
         for t in item_type:
             if is_union(t):
                 extracted.update(get_args(t))

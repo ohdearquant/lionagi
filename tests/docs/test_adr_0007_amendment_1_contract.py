@@ -576,19 +576,19 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
     )
     _in_span(
         _BRANCH,
-        248,
-        254,
+        250,
+        256,
         "agent-managed subset",
         'cp = self.metadata.get("current_progression")',
     )
 
 
 def test_compaction_path_replaces_a_span_with_one_summary() -> None:
-    _in_span(_CONTEXT, 353, 430, 'if action == "compact":')
+    _in_span(_CONTEXT, 353, 432, 'if action == "compact":')
     _in_span(
         _CONTEXT,
         417,
-        423,
+        425,
         "[CONTEXT COMPACTION]",
         "cp.insert(summary_at, note.id)",
         "cp.exclude(collapse)",
@@ -596,20 +596,20 @@ def test_compaction_path_replaces_a_span_with_one_summary() -> None:
 
 
 def test_codex_omission_markers_are_the_three_cited_shapes() -> None:
-    _in_span(_CODEX, 2019, 2022, "[output truncated:", "characters omitted here]")
-    _in_span(_CODEX, 2141, 2144, "items not shown]")
-    _in_span(_CODEX, 2173, 2178, 'note = "[omitted]"', "keys not shown")
+    _in_span(_CODEX, 2573, 2576, "[output truncated:", "characters omitted here]")
+    _in_span(_CODEX, 2695, 2698, "items not shown]")
+    _in_span(_CODEX, 2727, 2732, 'note = "[omitted]"', "keys not shown")
     # The file-change echo repeats the mapping's shape; its payload is the
     # ``{"omitted": ...}`` entry the amendment now names as its own shape.
-    _in_span(_CODEX, 2233, 2236, '{"omitted":', "changes not shown")
+    _in_span(_CODEX, 2787, 2790, '{"omitted":', "changes not shown")
 
 
 def test_amendment_counts_three_codex_marker_shapes_and_cites_each() -> None:
     normalized = _normalized(_amendment_body())
     assert "in three shapes" in normalized
-    for cited in (":2019-2022", ":2141-2144", ":2173-2178"):
+    for cited in (":2573-2576", ":2695-2698", ":2727-2732"):
         assert cited in normalized, f"{cited} is not cited for its marker shape"
-    assert ":2233-2236" in normalized
+    assert ":2787-2790" in normalized
     # The fourth site is the same mapping shape, said so, not a fourth shape.
     assert "A fourth site repeats the mapping's shape rather than adding a new one" in normalized
     # The ``{"omitted": ...}`` entry the file-change echo appends is described as its
@@ -658,7 +658,7 @@ def test_react_context_removal_is_listed_in_the_starting_state() -> None:
 
 
 def test_the_file_change_echo_call_site_is_where_cited() -> None:
-    _in_span(_CODEX, 2422, 2422, "_bounded_changes(changes)")
+    _in_span(_CODEX, 2976, 2976, "_bounded_changes(changes)")
 
 
 def test_amendment_cites_the_value_error_guard_by_line() -> None:
@@ -688,7 +688,7 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
         304,
         "current.with_updates(prompt_context=extended_ctx)",
     )
-    _in_span("lionagi/operations/chat/chat.py", 62, 62, "_prepare_run_kwargs(")
+    _in_span("lionagi/operations/chat/chat.py", 66, 66, "_prepare_run_kwargs(")
     _in_span("lionagi/operations/run/run.py", 466, 466, "_prepare_run_kwargs(")
     _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
 
@@ -706,7 +706,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"blocks_injected": 0,',
         '"writeback_failed": 0,',
     )
-    _in_span(_BRANCH, 291, 303, "def last_context_report(self):", "``skipped``")
+    _in_span(_BRANCH, 293, 305, "def last_context_report(self):", "``skipped``")
     _in_span("lionagi/cli/monitor.py", 668, 679, '"blocks_injected",')
 
 

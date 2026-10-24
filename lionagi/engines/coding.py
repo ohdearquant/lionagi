@@ -20,7 +20,7 @@ from pydantic import Field
 
 from lionagi.casts.emission import Verdict
 from lionagi.ln._json_dump import raise_if_non_finite
-from lionagi.ln.concurrency import run_sync
+from lionagi.ln.concurrency import run_sync, sleep
 from lionagi.tools._subprocess import _SHELL_CONTROL, _subprocess_sync
 
 from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun
@@ -934,7 +934,7 @@ class CodingEngine(Engine):
 
         async def _loop() -> None:
             while True:
-                await asyncio.sleep(self.heartbeat_interval_s)
+                await sleep(self.heartbeat_interval_s)
                 elapsed = round(monotonic() - t0, 1)
                 run.notify("WorkerHeartbeat", elapsed_s=elapsed, stage=stage)
                 try:

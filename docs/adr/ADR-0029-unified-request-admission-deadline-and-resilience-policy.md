@@ -39,8 +39,8 @@ does not include admission, and the service cannot currently accept the inherite
 (`lionagi/operations/run/run.py`; `_stream_with_deadline`, `run`).
 
 **P5 — HTTP stream resilience diverges from one-shot calls.** `Endpoint.call()` combines configured
-retry and circuit policy or supplies a native aiohttp retry path. `Endpoint.stream()` calls
-`_stream_aiohttp()` directly. Connection establishment and response-header failures therefore do
+retry and circuit policy or supplies a native HTTPX retry path. `Endpoint.stream()` calls
+`_stream_http()` directly. Connection establishment and response-header failures therefore do
 not receive the same policy. Replaying after a chunk reaches a caller is unsafe because generic
 provider streams have no replay cursor
 (`lionagi/service/connections/endpoint.py`; `Endpoint.call`, `Endpoint.stream`).
@@ -468,7 +468,7 @@ The target carries forward these defaults with clarified meaning:
 | Value | Target meaning | Reason |
 |-------|----------------|--------|
 | `max_attempts=3` | Three total transport attempts for one logical request. | Preserves the native `EndpointConfig.max_retries=3` attempt count; the exact number is inherited. Explicit `RetryConfig(max_retries=3)` callers require migration because that path currently permits four attempts. |
-| `base_delay=1s`, `max_delay=60s`, factor `2.0`, jitter `0.2` | Deadline-clipped exponential backoff with jitter. | Pattern choice avoids synchronized retries; exact values are inherited from `RetryConfig` (whose `jitter_factor` default is 0.2 — the native no-`RetryConfig` aiohttp path currently hardcodes 0.5), with no recorded tuning evidence. |
+| `base_delay=1s`, `max_delay=60s`, factor `2.0`, jitter `0.2` | Deadline-clipped exponential backoff with jitter. | Pattern choice avoids synchronized retries; exact values are inherited from `RetryConfig` (whose `jitter_factor` default is 0.2 — the native no-`RetryConfig` HTTPX path currently hardcodes 0.5), with no recorded tuning evidence. |
 | Circuit `5` failures, `30s` recovery, `1` half-open call | Logical-request circuit thresholds. | Inherited current defaults; no measured tuning rationale is recorded. |
 
 **Why this way.** A retry boundary is safe only before output becomes observable. Total attempts are

@@ -8,7 +8,8 @@ import pytest
 # Module-level Node subclasses
 # These classes MUST live here (module scope) so that their __module__ and
 # __qualname__ produce a valid importable fully-qualified name that
-# Element.from_dict can resolve via LION_CLASS_REGISTRY or import_module.
+# Element.from_dict resolves through get_class (the registry, or an import
+# under an allowed prefix).
 # Imported at module level; the import triggers no registration by itself
 # (Node.__pydantic_init_subclass__ fires only for *subclasses* of Node).
 from lionagi.protocols.graph.node import Node
@@ -322,13 +323,46 @@ class TestGetClassDottedPathFallback:
     def test_dotted_path_import_failure_is_normalized_to_value_error(self, monkeypatch):
         import lionagi._class_registry as class_registry
 
+        failure = RuntimeError("module initialization failed")
+
         def fail_import(*args, **kwargs):
-            raise RuntimeError("module initialization failed")
+            raise failure
 
-        monkeypatch.setattr(class_registry, "import_module", fail_import)
+        monkeypatch.setattr(class_registry, "load_type_from_string", fail_import)
 
-        with pytest.raises(ValueError, match="Unable to find class"):
-            class_registry.get_class("broken.module.UniqueRegistryClass")
+        with pytest.raises(
+            ValueError,
+            match="Unable to find class .*loading it failed: module initialization failed",
+        ) as raised:
+            class_registry.get_class("lionagi.broken_module.UniqueRegistryClass")
+        assert raised.value.__cause__ is failure
+
+    def test_a_module_that_raises_on_import_surfaces_its_error(self, tmp_path, monkeypatch):
+        import sys
+
+        from lionagi._class_registry import get_class
+        from lionagi.ln import _utils as ln_utils
+
+        package = tmp_path / "zz_broken_pkg"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        (package / "models.py").write_text("raise ImportError('needs an optional dependency')\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(
+            ln_utils, "_ALLOWED_MODULE_PREFIXES", set(ln_utils._DEFAULT_ALLOWED_PREFIXES)
+        )
+        monkeypatch.setattr(ln_utils, "_TYPE_CACHE", {})
+        ln_utils.register_type_prefix("zz_broken_pkg.")
+
+        try:
+            with pytest.raises(ValueError, match="needs an optional dependency") as raised:
+                get_class("zz_broken_pkg.models.Thing")
+        finally:
+            sys.modules.pop("zz_broken_pkg.models", None)
+            sys.modules.pop("zz_broken_pkg", None)
+        cause = raised.value.__cause__
+        assert cause is not None
+        assert isinstance(cause.__cause__, ImportError)
 
 
 # Duplicate-name handling: last writer wins (overwrite semantics, pinned).

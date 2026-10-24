@@ -1,5 +1,5 @@
 {
-  "count": 144,
+  "count": 145,
   "routes": [
     {
       "ordinal": 0,
@@ -6572,6 +6572,54 @@
         "module": "lionagi.studio.app",
         "qualname": "create_app.<locals>.health"
       }
+    },
+    {
+      "ordinal": 143,
+      "path": "/api/sessions/{session_id}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "label_session",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Label Session Api Sessions  Session Id  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": "Set or clear the display label without changing the session's activity.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "label_session_route"
+      }
     }
   ],
   "openapi": {
@@ -12066,6 +12114,58 @@
               }
             }
           }
+        },
+        "put": {
+          "tags": [
+            "sessions"
+          ],
+          "summary": "Label Session",
+          "description": "Set or clear the display label without changing the session's activity.",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionLabelBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Label Session Api Sessions  Session Id  Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
         }
       },
       "/api/sessions/{session_id}/signals": {
@@ -14495,6 +14595,25 @@
         ],
         "title": "SaveBody"
       },
+      "SessionLabelBody": {
+        "properties": {
+          "user_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Label"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SessionLabelBody",
+        "description": "An omitted label preserves it; null or a blank string clears it."
+      },
       "SkillValidateBody": {
         "properties": {
           "content": {
@@ -14604,6 +14723,17 @@
               }
             ],
             "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
           },
           "pinned": {
             "type": "boolean",

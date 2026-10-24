@@ -533,12 +533,10 @@ async def mcp_integration() -> None:
 
 
 async def image_and_document_reading() -> None:
-    """Multimodal file access: text with line numbers, images as base64, docs via docling.
+    """Multimodal file access: text with line numbers and images as base64.
 
     CodingToolkit's reader tool auto-detects images by extension and returns a
-    base64 data URL so vision-capable LLMs can see them directly.  ReaderTool
-    (standalone) adds action='open' for docling conversion of PDF/PPTX/DOCX/HTML
-    with an in-process LRU cache keyed by path.
+    base64 data URL so vision-capable LLMs can see them directly.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         # Use .resolve() to ensure macOS /private/var symlink is expanded.
@@ -573,7 +571,7 @@ async def image_and_document_reading() -> None:
         print("Content prefix:", prefix, "...")
         print("Size bytes:", img_result.get("size_bytes"))
 
-        # --- ReaderTool standalone (adds docling 'open' action + cache) ---
+        # --- ReaderTool standalone ---
         from lionagi.tools.file.reader import ReaderAction, ReaderRequest, ReaderTool
 
         reader = ReaderTool(workspace_root=root)
@@ -581,18 +579,6 @@ async def image_and_document_reading() -> None:
         req = ReaderRequest(action=ReaderAction.read, path=str(txt))
         resp = await reader.handle_request(req)
         print("\nReaderTool.read — success:", resp.success)
-
-        # ReaderTool.open converts documents via docling (requires lionagi[reader]).
-        # The converted text is cached; subsequent 'read' calls slice the cache.
-        print(
-            "\nReaderTool.open (docling) pattern:\n"
-            "  1. req = ReaderRequest(action=ReaderAction.open, path='report.pdf')\n"
-            "  2. resp = await reader.handle_request(req)  # converts + caches\n"
-            "  3. req = ReaderRequest(action=ReaderAction.read, path='report.pdf',\n"
-            "                         offset=0, limit=100)\n"
-            "  4. resp = await reader.handle_request(req)  # slices cache — no re-convert\n"
-            "(Install: pip install lionagi[reader])"
-        )
 
 
 # ---------------------------------------------------------------------------

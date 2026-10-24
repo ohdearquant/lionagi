@@ -57,19 +57,19 @@ def _amendment_flat() -> str:
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
     assert "run.spawn" in _span("lionagi/engines/hypothesis.py", 890, 961)
-    assert "run.spawn" in _line("lionagi/engines/review.py", 615)
+    assert "run.spawn" in _line("lionagi/engines/review.py", 616)
     assert "run.spawn" in _line("lionagi/engines/research.py", 187)
     assert "run.spawn" in _line("lionagi/engines/research.py", 191)
 
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
     assert "observe(self.spawn_type, self._on_bus_spawn)" in _line(
-        "lionagi/operations/flow.py", 1163
-    )
-    assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
         "lionagi/operations/flow.py", 1164
     )
-    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1456)
+    assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
+        "lionagi/operations/flow.py", 1165
+    )
+    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1457)
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
@@ -82,12 +82,12 @@ def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
 
 
 def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
-    assert "class ReviewVerdict(Verdict)" in _line("lionagi/engines/review.py", 280)
-    assert "await run.emit(final)" in _line("lionagi/engines/review.py", 841)
+    assert "class ReviewVerdict(Verdict)" in _line("lionagi/engines/review.py", 281)
+    assert "await run.emit(final)" in _line("lionagi/engines/review.py", 842)
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _line("lionagi/state/schema.sql", 463)
+    assert "github_cursor" in _line("lionagi/state/schema.sql", 464)
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
@@ -98,16 +98,16 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1378)
+        _line("lionagi/cli/orchestrate/_orchestration.py", 1488)
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1414)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1986)
+    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1524)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1992)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5342)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7181)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7206)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5368)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7207)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7232)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -126,9 +126,9 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:7181-7191" in flat
-    assert "lionagi/state/db.py:7206-7223" in flat
+    assert "lionagi/state/schema.sql:798-802" in flat
+    assert "lionagi/state/db.py:7207-7217" in flat
+    assert "lionagi/state/db.py:7232-7249" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -143,7 +143,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     flat = _flat()
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
-    assert "lionagi/session/branch.py:441-469" in flat
+    assert "lionagi/session/branch.py:474-502" in flat
     assert "lionagi/operations/run/run.py:817-828" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:581-598" in flat
@@ -179,7 +179,7 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionagi/engines/review.py:280`, `:841" in flat
+    assert "lionagi/engines/review.py:281`, `:842" in flat
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven
@@ -248,9 +248,9 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
-    assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:5342-5344" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py:1488" in flat
+    assert "lionagi/state/schema.sql:464" in flat
+    assert "lionagi/state/db.py:5368-5370" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
@@ -260,7 +260,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1986-2031" in flat
+    assert "lionagi/cli/orchestrate/flow.py:1992-2037" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
@@ -407,7 +407,7 @@ def test_amendment_citations_match_the_head_line_ranges() -> None:
     assert "already-committed source fact (`:493-498`)" in flat
     assert "durable delivery state (`:493-498`)" in flat
     assert "ADR-0125:495-499" in flat
-    assert "lionagi/session/branch.py:441-469`, `:1066-1119" in flat
+    assert "lionagi/session/branch.py:474-502`, `:1147-1200" in flat
     assert ":487-494" not in flat
     assert "(`:559`)" not in flat
     assert "`:1102-1115" not in flat

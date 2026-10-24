@@ -934,8 +934,7 @@ async def mirror_forever(
 
 
 async def _run(args: argparse.Namespace) -> int:
-    import anyio
-
+    from lionagi.ln.concurrency import sleep
     from lionagi.state.db import StateDB
 
     source = getattr(args, "source", "both")
@@ -1003,7 +1002,7 @@ async def _run(args: argparse.Namespace) -> int:
                 progress(f"  mirrored {n} new message(s)")
             if args.once:
                 break
-            await anyio.sleep(args.interval)
+            await sleep(args.interval)
     return 0
 
 

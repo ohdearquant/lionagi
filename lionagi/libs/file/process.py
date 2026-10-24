@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from lionagi import ln
-from lionagi.utils import is_import_installed
 
 from .chunk import chunk_content
 
@@ -96,20 +95,10 @@ def chunk(
 
             reader_tool = read_text
 
-        if reader_tool == "docling":
-            if not is_import_installed("docling"):
-                raise ImportError(
-                    "The 'docling' package is required for this feature. "
-                    "Please install it via 'pip install lionagi[reader]'."
-                )
-            from docling.document_converter import DocumentConverter
-
-            converter = DocumentConverter()
-
-            def read_document(x):
-                return converter.convert(x).document.export_to_markdown()
-
-            reader_tool = read_document
+        if not callable(reader_tool):
+            raise TypeError(
+                f"reader_tool must be a callable that returns a file's text, got {reader_tool!r}"
+            )
 
         texts = ln.lcall(files, reader_tool)
 

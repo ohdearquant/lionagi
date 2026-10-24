@@ -76,6 +76,17 @@ async def test_evict_is_non_destructive():
     assert len(b.msgs.progression) == total  # full record untouched
 
 
+async def test_a_message_added_after_the_view_exists_enters_it():
+    b = _build_branch()
+    res = await _call(b, action="evict", start=1, end=4)
+    assert res["success"]
+    later = b.msgs.add_message(instruction="a later question")
+    answer = await b.msgs.a_add_message(assistant_response="a later answer")
+
+    assert list(b.progression)[-2:] == [later.id, answer.id]
+    assert len(b.progression) == len(b.msgs.progression) - 3  # the evicted three stay out
+
+
 async def test_evict_cannot_remove_system():
     b = _build_branch()
     await _call(b, action="evict", start=0, end=1)  # start clamped to 1
@@ -162,6 +173,81 @@ async def test_compact_summary_takes_the_place_of_the_first_collapsed_message():
     assert res["success"] is True and res["compacted"] == 2
     assert b.progression[3] != first_tool_request
     assert "CONTEXT COMPACTION" in b.msgs.messages[b.progression[3]].content.assistant_response
+
+
+async def test_the_compaction_summary_is_in_the_view_once():
+    b = _build_branch()
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True
+
+    notes = [
+        u
+        for u in b.progression
+        if "CONTEXT COMPACTION"
+        in str(getattr(b.msgs.messages[u].content, "assistant_response", ""))
+    ]
+    assert notes == [b.progression[3]]
+
+
+async def test_a_replacement_system_message_heads_the_view_in_place_of_the_old_one():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=3)
+    old = b.msgs.system.id
+    b.msgs.add_message(system="You are a reviewing agent.")
+
+    assert b.progression[0] == b.msgs.system.id
+    assert old not in b.progression
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True, res
+
+
+async def test_a_system_message_set_directly_heads_the_view_and_restore_still_works():
+    b = _build_branch()
+    await _call(b, action="evict", start=1, end=4)
+    old = b.msgs.system.id
+    b.msgs.set_system(b.msgs.create_system(system="You are a reviewing agent."))
+
+    assert b.progression[0] == b.msgs.system.id
+    assert old not in b.progression
+    assert all(uid in b.msgs.messages for uid in b.progression)
+    res = await _call(b, action="restore", start=1, end=4)
+    assert res["success"] is True, res
+    res = await _call(b, action="compact", start=1, end=5, summary="s")
+    assert res["success"] is True, res
+
+
+async def test_clearing_the_messages_leaves_the_system_message_as_the_view():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=3)
+    b.msgs.clear_messages()
+
+    assert list(b.progression) == [b.msgs.system.id]
+    msg = b.msgs.add_message(instruction="start over")
+    assert list(b.progression) == [b.msgs.system.id, msg.id]
+
+
+async def test_a_restored_view_keeps_only_messages_the_stored_record_holds():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=5)
+    view = list(b.progression)
+    stray = b.msgs.create_message(instruction="never added")
+    b.metadata["current_progression"].append(stray.id)
+
+    restored = Branch.from_dict(b.to_dict())
+    assert list(restored.progression) == view
+
+
+async def test_a_restored_branch_keeps_its_view_and_admits_new_messages():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=5)
+    view = list(b.progression)
+
+    restored = Branch.from_dict(b.to_dict())
+    assert list(restored.progression) == view
+    msg = restored.msgs.add_message(instruction="next step")
+    assert list(restored.progression) == [*view, msg.id]
+    res = await _call(restored, action="compact", start=1, end=6, summary="s")
+    assert res["success"] is True, res
 
 
 async def test_compact_keeps_working_when_the_view_already_has_two_instructions_in_a_row(

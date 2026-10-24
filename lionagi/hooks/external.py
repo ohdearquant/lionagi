@@ -504,9 +504,16 @@ async def _write_stdin(proc: Any, data: bytes) -> None:
     stdin = proc.stdin
     if stdin is None:
         return
-    stdin.write(data)
-    await stdin.drain()
-    stdin.close()
+    try:
+        stdin.write(data)
+        await stdin.drain()
+        stdin.close()
+    except (BrokenPipeError, ConnectionResetError):
+        # A hook may exit without reading its input. Once the read end is
+        # closed, the envelope write cannot land, but that is the hook's
+        # valid early exit -- not a runner failure.
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            stdin.close()
     with contextlib.suppress(Exception):
         await stdin.wait_closed()
 

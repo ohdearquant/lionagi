@@ -39,13 +39,58 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   raised. The driver's statement cache is off (`cached_statements=0`) because the authorizer runs
   only when SQLite prepares a statement, and one of its decisions (no COMMIT of a transaction in
   which a statement was denied) depends on the transaction, not on the statement text.
-- `has_wal_reset_fix()` — SQLite documents a data race between a starting checkpoint and a
-  commit that resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
-  header field, and a later checkpoint then skips part of the committed transaction,
-  corrupting the database. It reaches every WAL-mode release from 3.7.0 up to and including
-  3.51.2, fixed in 3.51.3 with backports on the 3.44 and 3.50 branches. Exposure needs two
-  connections writing or checkpointing at the same instant, which is exactly what this store
-  does — hence the startup warning when an unfixed SQLite is linked.
+- `has_wal_reset_fix()` — returns true for known fixed versions and versions that predate WAL;
+  see the
+  [SQLite WAL-reset policy](#sqlite-wal-reset-policy) below.
+
+#### SQLite WAL-reset policy
+
+The writable state engine requests WAL for concurrent readers and writers. On a linked SQLite
+version without a known WAL-reset fix, it warns when a connection first enters WAL mode and
+continues. Creating the engine alone does not warn, and in-memory connections that remain in
+memory journal mode do not warn. Compatibility engines leave the store's journal mode unchanged:
+they warn when constructed, before connection setup and admission, which may then refuse a
+non-WAL store. The warning is shared once per process across both engine types. Read-only engines
+do not emit it. The engine does not impose a version floor or serialize every connection to the
+database file. Deployments using concurrent state access should use a fixed runtime rather than
+treating the warning as a corruption safeguard.
+
+[SQLite's WAL-reset documentation](https://www.sqlite.org/wal.html#walresetbug) identifies the
+**likely** affected range as 3.7.0 through 3.51.2. The fix is in 3.51.3 and later, and is also
+backported to the 3.44 branch from 3.44.6 and the 3.50 branch from 3.50.7. A release on another
+branch, such as 3.46.0, does not gain the fix merely by sorting after 3.44.6. The
+[3.51.3 release notes](https://www.sqlite.org/releaselog/3_51_3.html) confirm the fix.
+
+The race requires a WAL-mode database with two or more connections to the **same file**, in
+separate threads or processes, attempting writes or checkpoints at the same instant. A
+checkpoint that starts while another connection commits a WAL reset can miss that reset;
+a later checkpoint can then skip committed data. Upstream describes tight timing constraints
+and an unusual usage pattern. Ordinary `SQLITE_BUSY` or "database is locked" errors are not
+proof that this corruption race occurred, and a successful run does not rule out exposure.
+
+Check the library used by the actual process that opens the store. Run the following with
+the same Python interpreter, virtual environment or container that launches the CLI, Studio
+or worker; replace `python` with that interpreter's path when needed:
+
+```bash
+python -c "import sqlite3, sys; print(sys.executable); print(sqlite3.sqlite_version)"
+```
+
+Use a Python build or runtime linked to SQLite 3.51.3 or later, or one of the fixed backport
+branches above. After changing the runtime, restart every process accessing that store and
+repeat the check in each launch environment. Updating a separate `sqlite3` command-line
+program, or reinstalling this package, does not establish which library Python's `sqlite3`
+module uses.
+
+If an upgrade must wait, excluding this race's concurrent-connection condition requires an
+application-wide guarantee: only one live connection to that file at a time, with its entire
+lifetime and all reads, writes and checkpoints serialized across every thread and process.
+This includes pooled connections, Studio, workers, maintenance and external tools. The
+engine does not provide that cross-process guarantee. One application writer, a writer-only
+lock, fewer workers, or disabling manual checkpoints alone is insufficient: other connections
+can remain open, and SQLite also checkpoints automatically on commits or the last connection's
+close. Only use temporary serialization when the deployment can enforce the full guarantee;
+otherwise use a fixed runtime before running concurrent state workloads.
 
 ### `state/compat.py`
 
@@ -1401,11 +1446,11 @@ only while its declared target remains trusted, removing it on
 ### Retry & sentinel-exclusion contract (`connections/endpoint.py`, `providers.py`, `resilience.py`)
 
 - `endpoint.py` — 4xx (non-429) client errors are wrapped in `_NonRetryableClientError` so the
-  original `aiohttp.ClientResponseError` stays inspectable via `__cause__` while retry logic
+  original `APIClientError` stays inspectable via `__cause__` while retry logic
   sees an excluded type. The sentinel must stay excluded until whichever retry layer is active
   (the outer `retry_config`-driven wrapper in `call()`, or the native path in
-  `_call_aiohttp()`) has given up — unwrapping earlier would let a broad
-  `retry_exceptions=(aiohttp.ClientError,)` config replay a 400/401/403 the transport contract
+  `_call_http()`) has given up — unwrapping earlier would let a broad
+  `retry_exceptions=(APIClientError,)` config replay a 400/401/403 the transport contract
   intends as single-shot. Request bodies are rebuilt inside the per-attempt function rather
   than before retry orchestration, because `FormData`/`BytesIO`/file-stream bodies can be
   consumed by the first POST and must not be silently replayed on a later attempt. In the

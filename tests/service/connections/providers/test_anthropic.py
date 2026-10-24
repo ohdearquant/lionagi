@@ -94,7 +94,7 @@ class TestAnthropicIntegration:
         with patch.object(
             anthropic_imodel.endpoint,
             "call",
-            return_value=mock_anthropic_response.json.return_value,
+            return_value=mock_anthropic_response.json(),
         ):
             result = await anthropic_imodel.invoke(
                 messages=[{"role": "user", "content": "Hello, Claude!"}],
@@ -167,7 +167,7 @@ class TestAnthropicIntegration:
             assert payload["model"] == model
 
     def test_anthropic_error_handling(self, anthropic_imodel):
-        # max_tokens is required for Anthropic
+        # An output limit below 1 is refused; one left unset is supplied by the endpoint.
         with pytest.raises(
             ValueError
         ):  # endpoint wraps pydantic ValidationError as ValueError("Invalid payload")
@@ -175,7 +175,7 @@ class TestAnthropicIntegration:
                 {
                     "messages": [{"role": "user", "content": "Hello"}],
                     "model": "claude-3-opus-20240229",
-                    # Missing max_tokens
+                    "max_tokens": 0,
                 }
             )
 
@@ -196,7 +196,7 @@ class TestAnthropicIntegration:
 
         async def mock_request_with_delay(request, cache_control=False, **kwargs):
             await asyncio.sleep(0.1)
-            response = mock_anthropic_response.json.return_value.copy()
+            response = mock_anthropic_response.json().copy()
             response["id"] = f"msg_{request['messages'][0]['content'][-1]}"
             return response
 

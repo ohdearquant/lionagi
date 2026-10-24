@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
+from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
@@ -28,7 +29,7 @@ from .code.search import SearchAction as SearchAction  # re-export: preserves th
 from .code.search import SearchRequest, _visible_grep_lines
 from .context.context import ContextRequest, ContextTool
 from .file.editor import EditorRequest, _write_text_no_follow
-from .file.reader import ReaderRequest, _evict_expired, _open_sync, _read_cached
+from .file.reader import ReaderRequest
 from .file.reader import _list_dir_sync as _file_list_dir_sync
 from .file.reader import _read_sync as _file_read_sync
 
@@ -360,7 +361,7 @@ class CodingToolkit(LionTool):
         self.notify = notify
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
-        self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        self.workspace_root = _resolve_workspace_root(workspace_root)
         self.sandbox_allow_protected = sandbox_allow_protected
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
@@ -447,10 +448,6 @@ class CodingToolkit(LionTool):
                 else:
                     read_tracked.discard(resolved)
 
-        # Docling conversion cache, keyed by path — same (text, cached_at)
-        # layout as ReaderTool's cache so _read_cached/_evict_expired reuse it.
-        _open_cache: dict[str, tuple[str, float]] = {}
-
         async def reader(
             action: str,
             path: str,
@@ -459,32 +456,18 @@ class CodingToolkit(LionTool):
             recursive: bool | None = None,
             file_types: list[str] | None = None,
         ) -> dict:
-            """Read files, convert documents (PDF/PPTX/DOCX/HTML via docling), or list directory contents.
-            Use action='open' then action='read' with offset/limit to paginate a converted document.
-            """
+            """Read files or list directory contents."""
             # Canonical empty-path contract: every reader action requires path,
             # matching ReaderTool.handle_request's pre-dispatch guard.
             if not path:
                 return {
                     "success": False,
                     "content": None,
-                    "error": "'path' is required. Provide a file path for 'read'/'open' or a directory path for 'list_dir'.",
+                    "error": "'path' is required. Provide a file path for 'read' or a directory path for 'list_dir'.",
                 }
-            if action == "open":
-                _evict_expired(_open_cache)
-                resp = await run_sync(_open_sync, path, _open_cache, workspace_root, frozenset())
-                return {"success": resp.success, "content": resp.content, "error": resp.error}
             if action == "read":
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
-                # Serve from docling cache if the path was previously opened.
-                cached = _read_cached(path, start, max_lines, _open_cache)
-                if cached is not None:
-                    return {
-                        "success": cached.success,
-                        "content": cached.content,
-                        "error": cached.error,
-                    }
                 result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
                 _track(result, is_read=True)
                 return result

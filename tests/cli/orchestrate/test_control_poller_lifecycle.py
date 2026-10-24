@@ -22,6 +22,7 @@ import pytest
 from lionagi.casts.emission import TaskAssignment
 from lionagi.cli.orchestrate import flow as _flow
 from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+from lionagi.ln.concurrency import sleep
 from lionagi.state.db import StateDB
 
 from .test_control_poller import _FakeExecutor, _make_session, _queue_control
@@ -248,6 +249,9 @@ async def test_ctl_task_crash_does_not_kill_the_run(tmp_path, monkeypatch):
 async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, monkeypatch):
     """Before `run_dag` populates `executor_ref`, the poller must find no
     executor and skip the tick — not raise — for as many ticks as it takes."""
+    # Resolve the backend before replacing the poller's sleep, keeping this
+    # lifecycle assertion independent of earlier tests' backend imports.
+    await sleep(0)
     monkeypatch.setattr(_flow, "_CONTROL_POLL_INTERVAL", 0.02)
     original_sleep = asyncio.sleep
     completed_empty_ticks = asyncio.Event()
@@ -263,7 +267,7 @@ async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, 
             completed_empty_ticks.set()
         await original_sleep(0)
 
-    monkeypatch.setattr(_flow._asyncio, "sleep", _observed_sleep)
+    monkeypatch.setattr(_flow, "sleep", _observed_sleep)
 
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _make_session(db)

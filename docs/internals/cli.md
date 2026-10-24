@@ -345,15 +345,46 @@ grants everything the file lists, job control included, for a worker meant to
 orchestrate in turn. A submission's snapshot is the exception: it is read as
 found even when named (above), so the policy still applies to it. Once a worker set exists it is the worker's whole set, handed over
 exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
-of the servers it would discover itself, and every server a codex config
-declares outside the set is disabled by name. A worker handed a set therefore
-has none of the servers its CLI would load from its own configuration, a
-withheld one included; the orchestrator keeps them. To disable them a codex
-worker reads codex's own server list (`$CODEX_HOME/config.toml`, else `codex
-mcp list --json`), and its build fails rather than leave them enabled when
-neither can be read, as a `--no-mcp-config` codex worker's build already does.
-The synthesis branch starts from a copy of the orchestrator's model, so the
-same exclusive hand-over is what takes the orchestrator's servers off it. A
+of the servers it would discover itself. Every worker, a reactively spawned node included, is passed through
+`_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker
+runs with `--ignore-user-config` and no `-p` profile, so the servers and
+profiles of the user's codex config never load and none needs disabling by
+name. The config's `sandbox_mode`, its `[sandbox_workspace_write]` settings,
+its hook trust records and its `[projects]` trust decisions ride beside the
+flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still run for the
+worker and a project it trusts gets the sandbox codex derives for it; a
+config that declares hooks or sets `default_permissions` itself is refused,
+and so is one this Python's TOML parser refuses: on Python 3.11 and later that
+includes the TOML 1.1 syntax codex itself reads (`agent-runtime.md` lists it),
+and the same config written in TOML 1.0 starts.
+Both read the config in the codex home the worker's environment names (its
+`env` when it has one, else this process's environment; one naming neither
+`CODEX_HOME` nor `HOME` names the OS account's home): a `CODEX_HOME` that a
+`secrets.lookup` fill adds to the
+child's environment at spawn is not seen by them, since the fill comes after,
+so set it in the worker's `env` or in this process's environment. A
+`CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an absolute
+path is refused before either read or any process starts, from either
+environment.
+A Claude worker is not isolated here and keeps its settings sources, as an
+interactive run does. A worker therefore has none of the servers its CLI would load
+from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
+synthesis branch starts from a copy of the orchestrator's model and is not
+isolated, so the same exclusive hand-over is what takes the orchestrator's
+servers off it: on codex, with a non-empty set, or an allowlist naming a server its
+config declares, every server its config declares outside the set is disabled by
+name, read from codex's own server list (`$CODEX_HOME/config.toml`, else
+`codex mcp list --json`), and its build fails rather than leave them enabled when
+neither can be read. An empty set whose allowlist names none of those servers
+carries `--ignore-user-config` instead, and nothing is disabled by name. If the
+request names a codex profile, or its config overrides select one (`profile`), its
+build is refused either way: the flag drops the profile, and the disables by name do
+not reach a server only the profile declares. A `codex/<name>` model string that
+names a profile file is read by lionagi before codex starts, so under the flag its
+model settings still apply (`model` and every key starting with `model_`, provider
+routing included), and a profile that sets anything else, `sandbox_mode` or
+`approval_policy` for instance, is refused: for a planned worker when it is built, and
+for a codex orchestrator's profile before a run whose spawns can clone it starts. A
 worker whose provider has no transport for the set is warned
 about, naming the worker (`label`) since a run's workers can resolve
 different providers. `{}` (an explicit empty set) and `None` (no set at all)
@@ -876,7 +907,7 @@ default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
 `export_dir`: the CLI knows what directory it passed; neither `CodeResultRecorded`
-(`lionagi/engines/coding.py:153` — fields: `passed`, `measurements`, `caveats`,
+(`lionagi/engines/coding.py:125-131` — fields: `passed`, `measurements`, `caveats`,
 `experiment_ref`, `verdict_ref`) nor the hypothesis string echo it back. `export_dir` is sourced
 from args directly for kinds that accept the flag, falling back to `result_data` for any future
 engine model that does include it.
@@ -1084,7 +1115,7 @@ LION system text. The post-factory `add_message` on the preset path is skipped t
 
 **`_run_agent` raw_body vs system_prompt** — uses `profile.raw_body` (not
 `profile.system_prompt`) to avoid duplicating `LION_SYSTEM_MESSAGE`: `_parse_profile` prepends
-it into `system_prompt` when `lion_system=True`, and `factory.py:117-125` also prepends it
+it into `system_prompt` when `lion_system=True`, and `factory.py:297-300` also prepends it
 because `spec.lion_system` remains `True`. `raw_body` is the profile body before that expansion;
 the factory adds the header exactly once. When `lion_system=False`, `raw_body == system_prompt`
 so both paths are consistent.
@@ -1157,6 +1188,21 @@ before plus a pointer to the opt-in:
   other turn failure does: the session records `failed` and the error's message, and `li agent`
   reports the error and exits non-zero. Any other value, or `api_loop` without `api_tools`, is
   refused before a run exists.
+- `max_input_tokens`: the ceiling on each request's estimated input (ADR-0130), a positive whole
+  number of tokens, `auto` (the default) or `none`. `auto` is the first price tier's prompt bound
+  for an Anthropic model the pricing table prices by prompt length (100,000 for `claude-haiku-5-5`)
+  and no ceiling for any other model; the leg prints the ceiling and its source when it starts. The
+  estimate is the `o200k_base` count of the request as built, times the provider's reported input
+  per counted token so far (`iModel.input_token_scale`), and a request over the ceiling is refused
+  before it is sent. When its estimate of the next request (the active view compiled with the newest
+  instruction standing in for the one about to be sent) reaches 80% of the ceiling, the host folds
+  older tool calls and results into a note
+  that lists them, then, if that is not enough, older reasoning into a summary from one model call,
+  down toward 60% (`lionagi/agent/context_fold.py`). A request the ceiling still refuses is folded
+  and the loop continues, at most twice per turn (the task, or one queued message); a refusal the
+  fold cannot clear fails the turn.
+  The run's `run.json` records every fold under `context_folds`. Any other value, or
+  `max_input_tokens` without `api_tools`, is refused before a run exists.
 
 `--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
 A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off

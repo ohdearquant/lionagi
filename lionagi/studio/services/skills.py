@@ -3,7 +3,6 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 
-import anyio
 import yaml
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -12,6 +11,7 @@ from lionagi._paths import LIONAGI_HOME
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.frontmatter import parse_frontmatter_strict as _parse_frontmatter_strict
 from lionagi.libs.path_safety import validate_bare_name
+from lionagi.ln.concurrency import run_sync
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
@@ -141,13 +141,13 @@ class SkillValidateBody(BaseModel):
 
 @studio_route("/skills/", method="GET", area="skills", name="list_skills")
 async def list_skills_route() -> dict[str, Any]:
-    skills = await anyio.to_thread.run_sync(list_skills)
+    skills = await run_sync(list_skills)
     return {"skills": skills}
 
 
 @studio_route("/skills/{name}", method="GET", area="skills", name="get_skill")
 async def get_skill_route(name: str) -> dict[str, Any]:
-    skill = await anyio.to_thread.run_sync(partial(get_skill, name))
+    skill = await run_sync(partial(get_skill, name))
     if skill is None:
         raise HTTPException(status_code=404, detail=f"Skill '{name}' not found")
     return skill
@@ -155,5 +155,5 @@ async def get_skill_route(name: str) -> dict[str, Any]:
 
 @studio_route("/skills/{name}/validate", method="POST", area="skills", name="validate_skill")
 async def validate_skill_route(name: str, body: SkillValidateBody) -> dict[str, Any]:
-    errors = await anyio.to_thread.run_sync(partial(validate_skill_content, body.content, name))
+    errors = await run_sync(partial(validate_skill_content, body.content, name))
     return {"ok": not errors, "errors": errors or None}

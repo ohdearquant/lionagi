@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
+from typing import Any, ClassVar, Generic, Literal, TypeVar, cast, get_origin
 from uuid import UUID
 
 from pydantic import Field, PrivateAttr, field_serializer
@@ -77,36 +77,48 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     if value is None:
         return None
 
-    value = to_list_type(value)
-    out = set()
+    value = [value] if isinstance(value, str) else to_list_type(value)
+    resolved = []
 
-    from lionagi.utils import import_module
+    from lionagi._class_registry import _cut, _quoted, _shown, get_class
 
     for i in value:
-        subcls = i
+        pending = [i]
         if isinstance(i, str):
-            try:
-                mod, imp = i.rsplit(".", 1)
-                subcls = import_module(mod, import_name=imp)
-            except Exception as e:
+            if "." not in i:
+                # A bare name says nothing about which package's class it means.
                 raise ValidationError.from_value(
-                    i,
-                    expected="An importable type.",
-                    cause=e,
-                ) from e
-        if isinstance(subcls, type):
-            if is_union_type(subcls):
-                out.update(union_members(subcls))
+                    _cut(i),
+                    expected="A type.",
+                    message=(
+                        f"item_type {_quoted(i)} names no module: pass the class itself or "
+                        "its dotted path, such as 'lionagi.protocols.generic.element.Element'"
+                    ),
+                )
+            try:  # Imports a module only under an allowed prefix, with its parents.
+                pending = [get_class(i)]
+            except Exception as e:
+                raise ValidationError.from_value(_cut(i), message=str(e), cause=e) from e
+        # A union counts as each member, nested ones too; never None, Any, a ForwardRef, a generic.
+        while pending:
+            m = pending.pop()
+            if is_union_type(m):
+                pending.extend(union_members(m))
+            elif isinstance(m, type) and m not in (type(None), Any) and get_origin(m) is None:
+                resolved.append(m)
             else:
-                out.add(subcls)
-        else:
-            raise ValidationError.from_value(i, expected="A type.")
+                shown, refused = _shown(i), f"item_type cannot hold {_shown(m)}"
+                raise ValidationError.from_value(
+                    shown, expected="A type.", message=refused, type=_cut(type(i).__name__)
+                )
 
-    if len(value) != len(set(value)):
+    # Compared once resolved and unions expanded: a type and its name, two names
+    # for one class, or a type and a union holding it repeat one item type.
+    if len(resolved) != len(set(resolved)):
         raise ValidationError("Detected duplicated item types in item_type.")
 
     if len(value) > 0:
-        return out
+        return set(resolved)
 
 
 def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progression:

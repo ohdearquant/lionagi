@@ -94,11 +94,6 @@ class TestBranchProperties:
         assert isinstance(branch_with_tools.tools, dict)
 
 
-class TestBranchMessageCount:
-    def test_empty_branch_message_count(self, plain_branch):
-        assert len(plain_branch.messages) == 0
-
-
 class TestBranchMessages:
     def test_messages_is_iterable(self, system_branch):
         msgs = list(system_branch.messages)

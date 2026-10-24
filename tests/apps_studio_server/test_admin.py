@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1052,44 +1053,55 @@ def test_one_scan_answers_once_per_artifact_root(tmp_path):
 
 # How long a deliberately-blocked walk is held, how often the probe below takes
 # the loop's pulse, and how long a stall has to be before it counts as the loop
-# having been held. The tolerance sits well above scheduling jitter at this tick
-# rate and well below the block, so neither a loaded machine nor a marginal
-# improvement can decide the verdict.
-_BLOCK_SECONDS = 0.5
+# having been held. A walk left on the loop stalls it for at least the whole
+# block, so the tolerance sits at half the block: equal margin on each side.
+_BLOCK_SECONDS = 1.5
 _TICK_SECONDS = 0.005
-_STALL_TOLERANCE = 0.2
+_STALL_TOLERANCE = _BLOCK_SECONDS / 2
 
 
-async def _max_loop_stall(coro) -> float:
-    """Run *coro*, returning the longest the loop went without giving a turn.
+async def _max_loop_stall(coro, during: list[tuple[float, float]] | None = None) -> float:
+    """Run *coro*, returning the longest stall, over the run or inside *during*.
 
     Counting turns is not enough, and the difference is not academic: a
     coroutine that is slow for legitimate reasons accumulates plenty of turns
     around its blocking section, so the count comes out healthy whether or not
     the blocking work was offloaded. An earlier version of this helper counted,
-    and one of the two endpoints below passed under a deliberately reintroduced
+    and one of the endpoints below passed under a deliberately reintroduced
     defect because of it.
 
-    The longest gap does not dilute with the coroutine's total length. It is
-    also the number another in-flight request actually experiences, which is
-    what the property is about.
+    Without *during*, the result is the longest gap anywhere in the run. It
+    does not dilute with the coroutine's total length, and it is the number
+    another in-flight request actually experiences.
+
+    With *during*, a list of ``(start, end)`` intervals filled in while *coro*
+    runs, the result is the largest overlap of one gap with one interval, so
+    on-loop work outside every interval is not measured. A walk left on the
+    loop leaves no turn anywhere inside its interval, so it still measures the
+    whole block; the coroutine's own work before and after the walk (opening
+    the store, classifying the row, writing the transition) does not count.
     """
-    worst = 0.0
-    last = time.perf_counter()
+    ticks = [time.perf_counter()]
     task = asyncio.ensure_future(coro)
     while not task.done():
         await asyncio.sleep(_TICK_SECONDS)
-        now = time.perf_counter()
-        worst = max(worst, now - last)
-        last = now
+        ticks.append(time.perf_counter())
     await task
-    return worst
+    windows = during if during is not None else [(ticks[0], ticks[-1])]
+    return max(
+        (
+            max(0.0, min(b, end) - max(a, start))
+            for a, b in zip(ticks, ticks[1:], strict=False)
+            for start, end in windows
+        ),
+        default=0.0,
+    )
 
 
 @pytest.mark.parametrize(
     "endpoint", ["list_phantom_sessions", "health_report", "transition_sessions"]
 )
-def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
+def test_a_lock_scan_walks_off_the_loop_that_serves_every_other_request(
     tmp_path, monkeypatch, endpoint
 ):
     """The artifact walk runs off the event loop, so other requests keep moving.
@@ -1103,12 +1115,14 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     Two arms: the loop is never held for long while a walk is deliberately
     blocked, and a walk really ran (otherwise a scan that reached no row at
     all would leave the loop idle and pass the first assertion vacuously).
+    Only the walk is measured: the scan's other work on the loop (the per-row
+    liveness probe, opening the store, writing the transition) is not.
 
     Every coroutine that walks is covered, not just the one the defect was
     first noticed in -- they offload at separate call sites, so a guard on
     one says nothing about the others. The instrument's own sensitivity is
     checked separately by
-    ``test_the_tick_counter_would_have_caught_a_walk_left_on_the_loop``.
+    ``test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop``.
     """
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_svc
@@ -1145,11 +1159,14 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     _run(_age_and_record_dead_pid())
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    walked: list[Path] = []
+    walks: list[tuple[float, float]] = []
+    walk_threads: list[int] = []
 
     def slow_walk(root, *, cutoff, budget=None):
-        walked.append(root)
+        walk_threads.append(threading.get_ident())
+        start = time.perf_counter()
         time.sleep(_BLOCK_SECONDS)
+        walks.append((start, time.perf_counter()))
         return admin_svc._ScanResult(None, False)
 
     monkeypatch.setattr(admin_svc, "_walk_for_stale_lock", slow_walk)
@@ -1163,9 +1180,10 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     else:
         subject = getattr(admin_svc, endpoint)()
 
-    stall = _run(_max_loop_stall(subject))
+    loop_thread = threading.get_ident()  # `_run` drives the loop on this thread
+    stall = _run(_max_loop_stall(subject, during=walks))
 
-    assert walked, (
+    assert walks, (
         "no walk ran, so the loop was free for reasons unrelated to this fix; "
         "the stall below describes an empty population"
     )
@@ -1173,25 +1191,67 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
         f"the loop was held for {stall:.3f}s during a {_BLOCK_SECONDS}s walk: "
         "the scan is back on the event loop and other requests are queueing"
     )
+    # The stall above is measured only inside the recorded intervals, so a short
+    # interval would let an on-loop walk pass; and since a full-length interval
+    # recorded in the wrong place would too, where the walk ran is checked by thread.
+    assert all(end - start >= _BLOCK_SECONDS - _TICK_SECONDS for start, end in walks), (
+        f"a recorded walk interval is shorter than the {_BLOCK_SECONDS}s block: {walks}"
+    )
+    assert loop_thread not in walk_threads, "a walk ran on the event loop's own thread"
 
 
-def test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop():
+@pytest.mark.parametrize("windowed", [False, True], ids=["whole-run", "inside-the-walk"])
+def test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop(windowed):
     """The measurement above can fail, on a subject that has the defect.
 
     A healthy subject looks the same under a working probe and a broken one, so
     the passing test says something about the loop only if the same instrument
     reports a stall on a coroutine that holds it. This is that subject: the
-    identical block, run inline.
+    identical block, run inline, measured over the whole run and, as the
+    endpoint test measures it, only inside the block's recorded interval.
     """
+    walks: list[tuple[float, float]] = []
 
     async def holds_the_loop():
+        start = time.perf_counter()
         time.sleep(_BLOCK_SECONDS)
+        walks.append((start, time.perf_counter()))
 
-    stall = _run(_max_loop_stall(holds_the_loop()))
+    stall = _run(_max_loop_stall(holds_the_loop(), during=walks if windowed else None))
     assert stall >= _STALL_TOLERANCE, (
         f"only {stall:.3f}s measured while the loop was deliberately held for "
         f"{_BLOCK_SECONDS}s: the probe is not measuring loop availability"
     )
+
+
+def test_the_windowed_probe_leaves_out_loop_work_around_the_walk():
+    """Inside *during*, on-loop work before an offloaded walk is not counted.
+
+    The sensitivity test above holds the loop inside the interval, where a window
+    read too wide measures the same as a correct one. Here the loop is held just
+    before the walk, so a window ignored or an overlap computed from the gap alone
+    reads the whole hold. The same run measured whole is the control: the hold is
+    really there.
+    """
+
+    def run(windowed: bool) -> float:
+        walks: list[tuple[float, float]] = []
+
+        def walk():
+            start = time.perf_counter()
+            time.sleep(_BLOCK_SECONDS)
+            walks.append((start, time.perf_counter()))
+
+        async def holds_then_offloads():
+            time.sleep(_BLOCK_SECONDS)
+            await asyncio.to_thread(walk)
+
+        stall = _run(_max_loop_stall(holds_then_offloads(), during=walks if windowed else None))
+        assert walks, "the walk did not run"
+        return stall
+
+    assert run(windowed=False) >= _STALL_TOLERANCE
+    assert run(windowed=True) < _STALL_TOLERANCE
 
 
 def test_a_scan_that_runs_out_of_time_says_so_instead_of_reporting_clean(tmp_path, monkeypatch):

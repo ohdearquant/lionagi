@@ -3,30 +3,23 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
-from lionagi.ln import is_ssrf_safe
+from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
 
-_DOC_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".pptx", ".docx", ".html", ".htm"})
-_MAX_DOC_BYTES = 50 * 1024 * 1024
 _MAX_LIST_FILES = 1_000
-
-_CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 class ReaderAction(str, Enum):
     read = "read"
-    open = "open"
     list_dir = "list_dir"
 
 
@@ -39,16 +32,13 @@ class ReaderRequest(BaseModel):
             "the line-number prefix is for navigation only — strip it (and the tab) "
             "before using any line as editor old_string. For large files use "
             "offset+limit to read in windows rather than loading everything at once.\n"
-            "- 'open': Convert a document (PDF, PPTX, DOCX, HTML) to text via docling. "
-            "Result is cached by path — chain with read in one turn: "
-            "[open(path='x.pdf'), read(path='x.pdf', offset=0, limit=100)].\n"
             "- 'list_dir': List files in a directory."
         ),
     )
     path: str = Field(
         ...,
         description=(
-            "Absolute or workspace-relative file path, directory path, or URL. "
+            "Absolute or workspace-relative file or directory path. "
             "Required for all actions. Paths must stay within the configured workspace root."
         ),
     )
@@ -56,14 +46,14 @@ class ReaderRequest(BaseModel):
         None,
         description=(
             "Zero-indexed line number to start reading from. "
-            "Used for 'read' and for reading cached 'open' results. Defaults to 0. "
+            "Only used for 'read'. Defaults to 0. "
             "To read lines 200-400 of a large file: offset=200, limit=200."
         ),
     )
     limit: int | None = Field(
         None,
         description=(
-            "Maximum number of lines to return. Used for 'read' and cached reads. "
+            "Maximum number of lines to return. Only used for 'read'. "
             "Defaults to 2000. Increase for larger files or decrease for quick scans."
         ),
     )
@@ -189,110 +179,13 @@ def _list_dir_sync(
     return ReaderResponse(success=True, content=content)
 
 
-def _open_sync(
-    path: str,
-    cache: dict[str, tuple[str, float]],
-    workspace_root: Path,
-    allowed_url_hosts: frozenset[str],
-) -> ReaderResponse:
-    # docling import deferred until after URL/SSRF validation so the
-    # security checks stay testable without the optional dependency.
-    parsed = urlparse(path)
-    if parsed.scheme in ("http", "https", "ftp"):
-        if parsed.scheme != "https" or (parsed.hostname or "") not in allowed_url_hosts:
-            return ReaderResponse(
-                success=False,
-                error=f"URL conversion not allowed: {path!r}. Only configured https hosts.",
-            )
-        # SSRF guard: hostname passed the allowlist but must also resolve to a public IP.
-        if not is_ssrf_safe(parsed.hostname or ""):
-            return ReaderResponse(
-                success=False,
-                error="URL blocked: hostname resolves to a private or reserved IP address.",
-            )
-        validated_path = path
-    else:
-        # local file: validate workspace containment, extension, and size
-        try:
-            p = _resolve_workspace_path(path, workspace_root)
-        except PermissionError as e:
-            return ReaderResponse(success=False, error=str(e))
-        if p.suffix.lower() not in _DOC_EXTENSIONS:
-            return ReaderResponse(
-                success=False,
-                error=f"Unsupported document type for 'open': {p.suffix!r}. "
-                f"Allowed: {sorted(_DOC_EXTENSIONS)}",
-            )
-        try:
-            if p.stat().st_size > _MAX_DOC_BYTES:
-                return ReaderResponse(success=False, error="Document exceeds 50 MB size limit.")
-        except OSError:
-            pass
-        validated_path = str(p)
-
-    try:
-        from docling.document_converter import DocumentConverter
-    except ImportError:
-        return ReaderResponse(
-            success=False,
-            error="docling not installed. Run: uv add lionagi[reader]",
-        )
-
-    try:
-        converter = DocumentConverter()
-        result = converter.convert(validated_path)
-        text = result.document.export_to_markdown()
-    except Exception as e:
-        return ReaderResponse(success=False, error=f"Conversion error: {e}")
-
-    cache[path] = (text, time.time())
-    lines = text.split("\n")
-    return ReaderResponse(
-        success=True,
-        content=f"Opened: {path} ({len(lines)} lines, {len(text)} chars). Use read with offset/limit to view.",
-    )
-
-
-def _read_cached(
-    path: str, offset: int, limit: int, cache: dict[str, tuple[str, float]]
-) -> ReaderResponse | None:
-    """Read from cache if path was previously opened and not expired."""
-    if path not in cache:
-        return None
-    text, cached_at = cache[path]
-    if time.time() - cached_at > _CACHE_TTL_SECONDS:
-        del cache[path]
-        return None
-    lines = text.split("\n")
-    selected = lines[offset : offset + limit]
-    numbered = "".join(f"{offset + i + 1}\t{line}\n" for i, line in enumerate(selected))
-    return ReaderResponse(success=True, content=numbered)
-
-
-def _evict_expired(cache: dict[str, tuple[str, float]]) -> int:
-    """Remove expired entries. Returns count evicted."""
-    now = time.time()
-    expired = [k for k, (_, t) in cache.items() if now - t > _CACHE_TTL_SECONDS]
-    for k in expired:
-        del cache[k]
-    return len(expired)
-
-
 class ReaderTool(LionTool):
     is_lion_system_tool = True
     system_tool_name = "reader_tool"
 
-    def __init__(
-        self,
-        cache_ttl: int = _CACHE_TTL_SECONDS,
-        workspace_root: str | Path | None = None,
-        allowed_url_hosts: frozenset[str] | set[str] | None = None,
-    ):
+    def __init__(self, *, workspace_root: str | Path | None = None):
         self._tool = None
-        self._cache: dict[str, tuple[str, float]] = {}
-        self._cache_ttl = cache_ttl
-        self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
-        self._allowed_url_hosts: frozenset[str] = frozenset(allowed_url_hosts or ())
+        self.workspace_root = _resolve_workspace_root(workspace_root)
 
     async def handle_request(self, request: ReaderRequest) -> ReaderResponse:
         if isinstance(request, dict):
@@ -300,26 +193,10 @@ class ReaderTool(LionTool):
         if not request.path:
             return ReaderResponse(
                 success=False,
-                error="'path' is required. Provide a file path for 'read'/'open' or a directory path for 'list_dir'.",
-            )
-
-        _evict_expired(self._cache)
-
-        if request.action == ReaderAction.open:
-            return await run_sync(
-                _open_sync,
-                request.path,
-                self._cache,
-                self.workspace_root,
-                self._allowed_url_hosts,
+                error="'path' is required. Provide a file path for 'read' or a directory path for 'list_dir'.",
             )
 
         if request.action == ReaderAction.read:
-            start = max(0, request.offset or 0)
-            limit = request.limit if (request.limit and request.limit > 0) else 2000
-            cached = _read_cached(request.path, start, limit, self._cache)
-            if cached is not None:
-                return cached
             return await run_sync(
                 _read_sync,
                 request.path,
@@ -343,21 +220,16 @@ class ReaderTool(LionTool):
         if self._tool is None:
 
             async def reader_tool(**kwargs):
-                """Read files, convert documents (PDF/PPTX/DOCX/HTML via docling), or list directories.
+                """Read text files or list directories.
 
                 Use action='read' for text files. Output format is `<number>\\t<code>` per line;
                 the number prefix is for reference only — strip the leading `<digits>\\t` before
                 using any line as an editor old_string. Use offset+limit to read large files in
                 windows (e.g. offset=200, limit=200 to get lines 200-400).
 
-                Use action='open' for documents needing conversion (PDF, PPTX, HTML) —
-                result is cached by path, then use 'read' with offset/limit on the same path.
-                Chain them in one turn: [open(path="report.pdf"), read(path="report.pdf", offset=0, limit=100)]
-
                 Use action='list_dir' for directory listings.
 
-                All paths are restricted to the configured workspace root. URL conversion
-                requires explicit host allowlisting.
+                All paths are restricted to the configured workspace root.
                 """
                 return (await self.handle_request(ReaderRequest(**kwargs))).model_dump()
 

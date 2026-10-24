@@ -1480,7 +1480,11 @@ stopping unrelated schedules or swallowing scheduler shutdown.
 The Operator (ADR-0083) is a durable, human-gated chat surface over Studio:
 one long-lived conversation per project view, backed by SQLite
 (`store.py`'s `OperatorStore`), that can read run state and propose
-mutating actions but never executes one without an explicit human decision.
+mutating application actions through explicit human decisions. Its own conversation
+title and description are presentation metadata that the active turn can update
+directly; their write and applied effect persist in one transaction. The tool writes
+no extra result frame. The provider's result identifies the call, and the frontend
+re-reads conversation metadata on that result or on turn completion if it is missing.
 The package splits into the durable store, a Branch-backed engine that
 drives one provider turn (`engine.py`), a coordinator that wires turns to
 proposals (`coordinator.py`), a set of MCP-exposed read/write tools
@@ -1530,8 +1534,10 @@ it launches a new invocation that either continues an `agent` run's branch
 with a new instruction (`li agent -r`) or replays a `play`/`flow`/`show-play`
 run's persisted checkpoint (`li o flow --resume`), and the two argument
 shapes are mutually exclusive because the checkpoint owns the plan for the
-second kind. `rename_session` renames a run's own record; it is
-deliberately separate from renaming the Operator conversation itself
+second kind. `rename_session` writes the approved name to the run's explicit
+`user_label` through the dedicated setter. It replaces a previous label without
+changing the system name or activity timestamps. This is separate from
+renaming the Operator conversation itself
 (`OperatorStore.update_conversation`), since one conversation can discuss
 many runs across its life.
 
@@ -1540,7 +1546,7 @@ many runs across its life.
 `run_progress.py::resolve_run` (reused by `run_findings.py`,
 `resume_run.py`, and `rename_session.py`) and `cancel_run.py`'s own
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
-id, an id prefix, a name or playbook substring (minimum 3
+id, an id prefix, a label, name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
 `lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
@@ -1683,7 +1689,8 @@ forking mid-turn ends the fork at the last completed turn rather than
 copying a half-written one, and the source conversation keeps streaming
 untouched. `up_to_sequence`, when given, additionally caps the fork at an
 earlier point in history so a user can branch from any prior turn, not
-only the tip. The fork starts with no provider session of its own, so it
+only the tip. The fork copies the source description, which can then be
+edited independently. It starts with no provider session of its own, so it
 never silently resumes the source's provider-side session.
 
 ### Redaction

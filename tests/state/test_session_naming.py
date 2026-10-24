@@ -345,3 +345,25 @@ def test_a_real_stored_name_is_unaffected() -> None:
     """The other no-regression arm: rows whose stored name says something."""
     row = {"id": "aaaabbbbccccddddeeee", "name": "Refactor the auth module"}
     assert resolve_display_name(row) == "Refactor the auth module"
+
+
+@pytest.mark.parametrize(
+    ("started_at", "expected_time"),
+    (
+        pytest.param(0.0, "00:00", id="epoch"),
+        pytest.param(59.9999999, "00:00", id="before-minute"),
+        pytest.param(60.0, "00:01", id="on-minute"),
+        pytest.param(3599.9999999, "00:59", id="before-hour"),
+        pytest.param(3600.0, "01:00", id="on-hour"),
+        pytest.param(86399.9999999, "23:59", id="before-day"),
+        pytest.param(86400.0, "00:00", id="on-day"),
+    ),
+)
+def test_agent_role_label_keeps_the_utc_minute_containing_the_timestamp(
+    started_at: float, expected_time: str
+) -> None:
+    # Display the minute containing the row's start, even when the next minute
+    # is less than a microsecond away. Rounding through datetime changes it.
+    assert agent_role_label(" worker ", started_at, "abcd1234") == (
+        f"worker · abcd · {expected_time}"
+    )

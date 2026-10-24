@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln import short_id
-from lionagi.ln.concurrency import Semaphore, gather
+from lionagi.ln.concurrency import Semaphore, gather, sleep
 from lionagi.ln.concurrency._compat import (
     ExceptionGroup,
     get_exception_group_exceptions,
@@ -921,7 +921,7 @@ class EngineRun:
             return
         delay = self._deadline - monotonic()
         if delay > 0:
-            await asyncio.sleep(delay)
+            await sleep(delay)
         self._notify_budget_once("deadline_watchdog")
         # Cancel _run_task to interrupt the in-flight sequential stage promptly;
         # spawned tasks (_active) are drained separately in Engine.run()'s finally block.
@@ -936,7 +936,7 @@ class EngineRun:
             # Completion schedules the done callbacks rather than running them,
             # so yield once and let the tasks just awaited record themselves
             # before the set is re-tested.
-            await asyncio.sleep(0)
+            await sleep(0)
 
         # Every spawned task records its own failure as it settles, whether that
         # happened during this drain or before it started. Collecting from one

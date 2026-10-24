@@ -11,16 +11,15 @@ it. The walk must stop on a repeat, and the gate must still fail open.
 
 from __future__ import annotations
 
-import contextlib
 import signal
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi import Branch, iModel
 from lionagi.engines.engine import Engine
+from lionagi.service.connections.endpoint import Endpoint
 
 pytestmark = pytest.mark.asyncio
 
@@ -150,29 +149,22 @@ async def test_a_two_element_context_cycle_fails_open_instead_of_walking_forever
     assert [kind for kind, _ in events] == ["judge_error"]
 
 
-@contextlib.asynccontextmanager
-async def refusing_server():
-    """A local server that answers every request with the provider's 4xx shape.
+async def refusing_server(monkeypatch):
+    """A MockTransport returns the provider's 4xx shape without using a network."""
 
-    Started inside the test rather than from an async fixture: an async fixture
-    runs on its own loop, and a server bound to that loop is unreachable from the
-    test's.
-    """
-
-    async def answer(request: web.Request):
-        await request.read()
-        return web.json_response(
-            {"error": {"message": "the key is wrong", "type": "invalid_request_error"}},
-            status=401,
+    def answer(request):
+        return httpx.Response(
+            401,
+            json={"error": {"message": "the key is wrong", "type": "invalid_request_error"}},
+            request=request,
         )
 
-    server = TestServer(web.Application())
-    server.app.router.add_route("POST", "/{tail:.*}", answer)
-    await server.start_server()
-    try:
-        yield str(server.make_url("/")).rstrip("/")
-    finally:
-        await server.close()
+    def create_client(self, *args, **kwargs):
+        return httpx.AsyncClient(transport=httpx.MockTransport(answer))
+
+    monkeypatch.setattr(Endpoint, "_create_http_session", create_client)
+    monkeypatch.setattr(Endpoint, "_assert_ssrf_safe_url", lambda self: None)
+    return "https://api.example.test"
 
 
 def _local_model(base_url: str) -> iModel:
@@ -187,18 +179,16 @@ def _local_model(base_url: str) -> iModel:
 
 @pytest.mark.timeout(20, method="signal")
 @_SIGALRM_ONLY
-async def test_a_judge_on_a_provider_4xx_fails_open_with_an_acyclic_chain():
-    """The real 4xx path over a local server: a 401 must not freeze the judge.
+async def test_a_judge_on_a_provider_4xx_fails_open_with_an_acyclic_chain(monkeypatch):
+    """The real 4xx path through MockTransport: a 401 must not freeze the judge.
 
-    Every layer above the transport is production code — the endpoint's 4xx
-    sentinel, the retry layer's unwrap and the invocation wrapper — so this is
-    the chain that froze the judge. The server is in-process on the loopback
-    interface; no external network is used.
+    Every layer above the transport is production code: the endpoint's 4xx
+    sentinel, the retry layer's unwrap and the invocation wrapper.
     """
-    async with refusing_server() as base_url:
-        agent = Branch(chat_model=_local_model(base_url))
-        with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
-            allowed, events = await _judge(Engine(judge_model="openai/gpt-4.1"), agent)
+    base_url = await refusing_server(monkeypatch)
+    agent = Branch(chat_model=_local_model(base_url))
+    with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+        allowed, events = await _judge(Engine(judge_model="openai/gpt-4.1"), agent)
 
     assert allowed is True
     assert [kind for kind, _ in events] == ["judge_error"]
@@ -206,13 +196,13 @@ async def test_a_judge_on_a_provider_4xx_fails_open_with_an_acyclic_chain():
 
 @pytest.mark.timeout(20, method="signal")
 @_SIGALRM_ONLY
-async def test_the_chain_from_a_provider_4xx_ends_and_names_the_response():
-    async with refusing_server() as base_url:
-        branch = Branch(chat_model=_local_model(base_url))
+async def test_the_chain_from_a_provider_4xx_ends_and_names_the_response(monkeypatch):
+    base_url = await refusing_server(monkeypatch)
+    branch = Branch(chat_model=_local_model(base_url))
 
-        with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
-            with pytest.raises(Exception) as info:
-                await branch.operate(instruction="go")
+    with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+        with pytest.raises(Exception) as info:
+            await branch.operate(instruction="go")
 
     seen, cause, kinds = set(), info.value, []
     while cause is not None and id(cause) not in seen:
@@ -222,7 +212,7 @@ async def test_the_chain_from_a_provider_4xx_ends_and_names_the_response():
         cause = cause.__cause__
 
     assert len(seen) <= 8
-    assert "ClientResponseError" in kinds
+    assert "APIClientError" in kinds
 
 
 async def test_an_uncontained_judge_raises_a_refusal_its_call_raises():

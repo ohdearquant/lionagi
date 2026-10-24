@@ -131,19 +131,10 @@ def test_chunk_output_file_parquet_ok(mod_paths, ensure_fake_lionagi, tmp_path):
     assert len(res) == 5  # 50 tokens with chunk_size=10
 
 
-def test_chunk_docling_reader_missing_dependency(
-    mod_paths, ensure_fake_lionagi, tmp_path, monkeypatch
-):
-    """Missing-dependency path runs regardless of environment via monkeypatching.
-
-    Patch is_import_installed on the already-loaded process module so that
-    'docling' appears absent, then verify ImportError is raised.
-    """
+def test_chunk_rejects_a_reader_tool_that_is_not_callable(mod_paths, ensure_fake_lionagi):
+    """A reader_tool that is not callable is refused before any file is read."""
     api = importlib.import_module(mod_paths["api_mod"])
-    # Patch is_import_installed on the module so 'docling' looks missing
-    monkeypatch.setattr(api, "is_import_installed", lambda name: False)
-    # When reader_tool="docling" and docling is reported absent, expect ImportError
-    with pytest.raises(ImportError):
+    with pytest.raises(TypeError, match="reader_tool must be a callable"):
         api.chunk(
             url_or_path="some.pdf",
             reader_tool="docling",
