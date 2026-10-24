@@ -416,6 +416,20 @@ def _export(argv: list[str]) -> dict[str, Any]:
 # ── mutating subcommands ─────────────────────────────────────────────────────
 
 
+def _refuse_inside_an_agent() -> None:
+    """Refuse a request that can have the Studio daemon start a run when this process
+    runs inside an agent lionagi started. The daemon runs outside this process's tree,
+    so no check at spawn can see where the request came from."""
+    from lionagi.providers._provider_errors import NestedAgentRefusedError
+    from lionagi.providers._subagent_admission import refuse_nested_agent
+
+    try:
+        refuse_nested_agent()
+    except NestedAgentRefusedError as exc:
+        # Well-formed, and refused for where the caller runs, which no retry changes.
+        raise MachineError("conflict", str(exc)) from exc
+
+
 def _create(argv: list[str]) -> dict[str, Any]:
     """A schedule row, written. Enabled and awaiting the scheduler's next tick.
 
@@ -426,6 +440,7 @@ def _create(argv: list[str]) -> dict[str, Any]:
     """
     from lionagi.studio.cli import build_create_body
 
+    _refuse_inside_an_agent()
     known = _parse("create", argv, unhonoured={})
     if known.cwd:
         _absolute(known.cwd, "--cwd")
@@ -469,6 +484,7 @@ def _trigger(argv: list[str]) -> dict[str, Any]:
     allocated for it. The run's status is read afterwards with `schedule.status`
     or `schedule.runs`.
     """
+    _refuse_inside_an_agent()
     known = _parse(
         "trigger",
         argv,
@@ -487,6 +503,7 @@ def _trigger(argv: list[str]) -> dict[str, Any]:
 
 
 def _enable(argv: list[str]) -> dict[str, Any]:
+    _refuse_inside_an_agent()
     known = _parse("enable", argv, unhonoured={})
     _studio(f"/{_quote(known.id)}/enable", method="POST")
     return {"schedule_id": known.id, "enabled": True}

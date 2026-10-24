@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lionagi.cli._providers import _add_workload_kwarg
 from lionagi.cli.orchestrate._common import (
     BARE_WORKER_SYSTEM,
     bare_worker_system,
@@ -18,6 +19,7 @@ from lionagi.cli.orchestrate._orchestration import (
     _emit_worker_artifact_report,
     collect_worker_artifacts,
 )
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
 
 # Half 1: the prompt names the directory
 
@@ -140,6 +142,7 @@ def _build_worker(
 
     class _Endpoint:
         def __init__(self):
+            self.is_cli = is_cli
             self.config = SimpleNamespace(kwargs={}, provider=provider)
 
     class _IModel:
@@ -161,6 +164,11 @@ def _build_worker(
 
     def _fake_build_imodel(*a, **kw):
         built["imodel_kwargs"] = kw
+        _add_workload_kwarg(
+            imodel.endpoint.config.kwargs,
+            imodel.endpoint,
+            kw.get("workload", DEFAULT_WORKLOAD),
+        )
         return imodel
 
     env = orch.OrchestrationEnv(
@@ -213,28 +221,49 @@ def _add_dir_values(args: list[str]) -> list[str]:
     return [args[index + 1] for index, value in enumerate(args) if value == "--add-dir"]
 
 
-def _codex_worker_args(tmp_path, *, team_data=None) -> list[str]:
-    from lionagi.providers.openai.codex import CodexCodeRequest
+def _light_profile():
+    return SimpleNamespace(
+        raw_body=True,
+        system_prompt="Read and report.",
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        khive_injection=None,
+        workload="light",
+    )
 
+
+def _codex_worker_kwargs(tmp_path, *, team_data=None, light=False, provider="codex") -> dict:
     _env, imodel, _built = _build_worker(
         tmp_path,
         agent_id="worker-1",
         role="worker",
-        provider="codex",
+        provider=provider,
         team_data=team_data,
+        bare=not light,
+        profile=_light_profile() if light else None,
     )
-    request = CodexCodeRequest(prompt="work", **imodel.endpoint.config.kwargs)
+    return imodel.endpoint.config.kwargs
+
+
+def _codex_worker_args(tmp_path, *, team_data=None, light=False, provider="codex") -> list[str]:
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = _codex_worker_kwargs(tmp_path, team_data=team_data, light=light, provider=provider)
+    request = CodexCodeRequest(prompt="work", **kwargs)
     return request.as_cmd_args()
 
 
-def test_codex_team_worker_grants_only_the_teams_directory(tmp_path, monkeypatch):
+# An alias of the codex provider is the same provider, and gets the same grant.
+@pytest.mark.parametrize("provider", ["codex", "openai-codex", "Codex"])
+def test_codex_team_worker_grants_only_the_teams_directory(tmp_path, monkeypatch, provider):
     from lionagi.cli import team as team_module
 
     teams_dir = tmp_path / "state" / "teams"
     teams_dir.mkdir(parents=True)
     monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
 
-    args = _codex_worker_args(tmp_path, team_data={"id": "team-1"})
+    args = _codex_worker_args(tmp_path, team_data={"id": "team-1"}, provider=provider)
 
     assert _add_dir_values(args) == [str(tmp_path.resolve()), str(teams_dir.resolve())]
 
@@ -249,6 +278,43 @@ def test_codex_worker_without_team_does_not_grant_the_teams_directory(tmp_path, 
     args = _codex_worker_args(tmp_path)
 
     assert _add_dir_values(args) == [str(tmp_path.resolve())]
+
+
+def test_a_light_codex_worker_gets_no_extra_writable_root_and_starts(tmp_path):
+    """Codex refuses a light request any directory outside its working directory, so
+    the worker is handed none and writes only its artifact directory."""
+    kwargs = _codex_worker_kwargs(tmp_path, light=True)
+    assert kwargs["workload"] == "light"
+    assert kwargs["repo"] == tmp_path / "artifacts" / "worker-1"
+
+    args = _codex_worker_args(tmp_path, light=True)
+
+    assert _add_dir_values(args) == []
+    assert args[args.index("--sandbox") + 1] == "workspace-write"
+
+
+@pytest.mark.parametrize("provider", ["codex", "openai-codex", "Codex"])
+def test_a_light_codex_team_worker_is_refused_before_it_starts(tmp_path, monkeypatch, provider):
+    """Team mode needs the teams directory writable, which light codex cannot grant."""
+    from lionagi._errors import CLIInputRefusedError
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    with pytest.raises(CLIInputRefusedError, match="add_dir"):
+        _codex_worker_args(tmp_path, team_data={"id": "team-1"}, light=True, provider=provider)
+
+
+def test_a_light_claude_worker_keeps_the_project_root(tmp_path):
+    """Light Claude Code bounds the tool list, not the filesystem, so it keeps the
+    project root it reads from."""
+    _env, imodel, _built = _build_worker(
+        tmp_path, agent_id="worker-1", role="worker", bare=False, profile=_light_profile()
+    )
+    assert imodel.endpoint.config.kwargs["workload"] == "light"
+    assert imodel.endpoint.config.kwargs["add_dir"] == [str(tmp_path.resolve())]
 
 
 def test_worker_prompt_names_the_cwd_it_is_launched_with(tmp_path):
@@ -626,3 +692,643 @@ def test_a_genuinely_absent_directory_is_still_missing(tmp_path):
     entries = collect_worker_artifacts(_env_with_dirs({"a": tmp_path / "never-created"}))
     assert entries[0]["status"] == "missing"
     assert "does not exist" in entries[0]["error"]
+
+
+async def _spawned_branch_kwargs(
+    tmp_path,
+    monkeypatch,
+    workload: str,
+    team_data=None,
+    *,
+    from_orchestrator: bool = False,
+    provider: str = "codex",
+    emitted_by: str | None = None,
+    emitter_provider: str | None = None,
+    emitter_contained: bool = False,
+    independent: bool = True,
+    assignee: str | None = None,
+    role_alias: str | None = None,
+    role_contained: bool = False,
+    role_provider: str = "claude_code",
+    handed: list | None = None,
+    expected: list | None = None,
+    refuses: bool = False,
+) -> dict:
+    """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
+    runner, and return the request kwargs it leaves on the branch. The spawn is a clone
+    of a worker's branch, or of the orchestrator's when *from_orchestrator*; both carry
+    *workload*. When *emitted_by* names a class, the spawn is an independent request
+    naming no assignee, built by the run's node builder for a worker of that class (or
+    for the orchestrator itself, when it is "orchestrator") and cloned from the
+    orchestrator's branch, as the executor clones it. *emitter_provider* puts that worker
+    on another engine than the orchestrator's, and *emitter_contained* runs it with no
+    settings files read (``contain_user_settings``). With *independent* false the request is a
+    dependent one, cloned from that worker's branch. With *assignee* the request names a
+    role of that name on *role_provider* (Claude unless named), and is cloned from its
+    branch, which *role_contained* runs with no settings files read. *role_alias* plans a
+    worker of that name on the role and has the request name the worker, as a team
+    instance (``reviewer-2``) is named. *handed* collects the
+    server set each hand-off gives the spawn and whether it is the whole set. *expected*
+    collects the spawn ids the run is told to expect a worker for. With *refuses* the node builder must refuse
+    the request, and the refusal's text comes back as ``{"refusal": ...}``."""
+    import lionagi.engines as engines_mod
+    from lionagi import Branch, iModel
+    from lionagi.casts.emission import SpawnRequest
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    class _Captured(Exception):
+        pass
+
+    captured: dict = {}
+
+    class _Run:
+        async def run_dag(self, *args, **kwargs):
+            captured["setup"] = kwargs["spawn_branch_setup"]
+            captured["node_builder"] = kwargs["node_builder"]
+            captured["executor_ref"] = kwargs["executor_ref"]
+            raise _Captured
+
+    class _Engine:
+        def new_run(self, session=None):
+            return _Run()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(engines_mod, "PlanningEngine", _Engine)
+    monkeypatch.setattr(flow_mod, "_persist_session_phase", _noop)
+    monkeypatch.setattr(flow_mod, "_persist_control_poller_state_bounded", _noop)
+
+    def _hand(imodel, servers, **kwargs):
+        if handed is not None:
+            handed.append((servers, kwargs.get("exclusive")))
+
+    monkeypatch.setattr(flow_mod, "_hand_mcp_servers", _hand)
+
+    def _branch(
+        name: str, branch_workload: str = workload, branch_provider: str = provider
+    ) -> Branch:
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        canonical = EndpointRegistry.canonical_provider(branch_provider)
+        chat_model = iModel(
+            provider=branch_provider,
+            model={
+                "codex": "gpt-5.5",
+                "openai": "gpt-4.1-mini",
+                "gemini_code": "gemini-2.5-pro",
+            }.get(canonical, "sonnet"),
+            **({"api_key": "dummy-key"} if branch_provider == "openai" else {}),
+        )
+        _add_workload_kwarg(
+            chat_model.endpoint.config.kwargs,
+            chat_model.endpoint,
+            branch_workload,
+        )
+        return Branch(
+            system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / name),
+            chat_model=chat_model,
+        )
+
+    orchestrator = _branch("orchestrator")
+    role_branch = None
+    if assignee is not None:
+        role_branch = _branch(assignee, branch_provider=role_provider)
+        if role_contained:
+            from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
+
+            _isolate_worker_cli_config(role_branch.chat_model, contain_user_settings=True)
+    env = SimpleNamespace(
+        orc_branch=orchestrator,
+        run=SimpleNamespace(agent_artifact_dir=lambda aid: tmp_path / "artifacts" / aid),
+        session=SimpleNamespace(branches=[], observe=lambda *a, **k: None),
+        builder=SimpleNamespace(get_graph=lambda: None),
+        worker_artifact_dirs={},
+        cwd=str(tmp_path),
+        verbose=False,
+        effort=None,
+        _live_persist=None,
+        team_data=team_data,
+        exchange=None,
+        expect_worker=(lambda spawn_id: None) if expected is None else expected.append,
+    )
+    dag_state = SimpleNamespace(
+        reactive=True,
+        spawn_roles=None,
+        node_ids={},
+        known_nodes=set(),
+        deps_by_node={},
+        worker_models={},
+        role_base={} if role_branch is None else {assignee: role_branch},
+        role_artifact_defaults={},
+        op_segments=[],
+        max_spawn=5,
+    )
+    plan = SimpleNamespace(
+        assignments=[SimpleNamespace(assignee=assignee)] if role_alias else [],
+        agent_ids=[role_alias] if role_alias else [],
+    )
+    with pytest.raises(_Captured):
+        await flow_mod._execute_dag(env, plan, dag_state, max_concurrent=1, max_ops=5)
+
+    if emitted_by is None:
+        source = orchestrator if from_orchestrator else _branch("emitter")
+        operation = SimpleNamespace(metadata={"spawn_id": "spawn-1"})
+    else:
+        emitter = SimpleNamespace(id="emitter-op")
+        emitter_branch = (
+            orchestrator
+            if emitted_by == "orchestrator"
+            else _branch("emitter", emitted_by, emitter_provider or provider)
+        )
+        if emitter_contained:
+            from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
+
+            _isolate_worker_cli_config(emitter_branch.chat_model, contain_user_settings=True)
+        captured["executor_ref"]["executor"] = SimpleNamespace(
+            operation_branches={emitter.id: emitter_branch}
+        )
+        request = SpawnRequest(
+            instruction="check the result",
+            independent=independent,
+            assignee=role_alias or assignee,
+        )
+        if refuses:
+            from lionagi._errors import CLIInputRefusedError
+
+            with pytest.raises(CLIInputRefusedError) as refused:
+                captured["node_builder"](request, emitter)
+            return {"refusal": str(refused.value)}
+        operation = captured["node_builder"](request, emitter)
+        if role_branch is not None:
+            assert operation.branch_id == role_branch.id
+            source = role_branch
+        else:
+            assert operation.branch_id is None
+            source = orchestrator if independent else emitter_branch
+    orchestrator_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
+    branch = source.clone()
+    captured["setup"](operation, branch)
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert kwargs["repo"] == tmp_path / "artifacts" / "spawn-1"
+    # The spawn's setup changes the clone's request, never the orchestrator's own.
+    assert orchestrator.chat_model.endpoint.config.kwargs == orchestrator_kwargs
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_light_codex_worker_gets_no_extra_writable_root_and_starts(
+    tmp_path, monkeypatch
+):
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, "light")
+
+    assert kwargs.get("add_dir", []) == []
+    CodexCodeRequest(prompt="work", **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_heavy_codex_worker_keeps_the_project_root(tmp_path, monkeypatch):
+    kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, DEFAULT_WORKLOAD)
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["codex", "openai-codex", "Codex"])
+async def test_a_spawned_heavy_codex_team_worker_gets_the_teams_directory(
+    tmp_path, monkeypatch, provider
+):
+    """A reactive spawn in team mode gets the same teams-directory grant a planned
+    worker gets, or it could not write to the team inbox."""
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, DEFAULT_WORKLOAD, team_data={"id": "team-1"}, provider=provider
+    )
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve()), str(teams_dir.resolve())]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("emitted_by", [None, "orchestrator"])
+async def test_an_unassigned_spawn_of_a_light_orchestrator_runs_heavy(
+    tmp_path, monkeypatch, emitted_by
+):
+    """A spawn with no assignee and no worker behind it, asked for by nobody or by the
+    orchestrator itself, is cloned from the orchestrator's branch. The orchestrator's class
+    confines only its own process, so the spawn runs as a bare worker: heavy, with the
+    project root."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, "light", from_orchestrator=True, emitted_by=emitted_by
+    )
+
+    assert "workload" not in kwargs
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == DEFAULT_WORKLOAD
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_light_worker_asks_for_stays_light(tmp_path, monkeypatch):
+    """An independent request naming no assignee is cloned from the orchestrator's branch,
+    here a heavy one. The worker that asked is light, so the spawn is light too: asking for
+    an agent is not a way out of the asking worker's class."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, DEFAULT_WORKLOAD, emitted_by="light"
+    )
+
+    assert kwargs.get("add_dir", []) == []
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == "light"
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_heavy_worker_asks_for_runs_heavy(tmp_path, monkeypatch):
+    """The same request from a heavy worker under a light orchestrator runs heavy, with the
+    project root: the orchestrator's class does not reach the agents its workers ask for."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, "light", emitted_by=DEFAULT_WORKLOAD
+    )
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == DEFAULT_WORKLOAD
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_light_worker_asks_for_on_another_engine_is_refused(
+    tmp_path, monkeypatch
+):
+    """Under a Claude Code orchestrator, a light codex worker's independent request naming
+    no assignee would run as a Claude Code agent, where light removes only the file-writing
+    tools and Bash can still write anywhere. It is refused before any node exists."""
+    expected: list = []
+    message = (
+        await _spawned_branch_kwargs(
+            tmp_path,
+            monkeypatch,
+            DEFAULT_WORKLOAD,
+            provider="claude_code",
+            emitted_by="light",
+            emitter_provider="codex",
+            expected=expected,
+            refuses=True,
+        )
+    )["refusal"]
+    assert "orchestrator's engine (claude_code)" in message
+    assert "runs on codex" in message
+    # Refused before the node is built, so the run expects no worker for it.
+    assert expected == []
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_light_worker_asks_for_under_an_api_orchestrator_is_refused(
+    tmp_path, monkeypatch
+):
+    """Under an API orchestrator the request would run as an API call, which the light
+    class does not confine at all, so it is refused as under another CLI engine."""
+    refused = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="openai",
+        emitted_by="light",
+        emitter_provider="codex",
+        refuses=True,
+    )
+    assert "orchestrator's engine (openai)" in refused["refusal"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "emitter_provider"),
+    [
+        ("claude_code", "claude"),
+        ("claude_code", "claude-code"),
+        ("claude", "claude_code"),
+        ("codex", "openai-codex"),
+    ],
+)
+async def test_an_independent_spawn_a_light_worker_asks_for_on_its_own_engine_is_not_refused(
+    tmp_path, monkeypatch, provider, emitter_provider
+):
+    """Two spellings of one provider are one engine, so a light worker's independent
+    request under an orchestrator on its own engine, spelled differently, runs light."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider=provider,
+        emitted_by="light",
+        emitter_provider=emitter_provider,
+    )
+
+    assert kwargs["workload"] == "light"
+
+
+@pytest.mark.asyncio
+async def test_a_dependent_spawn_a_light_worker_asks_for_on_another_engine_runs_light_on_its_own(
+    tmp_path, monkeypatch
+):
+    """A dependent request naming no assignee is cloned from the branch of the worker that
+    asked, so under a Claude Code orchestrator a light codex worker's request runs as a
+    light codex agent and is not refused."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by="light",
+        emitter_provider="codex",
+        independent=False,
+    )
+
+    assert kwargs.get("add_dir", []) == []
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == "light"
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_heavy_worker_asks_for_on_another_engine_runs_heavy(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_provider="codex",
+    )
+
+    assert "workload" not in kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("independent", [True, False])
+async def test_an_agent_a_contained_claude_worker_asks_for_reads_no_settings(
+    tmp_path, monkeypatch, independent
+):
+    """A request naming no assignee from a worker that reads no settings files: a dependent
+    agent copies that worker's branch, an independent one copies the orchestrator's, which
+    reads them, and is contained from what the request recorded. Either way asking for an
+    agent is not a way back to the settings the worker runs without."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        independent=independent,
+    )
+
+    assert kwargs["setting_sources"] == ""
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_a_claude_worker_with_its_settings_asks_for_keeps_them(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+    )
+
+    assert kwargs.get("setting_sources") is None
+    assert kwargs.get("disallowed_tools") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_contained", [False, True])
+async def test_an_agent_a_contained_claude_worker_asks_for_by_role_reads_no_settings(
+    tmp_path, monkeypatch, role_contained
+):
+    """A request naming a role is cloned from that role's branch, which reads the settings
+    files unless the role is contained too, so naming a role is no way back to them either."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_contained=role_contained,
+    )
+
+    assert kwargs["setting_sources"] == ""
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_a_claude_worker_with_its_settings_asks_for_by_role_keeps_them(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        assignee="reviewer",
+    )
+
+    assert kwargs.get("setting_sources") is None
+    assert kwargs.get("disallowed_tools") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_provider", ["gemini_code", "gemini-cli", "pi"])
+async def test_a_contained_claude_worker_cannot_ask_for_a_role_on_a_cli_that_reads_its_own_settings(
+    tmp_path, monkeypatch, role_provider
+):
+    """Only a Claude spawn can be contained and only a codex one runs with its user config
+    left out, so a role on any other CLI would read the settings the asking worker runs
+    without: the request is refused before the node is built."""
+    expected: list = []
+    result = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_provider=role_provider,
+        expected=expected,
+        refuses=True,
+    )
+
+    assert "role 'reviewer' runs on" in result["refusal"]
+    assert "contain_user_settings" in result["refusal"]
+    assert expected == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("role_provider", "refused"), [("gemini_code", True), ("codex", False)])
+async def test_a_contained_claude_worker_asking_for_a_team_instance_is_held_to_its_role(
+    tmp_path, monkeypatch, role_provider, refused
+):
+    """A team instance's name (reviewer-2) resolves to its role before the check, as the
+    node builder resolves it, so naming the instance is no way around the refusal."""
+    expected: list = []
+    result = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_alias="reviewer-2",
+        role_provider=role_provider,
+        expected=expected,
+        refuses=refused,
+    )
+
+    if refused:
+        assert "role 'reviewer-2' runs on gemini_code" in result["refusal"]
+        assert expected == []
+    else:
+        assert result["ignore_user_config"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_with_its_settings_can_ask_for_a_role_on_another_cli(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        assignee="reviewer",
+        role_provider="gemini_code",
+    )
+
+    assert kwargs.get("setting_sources") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_provider", ["codex", "openai-codex", "Codex"])
+async def test_a_contained_claude_worker_can_ask_for_a_codex_role(
+    tmp_path, monkeypatch, role_provider
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_provider=role_provider,
+    )
+
+    assert kwargs["ignore_user_config"] is True
+    assert kwargs.get("profile") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("independent", [True, False])
+async def test_an_unnamed_agent_a_contained_claude_worker_asks_for_on_a_gemini_orchestrator(
+    tmp_path, monkeypatch, independent
+):
+    """An independent agent is cloned from the orchestrator's branch, so on a gemini
+    orchestrator it is refused; a dependent one is cloned from the asking worker's and stays
+    contained."""
+    result = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="gemini_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_provider="claude_code",
+        emitter_contained=True,
+        independent=independent,
+        refuses=independent,
+    )
+
+    if independent:
+        assert "the orchestrator runs on gemini_code" in result["refusal"]
+        return
+    assert result["setting_sources"] == ""
+    assert result["permission_mode"] == "dontAsk"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("emitter_contained", [False, True])
+async def test_a_contained_spawn_with_no_server_set_is_handed_the_empty_set_whole(
+    tmp_path, monkeypatch, emitter_contained
+):
+    """With no worker set resolved, a spawn keeps the servers its CLI discovers, unless it
+    is contained: those would start while dontAsk refused their tools, so it is handed the
+    empty set as its whole set."""
+    handed: list = []
+    await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=emitter_contained,
+        handed=handed,
+    )
+
+    assert handed == ([({}, True)] if emitter_contained else [(None, False)])
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_claude_team_worker_gets_no_teams_directory(tmp_path, monkeypatch):
+    """The teams-directory grant is a codex sandbox root; a claude worker, planned or
+    spawned, keeps the project root alone."""
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, DEFAULT_WORKLOAD, team_data={"id": "team-1"}, provider="claude_code"
+    )
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_light_codex_team_worker_is_refused_before_it_starts(tmp_path, monkeypatch):
+    """Team mode needs the teams directory writable, which light codex cannot grant,
+    for a reactive spawn as for a planned worker."""
+    from lionagi._errors import CLIInputRefusedError
+    from lionagi.cli import team as team_module
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, "light", team_data={"id": "team-1"}
+    )
+
+    assert kwargs["add_dir"] == [str(teams_dir.resolve())]
+    with pytest.raises(CLIInputRefusedError, match="add_dir"):
+        CodexCodeRequest(prompt="work", **kwargs)

@@ -706,7 +706,9 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     assert spawn_branch_setup is not None
 
     operation = SimpleNamespace(metadata={"spawn_id": "spawn-1"})
+    # A spawned branch is a clone, and this one is not cloned from the orchestrator's.
     cli_branch = SimpleNamespace(
+        metadata={"clone_from": object()},
         chat_model=SimpleNamespace(
             is_cli=True,
             endpoint=SimpleNamespace(
@@ -718,7 +720,7 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
                     },
                 )
             ),
-        )
+        ),
     )
     spawn_branch_setup(operation, cli_branch)
 
@@ -921,8 +923,9 @@ async def test_a_reactive_run_refuses_a_set_a_codex_orchestrator_clone_cannot_ta
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["codex", "openai-codex"])
 async def test_a_reactive_run_refuses_a_codex_orchestrator_profile_its_clone_cannot_take(
-    tmp_path, codex_home
+    tmp_path, codex_home, provider
 ):
     """A clone of the orchestrator ignores the user config like a worker and keeps
     the config overrides its model was built with. A profile the orchestrator's spec
@@ -936,8 +939,8 @@ async def test_a_reactive_run_refuses_a_codex_orchestrator_profile_its_clone_can
         'model = "vendor/m"\nmodel_provider = "openrouter"\napproval_policy = "never"\n'
     )
     env = _make_env(tmp_path)
-    env.default_model_spec = "codex/wide"
-    env.orc_branch.chat_model = build_imodel_from_spec("codex/wide")
+    env.default_model_spec = f"{provider}/wide"
+    env.orc_branch.chat_model = build_imodel_from_spec(f"{provider}/wide")
     plan_result = _PlanResult(
         assignments=[TaskAssignment(task="x", assignee="researcher")],
         agent_ids=["researcher"],

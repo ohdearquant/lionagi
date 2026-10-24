@@ -10,6 +10,7 @@ import pytest
 from lionagi.studio.scheduler.subprocess import (
     _validate_playbook_args,
     build_argv,
+    validate_launch_fields,
 )
 
 
@@ -76,6 +77,59 @@ class TestBuildArgvPlay:
     def test_leading_dash_prompt_rejected(self):
         with pytest.raises(ValueError, match="must not start with '-'"):
             build_argv(_play_schedule(action_prompt="--bypass"), {}, executable_prefix=["li"])
+
+    def test_leading_dash_refusal_does_not_carry_the_rendered_value(self):
+        # The refusal is stored on the run and served, and the value can come from an event.
+        schedule = _play_schedule(action_prompt="{{pr_title}}")
+        with pytest.raises(ValueError, match="must not start with '-'") as refused:
+            build_argv(schedule, {"pr_title": "--private-title"}, executable_prefix=["li"])
+        assert "private-title" not in str(refused.value)
+
+    @pytest.mark.parametrize("kind", ["play", "playbook"])
+    def test_a_stored_leading_dash_prompt_is_refused_before_rendering(self, kind):
+        # A manual trigger runs this check before it records a run.
+        with pytest.raises(ValueError, match="must not start with '-'"):
+            validate_launch_fields(_play_schedule(action_kind=kind, action_prompt="--bypass"))
+
+    @pytest.mark.parametrize("kind", ["play", "playbook"])
+    @pytest.mark.parametrize("name", ["list", "check", "status"])
+    def test_a_playbook_named_for_a_play_subcommand_is_refused(self, kind, name):
+        # `li play list` runs the listing and exits 0; the playbook would never run.
+        with pytest.raises(ValueError, match="names a `li play` subcommand"):
+            validate_launch_fields(_play_schedule(action_kind=kind, action_playbook=name))
+
+    def test_the_refused_names_are_the_subcommands_li_play_reads(self):
+        import ast
+        import importlib
+        import inspect
+
+        from lionagi.studio.scheduler.subprocess import _PLAY_SUBCOMMANDS
+
+        # The module, not the `main` function the package exports under the same name.
+        cli_main = importlib.import_module("lionagi.cli.main")
+
+        (shortcut,) = [
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(cli_main)))
+            if isinstance(node, ast.FunctionDef) and node.name == "_handle_play_shortcut"
+        ]
+        read = {
+            comparator.value
+            for node in ast.walk(shortcut)
+            if isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "head"
+            and isinstance(node.ops[0], ast.Eq)
+            for comparator in node.comparators
+            if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str)
+        }
+        # Flags (--resume) are refused by the identifier check already.
+        assert {name for name in read if not name.startswith("-")} == _PLAY_SUBCOMMANDS
+
+    @pytest.mark.parametrize("playbook", [None, ""])
+    def test_a_leading_dash_prompt_is_kept_when_no_playbook_sends_it(self, playbook):
+        schedule = _play_schedule(action_playbook=playbook, action_prompt="--bypass")
+        assert validate_launch_fields(schedule) == "play"
 
     @pytest.mark.parametrize(
         "bad_args",

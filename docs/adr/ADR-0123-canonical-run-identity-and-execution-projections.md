@@ -43,11 +43,13 @@ presence and modification times of those files. A workspace is a resource used b
 its directory cannot author lifecycle truth, especially for remote targets or deleted artifacts.
 
 **P4 — Studio's `/runs` surface is a Session projection.**
-`lionagi/studio/services/runs.py::_run_row()` assigns both `run_id` and `id` from `sessions.id`,
-even though the session schema already has a separate nullable `sessions.run_id` column. Detail
-lookup calls `get_session(run_id)`. A Session is reusable conversational state and a Run is an
-attempt. Equating them makes a resumed Session indistinguishable from the prior attempt and makes
-one Run with several worker Sessions impossible to represent without nesting conventions.
+`lionagi/studio/services/runs.py::_run_row()` now exposes `id` and `session_id` from `sessions.id`,
+while `run_id` preserves the separate nullable CLI-run provenance in `sessions.run_id`; it does
+not fabricate that provenance from the Session ID. Detail lookup still accepts the Session ID
+through `get_session(run_id)`, not the CLI-run identifier. This separation is a compatibility
+projection, not a durable execution-attempt authority: a resumed branch can adopt its existing
+Session row, and several Sessions can share CLI-run provenance. The attempt boundary and its
+relationship to reusable conversational state still need an explicit contract.
 
 **P5 — control-plane occurrences are also called runs.** `schedule_runs` owns queue, lease,
 retry, dependency, concurrency, dispatch, and schedule-chain state. `engine_runs` owns engine
@@ -270,8 +272,8 @@ The first legacy mapping is complete and evidence-sensitive:
 
 One row shape is not in the table above and exists in production data today: a Session carrying
 `status="running"` together with a non-null `ended_at`. The read path already meets it and names
-it. `_status_ended_at_mismatch` (`lionagi/studio/services/runs.py:619-627`) detects exactly that
-combination and the page summary reports a `status_ended_at_mismatches` count at `:652`, so the
+it. `_status_ended_at_mismatch` (`lionagi/studio/services/runs.py:246-254`) detects exactly that
+combination and the page summary reports a `status_ended_at_mismatches` count at `:279`, so the
 importer must classify it rather than encounter it. That row is self-contradictory evidence, not a
 running attempt, and it imports through the `legacy_evidence_conflict` outcome below rather than
 being read as either live or cleanly terminal. Its reverse, a terminal status with a null

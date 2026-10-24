@@ -145,12 +145,13 @@ def _record_placement(name: str) -> dict[str, Any]:
     }
 
 
-# Reported by ``profile_config`` only when a profile declares it (presence is
+# Reported by ``profile_config`` only when a profile declares them (presence is
 # meaningful there — see its docstring), so a blank profile's own output never
-# carries it. The projection schema still has to name it: a caller can only ask
-# for ``resolved.idle_timeout`` on a profile that DOES declare one if the field
-# is recognised on every profile, declaring or not.
-_OPTIONAL_RESOLVED_FIELDS = ("idle_timeout",)
+# carries them. The projection schema still has to name them: a caller can only
+# ask for ``resolved.idle_timeout`` on a profile that DOES declare one if the
+# field is recognised on every profile, declaring or not. A narrowed
+# ``resolved.workload`` of None is a heavy profile, the default.
+_OPTIONAL_RESOLVED_FIELDS = ("idle_timeout", "workload")
 
 
 def _resolved_fields() -> tuple[str, ...]:
@@ -159,14 +160,15 @@ def _resolved_fields() -> tuple[str, ...]:
     profile may or may not carry, so the schema recognises them either way."""
     from lionagi.cli._providers import AgentProfile, profile_config
 
-    # Both optional account-integration fields set, so the keys profile_config
-    # adds only when set are listed too.
+    # Both optional account-integration fields and the settings containment set,
+    # so the keys profile_config adds only when set are listed too.
     base = tuple(
         profile_config(
             AgentProfile(
                 name="",
                 contain_account_integrations=True,
                 account_connectors=("github",),
+                contain_user_settings=True,
             )
         )
     )

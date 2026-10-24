@@ -7995,8 +7995,15 @@ class StateDB:
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                except (ValueError, TypeError, RecursionError) as exc:  # digit limit, depth guard
+                    # Text past the parser's depth is kept only in trigger_context, which its
+                    # projection reads as text. On Python 3.10 and 3.11 that guard's error also
+                    # fires for a caller near the recursion limit, so every other column raises
+                    # it, as before; a bare RecursionError is raised for every column.
+                    if isinstance(exc, RecursionError) and (
+                        key != "trigger_context" or "while decoding a JSON" not in str(exc)
+                    ):
+                        raise
         return d
 
 
