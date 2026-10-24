@@ -708,7 +708,9 @@
         "lastOutcome": "{delta} 전 {outcome}",
         "neverFiredSince": "{date}부터 실행된 적 없음",
         "noEvidenceHint": "실행 기록 없음"
-      }
+      },
+      "disableReason": "사유",
+      "disableReasonHint": "이 일정을 중지하는 이유를 입력하세요."
     },
     "run": {
       "elapsed": "{delta} 경과",

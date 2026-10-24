@@ -145,6 +145,84 @@ def test_schedule_enable_disable_trigger_delete_accept_id():
         assert args.id == "sched-123"
 
 
+def test_schedule_disable_takes_an_optional_reason():
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    assert parser.parse_args(["schedule", "disable", "sched-123"]).reason is None
+    args = parser.parse_args(
+        ["schedule", "disable", "sched-123", "--reason", "planned maintenance"]
+    )
+    assert args.reason == "planned maintenance"
+
+
+def test_schedule_disable_sends_its_reason_and_rejects_a_blank_one(monkeypatch, capsys):
+    import lionagi.studio.cli as schedule_cli
+
+    captured: dict = {}
+
+    def fake_api(path, method="GET", body=None):
+        captured.update(path=path, method=method, body=body)
+        return {"ok": True}
+
+    monkeypatch.setattr(schedule_cli, "_api", fake_api)
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    schedule_cli.add_schedule_subparser(sub)
+
+    args = parser.parse_args(
+        ["schedule", "disable", "sched-123", "--reason", " planned maintenance "]
+    )
+    assert schedule_cli.run_schedule(args) == 0
+    assert captured == {
+        "path": "/sched-123/disable",
+        "method": "POST",
+        "body": {"reason": "planned maintenance"},
+    }
+
+    blank = parser.parse_args(["schedule", "disable", "sched-123", "--reason", "   "])
+    captured.clear()
+    assert schedule_cli.run_schedule(blank) == 1
+    assert "reason" in capsys.readouterr().err
+    assert captured == {}
+
+    bare = parser.parse_args(["schedule", "disable", "sched-123"])
+    assert schedule_cli.run_schedule(bare) == 0
+    assert captured == {"path": "/sched-123/disable", "method": "POST", "body": None}
+
+
+def test_machine_schedule_disable_sends_its_reason(monkeypatch):
+    from lionagi.cli import machine_schedule
+
+    captured: dict = {}
+
+    def fake_studio(path, method="GET", body=None):
+        captured.update(path=path, method=method, body=body)
+        return {"ok": True, "enabled": False}
+
+    monkeypatch.setattr(machine_schedule, "_studio", fake_studio)
+
+    result = machine_schedule.dispatch_schedule(
+        ["disable", "sched-123", "--reason", "planned maintenance"]
+    )
+
+    assert result == {"schedule_id": "sched-123", "enabled": False}
+    assert captured == {
+        "path": "/sched-123/disable",
+        "method": "POST",
+        "body": {"reason": "planned maintenance"},
+    }
+
+    captured.clear()
+    assert machine_schedule.dispatch_schedule(["disable", "sched-123"]) == {
+        "schedule_id": "sched-123",
+        "enabled": False,
+    }
+    assert captured == {"path": "/sched-123/disable", "method": "POST", "body": None}
+
+
 def test_schedule_limits_subcommand_registered():
     """li schedule limits is a recognized subcommand and takes no positional."""
     from lionagi.studio.cli import add_schedule_subparser

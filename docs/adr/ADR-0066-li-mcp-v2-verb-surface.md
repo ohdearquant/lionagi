@@ -12,6 +12,13 @@
 
 ## Amendment history
 
+**2026-10-19 — Amendment 5: no resident verb family.** A warm, long-lived agent host with
+its own registration, heartbeat and drain verbs is not part of this surface: recurring and
+queued work reaches an agent through `schedule.*` and the spawn verbs, no supported workflow
+needs a host that outlives its run, and the lifecycle state such a family carries would be
+one more thing every reader of `job.*` has to reconcile. A host of that kind would come with
+its own decision, not as an extension of this one.
+
 **2026-08-03 — Amendment 4: D6's wait contract catches up with the observed surface.**
 Three changes, all already true of the implementation, recorded under this document's own
 rule that a non-terminal classification is added to a list a caller can read, never left

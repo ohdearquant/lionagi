@@ -899,7 +899,12 @@ def test_schedules_unknown_id_404_shape_across_mutation_routes(
     _patch_db(monkeypatch, tmp_path / "state.db")
     client = _make_client()
 
-    kwargs = {"json": {"name": "x"}} if method == "patch" else {}
+    if method == "patch":
+        kwargs = {"json": {"name": "x"}}
+    elif path_suffix == "/disable":
+        kwargs = {"json": {"reason": "planned maintenance"}}
+    else:
+        kwargs = {}
     r = getattr(client, method)(f"/api/schedules/does-not-exist{path_suffix}", **kwargs)
     assert r.status_code == 404
     assert sorted(r.json().keys()) == ["detail"]
@@ -981,7 +986,7 @@ def test_schedules_disable_success_response_shape(tmp_path, monkeypatch):
     schedule_id = _create_gate_schedule(db_path)
     client = _make_client()
 
-    r = client.post(f"/api/schedules/{schedule_id}/disable")
+    r = client.post(f"/api/schedules/{schedule_id}/disable", json={"reason": "planned maintenance"})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "enabled": False}
 
@@ -990,6 +995,35 @@ def test_schedules_disable_success_response_shape(tmp_path, monkeypatch):
     # integer 0/1, not Python False/True.
     detail = client.get(f"/api/schedules/{schedule_id}")
     assert not detail.json()["enabled"]
+
+
+@pytest.mark.parametrize("reason", ["", " ", "x" * 501])
+def test_schedules_disable_refuses_an_unusable_reason(tmp_path, monkeypatch, reason):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.post(f"/api/schedules/{schedule_id}/disable", json={"reason": reason})
+
+    assert r.status_code == 422
+    # Refused before the write: the schedule is still enabled.
+    detail = client.get(f"/api/schedules/{schedule_id}")
+    assert detail.json()["enabled"]
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"json": {}}], ids=["no-body", "empty-body"])
+def test_schedules_disable_without_a_reason_still_disables(tmp_path, monkeypatch, kwargs):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.post(f"/api/schedules/{schedule_id}/disable", **kwargs)
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "enabled": False}
+    assert not client.get(f"/api/schedules/{schedule_id}").json()["enabled"]
 
 
 def test_schedules_trigger_success_response_shape(tmp_path, monkeypatch):

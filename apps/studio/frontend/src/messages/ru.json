@@ -708,7 +708,9 @@
         "lastOutcome": "последний раз {outcome} {delta} назад",
         "neverFiredSince": "никогда не запускался с {date}",
         "noEvidenceHint": "выполнение не зафиксировано"
-      }
+      },
+      "disableReason": "Причина",
+      "disableReasonHint": "Укажите, почему это расписание нужно приостановить."
     },
     "run": {
       "elapsed": "прошло {delta}",

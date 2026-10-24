@@ -708,7 +708,9 @@
         "lastOutcome": "آخر {outcome} منذ {delta}",
         "neverFiredSince": "لم يعمل مطلقًا منذ {date}",
         "noEvidenceHint": "لا يوجد تنفيذ مسجل"
-      }
+      },
+      "disableReason": "السبب",
+      "disableReasonHint": "اشرح سبب إيقاف هذا الجدول."
     },
     "run": {
       "elapsed": "انقضى {delta}",

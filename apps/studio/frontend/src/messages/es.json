@@ -708,7 +708,9 @@
         "lastOutcome": "última vez {outcome} hace {delta}",
         "neverFiredSince": "nunca se ejecutó desde {date}",
         "noEvidenceHint": "no se registró ninguna ejecución"
-      }
+      },
+      "disableReason": "Motivo",
+      "disableReasonHint": "¿Por qué debe pausarse esta programación?"
     },
     "run": {
       "elapsed": "{delta} transcurrido",

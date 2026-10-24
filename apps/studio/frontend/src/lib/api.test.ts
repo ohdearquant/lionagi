@@ -368,6 +368,20 @@ describe("fetchJson unsafe-request content type", () => {
     expect(new Headers(captured[0]?.headers).get("content-type")).toBe("application/json");
   });
 
+  it("sends the required schedule-disable reason as a JSON body", async () => {
+    const captured = captureFetch();
+    const { disableSchedule } = await import("./api");
+
+    await disableSchedule("schedule-1", { reason: "Investigating missed alerts" });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.method).toBe("POST");
+    expect(new Headers(captured[0]?.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(String(captured[0]?.body))).toEqual({
+      reason: "Investigating missed alerts",
+    });
+  });
+
   it("does not add a content type to safe GET requests", async () => {
     const captured = captureFetch();
     const { getStats } = await import("./api");
