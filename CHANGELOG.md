@@ -574,6 +574,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Fixed
 
+- Typed judge and novelty verdicts are bound to the branch that emitted them, so one agent cannot decide another item by naming its ID. Replayed or mutated novelty payloads keep distinct acceptance records for evidence reports and filing queues.
+
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.
   Health now counts the schedule's last healthy poll as liveness, as it counts a threshold
