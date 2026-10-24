@@ -138,7 +138,12 @@ def _error_summary(error: str | BaseException | None) -> str | None:
 
 
 async def emit_api_pre_call(branch: Branch, imodel: Any) -> None:
-    """Fire API_PRE_CALL immediately before a session-bound iModel is invoked."""
+    """Fire API_PRE_CALL before a session-bound iModel is invoked.
+
+    ``chat`` fires it before the request is compiled from the active view, so a handler that
+    curates the view (the host-side context fold) shapes the request it precedes. ``run``
+    fires it once the request is compiled, before the stream starts.
+    """
     hooks = branch._hooks
     if hooks is None:
         return

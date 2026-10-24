@@ -147,6 +147,8 @@ class Branch(Element, Relational):
 
         self._message_manager = MessageManager(messages=messages)
         self._message_manager._on_message_added.append(self._schedule_emit)
+        self._message_manager._on_message_added.append(self._track_message_in_view)
+        self._message_manager._on_pile_rewritten.append(self._sync_view_with_pile)
 
         if system_template is not None:
             import warnings
@@ -410,6 +412,37 @@ class Branch(Element, Relational):
         from lionagi.hooks.bus import HookPoint
 
         await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
+
+    def _track_message_in_view(self, msg: Any) -> None:
+        """on_message_added hook: a new message enters the curated LLM view.
+
+        Evicting and compacting curate history; they must not freeze the conversation. Without
+        this, every message added after the view exists lands in the record and is never sent
+        to the model again.
+        """
+        cp = self.metadata.get("current_progression")
+        if cp is None:
+            return
+        if msg.id not in cp:
+            cp.append(msg.id)
+
+    def _sync_view_with_pile(self) -> None:
+        """on_pile_rewritten hook: the curated view keeps only messages still in the record,
+        headed by the current system message.
+
+        Replacing the system message drops the old one from the record, and clearing drops all
+        but the system message. A view still naming them makes compaction refuse and restore
+        raise.
+        """
+        cp = self.metadata.get("current_progression")
+        if cp is None:
+            return
+        pile = self.msgs.messages
+        cp.exclude([uid for uid in cp if uid not in pile])
+        system = self.msgs.system
+        if system is not None:
+            cp.exclude(system.id)
+            cp.insert(0, system.id)
 
     def _schedule_emit(self, msg: Any) -> None:
         """on_message_added hook: fire-and-forget signal emission."""
@@ -726,6 +759,14 @@ class Branch(Element, Relational):
         # and log_config out of the caller's snapshot, so it could not be reused
         # for a retry, comparison, or a second restoration.
         data = dict(data)
+        # The curated view is stored as a plain dict. Restored as one, every later message
+        # add, evict and compaction on the branch would fail on it.
+        metadata = data.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("current_progression"), dict):
+            data["metadata"] = {
+                **metadata,
+                "current_progression": Progression.from_dict(metadata["current_progression"]),
+            }
         stored_chat_model = data.pop("chat_model", Unset)
         stored_parse_model = data.pop("parse_model", Unset)
         dict_ = {
@@ -758,7 +799,7 @@ class Branch(Element, Relational):
         # the fields a branch has and the reasons. It is raised outside the handler, so the
         # original error is not attached to it.
         try:
-            return cls(**{k: v for k, v in params.items() if v is not Unset})
+            branch = cls(**{k: v for k, v in params.items() if v is not Unset})
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False, include_input=False)
             problems = "; ".join(
@@ -767,6 +808,10 @@ class Branch(Element, Relational):
                 for error in errors
                 for loc in (error["loc"],)
             )
+        else:
+            # A stored view can name a message its stored record does not hold.
+            branch._sync_view_with_pile()
+            return branch
         raise ValueError(
             f"The stored branch does not validate ({problems}). Its values are left out of "
             "this message. Correct the stored data, or pass a live model (chat_model=, "
