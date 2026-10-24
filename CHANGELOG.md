@@ -13,11 +13,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed
   attempts remain distinct; credentials and prompt text are excluded.
 
+### Changed
+
+- `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
+  as offload controls. For a callable that takes either keyword, prebind its
+  arguments with `functools.partial` and pass that callable to `run_sync`.
+
 ### Fixed
 
 - Engine judges accept an untyped reply only when it is the whole token `PASS`,
   ignoring letter case and surrounding whitespace. Empty, malformed and non-string
   replies stop the item and emit the existing gate notification.
+
+- A tool call denied by an agent's security control now reaches the tool post hooks
+  registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
+  hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for
+  every denied call; it now copies and pickles with its GateResult intact.
+
+- Fenced Markdown examples in profile prompts no longer trigger a misplaced
+  frontmatter warning.
 
 ## [0.36.0] - 2026-10-24
 
