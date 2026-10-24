@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -933,6 +934,9 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
 
 
 _CONTAIN_KEY = "contain_user_settings"
+# A line that sets the flag as a key, in a mapping or a list item, quoted or not.
+_FLAG_KEY_LINE = re.compile(rf"^[ \t]*(?:-[ \t]+)*[\"']?{_CONTAIN_KEY}[\"']?[ \t]*:", re.M)
+_DASHES = re.compile(r"-{3,}")
 
 
 def _contain_flag_values(block: str) -> list[Any]:
@@ -981,6 +985,31 @@ def _contain_flag_of(values: list[Any]) -> Any:
     return next((value for value in values if value is not False), False)
 
 
+def _keys_like_the_contain_flag(document: Any) -> list[str]:
+    """The keys of a parsed frontmatter, at any depth, that read as ``contain_user_settings``
+    once case and dashes are set aside, each named by its path. Asked of a frontmatter no
+    top-level key of which sets the flag, every one it names is a key that does not."""
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def walk(node: Any, path: str) -> None:
+        if id(node) in seen or not isinstance(node, (dict, list)):
+            return
+        seen.add(id(node))
+        if isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+            return
+        for key, value in node.items():
+            where = f"{path}.{key}" if path else str(key)
+            if isinstance(key, str) and key.casefold().replace("-", "_") == _CONTAIN_KEY:
+                found.append(where)
+            walk(value, where)
+
+    walk(document, "")
+    return found
+
+
 def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     """The settings a profile keeps when no frontmatter block that reads opens it: none, with a
     warning when a block with settings in it was there to lose. The worker is contained when
@@ -988,9 +1017,12 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     anywhere in its text when it does not read or reads as a list or a line of text, so neither
     a broken line in the block nor text on the delimiter's line can turn containment off. A
     block that is empty or comments only has none to lose. Text on lines of its own ahead of
-    the first ``---`` line leaves the profile all prompt, as before: a block after it that names
-    the flag warns and does not contain. A profile with no ``---`` line has no block, and all of
-    it is the prompt."""
+    the first ``---`` line leaves the profile all prompt, as before, and contains nothing: any
+    block after it, closed or not, that sets the flag as a key or does not read and names it
+    warns that its worker is not contained. A profile with no line of dashes has no block, and
+    all of it is the prompt."""
+    from itertools import pairwise
+
     import yaml
 
     from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
@@ -1020,29 +1052,42 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
-        if lines and lines[0].rstrip().endswith("---"):
-            # Text on the line of the opening delimiter hides the block it opens, which runs
-            # to the next ``---`` line or, unclosed, to the end.
-            opening = 0
-        else:
+        if not (lines and lines[0].rstrip().endswith("---")):
             # Text on lines of its own ahead of a ``---`` line is the prompt of a profile with
-            # no block, as before; a block counts only between that line and a closing one.
-            opening = next((i for i, line in enumerate(lines) if line.rstrip() == "---"), None)
-            if opening is None:
-                return {}
-        rest = lines[opening + 1 :]
-        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
-        if closing is None and opening > 0:
+            # no block, as before, so nothing after it applies, the flag included. A block after
+            # that text that names the flag says so rather than lose it in silence: one with a
+            # line setting it as a key, one that reads as settings and sets it, or one that does
+            # not read and names it anywhere. A block runs from a line of three or more dashes
+            # to the next such line or, unclosed, to the end.
+            delimiters = [i for i, line in enumerate(lines) if _DASHES.fullmatch(line.rstrip())]
+            for opening, end in pairwise([*delimiters, len(lines)]):
+                block = "\n".join(lines[opening + 1 : end])
+                reads, document = read(block)
+                if (
+                    _FLAG_KEY_LINE.search(block)
+                    or (reads and isinstance(document, dict) and _contain_flag_values(block))
+                    or (not reads and _CONTAIN_KEY in block)
+                ):
+                    warn(
+                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
+                        "text on lines of its own, so the profile is all prompt and no setting "
+                        "in the block applies; its worker is not contained, though the block "
+                        "names contain_user_settings"
+                    )
+                    break
             return {}
+        # Text on the line of the opening delimiter hides the block it opens, which runs to
+        # the next ``---`` line or, unclosed, to the end.
+        rest = lines[1:]
+        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
         block = "\n".join(rest if closing is None else rest[:closing])
         reads, document = read(block)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
             named = bool(_contain_flag_values(block))
-        elif reads and (opening > 0 or document is None):
-            # Empty or comments only, a block has no settings to lose; after text on lines of
-            # its own, a list or a line of text between two ``---`` lines is prompt.
+        elif reads and document is None:
+            # Empty or comments only, a block has no settings to lose.
             return {}
         else:
             # A hidden block that reads as a list or a line of text holds no settings, and
@@ -1051,17 +1096,6 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             named = _CONTAIN_KEY in block
             if not named and (reads or closing is None):
                 return {}
-        if opening > 0:
-            # The profile is all prompt, as before, so nothing in the block applies, the flag
-            # included; a block that names the flag says so rather than lose it in silence.
-            if named:
-                warn(
-                    f"agent profile {name!r}: the --- block on line {opening + 1} follows text "
-                    "on lines of its own, so the profile is all prompt and no setting in the "
-                    "block applies; its worker is not contained, though the block names "
-                    "contain_user_settings"
-                )
-            return {}
         what = "text ahead of the --- on line 1 hides the frontmatter after it"
     warn(
         f"agent profile {name!r}: {what}; every setting in it is ignored"
@@ -1099,6 +1133,16 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
             )
         if values:
             frontmatter = {**frontmatter, _CONTAIN_KEY: _contain_flag_of(values)}
+        elif misplaced := _keys_like_the_contain_flag(frontmatter):
+            # A key spelled like the flag, or the flag under another setting, does not set it;
+            # say so rather than leave the worker on your settings in silence.
+            from ._logging import warn
+
+            warn(
+                f"agent profile {name!r}: contain_user_settings counts only as a top-level key "
+                f"spelled exactly so; it is not set by {', '.join(map(repr, misplaced))}, and "
+                "its worker is not contained"
+            )
 
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion

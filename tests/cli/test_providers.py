@@ -47,6 +47,12 @@ def test_parse_model_spec_names_a_claude_model_in_any_letter_case_of_its_provide
     assert ms.effort == effort
 
 
+@pytest.mark.parametrize("provider", ["anthropic", "codex", "openrouter"])
+def test_parse_model_spec_leaves_a_bare_claude_name_alone_under_another_provider(provider):
+    """Only a Claude provider name gives a bare Claude model name its ``claude-`` prefix."""
+    assert parse_model_spec(f"{provider}/opus-4-7").model == f"{provider}/opus-4-7"
+
+
 def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch):
     """build_imodel_from_spec passes correct kwargs to iModel for codex+xhigh+yolo."""
     import lionagi.cli._providers as pmod
