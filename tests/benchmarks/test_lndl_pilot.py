@@ -2370,7 +2370,9 @@ def test_summary_refuses_a_reading_with_no_source_for_its_recorded_tree(monkeypa
         row["source_6fa69b19"] = row.pop(f"source_{_OTHER_READ_TREE_HEAD[:8]}")
     _write_jsonl(run_dir / "reading.jsonl", reading)
 
-    _summary_refusal_keeps_record(monkeypatch, run_dir, _OTHER_READ_TREE_HEAD)
+    _summary_refusal_keeps_record(
+        monkeypatch, run_dir, f"no reading source for read_tree_head {_OTHER_READ_TREE_HEAD}"
+    )
 
 
 def test_summary_refuses_two_source_keys_matching_the_same_tree(monkeypatch, tmp_path):
