@@ -3,7 +3,10 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
+import { ApiError } from "@/lib/api";
 import type {
+  OperatorConversation,
+  OperatorConversationSnapshot,
   OperatorFrame,
   OperatorModelCatalogEntry,
   OperatorTruncationPayload,
@@ -36,7 +39,10 @@ const api = vi.hoisted(() => ({
 }));
 const router = vi.hoisted(() => ({ navigate: vi.fn() }));
 
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api", async (importOriginal) => {
+  const { ApiError } = await importOriginal<typeof import("@/lib/api")>();
+  return { ...api, ApiError };
+});
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, search }: { children?: React.ReactNode; search?: { s?: string } }) => (
     <a data-selected-session={search?.s} href="/fleet">
@@ -881,6 +887,16 @@ describe("OperatorPanel", () => {
   });
 
   describe("conversation list: rename, pin/archive, fork", () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<T>((complete, fail) => {
+        resolve = complete;
+        reject = fail;
+      });
+      return { promise, resolve, reject };
+    }
+
     async function openList() {
       const toggle = container.querySelector(
         'button[aria-label^="Conversations"]',
@@ -911,6 +927,1760 @@ describe("OperatorPanel", () => {
         },
         frames: [],
       });
+    });
+
+    const firstRow = {
+      id: "conversation-1",
+      title: "Scheduler check",
+      status: "active",
+      pinned: false,
+      activeRequestId: null,
+    } satisfies OperatorConversation;
+    const archivedRow: OperatorConversation = {
+      ...firstRow,
+      id: "archived-1",
+      title: "Archived conversation",
+      status: "archived",
+    };
+
+    async function clickFilter(label: "Active" | "Archived") {
+      const button = [...container.querySelectorAll("button")].find(
+        (item) => item.textContent === label,
+      )!;
+      await act(async () => button.click());
+    }
+
+    async function typeInstruction(text: string) {
+      const input = container.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(
+          input,
+          text,
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+
+    async function sendInstruction() {
+      await typeInstruction("Inspect this project");
+      const send = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Send",
+      )!;
+      await act(async () => send.click());
+    }
+
+    it("uses fresh server rows and removes rows absent from a later list read", async () => {
+      const other = { ...firstRow, id: "other", title: "Externally removed" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      await mount();
+      await openList();
+      expect(container.querySelector("ul")?.textContent).toContain(other.title);
+      api.listOperatorConversations.mockResolvedValueOnce([
+        { ...firstRow, title: "Externally renamed", pinned: true },
+      ]);
+      await clickFilter("Active");
+      expect(container.querySelector("ul")?.textContent).toContain("★ Externally renamed");
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      expect(container.querySelector("ul")?.textContent).not.toContain(other.title);
+    });
+
+    it("does not preserve a local creation that predates a later list read", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "created-turn" });
+      await mount();
+      await sendInstruction();
+      await openList();
+      expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      await clickFilter("Active");
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+    });
+
+    it("does not resurrect a row archived while a list read was pending", async () => {
+      await mount();
+      await openList();
+      const pending = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+      await clickFilter("Active");
+      api.updateOperatorConversation.mockResolvedValueOnce({ ...firstRow, status: "archived" });
+      const archive = container.querySelector(
+        'ul li button[aria-label="Archive"]',
+      ) as HTMLButtonElement;
+      await act(async () => archive.click());
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      await act(async () => pending.resolve([firstRow]));
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      // A subsequent authoritative read can still observe an external unarchive.
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      await clickFilter("Active");
+      expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
+    });
+
+    it.each([
+      [50, false],
+      [100, false],
+      [200, true],
+    ])(
+      "against an archive at 100, a pending read's row from %i is shown: %s",
+      async (snapshotAt, shown) => {
+        await mount();
+        await openList();
+        const pending = deferred<OperatorConversation[]>();
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await clickFilter("Active");
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...firstRow,
+          status: "archived",
+          updatedAt: 100,
+        });
+        const archive = container.querySelector(
+          'ul li button[aria-label="Archive"]',
+        ) as HTMLButtonElement;
+        await act(async () => archive.click());
+        expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+        // The server unarchived the row after the archive and before this snapshot.
+        await act(async () => pending.resolve([{ ...firstRow, updatedAt: snapshotAt }]));
+        expect(container.querySelector("ul")?.textContent?.includes(firstRow.title)).toBe(shown);
+      },
+    );
+
+    it.each(["initial", "manual"])(
+      "ignores the %s list result after its filter changes",
+      async (source) => {
+        const pending = deferred<OperatorConversation[]>();
+        if (source === "initial")
+          api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await mount();
+        await openList();
+        if (source === "manual") {
+          api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+          await clickFilter("Active");
+        }
+        api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+        await clickFilter("Archived");
+        await act(async () => pending.resolve([firstRow]));
+        expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+        expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      },
+    );
+
+    it("keeps the current filter when a selected conversation load settles", async () => {
+      const pending = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(pending.promise);
+      await mount();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+      await clickFilter("Archived");
+      await act(async () => pending.resolve({ conversation: firstRow, frames: [] }));
+      expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+    });
+
+    it("uses the live filter when an archive response settles", async () => {
+      await mount();
+      await openList();
+      const pending = deferred<OperatorConversation>();
+      api.updateOperatorConversation.mockReturnValueOnce(pending.promise);
+      const archive = container.querySelector(
+        'ul li button[aria-label="Archive"]',
+      ) as HTMLButtonElement;
+      await act(async () => archive.click());
+      api.listOperatorConversations.mockResolvedValueOnce([{ ...firstRow, status: "archived" }]);
+      await clickFilter("Archived");
+      await act(async () => pending.resolve({ ...firstRow, status: "archived" }));
+      expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
+      expect(container.querySelector('ul li button[aria-label="Unarchive"]')).not.toBeNull();
+    });
+
+    it("ignores a list error after its filter changes", async () => {
+      await mount();
+      await openList();
+      const pending = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+      await clickFilter("Active");
+      api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+      await clickFilter("Archived");
+      await act(async () => pending.reject(new Error("Old filter failed")));
+      expect(container.textContent).not.toContain("Old filter failed");
+      expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+    });
+
+    it.each([false, true])(
+      "ignores a failed mount list after local creation (stored=%s)",
+      async (stored) => {
+        if (stored) window.localStorage.setItem("studio:operator-conversation", "stored-old");
+        const pending = deferred<OperatorConversation[]>();
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+        api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "created-turn" });
+        await mount();
+        await sendInstruction();
+        await act(async () => pending.reject(new Error("Mount list failed")));
+        expect(api.getOperatorConversation).not.toHaveBeenCalled();
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+        expect(container.textContent).not.toContain(enMessages.operator.errors.load);
+      },
+    );
+
+    it.each(["selection", "unmount"])(
+      "does not reload stale_context after %s changes",
+      async (change) => {
+        const other = { ...firstRow, id: "other", title: "Other conversation" };
+        api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+        const pending = deferred<{ requestId: string }>();
+        api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+        await mount();
+        await sendInstruction();
+        if (change === "selection") {
+          await openList();
+          api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+          const select = [...container.querySelectorAll("ul li button")].find(
+            (button) => button.textContent === other.title,
+          ) as HTMLButtonElement;
+          await act(async () => select.click());
+        } else {
+          await act(async () => root?.unmount());
+          root = null;
+        }
+        const calls = api.getOperatorConversation.mock.calls.length;
+        await act(async () =>
+          pending.reject(new ApiError(409, "Old context", { code: "stale_context" })),
+        );
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(calls);
+        if (change === "selection") expect(container.textContent).not.toContain("Old context");
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe(
+          change === "selection" ? other.id : firstRow.id,
+        );
+      },
+    );
+
+    it("reports a failed draft send in the conversation created for it", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      api.submitOperatorTurn.mockRejectedValueOnce(new Error("Draft send failed"));
+      await mount();
+      await sendInstruction();
+
+      expect(container.textContent).toContain("Draft send failed");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+    });
+
+    it("reports a failed send and its text when its conversation is reselected", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      await clickFilter("Active");
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+
+      await act(async () => pending.reject(new Error("Draft send failed")));
+
+      expect(container.textContent).not.toContain("Draft send failed");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+      await typeInstruction("Second draft");
+
+      async function reselect(row: typeof firstRow) {
+        await openList();
+        const button = [...container.querySelectorAll("ul li button")].find(
+          (item) => item.textContent === row.title,
+        ) as HTMLButtonElement;
+        await act(async () => button.click());
+      }
+      await reselect(firstRow);
+
+      // The failed text comes back in front of what was typed since; neither is lost.
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Draft send failed");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project\nSecond draft");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+
+      // Reported once: leaving and selecting it again shows no alert.
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await reselect(other);
+      await reselect(firstRow);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("reports a draft whose conversation could not be created where it is selected", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      const submits = api.submitOperatorTurn.mock.calls.length;
+      await mount();
+      await sendInstruction();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([other]);
+      await clickFilter("Active");
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+
+      await act(async () => pending.reject(new Error("Draft create failed")));
+
+      expect(container.textContent).toContain("Draft create failed");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(submits);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
+
+    it("reports a draft sent while a conversation loads where it is selected", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      const creates = api.createOperatorConversation.mock.calls.length;
+      await mount();
+      // The first row is still loading, so the send has no conversation and creates one.
+      await sendInstruction();
+      expect(api.createOperatorConversation).toHaveBeenCalledTimes(creates + 1);
+      await openList();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+
+      await act(async () => pending.reject(new Error("Draft create failed")));
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Draft create failed",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+
+      // Nothing was kept for the row that was loading, so selecting it shows no alert.
+      await act(async () => loading.resolve({ conversation: firstRow, frames: [] }));
+      await openList();
+      const back = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === firstRow.title,
+      ) as HTMLButtonElement;
+      await act(async () => back.click());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
+    function buttonNamed(name: string) {
+      return [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === name,
+      );
+    }
+
+    async function selectRow(row: { title: string }) {
+      await openList();
+      const button = [...container.querySelectorAll("ul li button")].find(
+        (item) => item.textContent === row.title,
+      ) as HTMLButtonElement;
+      await act(async () => button.click());
+    }
+
+    it("keeps a conversation chosen before a draft's conversation is created", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      const submits = api.submitOperatorTurn.mock.calls.length;
+      await mount();
+      await sendInstruction();
+      const otherLoad = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(otherLoad.promise);
+      await selectRow(other);
+
+      // The create settles while the chosen conversation is still loading.
+      await act(async () => pending.resolve(created));
+      await act(async () => otherLoad.resolve({ conversation: other, frames: [] }));
+      await act(async () => loading.resolve({ conversation: firstRow, frames: [] }));
+
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(submits + 1);
+      expect(api.submitOperatorTurn.mock.calls[submits][0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+      await openList();
+      expect(container.querySelector("ul")?.textContent).toContain(created.title);
+    });
+
+    it("keeps a loaded conversation chosen before a draft's conversation is created", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      const submits = api.submitOperatorTurn.mock.calls.length;
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+
+      // The chosen conversation is shown before the create settles.
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls[submits][0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+      // The accepted turn runs in the new conversation; the chosen one shows no Stop.
+      expect(buttonNamed("Stop")).toBeUndefined();
+      expect(buttonNamed("Send")).toBeDefined();
+    });
+
+    it("lets a draft's conversation take the panel when the list selects a row by itself", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      const listing = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(listing.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      await sendInstruction();
+      // The list read settles during the create and selects its first row; the
+      // operator chose nothing.
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await act(async () => listing.resolve([firstRow]));
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(created.id);
+      expect(buttonNamed("Stop")).toBeDefined();
+    });
+
+    it("keeps a conversation the operator chose again while a draft's conversation is created", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await selectRow(firstRow);
+
+      await act(async () => pending.resolve(created));
+      await act(async () => loading.resolve({ conversation: firstRow, frames: [] }));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+      expect(buttonNamed("Stop")).toBeUndefined();
+    });
+
+    it("reports a kept failure after a send still in flight settles", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      await clickFilter("Active");
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+      await act(async () => pending.reject(new Error("Draft send failed")));
+
+      // Back to the failed conversation; a draft is sent while it loads.
+      const created = { ...firstRow, id: "created-2", title: "New conversation" };
+      const again = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(again.promise);
+      await selectRow(firstRow);
+      const creating = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(creating.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-2" });
+      await typeInstruction("Second draft");
+      const send = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Send",
+      )!;
+      await act(async () => send.click());
+
+      await act(async () => again.resolve({ conversation: firstRow, frames: [] }));
+      // Not reported while that send still holds the composer.
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("Second draft");
+
+      await act(async () => creating.resolve(created));
+      // The draft went to its new conversation, which shows neither the failure nor its text.
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(created.id);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("");
+
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Draft send failed");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
+    function proposalFrame(conversationId: string, id: string): OperatorFrame {
+      return {
+        version: 1,
+        conversationId,
+        requestId: `request-${id}`,
+        sequence: 1,
+        type: "proposal",
+        payload: {
+          proposal: {
+            id,
+            command: { operation: "shell", argv: ["git", "status"] },
+            commandHash: "sha256",
+            risk: "execute",
+            summary: "Inspect repository state",
+            idempotencyKey: id,
+            expiresAt: 999,
+          },
+        },
+        createdAt: 1,
+      } as unknown as OperatorFrame;
+    }
+
+    // A send on the first row fails while another conversation is shown, so its
+    // failure is kept. A decision on the first row's own proposal is still in flight
+    // then, and it fails while the row loads again, so its error is showing when the
+    // row becomes ready.
+    async function keepAFailureBehindADecisionError(reload: {
+      conversation: OperatorConversation;
+      frames: OperatorFrame[];
+    }) {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      const decision = deferred<{ proposalId: string; status: string }>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+
+      const reloading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(reloading.promise);
+      await selectRow(firstRow);
+      await act(async () => decision.reject(new Error("First decision failed")));
+      const draft = container.querySelector("textarea")!.value;
+      await act(async () => reloading.resolve(reload));
+      return { other, draft };
+    }
+
+    async function expectTheKeptFailureOnReturn(other: typeof firstRow) {
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    }
+
+    it("leaves a decision error showing when a kept failure's conversation loads", async () => {
+      const { other, draft } = await keepAFailureBehindADecisionError({
+        conversation: firstRow,
+        frames: [],
+      });
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "First decision failed",
+      );
+      expect(container.textContent).not.toContain("Send failed on the first row");
+      expect(container.querySelector("textarea")?.value).toBe(draft);
+
+      await expectTheKeptFailureOnReturn(other);
+    });
+
+    it.each(["decision", "stop"])(
+      "keeps a failure kept behind an alert while a %s started over it is in flight",
+      async (action) => {
+        const { other, draft } = await keepAFailureBehindADecisionError(
+          action === "decision"
+            ? { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-2")] }
+            : { conversation: { ...firstRow, activeRequestId: "request-running" }, frames: [] },
+        );
+        const inFlight = deferred<never>();
+        if (action === "decision") {
+          api.decideOperatorProposal.mockReturnValueOnce(inFlight.promise);
+          await act(async () => buttonNamed("Allow")!.click());
+        } else {
+          api.cancelOperatorRequest.mockReturnValueOnce(inFlight.promise);
+          await act(async () => buttonNamed("Stop")!.click());
+        }
+
+        // Starting it cleared the alert; the kept failure waits for its outcome.
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+        expect(container.querySelector("textarea")?.value).toBe(draft);
+
+        await act(async () => inFlight.reject(new Error(`The ${action} failed`)));
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          `The ${action} failed`,
+        );
+        expect(container.textContent).not.toContain("Send failed on the first row");
+
+        await expectTheKeptFailureOnReturn(other);
+      },
+    );
+
+    async function flushAutoAllow() {
+      // Auto-allow decides on a zero-delay timer; let it and the decision settle.
+      for (let tick = 0; tick < 3; tick += 1) {
+        await act(async () => {
+          await new Promise((settle) => window.setTimeout(settle, 0));
+        });
+      }
+    }
+
+    async function startANewConversation() {
+      await openList();
+      const button = [...container.querySelectorAll("button")].find(
+        (item) =>
+          item.textContent === "Start a new conversation" && !item.hasAttribute("aria-expanded"),
+      ) as HTMLButtonElement;
+      await act(async () => button.click());
+    }
+
+    it("reports a kept failure once auto-allow has decided its conversation's proposal", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
+    async function keepAFailureForTheFirstRow() {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+      return other;
+    }
+
+    it("leaves a reported failure showing when auto-allow decides a proposal that arrives after it", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      await keepAFailureForTheFirstRow();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+
+      await act(async () =>
+        subscriptions.at(-1)!.onFrame(proposalFrame(firstRow.id, "proposal-1")),
+      );
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+    });
+
+    it("keeps a kept failure when auto-allow's decision on its conversation is refused", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = await keepAFailureForTheFirstRow();
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Decision refused"));
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+      expect(container.textContent).not.toContain("Send failed on the first row");
+
+      await expectTheKeptFailureOnReturn(other);
+    });
+
+    it("sends a refused auto-allow decision once and leaves its error showing", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      api.decideOperatorProposal.mockRejectedValue(new Error("Decision refused"));
+      await mount();
+      await flushAutoAllow();
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+
+      api.decideOperatorProposal.mockResolvedValueOnce({
+        proposalId: "proposal-1",
+        status: "allowed",
+      });
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+    });
+
+    it("clears a refused Allow's error when auto-allow then allows that proposal", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Proposal expired"));
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Proposal expired");
+
+      const toggle = container.querySelector<HTMLInputElement>(
+        'label[title="Auto-allow proposals"] input',
+      )!;
+      await act(async () => toggle.click());
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it.each([
+      ["auto-allow", "is decided again on return, and only that refusal shows there"],
+      ["hand", "keeps its refusal for its own conversation and shows it on return"],
+    ])("a decision made by %s and refused after another conversation is chosen %s", async (by) => {
+      if (by === "auto-allow") window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      if (by === "auto-allow") await flushAutoAllow();
+      else await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Refused again"));
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      if (by === "auto-allow") {
+        // Untried again, so auto-allow decides it once more, and that refusal shows here.
+        expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
+      } else {
+        // Its refusal was kept for this conversation; the proposal waits for a click.
+        expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          "Decision refused",
+        );
+        expect(buttonNamed("Allow")).toBeDefined();
+      }
+    });
+
+    it("shows no alert once auto-allow decides a kept refusal's proposal again and it succeeds", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await flushAutoAllow();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("does not report a kept refusal whose proposal is no longer pending", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-2")],
+      });
+      await selectRow(firstRow);
+
+      expect(buttonNamed("Allow")).toBeDefined();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("does not report a kept refusal once its proposal is refused again", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await flushAutoAllow();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Refused again"));
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
+
+      // A send clears the alert, and the earlier refusal does not come back after it.
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-after" });
+      const sends = api.submitOperatorTurn.mock.calls.length;
+      await sendInstruction();
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    // A decision by hand on the first row's proposal is refused while another
+    // conversation is shown, so its refusal is kept for the first row.
+    async function keepARefusalForTheFirstRow(frames = [proposalFrame(firstRow.id, "proposal-1")]) {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames });
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+      return other;
+    }
+
+    it("reports a kept refusal once: a send after it leaves no alert, and it does not come back", async () => {
+      const other = await keepARefusalForTheFirstRow();
+      const shown = { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-1")] };
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-after" });
+      const sends = api.submitOperatorTurn.mock.calls.length;
+      await sendInstruction();
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(buttonNamed("Allow")).toBeDefined();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("reports each kept refusal of a conversation in turn, oldest first", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      const frames = [
+        proposalFrame(firstRow.id, "proposal-1"),
+        { ...proposalFrame(firstRow.id, "proposal-2"), sequence: 2 },
+      ];
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames });
+      const first = deferred<never>();
+      const second = deferred<never>();
+      api.decideOperatorProposal
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      await mount();
+      // A proposal being decided shows no Allow button, so the first one left is the next.
+      await act(async () => buttonNamed("Allow")!.click());
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => first.reject(new Error("Refused 1")));
+      await act(async () => second.reject(new Error("Refused 2")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames });
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused 1");
+
+      // Allowing the first proposal clears its alert, and the second refusal is reported.
+      api.decideOperatorProposal.mockResolvedValueOnce({
+        proposalId: "proposal-1",
+        status: "allowed",
+      });
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenLastCalledWith(
+        firstRow.id,
+        "proposal-1",
+        "allow",
+        "sha256",
+        null,
+      );
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused 2");
+    });
+
+    it("reports a kept send failure before a kept refusal of the same conversation", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const shown = { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-1")] };
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+      expect(container.textContent).not.toContain("Decision refused");
+
+      // Sent again, the failed text goes through, and the refusal is reported after it.
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-again" });
+      const sends = api.submitOperatorTurn.mock.calls.length;
+      await act(async () => buttonNamed("Send")!.click());
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(sends + 1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+    });
+
+    it("does not report a kept refusal over a lost connection", async () => {
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const shown = { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-1")] };
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      const decision = deferred<never>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => decision.reject(new Error("Decision refused")));
+
+      // Back on the first row its send is still in flight, so the refusal waits; the
+      // stream then fails for good before the send completes.
+      api.getOperatorConversation.mockResolvedValueOnce(shown);
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      await act(async () =>
+        subscriptions.at(-1)!.onError?.(new Error("Connection lost — reload to continue."), true),
+      );
+      await act(async () => pending.resolve({ requestId: "request-first" }));
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Connection lost — reload to continue.",
+      );
+      expect(container.textContent).not.toContain("Decision refused");
+    });
+
+    it("clears a refused decision's error once the stream resolves that proposal", async () => {
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      const confirmation = (proposalId: string, sequence: number) =>
+        ({
+          version: 1,
+          conversationId: firstRow.id,
+          requestId: `request-${proposalId}`,
+          sequence,
+          type: "confirmation",
+          payload: { proposalId, state: "expired" },
+          createdAt: 2,
+        }) as unknown as OperatorFrame;
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [
+          proposalFrame(firstRow.id, "proposal-1"),
+          { ...proposalFrame(firstRow.id, "proposal-2"), sequence: 2 },
+        ],
+      });
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Proposal expired"));
+      const animationFrames: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      });
+      const emit = async (frame: OperatorFrame) => {
+        await act(async () => {
+          subscriptions.at(-1)!.onFrame(frame);
+          animationFrames.shift()?.(0);
+        });
+      };
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Proposal expired");
+
+      const allowButtons = () =>
+        [...container.querySelectorAll("button")].filter((button) => button.textContent === "Allow")
+          .length;
+      expect(allowButtons()).toBe(2);
+
+      // Another proposal resolving leaves it showing.
+      await emit(confirmation("proposal-2", 3));
+      expect(allowButtons()).toBe(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Proposal expired");
+
+      await emit(confirmation("proposal-1", 4));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("decides a proposal appended after New conversation once its conversation is shown again", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      // Frames wait for an animation frame that never runs, so the stream's cleanup
+      // appends this one after New conversation has cleared the panel.
+      vi.stubGlobal("requestAnimationFrame", () => 1);
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await mount();
+      act(() => subscriptions.at(-1)!.onFrame(proposalFrame(firstRow.id, "proposal-1")));
+      await startANewConversation();
+      await flushAutoAllow();
+      expect(api.decideOperatorProposal).not.toHaveBeenCalled();
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a new conversation started before the first list read settles", async () => {
+      const listing = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(listing.promise);
+      await mount();
+      await startANewConversation();
+      const loads = api.getOperatorConversation.mock.calls.length;
+
+      await act(async () => listing.resolve([firstRow]));
+
+      expect(api.getOperatorConversation).toHaveBeenCalledTimes(loads);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBeNull();
+    });
+
+    it("keeps a new conversation started before the first list read fails", async () => {
+      window.localStorage.setItem("studio:operator-conversation", firstRow.id);
+      const listing = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(listing.promise);
+      await mount();
+      await startANewConversation();
+      const loads = api.getOperatorConversation.mock.calls.length;
+
+      await act(async () => listing.reject(new Error("List failed")));
+
+      expect(api.getOperatorConversation).toHaveBeenCalledTimes(loads);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it("keeps a draft's text when its conversation cannot be created after a new conversation", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      await startANewConversation();
+      expect(container.querySelector("textarea")?.value).toBe("");
+
+      await act(async () => pending.reject(new Error("Draft create failed")));
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Draft create failed",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
+    it("keeps a new conversation started while a draft's conversation is created", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      await sendInstruction();
+      await startANewConversation();
+
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBeNull();
+      expect(buttonNamed("Stop")).toBeUndefined();
+    });
+
+    it("keeps a conversation retried while a draft's conversation is created", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      // Sent while the list's own selection loads; that load then fails.
+      await sendInstruction();
+      await act(async () => loading.reject(new Error("Load failed")));
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await act(async () => buttonNamed("Retry")!.click());
+
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+      expect(buttonNamed("Stop")).toBeUndefined();
+    });
+
+    it("retries the conversation whose load failed, not the stored one", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      window.localStorage.setItem("studio:operator-conversation", firstRow.id);
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await mount();
+      api.getOperatorConversation.mockRejectedValueOnce(new Error("Load failed"));
+      await selectRow(other);
+      expect(buttonNamed("Retry")).toBeDefined();
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await act(async () => buttonNamed("Retry")!.click());
+
+      expect(api.getOperatorConversation.mock.calls.at(-1)?.[0]).toBe(other.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
+
+    it("keeps a fork when a draft's conversation is created during the fork request", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      const forked = { ...firstRow, id: "conversation-fork", title: "Scheduler check (fork)" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockReturnValueOnce(new Promise(() => {}));
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      const forking = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.forkOperatorConversation.mockReturnValueOnce(forking.promise);
+      await mount();
+      await sendInstruction();
+      await openList();
+      const forkButton = container.querySelector(
+        'ul li button[aria-label="Fork"]',
+      ) as HTMLButtonElement;
+      await act(async () => forkButton.click());
+
+      // The draft's conversation is created while the fork request is in flight.
+      await act(async () => pending.resolve(created));
+      expect(window.localStorage.getItem("studio:operator-conversation")).not.toBe(created.id);
+      expect(buttonNamed("Stop")).toBeUndefined();
+
+      await act(async () => forking.resolve({ conversation: forked, frames: [] }));
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(forked.id);
+    });
+
+    it("shows a conversation description beneath its title and in the tooltip", async () => {
+      const description = "Review scheduler retries and release decisions";
+      const conversation = {
+        id: "conversation-1",
+        title: "Scheduler check",
+        description,
+        status: "active",
+        pinned: false,
+        activeRequestId: null,
+      };
+      api.listOperatorConversations.mockResolvedValue([conversation]);
+      api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+
+      await mount();
+      await openList();
+
+      const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+        button.textContent?.includes("Scheduler check"),
+      ) as HTMLButtonElement;
+      expect(titleButton.title).toBe(description);
+      expect([...titleButton.querySelectorAll("span")].map((span) => span.textContent)).toEqual([
+        "Scheduler check",
+        description,
+      ]);
+    });
+
+    describe("live conversation metadata refresh", () => {
+      function metadataCall(sequence: number, requestId = "request-1"): OperatorFrame {
+        return {
+          ...textFrame(sequence, "assistant", ""),
+          requestId,
+          type: "tool_call",
+          payload: {
+            callId: "provider-call-1",
+            tool: "mcp__studio_operator__update_conversation",
+            arguments: { title: "Requested title" },
+            mode: "draft",
+          },
+        };
+      }
+
+      function metadataResult(sequence: number, requestId = "request-1", ok = true): OperatorFrame {
+        return {
+          ...textFrame(sequence, "assistant", ""),
+          requestId,
+          type: "tool_result",
+          payload: { callId: "provider-call-1", ok, result: { nativeToolCompleted: true } },
+        };
+      }
+
+      function metadataDone(sequence: number, requestId = "request-1"): OperatorFrame {
+        return {
+          ...textFrame(sequence, "assistant", ""),
+          requestId,
+          type: "done",
+          payload: { outcome: "failed", lastSequence: sequence },
+        };
+      }
+
+      async function mountMetadataConversation(frames: OperatorFrame[] = []) {
+        const conversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          description: "Original scope",
+          status: "active" as const,
+          pinned: true,
+          activeRequestId: "request-1",
+        };
+        const other = {
+          id: "conversation-2",
+          title: "Other conversation",
+          description: "Other scope",
+          status: "active" as const,
+          pinned: false,
+          activeRequestId: null,
+        };
+        window.localStorage.setItem("studio:operator-conversation", conversation.id);
+        api.listOperatorConversations.mockResolvedValue([conversation, other]);
+        api.getOperatorConversation.mockResolvedValue({ conversation, frames });
+        const animationFrames: FrameRequestCallback[] = [];
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+          animationFrames.push(callback);
+          return animationFrames.length;
+        });
+        await mount();
+        await openList();
+        const handlers = api.streamOperatorConversation.mock.calls.at(-1)![2];
+        const emit = async (...incoming: OperatorFrame[]) => {
+          await act(async () => {
+            for (const frame of incoming) handlers.onFrame(frame);
+            animationFrames.shift()?.(0);
+          });
+        };
+        return { conversation, other, emit };
+      }
+
+      function expectMetadata(title: string, description: string, pinned = true) {
+        const picker = container.querySelector('button[aria-label^="Conversations"]');
+        expect(picker?.getAttribute("aria-label")).toBe(`Conversations: ${title}`);
+        const displayedTitle = pinned ? `★ ${title}` : title;
+        const rowTitle = [...container.querySelectorAll("ul li button")].find(
+          (button) => button.querySelector("span")?.textContent === displayedTitle,
+        ) as HTMLButtonElement;
+        expect(rowTitle).toBeDefined();
+        expect(rowTitle.title).toBe(description);
+        expect([...rowTitle.querySelectorAll("span")].map((span) => span.textContent)).toEqual([
+          displayedTitle,
+          description,
+        ]);
+        expect(
+          rowTitle.closest("li")?.querySelector(`button[aria-label="${pinned ? "Unpin" : "Pin"}"]`),
+        ).not.toBeNull();
+        expect(api.acknowledgeOperatorEffect).not.toHaveBeenCalled();
+      }
+
+      it("rereads current metadata and the list after a paired successful native result", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Stored title", description: "Stored scope" };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit(metadataCall(1));
+        expect(api.getOperatorConversation).toHaveBeenCalledOnce();
+        await emit(metadataResult(2));
+
+        expectMetadata("Stored title", "Stored scope");
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        expect(api.listOperatorConversations).toHaveBeenLastCalledWith({ status: "active" });
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(2);
+        expect(api.streamOperatorConversation).toHaveBeenCalledOnce();
+        await emit(metadataResult(2), metadataDone(3));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+      });
+
+      it("uses fresh nonselected rows during metadata refresh", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+        api.listOperatorConversations.mockResolvedValueOnce([
+          conversation,
+          { ...other, title: "External update" },
+        ]);
+        await emit(metadataCall(1), metadataResult(2));
+        expect(container.querySelector("ul")?.textContent).toContain("External update");
+        expect(container.querySelector("ul")?.textContent).not.toContain(other.title);
+      });
+
+      it("keeps the current filter when an older metadata refresh settles", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const pending = deferred<OperatorConversation[]>();
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await emit(metadataCall(1), metadataResult(2));
+        api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+        await clickFilter("Archived");
+        await act(async () => pending.resolve([conversation, other]));
+        expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+        expect(container.querySelector("ul")?.textContent).not.toContain(other.title);
+      });
+
+      it("does not resurrect a local archive when metadata refresh settles", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const pending = deferred<OperatorConversation[]>();
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await emit(metadataCall(1), metadataResult(2));
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          status: "archived",
+        });
+        const archive = container.querySelector(
+          'ul li button[aria-label="Archive"]',
+        ) as HTMLButtonElement;
+        await act(async () => archive.click());
+        await act(async () => pending.resolve([conversation, other]));
+        expect(container.querySelector("ul")?.textContent).not.toContain(conversation.title);
+        expect(container.querySelector("ul")?.textContent).toContain(other.title);
+      });
+
+      async function holdMetadataRead() {
+        const mounted = await mountMetadataConversation();
+        const snapshot = deferred<OperatorConversationSnapshot>();
+        const list = deferred<OperatorConversation[]>();
+        api.getOperatorConversation.mockReturnValueOnce(snapshot.promise);
+        api.listOperatorConversations.mockReturnValueOnce(list.promise);
+        await mounted.emit(metadataCall(1), metadataResult(2));
+        const settle = async (
+          conversation: typeof mounted.conversation,
+          rows: OperatorConversation[],
+        ) => {
+          await act(async () => {
+            snapshot.resolve({ conversation, frames: [] });
+            list.resolve(rows);
+          });
+        };
+        return { ...mounted, settle };
+      }
+
+      async function renameRow(from: string, to: string) {
+        const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+          button.querySelector("span")?.textContent?.endsWith(from),
+        ) as HTMLButtonElement;
+        await act(async () => {
+          titleButton.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+        });
+        const input = container.querySelector("ul li input") as HTMLInputElement;
+        const setNativeValue = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        )!.set!;
+        await act(async () => {
+          setNativeValue.call(input, to);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+          await Promise.resolve();
+        });
+      }
+
+      it("keeps a pin written while a metadata refresh is pending, placed as the server lists it", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...other,
+          pinned: true,
+          updatedAt: 30,
+        });
+        const pin = container.querySelector('ul li button[aria-label="Pin"]') as HTMLButtonElement;
+        await act(async () => pin.click());
+        await settle(conversation, [conversation, other]);
+        const rows = [...container.querySelectorAll("ul li")];
+        expect(rows.map((row) => row.querySelector("button span")?.textContent)).toEqual([
+          "★ Other conversation",
+          "★ Scheduler check",
+        ]);
+        expect(rows[0].querySelector('button[aria-label="Unpin"]')).not.toBeNull();
+      });
+
+      it("keeps a rename written while a metadata refresh is pending", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          title: "Renamed check",
+        });
+        await renameRow("Scheduler check", "Renamed check");
+        expectMetadata("Renamed check", "Original scope");
+        await settle(conversation, [conversation, other]);
+        expectMetadata("Renamed check", "Original scope");
+      });
+
+      it("takes the description from a rename stamped later than a pending read", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          title: "Renamed check",
+          description: "Newer scope",
+          updatedAt: 30,
+        });
+        await renameRow("Scheduler check", "Renamed check");
+        const older = { ...conversation, description: "Older scope", updatedAt: 20 };
+        await settle(older, [older, other]);
+        expectMetadata("Renamed check", "Newer scope");
+      });
+
+      it("takes a refresh that holds a later server change over a rename written during it", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          title: "Renamed check",
+          updatedAt: 10,
+        });
+        await renameRow("Scheduler check", "Renamed check");
+        const later = { ...conversation, title: "Server title", updatedAt: 20 };
+        await settle(later, [later, other]);
+        expectMetadata("Server title", "Original scope");
+      });
+
+      it("rereads on done when the provider never reports the metadata call result", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Durable title", description: "Durable scope" };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit(metadataCall(1), metadataDone(2));
+
+        expectMetadata("Durable title", "Durable scope");
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(2);
+      });
+
+      it("pairs call ids within the same request and conversation", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation([metadataCall(1)]);
+        const updated = { ...conversation, title: "Paired title", description: "Paired scope" };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit({
+          ...metadataResult(2),
+          payload: { callId: "different-call", ok: true, result: { nativeToolCompleted: true } },
+        });
+        await emit(metadataResult(3, "another-request"));
+        await emit({ ...metadataResult(4), conversationId: "conversation-2" });
+        expect(api.getOperatorConversation).toHaveBeenCalledOnce();
+        await emit(metadataResult(5));
+
+        expectMetadata("Paired title", "Paired scope");
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        await emit(
+          {
+            ...metadataCall(6, "request-2"),
+            payload: { callId: "provider-call-1", tool: "other_tool", arguments: {}, mode: "read" },
+          },
+          metadataResult(7, "request-2"),
+          metadataDone(8, "request-2"),
+        );
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+      });
+
+      it("does not refresh a failed result again at done", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = {
+          ...conversation,
+          title: "Confirmed title",
+          description: "Confirmed scope",
+        };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+        await emit(metadataCall(1), metadataResult(2));
+        expectMetadata("Confirmed title", "Confirmed scope");
+
+        await emit(metadataCall(3, "request-2"), metadataResult(4, "request-2", false));
+        await emit(metadataDone(5, "request-2"));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(2);
+      });
+
+      it("discards an in-flight metadata read after selecting another conversation", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Delayed title", description: "Delayed scope" };
+        const pending = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        api.getOperatorConversation.mockReturnValueOnce(pending.promise);
+        api.listOperatorConversations.mockResolvedValueOnce([updated, other]);
+        await emit(metadataCall(1), metadataResult(2));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+        const otherButton = [...container.querySelectorAll("ul li button")].find(
+          (button) => button.querySelector("span")?.textContent === "Other conversation",
+        ) as HTMLButtonElement;
+        await act(async () => {
+          otherButton.click();
+        });
+        await act(async () => {
+          pending.resolve({ conversation: updated, frames: [] });
+        });
+        await openList();
+
+        expect(
+          container
+            .querySelector('button[aria-label^="Conversations"]')
+            ?.getAttribute("aria-label"),
+        ).toBe("Conversations: Other conversation");
+        expect(container.querySelector("ul")?.textContent).toContain("Scheduler check");
+        expect(container.querySelector("ul")?.textContent).not.toContain("Delayed title");
+      });
+
+      // Starts two metadata reads and returns settle(index, ...), where index is the order
+      // the reads started in: each read takes the next queued mock.
+      async function startTwoMetadataReads() {
+        const mounted = await mountMetadataConversation();
+        const { conversation, other, emit } = mounted;
+        const reads = [1, 2].map(() => ({
+          snapshot: deferred<OperatorConversationSnapshot>(),
+          list: deferred<OperatorConversation[]>(),
+        }));
+        for (const read of reads) {
+          api.getOperatorConversation.mockReturnValueOnce(read.snapshot.promise);
+          api.listOperatorConversations.mockReturnValueOnce(read.list.promise);
+        }
+        await emit(metadataCall(1), metadataResult(2));
+        await emit(metadataCall(3, "request-2"), metadataResult(4, "request-2"));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
+        const settle = async (index: number, title: string, description: string) => {
+          const updated = { ...conversation, title, description };
+          await act(async () => {
+            reads[index].snapshot.resolve({ conversation: updated, frames: [] });
+            reads[index].list.resolve([updated, other]);
+          });
+        };
+        return settle;
+      }
+
+      it("keeps a newer metadata read when an older one settles after it", async () => {
+        const settle = await startTwoMetadataReads();
+        await settle(1, "Newer title", "Newer scope");
+        expectMetadata("Newer title", "Newer scope");
+        await settle(0, "Older title", "Older scope");
+        expectMetadata("Newer title", "Newer scope");
+        expect(container.querySelector("ul")?.textContent).not.toContain("Older title");
+      });
+
+      it("applies metadata reads that settle in the order they started", async () => {
+        const settle = await startTwoMetadataReads();
+        await settle(0, "Older title", "Older scope");
+        expectMetadata("Older title", "Older scope");
+        await settle(1, "Newer title", "Newer scope");
+        expectMetadata("Newer title", "Newer scope");
+      });
+    });
+
+    it.each(["initial", "active-filter"])(
+      "merges the %s list read with a conversation created while it was pending",
+      async (source) => {
+        const pending = deferred<OperatorConversation[]>();
+        const existing: OperatorConversation = {
+          id: "existing",
+          title: "Earlier conversation",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const created: OperatorConversation = {
+          id: "created",
+          title: "Newly created conversation",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        api.listOperatorConversations.mockReset();
+        if (source === "initial")
+          api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        else api.listOperatorConversations.mockResolvedValueOnce([]);
+        api.createOperatorConversation.mockResolvedValueOnce(created);
+        api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "created-turn" });
+        await mount();
+        if (source === "active-filter") {
+          await openList();
+          api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+          const active = [...container.querySelectorAll("button")].find(
+            (button) => button.textContent === "Active",
+          )!;
+          await act(async () => active.click());
+        }
+        const input = container.querySelector("textarea")!;
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(
+            input,
+            "Inspect this project",
+          );
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        const send = [...container.querySelectorAll("button")].find(
+          (button) => button.textContent === "Send",
+        )!;
+        await act(async () => send.click());
+        expect(api.submitOperatorTurn).toHaveBeenCalledWith(created.id, expect.any(Object));
+        await act(async () => pending.resolve([existing]));
+        if (source === "initial") await openList();
+        expect(container.querySelector("ul")?.textContent).toContain(existing.title);
+        expect(container.querySelector("ul")?.textContent).toContain(created.title);
+      },
+    );
+
+    it("drops a conversation load after a different conversation is selected", async () => {
+      const first: OperatorConversation = {
+        id: "conversation-1",
+        title: "Scheduler check",
+        status: "active",
+        pinned: false,
+        activeRequestId: null,
+      };
+      const other: OperatorConversation = {
+        id: "conversation-2",
+        title: "Other conversation",
+        status: "active",
+        pinned: false,
+        activeRequestId: null,
+      };
+      api.listOperatorConversations.mockResolvedValueOnce([first, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: first, frames: [] });
+      await mount();
+      await openList();
+      const pending = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(pending.promise);
+      const select = async (title: string) => {
+        const button = [...container.querySelectorAll("ul li button")].find(
+          (item) => item.textContent === title,
+        ) as HTMLButtonElement;
+        await act(async () => button.click());
+      };
+      await select("Other conversation");
+      await openList();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: first, frames: [] });
+      await select("Scheduler check");
+      await act(async () => pending.resolve({ conversation: other, frames: [] }));
+      expect(
+        container.querySelector('button[aria-label^="Conversations"]')?.getAttribute("aria-label"),
+      ).toBe("Conversations: Scheduler check");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(first.id);
     });
 
     it("renames a conversation inline and reflects the new title", async () => {

@@ -21,10 +21,12 @@ import time
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
-import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from lionagi.ln.concurrency import run_sync, sleep
+
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
+from .conversation_metadata import UpdateConversationInput
 from .redact import (
     MESSAGE_BYTE_CAP,
     PER_ITEM_TEXT_CAP,
@@ -48,7 +50,7 @@ from .run_control import (
 from .run_detail import RunDetailInput, run_detail
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
-from .store import OperatorStore
+from .store import OperatorConflictError, OperatorNotFoundError, OperatorStore
 
 OperatorSpace = Literal[
     "mission",
@@ -247,6 +249,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
     "rename_run": RenameSessionInput,
+    "update_conversation": UpdateConversationInput,
     "pause_run": PauseRunInput,
     "release_run_pause": ReleaseRunPauseInput,
     "steer_run": SteerRunInput,
@@ -350,6 +353,12 @@ _TOOL_DESCRIPTIONS = {
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
     "rename_run": RENAME_SESSION_DESCRIPTION,
+    "update_conversation": (
+        "Update the title or short description of this Operator conversation. "
+        "Only this turn's own conversation can be changed. Omitted fields stay unchanged; "
+        "a blank or null description clears it. The result reports the durable applied "
+        "change, without requesting a browser action or renaming a run."
+    ),
     "pause_run": PAUSE_RUN_DESCRIPTION,
     "release_run_pause": RELEASE_RUN_PAUSE_DESCRIPTION,
     "steer_run": STEER_RUN_DESCRIPTION,
@@ -397,6 +406,23 @@ def _identity() -> tuple[OperatorStore, str, str]:
     if not db_path or not conversation_id or not request_id:
         raise RuntimeError("Studio application bridge is missing its durable turn identity")
     return OperatorStore(db_path), conversation_id, request_id
+
+
+async def update_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Update the authenticated turn's own conversation through the shared store service."""
+    args = UpdateConversationInput.model_validate(arguments)
+    store, conversation_id, request_id = _identity()
+    if args.conversation_id is not None and args.conversation_id != conversation_id:
+        return {"updated": False, "reason": "conversation_mismatch"}
+    fields = args.model_dump(include=args.model_fields_set - {"conversation_id"})
+    try:
+        return await store.update_conversation_from_turn(conversation_id, request_id, **fields)
+    except OperatorConflictError:
+        # With no status or pin to change, the store's only conflict here is a turn that is
+        # no longer the conversation's active one.
+        return {"updated": False, "reason": "turn_not_active"}
+    except OperatorNotFoundError:
+        return {"updated": False, "reason": "not_found"}
 
 
 def public_project(value: Any) -> str | None:
@@ -1007,7 +1033,7 @@ async def list_agents(arguments: dict[str, Any]) -> dict[str, Any]:
     from lionagi.studio.services.agents import list_agents as _list_agents
     from lionagi.studio.services.redaction import demo_mode_enabled, project_agent_fields
 
-    rows = await anyio.to_thread.run_sync(_list_agents)
+    rows = await run_sync(_list_agents)
     redact = demo_mode_enabled()
     projected = []
     for row in rows[: args.limit]:
@@ -1029,7 +1055,7 @@ async def list_playbooks(arguments: dict[str, Any]) -> dict[str, Any]:
     args = ListPlaybooksInput.model_validate(arguments)
     from lionagi.studio.services.playbooks import list_playbooks as _list_playbooks
 
-    rows = await anyio.to_thread.run_sync(_list_playbooks)
+    rows = await run_sync(_list_playbooks)
     projected = [
         {
             "name": row.get("name"),
@@ -1115,7 +1141,7 @@ async def resolve_playbook_version(playbook: str) -> str:
     """Fingerprint the exact playbook content without exposing its host path."""
     from lionagi.studio.services.playbooks import fingerprint_playbook
 
-    return await anyio.to_thread.run_sync(fingerprint_playbook, playbook)
+    return await run_sync(fingerprint_playbook, playbook)
 
 
 def _playbook_placeholder_problems(
@@ -1166,9 +1192,7 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
     args = LaunchPlaybookInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
     target_version = await resolve_playbook_version(args.playbook)
-    problem = await anyio.to_thread.run_sync(
-        _playbook_placeholder_problems, args.playbook, args.input, args.args
-    )
+    problem = await run_sync(_playbook_placeholder_problems, args.playbook, args.input, args.args)
     if problem is not None:
         return {"status": "refused", "reason": problem}
     command = {
@@ -1218,7 +1242,7 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
             status = proposal["status"]
         if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
             return _redacted_launch_result(proposal)
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 _TOOL_HANDLERS = {
@@ -1237,6 +1261,7 @@ _TOOL_HANDLERS = {
     "cancel_run": cancel_run,
     "resume_run": resume_run,
     "rename_run": rename_session,
+    "update_conversation": update_conversation,
     "pause_run": pause_run,
     "release_run_pause": release_run_pause,
     "steer_run": steer_run,

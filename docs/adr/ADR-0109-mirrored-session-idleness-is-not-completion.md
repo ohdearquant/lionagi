@@ -27,7 +27,7 @@ meanings, which is the same failure ADR-0105 fixed one column over.
 ### Three consequences
 
 **1. Consumers read a live agent as finished.** Verified at
-`lionagi/studio/services/sessions.py:1590-1598`: `is_session_stream_done` closes a
+`lionagi/studio/services/sessions.py:1629-1637`: `is_session_stream_done` closes a
 session's live stream once the status is terminal and has been stable for
 `SESSION_DONE_STABLE_SECS`. A mirrored session that goes quiet for five minutes
 is marked `completed`, and sixty seconds later the Studio stops following it.
@@ -59,7 +59,7 @@ process-wide terminal callback if, and only if, `notify.on_terminal` resolves
 to a handler. The CLI entry point calls `register_settings_terminal_callback`
 before dispatching any subcommand, `li mirror` included
 (`lionagi/cli/main.py:317-319`, inside `_run` and ahead of argparse dispatch),
-and Studio service startup calls it as well (`lionagi/studio/app.py:371-373`,
+and Studio service startup calls it as well (`lionagi/studio/app.py:372-374`,
 the same module that starts the in-process mirror); the
 function registers when the setting resolves and unregisters when it does not
 (`lionagi/state/lifecycle/notify_settings.py:659-673`). So with no
@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:4444-4455`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:4470-4481`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -346,15 +346,15 @@ second name from it at `lionagi/state/db.py:451`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
-| `studio/services/sessions.py:1590` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
+| `studio/services/sessions.py:1629` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `studio/services/run_resume.py:245` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
 | `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:74` | Unverified | not driven |
 | `studio/services/run_resume_worker.py:71` | Unverified | not driven |
-| `cli/monitor.py:1197,1209,1267` | Unverified | not driven |
+| `cli/monitor.py:1199,1211,1269` | Unverified | not driven |
 | `cli/machine.py:539` | Unverified, display flag | not driven |
 | `cli/_runs.py:918,1178,1370,1665` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:662-688`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:918` branches on that row's terminal status while `:937` handles it being `running`. An earlier draft wrote "the claude/codex-mirror row" and that is wrong: the resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:677`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:79-81`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `lionagi/cli/_runs.py:1772-1783` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
-| `cli/agent.py:828,1855` | Probably not: own run's session | not driven |
+| `cli/agent.py:969,2003` | Probably not: own run's session | not driven |
 | `cli/orchestrate/_orchestration.py:2203` | Probably not: own run's session | not driven |
 | `hooks/builtins.py:71,131` | Probably not: own run's session | not driven |
 

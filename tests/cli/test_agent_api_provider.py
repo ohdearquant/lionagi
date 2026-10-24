@@ -232,8 +232,9 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
 
     assert set(leg.branch.acts.registry) == {"reader", "search", "context"}
     record = leg.branch.metadata["api_launch"]
-    assert set(record) == {"tools", "max_extensions", "loop", "spend"}
+    assert set(record) == {"tools", "max_extensions", "loop", "max_input_tokens", "spend"}
     assert (record["tools"], record["max_extensions"], record["loop"]) == ("read", 10, "react")
+    assert record["max_input_tokens"] == "auto"
 
 
 @pytest.mark.asyncio

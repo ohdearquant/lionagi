@@ -79,4 +79,8 @@ describe("local daemon proxy", () => {
     expect(studioProxy["/health"]).toBe(studioProxy["/api"]);
     expect(studioProxy["/openapi.json"]).toBe(studioProxy["/api"]);
   });
+
+  it("passes the page's own Host on, so pairing through it is a same-origin request", () => {
+    expect(studioProxy["/api"]).toEqual({ target: expect.any(String), changeOrigin: false });
+  });
 });

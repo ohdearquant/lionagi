@@ -147,6 +147,8 @@ class Branch(Element, Relational):
 
         self._message_manager = MessageManager(messages=messages)
         self._message_manager._on_message_added.append(self._schedule_emit)
+        self._message_manager._on_message_added.append(self._track_message_in_view)
+        self._message_manager._on_pile_rewritten.append(self._sync_view_with_pile)
 
         if system_template is not None:
             import warnings
@@ -410,6 +412,37 @@ class Branch(Element, Relational):
         from lionagi.hooks.bus import HookPoint
 
         await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
+
+    def _track_message_in_view(self, msg: Any) -> None:
+        """on_message_added hook: a new message enters the curated LLM view.
+
+        Evicting and compacting curate history; they must not freeze the conversation. Without
+        this, every message added after the view exists lands in the record and is never sent
+        to the model again.
+        """
+        cp = self.metadata.get("current_progression")
+        if cp is None:
+            return
+        if msg.id not in cp:
+            cp.append(msg.id)
+
+    def _sync_view_with_pile(self) -> None:
+        """on_pile_rewritten hook: the curated view keeps only messages still in the record,
+        headed by the current system message.
+
+        Replacing the system message drops the old one from the record, and clearing drops all
+        but the system message. A view still naming them makes compaction refuse and restore
+        raise.
+        """
+        cp = self.metadata.get("current_progression")
+        if cp is None:
+            return
+        pile = self.msgs.messages
+        cp.exclude([uid for uid in cp if uid not in pile])
+        system = self.msgs.system
+        if system is not None:
+            cp.exclude(system.id)
+            cp.insert(0, system.id)
 
     def _schedule_emit(self, msg: Any) -> None:
         """on_message_added hook: fire-and-forget signal emission."""
@@ -707,16 +740,40 @@ class Branch(Element, Relational):
         return dict_
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        chat_model: iModel | None = None,
+        parse_model: iModel | None = None,
+    ):
+        """Rebuild a branch from ``to_dict`` output, read as trusted input.
+
+        A stored model is rebuilt by ``iModel.from_dict``, which takes from ``data`` no
+        API key, no header or setting whose name reads as a credential, no proxy and no
+        user or password in a URL, and lets it turn the local-network opt-in off but never
+        on. A model given here replaces the stored one. Stored data that does not validate
+        is refused naming each field and the reason, none of the stored values.
+        """
         # Copy first: the pops below would otherwise strip messages, chat_model,
         # and log_config out of the caller's snapshot, so it could not be reused
         # for a retry, comparison, or a second restoration.
         data = dict(data)
+        # The curated view is stored as a plain dict. Restored as one, every later message
+        # add, evict and compaction on the branch would fail on it.
+        metadata = data.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("current_progression"), dict):
+            data["metadata"] = {
+                **metadata,
+                "current_progression": Progression.from_dict(metadata["current_progression"]),
+            }
+        stored_chat_model = data.pop("chat_model", Unset)
+        stored_parse_model = data.pop("parse_model", Unset)
         dict_ = {
             "messages": data.pop("messages", Unset),
             "logs": data.pop("logs", Unset),
-            "chat_model": data.pop("chat_model", Unset),
-            "parse_model": data.pop("parse_model", Unset),
+            "chat_model": stored_chat_model if chat_model is None else chat_model,
+            "parse_model": stored_parse_model if parse_model is None else parse_model,
             "system": data.pop("system", Unset),
             "log_config": data.pop("log_config", Unset),
         }
@@ -735,7 +792,31 @@ class Branch(Element, Relational):
                 params[k] = v
 
         params.update(dict_)
-        return cls(**{k: v for k, v in params.items() if v is not Unset})
+        from pydantic import ValidationError
+
+        # pydantic's message repeats a stored value and the name of a stored key the branch
+        # has no field for, either of which may be a password, so the refusal names only
+        # the fields a branch has and the reasons. It is raised outside the handler, so the
+        # original error is not attached to it.
+        try:
+            branch = cls(**{k: v for k, v in params.items() if v is not Unset})
+        except ValidationError as exc:
+            errors = exc.errors(include_url=False, include_context=False, include_input=False)
+            problems = "; ".join(
+                f"{loc[0] if loc and loc[0] in cls.model_fields else 'a name with no field'}: "
+                f"{error['msg']}"
+                for error in errors
+                for loc in (error["loc"],)
+            )
+        else:
+            # A stored view can name a message its stored record does not hold.
+            branch._sync_view_with_pile()
+            return branch
+        raise ValueError(
+            f"The stored branch does not validate ({problems}). Its values are left out of "
+            "this message. Correct the stored data, or pass a live model (chat_model=, "
+            "parse_model=)."
+        )
 
     def dump_logs(self, clear: bool = True, persist_path=None):
         self._log_manager.dump(clear=clear, persist_path=persist_path)

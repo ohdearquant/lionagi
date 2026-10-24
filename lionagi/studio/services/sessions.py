@@ -1,6 +1,8 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
-import asyncio
 import base64
 import heapq
 import json
@@ -10,11 +12,13 @@ from typing import Any
 
 import aiosqlite
 from fastapi import HTTPException, Query
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from lionagi._errors import NotFoundError
+from lionagi.ln.concurrency import sleep
 from lionagi.state.claude_mirror import session_db_id
-from lionagi.state.db import SESSION_TERMINAL_STATUSES
-from lionagi.state.session_naming import resolve_display_name
+from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+from lionagi.state.session_naming import normalize_session_user_label, resolve_display_name
 
 from ..operator.run_control import session_has_control_consumer
 from ..registry import studio_route
@@ -24,6 +28,19 @@ from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
 SESSION_DONE_STABLE_SECS = 60.0
+
+
+class SessionLabelBody(BaseModel):
+    """An omitted label preserves it; null or a blank string clears it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_label: str | None = None
+
+    @field_validator("user_label")
+    @classmethod
+    def _normalize_label(cls, value: str | None) -> str | None:
+        return normalize_session_user_label(value)
 
 
 def display_model(value: Any) -> Any:
@@ -321,7 +338,7 @@ class SessionFilter:
         self.search = search
         self.kinds = kinds
 
-    def where(self) -> tuple[str, list[Any]]:
+    def where(self, *, user_label_available: bool = True) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         # A mirrored CLI transcript attributed to the run that spawned it as
@@ -337,13 +354,19 @@ class SessionFilter:
             params.append(_escape_like(self.playbook))
         if self.search:
             escaped = _escape_like(self.search)
+            name_columns = ["s.name", "s.agent_name"]
+            if user_label_available:
+                name_columns.append("s.user_label")
             clauses.append(
-                "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
-                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
-                "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
-                f"ESCAPE '{_LIKE_ESCAPE_CHAR}')"
+                "("
+                + " OR ".join(
+                    f"LOWER(COALESCE({column}, '')) LIKE '%' || LOWER(?) || '%' "
+                    f"ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+                    for column in name_columns
+                )
+                + ")"
             )
-            params.extend([escaped, escaped])
+            params.extend([escaped] * len(name_columns))
         if self.statuses:
             ordered = sorted(self.statuses)
             placeholders = ",".join("?" for _ in ordered)
@@ -384,8 +407,11 @@ async def count_sessions(where: SessionFilter | None = None) -> int:
     require_file_store()
     if not store_exists():
         return 0
-    clause, params = (where or SessionFilter()).where()
     async with _open_db(store_path()) as db:
+        user_label = await _user_label_selection(db, alias="s")
+        clause, params = (where or SessionFilter()).where(
+            user_label_available=user_label != "NULL AS user_label"
+        )
         cur = await db.execute(
             f"SELECT COUNT(*) AS n FROM sessions s {clause}",  # noqa: S608
             params,
@@ -418,6 +444,14 @@ async def _approximate_end_selection(db: Any, *, alias: str = "") -> str:
     return "0 AS ended_at_is_approximate"
 
 
+async def _user_label_selection(db: Any, *, alias: str = "") -> str:
+    """Read older stores without migrating them or inventing an explicit label."""
+    prefix = f"{alias}." if alias else ""
+    if "user_label" in await table_columns(db, "sessions"):
+        return f"{prefix}user_label"
+    return "NULL AS user_label"
+
+
 async def list_sessions(
     *,
     limit: int = MAX_SESSION_PAGE,
@@ -425,15 +459,17 @@ async def list_sessions(
     where: SessionFilter | None = None,
     sort: str = "recent",
 ) -> list[dict[str, Any]]:
-    """One page of sessions, newest first (or highest-cost first). Cost is
-    proportional to `limit`, not to the size of the store."""
+    """One page of sessions, newest first (or highest-cost first).
+
+    Branch and progression aggregates read only selected sessions. Filtering,
+    cost sorting, and OFFSET pagination may require work beyond the page.
+    """
     require_file_store()
     if not store_exists():
         return []
 
     limit = max(1, min(int(limit), MAX_SESSION_PAGE))
     offset = max(0, int(offset))
-    clause, params = (where or SessionFilter()).where()
     order_by = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
 
     async with _open_db(store_path()) as db:
@@ -444,6 +480,12 @@ async def list_sessions(
 
             await _ensure_table(db)
         approximate_end = await _approximate_end_selection(db, alias="s")
+        user_label = await _user_label_selection(db, alias="s")
+        clause, params = (where or SessionFilter()).where(
+            user_label_available=user_label != "NULL AS user_label"
+        )
+        # CROSS JOIN keeps the limited page in the outer loop, rather than
+        # allowing an outer sessions scan to satisfy the final ORDER BY.
         cur = await db.execute(
             f"""
             WITH page AS (
@@ -457,6 +499,7 @@ async def list_sessions(
                 s.id,
                 s.run_id,
                 s.name,
+                {user_label},
                 s.created_at,
                 s.updated_at,
                 s.playbook_name,
@@ -486,15 +529,19 @@ async def list_sessions(
                 s.total_cost_usd,
                 s.input_tokens,
                 s.output_tokens,
-                COUNT(DISTINCT b.id) AS branch_count,
-                COALESCE(SUM(
-                    json_array_length(p.collection)
+                (
+                    SELECT COUNT(*)
+                    FROM branches b
+                    WHERE b.session_id = s.id
+                ) AS branch_count,
+                COALESCE((
+                    SELECT SUM(json_array_length(p.collection))
+                    FROM branches b
+                    JOIN progressions p ON p.id = b.progression_id
+                    WHERE b.session_id = s.id
                 ), 0) AS message_count
             FROM page
-            JOIN sessions s ON s.id = page.page_id
-            LEFT JOIN branches b ON b.session_id = s.id
-            LEFT JOIN progressions p ON p.id = b.progression_id
-            GROUP BY s.id
+            CROSS JOIN sessions s ON s.id = page.page_id
             ORDER BY {order_by}
             """,  # noqa: S608
             [*params, limit, offset],
@@ -507,10 +554,10 @@ async def list_sessions(
             # Nullable CLI-run provenance. This is not the Session identity
             # used by Studio routes and can be shared by several Sessions.
             "run_id": row["run_id"],
-            # Displayed name prefers structured identity (playbook/show/agent)
-            # over the raw, possibly prompt-derived value stored on the row
-            # — see resolve_display_name().
+            # An explicit label wins over structured identity and the raw,
+            # possibly prompt-derived name — see resolve_display_name().
             "name": resolve_display_name(dict(row)),
+            "user_label": row["user_label"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"] or 0.0,
             "node_metadata": row["node_metadata"],
@@ -1188,11 +1235,12 @@ async def get_session(
 
     async with _open_db(store_path()) as db:
         approximate_end = await _approximate_end_selection(db)
+        user_label = await _user_label_selection(db)
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
-            # The one interpolated name is chosen from two literals by the
-            # helper above and never comes from a caller.
-            f"""SELECT id, name, created_at, updated_at,
+            # Interpolated selections come from fixed column names and never
+            # from a caller; old read-only stores need no migration.
+            f"""SELECT id, name, {user_label}, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
@@ -1397,9 +1445,9 @@ async def get_session(
         # Nullable CLI-run provenance; consumers must use ``id`` for this
         # Session projection's routes, controls, streams, and row identity.
         "run_id": session_row["run_id"],
-        # Same resolution as list_sessions() — structured identity beats
-        # the raw, possibly prompt-derived stored name.
+        # Same resolution as list_sessions(), including the explicit label.
         "name": resolve_display_name(dict(session_row)),
+        "user_label": session_row["user_label"],
         "created_at": session_row["created_at"],
         "updated_at": session_row["updated_at"],
         "playbook_name": session_row["playbook_name"],
@@ -1653,6 +1701,20 @@ async def get_session_route(
     return session
 
 
+@studio_route("/sessions/{session_id}", method="PUT", area="sessions", name="label_session")
+async def label_session_route(session_id: str, body: SessionLabelBody) -> dict[str, Any]:
+    """Set or clear the display label without changing the session's activity."""
+    # Check before opening a writable store: a missing id must not create a
+    # database or run migrations merely because a caller attempted a rename.
+    if not await session_exists(session_id):
+        raise NotFoundError(f"Session '{session_id}' not found")
+    if "user_label" in body.model_fields_set:
+        async with StateDB(store_path()) as db:
+            if not await db.set_session_user_label(session_id, body.user_label):
+                raise NotFoundError(f"Session '{session_id}' not found")
+    return await get_session_route(session_id)
+
+
 @studio_route(
     "/sessions/{session_id}/stream",
     method="GET",
@@ -1737,7 +1799,7 @@ async def stream_session_route(
                 yield 'data: {"type":"done"}\n\n'
                 return
 
-            await asyncio.sleep(0.5)
+            await sleep(0.5)
 
     from ._sse import sse_response
 
@@ -1798,7 +1860,7 @@ async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
                 yield 'data: {"type":"done"}\n\n'
                 return
 
-            await asyncio.sleep(0.5)
+            await sleep(0.5)
 
     from ._sse import sse_response
 

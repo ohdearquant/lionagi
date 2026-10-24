@@ -8,6 +8,72 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Upgrading from 0.35.5
 
+A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not
+its provider's registered one is restored without a credential. A restored model takes the
+local-network opt-in from its provider's registration (off for a provider that is not
+registered), and a stored config can turn it off but no longer on; a stored value other than
+`true` turns it off. So a model kept for a
+gateway that needs a key fails at its first call, and so does one kept for a loopback
+address (`localhost`, `127.0.0.1`, `::1`) whose provider does not register the opt-in. To
+keep sending there, pass the key for a gateway, `iModel.from_dict(data, api_key=...)`, or the
+opt-in for a loopback address, `allow_local_network=True`. The opt-in admits loopback
+addresses only, so it does not go with a gateway's URL, and another private-network address
+is refused either way. `Branch.from_dict` takes live models instead: a `chat_model`, and a
+`parse_model` as well when one was stored. `li agent --resume` and `--continue-last` take
+neither, so a branch saved against such a URL is resumed from Python instead. A restored model also keeps no
+client option but its headers: one that relied on a stored `proxy`, or on `trust_env` for proxy
+settings from the environment, sets it again on the live config
+(`model.endpoint.config.client_kwargs`).
+Nor does it keep a user and password written before an `@` in its stored base URL: for a
+gateway that reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A `base_url`
+stored in the config's `kwargs`, a copy no request reads, is not restored, nor is a stored
+setting whose name reads as a credential or a proxy, at the config's top level or in its
+`kwargs`, which the request body carries: `proxy`, `proxy_url`, `proxies`, `x_api_key`,
+`authorization`, `Authorisation`, `password`, `auth_key`, `session_key`, `client_key`, `key`,
+a name that begins with `x_auth` or ends in `token` (`access_token`, `accessToken`) and the
+like. A setting otherwise named, such as `max_tokens`, `token_limit`, `prompt_cache_key` or
+`custom_key`, is kept, and a value nested inside a kept setting is restored as written. A
+stored header is dropped by the same rule and three more: `token` anywhere in its name, `Key`
+as its last word (`X-Functions-Key`, `X-Cache-Key`), and `Host`. A set of headers stored
+there, `headers` or `extra_headers`, loses its credential headers as `default_headers` does,
+a header named with `Cookie`, `Authentication` or `Authorisation` in it (`X-Cookie`,
+`Cookie2`, `X-Authentication`) among them; a stored set of headers that is not a mapping or a
+list of name-value pairs, such as a string of header lines, is not restored at all. A
+`provider_metadata` entry named as a credential is dropped, and stored metadata that is not a
+mapping is not restored. A stored base URL is
+restored only in this form, read from the stored text:
+`http://` or `https://` from its first character, an optional user and password running to the
+last `@` and holding no `/`, `\`, `?` or `#`, a host name of letters, digits, `-`, `.` and `_`
+(outside ASCII a letter's combining marks count as letters, in the composed form, NFC) or an
+IPv6 address in brackets, an optional port number up to 65535, and no `@` anywhere once the user and
+password are removed, a percent-encoded or fullwidth `@` included. Any other stored base URL with a `:` or an `@` in
+it raises `ValueError` when it is restored, since which part of it is a password cannot be
+told; text with neither, such as `internal`, is kept as it is unless it is still
+percent-encoded after 16 layers are read. That refuses some URLs the client could send: one
+with an `@` in its path, query or fragment, such as `https://gateway.example/v1/@team`; one
+with an `@` and nothing before it (`https://@gateway.example/v1`); one with a `\` before its host; one whose
+IPv6 zone is not written after
+`%25` in letters, digits and `-._~`; one whose host holds percent-encoding or other
+punctuation; and one still percent-encoded after 16 layers are read, outside the user and
+password that are removed. It also refuses text the client could not send, such as
+`localhost:8000/v1` without a scheme, a URL that begins with a space, and one with a character
+the client cannot encode. Stored bytes that do not decode as UTF-8 raise `ValueError` as well,
+without their text; they raised pydantic's `ValidationError` before, whose message held part of
+the bytes. A stored config that does not validate raises `ValueError` too, naming each field
+and the reason and none of the stored values, and so does one holding a setting whose name is
+not a string. A stored `retry_config` or `circuit_breaker` that does not build raises
+`ValueError` naming only the part and the error's type, and stored `Branch` data that does not
+validate raises `ValueError` naming each field and the reason, a name with no field as "a name
+with no field". Pass the URL the same way, or a live model to `Branch.from_dict`. A stored
+`retry_config` and `circuit_breaker` are now kept by `iModel.from_dict` and
+`Branch.from_dict`, which dropped them before.
+
+Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
+(a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import
+the module first, or allow its package with `lionagi.ln.register_type_prefix("mypkg.")`, the
+prefix ending in a dot; until then the load raises `ValueError` naming both remedies. A bare `item_type` name is refused, so give
+its dotted path, and `lion_class` must name an `Element` subclass.
+
 Pair `li studio` and the daemon from the same release. Updating only the daemon leaves an older
 `li studio` asking the retired `POST /api/studio/pairing-codes`, which now answers 410, so a page
 opened against an already-running daemon is not paired; updating only `li studio` leaves it
@@ -35,11 +101,20 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 behaviour, including accepting a write-capable submission without `cwd`.
 
 The `reader` extra and document conversion are removed (see Removed). `lionagi[reader]` no
-longer exists, so an install that names it gets a missing-extra warning from the installer, and
-`lionagi[all]` no longer installs `docling`. Code that called the reader's `open` action, built
-`ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or passed
-`reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
+longer exists: `uv sync --extra reader` fails, and pip or `uv pip install` warns and installs
+lionagi without it. `lionagi[all]` no longer installs `docling`. Code that called the reader's
+`open` action, built `ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or
+passed `reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
 `chunk(text=...)`, or a callable `reader_tool` that returns a file's text.
+
+The `schema` and `sandbox` extras are removed (see Removed): `uv sync --extra` with either
+fails, and pip or `uv pip install` warns and installs lionagi without it. Code that loads a JSON
+schema through the `datamodel-code-generator` fallback installs `datamodel-code-generator>=0.64.0`
+itself, and code that runs agents in a Daytona sandbox installs `daytona>=0.171.0`; without them
+each raises an error naming the package and the version.
+
+`lionagi[graph]` no longer installs `matplotlib` (see Removed). Code that draws a graph with
+`Graph.display()`, and `li o flow --show-graph`, installs `matplotlib` beside it.
 
 `aiohttp` is no longer a dependency (see Changed). An endpoint HTTP error that raised
 `aiohttp.ClientResponseError` raises `lionagi.service.resilience.APIClientError`, with
@@ -65,6 +140,57 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Added
 
+- `ln.concurrency.retry` accepts an optional `exclude` tuple. Matching exceptions, including subclasses, propagate immediately without another attempt or backoff delay; existing calls keep the same retry behavior.
+
+- Studio Operator can update its active conversation's title and persistent
+  description. Omitted fields retain their values, and an applied effect is
+  recorded with the saved change without duplicating the provider's tool result.
+  Descriptions appear in the conversation list, and forks preserve the source
+  description independently. The store adds nullable
+  `studio_operator_conversations.description`. Live conversation titles and
+  descriptions refresh after the tool result, or after a turn ends without one.
+  List refreshes retain conversations created while the read was pending, do not
+  undo a rename, pin or archive made during the read unless the server changed the
+  row afterwards, and respect the current list filter. A failed send is reported
+  in the conversation it was sent for: at once while it is shown, otherwise once,
+  when it is shown again with no send, Stop or decision in flight or about to
+  start under auto-allow and no other error showing, with its unsent text back in
+  the composer ahead of any text typed there since. Auto-allow sends one
+  decision per proposal, a second only when the first was refused after another
+  conversation was chosen, and none while no conversation is shown. A decision
+  auto-allow makes leaves an error already showing in place when it succeeds,
+  except a refusal of that same proposal, which the success clears; a refused
+  decision shows its own error in place of any other, and its proposal can be
+  decided again by hand. A decision's error clears once its proposal is decided
+  or the stream resolves it. A decision refused after another conversation was
+  chosen is not shown in that one: its error is kept for its own conversation,
+  one per proposal, and shown once when that conversation is shown again, after
+  any kept send failure and under the same conditions, if the proposal is still
+  pending there, and the proposal is offered again for a hand decision. Several
+  kept refusals are shown one at a time, oldest first, each once the alert
+  before it has cleared. With auto-allow on, auto-allow decides it again there
+  instead, and only that decision's outcome is shown. A reported failure shows once: a later error
+  replaces it, and its text stays in the composer. A draft whose conversation
+  could not be
+  created, including one sent while the selected conversation was still loading,
+  reports it in the conversation then shown and keeps its text; if a new
+  conversation was started during the send, the text comes back when the composer
+  is empty. A draft's new conversation is selected only if the operator has made
+  no choice of conversation (a row, a new or forked conversation, a retry) since
+  the send started; otherwise it is listed and the turn is submitted there, and
+  the conversation shown does not take on that turn. A fork counts as a choice
+  from the click, even when it then fails. The first list read selects a
+  conversation only if no choice was made while it ran, and Retry loads the
+  conversation whose load failed.
+- Studio sessions can set or clear an explicit display label through
+  `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
+  detail names without changing activity timestamps; clearing a label restores
+  the existing fallback name. Operator renames change this explicit label, and
+  search, run references, proposals and CLI displays use it. A label is
+  trimmed first, so whitespace and separators at its edges are dropped; one
+  longer than 160 characters after trimming, or still holding control, format
+  or line/paragraph-separator characters, is refused with a 422 that names
+  `user_label`. The store adds nullable `sessions.user_label`.
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
   `play.submit` accept `exclude_mcp_servers`, which removes named servers from
   the MCP config a submission resolves before its snapshot is written. Every
@@ -177,6 +303,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Changed
 
+- Flow deserialization resolves UUIDs, UUID strings and objects exposing an id through the canonical identity helper. Objects with only a UUID-producing string representation are rejected, and unsupported ID inputs use the helper error message.
+
+- An approved Studio Operator `rename_run` sets the run's explicit display label
+  and no longer writes the run's system `name` or its `updated_at`.
 - `POST /api/studio/pairing-codes` now answers 410 for every admitted request, whatever its
   headers or the admission token. `li studio` mints a pairing code in process before it starts
   the daemon, or, against a daemon already running, obtains one over the daemon's new
@@ -204,6 +334,13 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   capability, but this release does not require one: a decision request that carries only that
   bearer is still accepted, and recorded unattributed. Every other route's admission is
   unchanged.
+- `li studio --dev` prints a one-time pairing link for the page address Vite reports, and the
+  daemon it starts lets a page on that origin redeem the code through Vite's proxy, whether or
+  not the origin is in the default list. Bound to a wildcard address (`0.0.0.0` or `::`), the
+  daemon admits only loopback names, so when Vite reports another host, such as a LAN address,
+  the link is for `localhost` on Vite's port. It prints no link when the page's API calls go to
+  another daemon, or when the daemon is bound to a single address and refuses the page's host
+  (`docs/guides/studio-getting-started.md`).
 - MCP argument validation now enforces `minimum`/`maximum`, `minLength`/`maxLength` and
   `pattern`, checks `enum` whatever the value's type, and treats `null` as a type it checks
   rather than as an absent check, so a value outside a published bound or choice is refused
@@ -397,6 +534,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   given as `client_kwargs["timeout"]`, which aiohttp refused beside the configured timeout with
   `TypeError`, is read the same way.
 
+- `ln.import_module` resolves dotted and relative names to the leaf module and accepts a keyword-only `package` anchor. List selectors stay lists, including empty and single-item lists; only `import_name=None` selects the module. Missing modules retain `ModuleNotFoundError` and its metadata, while other import errors keep the existing prefix. Package attributes retain child-module fallback.
+
 ### Removed
 
 - The `reader` optional dependency group and document conversion through `docling`. The reader
@@ -406,6 +545,24 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `reader_tool` only and raises `TypeError` for any other value, `"docling"` included. With
   `docling` go the `torch`, `torchvision`, `accelerate` and OCR packages it pulled into
   `lionagi[all]`.
+
+- `matplotlib` from the `graph` extra, and the `imaging` extra of `mkdocs-material` from the docs
+  dependency group, whose social-card plugin the docs do not enable. They were the last two
+  packages that brought Pillow into `uv.lock`, so Pillow leaves the lock, with `contourpy`,
+  `cycler`, `fonttools`, `kiwisolver` and `pyparsing` under matplotlib and `cairosvg`,
+  `cairocffi`, `cssselect2`, `tinycss2`, `webencodings` and `defusedxml` under the imaging
+  extra. `Graph.display()` and `li o flow --show-graph` still draw with matplotlib when it is
+  installed, and raise `ImportError` naming it when it is not.
+
+- The `schema` extra (`datamodel-code-generator`) and the `sandbox` extra (`daytona`, with
+  `ag2[openai]` and `uvicorn`, which the `ag2` and `studio` extras still provide). With
+  `daytona` go the OpenTelemetry exporter and instrumentation packages it pulled into the lock,
+  and with `datamodel-code-generator` go `black` and the generator's own dependencies. The
+  `[tool.uv]` constraints for packages the lock no longer contains are removed with them.
+
+- `pre-commit` from the dev dependency group, and `virtualenv`, `nodeenv`, `identify`, `cfgv`,
+  `distlib`, `filelock` and `python-discovery` with it. CI already runs the hooks with
+  `uvx pre-commit`, and so do the contributing docs now.
 
 - `msgspec` is no longer a dependency. lionagi still accepts a `msgspec.Struct` value wherever it
   accepted one before, when `msgspec` is installed; code that passes one installs `msgspec`
@@ -572,12 +729,72 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Security
 
+- `Endpoint.from_dict`, `iModel.from_dict` and `Branch.from_dict` no longer take the API key,
+  the local-network opt-in or a child process's environment from the stored data. The
+  provider's credential from the environment is attached only when the stored base URL is the
+  provider's registered one, and the local-network setting comes from the provider's
+  registration, which a stored config can turn off but not on. `iModel.from_dict` takes
+  `base_url`, `api_key` and `allow_local_network` from the caller, and `Branch.from_dict` takes
+  `chat_model` and `parse_model`. A grant or an environment written as a top-level key of a
+  stored config is dropped too. So is a stored header by its name: one whose
+  name names a credential (`Authorization`, `x-api-key`, `api-key` and the like), one whose name
+  ends in `-Key` (`Ocp-Apim-Subscription-Key`, `X-Auth-Key`), `Cookie` and `X-Auth`, and also
+  `Host`, which would send the restored key to another virtual host. Only the name is read, so
+  a header named otherwise, such as `X-Signature` or `Passphrase`, is kept. It is dropped from
+  `default_headers` and from the client options' `headers`, where before it could replace the
+  restored key, a caller's key included, and from a `headers` or `extra_headers` setting; and
+  no client option other than `headers` is restored (`auth`, `proxy_auth`, `cookies` and
+  `trust_env` among them). A stored setting whose name reads as a credential or a proxy
+  (`proxy`, `proxies`, `x_api_key`, `password`, `auth_key`, a name that ends in `token`) is dropped
+  as well, at the config's top level or in its `kwargs`, which the request body carries, and
+  so is a `provider_metadata` entry so named; any other setting, `max_tokens` included, is
+  restored as written. Nor is a user and password written
+  into a stored base URL, which the HTTP client would send as Basic authentication to the host
+  the URL names; a base URL the caller passes keeps them. A stored base URL is restored only in
+  this form: `http://` or `https://`, a host name or IP
+  address, an optional port number up to 65535, and no `@` anywhere once a user and password running to the
+  last `@` are removed, a percent-encoded or fullwidth `@` included. Any other stored base URL
+  with a `:` or an `@` in it is refused, since which part of it is a password cannot be told.
+  That covers one the client reads with a password in its host or in an IPv6 zone, which it
+  would send as part of the host; one it reads as a host and a port with
+  the rest of the password in the path, as in `https://user:12/secret@host`; and one it cannot
+  read, as in `user:secret/v1`.
+  A CLI model's
+  own settings are still restored as stored and read by the child process it starts: Codex `config_overrides` can name another provider URL and the
+  environment variable its key is read from, Claude Code's `settings` and `permission_mode`
+  set what that child may do, and a stored `mcp_servers` or `mcp_config` names the MCP servers
+  it starts, so restore a CLI row only from a writer you trust.
+- A class named in saved data, by `lion_class` in an element's metadata or by a `Pile`'s
+  `item_type`, no longer has its module imported unless the name is under an allowed prefix
+  (`lionagi.` and any added with `lionagi.ln.register_type_prefix()`). Outside them a class
+  loads from a module that is already imported or from `LION_CLASS_REGISTRY`, and
+  `Element.from_dict` accepts only an `Element` subclass. The lookup order is in
+  `docs/internals/support-libs.md`.
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.
-- Raised the `aiohttp` floor to 3.14.4, which fixes eight advisories in 3.14.3 (CVE-2026-111063 to
-  CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and GHSA-2g87-pp6c-29x5). The lockfiles move
-  to 3.14.4, and `uv.lock` moves `yarl` from 1.23.0 to 1.25.1, which 3.14.4 requires.
+- `lion1/uv.lock` moves `aiohttp` to 3.14.4, which fixes eight advisories in 3.14.3
+  (CVE-2026-111063 to CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and
+  GHSA-2g87-pp6c-29x5), with `yarl` 1.25.1, which 3.14.4 requires. `uv.lock` no longer contains
+  `aiohttp` (see Changed and Removed).
+- The lockfiles move off releases with published advisories: `opentelemetry-api` to 1.45.1
+  (CVE-2026-114603), in `uv.lock`, and in `lion1/uv.lock` with `opentelemetry-sdk` 1.45.1 and
+  the instrumentation, semantic-conventions and util-http packages at 0.66b1, where
+  `opentelemetry-proto` and the exporter packages stay at 1.45.0 and 0.66b0. `uv.lock` also
+  moves `packaging` from 26.1 to 26.3. A constraint in `pyproject.toml` keeps the lock at or
+  above `opentelemetry-api` 1.45.1. `virtualenv` (CVE-2026-113716, CVE-2026-113721,
+  CVE-2026-113722, CVE-2026-113724 and CVE-2026-113725) and `black` (CVE-2026-114134) are no
+  longer in `uv.lock` (see Removed). The studio frontend and the VS Code extension
+  move their test runner to `vitest` 4.1.12 and its packages with it, `@vitest/mocker` 4.1.12
+  among them (CVE-2026-112949 and CVE-2026-112950, published against `@vitest/mocker`); the
+  frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. Pillow, whose published
+  advisories are fixed only in 13.0.0, a release that requires Python 3.11, is no longer in
+  `uv.lock` (see Removed).
+- An endpoint's private-address check before a request now resolves the host name as the
+  HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
+  differ (`straße.example` resolves as `strasse.example` but the client connects to
+  `xn--strae-oqa.example`), so the check could pass a name whose real address it never
+  looked up.
 
 ### Docs
 

@@ -278,8 +278,8 @@ reverted — see the current-state note above for what the code does today):
   property through the structural protocol is not sufficient.~~ Superseded: admission is
   structural again, and `item_type` no longer judges class-level conformance.
 - `item_type` accepts classes and unions. A fully qualified class string is resolved when it reaches
-  validation as a member of a list, tuple, or set. A scalar non-UUID string is currently discarded
-  by Pile's `to_list_type` normalizer before the resolver sees it. ~~Every resolved member must be a
+  validation as a member of a list, tuple, or set. A single string counts as a list holding it;
+  `to_list_type` used to discard it before the resolver saw it. ~~Every resolved member must be a
   nominal Observable subclass~~ — superseded: a resolved member need only be a class, since
   conformance is a property of instances and is established at admission. Duplicated declarations
   raise LionAGI `ValidationError`.
@@ -408,7 +408,7 @@ _async_lock: lionagi.ln.concurrency.Lock  # wraps anyio.Lock
 AnyIO lock and then acquires the RLock with a non-blocking spin (a short sleep between attempts), so
 it never blocks the event loop while a sync thread holds `_lock`; because it holds both, an async
 method and a `synchronized` method on the same `Pile` exclude each other, in one thread and across
-threads. `_both_locks` (`pile.py:555-564`) applies the same ordered pair to an unscoped region.
+threads. `_both_locks` (`pile.py:567-576`) applies the same ordered pair to an unscoped region.
 
 **Exact semantics**:
 
@@ -432,7 +432,7 @@ threads. `_both_locks` (`pile.py:555-564`) applies the same ordered pair to an u
   with the copy.
 - `adump` snapshots dictionary UUIDs and a DataFrame under `_both_locks`, writes outside the locks,
   and, when `clear=True`, later removes only the snapshotted UUIDs under a second `_both_locks`
-  region (`pile.py:994-1013`). Items added during the write are retained.
+  region (`pile.py:1006-1025`). Items added during the write are retained.
 - Synchronous `dump(clear=True)` is format-dependent in the shipped control flow: Parquet reaches
   the final `clear()` call, while JSON-lines and CSV return immediately after their writer and do
   not clear. Async `adump(clear=True)` applies the snapshot removal after all three supported

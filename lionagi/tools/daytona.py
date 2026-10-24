@@ -19,10 +19,10 @@ if TYPE_CHECKING:
 def _require_daytona():
     try:
         import daytona  # noqa: F401
-    except ImportError as e:  # pragma: no cover - exercised only without the extra
+    except ImportError as e:
         raise ImportError(
             "Daytona support requires the 'daytona' package. "
-            "Install it with: pip install 'lionagi[sandbox]'  (or: uv add daytona)"
+            "Install it with: pip install 'daytona>=0.171.0'"
         ) from e
     return daytona
 
@@ -172,6 +172,7 @@ class DaytonaSandbox:
         session_id: str | None = None,
     ) -> int:
         """Run a command in a session streaming stdout/stderr live; returns exit code."""
+        _require_daytona()
         from daytona import SessionExecuteRequest
 
         sid = session_id or f"run-{os.urandom(4).hex()}"

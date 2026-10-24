@@ -36,6 +36,7 @@ class TestNodeSoftDelete:
             nd.soft_delete()
 
     def test_soft_delete_sets_is_deleted(self):
+        """The factory's soft-delete configuration enables the real deletion field."""
         cls = create_node("Del", soft_delete=True)
         d = cls(content="bye")
         d.soft_delete()

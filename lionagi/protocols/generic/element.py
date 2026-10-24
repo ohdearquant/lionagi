@@ -10,12 +10,12 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from lionagi._class_registry import get_class
+from lionagi._class_registry import _cut, _quoted, get_class
 from lionagi.ln._json_dump import get_orjson_default, json_dumps
 from lionagi.ln._json_load import json_loads
 from lionagi.ln._utils import now_utc
 from lionagi.ln.types import not_sentinel
-from lionagi.utils import import_module, to_dict
+from lionagi.utils import to_dict
 
 from .._concepts import Collective, Observable, Ordering
 
@@ -177,25 +177,17 @@ class Element(BaseModel):
         if "lion_class" in metadata:
             subcls: str = metadata.pop("lion_class")
             if subcls != Element.class_name(full=True):
-                try:
-                    # get_class resolves both fully-qualified names and legacy
-                    # short names (data persisted before full-name adoption).
-                    subcls_type: type[Element] = get_class(subcls)
-                    # Delegate to a custom from_dict, or when the concrete
-                    # type differs so model_validate uses the right schema.
-                    if hasattr(subcls_type, "from_dict") and (
-                        subcls_type.from_dict.__func__ != cls.from_dict.__func__
-                        or subcls_type is not cls
-                    ):
-                        data["metadata"] = metadata
-                        return subcls_type.from_dict(data)
-
-                except (KeyError, ValueError, ImportError, AttributeError, TypeError):
-                    mod, imp = subcls.rsplit(".", 1)
-                    subcls_type = import_module(mod, import_name=imp)
+                # get_class resolves both fully-qualified names and legacy
+                # short names (data persisted before full-name adoption), and
+                # imports a module only under an allowed prefix, with its parents.
+                subcls_type = _lion_class_type(subcls)
+                # Another class restores through its own from_dict, a staticmethod included, or
+                # through this one again with itself as cls, so that model_validate applies its
+                # schema. The class already restoring stops here: a from_dict of its own that calls
+                # super() into this one would otherwise run a second time for the same data.
+                if subcls_type is not cls:
                     data["metadata"] = metadata
-                    if hasattr(subcls_type, "from_dict") and (subcls_type is not cls):
-                        return subcls_type.from_dict(data)
+                    return subcls_type.from_dict(data)
         data["metadata"] = metadata
         return cls.model_validate(data)
 
@@ -219,6 +211,26 @@ class Element(BaseModel):
     def from_json(cls, json_str: str) -> Element:
         """Deserialize JSON string into Element or subclass."""
         return cls.from_dict(json_loads(json_str))
+
+
+def _lion_class_type(lion_class: Any) -> type[Element]:
+    """Resolve a ``lion_class`` from serialized metadata to an Element subclass.
+
+    Raises ValueError for a name that is not a string, that resolves to nothing
+    lionagi may load, or that names a type outside the Element hierarchy.
+    """
+    if not isinstance(lion_class, str):
+        shown = _cut(type(lion_class).__name__)
+        raise ValueError(f"metadata lion_class must be a string, got {shown}")
+    try:
+        resolved = get_class(lion_class)
+    except ValueError as exc:
+        # get_class's message names the class, cut short, and carries the remedy
+        # and, when loading failed, the reason; the name is not repeated here.
+        raise ValueError(f"metadata lion_class cannot be loaded: {exc}") from exc
+    if not (isinstance(resolved, type) and issubclass(resolved, Element)):
+        raise ValueError(f"metadata lion_class {_quoted(lion_class)} is not an Element subclass")
+    return resolved
 
 
 DEFAULT_ELEMENT_SERIALIZER = get_orjson_default(

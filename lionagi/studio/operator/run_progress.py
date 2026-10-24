@@ -20,6 +20,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi.state.session_naming import resolve_display_name
+
 from .redact import MAX_CANDIDATES, public_project, scrub_text
 
 # A full canonical UUID (36 characters, 8-4-4-4-12 hex). A reference in this
@@ -122,7 +124,7 @@ def _terminal_safe_health(run: dict[str, Any]) -> str | None:
 def _candidate(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
-        "name": _scrub(row.get("name")),
+        "name": _scrub(resolve_display_name(row)),
         "playbookName": _scrub(row.get("playbook_name")),
         "agentName": _scrub(row.get("agent_name")),
         "status": row.get("status"),
@@ -153,8 +155,7 @@ async def _fetch_ambiguous_candidates(
         return []
     placeholders = ",".join("?" for _ in ids)
     rows = await db.fetch_all(
-        f"SELECT id, name, playbook_name, agent_name, status, project "  # noqa: S608
-        f"FROM sessions WHERE id IN ({placeholders})",
+        f"SELECT * FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
         tuple(ids),
     )
     by_id = {row["id"]: row for row in rows}

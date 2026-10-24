@@ -178,8 +178,8 @@ async def test_a_round_a_hook_stores_before_its_call_returns_keeps_the_context(c
     extension = gathered[1]
     await branch.chat(instruction="and now?", progression=[extension.id])
 
-    # The hook stores the extension round's instruction after its request was prepared;
-    # the request left the context out of its own copy only.
+    # The hook stores the extension round's instruction before its request is compiled; the
+    # request still shows the context once, and the stored instruction keeps it.
     assert extension in branch.msgs.messages
     assert {"menu": MARKER} in extension.content.prompt_context
     assert [json.dumps(body["messages"]).count(MARKER) for body in received] == [1, 1, 1, 1]
@@ -534,8 +534,9 @@ LOOKUP = {"action_required": True, "action_requests": [{"function": "lookup", "a
                 {"extension_needed": True, **LOOKUP},
                 {"extension_needed": False},
             ],
-            # The tool's own request renders only the first round's reply.
-            [1, 1, 0, 1, 1],
+            # The tool's own request renders the extension round's instruction, which
+            # carries the context once the first round's is evicted.
+            [1, 1, 1, 1, 1],
         ),
     ],
     ids=["first round", "extension round"],

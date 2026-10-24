@@ -411,7 +411,7 @@ async def test_execute_dag_heartbeat_tracks_samples_and_terminal_state(
     monkeypatch.setattr(PlanningEngine, "new_run", lambda *_args, **_kwargs: engine_run)
     monkeypatch.setattr(flow_mod, "progress", emitted.append)
     monkeypatch.setattr(flow_mod.time, "time", lambda: clock[0])
-    monkeypatch.setattr(flow_mod._asyncio, "sleep", controlled_sleep)
+    monkeypatch.setattr(flow_mod, "sleep", controlled_sleep)
     monkeypatch.setattr(flow_mod, "_sample_descendant_cpu", sample_cpu)
 
     await flow_mod._execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)

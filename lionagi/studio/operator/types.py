@@ -8,7 +8,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .conversation_metadata import normalize_description
 
 OperatorFrameType = Literal[
     "text",
@@ -73,8 +75,14 @@ class UpdateConversationRequest(WireModel):
     # store's ``1 if pinned else 0``) or reach the store with a status it has
     # to reject as a conflict rather than as the malformed request it is.
     title: str | None = Field(default=None, max_length=512)
+    description: str | None = None
     pinned: bool = False
     status: Literal["active", "archived"] = "active"
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, value: str | None) -> str | None:
+        return normalize_description(value)
 
 
 class ForkConversationRequest(WireModel):

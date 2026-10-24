@@ -67,7 +67,7 @@ The request this record answers, and where each part is carried:
 
 **P1 — One provider credential cannot distribute a workload over named budgets.**
 `AppSettings` declares one `ANTHROPIC_API_KEY` and reads `.env`, `.env.local`, then
-`.secrets.env` (`lionagi/config.py:35`, `lionagi/config.py:55`). Provider metadata
+`.secrets.env` (`lionagi/config.py:167`, `lionagi/config.py:187`). Provider metadata
 supplies that name to endpoint configuration
 (`lionagi/providers/anthropic/_config.py:23`,
 `lionagi/service/connections/provider_config.py:98`). A missing settings name
@@ -76,17 +76,17 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:79`, `lionagi/service/imodel.py:567`,
-`lionagi/service/connections/api_calling.py:116`). HTTP retry happens inside the
-endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:875`,
-`lionagi/service/connections/endpoint.py:898`). Response JSON returns directly;
+(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:694`,
+`lionagi/service/connections/api_calling.py:187`). HTTP retry happens inside the
+endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
+`lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
-(`lionagi/service/connections/endpoint.py:806`, `lionagi/session/signal.py:346`).
+(`lionagi/service/connections/endpoint.py:826`, `lionagi/session/signal.py:346`).
 Neither a successful outer operation nor its final response accounts for every
 attempt that might have reached the provider.
 
 **P3 — Shared models are not conversation identities.** API Branch clones share
-their models (`lionagi/session/branch.py:533`). Binding a credential on that
+their models (`lionagi/session/branch.py:566`). Binding a credential on that
 shared endpoint would couple independent conversations. Switching accounts per
 call would instead disrupt cache reuse. The Claude API isolates caches by
 workspace, so keys of different organizations never share a cache
@@ -153,7 +153,7 @@ ANTHROPIC_ACCOUNTS='[{"name":"primary","key_env":"ANTHROPIC_PRIMARY_KEY","budget
   error; invalid configuration never means an empty pool.
 - Names match `[a-z][a-z0-9_-]{0,31}`. References match
   `[A-Za-z_][A-Za-z0-9_]{0,63}`, the existing secret lookup's name rule
-  (`lionagi/providers/_secret_resolution.py:41`) with a length bound, so a lookup
+  (`lionagi/providers/_secret_resolution.py:44`) with a length bound, so a lookup
   item named in lower case is referenced as itself (D2). Both reject credential-shaped text, including `sk-ant`
   case-insensitively, without echoing rejected values. Budgets are finite positive
   decimal USD strings with at most nine fractional digits, representable as signed
@@ -203,10 +203,10 @@ mapped, so a lookup item keeps its own name and the account declares that name.
 Factor a one-name helper from `lionagi/providers/_secret_resolution.py`; retain
 the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
-(`lionagi/providers/_secret_resolution.py:85`,
-`lionagi/providers/_secret_resolution.py:201`,
-`lionagi/providers/_secret_resolution.py:287`,
-`lionagi/providers/_secret_resolution.py:345`). Reusing the
+(`lionagi/providers/_secret_resolution.py:88`,
+`lionagi/providers/_secret_resolution.py:214`,
+`lionagi/providers/_secret_resolution.py:373`,
+`lionagi/providers/_secret_resolution.py:431`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes
@@ -222,8 +222,8 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
-the current eager header path (`lionagi/service/imodel.py:274`,
-`lionagi/service/connections/endpoint.py:472`). For routed calls, explicit
+the current eager header path (`lionagi/service/imodel.py:372`,
+`lionagi/service/connections/endpoint.py:483`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
 redirects are rejected before lookup: the ledger must describe the credential
@@ -252,8 +252,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id (`lionagi/service/imodel.py:699`,
-`lionagi/service/imodel.py:732`). Direct endpoints have
+preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:838`) and
+`from_dict` reads it back (`lionagi/service/imodel.py:921`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 
@@ -470,7 +470,7 @@ Status alone is not proof of a zero bill. Streams merge the initial usage and
 later cumulative usage fields by replacement, not addition, and settle only with
 complete terminal evidence. HTTP usage is intercepted before generic stream
 projection and before yielding to consumers; the current generic projection keeps
-raw events (`lionagi/service/connections/endpoint.py:1123`). No automatic retry after
+raw events (`lionagi/service/connections/endpoint.py:1143`). No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
 from caller cancellation, bounded by the ledger's five-second wait. If commit
 fails or the process dies, the durable ceiling remains. It must never report the
@@ -492,7 +492,7 @@ marks and new error handling. It retains current direct-key and unresolved-name
 semantics, retry/cache behavior, return types and serialization. Tightening
 `EndpointConfig._validate_api_key` globally is explicitly not authorized here.
 Configured routing disallows the endpoint's application response cache initially:
-its current wrapper receives headers (`lionagi/service/connections/endpoint.py:712`),
+its current wrapper receives headers (`lionagi/service/connections/endpoint.py:732`),
 and making that cache account-aware is DEFERRED. Provider prompt caching remains
 supported and is distinct from that application cache.
 

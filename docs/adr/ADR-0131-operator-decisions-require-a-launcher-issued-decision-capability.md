@@ -18,32 +18,35 @@ daemon's own OS user can open, and that no HTTP request can obtain.
 
 Landing steps 1, 2 and 2b are in: the decision-capability store and the decision rows that record
 its principal, minting at launch, the retired HTTP mint route, redemption returning the capability,
-the page's use of it, and the same-user reconnect channel the CLI pairs over. Step 3's remaining
-launch adapters and step 4's principal check and refusals are not; decisions are still admitted under
+the page's use of it, and the same-user reconnect channel the CLI pairs over. Of step 3, `--dev`
+delivers a code bound to the page origin Vite reports, and the pairing route admits an origin a
+launcher in the same process named; `--no-frontend` and the desktop shell do not deliver one yet.
+Step 4's principal check and refusals are not in; decisions are still admitted under
 contract version 1, every decision request accepted today is still accepted, and a request without
 the capability is recorded unattributed.
 
 ## Context
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
-`decide_operator_proposal` (`lionagi/studio/services/operator.py:310-360`) call the coordinator's
-`decide()` (`lionagi/studio/operator/coordinator.py:1014`), which claims the proposal in the store
-(`lionagi/studio/operator/store.py:2009`). The proposal's hash and version bind what is decided, not
+`decide_operator_proposal` (`lionagi/studio/services/operator.py:336-398`) call the coordinator's
+`decide()` (`lionagi/studio/operator/coordinator.py:1015`), which claims the proposal in the store
+(`lionagi/studio/operator/store.py:2180`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
-no `Sec-Fetch-Site` (`lionagi/studio/app.py:67`, `:113`), so a command-line client, a script and a
+no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:123`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
-**P2 — a code that pairs a page can be minted by any such request.** `POST
-/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) mints a 120-second code
+**P2 — a code that paired a page could be minted by any such request.** `POST
+/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) minted a 120-second code
 (`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
-/api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
-(`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
-redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
-daemon that is already running (`lionagi/studio/cli.py:262`). So pairing is not a boundary: a tool
-that can send HTTP can mint, redeem with a forged `Origin`, and decide.
+/api/studio/pair` (`pairing.py:48`) redeemed it for the daemon's one process-wide bearer
+(`launch_access.py:43`, `:63`). A test pinned that the command line could mint and that the minted
+code redeemed (`tests/studio/test_hosted_hardening.py:967`). The CLI used that route to pair a page
+with a daemon that was already running (`lionagi/studio/cli.py:261`). So pairing was not a boundary:
+a tool that could send HTTP could mint, redeem with a forged `Origin`, and decide. This paragraph
+describes the daemon before the HTTP mint route was retired (its line numbers are at `124b14193`).
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
-variable (`apps/studio/frontend/src/lib/pairing.ts:14`); a reload loses it. Nothing reachable over
+variable (`apps/studio/frontend/src/lib/pairing.ts:27`); a reload loses it. Nothing reachable over
 HTTP can read it.
 
 **P4 — the permission bridge reads storage, not HTTP.** The provider-permission bridge polls the
@@ -135,7 +138,7 @@ rule and the token's narrower meaning.
    2b. D2's reconnect channel, with the CLI's reconnect moved from the HTTP mint to it. It ships in
    the same release as step 2's 410, so no released daemon is without a reconnect, and before step 4.
 3. D5's adapters, one launch path per change, so that every launch path except Docker delivers a code
-   before any decision requires one. Today only the hosted launch delivers one.
+   before any decision requires one. Today the hosted launch and `--dev` deliver one.
 4. D4: the principal check in `decide()` and the refusals, Docker's decisions-disabled refusal, and
    D7's version-2 marker with the page's version gate, in one release. From this step the contract
    is version 2.
@@ -148,7 +151,8 @@ rule and the token's narrower meaning.
   stays pending, the bridge never sees `allow`, and nothing executes. A paired page's decision is the
   positive control. Repeated for an application proposal and for an already-decided one.
 - Mint: 410 for every header combination and for the admission token; the test that pins the
-  command-line mint today (`tests/studio/test_hosted_hardening.py:967`) is replaced by this one.
+  command-line mint today (`tests/studio/test_hosted_hardening.py:967`, line numbers at `124b14193`)
+  is replaced by this one.
 - Codes: unknown, expired, wrong origin, replayed and from a previous daemon start are refused; two
   concurrent redemptions of one code yield one capability; a refused wrong-origin attempt does not
   consume a valid code.

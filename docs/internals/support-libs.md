@@ -58,6 +58,45 @@ registration into `LION_CLASS_REGISTRY` for Node subclasses, and (b) makes
 every built-in class directly attribute-lookupable on its module, without
 scanning the filesystem.
 
+`get_class` resolves a name in this order: `LION_CLASS_REGISTRY`, a dotted path
+whose module is already imported (read from the module's namespace, so a
+module-level `__getattr__` is not called), a dotted path under an allowed
+module prefix (`lionagi.` and any prefix added with
+`lionagi.ln.register_type_prefix`, loaded through `load_type_from_string`),
+then the short-name lookup above, then a `LION_CLASS_REGISTRY` key ending in
+the short name. Of dotted names, only one under an allowed prefix reaches the
+short-name steps, which keeps a lionagi class whose module has moved loadable,
+and there it matches only a class defined under that same prefix; any other
+dotted name the first steps do not resolve raises `ValueError` rather than
+resolving to a built-in or registered class that shares its short name. A bare
+short name matches a class defined under `lionagi.` in the built-in modules
+(never one they merely import, such as `Path`) or a registered class. A
+dotted path through an already-imported module resolves to whatever class that
+module's namespace holds under the name, including one the module only imports
+(`lionagi.protocols.generic.pile.Path` is `pathlib.Path`). It imports a module
+only under an allowed prefix, together with the parent packages Python imports
+first, so a prefix naming a subpackage (`pkg.sub.`) lets it import the package
+above (`pkg`) as well. A name with an empty part (`.Foo`, `pkg.`, `pkg..Foo`)
+is refused before any import, unless that exact name is a `LION_CLASS_REGISTRY`
+key. When a dotted name under an allowed prefix fails to load and no later step
+resolves it, the `ValueError` says why loading failed and chains that error.
+`Element.from_dict` accepts only an Element subclass from this lookup and
+raises `ValueError` otherwise, and a `Pile`'s `item_type` names
+resolve the same way, so data naming a class from a package of your own needs
+its defining module imported first or its package prefix registered. The error
+gives the remedy that fits the name: `register_type_prefix()`, given the
+package's prefix with its trailing dot (`"mypkg."`), for a dotted name
+outside the allowed prefixes whose module is not imported, or whose imported
+module has a module-level `__getattr__` (called only under an allowed prefix);
+the dotted form for a bare name; why loading failed for a name under an allowed
+prefix; the current path for a class that has moved; and a
+`LION_CLASS_REGISTRY` entry under its dotted name for a class nested in another
+class, which no dotted path reaches. The message shows at most 160 characters
+of the name and of the reason, which can repeat the module path; the error it
+is chained from carries the whole name. A bare `item_type` name is refused, a
+single name counts as a list holding it, and a union counts as each of its
+members.
+
 <a id="path-safety-contain-relative-path"></a>
 
 ## libs/path_safety: `contain_relative_path`

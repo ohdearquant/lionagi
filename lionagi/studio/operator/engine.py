@@ -84,6 +84,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__cancel_run",
     "mcp__studio_operator__resume_run",
     "mcp__studio_operator__rename_run",
+    "mcp__studio_operator__update_conversation",
     "mcp__studio_operator__pause_run",
     "mcp__studio_operator__release_run_pause",
     "mcp__studio_operator__steer_run",
@@ -469,6 +470,7 @@ class BranchOperatorEngine:
                             "launch",
                             "navigate",
                             "prefill",
+                            "update_conversation",
                         )
                     )
                     else "read"
@@ -848,7 +850,13 @@ def build_operator_branch(
             "include_partial_messages": True,
             # These request-scoped application tools are safe to invoke
             # directly: reads are bounded, UI effects remain client-ACKed, and
-            # launch_playbook performs its own durable human proposal. Extra
+            # launch_playbook performs its own durable human proposal.
+            # update_conversation is the one direct durable write, with no
+            # proposal and no acknowledgement (ADR-0083 D5): it can change only
+            # the title and description of this turn's own conversation, the
+            # store refuses it once the turn is no longer the active one, and
+            # the most a steered model can do with it is rewrite that
+            # presentation text. Extra
             # tools are granted only by the explicit operator_mcp.json config,
             # and only toward servers that config itself attaches. In open mode,
             # do not auto-allow a tool that can make HTTP requests to the daemon:

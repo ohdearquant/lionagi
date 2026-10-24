@@ -77,6 +77,33 @@ const DEFAULT_WIDTH = 408;
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
 
+function recordConversationMetadataCall(
+  pending: Map<string, Set<string>>,
+  frame: OperatorFrame,
+): boolean {
+  const payload = frame.payload as { tool?: unknown; callId?: unknown; ok?: unknown };
+  if (
+    frame.type === "tool_call" &&
+    payload.tool === "mcp__studio_operator__update_conversation" &&
+    typeof payload.callId === "string" &&
+    payload.callId.length > 0
+  ) {
+    const calls = pending.get(frame.requestId) ?? new Set<string>();
+    calls.add(payload.callId);
+    pending.set(frame.requestId, calls);
+  } else if (frame.type === "tool_result" && typeof payload.callId === "string") {
+    const calls = pending.get(frame.requestId);
+    const matched = calls?.delete(payload.callId) ?? false;
+    if (calls?.size === 0) pending.delete(frame.requestId);
+    return matched && payload.ok === true;
+  } else if (frame.type === "done") {
+    const missingResult = (pending.get(frame.requestId)?.size ?? 0) > 0;
+    pending.delete(frame.requestId);
+    return missingResult;
+  }
+  return false;
+}
+
 const OPERATOR_PROVIDER_ORDER: OperatorProvider[] = ["claude_code", "codex", "gemini_code"];
 
 const OPERATOR_PROVIDER_LABELS: Record<OperatorProvider, string> = {
@@ -93,6 +120,10 @@ function groupModelsByProvider(
     models: catalog.filter((entry) => entry.provider === provider),
   })).filter((group) => group.models.length > 0);
 }
+
+// What the alert shows. A decision's error names its proposal, so a later decision of
+// that proposal that succeeds clears it and leaves any other error in place.
+type ActionError = { message: string; proposalId?: string };
 
 interface Props {
   open: boolean;
@@ -115,6 +146,31 @@ function readStoredConversation(): string | null {
   if (typeof window === "undefined") return null;
   const value = window.localStorage.getItem(STORAGE_KEY)?.trim();
   return value || null;
+}
+
+// A rename, pin or archive this panel wrote while a read was pending must not be
+// undone by the read's older snapshot of that row. The server stamps updatedAt on
+// every write, so a snapshot stamped later already holds the write. Otherwise the
+// write's result is the newer row: its description, which the Operator can change,
+// is taken with the fields this panel writes.
+function keepWrite(row: OperatorConversation, written: OperatorConversation): OperatorConversation {
+  const snapshotIsNewer =
+    row.updatedAt !== undefined &&
+    written.updatedAt !== undefined &&
+    row.updatedAt > written.updatedAt;
+  if (snapshotIsNewer) return row;
+  return {
+    ...row,
+    title: written.title,
+    description: written.description,
+    pinned: written.pinned,
+    status: written.status,
+    updatedAt: written.updatedAt,
+  };
+}
+
+function byPinThenRecency(a: OperatorConversation, b: OperatorConversation): number {
+  return Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
 }
 
 function conversationLabel(conversation: OperatorConversation): string {
@@ -717,7 +773,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [sending, setSending] = useState(false);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ActionError | null>(null);
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
   const [decidedProposalIds, setDecidedProposalIds] = useState<Set<string>>(() => new Set());
   // Opt-in, per-browser: every pending proposal is allowed the moment it
@@ -756,6 +812,145 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
+  // The conversation the human last chose, set before its load starts so a late
+  // result for an earlier choice is dropped. A failed load keeps it: the error view
+  // disables the composer, and Retry or a pick from the list replaces it.
+  const selectedConversationIdRef = useRef<string | null>(null);
+  // How many times the operator has chosen a conversation (a row, a new or forked
+  // conversation, a retry). The list's own first selection is not a choice.
+  const operatorChoicesRef = useRef(0);
+  // The filter of the newest list read, set when that read starts. A read for another
+  // filter is dropped when it settles, and merged rows must match this one.
+  const listFilterRef = useRef<"active" | "archived">("active");
+  // Conversations this panel created, by a draft send or a fork. A list read started
+  // before one was created may lack its row, so the merge keeps that row.
+  const createdConversationIdsRef = useRef(new Set<string>());
+  // A send that failed once its conversation was no longer shown: the error and the
+  // text, kept until that conversation is selected again.
+  const failedSendsRef = useRef(new Map<string, { message: string; instruction: string }>());
+  // Decisions refused once their conversation was no longer shown: each one's error, by
+  // proposal in the order refused, kept until that conversation is selected again or the
+  // proposal is decided again.
+  const refusedDecisionsRef = useRef(new Map<string, Map<string, ActionError>>());
+  // Proposals auto-allow has decided once. A decision refused while its conversation is
+  // shown is not retried by itself: its error shows, and the operator can decide again
+  // by hand. One refused after its conversation stopped being shown leaves this set.
+  const autoAllowTriedRef = useRef(new Set<string>());
+  // The latest rename, pin or archive result this panel wrote, per conversation.
+  const writeResultsRef = useRef(new Map<string, OperatorConversation>());
+  // For the shown conversation: the last frame sequence read and its update_conversation
+  // calls still waiting for a result, so a result or the turn's end refreshes metadata.
+  const metadataRefreshRef = useRef<{
+    conversationId: string;
+    sequence: number;
+    pending: Map<string, Set<string>>;
+  } | null>(null);
+  // Refresh reads can settle out of order. Each read takes the next number, and
+  // a read applies only when no later read of that conversation has applied.
+  const metadataReadCountRef = useRef(0);
+  const metadataReadAppliedRef = useRef(new Map<string, number>());
+
+  useEffect(
+    () => () => {
+      selectedConversationIdRef.current = null;
+    },
+    [],
+  );
+
+  const readConversationList = useCallback(async (status: "active" | "archived") => {
+    const createdBefore = new Set(createdConversationIdsRef.current);
+    const writtenBefore = new Map(writeResultsRef.current);
+    const available = await listOperatorConversations({ status });
+    return {
+      available,
+      merge(current: OperatorConversation[]) {
+        if (listFilterRef.current !== status) return current;
+        // Only local creations newer than this read may be absent from its result.
+        const rows = new Map(
+          current
+            .filter(
+              (item) =>
+                createdConversationIdsRef.current.has(item.id) && !createdBefore.has(item.id),
+            )
+            .map((item) => [item.id, item]),
+        );
+        for (const item of available) rows.set(item.id, item);
+        // A write completed during this read is kept over the read's snapshot of its row.
+        let kept = false;
+        for (const [id, written] of writeResultsRef.current) {
+          const row = rows.get(id);
+          if (writtenBefore.get(id) === written || row === undefined) continue;
+          const next = keepWrite(row, written);
+          kept ||= next !== row;
+          rows.set(id, next);
+        }
+        const merged = [...rows.values()].filter((item) => item.status === listFilterRef.current);
+        // The server lists pinned rows first, newest first; a kept pin is placed the same way.
+        return kept ? merged.sort(byPinThenRecency) : merged;
+      },
+    };
+  }, []);
+
+  const refreshConversationMetadata = useCallback(
+    async (conversationId: string) => {
+      const read = ++metadataReadCountRef.current;
+      const superseded = () => (metadataReadAppliedRef.current.get(conversationId) ?? 0) > read;
+      const writtenBefore = writeResultsRef.current.get(conversationId);
+      try {
+        const [snapshot, list] = await Promise.all([
+          getOperatorConversation(conversationId),
+          readConversationList(listFilter),
+        ]);
+        if (selectedConversationIdRef.current !== conversationId || superseded()) return;
+        metadataReadAppliedRef.current.set(conversationId, read);
+        const written = writeResultsRef.current.get(conversationId);
+        dispatch({
+          type: "UPDATE_CONVERSATION",
+          conversation:
+            written === undefined || written === writtenBefore
+              ? snapshot.conversation
+              : keepWrite(snapshot.conversation, written),
+        });
+        setConversations(list.merge);
+      } catch (error) {
+        if (
+          selectedConversationIdRef.current !== conversationId ||
+          listFilterRef.current !== listFilter ||
+          superseded()
+        )
+          return;
+        setActionError({ message: error instanceof Error ? error.message : t("errors.load") });
+      }
+    },
+    [listFilter, readConversationList, t],
+  );
+
+  useEffect(() => {
+    const conversationId = state.conversation?.id;
+    if (!conversationId || state.loadState !== "ready") {
+      metadataRefreshRef.current = null;
+      return;
+    }
+    const previous = metadataRefreshRef.current;
+    const sameConversation = previous?.conversationId === conversationId;
+    const tracking = sameConversation
+      ? previous
+      : {
+          conversationId,
+          sequence: 0,
+          pending: new Map<string, Set<string>>(),
+        };
+    let refresh = false;
+    for (const frame of state.frames) {
+      if (frame.conversationId !== conversationId || frame.sequence <= tracking.sequence) continue;
+      tracking.sequence = frame.sequence;
+      refresh = recordConversationMetadataCall(tracking.pending, frame) || refresh;
+    }
+    metadataRefreshRef.current = tracking;
+    // Loaded snapshots already contain current metadata. Track their pending
+    // calls so later provider results or a terminal frame can refresh it.
+    if (sameConversation && refresh) void refreshConversationMetadata(conversationId);
+  }, [refreshConversationMetadata, state.conversation?.id, state.frames, state.loadState]);
 
   // Derived rather than synced through an effect: archiving the row being
   // renamed, or switching the filter away from it, removes the row and its
@@ -788,11 +983,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
+      selectedConversationIdRef.current = conversationId;
       dispatch({ type: "LOAD_START" });
       try {
         const snapshot = await getOperatorConversation(conversationId);
+        if (selectedConversationIdRef.current !== conversationId) return;
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setConversations((current) => {
+          if (snapshot.conversation.status !== listFilterRef.current) {
+            return current.filter((item) => item.id !== snapshot.conversation.id);
+          }
           const index = current.findIndex((item) => item.id === snapshot.conversation.id);
           if (index < 0) return [snapshot.conversation, ...current];
           return current.map((item, itemIndex) =>
@@ -805,6 +1005,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
           frames: snapshot.frames,
         });
       } catch (error) {
+        if (selectedConversationIdRef.current !== conversationId) return;
         dispatch({
           type: "LOAD_ERROR",
           error: error instanceof Error ? error.message : t("errors.load"),
@@ -813,6 +1014,79 @@ export default function OperatorPanel({ open, onClose }: Props) {
     },
     [t],
   );
+
+  const proposals = useMemo(() => pendingOperatorProposals(state.frames), [state.frames]);
+
+  // A failed send or a refused decision kept for a conversation is reported, the send
+  // first, once that conversation is shown and ready, no send, Stop or decision is in
+  // flight or about to start under auto-allow, and no other error is showing. Refusals
+  // are reported one at a time, oldest first, each once the alert before it has
+  // cleared. A new decision of a proposal drops its kept refusal when it starts, so only
+  // that decision's outcome is reported. A send in flight still owns the
+  // composer and its outcome may clear it, a Stop or a decision made by hand clears
+  // the alert when it starts, and each of them replaces it when it fails, as another
+  // error showing would be replaced, so each defers the report rather than losing it.
+  const shownConversationId = state.conversation?.id;
+  useEffect(() => {
+    if (
+      !shownConversationId ||
+      state.loadState !== "ready" ||
+      sending ||
+      stopping ||
+      deciding.size > 0 ||
+      actionError ||
+      state.error
+    )
+      return;
+    // A proposal auto-allow will decide on its next tick; if that decision fails, its
+    // error would replace the alert.
+    if (
+      autoAllow &&
+      proposals.some(({ frame, resolved }) => {
+        const id = frame.payload.proposal.id;
+        return !resolved && !decidedProposalIds.has(id) && !autoAllowTriedRef.current.has(id);
+      })
+    )
+      return;
+    const failed = failedSendsRef.current.get(shownConversationId);
+    if (!failed) {
+      const kept = refusedDecisionsRef.current.get(shownConversationId);
+      if (!kept) return;
+      const pending = new Set(
+        proposals.filter(({ resolved }) => !resolved).map(({ frame }) => frame.payload.proposal.id),
+      );
+      // Each reported once, and only while its proposal is still pending here; the
+      // rest wait for the next report.
+      for (const [proposalId, refused] of kept) {
+        kept.delete(proposalId);
+        if (pending.has(proposalId)) {
+          setActionError(refused);
+          break;
+        }
+      }
+      if (kept.size === 0) refusedDecisionsRef.current.delete(shownConversationId);
+      return;
+    }
+    // Reported once: a later error replaces this one as it replaces any other, and the
+    // text stays in the composer.
+    failedSendsRef.current.delete(shownConversationId);
+    setActionError({ message: failed.message });
+    // Text typed here since keeps its place after the failed text, so neither is lost.
+    setInstruction((current) =>
+      current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
+    );
+  }, [
+    actionError,
+    autoAllow,
+    decidedProposalIds,
+    deciding,
+    proposals,
+    sending,
+    shownConversationId,
+    state.error,
+    state.loadState,
+    stopping,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -877,10 +1151,15 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(() => {
     let active = true;
     const stored = readStoredConversation();
-    void listOperatorConversations()
-      .then((available) => {
-        if (!active) return;
-        setConversations(available);
+    // A choice of conversation made while the list is read, New conversation included,
+    // is kept: the read then selects nothing.
+    const choicesAtStart = operatorChoicesRef.current;
+    void readConversationList("active")
+      .then(({ available, merge }) => {
+        if (!active || listFilterRef.current !== "active") return;
+        setConversations(merge);
+        if (selectedConversationIdRef.current || operatorChoicesRef.current !== choicesAtStart)
+          return;
         const selected =
           (stored ? available.find((item) => item.id === stored) : null) ??
           available.find((item) => item.status === "active") ??
@@ -893,17 +1172,23 @@ export default function OperatorPanel({ open, onClose }: Props) {
         }
       })
       .catch(() => {
-        if (!active) return;
+        if (
+          !active ||
+          selectedConversationIdRef.current ||
+          operatorChoicesRef.current !== choicesAtStart ||
+          listFilterRef.current !== "active"
+        )
+          return;
         if (stored) {
           void loadConversation(stored);
         } else {
-          setActionError(t("errors.load"));
+          setActionError({ message: t("errors.load") });
         }
       });
     return () => {
       active = false;
     };
-  }, [loadConversation, t]);
+  }, [loadConversation, readConversationList, t]);
 
   useEffect(() => {
     const conversationId = state.conversation?.id;
@@ -1036,7 +1321,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         effectsAcknowledgedRef.current.add(effectKey);
       })()
         .catch((error) => {
-          setActionError(error instanceof Error ? error.message : t("errors.effect"));
+          setActionError({ message: error instanceof Error ? error.message : t("errors.effect") });
         })
         .finally(() => {
           effectsInFlightRef.current.delete(effectKey);
@@ -1046,7 +1331,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const items = useMemo(() => displayItems(state.frames), [state.frames]);
   const visibleItems = useMemo(() => items.slice(-visibleCount), [items, visibleCount]);
-  const proposals = useMemo(() => pendingOperatorProposals(state.frames), [state.frames]);
   const resolvedProposalIds = useMemo(() => {
     const resolved = new Set(decidedProposalIds);
     for (const item of proposals) {
@@ -1054,6 +1338,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
     }
     return resolved;
   }, [decidedProposalIds, proposals]);
+
+  // A decision's error no longer applies once its proposal is decided or the stream
+  // resolves it; any other error stays. Cleared while rendering, so it is never shown
+  // beside its resolved proposal.
+  if (actionError?.proposalId && resolvedProposalIds.has(actionError.proposalId))
+    setActionError(null);
 
   useLayoutEffect(() => {
     if (!open || !nearBottomRef.current) {
@@ -1120,16 +1410,30 @@ export default function OperatorPanel({ open, onClose }: Props) {
     if (!trimmed || sending || state.activeRequestId) return;
     setSending(true);
     setActionError(null);
+    // The conversation this send is for: the one shown when it started, or, for
+    // a draft, the one created for it. A failure is reported there, at once while
+    // it is selected, else when it is selected again. A draft whose conversation
+    // could not be created has none, so its failure shows where its text still is.
+    let sentTo = state.conversation?.id ?? null;
+    // A draft's new conversation takes the panel only while the operator has made no
+    // choice of conversation since this send started; otherwise it is listed and the
+    // turn submitted there, and the chosen conversation stays selected.
+    const choicesAtStart = operatorChoicesRef.current;
     try {
       let conversation = state.conversation;
       if (!conversation) {
         conversation = await createOperatorConversation();
-        window.localStorage.setItem(STORAGE_KEY, conversation.id);
+        createdConversationIdsRef.current.add(conversation.id);
+        sentTo = conversation.id;
         setConversations((current) => [
           conversation as OperatorConversation,
           ...current.filter((item) => item.id !== conversation?.id),
         ]);
-        dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
+        if (operatorChoicesRef.current === choicesAtStart) {
+          selectedConversationIdRef.current = conversation.id;
+          window.localStorage.setItem(STORAGE_KEY, conversation.id);
+          dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
+        }
       }
       const context = operatorContext(
         location.pathname,
@@ -1149,13 +1453,26 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         ...(clearing ? { clearSelection: true } : {}),
       });
-      dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
-      setStreamEpoch((current) => current + 1);
+      // The turn runs on its own conversation; the panel shows it only when that
+      // conversation is still the one selected.
+      if (selectedConversationIdRef.current === conversation.id) {
+        dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
+        setStreamEpoch((current) => current + 1);
+        nearBottomRef.current = true;
+      }
       setInstruction("");
-      nearBottomRef.current = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : t("errors.send");
-      setActionError(message);
+      if (sentTo !== null && selectedConversationIdRef.current !== sentTo) {
+        // The text leaves the composer now shown, unless it was edited, so it is not
+        // sent to this conversation by mistake; both return with the one it was for.
+        failedSendsRef.current.set(sentTo, { message, instruction: trimmed });
+        setInstruction((current) => (current.trim() === trimmed ? "" : current));
+        return;
+      }
+      setActionError({ message });
+      // New conversation during the send clears the composer; the failed text comes back.
+      setInstruction((current) => (current.trim() ? current : trimmed));
       if (
         error instanceof ApiError &&
         error.status === 409 &&
@@ -1189,21 +1506,28 @@ export default function OperatorPanel({ open, onClose }: Props) {
     try {
       await cancelOperatorRequest(state.conversation.id, state.activeRequestId);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : t("errors.stop"));
+      setActionError({ message: error instanceof Error ? error.message : t("errors.stop") });
     } finally {
       setStopping(false);
     }
   }, [state.activeRequestId, state.conversation, stopping, t]);
 
   const handleProposalDecision = useCallback(
-    async (frame: OperatorFrame<OperatorProposalPayload>, decision: "allow" | "deny") => {
+    async (
+      frame: OperatorFrame<OperatorProposalPayload>,
+      decision: "allow" | "deny",
+      auto = false,
+    ) => {
       if (!state.conversation) return;
+      const conversationId = state.conversation.id;
       const proposal = frame.payload.proposal;
       setDeciding((current) => new Set(current).add(proposal.id));
-      setActionError(null);
+      // A click clears the alert; a decision that auto-allow makes leaves it showing.
+      if (!auto) setActionError(null);
+      refusedDecisionsRef.current.get(conversationId)?.delete(proposal.id);
       try {
         await decideOperatorProposal(
-          state.conversation.id,
+          conversationId,
           proposal.id,
           decision,
           proposal.commandHash,
@@ -1211,7 +1535,22 @@ export default function OperatorPanel({ open, onClose }: Props) {
         );
         setDecidedProposalIds((current) => new Set(current).add(proposal.id));
       } catch (error) {
-        setActionError(error instanceof Error ? error.message : t("errors.decision"));
+        const refusal = {
+          message: error instanceof Error ? error.message : t("errors.decision"),
+          proposalId: proposal.id,
+        };
+        if (selectedConversationIdRef.current !== conversationId) {
+          // Refused once its conversation was no longer shown, so it is not reported in
+          // another one: it is kept for that conversation and reported when it is shown
+          // again. The proposal is still pending there and counts as untried, so with
+          // auto-allow on it is decided again there instead.
+          autoAllowTriedRef.current.delete(proposal.id);
+          let kept = refusedDecisionsRef.current.get(conversationId);
+          if (!kept) refusedDecisionsRef.current.set(conversationId, (kept = new Map()));
+          kept.set(proposal.id, refusal);
+          return;
+        }
+        setActionError(refusal);
       } finally {
         setDeciding((current) => {
           const next = new Set(current);
@@ -1223,24 +1562,44 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [state.conversation, t],
   );
 
-  // Auto-allow: decide each pending proposal as it arrives. The deciding /
-  // decided sets make this idempotent across re-renders and SSE replays.
+  // Auto-allow: send one decision per pending proposal, as it arrives. The tried set
+  // makes this idempotent across re-renders and SSE replays, and keeps a refused
+  // decision from being sent again on every render; one refused after its
+  // conversation stopped being shown leaves the set, so it is decided again there.
   // Deferred a tick so the decision (a network POST plus its own state
   // bookkeeping) never runs synchronously inside the effect body; the guard
   // sets keep a cancelled-then-rescheduled tick from double-deciding.
+  // Nothing is tried while no conversation is shown: a proposal a closing stream
+  // appends after New conversation is decided once its conversation is shown again.
   useEffect(() => {
-    if (!autoAllow) return;
+    if (!autoAllow || !shownConversationId) return;
     const timer = window.setTimeout(() => {
       for (const item of proposals) {
         const id = item.frame.payload.proposal.id;
-        if (item.resolved || decidedProposalIds.has(id) || deciding.has(id)) continue;
-        void handleProposalDecision(item.frame, "allow");
+        if (
+          item.resolved ||
+          decidedProposalIds.has(id) ||
+          deciding.has(id) ||
+          autoAllowTriedRef.current.has(id)
+        )
+          continue;
+        autoAllowTriedRef.current.add(id);
+        void handleProposalDecision(item.frame, "allow", true);
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
+  }, [
+    autoAllow,
+    proposals,
+    decidedProposalIds,
+    deciding,
+    handleProposalDecision,
+    shownConversationId,
+  ]);
 
   const resetConversation = useCallback(() => {
+    operatorChoicesRef.current += 1;
+    selectedConversationIdRef.current = null;
     window.localStorage.removeItem(STORAGE_KEY);
     dispatch({ type: "RESET" });
     setActionError(null);
@@ -1254,6 +1613,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         resetConversation();
         return;
       }
+      operatorChoicesRef.current += 1;
       if (conversationId === state.conversation?.id) return;
       dispatch({ type: "RESET" });
       setVisibleCount(200);
@@ -1267,15 +1627,15 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const refreshConversations = useCallback(
     (status: "active" | "archived") => {
-      return listOperatorConversations({ status })
-        .then((available) => {
-          setConversations(available);
-        })
+      listFilterRef.current = status;
+      return readConversationList(status)
+        .then(({ merge }) => setConversations(merge))
         .catch((error) => {
+          if (listFilterRef.current !== status) return;
           setListActionError(error instanceof Error ? error.message : t("errors.load"));
         });
     },
-    [t],
+    [readConversationList, t],
   );
 
   const commitRename = useCallback(
@@ -1289,17 +1649,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversationId, {
           title: trimmed.length > 0 ? trimmed : null,
         });
+        writeResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
-        if (state.conversation?.id === updated.id) {
+        if (selectedConversationIdRef.current === updated.id) {
           dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
         }
       } catch (error) {
         setListActionError(error instanceof Error ? error.message : t("errors.rename"));
       }
     },
-    [conversations, state.conversation, t],
+    [conversations, t],
   );
 
   const togglePin = useCallback(
@@ -1310,15 +1671,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversation.id, {
           pinned: !conversation.pinned,
         });
+        writeResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
-          current
-            .map((item) => (item.id === updated.id ? updated : item))
-            .sort(
-              (a, b) =>
-                Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
-            ),
+          current.map((item) => (item.id === updated.id ? updated : item)).sort(byPinThenRecency),
         );
-        if (state.conversation?.id === updated.id) {
+        if (selectedConversationIdRef.current === updated.id) {
           dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
         }
       } catch (error) {
@@ -1327,7 +1684,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setConversationBusyId(null);
       }
     },
-    [state.conversation, t],
+    [t],
   );
 
   const toggleArchive = useCallback(
@@ -1339,12 +1696,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversation.id, {
           status: nextStatus,
         });
+        writeResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
-          updated.status === listFilter
+          updated.status === listFilterRef.current
             ? current.map((item) => (item.id === updated.id ? updated : item))
             : current.filter((item) => item.id !== updated.id),
         );
-        if (state.conversation?.id === updated.id) {
+        if (selectedConversationIdRef.current === updated.id) {
           dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
         }
       } catch (error) {
@@ -1353,17 +1711,22 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setConversationBusyId(null);
       }
     },
-    [listFilter, state.conversation, t],
+    [t],
   );
 
   const forkConversationById = useCallback(
     async (conversation: OperatorConversation) => {
+      // The click is the choice, so a draft's conversation created during the fork
+      // request does not take the panel, even when the fork then fails; it is listed.
+      operatorChoicesRef.current += 1;
       setConversationBusyId(conversation.id);
       setListActionError(null);
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
+        createdConversationIdsRef.current.add(snapshot.conversation.id);
         setConversations((current) => [snapshot.conversation, ...current]);
         resetConversation();
+        selectedConversationIdRef.current = snapshot.conversation.id;
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setVisibleCount(200);
         nearBottomRef.current = true;
@@ -1571,11 +1934,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                   selectConversation(conversation.id);
                                   setListPanelOpen(false);
                                 }}
-                                title={t("list.renamePlaceholder")}
+                                title={conversation.description || t("list.renamePlaceholder")}
                                 className="min-w-0 flex-1 truncate text-start text-meta text-content-primary outline-none"
                               >
-                                {conversation.pinned ? "★ " : ""}
-                                {conversationLabel(conversation)}
+                                <span className="block truncate">
+                                  {conversation.pinned ? "★ " : ""}
+                                  {conversationLabel(conversation)}
+                                </span>
+                                {conversation.description && (
+                                  <span className="block truncate text-content-muted">
+                                    {conversation.description}
+                                  </span>
+                                )}
                               </button>
                             )}
                             {activeRenamingId !== conversation.id && (
@@ -1690,8 +2060,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   variant="primary"
                   size="sm"
                   onClick={() => {
-                    const id = readStoredConversation();
-                    if (id) void loadConversation(id);
+                    // The conversation whose load failed, else the stored one.
+                    const id = selectedConversationIdRef.current ?? readStoredConversation();
+                    if (!id) return;
+                    operatorChoicesRef.current += 1;
+                    void loadConversation(id);
                   }}
                 >
                   {t("retry")}
@@ -1767,9 +2140,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
         <footer className="shrink-0 border-t border-edge bg-surface-raised p-3">
           {(actionError || state.error) && (
-            <div className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure">
+            <div
+              role="alert"
+              className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure"
+            >
               <IconError size={12} className="mt-0.5 shrink-0" />
-              <span className="min-w-0 flex-1 break-words">{actionError ?? state.error}</span>
+              <span className="min-w-0 flex-1 break-words">
+                {actionError?.message ?? state.error}
+              </span>
             </div>
           )}
           <label htmlFor="operator-instruction" className="sr-only">

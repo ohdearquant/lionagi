@@ -193,6 +193,7 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__release_run_pause",
         "mcp__studio_operator__steer_run",
         "mcp__studio_operator__rename_run",
+        "mcp__studio_operator__update_conversation",
         "mcp__studio_operator__list_sessions",
         "mcp__studio_operator__session_detail",
         "mcp__studio_operator__session_signals",
@@ -307,6 +308,7 @@ _REQUIRED_OPERATOR_TOOLS = frozenset(
         "release_run_pause",
         "steer_run",
         "rename_run",
+        "update_conversation",
         "list_sessions",
         "session_detail",
         "session_signals",
@@ -3722,8 +3724,8 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
     resume_run integration tests above: proves
     `coordinator.py::_execute_application_command`'s `rename_session` branch
     really dispatches to `rename_session.execute_rename_session_command`
-    end to end, and that the run's name is actually changed once a human
-    allows the proposal."""
+    end to end, and that the run's explicit label changes without advancing
+    activity once a human allows the proposal."""
     from lionagi.state.db import StateDB
     from lionagi.studio.operator.rename_session import rename_session
 
@@ -3731,6 +3733,7 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
         run_id = await _seed_running_session(db, project=_RENAME_TEST_PROJECT)
+        before = await db.fetch_one("SELECT name, updated_at FROM sessions WHERE id = ?", (run_id,))
 
     store = OperatorStore(path)
     coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
@@ -3781,8 +3784,12 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
     }
 
     async with StateDB() as db:
-        row = await db.fetch_one("SELECT name FROM sessions WHERE id = ?", (run_id,))
-        assert row["name"] == "nightly backfill"
+        row = await db.fetch_one(
+            "SELECT name, user_label, updated_at FROM sessions WHERE id = ?", (run_id,)
+        )
+        assert row["user_label"] == "nightly backfill"
+        assert row["name"] == before["name"]
+        assert row["updated_at"] == before["updated_at"]
     await store.finish_turn(accepted["requestId"], outcome="completed")
     await coordinator.shutdown()
 

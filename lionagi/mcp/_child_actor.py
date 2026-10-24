@@ -12,7 +12,6 @@ submitting config copied whole with only the ``[actor]`` table rewritten.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import re
@@ -21,6 +20,8 @@ import tempfile
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
+
+from lionagi.ln import compute_hash
 
 try:
     import tomllib as _toml
@@ -212,7 +213,7 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
     tail = lines[end:]
     if tail and tail[0].strip():
         tail = ["", *tail]
-    sha8 = hashlib.sha256(source_bytes).hexdigest()[:8]
+    sha8 = compute_hash(source_bytes, max_bytes=None)[:8]
     header = (
         f"# CHILD ACTOR CONFIG — {child_actor}, minted by lionagi at spawn from {source} "
         f"(source sha256 prefix {sha8}); only [actor] differs."

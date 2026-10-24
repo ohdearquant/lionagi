@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import NoDaemonGate from "./NoDaemonGate";
@@ -74,16 +74,17 @@ describe("NoDaemonGate", () => {
     vi.unstubAllGlobals();
   });
 
-  async function mount() {
+  async function mount({ strict = false } = {}) {
+    const gate = (
+      <IntlProvider locale="en" messages={enMessages}>
+        <NoDaemonGate>
+          <div data-testid="child">app content</div>
+        </NoDaemonGate>
+      </IntlProvider>
+    );
     await act(async () => {
       root = createRoot(container);
-      root.render(
-        <IntlProvider locale="en" messages={enMessages}>
-          <NoDaemonGate>
-            <div data-testid="child">app content</div>
-          </NoDaemonGate>
-        </IntlProvider>,
-      );
+      root.render(strict ? <StrictMode>{gate}</StrictMode> : gate);
       await Promise.resolve();
     });
   }
@@ -225,6 +226,33 @@ describe("NoDaemonGate", () => {
     daemonAnswering(jsonResponse({ token: "launch-bearer" }));
 
     await mount();
+    await settle();
+
+    expect(pairCalls()).toHaveLength(1);
+    expect(pairedBearer("http://127.0.0.1:8765")).toBe("launch-bearer");
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("pairs once under StrictMode, whose doubled effect connects twice", async () => {
+    window.history.replaceState(null, "", "/#pair=one-time-code");
+    takePairingCodeFromLocation();
+    let spent = false;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok" }));
+      if (url.endsWith("/api/studio/pair")) {
+        const first = !spent;
+        spent = true;
+        return Promise.resolve(
+          first
+            ? jsonResponse({ token: "launch-bearer" })
+            : jsonResponse({ detail: "used" }, false, 401),
+        );
+      }
+      return Promise.reject(new Error(`unexpected request: ${url}`));
+    });
+
+    await mount({ strict: true });
     await settle();
 
     expect(pairCalls()).toHaveLength(1);
