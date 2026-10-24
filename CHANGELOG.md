@@ -140,6 +140,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
 
 ### Added
 
+- API-model agent runs record per-request provider, requested model, prompt character
+  count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy
+  refusal counts and safe routed-account selections. Decisions, API dispatches and routed
+  attempts remain distinct; credentials and prompt text are excluded.
 - Studio Operator can update its active conversation's title and persistent
   description. Omitted fields retain their values, and an applied effect is
   recorded with the saved change without duplicating the provider's tool result.
