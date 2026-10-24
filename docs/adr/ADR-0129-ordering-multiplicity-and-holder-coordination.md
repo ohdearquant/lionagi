@@ -68,7 +68,7 @@ still cannot do is make a caller's read-then-act sequence atomic.
 inside the type, none of those holders states what it protects or for how long. Two call sites hold a
 collection lock across an await: `Session.asplit` awaits `Branch.aclone` inside `async with
 self.branches` (`lionagi/session/session.py:279-284`), and that callee takes the message pile lock
-(`lionagi/session/branch.py:552-554`); `Pile.adapt_to_async` awaits the adapter inside the both-lock
+(`lionagi/session/branch.py:553-555`); `Pile.adapt_to_async` awaits the adapter inside the both-lock
 protocol (`pile.py:914-915`).
 
 | Concern | Decision |
@@ -176,7 +176,7 @@ holder's, exercised where the holder lives.
 - **The holder rule.** The object that owns a collection serializes access to it; the collection
   type does not, and a caller does not hold the collection across an await. The named holders are:
   - `Session` over `branches` (`lionagi/session/session.py:74-76`, `:279-284`);
-  - `MessageManager` over `messages` (`lionagi/protocols/messages/manager.py:107-109`, `:111-119`);
+  - `MessageManager` over `messages` (`lionagi/protocols/messages/manager.py:107-109`, `:111-117`);
   - `Exchange` over `flows` (`lionagi/session/exchange.py:87-110`);
   - `DataLogger` over `logs` (`lionagi/protocols/generic/log.py:244-247`, `:291-325`);
   - `Executor` over its event pile and pending order
@@ -193,7 +193,7 @@ holder's, exercised where the holder lives.
   `log`. These are holders of one collection for the duration of a synchronous call, not waiters.
   The sites that do await while holding a collection lock are `Session.asplit`
   (`session.py:279-284`), whose callee `Branch.aclone` additionally takes the message pile lock
-  (`branch.py:552-554`), and `Pile.adapt_to_async` (`pile.py:914-915`). Both move onto the holder
+  (`branch.py:553-555`), and `Pile.adapt_to_async` (`pile.py:914-915`). Both move onto the holder
   rule or onto the snapshot, as does `DependencyAwareExecutor._preallocate_all_branches`
   (`lionagi/operations/flow.py:345-363`), which holds `branches.async_lock` around synchronous work
   today.
@@ -201,7 +201,7 @@ holder's, exercised where the holder lives.
   - ADR-0006 D4 (`Accepted`) is the message-added observer contract. Its async path reads "lock pile
     → construct and insert or replace message → release pile lock → snapshot callbacks"
     (`docs/adr/ADR-0006-conversational-message-envelope-and-ordered-history.md:357-363`), which is
-    `MessageManager.a_add_message` today (`manager.py:111-121`). The lock in that path is the pile's,
+    `MessageManager.a_add_message` today (`manager.py:111-134`). The lock in that path is the pile's,
     and its holder `MessageManager` is listed with the holders above and keeps a lock of its own
     around the insertion instead of taking the pile's. ADR-0006 D4's re-entrancy statement —
     callbacks run after the lock is released, so an async callback may re-enter `a_add_message`
@@ -229,8 +229,8 @@ holder's, exercised where the holder lives.
 | `Executor.pending` | `processor.py:197`, `:238` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
 | `Executor.pile` | `processor.py:199-202` | unique |
 | `MessageManager.messages` | `manager.py:79-84` | unique |
-| `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `manager.py:475-512` | unique: each access builds a fresh filtered Pile (`pile.py:1027-1065`) whose own default order is a unique order |
-| `Branch.progression`, both forms | `branch.py:249-256`: the `metadata["current_progression"]` subset, built at `lionagi/tools/context/context.py:142-149`, or `MessageManager.progression` when it is unset | unique: the subset is seeded from the full order and the context tool never appends a duplicate to it (`context.py:334-335` skips ids already active before `:343`), the branch appends a newly added message to it only when the id is absent (`branch.py:426-427`), and after the message manager replaces the system message or clears its messages (`manager.py:104-105`, `:445-446`) the branch drops every id no longer in the pile and puts the system message at its head once (`branch.py:440-445`), `branch.py:251` calls it a subset, and ADR-0007 D2 rejects a duplicate id in the selected history (`docs/adr/ADR-0007-canonical-turn-request-compilation-boundary.md:242-243`) |
+| `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `manager.py:486-523` | unique: each access builds a fresh filtered Pile (`pile.py:1027-1065`) whose own default order is a unique order |
+| `Branch.progression`, both forms | `branch.py:250-257`: the `metadata["current_progression"]` subset, built at `lionagi/tools/context/context.py:205-212`, or `MessageManager.progression` when it is unset | unique: the subset is seeded from the full order and the context tool's restore path skips host copies and ids already in its proposed view (`context.py:455-456`) before inserting an original (`:468`), the branch appends a newly added message to it only when the id is absent (`branch.py:427-428`), and after the message manager replaces the system message or clears its messages (`manager.py:104-105`, `:456-457`) the branch drops every id no longer in the pile and puts the system message at its head once (`branch.py:441-446`), `branch.py:252` calls it a subset, and ADR-0007 D2 rejects a duplicate id in the selected history (`docs/adr/ADR-0007-canonical-turn-request-compilation-boundary.md:242-243`) |
 | `Exchange` mailbox views `outbox` and `inbox_<sender>` | `exchange.py:53`, `:148-153` | repeated: standalone orders held by per-owner Flows; the `progressions` Pile that indexes them is itself a collection, and therefore unique over the view objects |
 
 - ADR-0003 D5's `pending` (the set-like `include` in "Executor owns live Events and pending order",

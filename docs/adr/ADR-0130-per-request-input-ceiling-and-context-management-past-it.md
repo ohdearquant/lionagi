@@ -41,9 +41,9 @@ spend; it is not the size a caller wants to stay under. No code before a send co
 against either number.
 
 **P2 — the model's own context tools exist, and nothing calls them for it.** `ContextTool`
-(`lionagi/tools/context/context.py:114`) gives a model `status` (`:245`, an estimate from
-`TokenCalculator` over message content, `:176`), `evict` (`:290`), `evict_action_results` (`:306`),
-`restore` (`:325`) and `compact` (`:353`). Eviction removes messages from the branch's active view
+(`lionagi/tools/context/context.py:177`) gives a model `status` (`:359`, an estimate from
+`TokenCalculator` over message content, `:239`), `evict` (`:404`), `evict_action_results` (`:420`),
+`restore` (`:439`) and `compact` (`:489`). Eviction removes messages from the branch's active view
 and keeps them in the full record, so `restore` brings them back. A model that never calls the tool
 keeps growing its request until the provider refuses it or bills it at the next tier.
 
@@ -51,7 +51,7 @@ keeps growing its request until the provider refuses it or bills it at the next 
 child with no branch of its own is built from its emitter's branch
 (`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:587-603`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
+(`lionagi/session/branch.py:642-653`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
@@ -128,7 +128,7 @@ text; a Gemini CLI summary for more than one turn, or one with no turn count, co
    the tool name, the call id, the original size and how to read it back; the original stays in the
    branch's full record and the model reads it back, in ranges, with its `context` tool (whose output
    is measured like any other result). Today that tool previews a message in 120 characters or
-   restores it whole (`lionagi/tools/context/context.py:185`, `:325`); landing step 4 adds the range
+   restores it whole (`lionagi/tools/context/context.py:248`, `:439`); landing step 4 adds the range
    read. A run whose model has no `context` tool (a profile with `context_management` off) is not
    folded, because it could not read the original back; it is refused as in 3. A fold never leaves a
    tool call without its result in the request, never touches the system text, the instruction, or
