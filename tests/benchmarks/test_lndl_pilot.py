@@ -2235,3 +2235,374 @@ def test_the_ignore_file_holds_the_patterns_the_rows_above_were_chosen_for():
         "!*.stdout.txt/",
         "!*.stderr.txt/",
     ]
+
+
+_READ_TREE_HEAD = "6fa69b196f45f65fe63ba640b8acc248e8c7cb5e"
+_R5_CODE_HEAD = "208bcc08dbdc512f31c142abf69c256f79a6536a"
+_OTHER_READ_TREE_HEAD = "b0123456789abcdef0123456789abcdef0123456"
+
+
+def _offline_recorded_run(monkeypatch, tmp_path, *flags, head=_READ_TREE_HEAD):
+    """Run the real recorder with two complete tasks and no child process or model call."""
+    here = tmp_path / "pilot"
+    here.mkdir()
+    profiles = here / ".lionagi" / "agents"
+    profiles.mkdir(parents=True)
+    for loop in LOOPS:
+        (profiles / f"d4-{loop}.md").write_text(f"fixture profile {loop}\n")
+    tree = here / "tree"
+    tree.mkdir()
+    home = here / "home"
+    home.mkdir()
+    li = here / "li"
+    li.touch(mode=0o755)
+    tasks = [
+        {
+            "id": tid,
+            "class": "lookup",
+            "prompt": f"question {tid}",
+            "accept": {"all_of": ["42"]},
+            "truth": f"fixture/source.py:{index}",
+        }
+        for index, tid in enumerate(("t01", "t02"), 1)
+    ]
+    tasks_file = here / "tasks.yaml"
+    tasks_file.write_text(json.dumps({"tasks": tasks}))
+    legs = _Legs()
+
+    def subprocess_run(argv, **kwargs):
+        if argv == ["git", "-C", str(tree), "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=head + "\n", stderr="")
+        assert argv == [str(li), "--version"] or argv[1:2] == ["agent"], argv
+        return legs(argv, **kwargs)
+
+    for name, value in (("HERE", here), ("TREE", tree), ("LI", li), ("SCRATCH_HOME", home)):
+        monkeypatch.setattr(runner, name, value)
+    monkeypatch.setattr(pilot, "HERE", here)
+    monkeypatch.setattr(runner.subprocess, "run", subprocess_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    out = here / "run"
+    monkeypatch.setattr(
+        sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", str(out), *flags]
+    )
+    assert runner.main() == 0
+    header = json.loads((out / "header.json").read_text())
+    assert header["read_tree_head"] == head
+    assert header["tasks_file"] == "tasks.yaml"
+    assert header["tasks_sha256"] == hashlib.sha256(tasks_file.read_bytes()).hexdigest()
+    assert len(legs.legs) == header["task_count"] * len(header["loops"])
+    truths = {task["id"]: task["truth"] for task in tasks}
+    _write_jsonl(
+        out / "reading.jsonl",
+        [
+            {
+                "id": row["id"],
+                "loop": row["loop"],
+                "check": "accepted" if row["accepted"] else "rejected",
+                "reading": "right",
+                f"source_{head[:8]}": truths[row["id"]],
+            }
+            for row in _jsonl(out / "results.jsonl")
+        ],
+    )
+    return out
+
+
+def _summary_refusal_keeps_record(monkeypatch, run_dir, match):
+    before = (run_dir / "summary.json").read_bytes()
+    monkeypatch.setattr(sys, "argv", ["summarize.py", str(run_dir)])
+    with pytest.raises(ValueError, match=match) as caught:
+        pilot.main()
+    assert (run_dir / "summary.json").read_bytes() == before
+    return str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("head", "prefix_length"),
+    [(_READ_TREE_HEAD, 8), (_OTHER_READ_TREE_HEAD, 8), (_OTHER_READ_TREE_HEAD, 40)],
+    ids=["recorded-tree", "different-tree", "full-head-key"],
+)
+def test_summary_uses_the_source_key_for_the_recorded_read_tree(
+    monkeypatch, tmp_path, head, prefix_length
+):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path, head=head)
+    reading = _jsonl(run_dir / "reading.jsonl")
+    for row in reading:
+        source = row.pop(f"source_{head[:8]}")
+        row[f"source_{head[:prefix_length]}"] = source
+    _write_jsonl(run_dir / "reading.jsonl", reading)
+
+    summary = pilot.build_summary(run_dir)
+
+    assert summary["react"]["accepted"] == summary["lndl"]["accepted"] == 2
+    assert summary["d4_rule_by_checks"] is not None
+    assert summary["d4_rule_by_substance"]["react_accepted"] == 2
+    assert summary["d4_rule_by_substance"]["lndl_accepted"] == 2
+
+
+def test_an_unrelated_legacy_source_key_cannot_override_the_recorded_tree(monkeypatch, tmp_path):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path, head=_OTHER_READ_TREE_HEAD)
+    reading = _jsonl(run_dir / "reading.jsonl")
+    for row in reading:
+        row["source_6fa69b19"] = "unrelated/file.py:999"
+    _write_jsonl(run_dir / "reading.jsonl", reading)
+
+    assert pilot.build_summary(run_dir)["react"]["accepted"] == 2
+
+
+@pytest.mark.parametrize("head", [None, "6fa69b19", "g" * 40, 123])
+def test_summary_refuses_missing_or_malformed_read_tree_metadata(monkeypatch, tmp_path, head):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path)
+    header = json.loads((run_dir / "header.json").read_text())
+    if head is None:
+        del header["read_tree_head"]
+    else:
+        header["read_tree_head"] = head
+    (run_dir / "header.json").write_text(json.dumps(header))
+
+    _summary_refusal_keeps_record(monkeypatch, run_dir, "read_tree_head")
+
+
+def test_summary_refuses_a_reading_with_no_source_for_its_recorded_tree(monkeypatch, tmp_path):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path, head=_OTHER_READ_TREE_HEAD)
+    reading = _jsonl(run_dir / "reading.jsonl")
+    for row in reading:
+        row["source_6fa69b19"] = row.pop(f"source_{_OTHER_READ_TREE_HEAD[:8]}")
+    _write_jsonl(run_dir / "reading.jsonl", reading)
+
+    _summary_refusal_keeps_record(
+        monkeypatch, run_dir, f"no reading source for read_tree_head {_OTHER_READ_TREE_HEAD}"
+    )
+
+
+def test_summary_refuses_two_source_keys_matching_the_same_tree(monkeypatch, tmp_path):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path)
+    reading = _jsonl(run_dir / "reading.jsonl")
+    for row in reading:
+        row[f"source_{_READ_TREE_HEAD[:12]}"] = row["source_6fa69b19"]
+    _write_jsonl(run_dir / "reading.jsonl", reading)
+
+    _summary_refusal_keeps_record(monkeypatch, run_dir, "ambiguous")
+
+
+def test_a_different_read_tree_still_requires_a_citation_in_the_task_truth(monkeypatch, tmp_path):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path, head=_OTHER_READ_TREE_HEAD)
+    reading = _jsonl(run_dir / "reading.jsonl")
+    reading[0][f"source_{_OTHER_READ_TREE_HEAD[:8]}"] = "fixture/source.py:999"
+    _write_jsonl(run_dir / "reading.jsonl", reading)
+
+    _summary_refusal_keeps_record(monkeypatch, run_dir, "truth does not")
+
+
+@pytest.mark.parametrize(
+    ("flags", "causes"),
+    [
+        (("--only", "t01"), {"--only"}),
+        (("--loops", "react"), {"--loops"}),
+        (("--only", "t01", "--loops", "react"), {"--only", "--loops"}),
+    ],
+    ids=["task-subset", "loop-subset", "both-subsets"],
+)
+def test_summary_names_the_options_that_recorded_a_subset(monkeypatch, tmp_path, flags, causes):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path, *flags)
+
+    message = _summary_refusal_keeps_record(monkeypatch, run_dir, "--only|--loops")
+
+    assert {option for option in ("--only", "--loops") if option in message} == causes
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [(), ("--only", "t01,t02"), ("--loops", "lndl,react")],
+    ids=["default-whole-run", "explicit-whole-task-set", "reversed-comparison-loops"],
+)
+def test_explicit_options_that_still_cover_the_whole_comparison_are_summarized(
+    monkeypatch, tmp_path, flags
+):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path, *flags)
+
+    summary = pilot.build_summary(run_dir)
+
+    assert summary["react"]["runs"] == summary["lndl"]["runs"] == 2
+    assert summary["d4_rule_by_checks"] is not None
+    assert summary["d4_rule_by_substance"] is not None
+
+
+def test_missing_rows_in_a_whole_run_are_not_mislabeled_as_subset_options(monkeypatch, tmp_path):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path)
+    results = _jsonl(run_dir / "results.jsonl")
+    missing = (results[0]["id"], results[0]["loop"])
+    _write_jsonl(run_dir / "results.jsonl", results[1:])
+    _write_jsonl(
+        run_dir / "reading.jsonl",
+        [row for row in _jsonl(run_dir / "reading.jsonl") if (row["id"], row["loop"]) != missing],
+    )
+
+    message = _summary_refusal_keeps_record(monkeypatch, run_dir, "results do not hold")
+
+    assert "--only" not in message
+    assert "--loops" not in message
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("task_count", None), ("task_count", "2"), ("loops", None), ("loops", "react,lndl")],
+    ids=["missing-task-count", "noninteger-task-count", "missing-loops", "nonlist-loops"],
+)
+def test_missing_or_malformed_subset_metadata_is_named_separately(
+    monkeypatch, tmp_path, field, value
+):
+    run_dir = _offline_recorded_run(monkeypatch, tmp_path)
+    header = json.loads((run_dir / "header.json").read_text())
+    if value is None:
+        del header[field]
+    else:
+        header[field] = value
+    (run_dir / "header.json").write_text(json.dumps(header))
+
+    _summary_refusal_keeps_record(monkeypatch, run_dir, field)
+
+
+# Mappings transcribed after comparing all 42 blocks against both historical commits on 2026-10-24.
+# These tests check recorded consistency without re-reading either historical commit.
+# task, path, read-tree start/end, installed-code start/end
+_HISTORICAL_CITATIONS = (
+    ("t01", "lionagi/_spec_limits.py", 11, 11, 11, 11),
+    ("t02", "lionagi/version.py", 1, 1, 1, 1),
+    ("t03", "lionagi/cli/agent.py", 89, 89, 109, 109),
+    ("t04", "lionagi/cli/agent.py", 87, 87, 93, 93),
+    ("t05", "lionagi/tools/code/bash.py", 35, 35, 35, 35),
+    ("t06", "lionagi/tools/_subprocess.py", 20, 20, 21, 21),
+    ("t06", "lionagi/tools/_subprocess.py", 18, 18, 19, 19),
+    ("t06", "lionagi/tools/code/bash.py", 13, 13, 13, 13),
+    ("t07", "lionagi/tools/file/reader.py", 24, 24, 25, 25),
+    ("t08", "lionagi/cli/agent.py", 83, 83, 89, 89),
+    ("t09", "lionagi/agent/permissions.py", 83, 88, 83, 88),
+    ("t10", "lionagi/hooks/bus.py", 71, 71, 71, 71),
+    ("t10", "lionagi/hooks/bus.py", 76, 76, 76, 76),
+    ("t11", "lionagi/tools/coding.py", 286, 294, 287, 295),
+    ("t12", "lionagi/dispatch/outbox.py", 48, 48, 48, 48),
+    ("t12", "lionagi/dispatch/outbox.py", 49, 49, 49, 49),
+    ("t12", "lionagi/dispatch/outbox.py", 55, 55, 55, 55),
+    ("t13", "lionagi/protocols/messages/base.py", 21, 28, 21, 28),
+    ("t14", "lionagi/protocols/generic/event.py", 30, 39, 30, 39),
+    ("t15", "lionagi/session/control.py", 13, 17, 13, 17),
+    ("t16", "lionagi/service/providers.py", 34, 43, 34, 43),
+    ("t17", "lionagi/work/form.py", 40, 40, 40, 40),
+    ("t18", "lionagi/engines/__init__.py", 10, 59, 10, 59),
+    ("t18", "lionagi/engines/planning.py", 132, 132, 132, 132),
+    ("t18", "lionagi/engines/research.py", 125, 125, 125, 125),
+    ("t18", "lionagi/engines/review.py", 516, 516, 517, 517),
+    ("t18", "lionagi/engines/hypothesis.py", 662, 662, 662, 662),
+    ("t18", "lionagi/engines/coding.py", 444, 444, 444, 444),
+    ("t19", "lionagi/libs/path_safety.py", 11, 13, 11, 13),
+    ("t20", "lionagi/agent/factory.py", 512, 519, 512, 519),
+    ("t20", "lionagi/tools/code/search.py", 193, 193, 193, 193),
+    ("t21", "lionagi/cli/agent.py", 265, 271, 305, 311),
+    ("t21", "lionagi/cli/agent.py", 272, 272, 312, 312),
+    ("t21", "lionagi/agent/spec.py", 44, 44, 44, 44),
+    ("t22", "lionagi/agent/spec.py", 48, 56, 48, 56),
+    ("t23", "lionagi/mcp/config.py", 35, 35, 35, 35),
+    ("t23", "lionagi/cli/agent.py", 25, 25, 29, 29),
+    ("t23", "lionagi/cli/agent.py", 114, 116, 134, 136),
+    ("t24", "lionagi/_paths.py", 20, 20, 20, 20),
+    ("t24", "lionagi/mcp/config.py", 16, 16, 16, 16),
+    ("t24", "lionagi/mcp/config.py", 19, 19, 19, 19),
+    ("t24", "lionagi/mcp/config.py", 23, 23, 23, 23),
+)
+
+
+def _citation(path, start, end):
+    return f"{path}:{start}" + (f"-{end}" if end != start else "")
+
+
+def _truth_citations(truth):
+    """Resolve the task record's basename and `line N` shorthand, without counting overlaps twice."""
+    full_paths = set(re.findall(r"[\w./-]+/[\w.-]+\.py", truth))
+    citations = []
+    last_path = None
+    pattern = (
+        r"(?P<path>[\w./-]+\.py):(?P<start>\d+)(?:-(?P<end>\d+))?"
+        r"|\bline (?P<line>\d+)\b"
+    )
+    for match in re.finditer(pattern, truth):
+        if match["line"] is not None:
+            assert last_path is not None, truth
+            start = end = int(match["line"])
+            path = last_path
+        else:
+            path = match["path"]
+            if "/" not in path:
+                candidates = {p for p in full_paths if Path(p).name == path}
+                if not candidates:
+                    # The engine names in t18 are beside the package initializer it cites.
+                    packages = {
+                        str(Path(p).parent) for p in full_paths if p.endswith("/__init__.py")
+                    }
+                    assert len(packages) == 1, (truth, path)
+                    candidates = {f"{next(iter(packages))}/{path}"}
+                assert len(candidates) == 1, (truth, path)
+                path = next(iter(candidates))
+            start = int(match["start"])
+            end = int(match["end"] or start)
+            last_path = path
+        if not any(p == path and a <= start <= end <= b for p, a, b in citations):
+            citations.append((path, start, end))
+    return citations
+
+
+@pytest.mark.parametrize("tasks_file", TASK_FILES)
+def test_every_historical_truth_citation_has_a_recorded_mapping(tasks_file):
+    tasks = yaml.safe_load((PILOT / tasks_file).read_bytes())["tasks"]
+    actual = [
+        (task["id"], path, start, end)
+        for task in tasks
+        for path, start, end in _truth_citations(task["truth"])
+    ]
+
+    assert len(tasks) == 24
+    assert actual == [
+        (tid, path, start, end) for tid, path, start, end, _, _ in _HISTORICAL_CITATIONS
+    ]
+
+
+def test_historical_readings_and_table_cannot_agree_on_a_different_unverified_target():
+    mapping = {
+        (tid, _citation(path, start, end)): _citation(path, new_start, new_end)
+        for tid, path, start, end, new_start, new_end in _HISTORICAL_CITATIONS
+    }
+    for run in RUNS:
+        reading = _jsonl(PILOT / "runs" / run / "reading.jsonl")
+        assert len(reading) == 48
+        for row in reading:
+            assert row["source_208bcc08"] == mapping[(row["id"], row["source_6fa69b19"])]
+    table = [
+        match
+        for line in (PILOT / "README.md").read_text().splitlines()
+        if (match := _R5_ROW.fullmatch(line))
+    ]
+    assert len(table) == 24
+    for match in table:
+        assert match[3] == mapping[(match[1], match[2])]
+
+
+def test_readme_historical_counts_are_derived_from_the_verified_blocks():
+    moved = [row for row in _HISTORICAL_CITATIONS if row[2:4] != row[4:6]]
+    lines = sum(end - start + 1 for _, _, start, end, _, _ in _HISTORICAL_CITATIONS)
+    moved_lines = sum(end - start + 1 for _, _, start, end, _, _ in moved)
+    moved_tasks = {row[0] for row in moved}
+    assert (len(_HISTORICAL_CITATIONS), lines, len(moved), len(moved_tasks), moved_lines) == (
+        42,
+        158,
+        12,
+        9,
+        28,
+    )
+    readme = _flat(PILOT / "README.md")
+    assert (
+        f"Of the {len(_HISTORICAL_CITATIONS)} source-line citations in the tasks' `truth` lines "
+        f"({lines} lines in all), {len(moved)} citations in {len(moved_tasks)} tasks "
+        f"({moved_lines} lines)"
+    ) in readme
+    assert _READ_TREE_HEAD in readme
+    assert _R5_CODE_HEAD in readme

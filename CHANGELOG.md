@@ -25,6 +25,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Pilot summaries select reading citations from the recorded source commit and name
+  task or loop subset refusals; pilot documentation records the checked historical
+  source mappings.
+
 - A tool call denied by an agent's security control now reaches the tool post hooks
   registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
   hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for

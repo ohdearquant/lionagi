@@ -184,8 +184,15 @@ line numbers at `208bcc08`. Each citation's lines, taken as one block, are prese
 `208bcc08`, and at one place only: the line numbers moved, the cited code did not. Those counts take
 `t21`'s "line 272" as a citation and not its "line 271", which is inside the `265-271` it cites, and
 read `t18`'s five citations by file name, such as `review.py:516`, as the files beside the
-`lionagi/engines/__init__.py` it cites. These counts, and where each block was found, were taken by
-hand at both commits; the tests do not read either commit, so none checks them.
+`lionagi/engines/__init__.py` it cites. The full commits are
+`6fa69b196f45f65fe63ba640b8acc248e8c7cb5e` (read tree) and
+`208bcc08dbdc512f31c142abf69c256f79a6536a` (the installed code r5 ran). On 2026-10-24, all 42
+source blocks and their unique unchanged targets were compared against the actual code at those
+two commits. The range mappings were transcribed into the fixture in
+[`test_lndl_pilot.py`](../../tests/benchmarks/test_lndl_pilot.py). Those tests check every task
+truth citation, recorded reading target and table target for consistency with the recorded fixture
+and derive the counts above, without re-reading either historical commit. The fixture checks need
+no historical Git objects or network.
 
 | task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |
 |---|---|---|---|---|
@@ -321,9 +328,10 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 
 ## Running it
 
-The runner expects, beside it, `tree/` (a checkout of `6fa69b19`), `venv/` (an environment with
-the lionagi to measure installed, so `venv/bin/li` exists), `home/` (an empty directory: the
-runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so the configuration in the real
+The runner expects, beside it, `tree/` (the source checkout; r2-r5 read `6fa69b19`),
+`venv/` (an environment with the lionagi to measure installed, so `venv/bin/li` exists), and
+`home/` (an empty directory: the runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`,
+so the configuration in the real
 home directory is not read) and `ANTHROPIC_API_KEY` in its environment. `.gitignore` beside the
 runner keeps those three directories, and the prompt, stdout and stderr files the runner writes for
 each leg, out of a commit. Each leg runs in `tree/`, and `li agent` looks for its profile in a
@@ -354,3 +362,18 @@ stopped, or a leg raised, on an error in the runner itself.
 A whole run's `summary.json` holds the runner's own summary (`d4_rule`, by the checks); once each
 answer has been read and the reading written to `runs/<name>/reading.jsonl`,
 `venv/bin/python summarize.py runs/<name>` writes the summary with both rules.
+
+The summarizer recomputes only a whole comparison: the header's `task_count` must equal the task
+file's whole set and its `loops` must contain both `react` and `lndl`, once each. It refuses a
+recorded task subset with a `--only` cause, a loop subset or different loop set with a `--loops`
+cause, and names both when both apply. For example, the runner can record `--loops react`, but the
+summarizer cannot derive a two-loop comparison from it. Explicit `--only` selecting every task and
+`--loops lndl,react` still describe a whole comparison. Missing or malformed header metadata has a
+separate diagnostic; missing rows under a whole-run header remain an incomplete-run coverage
+error. A refusal leaves the runner's existing `summary.json` unchanged.
+
+The header also records the full `read_tree_head`. For each reading, the summarizer selects exactly
+one `source_<hex-prefix>` key matching that head (8-40 lowercase hexadecimal characters) and checks
+its citation against the task's truth. A missing or ambiguous matching key is refused, and a source
+key for another tree cannot substitute for it. This selection follows the recorded tree, including
+runs whose tree differs from the historical pilot's `6fa69b19`.
