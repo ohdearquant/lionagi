@@ -106,8 +106,6 @@ _API_LNDL_GUIDANCE = (
     "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
     "tool result is never the answer."
 )
-# The Anthropic messages endpoint refuses a request that names no output limit.
-_ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 # A profile's `max_input_tokens` for an API leg: a positive integer, "auto" (the model's first
 # price-tier boundary, none for a model priced flat) or "none". Unset reads as "auto".
 _API_INPUT_CAP_WORDS = ("auto", "none")
@@ -1306,9 +1304,9 @@ async def _run_agent(
         if api_launch is not None and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
         if api_launch is not None and chat_model.endpoint.config.provider == "anthropic":
-            chat_model.endpoint.config.kwargs.setdefault(
-                "max_tokens", _ANTHROPIC_DEFAULT_MAX_TOKENS
-            )
+            from lionagi.agent.factory import ANTHROPIC_DEFAULT_MAX_TOKENS
+
+            chat_model.endpoint.config.kwargs.setdefault("max_tokens", ANTHROPIC_DEFAULT_MAX_TOKENS)
         # Two spawn shapes hand the set over in two different places, so the
         # message has to read the one that applies. A plain leg gets only what
         # build_chat_model already put on the request, which is knowable here;

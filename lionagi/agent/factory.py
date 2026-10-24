@@ -32,6 +32,9 @@ from .spec import AgentSpec
 if TYPE_CHECKING:
     from pathlib import Path
 
+# The Anthropic messages endpoint refuses a request that names no output limit.
+ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
+
 __all__ = (
     "create_agent",
     "CREATE_AGENT_BRANCH_ORIGIN_KEY",
@@ -250,6 +253,11 @@ async def create_agent(
             model=model_name,
             **extra,
         )
+        # An agent built here reaches the Anthropic API with whatever limit its caller set;
+        # one that set none was refused with "Invalid payload" (max_tokens required). A
+        # value the caller set is kept.
+        if not chat_model.is_cli and chat_model.endpoint.config.provider == "anthropic":
+            chat_model.endpoint.config.kwargs.setdefault("max_tokens", ANTHROPIC_DEFAULT_MAX_TOKENS)
         # A CLI endpoint takes env as runtime state; an API endpoint has no
         # child and would leave it unread in its config. Ask the endpoint.
         if agent_env and "env" not in getattr(chat_model.endpoint, "_runtime_state", {}):
