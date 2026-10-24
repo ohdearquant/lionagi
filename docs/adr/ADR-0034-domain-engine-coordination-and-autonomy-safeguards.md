@@ -86,8 +86,10 @@ A successfully returned off-contract reply is a negative gate result, not an
 exception: it must not enter the infrastructure-error fail-open path. This
 proposal leaves disabled judging, budget exhaustion, provider/build failures,
 containment refusals, emitter authority and caller-seed admission unchanged.
-Ordinary infrastructure failures still follow D3 and Amendment 1, including the
-existing behavior if an event callback itself raises.
+Ordinary infrastructure failures still follow D3 and Amendment 1. If an event
+callback raises on the gated notice, a typed or untyped refusal enters that
+fail-open path and the item expands unless `contain_account_integrations` is
+set; this existing behavior is tracked in #3744.
 
 The compatibility cost is intentional: weak judges that returned prose or no
 verdict previously allowed expansion; they would now stop that item. Callers can
