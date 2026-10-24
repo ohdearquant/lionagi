@@ -708,7 +708,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
   checked. A schedule whose stored fields cannot launch, such as one with an unknown action kind,
   an invalid playbook name, a `play` playbook named `list`, `check` or `status` (which `li play`
-  runs as its own subcommands), a command outside the allowlist, an `engine` schedule with no engine
+  runs as its own subcommands) or a `play` schedule with no playbook whose `action_extra_args`
+  start with one of them, a command outside the allowlist, an `engine` schedule with no engine
   kind, a `play` schedule whose stored prompt, sent beside its playbook, starts with `-`, or an
   `action_cwd` or `action_project` that no longer resolves to a directory, is refused for that
   reason first, with a refusal naming that reason. A manual trigger's refusal for a root names the
@@ -728,7 +729,11 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   its schedule or as a chained run, the run is recorded, as every such fire's is, and fails
   naming the refusal (or, when `li` itself cannot be resolved, that resolution error), and no
   process starts. The same holds for a `play` schedule whose playbook is named `list`, `check` or
-  `status`: creating or updating one is refused, and a stored one is refused when it fires.
+  `status`, and for one with no playbook whose `action_extra_args` start with one of those words,
+  which the launch passes to `li play` first: creating or updating one is refused (an update is
+  also checked when it sets the extra arguments), a schedule set member or a
+  `li schedule create playbook` naming one is refused when the set is validated or applied, and a
+  stored one is refused when it fires.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read
