@@ -17,7 +17,9 @@ reading the message text.
 
 from __future__ import annotations
 
+import copy
 import logging
+import pickle
 
 import pytest
 
@@ -154,6 +156,27 @@ def test_the_raised_error_says_which_of_the_two_it_was():
     assert str(GateDeniedError(denial)) == "policy: denied by rule: rm *"
     assert "could not evaluate" in str(GateDeniedError(fault))
     assert GateDeniedError(fault).result.errored is True
+
+
+@pytest.mark.parametrize("errored", [False, True], ids=["denial", "fault"])
+@pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, lambda e: pickle.loads(pickle.dumps(e))],
+    ids=["copy", "deepcopy", "pickle"],
+)
+def test_a_copy_of_the_raised_error_keeps_its_result(clone, errored):
+    result = GateResult(
+        False, "policy", "bash", "run", "denied", mutated_args={"cmd": "ls"}, errored=errored
+    )
+    error = GateDeniedError(result)
+    error.seen_by = ["audit"]
+
+    copied = clone(error)
+
+    assert type(copied) is GateDeniedError
+    assert copied.result == result
+    assert str(copied) == str(error)
+    assert copied.seen_by == ["audit"]
 
 
 @pytest.mark.asyncio

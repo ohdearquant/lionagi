@@ -65,6 +65,13 @@ class GateDeniedError(PermissionError):
         super().__init__(f"{prefix}: {result.reason}")
         self.result = result
 
+    def __reduce__(self):
+        # The default replays ``self.args``, the formatted message, into ``__init__``, which takes
+        # the GateResult, so copy.deepcopy and pickle raise. Tool post hooks deepcopy a failed
+        # call's error and are skipped when it cannot be copied, so a denied call reached none of
+        # them. Rebuild from the GateResult and keep any other instance state.
+        return (self.__class__, (self.result,), self.__dict__)
+
 
 def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
     """Adapt a legacy ``(tool_name, action, args) -> dict | None`` pre-hook.

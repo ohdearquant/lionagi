@@ -21,6 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A tool call denied by an agent's security control now reaches the tool post hooks
+  registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
+  hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for
+  every denied call; it now copies and pickles with its GateResult intact.
+
 - Mark GitHub schedules overdue after three settled capped polls with no dispatch or retained batch, while preserving successful-read and authentication health tracking.
 
 ## [0.36.0] - 2026-10-24
