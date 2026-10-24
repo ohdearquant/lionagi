@@ -708,7 +708,9 @@
         "lastOutcome": "{delta}前に{outcome}",
         "neverFiredSince": "{date}以降一度も実行されていません",
         "noEvidenceHint": "実行記録なし"
-      }
+      },
+      "disableReason": "理由",
+      "disableReasonHint": "このスケジュールを停止する理由を入力してください。"
     },
     "run": {
       "elapsed": "{delta}経過",

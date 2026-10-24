@@ -42,9 +42,9 @@ def _get_provider_windows(provider: str) -> dict[str, int] | None:
         return None
 
     try:
-        import importlib
+        from lionagi.ln import import_module
 
-        mod = importlib.import_module(module_path)
+        mod = import_module(module_path)
         windows = getattr(mod, "CONTEXT_WINDOWS", None)
         if isinstance(windows, dict):
             _provider_cache[provider_lower] = windows

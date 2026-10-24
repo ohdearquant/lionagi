@@ -339,11 +339,38 @@ def test_enable_and_disable_report_the_state_that_was_committed(studio):
         "enabled": True,
     }
     assert studio.recorded[-1]["content_type"] == "application/json"
-    assert result_of("schedule.disable", {"id": "sched-1"}) == {
+    assert result_of("schedule.disable", {"id": "sched-1", "reason": "planned maintenance"}) == {
         "schedule_id": "sched-1",
         "enabled": False,
     }
     assert studio.recorded[-1]["content_type"] == "application/json"
+    assert studio.recorded[-1]["body"] == {"reason": "planned maintenance"}
+
+
+def test_disable_without_a_reason_sends_no_body(studio):
+    assert result_of("schedule.disable", {"id": "sched-1"}) == {
+        "schedule_id": "sched-1",
+        "enabled": False,
+    }
+    assert studio.recorded[-1]["method"] == "POST"
+    assert studio.recorded[-1]["body"] is None
+
+
+@pytest.mark.parametrize("reason", ["", " ", "\t\n"])
+def test_disable_rejects_a_blank_reason_before_calling_studio(studio, reason):
+    entry = call("schedule.disable", {"id": "sched-1", "reason": reason})
+
+    assert entry["ok"] is False
+    assert entry["error"]["kind"] == "invalid_input"
+    assert "reason" in entry["error"]["message"]
+    assert "unknown parameter" not in entry["error"]["message"]
+    assert studio.recorded == []
+
+
+def test_disable_verb_admits_reason():
+    from lionagi.mcp import verbs
+
+    assert verbs.VERBS["schedule.disable"].admits == ("id", "reason")
 
 
 def test_delete_reports_the_deletion_the_store_confirmed(studio):

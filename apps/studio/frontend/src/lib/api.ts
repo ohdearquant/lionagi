@@ -2489,9 +2489,11 @@ export async function enableSchedule(id: string): Promise<unknown> {
   });
 }
 
-export async function disableSchedule(id: string): Promise<unknown> {
+export async function disableSchedule(id: string, data: { reason: string }): Promise<unknown> {
   return fetchJson<unknown>(`/api/schedules/${encodeURIComponent(id)}/disable`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
   });
 }
 

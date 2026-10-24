@@ -708,7 +708,9 @@
         "lastOutcome": "lần cuối {outcome} {delta} trước",
         "neverFiredSince": "chưa từng chạy kể từ {date}",
         "noEvidenceHint": "không có lần chạy nào được ghi nhận"
-      }
+      },
+      "disableReason": "Lý do",
+      "disableReasonHint": "Giải thích lý do tạm dừng lịch này."
     },
     "run": {
       "elapsed": "đã qua {delta}",
