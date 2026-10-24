@@ -112,8 +112,8 @@ _ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 # price-tier boundary, none for a model priced flat) or "none". Unset reads as "auto".
 _API_INPUT_CAP_WORDS = ("auto", "none")
 _API_DEFAULT_INPUT_CAP = "auto"
-# How many times one pass of the tool loop folds and continues after the input cap refused a
-# request.
+# How many times one turn (the task, or one queued message) folds and continues after the
+# input cap refused a request.
 _API_FOLD_RESUMES = 2
 _API_FOLD_RESUME_PROMPT = (
     "The host folded part of your context: the next request would have passed the input cap. "

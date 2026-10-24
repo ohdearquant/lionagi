@@ -580,6 +580,43 @@ async def test_a_span_holding_only_the_task_sends_no_summary_request(monkeypatch
     assert fold.records == []
 
 
+@pytest.mark.asyncio
+async def test_a_fold_that_cuts_between_a_call_and_its_result_keeps_the_call_in_view():
+    # Tool calls reach the model only as their results, which carry the call's function and
+    # arguments, so a cut that folds a call and keeps its result loses nothing it reads.
+    from lionagi import Branch
+    from lionagi.agent.context_fold import ContextFold
+    from lionagi.operations.chat._prepare import _prepare_run_kwargs
+    from lionagi.operations.types import ChatParam
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
+
+    branch = Branch(chat_model=_haiku(_CAP))
+    msgs = branch.msgs
+    added = [msgs.create_instruction(instruction="read the three files and report")]
+    for i in range(3):
+        call = {"function": "read_file", "arguments": {"path": f"src/f{i}.py"}}
+        added.append(ActionRequest(content=call))
+        added.append(ActionResponse(content={**call, "output": "line\n" * 50}))
+    added.append(msgs.create_instruction(instruction="continue"))
+    for m in added:
+        msgs.messages.include(m)
+        msgs.progression.include(m.id)
+    request, result = added[5], added[6]
+
+    assert await ContextFold(branch, cap=_CAP)._fold_once("tool_io", 2, "threshold")
+
+    active = list(branch.progression)
+    assert request.id not in active and result.id in active
+    _ins, kw = _prepare_run_kwargs(
+        branch, None, ChatParam.from_branch(branch), ins=added[-1], imodel=branch.chat_model
+    )
+    payload, _headers = branch.chat_model.endpoint.create_payload(request=kw)
+    sent = json.dumps(payload["messages"])
+    assert "src/f2.py" in sent and "read_file" in sent
+    note = next(msgs.messages[u] for u in active if u not in {m.id for m in added})
+    assert "src/f0.py" in str(note.rendered) and "src/f1.py" in str(note.rendered)
+
+
 def test_the_note_clips_long_values_and_keeps_paths_whole():
     from lionagi.agent.context_fold import _short
 

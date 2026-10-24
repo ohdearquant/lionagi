@@ -1194,10 +1194,13 @@ before plus a pointer to the opt-in:
   and no ceiling for any other model; the leg prints the ceiling and its source when it starts. The
   estimate is the `o200k_base` count of the request as built, times the provider's reported input
   per counted token so far (`iModel.input_token_scale`), and a request over the ceiling is refused
-  before it is sent. At 80% of the ceiling the host folds older tool calls and results into a note
+  before it is sent. When its estimate of the next request (the active view compiled with the newest
+  instruction standing in for the one about to be sent) reaches 80% of the ceiling, the host folds
+  older tool calls and results into a note
   that lists them, then, if that is not enough, older reasoning into a summary from one model call,
   down toward 60% (`lionagi/agent/context_fold.py`). A request the ceiling still refuses is folded
-  and the loop continues, at most twice per pass; a refusal the fold cannot clear fails the turn.
+  and the loop continues, at most twice per turn (the task, or one queued message); a refusal the
+  fold cannot clear fails the turn.
   The run's `run.json` records every fold under `context_folds`. Any other value, or
   `max_input_tokens` without `api_tools`, is refused before a run exists.
 

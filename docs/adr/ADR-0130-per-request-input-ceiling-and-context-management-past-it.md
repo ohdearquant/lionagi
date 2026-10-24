@@ -51,7 +51,7 @@ keeps growing its request until the provider refuses it or bills it at the next 
 child with no branch of its own is built from its emitter's branch
 (`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:546`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
+(`lionagi/session/branch.py:587-603`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
@@ -252,7 +252,7 @@ outside `li agent`, and the per-call value.
 
 **D3, amended: the request itself is counted, then scaled by what the provider reported.** The
 estimate is the `o200k_base` token count of the payload's `system`, `instructions`, `messages`,
-`input`, `prompt` and `tools` as JSON text (`estimate_payload_input_tokens`), times the model's
+`input`, `prompt`, `tools` and `response_format` as JSON text (`estimate_payload_input_tokens`), times the model's
 `input_token_scale`. The scale starts at 1.0. After each completed response whose counted input was at
 least 4,000 tokens, it rises to the provider's reported input for that request divided by the count,
 and it never falls. The reported input is `prompt_tokens`, or `input_tokens` plus the cache-read and
@@ -276,7 +276,9 @@ back:
 
 1. `tool_io`: the tool calls and results older than the newest six active messages, then older than
    the newest two, are replaced by one note that lists each call with its function, its arguments (a
-   path-like argument whole up to 1,000 characters, any other clipped to 160) and its output size.
+   path-like argument whole up to 1,000 characters, any other clipped to 160) and its output size;
+   a call whose result stays in view is not listed, since the model reads a call only through its
+   result.
 2. `all`, only if that is not enough: every message older than the same tails, except the first
    message of the view and the task instruction, is replaced by a note that holds a summary written by
    one model call carrying only the folded span, beside the call lists of stage 1 and of earlier notes.
@@ -284,7 +286,8 @@ back:
 
 The task instruction and the first message of the view are never folded, and no other branch is
 changed. If the cap still refuses a request, the loop calibrates the fold by the refused estimate,
-folds at least once more and continues, at most twice per pass of the loop. A refusal the fold cannot
+folds at least once more and continues, at most twice per turn (the task, or one queued message). A
+refusal the fold cannot
 bring under the ceiling fails the turn with the refusal, and the loop never returns an earlier round's
 text as its answer. A request built outside these legs under an `iModel` ceiling is refused as in D4
 step 1 and is not folded. Stage 2 reverses D4's "This record adds no summarizing compaction and the
@@ -303,10 +306,12 @@ also prints one line. Nothing in the signal schema changes.
 **Library changes the landing needed.**
 
 - A branch's curated view no longer freezes: a message added after the view exists joins it. Before
-  this, once a model evicted or compacted, no later message reached the model again. A replacement
-  system message takes the head of the view in place of the one it replaced, which had left the
-  message record and made every later compaction refuse, and a branch restored from its stored form
-  gets its view back as a progression rather than a plain mapping.
+  this, once a model evicted or compacted, no later message reached the model again. When the
+  message manager replaces the system message or clears the messages, the view keeps only messages
+  still in the record, headed by the current system message; before this a replaced system message
+  stayed in the view after it left the record, and every later compaction refused. A branch restored
+  from its stored form gets its view back as a progression rather than a plain mapping, holding only
+  messages its stored record holds.
 - `compact` places its summary note once, where the first collapsed message was.
 - `chat` emits `API_PRE_CALL` before it compiles the request from the active view, so a handler that
   curates the view shapes the request it precedes (ADR-0047 records the scope); `run` still emits it

@@ -74,6 +74,16 @@ def test_the_system_prompt_counts_toward_the_cap():
         )
 
 
+def test_a_response_format_counts_toward_the_estimate():
+    # A structured-output schema goes out with the request and is read as input.
+    messages = [{"role": "user", "content": "hi"}]
+    schema = {"type": "json_schema", "json_schema": {"name": "r", "description": "field " * 500}}
+    without = estimate_payload_input_tokens({"messages": messages})
+    assert estimate_payload_input_tokens({"messages": messages, "response_format": schema}) > (
+        without + 400
+    )
+
+
 def test_special_token_text_is_counted_not_estimated_as_zero():
     call = _haiku(None).create_api_calling(
         messages=[{"role": "user", "content": "<|endoftext|> " * 50}]

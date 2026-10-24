@@ -144,8 +144,8 @@ class APICalling(HookedEvent):
         """Estimated input tokens of the whole request, for max_input_tokens.
 
         Unlike required_tokens this does not depend on the endpoint's requires_tokens. It counts
-        ``system``, ``instructions``, ``messages``, ``input``, ``prompt`` and ``tools`` (an Anthropic
-        payload carries the system prompt outside ``messages``), not ``tool_choice``. Each part is
+        ``system`` (outside ``messages`` in an Anthropic payload), ``instructions``, ``messages``,
+        ``input``, ``prompt``, ``tools`` and ``response_format``, not ``tool_choice``. Each part is
         counted as its JSON text with the o200k_base encoding; the JSON punctuation makes it
         count somewhat high, never low on that account. tiktoken is called directly, with
         special-token text encoded as plain text: TokenCalculator.tokenize answers 0 when
@@ -253,11 +253,8 @@ def estimate_payload_input_tokens(payload: dict[str, Any]) -> int:
 
     import tiktoken
 
-    parts = [
-        payload[key]
-        for key in ("system", "instructions", "messages", "input", "prompt", "tools")
-        if payload.get(key) is not None
-    ]
+    keys = ("system", "instructions", "messages", "input", "prompt", "tools", "response_format")
+    parts = [payload[key] for key in keys if payload.get(key) is not None]
     if not parts:
         return 0
     text = json.dumps(parts, ensure_ascii=False, default=str)
