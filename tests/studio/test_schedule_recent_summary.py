@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from lionagi.state.db import StateDB
 from lionagi.studio.services import schedules
@@ -118,6 +120,7 @@ async def test_recent_reads_limit_index_work_and_fetch_only_displayed_error_payl
             columns = ", ".join(schedules._RUN_SUMMARY_FIELDS)
             connection.execute(
                 f"CREATE TEMP VIEW observed_runs AS SELECT {columns},"
+                " trigger_context, chain_parent_id,"
                 " observe_error(error_detail) AS error_detail FROM schedule_runs"
             )
             observed_query = query.replace("schedule_runs", "observed_runs")
@@ -206,11 +209,18 @@ async def test_recent_slice_order_bound_completeness_and_projection(isolated_db,
         f"run-{index:02}" for index in range(count - 1, max(-1, count - 26), -1)
     ]
     for row in summary["runs"]:
-        assert set(row) == set(schedules._RUN_SUMMARY_FIELDS) | {"error_class"}
+        assert set(row) == set(schedules._RUN_SUMMARY_FIELDS) | {
+            "error_class",
+            "scheduled",
+            "missed_fire_at",
+        }
         assert row["error_class"] == "permission"
+        assert row["scheduled"] is False
+        assert row["missed_fire_at"] is None
         assert row["status"] == "failed"
         assert row["chain_depth"] == int(row["id"].split("-")[1]) % 2
     assert "private" not in str(summary)
+    assert "secret" not in str(summary)
 
 
 @pytest.mark.asyncio
@@ -260,6 +270,41 @@ async def test_100_schedules_use_three_batched_reads_and_no_history_reads(isolat
     assert calls[2][1][0] == calls[1][1][0]
     assert calls[2][2] == 0
     assert all(len(row["recent_runs_summary"]["runs"]) == 1 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_skip_reasons_for_100_schedules_are_read_in_one_snapshot(isolated_db, monkeypatch):
+    async with StateDB() as db:
+        for index in range(100):
+            sid = f"schedule-{index}"
+            await create_schedule(db, sid)
+            await create_run(db, sid, f"run-{index}", status="skipped", error_detail=None)
+
+    opened = []
+    reads = []
+    original = StateDB.read_snapshot
+
+    def read_snapshot(db):
+        opened.append(db)
+        return original(db)
+
+    def record_query(conn, cursor, statement, parameters, context, executemany):
+        if "FROM status_transitions" in statement:
+            reads.append(statement)
+
+    monkeypatch.setattr(StateDB, "read_snapshot", read_snapshot)
+    # The route opens its own StateDB, so the statements are counted on every engine.
+    event.listen(Engine, "before_cursor_execute", record_query)
+    try:
+        rows = await list_rows()
+    finally:
+        event.remove(Engine, "before_cursor_execute", record_query)
+    assert len(rows) == 100
+    assert all(row["recent_runs_summary"]["runs"][0]["status"] == "skipped" for row in rows)
+    # The skip reasons of every listed run come from one snapshot and one statement,
+    # never one per run.
+    assert len(opened) == 1
+    assert len(reads) == 1
 
 
 @pytest.mark.asyncio

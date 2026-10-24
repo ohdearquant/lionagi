@@ -305,6 +305,12 @@ FIELD_CASES: dict[str, tuple[object, object, object]] = {
         ["vendor/lib"],
         lambda s: s.add_dir[0],
     ),
+    # The class is not an argument of its own; the light sandbox's pinned override shows it.
+    "workload": (
+        _TextThatReadsAsSomethingElse("light"),
+        "light",
+        lambda s: "sandbox_workspace_write.network_access=false",
+    ),
 }
 
 # The reduced fields whose plain value cannot be compared the same way for a request built

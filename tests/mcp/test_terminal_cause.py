@@ -75,6 +75,18 @@ class TestWhatTheWriterRecords:
             "status_source": "absent",
         }
 
+    def test_a_provider_error_inside_the_stream_wrapper_is_recorded_as_itself(self, cause_file):
+        """iModel re-raises a stream failure as a ValueError caused by the provider's
+        error; the record names the provider's class, as the run row's reason does."""
+        try:
+            try:
+                raise ProviderQuotaError("out of quota")
+            except ProviderQuotaError as inner:
+                raise ValueError(f"Failed to stream API call: {inner}") from inner
+        except ValueError as wrapped:
+            write_terminal_cause(wrapped)
+        assert read_terminal_cause(cause_file)["class"] == "ProviderQuotaError"
+
     def test_a_plain_exception_is_recorded_as_looked_at_and_not_a_provider_error(self, cause_file):
         """`unknown` and absent are different answers: this one says the cause
         was read and was not one of ours, which tells a caller to stop looking

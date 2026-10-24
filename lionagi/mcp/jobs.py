@@ -37,6 +37,7 @@ from lionagi.ln._proc import (
     start_time_matches,
 )
 from lionagi.ln.concurrency import current_time, sleep
+from lionagi.providers._subagent_admission import refuse_nested_agent
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -1302,6 +1303,10 @@ def submit(
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
+    # Checked in this server, which is alive and inside the tree of whatever started it: the
+    # detached run checks again, but a server that exits first leaves it outside that tree
+    # (ADR-0133 D7).
+    refuse_nested_agent()
 
     exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
     if not isinstance(exclusions, list) or any(

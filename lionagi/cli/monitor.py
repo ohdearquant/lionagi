@@ -1020,6 +1020,42 @@ async def _gather_table_rows(
 # ── Async main routines ───────────────────────────────────────────────────────
 
 
+async def _subagent_status() -> dict[str, Any]:
+    from anyio import to_thread
+
+    from lionagi.providers._subagent_admission import subagent_admission_status
+
+    try:
+        # Off the event loop: the read waits on each pool's admission lock.
+        return await to_thread.run_sync(subagent_admission_status)
+    except OSError as exc:
+        return {"error": type(exc).__name__}
+
+
+def _format_subagent_line(status: dict[str, Any]) -> str | None:
+    """One line of held slots per pool, e.g. ``subagents: all 3/30, heavy 1/6, codex 2/4``:
+    ``all``, then ``heavy``, then the engines by name.
+
+    None when no pool is capped and none holds a slot, so a machine with no caps
+    shows the table it showed before admission existed.
+    """
+    if "error" in status:
+        return _red(f"subagents: slots unreadable ({status['error']})")
+    parts = []
+    pools = status.get("pools", {})
+    for pool in sorted(pools, key=lambda name: ({"all": 0, "heavy": 1}.get(name, 2), name)):
+        entry = pools[pool]
+        cap = entry.get("cap")
+        if "error" in entry:
+            parts.append(_red(f"{pool} unreadable ({entry['error']})"))
+            continue
+        held = entry.get("held", 0)
+        if not cap and not held:
+            continue
+        parts.append(f"{pool} {held}/{cap}" if cap else f"{pool} {held}")
+    return f"subagents: {', '.join(parts)}" if parts else None
+
+
 async def _run_table(
     *,
     since: float | None,
@@ -1030,16 +1066,20 @@ async def _run_table(
         from lionagi.state.db import StateDB, state_db_known_absent
 
         if state_db_known_absent():
-            return _dim("(no state.db — run `li agent` at least once)")
-        async with StateDB() as db:
-            rows = await _gather_table_rows(
-                db, since=since, entity_type=entity_type, project=project
-            )
-        return _format_table(rows)
+            # The slots live outside the store, so they are shown without one.
+            table = _dim("(no state.db — run `li agent` at least once)")
+        else:
+            async with StateDB() as db:
+                rows = await _gather_table_rows(
+                    db, since=since, entity_type=entity_type, project=project
+                )
+            table = _format_table(rows)
     except Exception as exc:  # noqa: BLE001
         # A catch-all around a store open, so the message can be one that names
         # the store. Masked here for the same reason the envelope sinks are.
         return _red(f"error reading state.db: {mask_credentials(str(exc))}")
+    line = _format_subagent_line(await _subagent_status())
+    return f"{table}\n{line}" if line else table
 
 
 async def _run_detail(entity_id: str) -> str:
@@ -1977,12 +2017,14 @@ async def _machine_monitor_data(
             return {
                 "entities": why,
                 "filters": filters,
+                "subagents": await _subagent_status(),
                 "observed_at": time.time(),
             }
         entities = await _gather_entities(db, since=since, entity_type=entity_type, project=project)
     return {
         "entities": _available([_machine_entity(kind, row) for kind, row in entities]),
         "filters": filters,
+        "subagents": await _subagent_status(),
         "observed_at": time.time(),
     }
 

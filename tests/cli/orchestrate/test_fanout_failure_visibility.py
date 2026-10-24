@@ -381,6 +381,40 @@ async def test_synthesis_uses_a_fresh_branch_not_the_planner_branch(
     assert synthesis_branches[0] is not env.orc_branch
 
 
+async def test_the_synthesis_leg_is_named_past_a_worker_holding_its_name(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    env, _, session = _fanout_env(tmp_path)
+    assignments = [TaskAssignment(task="first", assignee="synthesis")]
+    _wire_fanout(
+        monkeypatch,
+        env,
+        assignments,
+        _workers_then_synthesis(session, "integrated result"),
+    )
+    synthesis_nodes: list[tuple[str | None, str]] = []
+    original_add = env.builder.add_operation
+
+    def capture_add(operation, **kwargs):
+        if kwargs.get("instruction") == "integrate these results":
+            synthesis_nodes.append((kwargs.get("node_id"), kwargs["branch"].name))
+        return original_add(operation, **kwargs)
+
+    monkeypatch.setattr(env.builder, "add_operation", capture_add)
+
+    await fanout_module._run_fanout(
+        "codex/model",
+        "work",
+        num_workers=1,
+        with_synthesis=True,
+        synthesis_prompt="integrate these results",
+    )
+
+    # The node's reference id names its queued signal and the branch name its
+    # started and terminal ones; both are the leg's own name, not the worker's.
+    assert synthesis_nodes == [("synthesis-2", "synthesis-2")]
+
+
 async def test_profile_routed_synthesis_label_uses_the_resolved_default_model(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ):

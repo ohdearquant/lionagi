@@ -57,6 +57,7 @@ from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
 from lionagi.providers._provider_errors import classify_provider_error
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -66,6 +67,7 @@ from lionagi.utils import to_dict
 from ._codex_profile import (
     _read_codex_config,
     codex_config_defining_profile,
+    codex_config_setting_default_permissions,
     codex_home_for_env,
     configured_codex_profile,
     is_generated_codex_profile,
@@ -396,15 +398,15 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
 
 def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
     """Whether account-integration containment keeps the override ``key=value``, and the
-    value it keeps: an override under `features.apps` or `features.plugins` is dropped, and
-    those keys leave an inline `features` table, which is dropped when nothing is left.
-
-    Reads the normalized snapshot: ``key`` is plain text and an inline table is a plain
-    ``dict`` whose switch names are plain text, so the name this check compares is the
-    name the table renders. ``what`` names the key in a refusal, so the key itself is
-    never printed.
-    """
+    value it keeps: an override under a top-level `apps` or `plugins` table, or under
+    `features.apps` or `features.plugins`, is dropped, and those keys leave an inline
+    `features` table, which is dropped when nothing is left. Reads the normalized snapshot:
+    ``key`` is plain text and an inline table is a plain ``dict`` whose switch names are
+    plain text, so the name this check compares is the name the table renders. ``what``
+    names the key in a refusal, so the key itself is never printed."""
     path = _override_key_path(key, what)
+    if path[0] in _ACCOUNT_INTEGRATION_FEATURES:
+        return False, value
     if path[0] == "features":
         if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
             return False, value
@@ -726,9 +728,13 @@ class _PlainRequest:
     images: list[str]
     add_dir: list[str]
     env: dict[str, str] | None
+    workload: str
 
     def contains_account_integrations(self) -> bool:
-        return self.contain_account_integrations and not self.account_connectors
+        # A light request is contained whatever it set: its sandbox keeps the network out,
+        # and the account's apps and plugins reach past it.
+        contained = self.contain_account_integrations or self.workload == "light"
+        return contained and not self.account_connectors
 
     def updates(self) -> dict[str, Any]:
         """The snapshot's values for the fields the declarative renderer reads, for the
@@ -841,7 +847,73 @@ def _plain_request(
         images=paths["images"],
         add_dir=paths["add_dir"],
         env=None if env is None else env_as_the_spawn_encodes_it(env),
+        workload=text("workload") or DEFAULT_WORKLOAD,
     )
+
+
+#: The ``-c`` keys a light agent's sandbox is pinned by, and ``default_permissions``, which
+#: names a permissions profile codex applies in place of ``sandbox_mode``, with the
+#: ``permissions`` table that defines those profiles; a caller override of any of them could
+#: widen what the agent may write or reach, so a light request refuses them, and the
+#: ``profile``/``profiles`` keys, since a codex profile can set them too.
+_LIGHT_PINNED_OVERRIDE_ROOTS = (
+    "sandbox_mode",
+    "sandbox_workspace_write",
+    "default_permissions",
+    "permissions",
+)
+
+
+def _refuse_light_escape(plain: _PlainRequest) -> None:
+    """Refuse a ``light`` request whose settings would let it write outside its cwd.
+
+    A light agent runs in codex's ``workspace-write`` sandbox (or ``read-only``),
+    writable only in its own working directory and with no network. Each setting
+    that would undo that is refused rather than dropped, so a caller learns the agent
+    needs to be declared ``heavy`` instead of getting a sandbox it did not ask for.
+    Run at construction and again where the process would start.
+    """
+    if plain.workload != "light":
+        return
+    reasons = []
+    if plain.bypass_approvals:
+        reasons.append("bypass_approvals turns the sandbox off")
+    if plain.sandbox == "danger-full-access":
+        reasons.append("sandbox='danger-full-access' turns the sandbox off")
+    if plain.add_dir:
+        reasons.append("add_dir makes directories outside the working directory writable")
+    if plain.account_connectors:
+        reasons.append("account_connectors turns the account's apps and plugins on")
+    if plain.profile is not None and not is_generated_codex_profile(plain.profile):
+        reasons.append(f"profile={plain.profile!r} can set the sandbox the light workload pins")
+    widening: set[str] = set()
+    for index, key in enumerate(plain.override_keys()):
+        # A key that holds '=' is refused by position where as_cmd_args renders the overrides.
+        if "=" in key:
+            continue
+        unreadable = None
+        try:
+            # Read as codex reads it, so `"sandbox_mode"` or `sandbox_workspace_write . x`
+            # names the same setting as the bare dotted key.
+            path = _override_key_path(key, f"The key of the config override entry {index}")
+        except ValueError as exc:
+            unreadable = str(exc)
+        if unreadable is not None:
+            # Raised after the handler, so the refusal keeps no error as its context.
+            raise CLIInputRefusedError(unreadable)
+        if path[0] in _LIGHT_PINNED_OVERRIDE_ROOTS or path[0] in ("profile", "profiles"):
+            widening.add(".".join(path))
+    if widening:
+        reasons.append(
+            f"config_overrides set {', '.join(sorted(widening))}, which the light sandbox pins"
+        )
+    if reasons:
+        # Not a ValueError, so a refusal at construction is not wrapped with the whole input.
+        raise CLIInputRefusedError(
+            "workload 'light' runs codex in its workspace-write sandbox with no network; "
+            + "; ".join(reasons)
+            + ". Declare the agent's workload 'heavy' instead."
+        )
 
 
 def _refuse_ambiguous_approval(plain: _PlainRequest) -> None:
@@ -1349,7 +1421,9 @@ class CodexCodeRequest(BaseModel):
             "be resolved or does not exist -- is refused too, since containment cannot "
             "be enforced without knowing which configs apply. "
             "Off by default: the request reaches whatever the account and the "
-            "config give it. Lifted by naming `account_connectors`."
+            "config give it. Lifted by naming `account_connectors`. A `light` "
+            "request is contained whether or not this is set, and refuses "
+            "`account_connectors`."
         ),
     )
     account_connectors: list[str] | None = Field(
@@ -1511,6 +1585,19 @@ class CodexCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False, exclude=True)
     cli_display_theme: Literal["light", "dark"] = Field(default="light", exclude=True)
     cli_include_summary: bool = Field(default=False, exclude=True)
+    workload: SubagentWorkload = Field(
+        default=DEFAULT_WORKLOAD,
+        exclude=True,
+        description=(
+            "'light' runs codex in its workspace-write sandbox (writable in its working "
+            "directory and the temporary directories that sandbox keeps writable) with no "
+            "network, with the account's apps and plugins turned off as "
+            "`contain_account_integrations` turns them off, and counts against the total and "
+            "codex agent caps. The MCP servers it is given run outside that sandbox. 'heavy' "
+            "(the default) keeps the configured "
+            "sandbox and also counts against the heavy cap."
+        ),
+    )
 
     # ── validators ────────────────────────────────────────────────
 
@@ -1698,7 +1785,9 @@ class CodexCodeRequest(BaseModel):
         # The refusal runs on the normalized snapshot, and again where the process would
         # start, so a request copied without validation cannot put both an
         # `ask_for_approval` policy and an `approval_policy` override on the line.
-        _refuse_ambiguous_approval(_plain_request(self))
+        plain = _plain_request(self)
+        _refuse_ambiguous_approval(plain)
+        _refuse_light_escape(plain)
         return self
 
     # ── workspace path ────────────────────────────────────────────
@@ -1735,18 +1824,32 @@ class CodexCodeRequest(BaseModel):
         if plain is None:
             plain = _plain_request(self, overrides)
         _refuse_ambiguous_approval(plain)
+        _refuse_light_escape(plain)
+        light = plain.workload == "light"
+        if light:
+            self._refuse_a_config_profile_for_light(plain)
         args: list[str] = ["exec", "--json"]
         cwd = self.cwd()
 
         args.extend(self._build_declarative_args(plain))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
 
-        for git_root in _linked_worktree_git_writable_roots(cwd):
+        # A light agent writes only its working directory, so a linked worktree's git
+        # directory is not made writable for it.
+        for git_root in () if light else _linked_worktree_git_writable_roots(cwd):
             if str(git_root) not in plain.add_dir:
                 args.extend(["--add-dir", str(git_root)])
 
         # Approval & sandbox: mutually exclusive hierarchy
-        if plain.bypass_approvals:
+        if light:
+            # The refusal above has ruled out every setting that turns the sandbox off.
+            if plain.ask_for_approval:
+                rendered = _rendered_override_value(plain.ask_for_approval, "ask_for_approval")
+                args.extend(["-c", f"approval_policy={rendered}"])
+            args.extend(
+                ["--sandbox", "read-only" if plain.sandbox == "read-only" else "workspace-write"]
+            )
+        elif plain.bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         elif plain.full_auto:
             # Codex 0.147.0 removed `--full-auto`, turning the earlier deprecation
@@ -1842,6 +1945,13 @@ class CodexCodeRequest(BaseModel):
                 carried.project_trust, "The project trust decisions"
             )
             args.extend(["-c", f"projects={rendered}"])
+        if light:
+            # Pinned against the user's config, read by codex or carried above, which may
+            # grant extra writable roots or the network to every workspace-write session.
+            # Emitted after every caller override and carried setting, so codex, which keeps
+            # the last `-c` of a key, reads these whatever came before.
+            args.extend(["-c", "sandbox_workspace_write.writable_roots=[]"])
+            args.extend(["-c", "sandbox_workspace_write.network_access=false"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])
@@ -1935,6 +2045,51 @@ class CodexCodeRequest(BaseModel):
                     "with no -p, codex before 0.135 makes it the active profile and applies "
                     "its features after --disable (from 0.135 codex refuses the key itself)"
                 )
+
+    def _refuse_a_config_profile_for_light(self, plain: _PlainRequest) -> None:
+        # A codex profile can set `sandbox_mode` and `sandbox_workspace_write`, and codex
+        # before 0.135 applies the active one over the root config the light pins write to.
+        # A config's `default_permissions` names a permissions profile codex applies in
+        # place of the mode, so a user or project config that sets it is refused as well.
+        # `_refuse_light_escape` has already refused a `-p` lionagi did not generate and every
+        # override that names a profile; what is left is a profile chosen by the configs
+        # codex reads, which only this process's view of the cwd and the child's env reach.
+        # A config that cannot be read is refused too: it cannot be ruled out.
+        refusal = None
+        try:
+            if plain.profile is not None:
+                defined = codex_config_defining_profile(plain.profile, plain.env, self.cwd())
+                if defined is not None:
+                    refusal = (
+                        f"{str(defined)!r} defines a profile named {plain.profile!r}, "
+                        "which codex before 0.135 applies over the light sandbox"
+                    )
+            else:
+                sources = [("the codex config", configured_codex_profile(plain.env))]
+                project = project_codex_profile(self.cwd())
+                if project is not None:
+                    sources.append((f"the project codex config {str(project[0])!r}", project[1]))
+                for where, value in sources:
+                    if value is not None:
+                        refusal = (
+                            f"{where} sets a root profile key, whose profile codex before "
+                            "0.135 makes active over the light sandbox"
+                        )
+                        break
+            if refusal is None:
+                found = codex_config_setting_default_permissions(plain.env, self.cwd())
+                if found is not None:
+                    refusal = (
+                        f"{str(found)!r} sets `default_permissions`, a permissions profile "
+                        "codex applies in place of the light sandbox"
+                    )
+        except (ValueError, OSError) as exc:
+            refusal = str(exc)
+        if refusal is not None:
+            raise CLIInputRefusedError(
+                "workload 'light' runs codex in its workspace-write sandbox with no network; "
+                f"{refusal}. Declare the agent's workload 'heavy' instead."
+            )
 
     def _build_declarative_args(self, plain: _PlainRequest) -> list[str]:
         if not plain.contains_account_integrations():
@@ -2434,6 +2589,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     # way and the renderer another.
     plain = _plain_request(request)
     _refuse_ambiguous_approval(plain)
+    _refuse_light_escape(plain)
     _refuse_oversized_cli_inputs(
         plain.prompt,
         plain.system_prompt,
@@ -2457,6 +2613,8 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             # stdin are the bytes those checks read.
             stdin_data=plain.prompt,
             on_spawn=request.on_spawn,
+            engine="codex",
+            workload=plain.workload,
         )
     ) as stream:
         async for obj in stream:

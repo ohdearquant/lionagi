@@ -278,7 +278,7 @@ class EndpointRegistry:
         name or provider-alias that some registered entry already claimed --
         i.e. whether rejecting it as unrecognized would be wrong regardless
         of which specific endpoint was requested for it."""
-        return provider.strip().lower() in cls._alias_owners
+        return provider.lower() in cls._alias_owners
 
     @classmethod
     def _provider_not_found_error(cls, provider: str) -> ProviderNotFoundError:
@@ -542,6 +542,17 @@ class EndpointRegistry:
                 return
             _import_all_providers()
             cls._loaded = True
+
+    @classmethod
+    def canonical_provider(cls, provider: str) -> str:
+        """The provider a name or provider-alias resolves to when matched
+        ("openai-codex" -> "codex", "claude" -> "claude_code"); a name no entry
+        claims comes back folded the same way. The name is folded as the match
+        folds it, letter case only, so a padded name comes back padded and names
+        no provider, as the match finds none for it."""
+        cls._ensure_loaded()
+        key = provider.lower()
+        return cls._alias_owners.get(key, key)
 
     @classmethod
     def list_providers(cls) -> list[dict[str, Any]]:

@@ -1,0 +1,347 @@
+# The questions and their `truth` lines were written against lionagi commit 6fa69b19, and the runs
+# read a checkout of that commit. The cited line numbers are that commit's, not the current tree's.
+tasks:
+- id: t01
+  class: lookup
+  prompt: What is the value of the MAX_SPEC_PROMPT_CHARS constant in this codebase?
+  accept:
+    all_of:
+    - '262144'
+  truth: lionagi/_spec_limits.py:11 — MAX_SPEC_PROMPT_CHARS = 256 * 1024 = 262144
+  reference_answer: MAX_SPEC_PROMPT_CHARS is 262144 (256 * 1024), defined in lionagi/_spec_limits.py.
+  decoy_answer: MAX_SPEC_PROMPT_CHARS is 131072 (128 * 1024).
+- id: t02
+  class: lookup
+  prompt: What is the __version__ string in lionagi/version.py?
+  accept:
+    all_of:
+    - 0.35.5
+  truth: lionagi/version.py:1 — __version__ = "0.35.5"
+  reference_answer: The version is 0.35.5.
+  decoy_answer: The version is 0.34.5.
+- id: t03
+  class: lookup
+  prompt: What is the default max_tokens value the Anthropic messages endpoint gets when no output limit
+    is named?
+  accept:
+    all_of:
+    - '8192'
+  truth: lionagi/cli/agent.py:89 — _ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
+  reference_answer: The Anthropic default max_tokens is 8192.
+  decoy_answer: The Anthropic default max_tokens is 4096.
+- id: t04
+  class: lookup
+  prompt: What is the default maximum number of extensions (rounds after the first) for an API model's
+    tool loop?
+  accept:
+    all_of:
+    - '10'
+  truth: lionagi/cli/agent.py:87 — _API_DEFAULT_MAX_EXTENSIONS = 10
+  reference_answer: The default max_extensions is 10.
+  decoy_answer: The default max_extensions is 20.
+- id: t05
+  class: lookup
+  prompt: What is the default max_tokens value for the BashTool's timeout field in milliseconds?
+  accept:
+    all_of:
+    - '30000'
+  truth: lionagi/tools/code/bash.py:35 — BashRequest.timeout description says Defaults to 30000 (30 s)
+  reference_answer: The default timeout is 30000 ms (30 s).
+  decoy_answer: The default timeout is 60000 ms (60 s).
+- id: t06
+  class: cross
+  prompt: The BashTool in lionagi/tools/code/bash.py imports a subprocess helper and a regex constant
+    from lionagi/tools/_subprocess.py. What is the maximum output bytes that the subprocess helper captures
+    before truncating, and what is the name of the regex constant used to reject shell control operators?
+  accept:
+    all_of:
+    - 're:\b100[,_ ]?000\b'
+    - _SHELL_CONTROL
+    none_of: []
+  truth: lionagi/tools/_subprocess.py:20 — _MAX_OUTPUT_BYTES = 100_000; lionagi/tools/_subprocess.py:18
+    — _SHELL_CONTROL = re.compile(...); imported by lionagi/tools/code/bash.py:13 — from .._subprocess
+    import _SHELL_CONTROL
+  reference_answer: The subprocess helper captures at most 100000 bytes. The regex constant is _SHELL_CONTROL,
+    defined in lionagi/tools/_subprocess.py and imported by the BashTool.
+  decoy_answer: The subprocess helper captures at most 50000 bytes. The regex constant is _MAX_OUTPUT_BYTES.
+- id: t07
+  class: lookup
+  prompt: What is the cache TTL in seconds for the reader tool's document conversion cache?
+  accept:
+    all_of:
+    - '300'
+  truth: lionagi/tools/file/reader.py:24 — _CACHE_TTL_SECONDS = 300
+  reference_answer: The cache TTL is 300 seconds (5 minutes).
+  decoy_answer: The cache TTL is 600 seconds (10 minutes).
+- id: t08
+  class: cross
+  prompt: The _API_TOOL_SETS dictionary maps the key 'read' to a tuple of three tool names. What are those
+    three tool names, and which module defines the mapping?
+  accept:
+    all_of:
+    - reader
+    - search
+    - context
+  truth: 'lionagi/cli/agent.py:83 — _API_TOOL_SETS = {''read'': (''reader'', ''search'', ''context'')};
+    tools at lionagi/tools/file/reader.py (ReaderTool), lionagi/tools/code/search.py (SearchTool), lionagi/tools/context/context.py
+    (ContextTool)'
+  reference_answer: The 'read' key maps to ('reader', 'search', 'context'), defined in lionagi/cli/agent.py.
+  decoy_answer: The 'read' key maps to ('reader', 'editor', 'bash'), defined in lionagi/cli/agent.py.
+- id: t09
+  class: cross
+  prompt: The PermissionPolicy class has a read_only classmethod. Which three tools does it allow with
+    wildcard patterns, and which two tools does it deny?
+  accept:
+    all_of:
+    - reader
+    - search
+    - context
+    - editor
+    - bash
+  truth: lionagi/agent/permissions.py:83-88 — read_only() allows reader/search/context ['*'], denies editor
+    and bash ['*']
+  reference_answer: read_only allows reader, search, and context; it denies editor and bash.
+  decoy_answer: read_only allows reader, editor, and bash; it denies context.
+- id: t10
+  class: cross
+  prompt: The HookPoint enum in the hooks bus defines a closed vocabulary of lifecycle points. Which points
+    are in the DORMANT_POINTS frozenset, and which points are in the _BLOCKING_POINTS frozenset?
+  accept:
+    all_of:
+    - ARTIFACT_CREATED
+    - TOOL_PRE
+    - USER_PROMPT_SUBMIT
+  truth: lionagi/hooks/bus.py:71 — DORMANT_POINTS = frozenset({HookPoint.ARTIFACT_CREATED}); lionagi/hooks/bus.py:76
+    — _BLOCKING_POINTS = frozenset({HookPoint.TOOL_PRE, HookPoint.USER_PROMPT_SUBMIT})
+  reference_answer: DORMANT_POINTS contains ARTIFACT_CREATED; _BLOCKING_POINTS contains TOOL_PRE and USER_PROMPT_SUBMIT.
+  decoy_answer: DORMANT_POINTS contains TOOL_PRE; _BLOCKING_POINTS contains ARTIFACT_CREATED and SESSION_START.
+- id: t11
+  class: cross
+  prompt: The DEFAULT_CODING_TOOLS tuple lists the coding tools bound by CodingToolkit. How many tools
+    does it list, and does it include 'context'?
+  accept:
+    all_of:
+    - '8'
+    - context
+  truth: lionagi/tools/coding.py:286-294 — DEFAULT_CODING_TOOLS = ('reader', 'editor', 'bash', 'search',
+    'code_check', 'code_nav', 'ast_search', 'context') — 8 items including context
+  reference_answer: 'DEFAULT_CODING_TOOLS lists 8 tools: reader, editor, bash, search, code_check, code_nav,
+    ast_search, context. Yes, it includes context.'
+  decoy_answer: 'DEFAULT_CODING_TOOLS lists 7 tools: reader, editor, bash, search, code_check, code_nav,
+    ast_search. No, it does not include context.'
+- id: t12
+  class: cross
+  prompt: The dispatch outbox has DEFAULT_MAX_ATTEMPTS and NOTIFY_TIMEOUT_SECONDS constants. What are
+    their values, and what is the base backoff in seconds?
+  accept:
+    all_of:
+    - '8'
+    - '10'
+    - '30'
+  truth: lionagi/dispatch/outbox.py:48 — DEFAULT_MAX_ATTEMPTS = 8; outbox.py:49 — NOTIFY_TIMEOUT_SECONDS
+    = 10.0; outbox.py:55 — _BASE_BACKOFF_SECONDS = 30
+  reference_answer: DEFAULT_MAX_ATTEMPTS is 8, NOTIFY_TIMEOUT_SECONDS is 10.0, and the base backoff is
+    30 seconds.
+  decoy_answer: DEFAULT_MAX_ATTEMPTS is 5, NOTIFY_TIMEOUT_SECONDS is 15.0, and the base backoff is 60
+    seconds.
+- id: t13
+  class: enumerate
+  prompt: List all the members of the MessageRole enum from lionagi/protocols/messages/base.py.
+  accept:
+    all_of:
+    - system
+    - user
+    - assistant
+    - unset
+    - action
+  truth: 'lionagi/protocols/messages/base.py:21-28 — class MessageRole: SYSTEM=''system'', USER=''user'',
+    ASSISTANT=''assistant'', UNSET=''unset'', ACTION=''action''; 5 members'
+  reference_answer: 'MessageRole has 5 members: system, user, assistant, unset, action.'
+  decoy_answer: 'MessageRole has 4 members: system, user, assistant, tool.'
+  enumerate_command: git -C tree grep -n 'class MessageRole' lionagi/protocols/messages/base.py; then
+    sed -n '21,28p' lionagi/protocols/messages/base.py
+  enumerate_known_member: system (lionagi/protocols/messages/base.py:24)
+- id: t14
+  class: enumerate
+  prompt: List all the members of the EventStatus enum from lionagi/protocols/generic/event.py.
+  accept:
+    all_of:
+    - pending
+    - processing
+    - completed
+    - failed
+    - skipped
+    - cancelled
+    - aborted
+  truth: 'lionagi/protocols/generic/event.py:30-39 — class EventStatus: PENDING=''pending'', PROCESSING=''processing'',
+    COMPLETED=''completed'', FAILED=''failed'', SKIPPED=''skipped'', CANCELLED=''cancelled'', ABORTED=''aborted'';
+    7 members'
+  reference_answer: 'EventStatus has 7 members: pending, processing, completed, failed, skipped, cancelled,
+    aborted.'
+  decoy_answer: 'EventStatus has 5 members: pending, running, completed, failed, cancelled.'
+  enumerate_command: sed -n '30,40p' lionagi/protocols/generic/event.py
+  enumerate_known_member: pending (lionagi/protocols/generic/event.py:33)
+- id: t15
+  class: enumerate
+  prompt: List all the members of the LoopDirective enum from lionagi/session/control.py.
+  accept:
+    all_of:
+    - continue
+    - cancel
+    - break
+  truth: 'lionagi/session/control.py:13-17 — class LoopDirective: CONTINUE=''continue'', CANCEL=''cancel'',
+    BREAK=''break''; 3 members'
+  reference_answer: 'LoopDirective has 3 members: continue, cancel, break.'
+  decoy_answer: 'LoopDirective has 3 members: continue, stop, break.'
+  enumerate_command: sed -n '13,17p' lionagi/session/control.py
+  enumerate_known_member: continue (lionagi/session/control.py:14)
+- id: t16
+  class: enumerate
+  prompt: List all the effort level strings in the EFFORT_LEVELS frozenset defined in lionagi/service/providers.py.
+  accept:
+    all_of:
+    - none
+    - minimal
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
+    - ultra
+    none_of: []
+  truth: lionagi/service/providers.py:34-43 — EFFORT_LEVELS = frozenset({'none', 'minimal', 'low', 'medium',
+    'high', 'xhigh', 'max', 'ultra'}); 8 levels
+  reference_answer: 'EFFORT_LEVELS has 8 levels: none, minimal, low, medium, high, xhigh, max, ultra.'
+  decoy_answer: 'EFFORT_LEVELS has 7 levels: none, minimal, low, medium, high, max, ultra.'
+  enumerate_command: sed -n '34,43p' lionagi/service/providers.py
+  enumerate_known_member: none (lionagi/service/providers.py:36)
+- id: t17
+  class: enumerate
+  prompt: List all the valid FormStatus lifecycle states defined in lionagi/work/form.py.
+  accept:
+    all_of:
+    - draft
+    - filled
+    - validated
+    - error
+    - submitted
+    - completed
+  truth: lionagi/work/form.py:40 — FormStatus = Literal['draft', 'filled', 'validated', 'error', 'submitted',
+    'completed']; 6 states
+  reference_answer: 'FormStatus has 6 states: draft, filled, validated, error, submitted, completed.'
+  decoy_answer: 'FormStatus has 5 states: draft, filled, validated, submitted, completed.'
+  enumerate_command: sed -n '40p' lionagi/work/form.py
+  enumerate_known_member: draft (lionagi/work/form.py:40)
+- id: t18
+  class: enumerate
+  prompt: List all the built-in engine classes exported from lionagi/engines/__init__.py (the classes
+    that subclass Engine).
+  accept:
+    all_of:
+    - PlanningEngine
+    - ResearchEngine
+    - ReviewEngine
+    - HypothesisEngine
+    - CodingEngine
+  truth: 'lionagi/engines/__init__.py:10-59 — imports 5 Engine subclasses: PlanningEngine (planning.py:132),
+    ResearchEngine (research.py:125), ReviewEngine (review.py:516), HypothesisEngine (hypothesis.py:662),
+    CodingEngine (coding.py:444)'
+  reference_answer: 'There are 5 engine classes: PlanningEngine, ResearchEngine, ReviewEngine, HypothesisEngine,
+    CodingEngine.'
+  decoy_answer: 'There are 4 engine classes: PlanningEngine, ResearchEngine, ReviewEngine, CodingEngine.'
+  enumerate_command: git -C tree grep -n 'class.*Engine(Engine)' lionagi/engines/
+  enumerate_known_member: PlanningEngine (lionagi/engines/planning.py:132)
+- id: t19
+  class: enumerate
+  prompt: List all the DENIED_NAMES that the path safety module protects (the frozenset in lionagi/libs/path_safety.py).
+  accept:
+    all_of:
+    - .env
+    - .netrc
+    - id_rsa
+    - id_ed25519
+    - id_ecdsa
+    - .htpasswd
+  truth: lionagi/libs/path_safety.py:11-13 — DENIED_NAMES = frozenset({'.env', '.netrc', 'id_rsa', 'id_ed25519',
+    'id_ecdsa', '.htpasswd'}); 6 names
+  reference_answer: 'DENIED_NAMES has 6 entries: .env, .netrc, id_rsa, id_ed25519, id_ecdsa, .htpasswd.'
+  decoy_answer: 'DENIED_NAMES has 5 entries: .env, .netrc, id_rsa, id_ed25519, .htpasswd.'
+  enumerate_command: sed -n '12,14p' lionagi/libs/path_safety.py
+  enumerate_known_member: .env (lionagi/libs/path_safety.py:12)
+- id: t20
+  class: trace
+  prompt: When the agent factory encounters tool_spec == 'search' in _register_tools, what class does
+    it import, what argument does it pass to its constructor, and which module defines that class?
+  accept:
+    all_of:
+    - SearchTool
+    - workspace_root
+    - 're:lionagi/tools/code/search\.py|lionagi\.tools\.code\.search\b'
+  truth: lionagi/agent/factory.py:512-519 — imports SearchTool from lionagi.tools.code.search, constructs
+    SearchTool(workspace_root=workspace_root); SearchTool defined at lionagi/tools/code/search.py:193
+  reference_answer: It imports SearchTool from lionagi.tools.code.search, passes workspace_root=<str>
+    to the constructor. SearchTool is defined in lionagi/tools/code/search.py.
+  decoy_answer: It imports ReaderTool from lionagi.tools.file.reader, passes no arguments. ReaderTool
+    is defined in lionagi/tools/file/reader.py.
+- id: t21
+  class: trace
+  prompt: When an API model tool loop runs, _make_api_agent_spec builds an AgentSpec. What does it set
+    spec.coding_tools to, and which function does it call to wire the security guards? Trace the two calls.
+  accept:
+    all_of:
+    - _API_TOOL_SETS
+    - _wire_secure_guards
+  truth: lionagi/cli/agent.py:265-271 — spec.coding_tools = _API_TOOL_SETS[tools] (line 271); _wire_secure_guards(spec,
+    cwd) (line 272); _wire_secure_guards defined at lionagi/agent/spec.py:44
+  reference_answer: It sets spec.coding_tools to _API_TOOL_SETS[tools] and calls _wire_secure_guards(spec,
+    cwd) to wire guard_destructive and guard_paths.
+  decoy_answer: It sets spec.coding_tools to DEFAULT_CODING_TOOLS and calls _register_coding_tools directly.
+- id: t22
+  class: trace
+  prompt: When _wire_secure_guards is called for an AgentSpec, which two hook handlers does it register,
+    and on which tools does it register the path guard? Trace the guard_paths registration.
+  accept:
+    all_of:
+    - guard_destructive
+    - guard_paths
+    - bash
+    - reader
+    - editor
+  truth: lionagi/agent/spec.py:48-56 — imports guard_destructive, guard_paths from lionagi.agent.hooks;
+    spec.security_pre('bash', guard_destructive); path_guard = guard_paths(allowed_paths=[workspace_root]);
+    spec.security_pre('reader', path_guard); spec.security_pre('editor', path_guard)
+  reference_answer: It registers guard_destructive on bash, and guard_paths (with the workspace root)
+    on reader and editor.
+  decoy_answer: It registers guard_paths on bash and guard_destructive on reader.
+- id: t23
+  class: trace
+  prompt: The MCP config module defines JOB_MARKER_ENV_VAR. What is its string value, and which module
+    reads it via the _apply_detached_execution_boundary function to prepend the detached execution boundary
+    text? Trace the constant to its consumer.
+  accept:
+    all_of:
+    - LIONAGI_MCP_JOB_RUN_ID
+    - _apply_detached_execution_boundary
+  truth: lionagi/mcp/config.py:35 — JOB_MARKER_ENV_VAR = 'LIONAGI_MCP_JOB_RUN_ID'; lionagi/cli/agent.py:25
+    — imports JOB_MARKER_ENV_VAR from lionagi.mcp.config; lionagi/cli/agent.py:114-116 — _apply_detached_execution_boundary
+    reads os.environ.get(JOB_MARKER_ENV_VAR)
+  reference_answer: JOB_MARKER_ENV_VAR is 'LIONAGI_MCP_JOB_RUN_ID'. The _apply_detached_execution_boundary
+    function in lionagi/cli/agent.py reads it to decide whether to prepend the detached execution boundary.
+  decoy_answer: JOB_MARKER_ENV_VAR is 'LIONAGI_RUN_ID'. The _seed_injection_stats function reads it.
+- id: t24
+  class: trace
+  prompt: The LIONAGI_HOME path constant is used by the MCP config module. What does it default to when
+    the LIONAGI_HOME env var is not set, and which two path constants does the MCP config module derive
+    from it (RUNS_DIR and JOBS_DIR)? Trace the import.
+  accept:
+    all_of:
+    - .lionagi
+    - 're:RUNS_DIR\W{0,5}=\s*\W{0,3}RUNS_ROOT'
+    - 're:JOBS_DIR\W{0,5}=\s*\W{0,3}LIONAGI_HOME'
+  truth: lionagi/_paths.py:20 — LIONAGI_HOME = Path(os.environ.get('LIONAGI_HOME', Path.home() / '.lionagi'));
+    lionagi/mcp/config.py:16 — imports LIONAGI_HOME, RUNS_ROOT from lionagi._paths; config.py:19 — RUNS_DIR
+    = RUNS_ROOT; config.py:23 — JOBS_DIR = LIONAGI_HOME / 'mcp' / 'jobs'
+  reference_answer: LIONAGI_HOME defaults to ~/.lionagi (Path.home() / '.lionagi'). The MCP config module
+    derives RUNS_DIR (= RUNS_ROOT) and JOBS_DIR (= LIONAGI_HOME / 'mcp' / 'jobs') from it.
+  decoy_answer: LIONAGI_HOME defaults to ~/.lionagi/runs. The MCP config module derives RUNS_DIR from
+    it.

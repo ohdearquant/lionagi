@@ -178,6 +178,8 @@ _DECLARED_RUN_FIELDS = {
     "fired_at",
     "ended_at",
     "error_class",
+    "scheduled",
+    "missed_fire_at",
 }
 # Named one by one rather than left to the allow-list, because each is content-bearing and
 # each was called out by name: trigger_context carries whole external event payloads and
@@ -1000,9 +1002,7 @@ def test_the_single_run_record_serves_no_private_run_column(tmp_path, monkeypatc
 
 
 def test_the_single_run_record_serves_no_trigger_payload(tmp_path, monkeypatch):
-    """trigger_context carries whole external event payloads and no client reads it.
-    Named separately from the sweep because it is the one field this route used to serve
-    that the web client still declared, so dropping it is a client-visible decision."""
+    """Whole external event payloads stay private despite the two derived trigger facts."""
     parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
 
     resp = _make_client().get(f"/api/schedules/runs/{parent_id}")
@@ -1066,3 +1066,52 @@ def test_the_single_run_record_keeps_a_session_reported_summary(tmp_path, monkey
 
     listed = client.get(f"/api/schedules/{schedule_id}/runs")
     assert _RAW_ERROR_SENTINEL not in listed.text, "the list surface still classifies it"
+
+
+@pytest.mark.parametrize(
+    ("fire", "facts"), [("timer", (True, None)), ("missed", (False, 1700000000.125))]
+)
+def test_every_run_route_serves_both_trigger_facts_with_their_values(
+    tmp_path, monkeypatch, fire, facts
+):
+    """The allow-list above only bounds the keys; this requires both, with their values, on
+    every HTTP surface: a timer fire, and a missed-fire skip as the scheduler records it."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    _patch_db(monkeypatch, tmp_path / "state.db")
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        async with StateDB() as db:
+            if fire == "timer":
+                await db.create_schedule_run(
+                    {
+                        "id": "timer-fire",
+                        "schedule_id": schedule_id,
+                        "trigger_context": {"scheduled": True, "fired_at": 1700000000.0},
+                        "action_kind": "agent",
+                        "action_args": {"prompt": "ping"},
+                        "status": "completed",
+                        "fired_at": time.time(),
+                    }
+                )
+                return schedule_id
+            schedule = await db.get_schedule(schedule_id)
+        schedule = {**schedule, "next_fire_at": 1700000000.125, "missed_fire_policy": "skip"}
+        await SchedulerEngine()._record_missed_fire_skip(schedule, now=1700000100.0)
+        return schedule_id
+
+    schedule_id = asyncio.run(seed())
+    client = _make_client()
+    (run_id,) = [r["id"] for r in client.get(f"/api/schedules/{schedule_id}/runs").json()["runs"]]
+    listed = client.get("/api/schedules/", params={"include_recent_runs": "true"}).json()
+    summary = next(s for s in listed["schedules"] if s["id"] == schedule_id)
+    rows = {
+        "run list": client.get(f"/api/schedules/{schedule_id}/runs").json()["runs"][0],
+        "detail": client.get(f"/api/schedules/{schedule_id}").json()["recent_runs"][0],
+        "status": client.get(f"/api/schedules/{schedule_id}/status").json()["latest_run"],
+        "list summary": summary["recent_runs_summary"]["runs"][0],
+        "record": client.get(f"/api/schedules/runs/{run_id}").json(),
+    }
+    for surface, row in rows.items():
+        assert (row.get("scheduled"), row.get("missed_fire_at", "absent")) == facts, surface

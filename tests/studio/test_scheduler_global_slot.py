@@ -207,13 +207,14 @@ async def test_maybe_fire_fires_when_slot_available(monkeypatch):
     assert kwargs["global_slot_claim"] is not None
 
 
-# _tick_github — defers before fetch when no slot; releases on no-events
+# _tick_github — polls on a full cap and holds what it finds; releases on no-events
 
 
 @pytest.mark.asyncio
-async def test_tick_github_defers_before_fetch_when_no_slot(monkeypatch):
+async def test_tick_github_polls_on_a_full_cap_and_holds_the_events_it_finds(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
 
     monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _make_svc()
@@ -221,16 +222,34 @@ async def test_tick_github_defers_before_fetch_when_no_slot(monkeypatch):
     schedule = _minimal_schedule(
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
+    item = GithubPollItem(
+        event={"pr_number": 1},
+        updated_at="2026-07-07T10:00:00Z",
+        dispatchable=True,
+        cursor=_cursor_for("2026-07-07T10:00:00Z", 1),
+    )
+    fire = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, "_fire", fire)
 
     _, holder_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert holder_claim is not None
 
-    with patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock()) as mock_poll:
+    poll = AsyncMock(return_value=GithubPollResult(items=[item], scan_complete=True))
+    with patch("lionagi.studio.scheduler.github.github_poll", new=poll):
         await engine._tick_github(schedule, now=10_000.0)
 
-    mock_poll.assert_not_awaited()
-    svc.update_schedule.assert_not_awaited()
+    poll.assert_awaited_once()
+    fire.assert_not_awaited()
+    batch = engine._github_batches[schedule["id"]]
+    # Due when the poll cycle that found it came due: last_fired_at 0 plus the default cadence.
+    assert batch.due_at == 300
+    assert batch.items == [item]
+    assert batch.slot_claim is None
+    assert engine._global_inflight == 1
+    for call in svc.update_schedule.call_args_list:
+        assert "github_cursor" not in call.kwargs
     svc.create_schedule_run.assert_awaited_once()
+    holder_claim.release()
 
 
 @pytest.mark.asyncio
