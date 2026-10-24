@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
+  as offload controls. For a callable that takes either keyword, prebind its
+  arguments with `functools.partial` and pass that callable to `run_sync`.
+
 ## [0.36.0] - 2026-10-24
 
 `httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
