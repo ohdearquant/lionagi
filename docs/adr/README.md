@@ -294,6 +294,8 @@ its area block.
 - [ADR-0131](ADR-0131-operator-decisions-require-a-launcher-issued-decision-capability.md) —
   Operator decisions require a launcher-issued decision capability (sequential number; see
   Numbering)
+- [ADR-0135](ADR-0135-bounded-opt-in-session-and-run-listing.md) — Bounded opt-in session and
+  run listing; standalone Proposed v2 contract, preserving v1 (sequential number; see Numbering)
 
 ### governance (0086-0089)
 

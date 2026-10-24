@@ -76,17 +76,17 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:79`, `lionagi/service/imodel.py:570`,
-`lionagi/service/connections/api_calling.py:116`). HTTP retry happens inside the
-endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:887`,
-`lionagi/service/connections/endpoint.py:910`). Response JSON returns directly;
+(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:697`,
+`lionagi/service/connections/api_calling.py:187`). HTTP retry happens inside the
+endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
+`lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
-(`lionagi/service/connections/endpoint.py:818`, `lionagi/session/signal.py:346`).
+(`lionagi/service/connections/endpoint.py:826`, `lionagi/session/signal.py:346`).
 Neither a successful outer operation nor its final response accounts for every
 attempt that might have reached the provider.
 
 **P3 — Shared models are not conversation identities.** API Branch clones share
-their models (`lionagi/session/branch.py:533`). Binding a credential on that
+their models (`lionagi/session/branch.py:566`). Binding a credential on that
 shared endpoint would couple independent conversations. Switching accounts per
 call would instead disrupt cache reuse. The Claude API isolates caches by
 workspace, so keys of different organizations never share a cache
@@ -222,8 +222,8 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
-the current eager header path (`lionagi/service/imodel.py:277`,
-`lionagi/service/connections/endpoint.py:484`). For routed calls, explicit
+the current eager header path (`lionagi/service/imodel.py:375`,
+`lionagi/service/connections/endpoint.py:483`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
 redirects are rejected before lookup: the ledger must describe the credential
@@ -252,8 +252,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:702`) and
-`from_dict` reads it back (`lionagi/service/imodel.py:765`). Direct endpoints have
+preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:841`) and
+`from_dict` reads it back (`lionagi/service/imodel.py:924`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 
@@ -470,7 +470,7 @@ Status alone is not proof of a zero bill. Streams merge the initial usage and
 later cumulative usage fields by replacement, not addition, and settle only with
 complete terminal evidence. HTTP usage is intercepted before generic stream
 projection and before yielding to consumers; the current generic projection keeps
-raw events (`lionagi/service/connections/endpoint.py:1135`). No automatic retry after
+raw events (`lionagi/service/connections/endpoint.py:1143`). No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
 from caller cancellation, bounded by the ledger's five-second wait. If commit
 fails or the process dies, the durable ceiling remains. It must never report the
@@ -492,7 +492,7 @@ marks and new error handling. It retains current direct-key and unresolved-name
 semantics, retry/cache behavior, return types and serialization. Tightening
 `EndpointConfig._validate_api_key` globally is explicitly not authorized here.
 Configured routing disallows the endpoint's application response cache initially:
-its current wrapper receives headers (`lionagi/service/connections/endpoint.py:724`),
+its current wrapper receives headers (`lionagi/service/connections/endpoint.py:732`),
 and making that cache account-aware is DEFERRED. Provider prompt caching remains
 supported and is distinct from that application cache.
 

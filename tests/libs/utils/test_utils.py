@@ -251,8 +251,10 @@ class TestImportModule:
 
     @pytest.mark.unit
     def test_import_module_with_module_name(self):
+        import os
+
         result = import_module("os", "path")
-        assert result is not None
+        assert result is os.path
 
     @pytest.mark.unit
     def test_import_module_with_single_import_name(self):
@@ -270,13 +272,15 @@ class TestImportModule:
 
     @pytest.mark.unit
     def test_import_module_invalid_package_raises(self):
-        with pytest.raises(ImportError, match="Failed to import"):
+        with pytest.raises(ModuleNotFoundError) as exc_info:
             import_module("nonexistent_package_xyz")
+        assert exc_info.value.name == "nonexistent_package_xyz"
 
     @pytest.mark.unit
     def test_import_module_invalid_module_raises(self):
-        with pytest.raises(ImportError, match="Failed to import"):
+        with pytest.raises(ModuleNotFoundError) as exc_info:
             import_module("os", "nonexistent_module_xyz")
+        assert exc_info.value.name == "os.nonexistent_module_xyz"
 
 
 class TestIsImportInstalled:

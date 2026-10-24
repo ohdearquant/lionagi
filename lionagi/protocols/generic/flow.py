@@ -104,7 +104,11 @@ class Flow(Element, Generic[E, P]):
 
     @classmethod
     def from_dict(cls, data: dict) -> Flow:
-        """Deserialize from dict; reconstructs Pile fields explicitly (model_validate can't round-trip them)."""
+        """Rebuild nested Piles and canonicalize UUID, string, or Observable IDs.
+
+        Objects exposing ``id`` resolve through it; stringification alone is not
+        an ID. Piles need explicit reconstruction for polymorphic round trips.
+        """
         data = data.copy()
         # Copy the nested metadata dict: data.copy() is shallow, so popping
         # lion_class off the original would mutate the caller's snapshot.
@@ -113,7 +117,7 @@ class Flow(Element, Generic[E, P]):
 
         # Coerce scalar fields that model_construct won't validate
         if "id" in data and not isinstance(data["id"], UUID):
-            data["id"] = UUID(str(data["id"]))
+            data["id"] = ID.get_id(data["id"])
 
         items = cls._coerce_pile(data.pop("items", None)) or Pile()
         progressions = cls._coerce_pile(data.pop("progressions", None)) or Pile()

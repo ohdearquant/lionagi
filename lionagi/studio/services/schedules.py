@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
-from lionagi.ln import short_id
+from lionagi.ln import json_dumps, short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 from lionagi.state.lifecycle import ReasonRecord
 from lionagi.state.reasons import ScheduleDefinitionReasons, ScheduleReasons
@@ -41,11 +41,13 @@ class DisableScheduleRequest(BaseModel):
 
     reason: str | None = Field(default=None, max_length=500)
 
-    @field_validator("reason")
+    # Before the field's own checks, so the length limit applies to the stripped reason, as in
+    # disable_schedule and the CLI.
+    @field_validator("reason", mode="before")
     @classmethod
-    def _reason_must_not_be_blank(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def _reason_must_not_be_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         value = value.strip()
         if not value:
             raise ValueError("reason must not be blank")
@@ -778,7 +780,7 @@ async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     """
     rows = await db.fetch_all(
         _recent_run_keys_sql(db.dialect),
-        (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
+        (json_dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
     )
     rows = await run_view._with_skip_reasons(db, rows)
     grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
@@ -794,7 +796,7 @@ async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     )
     if not invocation_ids:
         return grouped, {}, {}
-    ids = (json.dumps(invocation_ids),)
+    ids = (json_dumps(invocation_ids),)
     id_set = _id_set_predicate(db.dialect)
     # The interpolated text is a placeholder clause for the store's dialect,
     # never a value; the ids themselves are bound.

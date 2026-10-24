@@ -20,11 +20,11 @@ uv run pytest -m unit                       # By marker; see pyproject.toml for 
 uv run pytest -n0 -s tests/path.py          # Debug: no parallelism, show stdout
 uv run pytest --cov=lionagi                 # With coverage
 uv run ruff format . && uv run ruff check --fix .  # Format + autofix lint
-pre-commit run -a                           # All hooks (file sanity, ruff, pyupgrade, markdownlint, etc.)
+uvx pre-commit run -a                       # All hooks (file sanity, ruff, pyupgrade, markdownlint, etc.)
 uv build                                    # Build wheel
 ```
 
-CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14 on `main`/`develop` pushes. Async mode is auto-detected.
+CI tests Python 3.10-3.14 on PRs and `main`/`develop` pushes; only the manual `endpoints` diagnostic selects 3.10 and 3.14. Async mode is auto-detected.
 
 ## Repository Map
 

@@ -2034,3 +2034,29 @@ async def test_create_agent_builds_a_provider_alias_as_its_provider(
     assert captured["codex"]["reasoning_effort"] == (effort or "xhigh")
     assert captured["codex"]["api_key"] == "dummy"
     assert captured["codex"]["repo"] == str(tmp_path)
+
+
+async def test_an_anthropic_api_agent_names_an_output_limit(monkeypatch):
+    """The Anthropic messages request requires `max_tokens`, and an agent built here
+    reached it with none set: every call failed in validate_payload ("Invalid payload")
+    before anything was sent. The payload the agent's endpoint builds validates against
+    the real request model.
+    """
+    from lionagi.providers.anthropic.messages import ANTHROPIC_DEFAULT_MAX_TOKENS
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x" * 20)
+    config = AgentSpec.compose("implementer", model="anthropic/claude-haiku-5-5")
+    branch = await create_agent(config, load_settings=False)
+
+    endpoint = branch.chat_model.endpoint
+    payload = endpoint.create_payload({"messages": [{"role": "user", "content": "hi"}]})
+    assert payload[0]["max_tokens"] == ANTHROPIC_DEFAULT_MAX_TOKENS
+
+
+async def test_a_cli_agent_gets_no_output_limit_default(monkeypatch):
+    """The default is the API endpoint's requirement; a CLI-child endpoint has no such
+    field and must not be handed one."""
+    config = AgentSpec.compose("implementer", model="claude_code/haiku")
+    branch = await create_agent(config, load_settings=False)
+
+    assert "max_tokens" not in branch.chat_model.endpoint.config.kwargs

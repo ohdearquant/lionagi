@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from lionagi._paths import RUNS_ROOT
+from lionagi.ln.concurrency import sleep
 from lionagi.state.db import TERMINAL_STATUSES_BY_ENTITY_TYPE
 from lionagi.state.reasons import VALID_REASON_CODES
 
@@ -212,9 +213,7 @@ async def wait_for_terminal(
                 if on_result is not None:
                     on_result(outcome)
             if pending and not (should_stop is not None and should_stop()):
-                import asyncio
-
-                await asyncio.sleep(interval)
+                await sleep(interval)
 
     return [outcomes[rid] for rid in order if rid in outcomes]
 

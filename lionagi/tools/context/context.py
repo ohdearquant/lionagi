@@ -417,8 +417,10 @@ class ContextTool(LionTool):
                 note = await msgs.a_add_message(
                     assistant_response=f"[CONTEXT COMPACTION] {summary.strip()}"
                 )
-                # place the summary where the first collapsed message was, then
-                # drop the collapsed uids
+                # A new message joins the end of the view; the summary belongs where the
+                # first collapsed message was, then the collapsed uids are dropped.
+                if note.id in cp:
+                    cp.remove(note.id)
                 cp.insert(summary_at, note.id)
                 cp.exclude(collapse)
                 return {

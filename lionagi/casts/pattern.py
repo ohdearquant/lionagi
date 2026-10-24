@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from lionagi.ln import import_module
 from lionagi.ln.types import Enum, ModelConfig, Params
 from lionagi.ln.types._sentinel import _compat_is_sentinel
 from lionagi.protocols._concepts import Composable

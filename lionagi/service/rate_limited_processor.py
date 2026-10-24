@@ -5,10 +5,9 @@ import asyncio
 import logging
 from typing import Any
 
-from anyio import get_cancelled_exc_class
 from typing_extensions import Self, override
 
-from lionagi.ln.concurrency import Lock, sleep
+from lionagi.ln.concurrency import Lock, get_cancelled_exc_class, sleep
 from lionagi.protocols.types import Executor, Processor
 
 from .connections.api_calling import APICalling

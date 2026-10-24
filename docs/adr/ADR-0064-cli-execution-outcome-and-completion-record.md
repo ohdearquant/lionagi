@@ -305,7 +305,7 @@ EXIT_CODE_BY_STATUS = {
   `lionagi/state/lifecycle/policy.py:287-300`), which carries the full schema
   vocabulary including `timed_out`, `waiting_dependency`, and `retry_wait`. `li wait`
   reads the same registry-sourced terminal map, so a `timed_out` schedule run is
-  recognized as terminal (`lionagi/cli/wait.py:180`).
+  recognized as terminal (`lionagi/cli/wait.py:181`).
 
 **Why this way.** A small status vocabulary supports reliable automation, while reason
 codes and evidence retain the cause without proliferating statuses. Denormalizing the
