@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import copy
 import math
 
+from lionagi.ln import copy
 from lionagi.operations._api_hooks import _safe_identifier
 from lionagi.service._api_telemetry import InputDecision
 
@@ -103,7 +103,7 @@ class APIUsageCollector:
             self._guard_calls.add(safe_id)
 
     def snapshot(self) -> dict:
-        return copy.deepcopy(
+        return copy(
             {
                 "schema_version": 1,
                 "run_id": self._run_id,
