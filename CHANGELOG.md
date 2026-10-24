@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
+  as offload controls. For a callable that takes either keyword, prebind its
+  arguments with `functools.partial` and pass that callable to `run_sync`.
+
+## [0.36.0] - 2026-10-24
+
+`httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
+longer takes an API key or a local-network opt-in from that data, and several optional extras
+and dependencies are removed. Schedules, Studio, the MCP server and `li agent` gain new controls
+and records, with a long list of fixes. If you restore saved models or branches, read
+"Upgrading from 0.35.5" first.
+
 ### Upgrading from 0.35.5
 
 A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not
@@ -350,10 +364,6 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   the scheduler unready.
 
 ### Changed
-
-- `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
-  as offload controls. For a callable that takes either keyword, prebind its
-  arguments with `functools.partial` and pass that callable to `run_sync`.
 
 - Lazy type resolution, provider token-window lookup and built-in role/mode loading
   use the shared import helper. Pattern loading preserves original missing-module
