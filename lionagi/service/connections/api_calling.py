@@ -3,19 +3,32 @@
 
 import logging
 import math
-from typing import Any
+from contextvars import ContextVar
+from typing import Any, Literal
 
 from pydantic import Field, PrivateAttr, model_validator
 from typing_extensions import Self
 
 from lionagi._errors import ProviderStreamError
 
+from .._api_telemetry import (
+    InputDecision,
+    RequestFrame,
+    activate_request,
+    capture_request,
+    is_collecting,
+    mark_dispatch,
+)
 from ..hooks.hooked_event import HookedEvent
 from ..token_budget import lookup_context_window
 from ..types.stream_chunk import StreamChunk
 from .endpoint import Endpoint, _call_failure_detail
 
 logger = logging.getLogger(__name__)
+
+_input_chars: ContextVar[tuple[dict, list[int]] | None] = ContextVar(
+    "api_input_chars", default=None
+)
 
 
 __all__ = ("APICalling", "estimate_payload_input_tokens")
@@ -74,6 +87,8 @@ class APICalling(HookedEvent):
 
     _routing_scope: object | None = PrivateAttr(default=None)
     _counted_input_tokens: int | None = PrivateAttr(default=None)
+    _telemetry_initialized: bool = PrivateAttr(default=False)
+    _telemetry_frame: RequestFrame | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _validate_streaming(self) -> Self:
@@ -111,12 +126,30 @@ class APICalling(HookedEvent):
 
         Runs after the validator above, so the estimate covers the payload as it will be sent.
         """
+        observe = not self._telemetry_initialized and is_collecting()
+        self._telemetry_initialized = True
         if self.max_input_tokens is None:
+            if observe:
+                self._capture_input_decision("uncapped", None, None, None, None)
             return self
-        counted = self.input_token_estimate
+        chars: list[int] = []
+        token = _input_chars.set((self.payload, chars)) if observe else None
+        try:
+            counted = self.input_token_estimate
+        finally:
+            if token is not None:
+                _input_chars.reset(token)
         self._counted_input_tokens = counted
         scale = self.input_token_scale
         estimate = math.ceil(counted * scale) if scale > 1.0 else counted
+        if observe:
+            self._capture_input_decision(
+                "refused" if estimate > self.max_input_tokens else "checked",
+                counted,
+                scale,
+                estimate,
+                chars[0] if chars else None,
+            )
         if estimate > self.max_input_tokens:
             from lionagi._errors import InputTokenCapError
 
@@ -138,6 +171,41 @@ class APICalling(HookedEvent):
                 },
             )
         return self
+
+    def _capture_input_decision(
+        self,
+        kind: Literal["checked", "refused", "uncapped"],
+        counted: int | None,
+        scale: float | None,
+        estimate: int | None,
+        prompt_chars: int | None,
+    ) -> None:
+        if prompt_chars is None:
+            try:
+                text = _input_payload_text(self.payload)
+                prompt_chars = len(text) if text is not None else 0
+            except Exception:
+                # An optional measurement can be unavailable without losing the row.
+                prompt_chars = None
+        try:
+            provider = self.endpoint.config.provider
+            model = self.payload.get("model")
+            self._telemetry_frame = capture_request(
+                InputDecision(
+                    kind=kind,
+                    counted=counted,
+                    scale=scale,
+                    estimate=estimate,
+                    cap=self.max_input_tokens,
+                    prompt_chars=prompt_chars,
+                    provider=provider if isinstance(provider, str) else None,
+                    model=model if isinstance(model, str) else None,
+                ),
+                api_call_id=None if kind == "refused" else str(self.id),
+            )
+        except Exception:
+            # Optional uncapped measurement and observation cannot change the request.
+            return
 
     @property
     def input_token_estimate(self) -> int:
@@ -195,14 +263,16 @@ class APICalling(HookedEvent):
         scope_kwargs = (
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )
-        return await self.endpoint.call(
-            request=self.payload,
-            cache_control=self.cache_control,
-            skip_payload_creation=True,
-            extra_headers=self.headers if self.headers else None,
-            **scope_kwargs,
-            **self.call_kwargs,
-        )
+        mark_dispatch(self._telemetry_frame)
+        with activate_request(self._telemetry_frame):
+            return await self.endpoint.call(
+                request=self.payload,
+                cache_control=self.cache_control,
+                skip_payload_creation=True,
+                extra_headers=self.headers if self.headers else None,
+                **scope_kwargs,
+                **self.call_kwargs,
+            )
 
     async def _core_stream(self):
         """Yield the endpoint's chunks; a stream whose provider reported the call failed
@@ -217,15 +287,37 @@ class APICalling(HookedEvent):
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )
         failure: StreamChunk | None = None
-        async for i in self.endpoint.stream(
-            request=self.payload,
-            extra_headers=self.headers if self.headers else None,
-            **scope_kwargs,
-            **self.call_kwargs,
-        ):
-            if failure is None and isinstance(i, StreamChunk) and i.metadata.get("call_failed"):
-                failure = i
-            yield i
+        mark_dispatch(self._telemetry_frame)
+        with activate_request(self._telemetry_frame):
+            source = self.endpoint.stream(
+                request=self.payload,
+                extra_headers=self.headers if self.headers else None,
+                **scope_kwargs,
+                **self.call_kwargs,
+            ).__aiter__()
+        unwinding = False
+        try:
+            while True:
+                with activate_request(self._telemetry_frame):
+                    try:
+                        i = await source.__anext__()
+                    except StopAsyncIteration:
+                        break
+                if failure is None and isinstance(i, StreamChunk) and i.metadata.get("call_failed"):
+                    failure = i
+                # Reset the request context before control returns to consumer code.
+                yield i
+        except BaseException:
+            unwinding = True
+            raise
+        finally:
+            try:
+                if close := getattr(source, "aclose", None):
+                    with activate_request(self._telemetry_frame):
+                        await close()
+            except Exception:
+                if not unwinding:
+                    raise
         if failure is not None:
             raw = failure.metadata.get("raw")
             raise ProviderStreamError(
@@ -242,6 +334,14 @@ class APICalling(HookedEvent):
         }
 
 
+def _input_payload_text(payload: dict[str, Any]) -> str | None:
+    import json
+
+    keys = ("system", "instructions", "messages", "input", "prompt", "tools", "response_format")
+    parts = [payload[key] for key in keys if payload.get(key) is not None]
+    return json.dumps(parts, ensure_ascii=False, default=str) if parts else None
+
+
 def estimate_payload_input_tokens(payload: dict[str, Any]) -> int:
     """The input-token estimate max_input_tokens is checked against, for a provider payload.
 
@@ -249,13 +349,12 @@ def estimate_payload_input_tokens(payload: dict[str, Any]) -> int:
     payload without sending it (a host-side fold deciding whether the next request fits) counts
     the same way.
     """
-    import json
-
     import tiktoken
 
-    keys = ("system", "instructions", "messages", "input", "prompt", "tools", "response_format")
-    parts = [payload[key] for key in keys if payload.get(key) is not None]
-    if not parts:
+    text = _input_payload_text(payload)
+    if measurement := _input_chars.get():
+        if measurement[0] is payload:
+            measurement[1].append(len(text) if text is not None else 0)
+    if text is None:
         return 0
-    text = json.dumps(parts, ensure_ascii=False, default=str)
     return len(tiktoken.get_encoding("o200k_base").encode(text, disallowed_special=()))

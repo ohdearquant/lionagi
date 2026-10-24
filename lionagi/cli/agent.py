@@ -38,10 +38,12 @@ from lionagi.providers._subagent_admission import (
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
+from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
 from ._agent_depth import stamp_agent_depth
+from ._api_usage import APIUsageCollector
 from ._argtypes import BoundedInt
 from ._context_from import (
     DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -1675,6 +1677,13 @@ async def _run_agent(
         "started_at": time.time(),
         "ended_at": None,
     }
+    _api_usage = (
+        APIUsageCollector(run_id=run.run_id, branch_id=branch_id)
+        if api_launch is not None
+        else None
+    )
+    if _api_usage is not None:
+        run_manifest["api_usage"] = _api_usage.snapshot()
     if context_from:
         run_manifest["context_from"] = list(context_from)
     _write_run_manifest = getattr(run, "write_manifest", None)
@@ -1888,16 +1897,24 @@ async def _run_agent(
         # _run_api_turn, so a long leg continues instead of being refused.
         _api_fold = _install_api_input_cap(branch, api_launch["max_input_tokens"])
 
+        _api_turn_index = 0
+
         async def _api_turn(instruction: str, turn_timeout: float | None):
-            return await _run_api_turn(
-                branch,
-                instruction,
-                timeout=turn_timeout,
-                max_extensions=api_launch["max_extensions"],
-                snapshot_dir=str(run.branches_dir),
-                loop=api_launch["loop"],
-                fold=_api_fold,
-            )
+            nonlocal _api_turn_index
+            _api_turn_index += 1
+            try:
+                with collect_api_turn(_api_usage, _api_turn_index):
+                    return await _run_api_turn(
+                        branch,
+                        instruction,
+                        timeout=turn_timeout,
+                        max_extensions=api_launch["max_extensions"],
+                        snapshot_dir=str(run.branches_dir),
+                        loop=api_launch["loop"],
+                        fold=_api_fold,
+                    )
+            finally:
+                run_manifest["api_usage"] = _api_usage.snapshot()
 
     # Passed only when set: an absent key is what lets the run fall back to
     # LIONAGI_WORKER_IDLE_TIMEOUT, and an explicit None would switch the
@@ -1975,6 +1992,10 @@ async def _run_agent(
     finally:
         # See docs/internals/cli.md for why an about-to-auto-resume leg must
         # not stamp a terminal status here (ADR-0035 terminal guard).
+        if _api_usage is not None:
+            run_manifest["api_usage"] = _api_usage.close()
+            if _write_run_manifest is not None:
+                _write_run_manifest(run_manifest)
         will_auto_resume = (
             _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed
         )

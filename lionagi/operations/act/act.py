@@ -12,6 +12,7 @@ from lionagi.ln import AlcallParams
 from lionagi.protocols.action.tool_hooks import ActionGovernanceDeniedError
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.messages import ActionRequest, ActionResponse
+from lionagi.service._api_telemetry import record_guard_refusal
 
 from .._defaults import get_default_action_call as _get_default_call_params
 from ..fields import ActionResponseModel
@@ -51,10 +52,12 @@ async def _act(
     # ADR-0047: governance gate — denied calls surface as tool results (not exceptions) so ReAct loops can adapt.
     from lionagi.session.control import ToolInvocation
 
+    _call_id = str(uuid.uuid4())
     _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
     if not await branch.authorize(
         ToolInvocation(function=_request["function"], arguments=_args, branch_id=str(branch.id))
     ):
+        record_guard_refusal(call_id=_call_id)
         denial = {"error": "denied by governance gate", "function": _request["function"]}
         if not isinstance(action_request, ActionRequest):
             action_request = ActionRequest(content=_request, sender=branch.id, recipient=branch.id)
@@ -70,7 +73,6 @@ async def _act(
 
     _hooks = branch._hooks
     _tool_name = _request["function"]
-    _call_id = str(uuid.uuid4())
     _args_summary = str(_request["arguments"])[:200]
 
     if _hooks is not None:
@@ -118,6 +120,7 @@ async def _act(
             )
 
     except Exception as e:
+        from lionagi.agent.gate import GateDeniedError
         from lionagi.state.compat import refusal_in
 
         # A hook or the call itself can wrap the refusal in a task group, so it is looked up
@@ -128,6 +131,8 @@ async def _act(
             # TOOL_POST handler made: the run stops rather than recording it as a tool error,
             # and the refusal leaves as itself so a caller's check finds it.
             raise refusal  # noqa: B904 -- raised as found, keeping its own cause
+        if isinstance(e, (GateDeniedError, ActionGovernanceDeniedError)):
+            record_guard_refusal(call_id=_call_id)
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
 
