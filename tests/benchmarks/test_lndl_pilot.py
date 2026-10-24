@@ -2463,9 +2463,8 @@ def test_missing_or_malformed_subset_metadata_is_named_separately(
     _summary_refusal_keeps_record(monkeypatch, run_dir, field)
 
 
-# Independently checked unchanged blocks, from the full read-tree commit above to the full
-# installed-code commit above. These fixtures keep the historical facts available in shallow
-# checkouts; the default tests do not fetch or require either historical Git object.
+# Mappings transcribed after comparing all 42 blocks against both historical commits on 2026-10-24.
+# These tests check recorded consistency without re-reading either historical commit.
 # task, path, read-tree start/end, installed-code start/end
 _HISTORICAL_CITATIONS = (
     ("t01", "lionagi/_spec_limits.py", 11, 11, 11, 11),
@@ -2553,7 +2552,7 @@ def _truth_citations(truth):
 
 
 @pytest.mark.parametrize("tasks_file", TASK_FILES)
-def test_every_historical_truth_citation_has_an_independently_verified_mapping(tasks_file):
+def test_every_historical_truth_citation_has_a_recorded_mapping(tasks_file):
     tasks = yaml.safe_load((PILOT / tasks_file).read_bytes())["tasks"]
     actual = [
         (task["id"], path, start, end)

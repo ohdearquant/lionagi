@@ -186,13 +186,13 @@ line numbers at `208bcc08`. Each citation's lines, taken as one block, are prese
 read `t18`'s five citations by file name, such as `review.py:516`, as the files beside the
 `lionagi/engines/__init__.py` it cites. The full commits are
 `6fa69b196f45f65fe63ba640b8acc248e8c7cb5e` (read tree) and
-`208bcc08dbdc512f31c142abf69c256f79a6536a` (the installed code r5 ran). Each source block and its
-unique unchanged target were checked against the actual code at those commits. The 42 range
-mappings are recorded as an independently checked fixture in
-[`test_lndl_pilot.py`](../../tests/benchmarks/test_lndl_pilot.py). Those tests compare every task
-truth citation, recorded reading target and table target against the fixture and derive the counts
-above. The fixture checks need no historical Git objects or network; they retain the checked facts
-rather than re-reading either historical commit on each test run.
+`208bcc08dbdc512f31c142abf69c256f79a6536a` (the installed code r5 ran). On 2026-10-24, all 42
+source blocks and their unique unchanged targets were compared against the actual code at those
+two commits. The range mappings were transcribed into the fixture in
+[`test_lndl_pilot.py`](../../tests/benchmarks/test_lndl_pilot.py). Those tests check every task
+truth citation, recorded reading target and table target for consistency with the recorded fixture
+and derive the counts above, without re-reading either historical commit. The fixture checks need
+no historical Git objects or network.
 
 | task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |
 |---|---|---|---|---|
