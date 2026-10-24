@@ -243,15 +243,15 @@ held batch contains events saved for a later pass because the fire cap
 prevented dispatch. A confirmed launch means that the operating-system process
 was confirmed to exist by its launch callback or by a returned exit code.
 
-A capped poll cannot prove no unfetched merge lies between the cursor and its
-oldest page, so its cursor advance is not counted as progress.
+A capped merged-mode poll releases no events and leaves the cursor unchanged:
+an unfetched merge can precede a merge that was already fetched.
 
 1. Increment the count when a settled fresh poll returns OK with an incomplete
    scan, no confirmed launch and no held batch.
-2. Reset the count when a complete OK poll settles without a held batch or a
-   confirmed launch comes from a fresh OK poll or a still-matching held batch,
-   attempting the latter reset best-effort if interrupted without replacing
-   the original exception or cancellation.
+2. Reset the count when a complete OK poll settles without a held batch.
+   Reset it also for a confirmed launch from a fresh OK poll or a still-matching
+   held batch, best-effort if interrupted and without replacing the original
+   exception or cancellation.
 3. Leave the count unchanged for a fresh error or authentication error before
    applying the other rules, a held batch without a launch, a pass that does
    not poll or launch, or an interrupted pass without a confirmed launch.

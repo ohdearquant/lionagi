@@ -749,16 +749,13 @@ def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None =
     return items
 
 
-def test_github_poll_merged_mode_cap_truncation_defers_unsafe_boundary_items(monkeypatch):
+def test_github_poll_merged_mode_cap_truncation_defers_all_events(monkeypatch):
     """The 5th (cap) page is itself full, links to a 6th page, and hasn't
     reached the cursor -- genuinely more data likely exists beyond it, but
     the cap forbids fetching further. That makes the scan incomplete:
-    github_poll must not return, as dispatchable, any item whose cursor
-    field (merged_at) sits at or after the oldest updated_at actually
-    fetched -- advancing the cursor to that item risks permanently skipping
-    an unfetched, older, still-undispatched merge. An item merged long
-    before the fetched window entirely (safely below that boundary) is
-    unaffected and still returned.
+    no fetched merge is proven safe to release. Even a merge older than
+    the oldest fetched updated_at may be newer than an unfetched merge,
+    so advancing to it could permanently skip that earlier event.
     """
     pages = [
         _closed_page(15, 1000),
@@ -781,8 +778,7 @@ def test_github_poll_merged_mode_cap_truncation_defers_unsafe_boundary_items(mon
     # 5 requests: the cap (_MERGED_MODE_MAX_PAGES) was reached exactly --
     # the 6th page is never fetched.
     assert len(client.requests) == 5
-    assert [i.event["pr_number"] for i in result.items] == [1410]
-    assert result.items[0].dispatchable is True
+    assert result.items == []
 
 
 def test_github_poll_merged_mode_cap_reached_but_final_page_is_safe_terminal(monkeypatch):
@@ -811,11 +807,10 @@ def test_github_poll_merged_mode_cap_reached_but_final_page_is_safe_terminal(mon
     assert result.items[0].dispatchable is True
 
 
-def test_github_poll_merged_mode_pagination_error_defers_unsafe_boundary_items(monkeypatch):
+def test_github_poll_merged_mode_pagination_error_defers_all_events(monkeypatch):
     """A pagination fetch/status error mid-scan is exactly as unsafe as
     hitting the page cap -- the scan stopped without proving there's no
-    unfetched page beyond it, so the same truncation-safety filter applies
-    to whatever was fetched before the failure."""
+    unfetched page beyond it, so none of the fetched events is released."""
     page0 = _closed_page(
         11,
         1400,
@@ -829,8 +824,7 @@ def test_github_poll_merged_mode_pagination_error_defers_unsafe_boundary_items(m
     assert result.scan_complete is False
     # 2 requests: the initial fetch, plus the pagination fetch that raised.
     assert len(client.requests) == 2
-    assert [i.event["pr_number"] for i in result.items] == [1410]
-    assert result.items[0].dispatchable is True
+    assert result.items == []
     # The poll was blind past page 1, so it is not a healthy poll.
     assert result.poll_status == "error"
 
@@ -843,7 +837,7 @@ def test_github_poll_merged_mode_pagination_status_error_is_not_a_healthy_poll(
     monkeypatch, status_code, expected
 ):
     """A page after the first that comes back non-200 leaves the poll blind past it.
-    The events fetched before it still dispatch, and the poll reports the failure so the
+    The fetched events stay unoffered, and the poll reports the failure so the
     engine does not stamp it as a healthy poll."""
     page0 = _closed_page(
         11,
@@ -876,7 +870,7 @@ def test_github_poll_merged_mode_pagination_status_error_is_not_a_healthy_poll(
 
     assert len(client.requests) == 2
     assert result.scan_complete is False
-    assert [i.event["pr_number"] for i in result.items] == [1410]
+    assert result.items == []
     assert result.poll_status == expected
 
 
@@ -1300,13 +1294,11 @@ def test_github_poll_truncated_scan_holding_everything_back_warns(monkeypatch, c
     assert "owner/name" in msg
 
 
-def test_github_poll_truncated_scan_that_still_dispatches_does_not_warn(monkeypatch, caplog):
-    """Holding some events back while returning others is not the stuck shape.
+def test_github_poll_truncated_scan_defers_older_merges_and_warns(monkeypatch, caplog):
+    """An older merged_at does not prove an event is next in merge order.
 
-    The caller advances the cursor past what it got, so the next scan starts
-    higher and the held-back band drains on its own. Warning here too would
-    fire on every truncated poll of a busy repo, and a line that fires
-    constantly stops carrying the one case that matters.
+    Withholding every fetched event leaves the cursor in place, so the
+    warning must cover this shape as well as merges at the fetched boundary.
     """
     caplog.set_level(logging.WARNING, logger=gh_mod.__name__)
     gh_log = logging.getLogger(gh_mod.__name__)
@@ -1316,8 +1308,8 @@ def test_github_poll_truncated_scan_that_still_dispatches_does_not_warn(monkeypa
         _all_merged(_closed_page(10 - i, 1000 + i * 1000))
         for i in range(gh_mod._MERGED_MODE_MAX_PAGES + 1)
     ]
-    # One PR on the first page merged long before the boundary, so it is
-    # provably safe to dispatch while its page-mates are held back.
+    # Even this merge, far older than the fetched updated_at window, could
+    # step past an earlier merge on an unfetched page.
     pages[0][0]["merged_at"] = "2026-02-01T00:00:00Z"
     _install_paginated(monkeypatch, pages)
 
@@ -1330,9 +1322,12 @@ def test_github_poll_truncated_scan_that_still_dispatches_does_not_warn(monkeypa
         }
     )
 
-    assert [i.event["pr_number"] for i in result.items] == [1000]
+    assert result.items == []
     assert result.scan_complete is False
-    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert "owner/name" in warnings[-1]
+    assert "No cursor advances" in warnings[-1]
 
 
 # The oldest updated_at a full ``_closed_page`` carries, restated here because the
@@ -1418,3 +1413,69 @@ def test_merged_mode_keeps_paging_while_the_cursors_own_second_may_hold_more(mon
 
     assert whole_second == []
     assert len(client.requests) == 1
+
+
+_EARLIER_MERGE_CURSOR = gh_mod._cursor_for("2026-07-01T00:00:00Z", 1)
+
+
+def _merged_scan_pages():
+    # Pages 1-5 are fetched under the default cap; page 6 is not.
+    # 1410 merged July 3, then was updated again on July 6 and is fetched.
+    # 1505 merged July 2, with its last update on the unfetched sixth page.
+    return [
+        _closed_page(15, 1000),
+        _closed_page(14, 1100),
+        _closed_page(13, 1200),
+        _closed_page(12, 1300),
+        _closed_page(11, 1400, merges={10: "2026-07-03T00:00:00Z"}),
+        _closed_page(10, 1500, merges={5: "2026-07-02T00:00:00Z"}),
+    ]
+
+
+def _merged_poll_schedule(cursor):
+    return {
+        "id": "s1",
+        "github_repo": "owner/name",
+        "github_filter": {"event": "pr_merged"},
+        "github_cursor": cursor,
+    }
+
+
+def test_control_the_earlier_merge_is_an_event_past_the_old_cursor(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_MERGED_MODE_MAX_PAGES", 10)
+    _install_paginated(monkeypatch, _merged_scan_pages())
+    result = _poll_result(_merged_poll_schedule(_EARLIER_MERGE_CURSOR))
+    assert result.scan_complete is True
+    assert [i.event["pr_number"] for i in result.items] == [1505, 1410]
+
+
+def test_capped_scan_keeps_the_cursor_until_a_complete_scan_recovers_all_merges(monkeypatch):
+    schedule = _merged_poll_schedule(_EARLIER_MERGE_CURSOR)
+    client = _install_paginated(monkeypatch, _merged_scan_pages())
+    first = _poll_result(schedule)
+    assert first.scan_complete is False
+    assert len(client.requests) == gh_mod._MERGED_MODE_MAX_PAGES
+    assert first.items == []
+    assert schedule["github_cursor"] == _EARLIER_MERGE_CURSOR
+
+    # Once a complete scan reaches page 6, both merges remain past the cursor.
+    monkeypatch.setattr(gh_mod, "_MERGED_MODE_MAX_PAGES", 10)
+    _install_paginated(monkeypatch, _merged_scan_pages())
+    later = _poll_result(schedule)
+    assert later.scan_complete is True
+    assert [i.event["pr_number"] for i in later.items] == [1505, 1410]
+    assert schedule["github_cursor"] == _EARLIER_MERGE_CURSOR
+
+
+def test_each_truncated_scan_defers_the_old_prefix_without_advancing_cursor(monkeypatch):
+    schedule = _merged_poll_schedule(_EARLIER_MERGE_CURSOR)
+    for _ in range(3):
+        # Re-offer the older-than-window merge on every capped poll, including
+        # the first; an unfetched earlier merge makes it unsafe every time.
+        client = _install_paginated(monkeypatch, _merged_scan_pages())
+        result = _poll_result(schedule)
+        assert result.scan_complete is False
+        assert result.poll_status == "ok"
+        assert len(client.requests) == gh_mod._MERGED_MODE_MAX_PAGES
+        assert result.items == []
+        assert schedule["github_cursor"] == _EARLIER_MERGE_CURSOR

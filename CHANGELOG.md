@@ -21,6 +21,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Defer every merged pull request from an incomplete GitHub poll until a complete
+  scan establishes merge order, preventing the cursor from skipping older merges. (#3741)
+
 - A tool call denied by an agent's security control now reaches the tool post hooks
   registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
   hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for

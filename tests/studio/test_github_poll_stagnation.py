@@ -233,7 +233,8 @@ async def test_complete_empty_poll_resets_without_dispatch(stores, client, statu
 async def test_filtered_cursor_progress_is_not_dispatch(stores, client, operator_advanced):
     db, _, reader = stores
     schedule = await _schedule(db, github_filter={"event": "pr_merged", "draft": False})
-    client.response = _Response([_pr(1, draft=True), _pr(2, safe=False)], more=True)
+    # A complete scan can advance past a filtered event without launching it.
+    client.response = _Response([_pr(1, draft=True)])
     newer = "2026-10-25T00:00:00Z"
     if operator_advanced:
 
@@ -243,7 +244,7 @@ async def test_filtered_cursor_progress_is_not_dispatch(stores, client, operator
         client.before_get = advance
     await SchedulerEngine(svc=_Service(db))._tick_github(schedule, _NOW)
     row = await _row(reader)
-    assert row[_COUNTER] == 3
+    assert row[_COUNTER] == 0
     if operator_advanced:
         assert row["github_cursor"] == newer
     else:
@@ -252,7 +253,7 @@ async def test_filtered_cursor_progress_is_not_dispatch(stores, client, operator
 
 
 @pytest.mark.asyncio
-async def test_capped_filtered_cursor_advance_still_counts_as_stagnation(
+async def test_capped_filtered_scan_preserves_cursor_and_counts_as_stagnation(
     stores, client, process, monkeypatch
 ):
     db, _, reader = stores
@@ -283,14 +284,13 @@ async def test_capped_filtered_cursor_advance_still_counts_as_stagnation(
     result = poll_results[0]
     assert result.poll_status == "ok"
     assert result.scan_complete is False
-    assert [item.event["pr_number"] for item in result.items] == [1]
-    assert all(not item.dispatchable for item in result.items)
+    assert result.items == []
     row = await _row(reader)
-    assert row["github_cursor"] == github_module._cursor_for("2026-10-24T10:05:00Z", 1)
-    assert row["github_cursor"] > initial_cursor
+    assert row["github_cursor"] == initial_cursor
     assert row[_COUNTER] == 3
     assert row["last_healthy_poll_at"] == _NOW
     assert await reader.list_schedule_runs("poll") == []
+    assert "poll" not in engine._github_batches
     assert engine._global_inflight == 0
     assert client.calls == 1
     assert compute_schedule_health(row, {}, now=_NOW)["health_state"] == "overdue"
@@ -312,21 +312,35 @@ async def test_held_and_reheld_batch_are_neutral_then_no_poll_launch_resets(
     assert allowed
     try:
         await engine._tick_github(await _row(db), _NOW)
-        assert (await _row(reader))[_COUNTER] == 2
-        assert "poll" in engine._github_batches
-        # Admission of a held batch at a full cap does not start a pass or poll.
-        await engine._admit_github_tick(await _row(db), _NOW + 2)
-        assert not engine._github_tick_tasks
-        assert (await _row(reader))[_COUNTER] == 2
-        # A due pass that re-holds the matched batch also leaves accounting alone.
-        await engine._tick_github(await _row(db), _NOW + 4)
-        assert (await _row(reader))[_COUNTER] == 2
-        assert client.calls == 1
+        if capped:
+            # An incomplete poll has no fire items to put in a scheduler batch.
+            assert (await _row(reader))[_COUNTER] == 3
+            assert "poll" not in engine._github_batches
+            assert await reader.list_schedule_runs("poll") == []
+            assert engine._global_inflight == 1
+            assert client.calls == 1
+        else:
+            assert (await _row(reader))[_COUNTER] == 2
+            assert "poll" in engine._github_batches
+            # Admission of a held batch at a full cap does not start a pass or poll.
+            await engine._admit_github_tick(await _row(db), _NOW + 2)
+            assert not engine._github_tick_tasks
+            assert (await _row(reader))[_COUNTER] == 2
+            # A due pass that re-holds the matched batch also leaves accounting alone.
+            await engine._tick_github(await _row(db), _NOW + 4)
+            assert (await _row(reader))[_COUNTER] == 2
+            assert client.calls == 1
     finally:
         holder.release()
     await engine._tick_github(await _row(db), _NOW + 6)
-    assert (await _row(reader))[_COUNTER] == 0
-    assert client.calls == 1
+    if capped:
+        assert (await _row(reader))[_COUNTER] == 4
+        assert "poll" not in engine._github_batches
+        assert await reader.list_schedule_runs("poll") == []
+        assert client.calls == 2
+    else:
+        assert (await _row(reader))[_COUNTER] == 0
+        assert client.calls == 1
     assert engine._global_inflight == 0
 
 
@@ -353,9 +367,9 @@ async def test_stale_batch_uses_actual_fresh_complete_poll(stores, client, proce
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [401, 503])
-@pytest.mark.parametrize("held", [False, True])
-async def test_fresh_pagination_error_precedes_safe_prefix_launch_or_hold(
-    stores, client, process, monkeypatch, status, held
+@pytest.mark.parametrize("capacity_occupied", [False, True])
+async def test_fresh_pagination_error_releases_no_events_or_held_batch(
+    stores, client, process, monkeypatch, status, capacity_occupied
 ):
     import lionagi.studio.config as config
 
@@ -366,9 +380,18 @@ async def test_fresh_pagination_error_precedes_safe_prefix_launch_or_hold(
         _Response([_pr(1), _pr(2, safe=False)], more=True),
         _Response(status=status),
     ]
+    poll_results = []
+    github_poll = github_module.github_poll
+
+    async def observe_poll(schedule):
+        result = await github_poll(schedule)
+        poll_results.append(result)
+        return result
+
+    monkeypatch.setattr(github_module, "github_poll", observe_poll)
     engine = SchedulerEngine(svc=_Service(db))
     holder = None
-    if held:
+    if capacity_occupied:
         monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
         _, holder = await engine._reserve_global_slot("other", path="scheduled")
     try:
@@ -376,13 +399,20 @@ async def test_fresh_pagination_error_precedes_safe_prefix_launch_or_hold(
     finally:
         if holder is not None:
             holder.release()
+    assert len(poll_results) == 1
+    result = poll_results[0]
+    assert result.items == []
+    assert result.scan_complete is False
+    assert result.poll_status == ("auth_error" if status == 401 else "error")
     row = await _row(reader)
     assert row[_COUNTER] == 2
     assert row["last_healthy_poll_at"] is None
     assert row["poller_consecutive_401"] == (1 if status == 401 else 0)
-    runs = await db.list_schedule_runs("poll")
-    assert any(run["dispatched_at"] is not None for run in runs) is not held
-    assert ("poll" in engine._github_batches) is held
+    assert row["github_cursor"] is None
+    assert await db.list_schedule_runs("poll") == []
+    assert "poll" not in engine._github_batches
+    assert engine._global_inflight == 0
+    assert client.calls == 2
 
 
 @pytest.mark.asyncio
@@ -426,9 +456,12 @@ async def test_interrupted_poll_without_launch_is_neutral(stores, client, failur
 
 @pytest.mark.asyncio
 async def test_committed_but_unlaunched_true_is_not_progress(stores, client, process, monkeypatch):
+    import lionagi.studio.config as config
+
     db, _, reader = stores
-    schedule = await _schedule(db)
-    client.response = _Response([_pr(1), _pr(2, safe=False)], more=True)
+    await _schedule(db)
+    client.response = _Response([_pr(1)])
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
     svc = _Service(db)
     update_status = svc.update_status
 
@@ -448,12 +481,44 @@ async def test_committed_but_unlaunched_true_is_not_progress(stores, client, pro
         return outcome
 
     monkeypatch.setattr(engine, "_fire", observe_fire)
-    await engine._tick_github(schedule, _NOW)
+    allowed, holder = await engine._reserve_global_slot("other", path="scheduled")
+    assert allowed
+    try:
+        await engine._tick_github(await _row(db), _NOW)
+        assert engine._github_batches["poll"].matches(await _row(reader))
+        assert (await _row(reader))[_COUNTER] == 2
+        assert outcomes == []
+        held_rows = await db.list_schedule_runs("poll")
+        held_rows_by_id = {
+            run["id"]: (run["status"], run["status_reason_code"], run["dispatched_at"])
+            for run in held_rows
+        }
+        assert len(held_rows_by_id) == 1
+        assert set(held_rows_by_id.values()) == {("skipped", "schedule.deferred.capacity", None)}
+    finally:
+        holder.release()
+    # Consume the real matching batch without a fresh complete-poll reset.
+    await engine._tick_github(await _row(db), _NOW + 2)
     assert outcomes == [True]
-    assert (await _row(reader))[_COUNTER] == 3
+    assert (await _row(reader))[_COUNTER] == 2
     runs = await db.list_schedule_runs("poll")
-    assert len(runs) == 1
-    assert runs[0]["dispatched_at"] is None
+    assert len(runs) == len(held_rows_by_id) + 1
+    assert {
+        run["id"]: (run["status"], run["status_reason_code"], run["dispatched_at"])
+        for run in runs
+        if run["id"] in held_rows_by_id
+    } == held_rows_by_id
+    new_runs = [run for run in runs if run["id"] not in held_rows_by_id]
+    assert len(new_runs) == 1
+    run = new_runs[0]
+    assert run["invocation_id"] is not None
+    assert run["trigger_context"]["github_events"][0]["pr_number"] == 1
+    assert run["status"] == "running"
+    assert run["dispatched_at"] is None
+    assert run["exit_code"] is None
+    assert "poll" not in engine._github_batches
+    assert engine._global_inflight == 0
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio
@@ -463,7 +528,7 @@ async def test_cross_task_launch_before_dispatch_stamp_survives_cancellation(
 ):
     db, _, reader = stores
     await _schedule(db)
-    client.response = _Response([_pr(1), _pr(2, safe=False)], more=True)
+    client.response = _Response([_pr(1)])
     process.release.clear()
     svc = _Service(db)
     if accounting_fails:
@@ -509,7 +574,7 @@ async def test_post_launch_accounting_failure_preserves_original_interruption(
 ):
     db, _, reader = stores
     schedule = await _schedule(db)
-    client.response = _Response([_pr(1), _pr(2, safe=False)], more=True)
+    client.response = _Response([_pr(1)])
     svc = _Service(db)
     update = svc.update_schedule
     failure = failure_type("cursor write interrupted")
@@ -613,15 +678,116 @@ async def test_initial_http_errors_leave_both_observers_unchanged(stores, client
 
 @pytest.mark.asyncio
 async def test_confirmed_exit_resets_even_without_launch_callback(stores, client, monkeypatch):
+    import lionagi.studio.config as config
+
     db, _, reader = stores
-    schedule = await _schedule(db)
-    client.response = _Response([_pr(1), _pr(2, safe=False)], more=True)
+    await _schedule(db)
+    client.response = _Response([_pr(1)])
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
     monkeypatch.setattr(subprocess_module, "build_argv", lambda *a, **k: (["test-child"], None))
     monkeypatch.setattr(subprocess_module, "resolve_li_executable", lambda: (["li"], None))
+    launch_callbacks = []
 
     async def confirmed_exit(*args, **kwargs):
+        launch_callbacks.append(kwargs["on_launched"])
         return 0, ""
 
     monkeypatch.setattr(subprocess_module, "spawn_and_wait", confirmed_exit)
-    await SchedulerEngine(svc=_Service(db))._tick_github(schedule, _NOW)
+    engine = SchedulerEngine(svc=_Service(db))
+    allowed, holder = await engine._reserve_global_slot("other", path="scheduled")
+    assert allowed
+    try:
+        await engine._tick_github(await _row(db), _NOW)
+        assert engine._github_batches["poll"].matches(await _row(reader))
+        assert (await _row(reader))[_COUNTER] == 2
+        assert launch_callbacks == []
+        held_rows = await db.list_schedule_runs("poll")
+        held_rows_by_id = {
+            run["id"]: (run["status"], run["status_reason_code"], run["dispatched_at"])
+            for run in held_rows
+        }
+        assert len(held_rows_by_id) == 1
+        assert set(held_rows_by_id.values()) == {("skipped", "schedule.deferred.capacity", None)}
+    finally:
+        holder.release()
+    # The callback is passed but never invoked; only the returned exit confirms launch.
+    await engine._tick_github(await _row(db), _NOW + 2)
+    assert len(launch_callbacks) == 1
+    assert callable(launch_callbacks[0])
     assert (await _row(reader))[_COUNTER] == 0
+    runs = await db.list_schedule_runs("poll")
+    assert len(runs) == len(held_rows_by_id) + 1
+    assert {
+        run["id"]: (run["status"], run["status_reason_code"], run["dispatched_at"])
+        for run in runs
+        if run["id"] in held_rows_by_id
+    } == held_rows_by_id
+    new_runs = [run for run in runs if run["id"] not in held_rows_by_id]
+    assert len(new_runs) == 1
+    run = new_runs[0]
+    assert run["invocation_id"] is not None
+    assert run["trigger_context"]["github_events"][0]["pr_number"] == 1
+    assert run["status"] == "completed"
+    assert run["status_reason_code"] == "run.completed.ok"
+    assert run["exit_code"] == 0
+    # The exit confirms launch even though the unused callback never stamps the row.
+    assert run["dispatched_at"] is None
+    assert "poll" not in engine._github_batches
+    assert engine._global_inflight == 0
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_truncated_polls_never_release_an_older_merge_and_become_overdue(
+    stores, client, process, monkeypatch
+):
+    db, _, reader = stores
+    initial_cursor = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
+    await _schedule(
+        db,
+        streak=0,
+        github_repo="owner/truncated-release-regression",
+        github_cursor=initial_cursor,
+    )
+    # PR 1 merges below the oldest fetched updated_at; the old split releases it.
+    client.response = _Response([_pr(1, safe=True), _pr(2, safe=False)], more=True)
+    poll_results = []
+    github_poll = github_module.github_poll
+
+    async def observe_poll(schedule):
+        result = await github_poll(schedule)
+        poll_results.append(result)
+        return result
+
+    monkeypatch.setattr(github_module, "github_poll", observe_poll)
+    engine = SchedulerEngine(svc=_Service(db))
+    observations = []
+    for attempt in range(1, 4):
+        now = _NOW + attempt * 2
+        await engine._tick_github(await _row(db), now)
+        row = await _row(reader)
+        observations.append(
+            (
+                row,
+                await reader.list_schedule_runs("poll"),
+                "poll" in engine._github_batches,
+                engine._global_inflight,
+                compute_schedule_health(row, {}, now=now)["health_state"],
+            )
+        )
+
+    assert len(poll_results) == 3
+    assert client.calls == 3
+    for attempt, (result, observed) in enumerate(zip(poll_results, observations), start=1):
+        row, runs, held, inflight, health = observed
+        assert result.items == []
+        assert result.scan_complete is False
+        assert result.poll_status == "ok"
+        assert row["github_cursor"] == initial_cursor
+        assert row[_COUNTER] == attempt
+        assert row["last_healthy_poll_at"] == _NOW + attempt * 2
+        assert row["poller_consecutive_401"] == 0
+        assert runs == []
+        assert held is False
+        assert inflight == 0
+        assert health == ("overdue" if attempt == 3 else "healthy")
