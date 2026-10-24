@@ -576,19 +576,19 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
     )
     _in_span(
         _BRANCH,
-        248,
-        254,
+        250,
+        256,
         "agent-managed subset",
         'cp = self.metadata.get("current_progression")',
     )
 
 
 def test_compaction_path_replaces_a_span_with_one_summary() -> None:
-    _in_span(_CONTEXT, 353, 430, 'if action == "compact":')
+    _in_span(_CONTEXT, 353, 432, 'if action == "compact":')
     _in_span(
         _CONTEXT,
         417,
-        423,
+        425,
         "[CONTEXT COMPACTION]",
         "cp.insert(summary_at, note.id)",
         "cp.exclude(collapse)",
@@ -688,7 +688,7 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
         304,
         "current.with_updates(prompt_context=extended_ctx)",
     )
-    _in_span("lionagi/operations/chat/chat.py", 62, 62, "_prepare_run_kwargs(")
+    _in_span("lionagi/operations/chat/chat.py", 66, 66, "_prepare_run_kwargs(")
     _in_span("lionagi/operations/run/run.py", 466, 466, "_prepare_run_kwargs(")
     _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
 
@@ -706,7 +706,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"blocks_injected": 0,',
         '"writeback_failed": 0,',
     )
-    _in_span(_BRANCH, 291, 303, "def last_context_report(self):", "``skipped``")
+    _in_span(_BRANCH, 293, 305, "def last_context_report(self):", "``skipped``")
     _in_span("lionagi/cli/monitor.py", 668, 679, '"blocks_injected",')
 
 

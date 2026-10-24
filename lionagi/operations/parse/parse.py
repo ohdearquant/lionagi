@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
+from lionagi._errors import InputTokenCapError
 from lionagi.ln import (
     AlcallParams,
     extract_json,
@@ -243,6 +244,10 @@ async def parse(
     try:
         result = await _call([0], _inner_parse)
     except get_cancelled_exc_class():
+        raise
+    except InputTokenCapError:
+        # The repair request was refused by max_input_tokens before it was sent; that is no
+        # parse failure, and an unparsed fallback would let the caller go on as if it were.
         raise
     except Exception as e:
         from lionagi.state.compat import refusal_in

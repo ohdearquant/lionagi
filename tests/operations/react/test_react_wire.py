@@ -12,10 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
 import pytest
-import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi._errors import ExecutionError
 from lionagi.hooks.bus import HookBus, HookPoint
@@ -32,6 +30,7 @@ from lionagi.operations.types import ChatParam
 from lionagi.protocols.action.tool import Tool
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.messages import AssistantResponse, Instruction
+from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 
@@ -64,28 +63,23 @@ def _completion(content: dict) -> dict:
     }
 
 
-@pytest_asyncio.fixture
-async def chat_server():
-    servers = []
-
+@pytest.fixture
+def chat_server(monkeypatch):
     async def _run(replies: list[dict]) -> tuple[str, list[dict]]:
         received: list[dict] = []
 
-        async def handler(request: web.Request):
-            received.append(await request.json())
-            return web.json_response(replies[len(received) - 1])
+        def handler(request: httpx.Request):
+            received.append(json.loads(request.content))
+            return httpx.Response(200, json=replies[len(received) - 1], request=request)
 
-        app = web.Application()
-        app.router.add_route("POST", "/{tail:.*}", handler)
-        server = TestServer(app)
-        await server.start_server()
-        servers.append(server)
-        return str(server.make_url("/")).rstrip("/"), received
+        def create_client(self, *args, **kwargs):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    yield _run
+        monkeypatch.setattr(Endpoint, "_create_http_session", create_client)
+        monkeypatch.setattr(Endpoint, "_assert_ssrf_safe_url", lambda self: None)
+        return "https://api.example.test", received
 
-    for server in servers:
-        await server.close()
+    return _run
 
 
 def _branch(base_url: str, **kwargs) -> Branch:
@@ -184,8 +178,8 @@ async def test_a_round_a_hook_stores_before_its_call_returns_keeps_the_context(c
     extension = gathered[1]
     await branch.chat(instruction="and now?", progression=[extension.id])
 
-    # The hook stores the extension round's instruction after its request was prepared;
-    # the request left the context out of its own copy only.
+    # The hook stores the extension round's instruction before its request is compiled; the
+    # request still shows the context once, and the stored instruction keeps it.
     assert extension in branch.msgs.messages
     assert {"menu": MARKER} in extension.content.prompt_context
     assert [json.dumps(body["messages"]).count(MARKER) for body in received] == [1, 1, 1, 1]
@@ -540,8 +534,9 @@ LOOKUP = {"action_required": True, "action_requests": [{"function": "lookup", "a
                 {"extension_needed": True, **LOOKUP},
                 {"extension_needed": False},
             ],
-            # The tool's own request renders only the first round's reply.
-            [1, 1, 0, 1, 1],
+            # The tool's own request renders the extension round's instruction, which
+            # carries the context once the first round's is evicted.
+            [1, 1, 1, 1, 1],
         ),
     ],
     ids=["first round", "extension round"],

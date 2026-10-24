@@ -517,6 +517,7 @@ export interface OperatorConversation {
   id: string;
   project?: string | null;
   title?: string | null;
+  description?: string | null;
   status: OperatorConversationStatus;
   pinned: boolean;
   nextSequence?: number;

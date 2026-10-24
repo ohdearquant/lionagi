@@ -90,13 +90,9 @@ def test_chunk_unsupported_output_format_raises(tmp_path):
         chunk(text=text, output_file=out, chunk_size=100, threshold=10)
 
 
-def test_chunk_docling_not_installed_raises(tmp_path, monkeypatch):
-    import lionagi.libs.file.process as proc_mod
-
-    monkeypatch.setattr(proc_mod, "is_import_installed", lambda pkg: False)
-
+def test_chunk_non_callable_reader_tool_raises(tmp_path):
     f = tmp_path / "doc.txt"
     f.write_text("some content")
 
-    with pytest.raises(ImportError, match="docling"):
+    with pytest.raises(TypeError, match="reader_tool must be a callable"):
         chunk(url_or_path=f, reader_tool="docling", chunk_size=100, threshold=10)

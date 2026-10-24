@@ -98,6 +98,22 @@ def test_grant_preserves_base_system():
     assert CAP_BEGIN in sys_text
 
 
+def test_grant_and_revoke_keep_the_system_message_at_the_head_of_the_view():
+    from lionagi.protocols.generic.progression import Progression
+
+    branch = Session().default_branch
+    branch.msgs.set_system(branch.msgs.create_system(system="You are a researcher."))
+    branch.msgs.add_message(instruction="q")
+    branch.metadata["current_progression"] = Progression(order=list(branch.msgs.progression))
+
+    for change in (lambda: branch.grant_capabilities(_grant()), branch.revoke_capabilities):
+        old = branch.msgs.system.id
+        change()
+        assert branch.progression[0] == branch.msgs.system.id
+        assert old not in branch.progression
+        assert len(branch.progression) == 2
+
+
 def test_revoke_clears_and_strips():
     s = Session()
     branch = s.default_branch

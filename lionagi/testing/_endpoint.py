@@ -11,16 +11,13 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
-import aiohttp
-from multidict import CIMultiDict, CIMultiDictProxy
-from yarl import URL
-
 from lionagi import ln
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import sleep
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import EndpointType, register_endpoint
+from lionagi.service.resilience import APIClientError
 from lionagi.service.types.stream_chunk import StreamChunk
 
 from ._script import ScriptModel
@@ -315,16 +312,9 @@ _STATUS_FOR_KIND = {"rate_limit": 429, "server_error": 500, "bad_request": 400}
 def _build_exception(entry: ErrorResponse) -> Exception:
     """Map an ErrorResponse to a realistic exception type."""
     if entry.kind in _STATUS_FOR_KIND:
-        request_info = aiohttp.RequestInfo(
-            URL("https://scripted.invalid"),
-            "POST",
-            CIMultiDictProxy(CIMultiDict()),
-        )
-        return aiohttp.ClientResponseError(
-            request_info=request_info,
-            history=(),
-            status=_STATUS_FOR_KIND[entry.kind],
-            message=entry.message,
+        return APIClientError(
+            entry.message,
+            status_code=_STATUS_FOR_KIND[entry.kind],
         )
     if entry.kind == "timeout":
         return asyncio.TimeoutError(entry.message)

@@ -22,6 +22,7 @@ __all__ = (
     "TimeoutError",
     "EmptyOutgoingContentError",
     "CLIInputRefusedError",
+    "InputTokenCapError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -199,6 +200,20 @@ class CLIInputRefusedError(LionError):
     """
 
     default_message = "CLI input cannot be passed"
+    default_status_code = 400
+    __slots__ = ()
+
+
+class InputTokenCapError(LionError):
+    """Raised when an API request's estimated input exceeds the model's
+    ``max_input_tokens``, refused before the request is sent.
+
+    Not a ValueError, for the reason given on CLIInputRefusedError: it is raised
+    inside APICalling's validator and must reach the caller unwrapped. ``details``
+    carries ``estimate`` and ``cap``.
+    """
+
+    default_message = "Request input exceeds max_input_tokens"
     default_status_code = 400
     __slots__ = ()
 

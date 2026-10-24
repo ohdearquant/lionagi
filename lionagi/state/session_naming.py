@@ -13,9 +13,46 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from typing import Any
 
+__all__ = (
+    "DISPLAY_NAME_MAX_LEN",
+    "agent_role_label",
+    "normalize_session_user_label",
+    "resolve_display_name",
+    "sanitize_prompt_name",
+    "validate_name_characters",
+)
+
 DISPLAY_NAME_MAX_LEN = 80
+
+# Controls, formatting characters and line/paragraph separators cannot form
+# a printable name. Ordinary internal spaces (category Zs) remain valid.
+_REJECTED_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
+def validate_name_characters(value: str, field: str = "name") -> str:
+    """Reject control and separator characters while preserving the given name."""
+    for char in value:
+        category = unicodedata.category(char)
+        if category in _REJECTED_NAME_CATEGORIES:
+            raise ValueError(
+                f"{field} must not contain control or line/paragraph-separator "
+                f"characters (found {char!r}, category {category})"
+            )
+    return value
+
+
+def normalize_session_user_label(value: str | None) -> str | None:
+    """Normalize an explicit session label; None or a blank label clears it."""
+    if value is None:
+        return None
+    value = value.strip()
+    if len(value) > 160:
+        raise ValueError("user_label must be at most 160 characters after stripping")
+    return validate_name_characters(value, "user_label") or None
+
 
 # A run's own prompt sometimes carries the framework's system-message banner
 # verbatim (e.g. a caller that folds system + instruction into one field) —
@@ -143,10 +180,8 @@ def resolve_display_name(session_row: dict[str, Any]) -> str:
         user_label > show/play name > playbook name > agent-role descriptor
         > sanitized prompt-derived name > short id
 
-    `user_label` has no write path anywhere in this codebase yet — it is read
-    defensively via `.get()` so a future rename feature slots into the top of
-    this chain without another reorder. Every other tier reads a field that
-    is already computed or stored on the row.
+    `user_label` is an explicit label stored separately from the system name.
+    Its defensive read also accepts rows from stores that predate the column.
 
     The prompt-derived tier declines a stored name that is a known placeholder
     (see `_UNINFORMATIVE_STORED_NAMES`) and falls through to the short id, so

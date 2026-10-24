@@ -525,3 +525,34 @@ async def test_list_filters_and_detail_history_remain_independent(isolated_db):
     assert "recent_runs_summary" not in detail
     history = await schedules.list_schedule_run_views("selected", limit=7, offset=25)
     assert [row["id"] for row in history] == [f"run-{index:02}" for index in range(4, -1, -1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "suffix",
+    ["plain", 'quote"id', "slash\\id", "café", "漢字🚀", "e\u0301", '"]; SELECT invalid --'],
+)
+async def test_recent_batch_preserves_identifier_values_and_linked_evidence(isolated_db, suffix):
+    sid = f"schedule-{suffix}"
+    iid = f"invocation-{suffix}"
+    async with StateDB() as db:
+        await create_schedule(db, sid)
+        await db.create_invocation(
+            {"id": iid, "skill": "agent", "status": "completed", "started_at": 100}
+        )
+        await db.create_progression("progression")
+        await db.create_session(
+            {
+                "id": "session",
+                "progression_id": "progression",
+                "invocation_id": iid,
+                "status": "completed",
+            }
+        )
+        await create_run(db, sid, "run", invocation_id=iid)
+        grouped, invocations, sessions = await schedules._read_run_batch(db, [sid, sid])
+        assert [row["id"] for row in grouped[sid]] == ["run", "run"]
+        assert set(invocations) == {iid}
+        assert invocations[iid]["status"] == "completed"
+        assert [row["id"] for row in sessions[iid]] == ["session"]
+        assert await schedules._read_run_batch(db, []) == ({}, {}, {})

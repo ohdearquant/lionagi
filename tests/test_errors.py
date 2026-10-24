@@ -13,6 +13,7 @@ from lionagi._errors import (
     EmptyOutgoingContentError,
     ExecutionError,
     ExistsError,
+    InputTokenCapError,
     ItemExistsError,
     ItemNotFoundError,
     LionError,
@@ -42,6 +43,7 @@ _EXPECTED_ALL = (
     "TimeoutError",
     "EmptyOutgoingContentError",
     "CLIInputRefusedError",
+    "InputTokenCapError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -322,6 +324,23 @@ class TestCLIInputRefusedError:
         """A ValueError raised in a model validator is wrapped in a validation error
         that carries the whole input; this refusal must not be."""
         assert not issubclass(CLIInputRefusedError, ValueError)
+
+
+class TestInputTokenCapError:
+    def test_default_message(self):
+        error = InputTokenCapError()
+        assert error.message == "Request input exceeds max_input_tokens"
+        assert error.status_code == 400
+
+    def test_details_carry_estimate_and_cap(self):
+        error = InputTokenCapError("over", details={"estimate": 120, "cap": 100})
+        assert error.details == {"estimate": 120, "cap": 100}
+
+    def test_is_not_a_value_error(self):
+        """Raised inside APICalling's validator, so it must not be a ValueError that
+        pydantic would wrap together with the whole request payload."""
+        assert issubclass(InputTokenCapError, LionError)
+        assert not issubclass(InputTokenCapError, ValueError)
 
 
 class TestAliases:

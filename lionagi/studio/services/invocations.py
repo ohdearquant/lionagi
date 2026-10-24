@@ -20,6 +20,7 @@ from lionagi.state.db import (
     state_db_known_absent,
 )
 from lionagi.state.health import SessionHealth, classify_session_health, worst_health
+from lionagi.state.session_naming import resolve_display_name
 
 from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
@@ -304,7 +305,7 @@ async def get_invocation(
         "sessions": [
             {
                 "id": s["id"],
-                "name": s.get("name"),
+                "name": resolve_display_name(s),
                 "agent_name": s.get("agent_name"),
                 "playbook_name": s.get("playbook_name"),
                 "invocation_kind": s.get("invocation_kind"),

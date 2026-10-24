@@ -1,5 +1,7 @@
 """Tests for lionagi/ln/fuzzy/_fuzzy_json.py"""
 
+import json
+
 import pytest
 
 from lionagi.ln.fuzzy._fuzzy_json import (
@@ -355,7 +357,5 @@ def test_clean_json_string_safe_mixed_fixes():
     result = _clean_json_string_safe("{key: 'value',}")
     assert '"key"' in result
     assert "'" not in result or "'" in result
-    import msgspec
-
-    parsed = msgspec.json.decode(result.encode("utf-8"))
+    parsed = json.loads(result)
     assert parsed == {"key": "value"}

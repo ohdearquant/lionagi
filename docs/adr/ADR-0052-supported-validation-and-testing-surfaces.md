@@ -512,7 +512,7 @@ it through `provider="scripted", endpoint="chat"`.
   text entry yields a text delta and then a done result. Streaming tool/structured
   entries yields one result chunk containing the encoded normal response.
 - A scripted error optionally sleeps for `delay_ms / 1000`, records the call, then maps
-  rate limit/server/bad request to HTTP-like 429/500/400 `ClientResponseError`, timeout
+  rate limit/server/bad request to HTTP-like 429/500/400 `APIClientError`, timeout
   to `asyncio.TimeoutError`, and other errors to `ValueError`. The streaming error path
   first yields an error chunk, then raises the mapped exception.
 - Every served call appends a `RecordedCall` containing a shallow payload/header copy,
@@ -521,8 +521,8 @@ it through `provider="scripted", endpoint="chat"`.
 - Copying endpoint runtime state deep-copies and resets the script cursor for the clone
   and shallow-copies prior call records. Future calls on original and clone do not
   consume each other's positional entries.
-- All responses are constructed in process. The endpoint does not invoke an external
-  HTTP service; `aiohttp` is used only to construct realistic error objects.
+- All responses and errors are constructed in process. The endpoint does not invoke an external
+  HTTP service and needs no HTTP client to build its scripted responses.
 
 **Why this way**: normal endpoint registration exercises the same discovery, payload,
 Branch, parse, stream, and copy paths as other providers. In-process serving keeps the

@@ -4,8 +4,8 @@
 
 A daemon with no ``LIONAGI_STUDIO_AUTH_TOKEN`` refuses API requests from a browser
 origin that is neither loopback nor its own. ``li studio`` opens the hosted page
-anyway, so the page needs two credentials: a bearer for API admission and a
-decision capability for the two Operator decision routes. This module holds both,
+anyway, so the page holds two credentials: a bearer for API admission and a decision
+capability the two Operator decision routes record as who decided. This module holds both,
 minted per process and kept in memory only. They are never put in the environment,
 so the processes the daemon spawns do not inherit them, and they are never written
 anywhere.
@@ -34,6 +34,7 @@ import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 __all__ = (
     "DECISION_CAPABILITY_TTL_S",
@@ -44,6 +45,7 @@ __all__ = (
     "PAIRING_REDEEM_PATH",
     "begin_serving",
     "daemon_epoch",
+    "is_launch_origin",
     "launch_bearer",
     "mint_decision_capability",
     "mint_pairing_code",
@@ -76,10 +78,16 @@ _bearer: str | None = None
 # code's binding to another's.
 _codes: dict[str, tuple[float, tuple[str, ...]]] = {}
 _epoch = _new_epoch()
-# The codes a launcher minted in this process for the daemon it starts next.
+# The codes a launcher minted in this process for the daemon it starts next,
+# each with the page origins the launcher named for it (none when it named none).
 # They belong to the daemon starting now, so serving begins by carrying them
 # into the new epoch instead of clearing them.
-_launch_codes: set[str] = set()
+_launch_codes: dict[str, tuple[str, ...]] = {}
+# The page origins a launcher in this process named for its codes. The pairing
+# route admits a page on one of them as it admits one on an origin CORS allows:
+# a launcher that serves its own page (``li studio --dev``) names that page's
+# exact origin, which need not be one CORS allows.
+_launch_origins: set[str] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +134,7 @@ def reset_launch_access() -> None:
         _codes.clear()
         _capabilities.clear()
         _launch_codes.clear()
+        _launch_origins.clear()
         _epoch = _new_epoch()
 
 
@@ -135,15 +144,18 @@ def begin_serving() -> None:
     A code a launcher minted just before starting this daemon, in this same
     process (``li studio`` mints the code it opens the page with and then runs
     the server), is carried into the new epoch, since it belongs to the daemon
-    starting now. Every other code and every capability is dropped. A restart
-    in a fresh process starts with fresh module state; this matters for a
-    second daemon in one interpreter, whose earlier codes and capabilities must
+    starting now. Every other code and every capability is dropped, and only the
+    page origins named for a carried code stay launch origins. A restart in a
+    fresh process starts with fresh module state; this matters for a second
+    daemon in one interpreter, whose earlier codes, capabilities and origins must
     not outlive it.
     """
     global _bearer, _epoch
     with _lock:
         carried = {code: _codes[code] for code in _launch_codes if code in _codes}
+        named = {origin for code in carried for origin in _launch_codes[code]}
         _launch_codes.clear()
+        _launch_origins.clear()
         _bearer = None
         _codes.clear()
         _capabilities.clear()
@@ -151,6 +163,7 @@ def begin_serving() -> None:
         if carried:
             _bearer = secrets.token_urlsafe(32)
             _codes.update(carried)
+            _launch_origins.update(named)
 
 
 def launch_bearer() -> str | None:
@@ -163,7 +176,11 @@ def mint_pairing_code(*, origins: Iterable[str] | None = None, for_launch: bool 
     """A new single-use code for the launch bearer, minting the bearer on first use.
 
     The code redeems only from an origin in *origins*; ``None`` binds it to the
-    origins this daemon admits (``CORS_ORIGINS`` at the time of the call).
+    origins this daemon admits, ``CORS_ORIGINS`` at the time of the call, as
+    configured, since the pairing route and the CORS layer compare a request's
+    ``Origin`` with those strings as written. A named origin is kept as a browser
+    sends it in ``Origin``, so a page address written with an uppercase host, a
+    default port or a path still binds its page.
     *for_launch* marks a code a launcher minted in this process for the daemon
     it starts next, so starting that daemon does not invalidate it.
     """
@@ -178,16 +195,54 @@ def mint_pairing_code(*, origins: Iterable[str] | None = None, for_launch: bool 
         code = secrets.token_urlsafe(24)
         _codes[code] = (now + PAIRING_CODE_TTL_S, bound)
         if for_launch:
-            _launch_codes.add(code)
+            _launch_codes[code] = bound if origins is not None else ()
+            _launch_origins.update(_launch_codes[code])
         return code
+
+
+def is_launch_origin(origin: str) -> bool:
+    """Whether a launcher in this process named *origin* for a code it minted."""
+    with _lock:
+        return origin in _launch_origins
 
 
 def _normalize_origins(origins: Iterable[str] | None) -> tuple[str, ...]:
     if origins is None:
         from .config import CORS_ORIGINS
 
-        origins = CORS_ORIGINS
-    return tuple(str(origin) for origin in origins)
+        return tuple(str(origin) for origin in CORS_ORIGINS)
+    return tuple(_canonical_origin(str(origin)) for origin in origins)
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _canonical_origin(url: str) -> str:
+    """The origin of *url* as a browser serializes it: lowercase scheme and host,
+    an IP address in its compressed form, no default port, no path.
+
+    A value that is not an http(s) URL, or that carries credentials before its
+    host, is kept as written, so it matches no ``Origin`` a browser sends.
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return url
+    scheme, host = parts.scheme, parts.hostname
+    if scheme not in _DEFAULT_PORTS or not host or "@" in parts.netloc:
+        return url
+    import ipaddress
+
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if ":" in host:
+        host = f"[{host}]"
+    if port is None or port == _DEFAULT_PORTS[scheme]:
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
 
 
 def _spend_code(presented: str, origin: str | None) -> bool:

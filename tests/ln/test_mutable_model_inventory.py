@@ -202,7 +202,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.models.operable_model:145:17": "an extra field reset from its factory",
     "lionagi.models.operable_model:255:9": "an extra field set by name",
     "lionagi.models.operable_model:275:13": "a field attribute set by name on a field object",
-    "lionagi.protocols.generic.pile:527:13": "a field attribute copied by name while copying",
+    "lionagi.protocols.generic.pile:539:13": "a field attribute copied by name while copying",
     "lionagi.protocols.messages.instruction:101:17": "a declared field set by name",
     "lionagi.protocols.messages.instruction:147:17": "a declared field set by name",
     "lionagi.protocols.messages.message:181:9": "a declared field set by name",
@@ -226,13 +226,16 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.ln.concurrency.primitives:126:13": "``Generic[T]``, the typing generic base",
     "lionagi.protocols._concepts:110:21": "``Generic[E]``, the typing generic base",
     "lionagi.protocols._concepts:98:23": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols.generic.element:274:10": "``Generic[E]``, the typing generic base",
+    "lionagi.protocols.generic.element:286:10": "``Generic[E]``, the typing generic base",
     "lionagi.protocols.generic.flow:25:21": "``Generic[E, P]``, the typing generic base",
-    "lionagi.protocols.generic.pile:175:21": "``Collective[T]``, the collection base on ``Element``",
-    "lionagi.protocols.generic.pile:175:36": "``Generic[T]``, the typing generic base",
+    "lionagi.protocols.generic.pile:187:21": "``Collective[T]``, the collection base on ``Element``",
+    "lionagi.protocols.generic.pile:187:36": "``Generic[T]``, the typing generic base",
     "lionagi.protocols.generic.progression:139:28": "``Ordering[T]``, the ordering base on ``Element``",
     "lionagi.protocols.generic.progression:139:41": "``Generic[T]``, the typing generic base",
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
+    # A class base whose module is imported inside the function that defines the class,
+    # so the scan cannot resolve the name; the class is an exception, not a model:
+    "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
@@ -246,16 +249,16 @@ _ALLOWLIST: dict[str, str] = {
     # An assignment to a class authority outside a class body; here it rebinds one
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
-    "lionagi.state.engine:238:9": "a connection object taking a runtime subclass",
+    "lionagi.state.engine:241:9": "a connection object taking a runtime subclass",
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
-    "lionagi.state.engine:176:30": "a subclass of a caller-supplied connection class",
+    "lionagi.state.engine:179:30": "a subclass of a caller-supplied connection class",
     "lionagi.testing.helpers:228:22": "a subclass of the class a classmethod is called on",
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:
     "lionagi.config:168:5": "a pydantic settings config, which sets no frozen option",
-    "lionagi.studio.operator.types:48:5": "a config whose alias generator is a callable",
+    "lionagi.studio.operator.types:50:5": "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",

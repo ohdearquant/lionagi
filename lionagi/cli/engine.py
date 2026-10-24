@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import time
@@ -13,6 +12,7 @@ import uuid
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln import compute_hash
 
 from ._logging import log_error, progress, warn
 
@@ -623,9 +623,9 @@ def _engine_outcome(
         "max_depth": getattr(engine, "max_depth", None) if engine is not None else None,
         "max_agents": getattr(engine, "max_agents", None) if engine is not None else None,
     }
-    fingerprint = hashlib.sha256(
-        json.dumps(config_shape, sort_keys=True, default=str).encode()
-    ).hexdigest()[:16]
+    fingerprint = compute_hash(
+        json.dumps(config_shape, sort_keys=True, default=str), max_bytes=None
+    )[:16]
     envelope: dict[str, Any] = {
         "version": 1,
         "status": status,

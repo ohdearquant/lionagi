@@ -450,6 +450,7 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
     pinned: raw.pinned === true,
     project: typeof raw.project === "string" ? raw.project : null,
     title: typeof raw.title === "string" ? raw.title : null,
+    description: typeof raw.description === "string" ? raw.description : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
     activeRequestId: readString("activeRequestId", "active_request_id") ?? null,
     // The pinned selection must survive normalization: dropping it here is

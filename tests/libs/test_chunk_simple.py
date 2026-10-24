@@ -131,8 +131,11 @@ def test_chunk_main_function_with_directory():
         assert all(isinstance(c, str) for c in chunks)
 
 
-def test_load_pydantic_model_basic():
-    """Test loading a Pydantic model from schema."""
+def test_load_pydantic_model_basic(monkeypatch):
+    """A plain schema loads without datamodel-code-generator, which no extra installs."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "datamodel_code_generator", None)
     schema = {
         "title": "TestModel",
         "type": "object",
@@ -143,9 +146,6 @@ def test_load_pydantic_model_basic():
         },
         "required": ["name", "age"],
     }
-
-    # This will only work if datamodel-code-generator is installed
-    pytest.importorskip("datamodel_code_generator")
 
     model_class = load_pydantic_model_from_schema(schema)
     assert model_class.__name__ == "TestModel"

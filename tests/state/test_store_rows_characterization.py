@@ -833,6 +833,7 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
             "total_cost_usd": None,
             "updated_at": "<t:number>",
             "user": None,
+            "user_label": None,
         }
     ],
     "status_transitions": [

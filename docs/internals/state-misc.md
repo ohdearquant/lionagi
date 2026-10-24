@@ -23,9 +23,12 @@ agree on what "prompt-shaped" and "a sane display width" mean.
 `resolve_display_name` walks a fixed priority chain: an explicit user label,
 then a show/play name, then a playbook name, then an agent-role descriptor,
 then a sanitized prompt-derived name, and finally a short id as the
-unconditional fallback. `user_label` has no write path anywhere in the
-codebase yet — it's read defensively via `.get()` so a future rename feature
-can slot into the top of the chain without another reorder.
+unconditional fallback. `PUT /api/sessions/{session_id}` sets or clears
+`user_label`, and an approved Operator run rename uses the same dedicated
+setter. It changes only the label, preserving the stored system name and
+activity timestamps. Search and run-reference resolution also match labels
+within the same project scope as existing names. Read-only stores created
+before the label column still use the fallback chain.
 
 The agent-role tier (`agent_role_label`) formats as `"claude-code · 1167 ·
 14:22"`: engine name, four characters of the row's own id, and a UTC

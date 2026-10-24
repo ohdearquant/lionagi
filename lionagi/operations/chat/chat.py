@@ -59,20 +59,22 @@ async def chat(
     provider_ins, context_report = await _apply_context_providers(
         branch, instruction, chat_param, ins=ins
     )
-    ins, kw = _prepare_run_kwargs(
-        branch,
-        instruction,
-        chat_param,
-        ins=provider_ins or ins,
-        context_blocks=context_report.blocks if context_report else None,
-        imodel=imodel,
-    )
-
-    if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
-        kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
-
+    # Fired before the request is compiled, so a handler that curates the active view (the
+    # host-side context fold) shapes the request it precedes rather than the next one.
     await emit_api_pre_call(branch, imodel)
     try:
+        ins, kw = _prepare_run_kwargs(
+            branch,
+            instruction,
+            chat_param,
+            ins=provider_ins or ins,
+            context_blocks=context_report.blocks if context_report else None,
+            imodel=imodel,
+        )
+
+        if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
+            kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
+
         from lionagi.service.imodel import _branch_routing_context
 
         with _branch_routing_context(branch.id, imodel):

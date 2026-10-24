@@ -1,10 +1,50 @@
 # ADR-0001: Element identity and polymorphic serialization envelope
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-19 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09
 - **Relations**: none
+
+## Amendment 1 (2026-10-19) — a dotted discriminator is imported only under an allowed prefix
+
+D3 and its exact semantics below record that `get_class` imports the module named by any dotted
+discriminator, that `Element.from_dict` retries a failed lookup with a direct import, and that the
+code keeps no allow-list. A payload could therefore make a reader import any module on its path.
+Recovery now uses the allow-list that `lionagi.ln.load_type_from_string` already applies: `lionagi.`
+plus every prefix added with `lionagi.ln.register_type_prefix()`.
+
+Decision: `get_class` resolves in this order.
+
+1. An exact `LION_CLASS_REGISTRY` hit.
+2. A dotted name whose module is already imported: the attribute is read from that module's own
+   namespace, without calling a module-level `__getattr__`, and returned when it is a class.
+3. A dotted name under an allowed prefix, imported through `load_type_from_string`.
+4. A dotted name under an allowed prefix that step 3 could not import, such as a lionagi class whose
+   module has moved: the short name is looked up in `_BUILTIN_MODULES` and then by registry suffix,
+   and only a class defined under an allowed prefix that the name itself starts with is returned. A
+   dotted name outside every allowed prefix raises `ValueError` instead.
+5. A bare short name: `_BUILTIN_MODULES`, accepting only a class defined under `lionagi.`, then a
+   registry key ending in that name.
+
+`Element.from_dict` no longer retries with a direct import, and it dispatches only to an `Element`
+subclass; any other resolved type raises `ValueError`. A string `item_type` given to `Pile` is
+resolved by the same `get_class`, and a bare name there is refused.
+
+Consequence: a payload that names a third-party class which is not registered, not in an
+already-imported module and not under a registered prefix now raises `ValueError`, and the message
+names `register_type_prefix()`. A process that reads such payloads imports the defining module
+first or registers its package prefix. This takes part of the cost the closed-registry alternative
+describes: a third-party class is readable once its package is admitted, and unreadable before.
+
+Limits: a module that is already imported counts as admitted, so the allow-list bounds which modules
+deserialization imports, while dispatch to a loaded class is bounded only by the `Element` subclass
+check. Importing a module also imports its parent packages, so a prefix that names a subpackage
+(`pkg.sub.`) lets deserialization import the packages above it (`pkg`) as well. The allow-list
+bounds the module a name points at, not what that module's own code imports: importing an
+allowed module runs its top-level code, and the imports that code makes are not restricted.
+Delta 1's registration half, third-party models round-tripping without being admitted first,
+stays open.
 
 ## Context
 
@@ -44,7 +84,7 @@ The current implementation is defined by `lionagi/protocols/generic/element.py`,
 |---|---|
 | Object identity and base fields | D1: Addressable framework models inherit the frozen UUID and creation timestamp plus mutable metadata from `Element`. |
 | Serialized envelope | D2: Writers place a fully qualified `lion_class` discriminator in metadata and support Python, JSON, and database dictionary shapes. |
-| Concrete-class recovery | D3: Readers resolve registry entries, importable dotted paths, and a fixed legacy built-in short-name set in that order. |
+| Concrete-class recovery | D3: Readers resolve registry entries, importable dotted paths, and a fixed legacy built-in short-name set in that order. Amendment 1 replaces the order and imports a dotted path only under an allowed prefix. |
 | Node payload | D4: `Node` adds serializable arbitrary content and a nullable float-list embedding while retaining the Element envelope. |
 
 This ADR deliberately does **not** decide:
@@ -193,6 +233,10 @@ database shapes move metadata as one unit.
 
 The resolver is deliberately compatibility-oriented rather than a uniform extension registry.
 
+Amendment 1 at the top of this record supersedes this section's resolution order, the direct
+import retry in `Element.from_dict` and the statement that the code keeps no allow-list. The text
+below records the resolver as it was before the amendment.
+
 **The contract** (`lionagi/_class_registry.py`):
 
 ```python
@@ -201,7 +245,7 @@ LION_CLASS_REGISTRY: dict[str, type] = {}
 def get_class(class_name: str) -> type: ...
 ```
 
-Resolution proceeds in this exact order:
+Before Amendment 1, resolution proceeded in this order:
 
 1. Return an exact `LION_CLASS_REGISTRY[class_name]` hit.
 2. If the string contains `.`, split it at the last dot and attempt to import that module attribute;
@@ -239,7 +283,8 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
 - A short-name suffix collision is resolved by registry insertion order, not by an explicit
   ambiguity error.
 - Dotted-path recovery executes Python import machinery. Payloads must therefore come from a trust
-  context permitted to name importable classes; the code does not maintain an allow-list.
+  context permitted to name importable classes; the code did not maintain an allow-list before
+  Amendment 1.
 
 This shape grew from two compatibility needs: qualified names for extensions and continued reads
 of older built-in short names. It buys recovery breadth at the cost of an asymmetric registration

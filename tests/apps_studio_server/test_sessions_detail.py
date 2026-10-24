@@ -1035,7 +1035,7 @@ async def test_session_message_stream_resumes_and_drains_before_done(monkeypatch
     monkeypatch.setattr(svc, "get_session_messages_after", _after)
     monkeypatch.setattr(svc, "get_session_stream_state", _state)
     monkeypatch.setattr(svc, "is_session_stream_done", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(svc.asyncio, "sleep", _unexpected_sleep)
+    monkeypatch.setattr(svc, "sleep", _unexpected_sleep)
 
     cursor = svc._encode_session_stream_cursor("resume-session", 100.0, "message-a", "branch-1")
     response = await svc.stream_session_route("resume-session", cursor=cursor)

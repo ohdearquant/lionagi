@@ -546,13 +546,13 @@ against the artifact set a node declared, it does not make.
   (`lionagi/cli/orchestrate/flow.py:1070-1081`), so removing a role's `artifact_defaults` between runs
   loses that leg's contract. The persisted record exists — `artifact_contract_json` is the column
   ADR-0064 D3 has a flow write
-  (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:403`; declared at
-  `lionagi/state/schema.sql:191`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
+  (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:412`; declared at
+  `lionagi/state/schema.sql:192`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
   before execution (`lionagi/cli/orchestrate/flow.py:1080-1081,1173-1184`). Spawned instructions use the
   cached role declarations before injection, but `_execute_dag` appends their entries to the
   session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2543,2546-2557`).
   Resume does not read either persisted set. The column is also nullable — the schema records that a NULL contract means verification
-  is skipped (`lionagi/state/schema.sql:190`) — so an absent or unreadable record is not evidence
+  is skipped (`lionagi/state/schema.sql:191`) — so an absent or unreadable record is not evidence
   that the declared set is still present. Delta row 2 covers both the read and the check.
 - **A node that declared no artifact contract.** There is nothing independent to check, so it keeps
   today's status replay like any other completed node. The settle-check delta rows cover only nodes

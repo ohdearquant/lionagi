@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
-from lionagi.ln import short_id
+from lionagi.ln import json_dumps, short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
@@ -675,7 +675,7 @@ async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     """
     rows = await db.fetch_all(
         _recent_run_keys_sql(db.dialect),
-        (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
+        (json_dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
     )
     grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
     for row in rows:
@@ -690,7 +690,7 @@ async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     )
     if not invocation_ids:
         return grouped, {}, {}
-    ids = (json.dumps(invocation_ids),)
+    ids = (json_dumps(invocation_ids),)
     id_set = _id_set_predicate(db.dialect)
     # The interpolated text is a placeholder clause for the store's dialect,
     # never a value; the ids themselves are bound.

@@ -12,6 +12,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # The CLI run this session belongs to; NULL on rows created before
         # this migration and on sessions that were not started by a run.
         ("run_id", "TEXT"),
+        ("user_label", "TEXT"),
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
         ("invocation_kind", "TEXT"),

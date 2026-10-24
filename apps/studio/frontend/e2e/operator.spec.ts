@@ -51,7 +51,7 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
   const discovery = page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
-      response.url().endsWith("/api/operator/conversations"),
+      new URL(response.url()).pathname.endsWith("/api/operator/conversations"),
   );
   await page.goto("/");
   expect((await discovery).status()).toBe(200);
@@ -164,7 +164,7 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   const discovery = page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
-      response.url().endsWith("/api/operator/conversations"),
+      new URL(response.url()).pathname.endsWith("/api/operator/conversations"),
   );
   await page.goto("/");
   expect((await discovery).status()).toBe(200);

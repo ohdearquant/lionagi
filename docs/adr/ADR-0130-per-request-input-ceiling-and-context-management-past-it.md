@@ -1,8 +1,13 @@
 # ADR-0130: Per-request input ceiling and context management past it
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-23) for D1 and D2 on `li agent` API-model legs and for D3 and D4
+  as amended; D1 and D2 elsewhere, D5, D6 and D7 remain Proposed (see Amendment 1)
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial: the ceiling on `li agent` API-model legs and as an `iModel`
+  field, the calibrated count (D3 as amended), the refusal before the send and the host fold (D4 as
+  amended) have landed; the default for requests built outside `li agent`, the per-call value, the
+  resumed-session and command-line measurement, the 80% notice, the ranged read-back, D5, D6 and D7
+  have not
 - **Area**: messages-context
 - **Date**: 2026-10-17
 - **Relations**: takes the per-request input ceiling and the context management past it that
@@ -46,7 +51,7 @@ keeps growing its request until the provider refuses it or bills it at the next 
 child with no branch of its own is built from its emitter's branch
 (`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:523`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
+(`lionagi/session/branch.py:587-603`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
@@ -75,7 +80,7 @@ distinct from the pricing table's `ModelPrice.max_input_tokens`, which keeps its
 **D2 — `"auto"` resolves to the model's first price-tier boundary.** For a request whose model the
 pricing table prices by prompt length, `"auto"` is the first tier's `max_prompt_tokens` (100,000 for
 `claude-haiku-5-5`). The table prices the requests it is consulted for, the Anthropic Messages path
-and the account router (`lionagi/providers/anthropic/messages.py:989`,
+and the account router (`lionagi/providers/anthropic/messages.py:984`,
 `lionagi/service/accounts/_router.py:123`); a provider the table does not price, such as a command-line
 agent billed by subscription, has no tier here, so unset leaves it unchanged. For a model with one flat
 tier, or none in the table, `"auto"` resolves to no ceiling, and the resolution says so in the
@@ -218,3 +223,106 @@ any setting of theirs: the release that ships landing step 2 states it, with `"n
   with evidence that children do not need the history.
 - A new summarization algorithm, a model capability catalog, and any change to prices or to the
   transport limits adapters enforce.
+
+## Amendment 1 (2026-10-23): a calibrated count and a host fold, first on `li agent` API-model legs
+
+On 2026-10-23 the maintainer asked that the library fold and compact an API agent's context itself,
+before the input cap refuses the run. The first landing serves that request, and the decisions above
+as far as they reach an `li agent` leg on an API model. It changes two decisions: D3's measure, and
+D4's rule that the library never summarizes on its own account. The text above stays as it was
+decided; where it conflicts with this amendment, the amendment holds.
+
+**D1 and D2, as landed.** `iModel(max_input_tokens=N)` takes a positive integer, or `None` for no
+ceiling, and `None` stays the default for an `iModel` built directly. Every `APICalling` the model
+builds checks its estimate (D3 below) before the send and raises `InputTokenCapError`, whose `details`
+carry `estimate`, `cap`, `counted` and `scale`. The model keeps the first refusal and raises it for
+every later request until a caller clears `input_cap_refusal`, so a loop that catches the error cannot
+go on to send a smaller request as if the run had not been refused; `ReAct` and `parse` re-raise it
+instead of returning an earlier round's text or an unparsed fallback. An agent profile that declares
+`api_tools` may set `max_input_tokens` to a positive integer, `auto` or `none`, and unset reads as
+`auto`: the first price tier's `max_prompt_tokens` in the pricing table's current revision for an
+Anthropic model the table prices by prompt length (100,000 for `claude-haiku-5-5`), and no ceiling for
+any other model. The leg
+prints the ceiling and its source when it starts. The branch's launch record keeps the policy; a
+resume under a profile takes the value that profile names, and a record written before the key existed
+reads as unset. This is D1's stated cost, on these legs only: a leg on a tier-priced model that sets
+nothing is now held under the first boundary, and `max_input_tokens: none` restores the old behaviour.
+Not landed: `auto` and `none` on `iModel` itself, the unset-as-`auto` default for a request built
+outside `li agent`, and the per-call value.
+
+**D3, amended: the request itself is counted, then scaled by what the provider reported.** The
+estimate is the `o200k_base` token count of the payload's `system`, `instructions`, `messages`,
+`input`, `prompt`, `tools` and `response_format` as JSON text (`estimate_payload_input_tokens`), times the model's
+`input_token_scale`. The scale starts at 1.0. After each completed response whose counted input was at
+least 4,000 tokens, it rises to the provider's reported input for that request divided by the count,
+and it never falls. The reported input is `prompt_tokens`, or `input_tokens` plus the cache-read and
+cache-write counts; a streamed response's usage is merged across its events, which report cumulative
+counts. The cap and the fold share the scale. This replaces the estimate of the reported count plus
+0.66 tokens per appended byte: counting the compiled payload measures the request as it will be sent,
+the first request included, and the scale carries the provider's own counting into every later one.
+On one `claude-haiku-5-5` agent run the provider counted 93,525 and 95,483 input tokens for two
+requests the local count put at 68,308 and 69,836, a ratio of 1.37, so a cap on the local count alone
+would have let requests near 137,000 tokens through a 100,000 ceiling. Not landed from D3: the
+resumed-session and remote-history provisions, the Claude Code adapter's per-request count and the
+Gemini CLI rule. Command-line providers are unchanged.
+
+**D4, amended: a refusal before the send, then a host fold in two stages, the second a summary.**
+`ContextFold` (`lionagi/agent/context_fold.py`), installed on the leg's branch at `API_PRE_CALL`,
+estimates the next request before it is compiled: the chat compiler is run over the active view, with
+the newest instruction standing in for the one about to be sent, and the result is counted and scaled
+as the cap counts. At or past 80% of the ceiling it folds the active view toward 60% with the `context`
+tool's own `compact`, so the folded messages stay in the branch's full record and `restore` brings them
+back:
+
+1. `tool_io`: the tool calls and results older than the newest six active messages, then older than
+   the newest two, are replaced by one note that lists each call with its function, its arguments (a
+   path-like argument whole up to 1,000 characters, any other clipped to 160) and its output size;
+   a call whose result stays in view is not listed, since the model reads a call only through its
+   result.
+2. `all`, only if that is not enough: every message older than the same tails, except the first
+   message of the view and the task instruction, is replaced by a note that holds a summary written by
+   one model call carrying only the folded span, beside the call lists of stage 1 and of earlier notes.
+   If that call fails, the list stands alone.
+
+The task instruction and the first message of the view are never folded, and no other branch is
+changed. If the cap still refuses a request, the loop calibrates the fold by the refused estimate,
+folds at least once more and continues, at most twice per turn (the task, or one queued message). A
+refusal the fold cannot
+bring under the ceiling fails the turn with the refusal, and the loop never returns an earlier round's
+text as its answer. A request built outside these legs under an `iModel` ceiling is refused as in D4
+step 1 and is not folded. Stage 2 reverses D4's "This record adds no summarizing compaction and the
+library never summarizes on its own account": the request above asked for compaction by the library,
+and a list of calls keeps what the agent read but not what it concluded. Not landed from D4: the
+one-line notice at 80% (each tool result the coding toolkit returns already carries its context
+status, which on these legs measures against the ceiling, counting message content without the scale),
+and the per-result stub with its ranged read-back (`restore` returns a message whole).
+
+**D5 and D6 not landed; D7 deferred.** No `ContextDecision` signal is emitted. The leg's run manifest
+records every fold under `context_folds`: its time, the reason (`threshold` or `refused`), the stage,
+the tail kept, the number of messages folded, up to 50 of the calls listed and their total, whether the summary
+came from the model or the host, the estimate before and after, the ceiling and the scale. Each fold
+also prints one line. Nothing in the signal schema changes.
+
+**Library changes the landing needed.**
+
+- A branch's curated view no longer freezes: a message added after the view exists joins it. Before
+  this, once a model evicted or compacted, no later message reached the model again. When the
+  message manager replaces the system message or clears the messages, the view keeps only messages
+  still in the record, headed by the current system message; before this a replaced system message
+  stayed in the view after it left the record, and every later compaction refused. A branch restored
+  from its stored form gets its view back as a progression rather than a plain mapping, holding only
+  messages its stored record holds.
+- `compact` places its summary note once, where the first collapsed message was.
+- `chat` emits `API_PRE_CALL` before it compiles the request from the active view, so a handler that
+  curates the view shapes the request it precedes (ADR-0047 records the scope); `run` still emits it
+  after compiling, before the stream starts.
+
+**Tests that prove it.** `tests/service/imodel/test_input_cap.py` pins the refusal and the first
+refusal kept, the count of the system prompt and of special-token text, each usage shape the reported
+input is read from, the stream merge, and the scale (its floor, that it only rises, that copy and
+serialization carry it). `tests/cli/test_agent_api_context_fold.py` pins the profile policy and its
+resume, `auto` against the pricing table, a run that folds past the line and completes, a refused
+request folded and continued, a refusal the fold cannot clear failing the run, the summary request
+carrying the span alone, and the fold line moving with the provider's count.
+`tests/tools/test_context_tool.py` and `tests/hooks/test_api_call_hookpoints.py` pin the view, the
+note's single placement and the hook order.

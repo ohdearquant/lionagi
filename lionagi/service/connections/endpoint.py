@@ -6,13 +6,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from lionagi.service.resilience import (
+    APIClientError,
     CircuitBreaker,
     RetryConfig,
     _reraise_inner,
@@ -20,10 +21,142 @@ from lionagi.service.resilience import (
 )
 from lionagi.service.types.stream_chunk import StreamChunk
 
-from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
+from .endpoint_config import AUTHORIZATION_KWARG_NAMES, RUNTIME_STATE_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
+
+# What ``from_dict`` never takes from a stored config: the credential source, the
+# local-network opt-in and the kwargs a config never writes down. A setting named as a
+# credential or a proxy is dropped too, by ``_names_credential_setting``.
+_NOT_RESTORED = frozenset(
+    ("api_key", "allow_local_network", *AUTHORIZATION_KWARG_NAMES, *RUNTIME_STATE_NAMES)
+)
+
+# Kwargs whose value is a set of headers; a restored one is filtered as default_headers is.
+_HEADER_KWARGS = frozenset({"headers", "extra_headers"})
+
+
+# Built on first use and shared by every client, as aiohttp shared its own.
+_VERIFIED_SSL_CONTEXT = None
+
+
+def _verified_ssl_context():
+    # ssl.create_default_context() reads the system trust store and SSL_CERT_FILE and
+    # SSL_CERT_DIR, as aiohttp's verification did; httpx's own default is certifi's bundle.
+    global _VERIFIED_SSL_CONTEXT
+    if _VERIFIED_SSL_CONTEXT is None:
+        import ssl
+
+        _VERIFIED_SSL_CONTEXT = ssl.create_default_context()
+    return _VERIFIED_SSL_CONTEXT
+
+
+def _pinned_ssl_context(fingerprint: bytes):
+    """A context for an ``aiohttp.Fingerprint``: no chain check, and the server's certificate
+    must have this SHA-256 digest, checked when the handshake completes and before the request
+    is sent, as aiohttp checked it. A mismatch fails the connection with an ``ssl.SSLError``."""
+    import hashlib
+    import ssl
+
+    class _PinnedSSLObject(ssl.SSLObject):
+        def do_handshake(self):
+            super().do_handshake()
+            # aiohttp's Fingerprint takes SHA-256 digests only.
+            got = hashlib.sha256(self.getpeercert(binary_form=True)).digest()
+            if got != fingerprint:
+                raise ssl.SSLCertVerificationError(
+                    f"the server certificate's SHA-256 fingerprint is {got.hex()}, "
+                    f"expected {fingerprint.hex()}"
+                )
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.sslobject_class = _PinnedSSLObject
+    return context
+
+
+# Built on first use, as httpx is imported only when a request is made.
+_REFUSED_REDIRECT_ERROR = None
+
+
+def _refused_redirect_error():
+    """The ``httpx.ConnectError`` a pinned client raises for a redirect off https."""
+    global _REFUSED_REDIRECT_ERROR
+    if _REFUSED_REDIRECT_ERROR is None:
+        import httpx
+
+        class RefusedRedirectError(httpx.ConnectError):
+            """A redirect off https from a pinned request; sent again, it would be refused again."""
+
+        _REFUSED_REDIRECT_ERROR = RefusedRedirectError
+    return _REFUSED_REDIRECT_ERROR
+
+
+def _refuse_a_redirect_off_https():
+    """A request hook for a pinned client: once a request has gone over https, a redirect
+    to plain http is refused.
+
+    The pin is checked only on a TLS connection, so following such a redirect would send the
+    request, body included, to a server the pin never checked. Hops over plain http before
+    the first https one are left alone, as aiohttp left them. Each request gets a client of
+    its own, so the hook sees the hops of one request.
+    """
+    https_seen = False
+
+    async def hook(request):
+        nonlocal https_seen
+        if request.url.scheme == "https":
+            https_seen = True
+        elif https_seen:
+            raise _refused_redirect_error()(
+                f"refusing a redirect from https to {request.url.scheme}: "
+                "the certificate fingerprint cannot be checked there",
+                request=request,
+            )
+
+    return hook
+
+
+def _seconds_or_none(value):
+    """A timeout as httpx takes it: aiohttp read zero or below as no timeout, httpx as none left."""
+    if isinstance(value, (int, float)) and value <= 0:
+        return None
+    return value
+
+
+def _httpx_timeout(timeout):
+    """httpx's timeout for an ``aiohttp.ClientTimeout``.
+
+    httpx has no bound on a whole request, so ``total`` bounds each phase, as
+    ``EndpointConfig.timeout`` does, and a phase takes the smallest bound set on it:
+    connecting is bounded by ``sock_connect``, ``connect`` and ``total``, reading by
+    ``sock_read`` and ``total``, and waiting for a pooled connection by ``connect`` and
+    ``total``. A value of zero or below is no timeout, as aiohttp read it, except a negative
+    ``sock_read``: aiohttp timed every read out at once on one, so it is refused here.
+    """
+    import httpx
+
+    sock_read = timeout.sock_read
+    if isinstance(sock_read, (int, float)) and sock_read < 0:
+        raise ValueError(
+            f"sock_read={sock_read!r} would time every read out at once; "
+            "pass None or 0 for no read timeout"
+        )
+    total = _seconds_or_none(timeout.total)
+
+    def bound(*values):
+        bounds = [v for v in (*map(_seconds_or_none, values), total) if v is not None]
+        return min(bounds, default=None)
+
+    return httpx.Timeout(
+        connect=bound(timeout.sock_connect, timeout.connect),
+        read=bound(timeout.sock_read),
+        write=total,
+        pool=bound(timeout.connect),
+    )
+
 
 # The event types that say the call itself failed: the Responses API's
 # ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
@@ -176,6 +309,17 @@ class Endpoint:
     # (ADR-0127 D3). Only such an endpoint changes a request when ``prompt_caching`` is on.
     caches_system_prefix: ClassVar[bool] = False
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for old_name, new_name in (
+            ("_call_aiohttp", "_call_http"),
+            ("_stream_aiohttp", "_stream_http"),
+        ):
+            if old_name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} overrides a removed transport method; use {new_name} instead"
+                )
+
     def __init__(
         self,
         config: dict | EndpointConfig | None = None,
@@ -213,13 +357,77 @@ class Endpoint:
     def _create_http_session(
         self, client_kwargs: dict[str, Any] | None = None, *, timeout: Any = _CONFIGURED_TIMEOUT
     ):
-        import aiohttp
+        import httpx
 
         if timeout is _CONFIGURED_TIMEOUT:
             timeout = self.config.timeout
-        return aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(timeout),
-            **(self.config.client_kwargs if client_kwargs is None else client_kwargs),
+        options = dict(self.config.client_kwargs if client_kwargs is None else client_kwargs)
+        if "timeout" in options:
+            # A configured number of zero or below is no timeout, as the config's own is.
+            options["timeout"] = _seconds_or_none(options["timeout"])
+        options.setdefault("follow_redirects", True)
+        options.setdefault("trust_env", False)
+        options.setdefault("verify", _verified_ssl_context())
+        options.setdefault("timeout", httpx.Timeout(_seconds_or_none(timeout)))
+        return httpx.AsyncClient(**options)
+
+    def _client_for_request(self, request_kwargs: dict[str, Any]):
+        """The client for one request and the options left for the request itself.
+
+        aiohttp took ``ssl``, ``proxy``, ``allow_redirects`` and ``timeout`` with each
+        request. httpx takes the first two from the client, as ``verify`` and ``proxy``, the
+        third as ``follow_redirects`` and the fourth as an ``httpx.Timeout``, so a request
+        that passes ``ssl`` or ``proxy`` gets a client of its own. A request's ``ssl=True``
+        verifies certificates even when the configured client does not.
+        """
+        if not request_kwargs.keys() & {"ssl", "proxy", "allow_redirects", "timeout"}:
+            return self._create_http_session(), request_kwargs
+        import ssl
+        import sys
+
+        import httpx
+
+        # Set only when the caller has imported aiohttp, as building its types requires.
+        aiohttp = sys.modules.get("aiohttp")
+        request_kwargs = dict(request_kwargs)
+        if aiohttp is not None and isinstance(request_kwargs.get("timeout"), aiohttp.ClientTimeout):
+            request_kwargs["timeout"] = _httpx_timeout(request_kwargs["timeout"])
+        elif "timeout" in request_kwargs:
+            request_kwargs["timeout"] = _seconds_or_none(request_kwargs["timeout"])
+        if "allow_redirects" in request_kwargs:
+            if "follow_redirects" in request_kwargs:
+                raise TypeError("pass allow_redirects or follow_redirects, not both")
+            request_kwargs["follow_redirects"] = request_kwargs.pop("allow_redirects")
+        client_options: dict[str, Any] = {}
+        if "ssl" in request_kwargs:
+            verify = request_kwargs.pop("ssl")
+            if verify is None or verify is True:
+                # aiohttp read None as True.
+                if self.config.client_kwargs.get("verify", True) is False:
+                    client_options["verify"] = _verified_ssl_context()
+            elif verify is False or isinstance(verify, ssl.SSLContext):
+                client_options["verify"] = verify
+            elif aiohttp is not None and isinstance(verify, aiohttp.Fingerprint):
+                client_options["verify"] = _pinned_ssl_context(verify.fingerprint)
+                configured = self.config.client_kwargs.get("event_hooks") or {}
+                hooks = {name: list(handlers) for name, handlers in configured.items()}
+                hooks.setdefault("request", []).append(_refuse_a_redirect_off_https())
+                client_options["event_hooks"] = hooks
+            else:
+                raise TypeError(
+                    "ssl takes True, False, None, an ssl.SSLContext or an aiohttp.Fingerprint, "
+                    f"not {type(verify).__name__}"
+                )
+        if "proxy" in request_kwargs:
+            proxy = request_kwargs.pop("proxy")
+            # aiohttp went direct for an empty proxy: None, "" or an empty URL.
+            if proxy:
+                client_options["proxy"] = proxy if isinstance(proxy, httpx.Proxy) else str(proxy)
+        if not client_options:
+            return self._create_http_session(), request_kwargs
+        return (
+            self._create_http_session({**self.config.client_kwargs, **client_options}),
+            request_kwargs,
         )
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
@@ -384,10 +592,19 @@ class Endpoint:
         """Raise PermissionError if full_url resolves to a blocked address."""
         from urllib.parse import urlparse
 
+        import httpx
+
         from lionagi.ln._ssrf import is_ssrf_safe
 
-        parsed = urlparse(self.config.full_url)
-        hostname = parsed.hostname or ""
+        # The host the HTTP client connects to, in its own ASCII encoding: a name outside
+        # ASCII is encoded differently by the resolver (IDNA 2003 maps ``straße`` to
+        # ``strasse``) than by the client (IDNA 2008, ``xn--strae-oqa``), so checking the
+        # name as written would resolve a host the request never reaches. A URL the
+        # client cannot read is checked as before; the client refuses to send it.
+        try:
+            hostname = httpx.URL(self.config.full_url).raw_host.decode("ascii")
+        except (httpx.InvalidURL, UnicodeError):
+            hostname = urlparse(self.config.full_url).hostname or ""
         allow_local = getattr(self.config, "allow_local_network", False)
         if not is_ssrf_safe(hostname, allow_local=allow_local):
             raise PermissionError(
@@ -396,13 +613,13 @@ class Endpoint:
             )
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        return await self._call_aiohttp(payload=payload, headers=headers, **kwargs)
+        return await self._call_http(payload=payload, headers=headers, **kwargs)
 
     def _with_idempotency_key(self, headers: dict, *, routed: bool) -> dict:
         """*headers* with the key one logical request sends on every attempt, when retries are
         idempotent.
 
-        Minted once per logical request, before any retry path (native _call_aiohttp, the
+        Minted once per logical request, before any retry path (native _call_http, the
         opt-in RetryConfig wrapper, or a routed stream's attempts) is entered, and reused
         verbatim across every attempt, so the provider can recognize a lost-response replay as
         the same request. It also takes the place of a client-level key: one key shared by every
@@ -560,74 +777,82 @@ class Endpoint:
         error_context: str,
         _routing_scope: Any = None,
     ) -> Any:
-        import aiohttp
+        import httpx
 
-        async with self._create_http_session() as session:
-            response = None
+        client, request_kwargs = self._client_for_request(request_kwargs)
+        async with client:
             try:
-                response = await session.request(
+                response = await client.request(
                     method=self.config.method,
                     url=self.config.full_url,
                     headers=headers,
                     **body_kwargs,
                     **request_kwargs,
                 )
+            except _refused_redirect_error() as exc:
+                # Sent again, the request would reach the pinned server and be refused again.
+                raise _NonRetryableClientError(exc) from exc
 
-                if response.status == 429 or response.status >= 500:
+            status = response.status_code
+            if status == 429 or status >= 500:
+                try:
                     response.raise_for_status()
-                elif response.status != 200:
-                    try:
-                        error_body = await response.json()
-                        error_message = (
-                            f"{error_context} failed with status {response.status}: {error_body}"
-                        )
-                    except Exception:
-                        error_message = f"{error_context} failed with status {response.status}"
+                except httpx.HTTPStatusError as exc:
+                    raise APIClientError(
+                        str(exc), status_code=status, headers=response.headers
+                    ) from exc
+            elif status != 200:
+                error_kwargs = {}
+                try:
+                    error_body = response.json()
+                    error_message = f"{error_context} failed with status {status}: {error_body}"
+                    error_kwargs["response_data"] = error_body
+                except Exception:
+                    error_message = f"{error_context} failed with status {status}"
 
-                    original = aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=error_message,
-                        headers=response.headers,
-                    )
-                    # 4xx (non-429): wrap in sentinel so the native retry layer
-                    # gives up immediately, preserving the original error on __cause__.
-                    raise _NonRetryableClientError(original) from original
-
-                if response_mode == "bytes":
-                    return await response.read()
-                body = await response.json()
-                error = _error_in_body(payload, body)
-                if error is None:
-                    return body
-
-                # Some OpenAI-compatible gateways answer a refused request with
-                # HTTP 200 and an error object in place of a result. Fail it the
-                # way the status it names would have failed.
-                code = error.get("code") if isinstance(error, dict) else None
-                status = (
-                    code
-                    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
-                    else response.status
-                )
-                original = aiohttp.ClientResponseError(
-                    request_info=response.request_info,
-                    history=response.history,
-                    status=status,
-                    message=f"{error_context} failed with status {status}: {body}",
+                original = APIClientError(
+                    error_message,
+                    status_code=status,
                     headers=response.headers,
+                    **error_kwargs,
                 )
-                if status == 429 or status >= 500:
-                    raise original
+                # 4xx (non-429): wrap in sentinel so the native retry layer
+                # gives up immediately, preserving the original error on __cause__.
                 raise _NonRetryableClientError(original) from original
-            finally:
-                # Ensure response is properly released if coroutine is cancelled between retries.
-                # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
-                if response is not None and not response.closed:
-                    response.release()
 
-    async def _call_aiohttp(
+            if response_mode == "bytes":
+                return response.content
+            try:
+                body = response.json()
+            except json.JSONDecodeError:
+                # An empty body is None, as aiohttp read it; httpx raises on one.
+                if response.content.strip():
+                    raise
+                body = None
+            error = _error_in_body(payload, body)
+            if error is None:
+                return body
+
+            # Some OpenAI-compatible gateways answer a refused request with
+            # HTTP 200 and an error object in place of a result. Fail it the
+            # way the status it names would have failed.
+            code = error.get("code") if isinstance(error, dict) else None
+            status = (
+                code
+                if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
+                else response.status_code
+            )
+            original = APIClientError(
+                f"{error_context} failed with status {status}: {body}",
+                status_code=status,
+                headers=response.headers,
+                response_data=body,
+            )
+            if status == 429 or status >= 500:
+                raise original
+            raise _NonRetryableClientError(original) from original
+
+    async def _call_http(
         self,
         payload: dict[str, Any],
         headers: dict[str, str],
@@ -663,12 +888,12 @@ class Endpoint:
             _routing_scope = self._account_scope(_routing_scope)
         self._assert_ssrf_safe_url()
 
-        import aiohttp
+        import httpx
 
         build_body = request_body_factory or (lambda: {"json": payload})
 
         async def _make_request():
-            # Body rebuilt per-attempt, not before retry orchestration: FormData/BytesIO/
+            # Body rebuilt per-attempt, not before retry orchestration: multipart bodies and
             # file streams get consumed by the first POST and must not be silently replayed.
             body_kwargs = build_body()
             collision = set(body_kwargs) & set(request_kwargs)
@@ -697,7 +922,7 @@ class Endpoint:
 
         # No RetryConfig: native path excludes the 4xx sentinel so it gives up immediately.
         # max_retries is a total-attempt cap; retry_with_backoff runs +1 attempts, so subtract one.
-        retry_exceptions = (aiohttp.ClientError, asyncio.TimeoutError)
+        retry_exceptions = (httpx.RequestError, APIClientError, asyncio.TimeoutError)
         excluded_exceptions: tuple[type[Exception], ...] = (_NonRetryableClientError,)
         if routed:
             retry_exceptions = (*retry_exceptions, _RoutedRetryableError)
@@ -734,7 +959,7 @@ class Endpoint:
             # as a routed call's do.
             headers = self._with_idempotency_key(headers, routed=True)
 
-        stream = self._stream_aiohttp(
+        stream = self._stream_http(
             payload=payload,
             headers=headers,
             **scope_kwargs,
@@ -752,7 +977,7 @@ class Endpoint:
             # too, so it records how the stream ended now rather than when collected.
             await stream.aclose()
 
-    async def _stream_aiohttp(
+    async def _stream_http(
         self,
         payload: dict,
         headers: dict,
@@ -764,31 +989,28 @@ class Endpoint:
 
         payload["stream"] = True
 
-        async with self._create_http_session() as session:
-            async with session.request(
+        client, kwargs = self._client_for_request(kwargs)
+        async with client:
+            async with client.stream(
                 method=self.config.method,
                 url=self.config.full_url,
                 headers=headers,
                 json=payload,
                 **kwargs,
             ) as response:
-                if response.status != 200:
-                    import aiohttp
-
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=f"Request failed with status {response.status}",
+                if response.status_code != 200:
+                    raise APIClientError(
+                        f"Request failed with status {response.status_code}",
+                        status_code=response.status_code,
                         headers=response.headers,
                     )
 
                 pending = ""
                 frame = _SSEFrame()
-                async for raw in response.content:
-                    if not raw:
+                async for text in response.aiter_text():
+                    if not text:
                         continue
-                    pending += raw.decode("utf-8")
+                    pending += text
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         for data, name in self._frame_stream_line(line, frame):
@@ -1010,7 +1232,33 @@ class Endpoint:
         }
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        base_url: str | None = None,
+        api_key: str | SecretStr | None = None,
+        allow_local_network: bool | None = None,
+    ):
+        """Rebuild an endpoint from ``to_dict`` output.
+
+        The stored config never supplies the API key, the local-network opt-in, a grant
+        or runtime state. The first two come from the keyword arguments here; a grant is
+        handed to the live config again by the caller whose role names it. ``base_url``
+        given here replaces the stored one. A stored header whose name reads as a
+        credential or picks the server is dropped (see ``_without_credential_headers``),
+        and of the stored client options only the headers are kept. A setting at the top
+        level of the config or of its ``kwargs`` whose name reads as a credential or a
+        proxy is dropped (see ``_names_credential_setting``); other stored ``kwargs`` are
+        restored as written, a value nested inside one included. A user and password in
+        the stored URL are removed, and a stored URL that is not in a form they can be
+        removed from is refused (see ``_without_userinfo``). A stored config that does not
+        validate is refused with the fields and reasons only, none of its values, and a
+        stored ``retry_config`` or ``circuit_breaker`` that does not build is refused naming
+        the part and the error's type only. Without the keyword arguments the config has no
+        API key and the opt-in is off; ``iModel.from_dict`` then applies the provider's
+        registration.
+        """
         from lionagi.utils import to_dict
 
         data = to_dict(data, recursive=True)
@@ -1019,26 +1267,345 @@ class Endpoint:
         config = data.get("config")
 
         if retry_config:
-            retry_config = RetryConfig(**retry_config)
+            retry_config = _restored_part(RetryConfig, "retry_config", retry_config)
         if circuit_breaker:
-            circuit_breaker = CircuitBreaker(**circuit_breaker)
+            circuit_breaker = _restored_part(CircuitBreaker, "circuit_breaker", circuit_breaker)
         if config:
-            # The config never writes a grant down, but this reads a stored row
-            # as it stands: one written by an older version, or by any other
-            # writer, may still carry it. A grant belongs to the role of the
-            # caller restoring the row, who hands it again if the role names it.
+            # None of these is taken from a stored row. The config writes down only the
+            # opt-in; a row written by an older version, or by any other writer, may
+            # carry the rest. A name the config has no field for is moved into kwargs,
+            # so both places are cleared. A grant belongs to the role of the caller
+            # restoring the row, who hands it again if the role names it.
+            # A name the config has no field for becomes a kwarg, which the request body
+            # carries, so the setting rule and the header filter apply at the top level too.
+            config = _restored_settings(config)
             kwargs = config.get("kwargs")
             if isinstance(kwargs, dict):
-                config = {
-                    **config,
-                    "kwargs": {
-                        k: v for k, v in kwargs.items() if k not in AUTHORIZATION_KWARG_NAMES
-                    },
+                # A base_url there is a copy no request reads, the config's own field being
+                # the URL the client uses, so it is dropped with any user and password in it.
+                # A stored set of headers kept there is filtered as default_headers is.
+                config["kwargs"] = _restored_settings(kwargs, drop=frozenset({"base_url"}))
+            # Nor does a stored header. The endpoint merges default_headers over the
+            # credential header it writes, so a stored Authorization or x-api-key would
+            # replace the restored key, at whatever URL the model is restored to. Of the
+            # client options only the headers are kept, filtered the same way: the rest
+            # set up this process's HTTP client, and some hand it a credential (auth,
+            # proxy_auth, cookies) or let it read one here (trust_env reads .netrc).
+            if isinstance(config.get("default_headers"), Mapping):
+                config["default_headers"] = _without_credential_headers(config["default_headers"])
+            client_kwargs = config.get("client_kwargs")
+            if isinstance(client_kwargs, Mapping):
+                config["client_kwargs"] = {
+                    name: headers
+                    for name, value in client_kwargs.items()
+                    if name == "headers"
+                    and (headers := _without_credential_headers(value)) is not None
                 }
-            config = EndpointConfig(**config)
+            # The stored URL keeps no user and password either: the HTTP client would
+            # send them as Basic authentication to the host the URL names. A URL the
+            # caller passes replaces the stored one unread.
+            if base_url is not None:
+                config["base_url"] = base_url
+            elif isinstance(stored_url := _stored_base_url(config), str):
+                config["base_url"] = _without_userinfo(stored_url)
+            if api_key is not None:
+                config["api_key"] = api_key
+            if allow_local_network is not None:
+                config["allow_local_network"] = allow_local_network
+            # pydantic's message repeats the values it could not read, and a stored value
+            # may be a password, so the refusal names each field and reason only. A
+            # location past the field is a key of the stored value (``params.<key>``),
+            # which is stored text too, so only the field is named. It is raised outside
+            # the handler, so the original error is not attached to it.
+            try:
+                config = EndpointConfig(**config)
+                problems = None
+            except ValidationError as exc:
+                problems = "; ".join(
+                    f"{error['loc'][0] if error['loc'] else 'config'}: {error['msg']}"
+                    for error in exc.errors(
+                        include_url=False, include_context=False, include_input=False
+                    )
+                )
+            except TypeError:
+                # A name that is not a string, bytes say, which no field takes.
+                problems = "a setting's name is not a string"
+            if problems is not None:
+                raise ValueError(
+                    f"The stored endpoint config does not validate ({problems}). Its values "
+                    "are left out of this message. Correct the stored config, or pass a live "
+                    "model to Branch.from_dict (chat_model=, parse_model=)."
+                )
 
         return cls(
             config=config,
             circuit_breaker=circuit_breaker,
             retry_config=retry_config,
         )
+
+
+def _restored_part(part: type, field: str, stored: Any) -> Any:
+    """``part`` built from the stored ``field``, or refused without the stored text.
+
+    The constructor's message names an unknown stored key, which is stored text and may be
+    a password, so the refusal names the field and the error's class only. It is raised
+    outside the handler, so the original error is not attached to it.
+    """
+    try:
+        return part(**stored)
+    except (TypeError, ValueError) as exc:
+        reason = type(exc).__name__
+    raise ValueError(
+        f"The stored {field} does not build ({reason}). Its names and values are left out "
+        "of this message. Correct the stored config, or pass a live model to "
+        "Branch.from_dict (chat_model=, parse_model=)."
+    )
+
+
+def _restored_settings(settings: Mapping, *, drop: frozenset[str] = frozenset()) -> dict:
+    """``settings`` without what a restored config never takes from a stored row.
+
+    That is a name in ``_NOT_RESTORED`` or ``drop`` and one ``_names_credential_setting``
+    reads as a credential or a proxy, each test reading a bytes name as Latin-1, as the
+    HTTP client reads it. A stored set of headers loses its credential headers (see
+    ``_without_credential_headers``), and one that cannot be read for its names is dropped.
+    """
+    restored = {}
+    for key, value in settings.items():
+        name = bytes(key).decode("latin-1") if isinstance(key, (bytes, bytearray)) else key
+        if name in _NOT_RESTORED or name in drop or _names_credential_setting(name):
+            continue
+        if name in _HEADER_KWARGS:
+            value = _without_credential_headers(value)
+            if value is None:
+                continue
+        restored[key] = value
+    return restored
+
+
+# Read in a name with its case, separators and camel-case run together, so ``X-AuthKey``,
+# ``auth_key`` and ``authKey`` read alike. The stored settings and the stored headers are
+# both tested against these; see ``_names_credential_setting``.
+_CREDENTIAL_NAME_PARTS = (
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "bearer",
+    "cookie",
+    "proxy",
+    "proxies",
+    "authorization",
+    "authorisation",
+    "authentication",
+    "authkey",
+    "authtoken",
+    "apikey",
+    "accesskey",
+    "privatekey",
+    "sessionkey",
+    "clientkey",
+    "signingkey",
+    "encryptionkey",
+    "masterkey",
+    "subscriptionkey",
+    "licensekey",
+)
+
+
+def _names_credential_setting(name: Any) -> bool:
+    """Whether a stored setting's or header's name reads as a credential or a proxy.
+
+    The name is read with its case, separators and camel-case run together. It reads as a
+    credential when it is ``auth``, ``authentication``, ``bearer`` or ``key``; begins with
+    ``xauth`` (``X-Auth``, ``XAuth``, ``x_authentication``); ends in ``token``
+    (``access_token``, ``accessToken``), so ``max_tokens`` and ``token_limit`` are kept; or
+    holds one of ``_CREDENTIAL_NAME_PARTS``: ``Authorisation``, ``authentication_key``,
+    ``api_key_id``, ``session_key``, ``clientKey``, ``Ocp-Apim-Subscription-Key``,
+    ``client_secret``, ``Cookie2`` and a name holding ``proxy`` or ``proxies``, whose URL
+    can hold a user and password. A setting otherwise named, ``author``, ``user``,
+    ``prompt_cache_key`` or ``custom_key`` say, is kept. Headers are read by this rule and
+    two more (see ``_without_credential_headers``). A bytes name is read as Latin-1, as the
+    HTTP client reads it. Only the name is read, so a setting nested inside another keeps
+    its names: a JSON schema field named ``token`` is sent.
+    """
+    from lionagi.libs.credential_fields import fold_field_name
+
+    if isinstance(name, (bytes, bytearray)):
+        name = bytes(name).decode("latin-1")
+    if not isinstance(name, str):
+        return False
+    compact = fold_field_name(name).replace("_", "")
+    return (
+        compact in ("auth", "authentication", "bearer", "key")
+        or compact.startswith("xauth")
+        or compact.endswith("token")
+        or any(part in compact for part in _CREDENTIAL_NAME_PARTS)
+    )
+
+
+def _without_credential_headers(headers: Any) -> Any:
+    """``headers`` without each stored header a restored model must not send.
+
+    That is a header whose name reads as a credential or a proxy as a stored setting's
+    does (see ``_names_credential_setting``: ``Authorisation``, ``X-Auth``, ``AuthKey``,
+    ``X-Session-Key``, ``Cookie2``) and three more: one with ``token`` anywhere in its name
+    (``X-Token-Auth``), since no header counts tokens as ``max_tokens`` does; one whose
+    last word is ``key`` (``X-Functions-Key``, ``X-Cache-Key``), since a header so named
+    carries a key where a setting so named, ``custom_key``, may be the caller's own; and
+    ``Host``, which would send the restored key to another virtual host at the same address.
+    Only the name is read: a header named otherwise, ``X-Signature``, ``X-Monkey`` or
+    ``Passphrase`` say, is kept. A bytes name is read as Latin-1, as the HTTP client reads
+    it. A mapping and a list of name-value pairs are filtered, and an entry of the list that
+    is not a pair is dropped. Any other value, such as a string of header lines, cannot be
+    read for its names and is returned as ``None``, so no header from it is restored.
+    """
+    from lionagi.libs.credential_fields import fold_field_name
+
+    def names_credential(name: Any) -> bool:
+        if isinstance(name, (bytes, bytearray)):
+            name = bytes(name).decode("latin-1")
+        if not isinstance(name, str):
+            return False
+        folded = fold_field_name(name).strip("_")
+        compact = folded.replace("_", "")
+        return (
+            _names_credential_setting(name)
+            or compact == "host"
+            or "token" in compact
+            or folded.endswith("_key")
+        )
+
+    if isinstance(headers, Mapping):
+        return {name: value for name, value in headers.items() if not names_credential(name)}
+    if isinstance(headers, (list, tuple)):
+        return [
+            pair
+            for pair in headers
+            if isinstance(pair, (list, tuple)) and len(pair) == 2 and not names_credential(pair[0])
+        ]
+    return None
+
+
+_STORED_URL_REMEDY = (
+    "Pass the URL to iModel.from_dict or Endpoint.from_dict (base_url=), pass a live "
+    "model to Branch.from_dict (chat_model=, parse_model=), or correct the stored URL."
+)
+
+# Layers of percent-encoding a stored URL is read through before it counts as unreadable.
+_URL_DECODE_PASSES = 16
+
+
+def _stored_base_url(config: Mapping) -> Any:
+    """The stored ``base_url`` as the config reads it: bytes are decoded as UTF-8, as the
+    config's string field decodes them, and any other value is returned as it is. Bytes
+    that do not decode are refused without their text, which may hold a password."""
+    value = config.get("base_url")
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return bytes(value).decode()
+        except UnicodeDecodeError:
+            pass
+        # Raised here, outside the handler, so the decode error and the bytes it holds
+        # are not attached to the refusal.
+        raise ValueError(
+            "The stored base_url is bytes that do not decode as UTF-8, so it cannot be read "
+            f"for a user and password and is not restored. {_STORED_URL_REMEDY}"
+        )
+    return value
+
+
+def _without_userinfo(url: str) -> str:
+    """``url`` without the ``user:password@`` part the HTTP client reads in it, or refused.
+
+    A stored URL is restored only in this form, read from the stored text itself:
+    ``http://`` or ``https://`` from its first character, an optional user and password
+    running to the last ``@`` and holding no slash, backslash, ``?`` or ``#``, then a host
+    name of letters, digits, ``-``, ``.`` and ``_`` (outside ASCII, a letter's combining
+    marks count as letters, in the composed form, NFC, that the client accepts), or an IPv6
+    address in brackets with an optional zone of letters, digits and ``-._~``, then an
+    optional port of digits, which may be empty and is at most 65535, and no ``@`` anywhere
+    once the user and password are removed. Text with no ``:`` and no ``@``, such as
+    ``internal``, is returned as it is, since it has no place for a password. Anything else
+    is refused, because which part of it is a password cannot be told and the config would
+    write it back. The check for ``:`` and ``@`` reads the text
+    with its percent-encoding removed and its compatibility characters folded until it
+    stops changing, so ``%2540`` and a fullwidth ``＠`` count as an ``@``.
+    """
+    import re
+    import unicodedata
+    from urllib.parse import unquote
+
+    import httpx
+
+    def plain(text: str) -> str | None:
+        # One pass past the limit, to see that the last layer read was the last one.
+        for _ in range(_URL_DECODE_PASSES + 1):
+            once = unquote(unicodedata.normalize("NFKC", text))
+            if once == text:
+                return text
+            text = once
+        # Still changing after that many layers: no client sends such a URL, and what
+        # the layers hide cannot be told.
+        return None
+
+    def refused(reason: str) -> ValueError:
+        return ValueError(
+            f"The stored base_url {reason}, so it cannot be read for a user and password "
+            f"and is not restored. {_STORED_URL_REMEDY}"
+        )
+
+    deep = f"is still percent-encoded after {_URL_DECODE_PASSES} layers are read"
+    whole = plain(url)
+    if whole is not None and ":" not in whole and "@" not in whole:
+        return url
+    if re.match(r"(?i:https?)://", url, re.ASCII) is None:
+        raise refused(deep if whole is None else "does not begin with http:// or https://")
+    # Every refusal is raised outside an exception handler: the client's error repeats
+    # the text it could not read, and a refusal raised inside would carry it.
+    try:
+        parsed = httpx.URL(url)
+    except (httpx.InvalidURL, UnicodeError):
+        parsed = None
+    if parsed is None:
+        raise refused("does not read as a URL the HTTP client can send")
+    if not parsed.host:
+        raise refused("has no host")
+    # The form is read from the stored text, never from the client's normalized copy of
+    # it: parsers end the host at different characters (a backslash ends it for a browser
+    # and not for this client), so a check of the copy can pass a host the text does not
+    # name. The user and password run to the last '@' before any slash, backslash, '?' or
+    # '#', and a backslash before the host fails the form. This client ends the authority
+    # at the first slash, '?' or '#' and takes the user and password to its last '@', so
+    # it reads in a URL of this form the host the form reads.
+    stored = re.fullmatch(
+        r"(?i:https?)://"
+        r"(?:[^/?#\\]+@)?"
+        r"(?:\[[0-9A-Fa-f:.]+(?:%25[A-Za-z0-9._~-]+)?\]|(?P<name>[^\[\]:/?#@\\]+))"
+        r"(?::(?P<port>[0-9]*))?"
+        r"(?:[/?#].*)?",
+        url,
+        re.DOTALL | re.ASCII,
+    )
+
+    # The client has checked an IPv6 address already; a name it accepts may still hold
+    # percent-encoding or other punctuation. Outside ASCII a letter can be written with a
+    # combining mark, as in Devanagari, so a mark counts there as a letter does.
+    def name_char(char: str) -> bool:
+        if char.isascii():
+            return char.isalnum() or char in "-._"
+        return unicodedata.category(char)[0] in "LMN"
+
+    if (
+        stored is None
+        or not (stored["name"] is None or all(name_char(char) for char in stored["name"]))
+        or (stored["port"] and int(stored["port"]) > 65535)
+    ):
+        raise refused("has something other than a host name or IP address and a port number")
+    restored = str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
+    after = plain(restored)
+    if after is None:
+        raise refused(deep)
+    if "@" in after:
+        raise refused("has an '@' after its host")
+    return restored
