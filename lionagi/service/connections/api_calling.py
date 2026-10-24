@@ -185,7 +185,7 @@ class APICalling(HookedEvent):
                 text = _input_payload_text(self.payload)
                 prompt_chars = len(text) if text is not None else 0
             except Exception:
-                # An advisory measurement can be unavailable without losing the row.
+                # An optional measurement can be unavailable without losing the row.
                 prompt_chars = None
         try:
             provider = self.endpoint.config.provider
@@ -204,7 +204,7 @@ class APICalling(HookedEvent):
                 api_call_id=None if kind == "refused" else str(self.id),
             )
         except Exception:
-            # Advisory uncapped measurement and observation cannot change the request.
+            # Optional uncapped measurement and observation cannot change the request.
             return
 
     @property

@@ -64,7 +64,7 @@ def _live(owner: weakref.ReferenceType[APIUsageSink]) -> APIUsageSink | None:
 
 
 def is_collecting() -> bool:
-    """Whether advisory construction measurement has a live, open turn owner."""
+    """Whether optional construction measurement has a live, open turn owner."""
     scope = _turn.get()
     return scope is not None and _live(scope[0]) is not None
 

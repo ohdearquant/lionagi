@@ -117,7 +117,7 @@ def test_uncapped_advisory_chars_never_count_or_calibrate(endpoint, monkeypatch)
 
 def test_nontelemetry_uncapped_construction_does_no_new_serialization(endpoint, monkeypatch):
     def forbidden(*args):
-        raise AssertionError("no advisory work without telemetry")
+        raise AssertionError("no optional work without telemetry")
 
     monkeypatch.setattr(api_module, "_input_payload_text", forbidden)
     call = APICalling(endpoint=endpoint, payload=_payload())
