@@ -77,7 +77,7 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
 (`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:697`,
-`lionagi/service/connections/api_calling.py:187`). HTTP retry happens inside the
+`lionagi/service/connections/api_calling.py:268-275`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
 `lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
