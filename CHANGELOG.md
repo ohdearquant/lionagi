@@ -314,9 +314,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   own user settings. `--retry-failed` refuses to run one again on a branch that reads settings
   files: the orchestrator's, or a role's that is neither a contained Claude worker, a codex
   worker nor a model that is not a CLI. The flag is read from the block's top-level keys as YAML
-  parses them, its key matched as written, so a key nested under another setting is not the
-  flag: an indented block, a quoted or `?` key and a `<<` merge key all count, an
-  explicit key wins over a merged one, and a key given more than once, of which YAML keeps the
+  parses them, its key matched as written, so a key nested under another setting, or spelled in
+  another letter case or with dashes, is not the flag, and when no top-level key sets the flag
+  such a key warns that it does not: an indented block, a quoted or `?` key and a `<<` merge key
+  all count, an explicit key wins over a merged one, and a key given more than once, of which YAML keeps the
   last, warns and leaves the flag off only when every one reads `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0`
   and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does
   not read as YAML settings now warns that every setting in it is ignored, and contains its
@@ -332,11 +333,14 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   none of its settings apply, so the worker is contained rather than run on your settings, which
   is what the flag asks to prevent: the value that would turn that off is in a block that is not
   read. The cost is that your own hooks and permission rules do not gate that worker until the
-  profile is fixed, which the warning says. Text on lines of its own ahead of the first line
-  that is exactly `---` leaves the profile all prompt, as before, and nothing in a block after
-  it applies, the flag included: when a closing `---` line follows and the block between them
-  sets the flag, or does not read and names it, the profile warns that its worker is not
-  contained.
+  profile is fixed. Text on lines of its own ahead of the first line that is exactly `---`
+  leaves the profile all prompt, as before, and nothing after it applies, the flag included, so
+  its worker runs on your settings even where a block after that text sets the flag to `true`:
+  containing it would drop your hooks and permission rules for a profile that earlier releases
+  ran as a prompt, on a block that is not read. Every block after that text, closed or not, that
+  has a line setting the flag as a key, reads as settings that set it, or does not read and
+  names it, warns that its worker is not contained; a block there runs from a line of three or
+  more dashes to the next such line.
   Containment is unchanged for `li agent -a`, which reads profiles the same way and so prints the
   same warnings.
 - The scheduler's readiness (`/admin/readiness`, `li doctor`) reads `stalled` when a
@@ -643,7 +647,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   An effort suffix on an alias of a provider with no effort levels, `gemini-api/<model>-high`, or
   on a letter case of its name, is refused as on `gemini/<model>-high`: such a spec, which ran
   before without the effort, now raises `ValueError` naming the suffix to remove. A letter case
-  of a Claude provider name, `Claude/opus-4-7`, builds as `claude/opus-4-7` does.
+  of a Claude provider name, `Claude/opus-4-7`, builds as `claude/opus-4-7` does, and the model
+  an orchestrator's session row records for such a spec gains the prefix too
+  (`Claude/claude-opus-4-7`, where it recorded the spec as written).
 
 - `extract_docstring(func, style="rest")`, and `function_to_schema(..., style="rest")` with it,
   keeps a parameter's whole description. Indented lines after `:param x:` were dropped, so a
