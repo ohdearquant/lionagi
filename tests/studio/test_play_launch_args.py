@@ -98,6 +98,33 @@ class TestBuildArgvPlay:
         with pytest.raises(ValueError, match="names a `li play` subcommand"):
             validate_launch_fields(_play_schedule(action_kind=kind, action_playbook=name))
 
+    @pytest.mark.parametrize("kind", ["play", "playbook"])
+    @pytest.mark.parametrize("playbook", [None, ""])
+    @pytest.mark.parametrize("name", ["list", "check", "status"])
+    def test_extra_args_that_open_with_a_play_subcommand_are_refused_without_a_playbook(
+        self, kind, playbook, name
+    ):
+        # Without a playbook the extra arguments follow `li play` directly.
+        schedule = _play_schedule(
+            action_kind=kind, action_playbook=playbook, action_extra_args=[name]
+        )
+        with pytest.raises(ValueError, match=f"action_extra_args starts with '{name}'"):
+            validate_launch_fields(schedule)
+        with pytest.raises(ValueError, match=f"action_extra_args starts with '{name}'"):
+            build_argv(schedule, {}, executable_prefix=["li"])
+
+    def test_extra_args_after_a_playbook_or_a_playbook_word_still_launch(self):
+        argv, _ = build_argv(
+            _play_schedule(action_extra_args=["list"]), {}, executable_prefix=["li"]
+        )
+        assert argv == ["li", "play", "audit", "list"]
+        argv, _ = build_argv(
+            _play_schedule(action_playbook=None, action_extra_args=["triage", "status"]),
+            {},
+            executable_prefix=["li"],
+        )
+        assert argv == ["li", "play", "triage", "status"]
+
     def test_the_refused_names_are_the_subcommands_li_play_reads(self):
         import ast
         import importlib
@@ -113,16 +140,29 @@ class TestBuildArgvPlay:
             for node in ast.walk(ast.parse(inspect.getsource(cli_main)))
             if isinstance(node, ast.FunctionDef) and node.name == "_handle_play_shortcut"
         ]
-        read = {
-            comparator.value
-            for node in ast.walk(shortcut)
-            if isinstance(node, ast.Compare)
-            and isinstance(node.left, ast.Name)
-            and node.left.id == "head"
-            and isinstance(node.ops[0], ast.Eq)
-            for comparator in node.comparators
-            if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str)
-        }
+        # `head == "list"` and `head in ("list", ...)` both read a word as a subcommand.
+        read = set()
+        for node in ast.walk(shortcut):
+            if not (
+                isinstance(node, ast.Compare)
+                and isinstance(node.left, ast.Name)
+                and node.left.id == "head"
+            ):
+                continue
+            for op, comparator in zip(node.ops, node.comparators):
+                if isinstance(op, ast.Eq):
+                    candidates = [comparator]
+                elif isinstance(op, ast.In) and isinstance(
+                    comparator, (ast.Tuple, ast.List, ast.Set)
+                ):
+                    candidates = comparator.elts
+                else:
+                    continue
+                read |= {
+                    c.value
+                    for c in candidates
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                }
         # Flags (--resume) are refused by the identifier check already.
         assert {name for name in read if not name.startswith("-")} == _PLAY_SUBCOMMANDS
 

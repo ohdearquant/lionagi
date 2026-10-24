@@ -508,9 +508,17 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import _validate_identifier, _validate_playbook_args
+    from lionagi.studio.scheduler.subprocess import (
+        _PLAY_SUBCOMMANDS,
+        _validate_identifier,
+        _validate_playbook_args,
+    )
 
     _validate_identifier(target.name, "target.playbook.name")
+    if target.name in _PLAY_SUBCOMMANDS:
+        raise ValueError(
+            f"target.playbook.name {target.name!r} names a `li play` subcommand, not a playbook"
+        )
     # The launch passes these args, so they are held to its rules here, where
     # validate and apply report them, rather than first failing when the row fires.
     _validate_playbook_args(target.args)
@@ -1444,13 +1452,13 @@ async def _adopt_undeclarable(
         return any(status not in _NOTIFY_ALLOWED_STATUSES for status in current)
     if name == "action_playbook" and isinstance(current, str):
         # A member's playbook name is refused when the launch would refuse it.
-        from lionagi.studio.scheduler.subprocess import _validate_identifier
+        from lionagi.studio.scheduler.subprocess import _PLAY_SUBCOMMANDS, _validate_identifier
 
         try:
             _validate_identifier(current, "action_playbook")
         except ValueError:
             return True
-        return False
+        return _row_action_kind(row) == "play" and current in _PLAY_SUBCOMMANDS
     if name == "action_command" and isinstance(current, str):
         # A member's executable resolves only against the allow-list, so a name the
         # launch refuses, or one this process's allow-list does not carry, is not

@@ -1554,13 +1554,16 @@ async def test_fire_now_refuses_when_the_execution_root_cannot_be_resolved(monke
     with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
         with patch.object(engine, "_tracked_fire") as mock_tracked:
             with pytest.raises(
-                ValueError, match=r"could not be resolved \(PermissionError\)"
+                ValueError,
+                match=r"the project registry or the execution root its launch reads could not "
+                r"be read \(PermissionError\)",
             ) as refused:
                 await engine.fire_now("sched-001")
 
     assert "/private/registry.db" not in str(refused.value)
     assert refused.value.__cause__ is None
-    (record,) = [r for r in caplog.records if "could not be resolved" in r.message]
+    assert refused.value.__context__ is None
+    (record,) = [r for r in caplog.records if "project registry or execution root" in r.message]
     assert isinstance(record.exc_info[1], PermissionError)
     mock_tracked.assert_not_called()
     assert engine.global_slot_holders == []

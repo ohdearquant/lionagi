@@ -1429,18 +1429,18 @@ def test_text_ahead_of_a_frontmatter_on_its_line_warns_that_its_settings_are_ign
         "Work.\n\n---\n\nMore work.\n",
         "Scope\n---\nDo not touch contain_user_settings.\n",
         "Work.\n\n---\n\nNever set contain_user_settings here.\n\n---\n\nMore work.\n",
-        "# notes\n---\nnotes: [unclosed, contain_user_settings\n",
         "Notes ---\nWork on the task.\n",
+        "Notes ---\nWork on the task.\n---\n\nMore work.\n",
         "Notes ---\nWork: do this: then that\n",
-        "Title\n-----\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n",
+        "Title\n-----\nmodel: claude_code/sonnet\n---\n\nWork.\n",
         "---\n# contain_user_settings: true\n---\n\nWork.\n",
-        "Work.\n\n---\n\n- contain_user_settings: true\n\n---\n\nMore work.\n",
+        "Work.\n\n---\n\n- Never set contain_user_settings here.\n\n---\n\nMore work.\n",
     ],
 )
 def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
     """Text on lines of its own ahead of any delimiter makes the profile one with no block, so
-    nothing in it is a setting, as before; a list or a line of text between two delimiters
-    after it is prompt too, as is a hidden block of prose that names no flag."""
+    nothing in it is a setting, as before; prose or a list after it is prompt too, even where
+    it names the flag, as is a hidden block of prose, closed or not, that names no flag."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
@@ -1479,8 +1479,7 @@ def test_a_profile_that_does_not_open_with_a_block_is_all_prompt(caplog, text):
 )
 def test_a_hidden_block_ends_at_its_closing_delimiter(caplog, text, contained, warns):
     """A hidden block runs to its closing ``---`` line, so a flag in the body after it is
-    prompt text; one that does not read runs to the end when it has no closing line. A block
-    after text on lines of its own counts only between two ``---`` lines."""
+    prompt text; one that does not read runs to the end when it has no closing line."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
@@ -1543,14 +1542,29 @@ def test_a_hidden_block_that_reads_as_a_list_or_text_contains_when_it_names_the_
             "notes: [unclosed\n---\n\nWork.\n",
             2,
         ),
+        ("# notes\n---\nnotes: [unclosed, contain_user_settings\n", 2),
+        ("Title\n-----\nmodel: claude_code/sonnet\ncontain_user_settings: true\n---\n\nWork.\n", 2),
+        ("Work.\n\n---\n\n- contain_user_settings: true\n\n---\n\nMore work.\n", 3),
+        ("Work.\n---\ncontain_user_settings: true\n", 2),
+        ("Work.\r\n---\r\ncontain_user_settings: true\r\n", 2),
+        ("Work.\n---\ncontain_user_settings:true\n---\nMore.\n", 2),
+        ("Work.\n---\n{contain_user_settings: true}\n---\nMore.\n", 2),
+        ("Work.\n---\n---\ncontain_user_settings: true\n", 3),
+        (
+            "Work.\n---\nmodel: claude_code/sonnet\n---\nNotes.\n---\n"
+            "contain_user_settings: true\n---\nMore.\n",
+            6,
+        ),
     ],
 )
 def test_a_block_after_text_on_lines_of_its_own_names_the_flag_without_containing(
     caplog, text, line
 ):
     """Text on lines of its own ahead of the first ``---`` line leaves the profile all prompt,
-    as before, so a block after it sets nothing, the flag included, whatever value it gives;
-    one that names the flag warns rather than lose it in silence."""
+    as before, so a block after it sets nothing, the flag included, whatever value it gives.
+    Any block after that text, closed or not and whichever it is, that sets the flag as a key
+    or does not read and names it warns rather than lose it in silence; a block runs from a
+    line of three or more dashes to the next such line."""
     import logging
 
     from lionagi.cli._providers import _parse_profile
@@ -1563,6 +1577,55 @@ def test_a_block_after_text_on_lines_of_its_own_names_the_flag_without_containin
     assert f"the --- block on line {line} follows text on lines of its own" in caplog.text
     assert "its worker is not contained, though the block names" in caplog.text
     assert "hides the frontmatter" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("block", "key"),
+    [
+        ("worker:\n  contain_user_settings: true\n", "worker.contain_user_settings"),
+        ("workers:\n  - contain_user_settings: true\n", "workers[0].contain_user_settings"),
+        ("Contain_User_Settings: true\n", "Contain_User_Settings"),
+        ("contain-user-settings: true\n", "contain-user-settings"),
+    ],
+)
+def test_a_key_that_reads_as_the_flag_but_is_not_it_warns_without_containing(caplog, block, key):
+    """The flag is read only as a top-level key spelled exactly so: a key spelled like it, or
+    the flag under another setting, warns that it does not set the flag, and the rest of the
+    frontmatter still applies."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = "---\nmodel: claude_code/sonnet\n" + block + "---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model == "claude_code/sonnet"
+    assert profile.contain_user_settings is False
+    assert f"it is not set by {key!r}, and its worker is not contained" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("block", "contained"),
+    [
+        ("contain_user_settings: true\nworker:\n  contain_user_settings: false\n", True),
+        ("contain_user_settings: false\n", False),
+        ("notes: do not touch contain_user_settings\n", False),
+    ],
+)
+def test_a_frontmatter_that_sets_the_flag_or_names_it_in_a_value_has_no_key_warning(
+    caplog, block, contained
+):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = "---\nmodel: claude_code/sonnet\n" + block + "---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.contain_user_settings is contained
+    assert "counts only as a top-level key" not in caplog.text
 
 
 def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):

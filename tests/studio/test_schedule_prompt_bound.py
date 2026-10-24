@@ -175,3 +175,71 @@ def test_update_of_another_field_on_a_stored_dash_play_prompt_is_written():
             db.update_schedule.assert_awaited_once_with("sched-1", name="renamed")
 
     asyncio.run(_run())
+
+
+@pytest.mark.parametrize("kind", ["play", "playbook"])
+@pytest.mark.parametrize("playbook", [None, ""])
+@pytest.mark.parametrize("name", ["list", "check", "status"])
+def test_create_rejects_extra_args_that_open_with_a_play_subcommand_before_db_write(
+    kind, playbook, name
+):
+    # With no playbook, the first extra argument is the word `li play` reads first.
+    async def _run() -> None:
+        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+            db = AsyncMock()
+            state_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            state_db.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match=f"action_extra_args starts with '{name}'"):
+                await create_schedule(
+                    _play_data(
+                        "",
+                        action_kind=kind,
+                        action_playbook=playbook,
+                        action_extra_args=[name, "triage"],
+                    )
+                )
+            db.create_schedule.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # A playbook name comes first, so a later `list` is one of its arguments.
+        {"action_playbook": "triage", "action_extra_args": ["list"]},
+        {"action_playbook": None, "action_extra_args": ["triage", "list"]},
+    ],
+)
+def test_create_keeps_extra_args_that_li_play_does_not_read_as_a_subcommand(overrides):
+    async def _run() -> None:
+        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+            db = AsyncMock()
+            state_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            state_db.return_value.__aexit__ = AsyncMock(return_value=False)
+            await create_schedule(_play_data("", **overrides))
+            db.create_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    ("stored", "fields"),
+    [
+        (_play_data("", action_playbook=None), {"action_extra_args": ["list"]}),
+        # Clearing the playbook makes the stored first extra argument the subcommand.
+        (_play_data("", action_extra_args=["status"]), {"action_playbook": None}),
+    ],
+)
+def test_update_rejects_extra_args_that_open_with_a_play_subcommand_before_db_write(stored, fields):
+    async def _run() -> None:
+        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+            db = AsyncMock()
+            db.get_schedule.return_value = stored | {"id": "sched-1"}
+            state_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            state_db.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match="action_extra_args starts with"):
+                await update_schedule("sched-1", fields)
+            db.update_schedule.assert_not_awaited()
+
+    asyncio.run(_run())
