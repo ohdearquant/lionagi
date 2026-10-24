@@ -10,6 +10,8 @@ then every payload, then duplicate owners, and finally key collisions.
 
 Frozen values support ordinary assignment protection, not initializer re-entry or
 deliberate low-level mutation. Runtime structural hashes are not durable digests.
+Functions, classes and module-level builtins are admitted by identity; their internal
+state is outside the immutability promise.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 from types import MemberDescriptorType
-from typing import Any, ClassVar, Generic, Literal, TypeVar, get_origin, overload
+from typing import Any, ClassVar, Generic, Literal, NoReturn, TypeVar, get_origin, overload
 
 from typing_extensions import Self
 
@@ -482,10 +484,17 @@ class Registry(Params, Generic[ItemT]):
     def __len__(self) -> int:
         return len(self.records)
 
-    def __contains__(self, key: object) -> bool:
-        return type(key) is str and key in self.keys()
+    def __iter__(self) -> NoReturn:
+        raise TypeError("Registry is not iterable; use keys()")
 
-    def _record(self, key: str) -> RegistryRecord[ItemT]:
+    def __contains__(self, key: object) -> bool:
+        try:
+            self._record(key)
+        except KeyError:
+            return False
+        return True
+
+    def _record(self, key: object) -> RegistryRecord[ItemT]:
         if type(key) is not str:
             raise TypeError("registry query keys must be exact str values")
         for record in self.records:

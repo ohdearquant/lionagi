@@ -180,10 +180,17 @@ def test_empty_composition_and_ordinary_query_contract():
         pass
 
     for key in (1, True, None, String("a")):
-        assert key not in registry
-        for query in (registry.__getitem__, registry.get, registry.source_of):
-            with pytest.raises(TypeError):
+        for query in (
+            registry.__contains__,
+            registry.__getitem__,
+            registry.get,
+            registry.source_of,
+        ):
+            with pytest.raises(TypeError, match="exact str"):
                 query(key)
+    for iterate in (iter, list, tuple):
+        with pytest.raises(TypeError, match=r"keys\(\)"):
+            iterate(registry)
     assert not hasattr(registry, "values") and not hasattr(registry, "owner_of")
     assert not callable(registry.items)
 
@@ -353,6 +360,40 @@ def test_authored_updates_are_fresh_and_derived_values_are_readonly():
 @dataclass(frozen=True)
 class _Box:
     child: Any
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_plain_subclass_cannot_inherit_frozen_dataclass_admission(nested):
+    class PlainBox(_Box):
+        pass
+
+    value = PlainBox(1)
+    value.extra = []
+    value.extra.append("mutable")
+    payload = (value,) if nested else value
+    with pytest.raises(RegistryValueError) as info:
+        RegistryEntry(key="x", value=payload)
+    assert (info.value.reason, info.value.path, info.value.value_type) == (
+        "mutable",
+        "$[0]" if nested else "$",
+        PlainBox,
+    )
+    # Admission must not change the ordinary inherited dataclass key.
+    assert structural._structural_key(value) == structural._structural_key(PlainBox(1))
+
+
+@pytest.mark.parametrize("slots", [False, True])
+def test_explicitly_frozen_dataclass_subclass_is_still_admitted(slots):
+    @dataclass(frozen=True, slots=slots)
+    class FrozenBox(_Box):
+        label: str = "frozen"
+
+    value = FrozenBox((1, 2))
+    entry = RegistryEntry(key="x", value=value)
+    assert entry.value is value
+    assert structural._registry_structural_key(value) == structural._structural_key(value)
+    with pytest.raises((FrozenInstanceError, TypeError)):
+        value.extra = []
 
 
 class _Choice(Enum):

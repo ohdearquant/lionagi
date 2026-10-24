@@ -552,7 +552,10 @@ def _project(
             and not isinstance(value, type)
             and not typing_form
             and not enum_member
-            and not value_type.__dataclass_params__.frozen
+            and (
+                "__dataclass_params__" not in value_type.__dict__
+                or not value_type.__dataclass_params__.frozen
+            )
         ):
             reason = "mutable"
         if reason is not None:
