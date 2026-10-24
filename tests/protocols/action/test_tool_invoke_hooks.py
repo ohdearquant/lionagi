@@ -559,6 +559,7 @@ async def test_post_hook_fires_on_a_security_control_denial_with_its_result():
     assert isinstance(seen[0], GateDeniedError)
     assert seen[0].result.control == "deny_all"
     assert seen[0].result.reason == "no adds today"
+    # The hook is handed its own copy of the error, never the call's recorded one.
     assert seen[0] is not fc.execution.error
 
 
