@@ -26,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for
   every denied call; it now copies and pickles with its GateResult intact.
 
+- Fenced Markdown examples in profile prompts no longer trigger a misplaced
+  frontmatter warning.
+
 ## [0.36.0] - 2026-10-24
 
 `httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
