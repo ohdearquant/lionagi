@@ -21,13 +21,13 @@ import pytest
 from anyio import to_thread
 
 from lionagi.ln._proc import process_create_time
-from lionagi.mcp._terminal_cause import allowed_cause_classes
 from lionagi.providers import _subagent_admission as admission
 from lionagi.providers._subagent_admission import (
     SubagentAdmissionRefusedError,
     admit_subagent,
     subagent_admission_status,
 )
+from lionhub.serve.mcp._terminal_cause import allowed_cause_classes
 
 
 @pytest.fixture()

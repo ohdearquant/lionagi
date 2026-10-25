@@ -272,8 +272,8 @@ class TestTheTerminalPathReachesTheCauseWriter:
     async def test_a_provider_failure_leaves_its_class_on_disk(self, monkeypatch, tmp_path):
         import json
 
-        from lionagi.mcp import config
         from lionagi.providers._provider_errors import ProviderQuotaError
+        from lionhub.serve.mcp import config
 
         Branch = _wire_agent_stubs(monkeypatch, tmp_path)
         monkeypatch.setattr("lionagi.cli.agent.log_error", lambda msg: None)
@@ -304,7 +304,7 @@ class TestTheTerminalPathReachesTheCauseWriter:
         """`li agent` run by hand has no cause file configured. The absence must
         cost the run nothing: the original exception still propagates, and this
         arm fails if the writer ever starts raising on a missing variable."""
-        from lionagi.mcp import config
+        from lionhub.serve.mcp import config
 
         Branch = _wire_agent_stubs(monkeypatch, tmp_path)
         monkeypatch.setattr("lionagi.cli.agent.log_error", lambda msg: None)
@@ -331,7 +331,7 @@ class TestTheTerminalPathReachesTheCauseWriter:
         stay green."""
         import json
 
-        from lionagi.mcp import config
+        from lionhub.serve.mcp import config
 
         Branch = _wire_agent_stubs(monkeypatch, tmp_path)
         cause = tmp_path / "terminal_cause.json"

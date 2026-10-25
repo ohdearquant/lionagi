@@ -243,8 +243,8 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
     # A base reached through a submodule import (``import importlib.abc``), which the scan
     # does not resolve; each class is an import hook, not a model:
-    "lionagi._moved:105:20": "``importlib.abc.Loader``, the import system's loader base",
-    "lionagi._moved:132:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
+    "lionagi._moved:106:20": "``importlib.abc.Loader``, the import system's loader base",
+    "lionagi._moved:138:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
@@ -258,10 +258,10 @@ _ALLOWLIST: dict[str, str] = {
     # An assignment to a class authority outside a class body; here it rebinds one
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
-    "lionagi.state.engine:241:9": "a connection object taking a runtime subclass",
+    "lionagi.state.engine:244:9": "a connection object taking a runtime subclass",
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
-    "lionagi.state.engine:179:30": "a subclass of a caller-supplied connection class",
+    "lionagi.state.engine:182:30": "a subclass of a caller-supplied connection class",
     "lionagi.testing.helpers:228:22": "a subclass of the class a classmethod is called on",
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather

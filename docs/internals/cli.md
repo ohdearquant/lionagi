@@ -199,8 +199,8 @@ known — same `resolve_notify_config` resolution, same legacy payload/argv/env
 shape (`_legacy_argv_env_builders`, shared with the registered path), just
 invoked against a synthesized `RunTerminalEnvelope` instead of one raised by
 a DB transition. This is why the MCP server's job-spawn `--notify` template
-(`lionagi/mcp/jobs.py`, `_notify_template`) still fires for a run whose
-persistence broke: the argv it invokes (`lionagi.mcp._notify_hook`) carries
+(`lionhub/src/lionhub/serve/mcp/jobs.py`, `_notify_template`) still fires for a run whose
+persistence broke: the argv it invokes (`lionhub.serve.mcp._notify_hook`) carries
 its own `run_id` and needs nothing from the session/StateDB path to record
 the job's end and attempt delivery — it is agnostic to which of the two
 notify paths called it.
@@ -222,7 +222,7 @@ cannot be completed — nothing configured to run, or the configured adapter
 itself fails to resolve/build. A `--notify` adapter that resolves and builds
 but fails to *launch or exit cleanly* is recorded by `record_notify_outcome_
 to_run` instead (no `reason` key — see `lionagi/state/lifecycle/
-notify_settings.py`), which is what lets `lionagi/mcp/jobs.py`'s orphan
+notify_settings.py`), which is what lets `lionhub/src/lionhub/serve/mcp/jobs.py`'s orphan
 reaper (see `docs/internals/mcp.md#reap-reason-code-split`) tell "this run
 said its notice never arrived" from "this run said nothing at all."
 
@@ -335,7 +335,7 @@ inventing a value.
 When the run resolved a set, leaf workers, nodes spawned while the flow runs
 and the fanout synthesis branch are handed an exact set: when the run's set
 came from discovery, lionagi's own job-control server (`li mcp`, `python -m
-lionagi.mcp` or `python -m lionagi.cli mcp`, under whatever alias it is
+lionhub.serve.mcp` or `python -m lionagi.cli mcp`, under whatever alias it is
 registered and behind a launcher such as `uv run` or `env`, recognised by
 `_is_job_control_server`; any program named `li` run with `mcp` is taken for
 it) is withheld and the rest of the found set reaches them, and a planned

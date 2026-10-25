@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 import lionagi.state.db as state_db_mod
-from lionagi.mcp import config, dispatch
+from lionhub.serve.mcp import config, dispatch
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
@@ -357,7 +357,7 @@ async def test_detail_true_is_soft_when_no_metadata_or_branches_recorded(isolate
 async def test_detail_true_is_soft_when_the_studio_extra_is_absent(isolated_state, monkeypatch):
     """A run whose session IS recorded but whose detail-building service
     cannot be imported still answers, rather than raising past job.status."""
-    from lionagi.mcp import _run_detail
+    from lionhub.serve.mcp import _run_detail
 
     # Simulate the studio extra being unavailable regardless of what this
     # test environment actually has installed.

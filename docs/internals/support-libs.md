@@ -19,7 +19,7 @@ missing name is visible:
 - `lionagi/_flow_spec.py`
 - `lionagi/cli/agent.py`
 - `lionagi/cli/orchestrate/__init__.py`
-- `lionagi/mcp/dispatch.py`
+- `lionhub/src/lionhub/serve/mcp/dispatch.py`
 - `lionagi/studio/scheduler/subprocess.py`
 - `lionagi/studio/services/run_resume.py`
 

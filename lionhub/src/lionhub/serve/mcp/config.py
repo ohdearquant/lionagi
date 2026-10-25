@@ -35,7 +35,7 @@ RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 JOB_MARKER_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
 
 # Where a run writes the typed class of the exception that ended it, for the
-# terminal hook to lift into the job record (lionagi/mcp/_terminal_cause.py).
+# terminal hook to lift into the job record (lionhub/src/lionhub/serve/mcp/_terminal_cause.py).
 # Named per job rather than derived from the run id inside the child: the child
 # is free to reassign RUN_ID_ENV_VAR for a sub-run, and a cause file placed by
 # that name would land in a directory this server never reads.

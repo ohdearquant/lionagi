@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from lionagi.mcp import config, jobs
+from lionhub.serve.mcp import config, jobs
 
 
 @pytest.fixture
@@ -696,7 +696,7 @@ def test_a_value_that_cannot_be_an_argv_token_is_refused_before_any_run_exists(s
     """
     import asyncio
 
-    from lionagi.mcp import dispatch
+    from lionhub.serve.mcp import dispatch
 
     fingerprint = asyncio.run(dispatch.request(help="agent.submit"))["schema_fingerprint"]
     answer = asyncio.run(

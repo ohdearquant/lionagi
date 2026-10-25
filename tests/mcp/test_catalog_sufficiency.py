@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from lionagi.mcp import dispatch
+from lionhub.serve.mcp import dispatch
 
 from .stdio_client import StdioMCPClient
 
@@ -185,7 +185,7 @@ async def test_the_advertised_tool_description_still_carries_the_call_gates():
     because what a client receives is whatever the decorator published, and those
     are only the same thing for as long as nobody passes an explicit description.
     """
-    from lionagi.mcp.server import mcp
+    from lionhub.serve.mcp.server import mcp
 
     tool = await mcp.get_tool("request")
     described = tool.description or ""

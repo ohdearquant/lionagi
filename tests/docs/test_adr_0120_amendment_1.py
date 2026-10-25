@@ -108,9 +108,9 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1582)
+        _line("lionagi/cli/orchestrate/_orchestration.py", 1597)
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1618)
+    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1633)
     assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2083)
 
 
@@ -258,7 +258,7 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1582" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
     assert "lionagi/state/schema.sql:464" in flat
     assert "lionagi/state/db.py:5386-5388" in flat
     assert (

@@ -31,8 +31,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lionagi.mcp import config
 from lionagi.providers._provider_errors import ProviderError
+from lionhub.serve.mcp import config
 
 __all__ = [
     "STATUS_SOURCES",

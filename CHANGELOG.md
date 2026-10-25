@@ -40,6 +40,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | `lionagi.engines` | `lionhub.orchestration.engines` | 2.0.0 |
   | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
   | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
+  | `lionagi.mcp` | `lionhub.serve.mcp` | 2.0.0 |
 
 - The core no longer imports `lionagi.cli`: no import statement or literal
   `import_module` call outside `lionagi.cli`, `lionagi.mcp` and `lionagi.studio`

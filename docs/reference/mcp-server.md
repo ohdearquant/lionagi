@@ -5,7 +5,7 @@ client, and the one tool they are reached through.
 
 ## Purpose and transport
 
-`li mcp` (equivalently `python -m lionagi.mcp`) starts an MCP server that speaks
+`li mcp` (equivalently `python -m lionhub.serve.mcp`) starts an MCP server that speaks
 over **stdio**. There is no HTTP listener and no port to configure: the client
 launches the process and talks to it on its standard streams.
 
@@ -28,7 +28,7 @@ The server needs the optional `mcp` extra:
 pip install 'lionagi[mcp]'
 ```
 
-Importing `lionagi.mcp` does not pull that dependency. Only serving does, so a
+Importing `lionhub.serve.mcp` does not pull that dependency. Only serving does, so a
 missing extra surfaces when you run `li mcp`, with a message naming the install
 command.
 
@@ -150,7 +150,7 @@ fails a test rather than going unnoticed. The registry is the authority; ask it
 directly with:
 
 ```bash
-python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) for n in sorted(v.VERBS)]"
+python -c "from lionhub.serve.mcp import verbs as v; print(len(v.VERBS)); [print(n) for n in sorted(v.VERBS)]"
 ```
 
 <!-- mcp-catalog:available:start -->

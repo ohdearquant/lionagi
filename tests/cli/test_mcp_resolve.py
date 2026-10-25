@@ -117,7 +117,7 @@ def test_snapshot_keeps_the_discovered_source_and_is_not_explicit(tmp_path):
 def test_a_snapshot_reports_the_directory_its_search_began_in(tmp_path):
     """A run whose submission named a cwd starts there; when that cwd is not where the
     search began, the pair the snapshot reports must still rediscover the same file."""
-    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
     server_dir = tmp_path / "server"
     checkout = tmp_path / "checkout"

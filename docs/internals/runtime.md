@@ -21,6 +21,11 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   connection factories and other `connect_args` remain caller-controlled. A
   rollback error is logged and native close still runs; committed rows are
   unaffected.
+- With the default aiosqlite driver, a failed initial connection waits for its
+  actual worker thread to exit before raising the original error. The join runs
+  off the event-loop thread, so failed writable, read-only and compatibility
+  opens cannot leave that worker delivering results after the loop closes.
+  Explicit DBAPI modules and other SQLite drivers remain caller-controlled.
 - `make_readonly_engine()` — read-only `AsyncEngine` over an **existing** SQLite file, opened
   through SQLite's own URI read-only mode (`mode=ro`), not through `make_engine()`. This
   matters because: (1) no schema/PRAGMA write ever reaches the file — the OS-level open is
@@ -1025,11 +1030,11 @@ child exists and before any output is read. Three things about that record are l
   basis reaches the stranger. `create_time` binds them, it is readable only while the child is
   known to exist, and a consumer acting on the record later must compare a live read against
   it. `None` means nothing was established and is never a claim about the process; this mirrors
-  what `lionagi/mcp/jobs.py` does with `pid_create_time`.
+  what `lionhub/src/lionhub/serve/mcp/jobs.py` does with `pid_create_time`.
 - **The three fields are one observation, within limits worth stating.** The group and the start
   time are separate reads by pid, so `observe_spawned()` brackets the group read between two
   start-time reads and drops `create_time` to `None` if they disagree, the same shape as
-  `_pinned_member` in `lionagi/mcp/jobs.py`. That rejects a replacement arriving *during* the
+  `_pinned_member` in `lionhub/src/lionhub/serve/mcp/jobs.py`. That rejects a replacement arriving *during* the
   observation. It does not speak for one that arrived before the first read, and the window
   where that is possible is a child that exits and is reaped between the spawn call returning
   and the first probe — covered not by the bracket but by the probe, which answers `None` for

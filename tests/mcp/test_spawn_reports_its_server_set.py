@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from lionagi.mcp import config, jobs
+from lionhub.serve.mcp import config, jobs
 
 
 @pytest.fixture
