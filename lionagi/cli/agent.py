@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -132,6 +133,12 @@ _API_LNDL_GUIDANCE = (
 # price-tier boundary, none for a model priced flat) or "none". Unset reads as "auto".
 _API_INPUT_CAP_WORDS = ("auto", "none")
 _API_DEFAULT_INPUT_CAP = "auto"
+_API_POLICY_KEYS = (
+    "tool_result_max_chars",
+    "context_fold_at",
+    "context_fold_target",
+    "prompt_caching",
+)
 # How many times one turn (the task, or one queued message) folds and continues after the
 # input cap refused a request.
 _API_FOLD_RESUMES = 2
@@ -265,13 +272,13 @@ def _profile_api_launch(profile) -> dict | None:
     `api_tools` names the tool set; `max_extensions` bounds the rounds after the
     first (1 to 100); `api_loop` picks the loop, `react` or `lndl`; `max_input_tokens`
     caps each request's estimated input, a positive integer, `auto` or `none`. A value
-    outside any of them, or `api_loop` or `max_input_tokens` without `api_tools`, is
-    refused here, before a run exists.
+    outside these policies, or any API policy without `api_tools`, is refused
+    here before a run exists. Additional controls remain in the profile's extra mapping.
     """
     extra = (getattr(profile, "extra", None) or {}) if profile is not None else {}
     name = getattr(profile, "name", "<unknown>")
     if "api_tools" not in extra:
-        for key in ("api_loop", "max_input_tokens"):
+        for key in ("api_loop", "max_input_tokens", *_API_POLICY_KEYS):
             if key in extra:
                 raise ConfigurationError(
                     f"agent profile {name!r} sets {key} but no api_tools; it applies only "
@@ -305,7 +312,47 @@ def _profile_api_launch(profile) -> dict | None:
             f"agent profile {name!r} sets max_input_tokens to {cap!r}; it must be a "
             "positive whole number of tokens, 'auto' or 'none'."
         )
-    return {"tools": tools, "max_extensions": rounds, "loop": loop, "max_input_tokens": cap}
+    settings = _api_requested_settings(extra, label=f"agent profile {name!r}")
+    return {
+        "tools": tools,
+        "max_extensions": rounds,
+        "loop": loop,
+        "max_input_tokens": cap,
+        **settings,
+    }
+
+
+def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -> dict:
+    """Validate requested settings, preserving unset values separately from defaults."""
+    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET
+
+    settings = {key: values.get(key) for key in _API_POLICY_KEYS}
+    for key, value in settings.items():
+        if key not in values or (stored and value is None):
+            continue
+        if key == "tool_result_max_chars":
+            valid = isinstance(value, int) and not isinstance(value, bool) and value >= 1024
+        elif key == "prompt_caching":
+            valid = isinstance(value, bool)
+        else:
+            valid = (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and 0 < value <= 1
+                and math.isfinite(value)
+            )
+        if not valid:
+            raise ConfigurationError(f"{label} sets invalid {key}: {value!r}")
+    fold_at = settings["context_fold_at"]
+    target = settings["context_fold_target"]
+    fold_at = _FOLD_AT if fold_at is None else fold_at
+    target = _FOLD_TARGET if target is None else target
+    if not 0 < target < fold_at <= 1:
+        raise ConfigurationError(
+            f"{label} needs 0 < context_fold_target < context_fold_at <= 1; "
+            f"the effective pair is {target!r}, {fold_at!r}."
+        )
+    return settings
 
 
 def _is_round_bound(rounds: object) -> bool:
@@ -337,7 +384,13 @@ def _recorded_api_launch(recorded: object) -> dict:
             and loop in _API_LOOPS
             and _is_input_cap_policy(cap)
         ):
-            return {"tools": tools, "max_extensions": rounds, "loop": loop, "max_input_tokens": cap}
+            return {
+                "tools": tools,
+                "max_extensions": rounds,
+                "loop": loop,
+                "max_input_tokens": cap,
+                **_api_requested_settings(recorded, label="stored API launch", stored=True),
+            }
     raise ConfigurationError(
         f"this branch was launched on an API model's tool loop, but its stored launch "
         f"record {recorded!r} names a tool set, a round bound, a loop or an input cap this "
@@ -424,26 +477,79 @@ def _first_input_cap_refusal(branch) -> Exception | None:
     return None
 
 
-def _install_api_input_cap(branch, policy: object):
+def _install_api_input_cap(
+    branch,
+    policy: object,
+    *,
+    tool_result_max_chars: int | None = None,
+    context_fold_at: float | None = None,
+    context_fold_target: float | None = None,
+    prompt_caching: bool | None = None,
+):
     """Put the leg's input cap on its models and fold its context under it.
 
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
+    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET, install_context_fold
+    from lionagi.ln import copy
+
+    # Profile nulls have already been refused. Here None is an unset requested value.
+    _api_requested_settings(
+        {
+            "tool_result_max_chars": tool_result_max_chars,
+            "context_fold_at": context_fold_at,
+            "context_fold_target": context_fold_target,
+            "prompt_caching": prompt_caching,
+        },
+        label="API launch policy",
+        stored=True,
+    )
+    fold_at = _FOLD_AT if context_fold_at is None else context_fold_at
+    target = _FOLD_TARGET if context_fold_target is None else context_fold_target
     cap, source = _resolve_api_input_cap(policy, branch.chat_model)
+    # Check an existing fold before changing models. A rejected pair must leave its
+    # model policy and pending pre/post-call state intact.
+    fold = (
+        install_context_fold(branch, cap=cap, fold_at=fold_at, target=target, log=hint)
+        if cap is not None
+        else None
+    )
+    models = {}
+    for api_model in _api_models(branch):
+        config = api_model.endpoint.config
+        changes = (
+            getattr(api_model, "tool_result_max_chars", None) != tool_result_max_chars
+            or (prompt_caching is not None and config.prompt_caching != prompt_caching)
+            or (
+                cap is not None
+                and (api_model.max_input_tokens != cap or config.context_window != cap)
+            )
+        )
+        selected = api_model
+        if changes:
+            # Isolate configuration without constructing a fresh logical model. Preserve
+            # its refusal, calibration, call count, identity, hooks and executor state.
+            selected = copy(api_model, deep=False)
+            selected.endpoint = copy(api_model.endpoint, deep=False)
+            selected.endpoint.config = config.model_copy(deep=True)
+            selected.tool_result_max_chars = tool_result_max_chars
+            if prompt_caching is not None:
+                selected.endpoint.config.prompt_caching = prompt_caching
+            if cap is not None:
+                selected.max_input_tokens = cap
+                selected.endpoint.config.context_window = cap
+        models[id(api_model)] = selected
+    chat, parse = branch.chat_model, getattr(branch, "parse_model", None)
+    branch.chat_model = models[id(chat)]
+    if parse is not None:
+        branch.parse_model = models[id(parse)]
     if cap is None:
         hint(f"[api] no input cap ({source})")
         return None
-    for api_model in _api_models(branch):
-        api_model.max_input_tokens = cap
-        # The cap is the leg's working context: the branch token budget, and the context
-        # nudges with it, measure against the cap rather than the model's whole window.
-        api_model.endpoint.config.context_window = cap
-    from lionagi.agent.context_fold import install_context_fold
-
-    fold = install_context_fold(branch, cap=cap, log=hint)
     hint(
-        f"[api] input cap {cap:,} tokens ({source}); the host folds the context at "
-        f"{int(fold.fold_at * cap):,} down to {int(fold.target * cap):,}"
+        f"[api] input cap {cap:,} tokens ({source}); the host folds at "
+        f"fold_at={fold.fold_at} ({int(fold.fold_at * cap):,} tokens) toward "
+        f"target={fold.target} ({int(fold.target * cap):,} tokens)"
     )
     return fold
 
@@ -1196,7 +1302,10 @@ async def _run_agent(
     # without a stored record runs as before, so `api_loop` there would be
     # silently ignored. Without `api_tools` the call below only refuses that, and
     # it runs before any run is allocated.
-    if "api_tools" not in (getattr(profile, "extra", None) or {}):
+    profile_api_extra = getattr(profile, "extra", None) or {}
+    if "api_tools" not in profile_api_extra or any(
+        key in profile_api_extra for key in _API_POLICY_KEYS
+    ):
         _profile_api_launch(profile)
 
     stamp_agent_depth(agent_name)
@@ -1589,6 +1698,17 @@ async def _run_agent(
     # launched with, and a resume runs the loop again from that record. A branch
     # without the record runs as it did before the loop existed.
     api_launch = None
+    stored_api_launch = branch.metadata.get(_API_LAUNCH_KEY)
+    if getattr(branch.chat_model, "is_cli", False) and (
+        any(key in profile_api_extra for key in _API_POLICY_KEYS)
+        or (
+            isinstance(stored_api_launch, dict)
+            and any(stored_api_launch.get(key) is not None for key in _API_POLICY_KEYS)
+        )
+    ):
+        raise ConfigurationError(
+            "profile or stored API policy settings cannot be declared on a CLI-provider leg."
+        )
     if not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata:
         api_launch = _recorded_api_launch(branch.metadata[_API_LAUNCH_KEY])
         # What an earlier invocation spent is not this one's.
@@ -1603,7 +1723,10 @@ async def _run_agent(
         if declared is not None:
             api_launch["max_extensions"] = declared["max_extensions"]
             api_launch["max_input_tokens"] = declared["max_input_tokens"]
+            for key in _API_POLICY_KEYS:
+                api_launch[key] = declared[key]
             branch.metadata[_API_LAUNCH_KEY]["max_input_tokens"] = declared["max_input_tokens"]
+        branch.metadata[_API_LAUNCH_KEY].update({key: api_launch[key] for key in _API_POLICY_KEYS})
         if is_resumed_branch and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
         if is_resumed_branch:
@@ -1896,10 +2019,6 @@ async def _run_agent(
     _api_turn = None
     _api_fold = None
     if api_launch is not None:
-        # Folds the active view before a request reaches the cap, and after a refusal in
-        # _run_api_turn, so a long leg continues instead of being refused.
-        _api_fold = _install_api_input_cap(branch, api_launch["max_input_tokens"])
-
         _api_turn_index = 0
 
         async def _api_turn(instruction: str, turn_timeout: float | None):
@@ -1925,6 +2044,24 @@ async def _run_agent(
     _idle = {"idle_timeout": idle_timeout} if idle_timeout is not None else {}
     try:
         if _api_turn is not None:
+            _api_fold = _install_api_input_cap(
+                branch,
+                api_launch["max_input_tokens"],
+                **{key: api_launch[key] for key in _API_POLICY_KEYS},
+            )
+            run_manifest.update(
+                {
+                    "prompt_caching": branch.chat_model.endpoint.places_prompt_cache,
+                    "tool_result_max_chars": branch.chat_model.tool_result_max_chars,
+                    "context_fold": (
+                        {"fold_at": _api_fold.fold_at, "target": _api_fold.target}
+                        if _api_fold is not None
+                        else None
+                    ),
+                }
+            )
+            if _write_run_manifest is not None:
+                _write_run_manifest(run_manifest)
             res = await _api_turn(prompt, timeout)
         else:
             res = await branch.operate(

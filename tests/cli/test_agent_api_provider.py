@@ -232,7 +232,26 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
 
     assert set(leg.branch.acts.registry) == {"reader", "search", "context"}
     record = leg.branch.metadata["api_launch"]
-    assert set(record) == {"tools", "max_extensions", "loop", "max_input_tokens", "spend"}
+    assert set(record) == {
+        "tools",
+        "max_extensions",
+        "loop",
+        "max_input_tokens",
+        "spend",
+        "tool_result_max_chars",
+        "context_fold_at",
+        "context_fold_target",
+        "prompt_caching",
+    }
+    assert all(
+        record[key] is None
+        for key in (
+            "tool_result_max_chars",
+            "context_fold_at",
+            "context_fold_target",
+            "prompt_caching",
+        )
+    )
     assert (record["tools"], record["max_extensions"], record["loop"]) == ("read", 10, "react")
     assert record["max_input_tokens"] == "auto"
 

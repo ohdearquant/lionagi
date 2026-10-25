@@ -437,3 +437,58 @@ def test_a_history_instruction_names_a_tool_registered_after_it_was_sent():
     assert "Find an order by its id." not in str(after["messages"][2]["content"])
     assert "- lookup_order" in str(after["messages"][2]["content"])
     assert after["messages"] == uncached["messages"]
+
+
+@pytest.mark.asyncio
+async def test_bound_projects_both_result_collection_seams_with_one_source_session(monkeypatch):
+    import json
+
+    from lionagi.operations.chat import _prepare
+    from lionagi.protocols.messages import ActionResponse
+    from lionagi.service.imodel import iModel
+
+    model = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="test-not-a-key",
+        max_tokens=64,
+        tool_result_max_chars=1024,
+    )
+    branch = Branch(system="Keep evidence.", chat_model=model, parse_model=model)
+    await branch.msgs.a_add_message(instruction="first task")
+    outputs = []
+    for number in range(2):
+        text = "head " * 250 + f"HIDDEN_MIDDLE_{number}" + "tail " * 20000
+        result = ActionResponse(content={"function": "reader", "arguments": {}, "output": text})
+        await branch.msgs._a_add_built_response(result)
+        outputs.append(result)
+        if number == 0:
+            # A historical instruction is sent only after an assistant turn; adjacent
+            # instructions are deliberately coalesced by the existing compiler.
+            await branch.msgs.a_add_message(assistant_response="continue with the evidence")
+            await branch.msgs.a_add_message(instruction="historical collection boundary")
+    original = [result.to_dict() for result in outputs]
+    progression = list(branch.progression)
+    record_size = len(branch.msgs.messages)
+    sessions = []
+    real = _prepare._collect_action_dicts
+
+    def observed(messages, projection=None):
+        sessions.append(projection)
+        return real(messages, projection)
+
+    monkeypatch.setattr(_prepare, "_collect_action_dicts", observed)
+    try:
+        _instruction, request = _prepare_run_kwargs(
+            branch, "current task", ChatParam(), imodel=model
+        )
+        payload, _headers = model.endpoint.create_payload(request=request)
+        text = json.dumps(payload, ensure_ascii=False)
+        assert len(sessions) == 2 and sessions[0] is not None and sessions[0] is sessions[1]
+        assert text.count("chars omitted from") == 2
+        assert all(f"HIDDEN_MIDDLE_{number}" not in text for number in range(2))
+        assert [result.to_dict() for result in outputs] == original
+        assert list(branch.progression) == progression
+        assert len(branch.msgs.messages) == record_size
+    finally:
+        await branch.mdls.shutdown()

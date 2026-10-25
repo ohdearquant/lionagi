@@ -1693,3 +1693,749 @@ async def test_fold_pre_call_refusal_retains_the_group_and_its_sibling(monkeypat
     assert caught.value.__cause__ is group
     assert group.exceptions == (refusal, sibling)
     assert fold._request_views.get() == ()
+
+
+# Per-leg policy launch validation and persistence.
+
+_POLICY_KEYS = (
+    "tool_result_max_chars",
+    "context_fold_at",
+    "context_fold_target",
+    "prompt_caching",
+)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"tool_result_max_chars": 1024},
+        {"tool_result_max_chars": 4000, "prompt_caching": False},
+        {"tool_result_max_chars": 20000, "context_fold_at": 1, "context_fold_target": 0.5},
+        {"context_fold_at": 0.9},
+        {"context_fold_target": 0.5},
+        {"context_fold_at": 0.9, "context_fold_target": 0.5, "prompt_caching": True},
+        {},
+    ],
+)
+def test_leg_policy_preserves_requested_values_and_unset_sides(settings):
+    import lionagi.cli.agent as agent_mod
+
+    launch = agent_mod._profile_api_launch(_profile(api_tools="read", **settings))
+    assert launch is not None
+    for key, value in settings.items():
+        assert launch.get(key) == value
+    assert set(_POLICY_KEYS).issubset(launch)
+    assert {key: launch.get(key) for key in _POLICY_KEYS} == {
+        key: settings.get(key) for key in _POLICY_KEYS
+    }
+    assert agent_mod._recorded_api_launch(json.loads(json.dumps(launch))) == launch
+
+
+_BAD_POLICY_SETTINGS = (
+    [{key: None} for key in _POLICY_KEYS]
+    + [
+        {"tool_result_max_chars": value}
+        for value in (True, False, 1023, 0, -1, 1024.0, 1024.5, "1024", "true", "yes")
+    ]
+    + [
+        {key: value}
+        for key in ("context_fold_at", "context_fold_target")
+        for value in (True, False, 0, -0.1, 1.1, float("nan"), float("inf"), -float("inf"), "0.9")
+    ]
+    + [
+        {"context_fold_at": 0.6},
+        {"context_fold_target": 0.8},
+        {"context_fold_at": 0.9, "context_fold_target": 0.9},
+        {"context_fold_at": 0.7, "context_fold_target": 0.8},
+    ]
+    + [{"prompt_caching": value} for value in (0, 1, "true", "false", "yes", [], {})]
+)
+
+
+@pytest.mark.parametrize("settings", _BAD_POLICY_SETTINGS)
+@pytest.mark.asyncio
+async def test_invalid_leg_policy_is_refused_before_allocate_run(leg, monkeypatch, settings):
+    import lionagi.cli.agent as agent_mod
+
+    class AllocationObserved(RuntimeError):
+        pass
+
+    allocated = []
+
+    def allocation_probe():
+        allocated.append(True)
+        raise AllocationObserved("allocation reached")
+
+    monkeypatch.setattr(agent_mod, "allocate_run", allocation_probe)
+    error = None
+    try:
+        await leg.run(_profile(api_tools="read", **settings))
+    except (ConfigurationError, AllocationObserved) as exc:
+        error = exc
+    assert allocated == [], "invalid settings reached the allocation boundary"
+    assert isinstance(error, ConfigurationError)
+    assert leg.payloads == []
+
+
+@pytest.mark.parametrize("key", _POLICY_KEYS)
+def test_every_policy_declaration_requires_api_tools_even_false(key):
+    import lionagi.cli.agent as agent_mod
+
+    values = {
+        "prompt_caching": False,
+        "tool_result_max_chars": 4000,
+        "context_fold_at": 0.9,
+        "context_fold_target": 0.5,
+    }
+    value = values[key]
+    with pytest.raises(ConfigurationError, match="but no api_tools"):
+        agent_mod._profile_api_launch(_profile(**{key: value}))
+
+
+@pytest.mark.parametrize("key", _POLICY_KEYS)
+@pytest.mark.asyncio
+async def test_every_policy_declaration_on_cli_is_refused_before_run(leg, monkeypatch, key):
+    import lionagi.cli.agent as agent_mod
+
+    class AllocationObserved(RuntimeError):
+        pass
+
+    # Construct while its real API defaults apply; the capability flag alone does
+    # not supply the queue/concurrency defaults of a real CLI endpoint.
+    model = _haiku(None)
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "is_cli", True)
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: model)
+    allocated = []
+
+    def allocation_probe():
+        allocated.append(True)
+        raise AllocationObserved("allocation reached")
+
+    monkeypatch.setattr(agent_mod, "allocate_run", allocation_probe)
+    values = {
+        "prompt_caching": False,
+        "tool_result_max_chars": 4000,
+        "context_fold_at": 0.9,
+        "context_fold_target": 0.5,
+    }
+    error = None
+    try:
+        await leg.run(_profile(api_tools="read", **{key: values[key]}))
+    except (ConfigurationError, AllocationObserved) as exc:
+        error = exc
+    assert allocated == [], "CLI policy declaration reached the allocation boundary"
+    assert isinstance(error, ConfigurationError)
+    assert "CLI-provider" in str(error)
+    assert leg.payloads == []
+
+
+def test_older_launch_records_load_unset_and_non_null_malformed_settings_fail():
+    import lionagi.cli.agent as agent_mod
+
+    old = {"tools": "read", "max_extensions": 3, "loop": "react"}
+    loaded = agent_mod._recorded_api_launch(old)
+    assert {key: loaded[key] for key in _POLICY_KEYS} == dict.fromkeys(_POLICY_KEYS)
+    assert agent_mod._recorded_api_launch({**old, **dict.fromkeys(_POLICY_KEYS)}) == loaded
+    for settings in _BAD_POLICY_SETTINGS:
+        if all(value is None for value in settings.values()):
+            continue  # Stored null is the representation of unset.
+        with pytest.raises(ConfigurationError):
+            agent_mod._recorded_api_launch({**old, **settings})
+
+
+def test_cache_unset_preserves_stored_true_and_explicit_false_disables_it():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    model = _haiku(None)
+    model.endpoint.config.prompt_caching = True
+    branch = Branch(chat_model=model)
+    assert agent_mod._install_api_input_cap(branch, "none") is None
+    assert branch.chat_model.endpoint.config.prompt_caching is True
+    assert branch.chat_model.endpoint.places_prompt_cache is True
+    agent_mod._install_api_input_cap(branch, "none", prompt_caching=False)
+    assert branch.chat_model.endpoint.config.prompt_caching is False
+    assert branch.chat_model.endpoint.places_prompt_cache is False
+    assert model.endpoint.config.prompt_caching is True
+
+
+def test_no_ceiling_applies_bound_and_cache_but_installs_no_fold():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    branch = Branch(chat_model=_haiku(None))
+    fold = agent_mod._install_api_input_cap(
+        branch,
+        "none",
+        tool_result_max_chars=4000,
+        context_fold_at=0.9,
+        context_fold_target=0.5,
+        prompt_caching=True,
+    )
+    assert fold is None
+    assert branch.chat_model.tool_result_max_chars == 4000
+    assert branch.chat_model.endpoint.places_prompt_cache is True
+    assert branch._pending_hook_bus_entries == []
+
+
+def test_policy_installation_detaches_shared_models_and_preserves_parse_alias():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    original = Branch(chat_model=_haiku(None))
+    original.parse_model = original.chat_model
+    cloned = original.clone()
+    shared = original.chat_model
+    assert cloned.chat_model is shared and cloned.parse_model is shared
+    fold = agent_mod._install_api_input_cap(
+        cloned,
+        20000,
+        tool_result_max_chars=4000,
+        context_fold_at=0.9,
+        context_fold_target=0.5,
+        prompt_caching=True,
+    )
+    assert (fold.fold_at, fold.target) == (0.9, 0.5)
+    assert cloned.chat_model is cloned.parse_model and cloned.chat_model is not shared
+    assert shared.tool_result_max_chars is None
+    assert shared.endpoint.config.prompt_caching is False
+    assert shared.max_input_tokens is None
+    assert cloned.chat_model.tool_result_max_chars == 4000
+
+
+@pytest.mark.asyncio
+async def test_resume_policy_replays_then_clears_omissions_and_disables_cache(leg, monkeypatch):
+    import copy
+
+    import lionagi.cli.agent as agent_mod
+
+    seen = []
+    real = agent_mod._run_api_turn
+
+    async def observe(branch, *args, **kwargs):
+        seen.append(
+            (
+                copy.deepcopy(branch.metadata["api_launch"]),
+                branch.chat_model.tool_result_max_chars,
+                branch.chat_model.endpoint.config.prompt_caching,
+                (kwargs["fold"].fold_at, kwargs["fold"].target),
+            )
+        )
+        return await real(branch, *args, **kwargs)
+
+    monkeypatch.setattr(agent_mod, "_run_api_turn", observe)
+    leg.replies = [_last_round(), _answer("first")]
+    profile = _profile(
+        api_tools="read",
+        max_input_tokens=50000,
+        tool_result_max_chars=4000,
+        context_fold_at=0.9,
+        context_fold_target=0.5,
+        prompt_caching=True,
+    )
+    first = await leg.run(profile)
+    branch_id = first[2]
+    leg.replies = [_last_round(), _answer("recorded")]
+    await agent_mod._run_agent(None, "again", resume=branch_id, cwd=str(leg.workspace))
+    assert seen[1][1:] == (4000, True, (0.9, 0.5))
+    leg.replies = [_last_round(), _answer("cleared")]
+    await leg.run(_profile(api_tools="read", max_input_tokens=50000), model=None, resume=branch_id)
+    assert seen[2][1:] == (None, True, (0.8, 0.6))
+    assert all(seen[2][0][key] is None for key in _POLICY_KEYS)
+    leg.replies = [_last_round(), _answer("disabled")]
+    await leg.run(
+        _profile(api_tools="read", max_input_tokens=50000, prompt_caching=False),
+        model=None,
+        resume=branch_id,
+    )
+    assert seen[3][1:] == (None, False, (0.8, 0.6))
+    leg.replies = [_last_round(), _answer("still disabled")]
+    await agent_mod._run_agent(None, "one more", resume=branch_id, cwd=str(leg.workspace))
+    assert seen[4][1:] == (None, False, (0.8, 0.6))
+    assert seen[4][0]["prompt_caching"] is False
+
+
+@pytest.mark.parametrize("ending", ["completed", "failed", "cancelled"])
+@pytest.mark.asyncio
+async def test_startup_policy_survives_usage_and_terminal_writes(
+    leg, monkeypatch, tmp_path, ending
+):
+    import asyncio
+    import copy
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import RunDir
+
+    policy = {
+        "prompt_caching": True,
+        "tool_result_max_chars": 4000,
+        "context_fold": {"fold_at": 0.9, "target": 0.5},
+    }
+    snapshots, startup_disk = [], []
+    write, turn = RunDir.write_manifest, agent_mod._run_api_turn
+
+    def observe_write(run, manifest):
+        snapshots.append(copy.deepcopy(manifest))
+        return write(run, manifest)
+
+    async def observe_main(branch, *args, **kwargs):
+        # Read actual startup bytes before entering the main turn.
+        current = _manifest(tmp_path)
+        startup_disk.append(current)
+        assert {key: current.get(key) for key in policy} == policy
+        assert "usage" not in current
+        if ending != "completed":
+            exc = RuntimeError if ending == "failed" else asyncio.CancelledError
+            raise exc("stopped before a provider request")
+        return await turn(branch, *args, **kwargs)
+
+    monkeypatch.setattr(RunDir, "write_manifest", observe_write)
+    monkeypatch.setattr(agent_mod, "_run_api_turn", observe_main)
+    leg.replies = [_last_round(), _answer("done")] if ending == "completed" else []
+    profile = _profile(
+        api_tools="read",
+        max_input_tokens=50000,
+        tool_result_max_chars=4000,
+        context_fold_at=0.9,
+        context_fold_target=0.5,
+        prompt_caching=True,
+    )
+    if ending == "completed":
+        await leg.run(profile)
+    else:
+        exc = RuntimeError if ending == "failed" else asyncio.CancelledError
+        with pytest.raises(exc):
+            await leg.run(profile)
+        assert leg.payloads == []
+    assert len(startup_disk) == 1
+    final = _manifest(tmp_path)
+    assert {key: final.get(key) for key in policy} == policy
+    assert "api_usage" in final and "usage" not in final
+    assert final["context_folds"] == []
+    first = next(i for i, snapshot in enumerate(snapshots) if "context_fold" in snapshot)
+    assert first > 0 and all(key not in snapshots[0] for key in policy)
+    assert len(snapshots[first:]) >= 3
+    for snapshot in snapshots[first:]:
+        assert {key: snapshot.get(key) for key in policy} == policy
+        assert "api_usage" in snapshot and "usage" not in snapshot
+
+
+@pytest.mark.parametrize("ending", ["failed", "cancelled"])
+@pytest.mark.asyncio
+async def test_setup_failure_does_not_claim_installed_manifest_policy(
+    leg, monkeypatch, tmp_path, ending
+):
+    import asyncio
+
+    import lionagi.cli.agent as agent_mod
+
+    exc = ValueError if ending == "failed" else asyncio.CancelledError
+
+    def fail_setup(*args, **kwargs):
+        raise exc("fold installation stopped")
+
+    monkeypatch.setattr(agent_mod, "_install_api_input_cap", fail_setup)
+    with pytest.raises(exc):
+        await leg.run(_profile(api_tools="read", tool_result_max_chars=4000))
+    manifest = _manifest(tmp_path)
+    assert all(
+        key not in manifest for key in ("prompt_caching", "tool_result_max_chars", "context_fold")
+    )
+    assert manifest["status"] == ending
+    assert "usage" not in manifest
+    assert leg.payloads == []
+
+
+def test_installing_a_fold_requires_cap_line_and_target_agreement():
+    from lionagi import Branch
+    from lionagi.agent.context_fold import install_context_fold
+    from lionagi.hooks.bus import HookPoint
+
+    branch = Branch(chat_model=_haiku(None))
+    fold = install_context_fold(branch, cap=20000, fold_at=0.9, target=0.5)
+    assert install_context_fold(branch, cap=20000, fold_at=0.9, target=0.5) is fold
+    for settings in (
+        {"cap": 20001, "fold_at": 0.9, "target": 0.5},
+        {"cap": 20000, "fold_at": 0.8, "target": 0.5},
+        {"cap": 20000, "fold_at": 0.9, "target": 0.6},
+    ):
+        with pytest.raises(ValueError, match="cap, fold_at or target"):
+            install_context_fold(branch, **settings)
+    assert [
+        p for p, h in branch._pending_hook_bus_entries if getattr(h, "__self__", None) is fold
+    ] == [HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL]
+
+
+@pytest.mark.parametrize("estimate,triggered", [(899, False), (900, True), (901, True)])
+@pytest.mark.asyncio
+async def test_configured_fold_trigger_boundary(monkeypatch, estimate, triggered):
+    from unittest.mock import AsyncMock
+
+    from lionagi import Branch
+    from lionagi.agent.context_fold import ContextFold
+
+    fold = ContextFold(Branch(chat_model=_haiku(None)), cap=1000, fold_at=0.9, target=0.5)
+    monkeypatch.setattr(fold, "estimate", lambda: estimate)
+    fold_call = AsyncMock(return_value=False)
+    monkeypatch.setattr(fold, "fold", fold_call)
+    await fold.on_api_pre_call()
+    assert fold_call.await_count == int(triggered)
+
+
+@pytest.mark.parametrize("stop", [0, 1, 2, 3, 4, 5])
+@pytest.mark.asyncio
+async def test_configured_target_stops_at_each_stage(monkeypatch, stop):
+    from lionagi import Branch
+    from lionagi.agent.context_fold import ContextFold
+
+    fold = ContextFold(Branch(chat_model=_haiku(None)), cap=1000, fold_at=0.9, target=0.5)
+    state = {"count": 500 if stop == 0 else 900}
+    calls = []
+    steps = [("tool_io", 6), ("tool_io", 2), ("clip", None), ("all", 6), ("all", 2)]
+
+    async def step(mode, tail, reason):
+        calls.append((mode, tail))
+        if len(calls) == stop:
+            state["count"] = 500
+        return True
+
+    async def clip(reason):
+        return await step("clip", None, reason)
+
+    monkeypatch.setattr(fold, "estimate", lambda: state["count"])
+    monkeypatch.setattr(fold, "_estimate_view", lambda messages: 400)
+    monkeypatch.setattr(fold, "_fold_once", step)
+    monkeypatch.setattr(fold, "_clip_once", clip)
+    await fold.fold(reason="threshold")
+    assert calls == steps[:stop]
+
+
+@pytest.mark.parametrize(
+    "floor,tails", [(1001, []), (1000, [2]), (501, [2]), (500, [6, 2]), (499, [6, 2])]
+)
+@pytest.mark.asyncio
+async def test_configured_target_controls_floor_passes_without_moving_ceiling(
+    monkeypatch, floor, tails
+):
+    from lionagi import Branch
+    from lionagi.agent.context_fold import ContextFold
+
+    fold = ContextFold(Branch(chat_model=_haiku(None)), cap=1000, fold_at=0.9, target=0.5)
+    calls = []
+
+    async def step(mode, tail, reason):
+        calls.append((mode, tail))
+        return False
+
+    async def clip(reason):
+        return False
+
+    monkeypatch.setattr(fold, "estimate", lambda: 900)
+    monkeypatch.setattr(fold, "_estimate_view", lambda messages: floor)
+    monkeypatch.setattr(fold, "_fold_once", step)
+    monkeypatch.setattr(fold, "_clip_once", clip)
+    await fold.fold(reason="threshold")
+    assert [tail for mode, tail in calls if mode == "all"] == tails
+
+
+@pytest.mark.parametrize("count,reached", [(499, True), (500, True), (501, False)])
+@pytest.mark.asyncio
+async def test_clip_outcome_uses_configured_target_at_its_boundary(monkeypatch, count, reached):
+    from lionagi.agent.context_fold import ContextFold
+
+    branch, _requests, _originals = await _clip_fixture(["short result"], cap=1000)
+    fold = ContextFold(branch, cap=1000, fold_at=0.9, target=0.5)
+    monkeypatch.setattr(fold, "estimate", lambda: count)
+    await fold._clip_once("threshold")
+    assert fold.records[-1]["target_reached"] is reached
+
+
+@pytest.mark.parametrize("quoted", ['"true"', '"yes"'])
+def test_quoted_yaml_cache_values_remain_strings_and_are_refused(quoted):
+    import yaml
+
+    import lionagi.cli.agent as agent_mod
+
+    parsed = yaml.safe_load("api_tools: read\nprompt_caching: " + quoted)
+    assert isinstance(parsed["prompt_caching"], str)
+    with pytest.raises(ConfigurationError, match="prompt_caching"):
+        agent_mod._profile_api_launch(_profile(**parsed))
+
+
+def test_policy_installation_updates_distinct_parse_model_without_changing_its_source():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    chat, parse = _haiku(None), _haiku(None)
+    chat.endpoint.config.prompt_caching = True
+    parse.endpoint.config.prompt_caching = True
+    branch = Branch(chat_model=chat)
+    branch.parse_model = parse
+    agent_mod._install_api_input_cap(
+        branch, "none", tool_result_max_chars=1024, prompt_caching=False
+    )
+    assert branch.chat_model is not branch.parse_model
+    assert all(model.tool_result_max_chars == 1024 for model in agent_mod._api_models(branch))
+    assert all(
+        model.endpoint.config.prompt_caching is False for model in agent_mod._api_models(branch)
+    )
+    assert chat.endpoint.config.prompt_caching is parse.endpoint.config.prompt_caching is True
+    assert chat.tool_result_max_chars is parse.tool_result_max_chars is None
+
+
+@pytest.mark.parametrize("declares", [True, False], ids=["declaring", "not-declaring"])
+@pytest.mark.asyncio
+async def test_no_cap_manifest_reports_initialized_effective_endpoint_policy(
+    leg, monkeypatch, tmp_path, declares
+):
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "caches_system_prefix", declares)
+    leg.replies = [_last_round(), _answer("done")]
+    await leg.run(
+        _profile(
+            api_tools="read",
+            max_input_tokens="none",
+            tool_result_max_chars=4000,
+            context_fold_at=0.9,
+            context_fold_target=0.5,
+            prompt_caching=True,
+        )
+    )
+    manifest = _manifest(tmp_path)
+    assert manifest["prompt_caching"] is declares
+    assert manifest["tool_result_max_chars"] == 4000
+    assert "context_fold" in manifest and manifest["context_fold"] is None
+    assert manifest["context_folds"] == []
+    assert leg.branch.metadata["api_launch"]["prompt_caching"] is True
+    assert leg.branch.metadata["api_launch"]["context_fold_at"] == 0.9
+    assert leg.branch.metadata["api_launch"]["context_fold_target"] == 0.5
+    assert leg.branch.chat_model.tool_result_max_chars == 4000
+
+
+def _primed_policy_model_branch():
+    from lionagi import Branch
+
+    model = _haiku(100)
+    with pytest.raises(InputTokenCapError) as refusal:
+        model.create_api_calling(messages=[{"role": "user", "content": "a " * 500}])
+    model.max_input_tokens = 20000
+    model.endpoint.config.context_window = 20000
+    model.input_token_scale = 1.25
+    model.calls_sent = 7
+    model.provider_metadata["served_model"] = "provider-reported-model"
+    return Branch(chat_model=model, parse_model=model), model, refusal.value
+
+
+def test_existing_cap_install_preserves_live_model_refusal_scale_and_counter():
+    import lionagi.cli.agent as agent_mod
+
+    branch, model, refusal = _primed_policy_model_branch()
+    endpoint, executor, hooks = model.endpoint, model.executor, model.hook_registry
+    fold = agent_mod._install_api_input_cap(branch, 20000)
+    assert fold.cap == 20000
+    assert branch.chat_model is branch.parse_model is model
+    assert model.endpoint is endpoint and model.executor is executor
+    assert model.hook_registry is hooks
+    assert model.input_cap_refusal is refusal
+    assert model.input_token_scale == 1.25
+    assert model.calls_sent == 7
+    assert model.provider_metadata["served_model"] == "provider-reported-model"
+    with pytest.raises(InputTokenCapError) as later:
+        branch.chat_model.create_api_calling(messages=[{"role": "user", "content": "hi"}])
+    assert later.value is refusal
+
+
+def test_repeated_unchanged_cap_install_preserves_fold_pending_state_and_model_identity():
+    import lionagi.cli.agent as agent_mod
+
+    branch, model, refusal = _primed_policy_model_branch()
+    fold = agent_mod._install_api_input_cap(branch, 20000)
+    fold._scale = 1.3
+    fold.records.append({"prior": "record"})
+    pending = (tuple(str(uid) for uid in branch.progression),)
+    fold._request_views.set(pending)
+    request_views = fold._request_views
+    handlers = list(branch._pending_hook_bus_entries)
+    restore_check = branch._context_restore_check
+    assert agent_mod._install_api_input_cap(branch, 20000) is fold
+    assert branch.chat_model is branch.parse_model is model
+    assert model.input_cap_refusal is refusal and model.calls_sent == 7
+    assert model.input_token_scale == 1.25 and fold._scale == 1.3
+    assert fold.records == [{"prior": "record"}]
+    assert fold._request_views is request_views and fold._request_views.get() == pending
+    assert branch._pending_hook_bus_entries == handlers
+    assert branch._context_restore_check is restore_check
+
+
+def test_changed_configuration_detaches_without_fresh_model_runtime():
+    import lionagi.cli.agent as agent_mod
+
+    branch, model, refusal = _primed_policy_model_branch()
+    endpoint, metadata = model.endpoint, model.provider_metadata
+    fold = agent_mod._install_api_input_cap(
+        branch,
+        20000,
+        tool_result_max_chars=4000,
+        prompt_caching=True,
+        context_fold_at=0.9,
+        context_fold_target=0.5,
+    )
+    selected = branch.chat_model
+    assert selected is branch.parse_model and selected is not model
+    assert selected.id == model.id and selected.created_at == model.created_at
+    assert selected.input_cap_refusal is refusal
+    assert selected.input_token_scale == 1.25 and selected.calls_sent == 7
+    assert selected.executor is model.executor and selected.hook_registry is model.hook_registry
+    assert selected.provider_metadata is metadata
+    assert selected.endpoint is not endpoint and selected.endpoint.config is not endpoint.config
+    assert selected.tool_result_max_chars == 4000
+    assert selected.endpoint.config.prompt_caching is True
+    assert getattr(model, "tool_result_max_chars", None) is None
+    assert endpoint.config.prompt_caching is False
+    assert (fold.fold_at, fold.target) == (0.9, 0.5)
+
+
+def test_rejected_fold_pair_leaves_models_and_pending_hooks_unchanged():
+    import lionagi.cli.agent as agent_mod
+
+    branch, model, refusal = _primed_policy_model_branch()
+    fold = agent_mod._install_api_input_cap(
+        branch, 20000, context_fold_at=0.9, context_fold_target=0.5
+    )
+    handlers = list(branch._pending_hook_bus_entries)
+    views = fold._request_views
+    pending = (tuple(str(uid) for uid in branch.progression),)
+    views.set(pending)
+    with pytest.raises(ValueError, match="cap, fold_at or target"):
+        agent_mod._install_api_input_cap(
+            branch,
+            20000,
+            context_fold_at=0.8,
+            context_fold_target=0.5,
+            tool_result_max_chars=4000,
+            prompt_caching=True,
+        )
+    assert branch.chat_model is branch.parse_model is model
+    assert model.input_cap_refusal is refusal and model.calls_sent == 7
+    assert getattr(model, "tool_result_max_chars", None) is None
+    assert model.endpoint.config.prompt_caching is False
+    assert fold._request_views is views and views.get() == pending
+    assert branch._pending_hook_bus_entries == handlers
+
+
+def test_unset_policy_preserves_preexisting_endpoint_option_without_model_replacement():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    model = _haiku(None)
+    model.endpoint.config.prompt_caching = True
+    branch = Branch(chat_model=model, parse_model=model)
+    assert agent_mod._install_api_input_cap(branch, "none") is None
+    assert branch.chat_model is branch.parse_model is model
+    assert model.endpoint.config.prompt_caching is True
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tool_result_max_chars", 4000),
+        ("context_fold_at", 0.9),
+        ("context_fold_target", 0.5),
+        ("prompt_caching", False),
+    ],
+)
+def test_recorded_policy_does_not_discard_non_null_requested_values(key, value):
+    import lionagi.cli.agent as agent_mod
+
+    record = {"tools": "read", "max_extensions": 3, "loop": "react", key: value}
+    launch = agent_mod._recorded_api_launch(record)
+    assert launch.get(key) == value
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tool_result_max_chars", 4000),
+        ("context_fold_at", 0.9),
+        ("context_fold_target", 0.5),
+        ("prompt_caching", False),
+    ],
+)
+@pytest.mark.parametrize("unset", [False, True], ids=["requested", "stored-null"])
+@pytest.mark.asyncio
+async def test_resumed_cli_record_cannot_silently_ignore_non_null_policy(
+    leg, monkeypatch, tmp_path, key, value, unset
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    class AllocationObserved(RuntimeError):
+        pass
+
+    model = _haiku(None)
+    branch = Branch(chat_model=model, parse_model=model)
+    branch.metadata["api_launch"] = {
+        "tools": "read",
+        "max_extensions": 3,
+        key: None if unset else value,
+    }
+    path = tmp_path / (str(branch.id) + ".json")
+    path.write_text("{}")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda _: (path.parent, path))
+    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: branch))
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "is_cli", True)
+    allocated = []
+
+    def allocation_probe():
+        allocated.append(True)
+        raise AllocationObserved("allocation reached")
+
+    monkeypatch.setattr(agent_mod, "allocate_run", allocation_probe)
+    error = None
+    try:
+        await agent_mod._run_agent(None, "again", resume=str(branch.id), cwd=str(leg.workspace))
+    except (ConfigurationError, AllocationObserved) as exc:
+        error = exc
+    if unset:
+        assert allocated == [True] and isinstance(error, AllocationObserved)
+    else:
+        assert allocated == [], "stored policy on CLI reached the allocation boundary"
+        assert isinstance(error, ConfigurationError)
+        assert "CLI-provider" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_startup_line_reports_effective_fold_pair_and_token_values(leg, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    lines, entered = [], []
+    expected = (
+        "[api] input cap 50,000 tokens (max_input_tokens); the host folds at "
+        "fold_at=0.9 (45,000 tokens) toward target=0.5 (25,000 tokens)"
+    )
+    turn = agent_mod._run_api_turn
+
+    def observe_hint(message, *args, **kwargs):
+        lines.append(message)
+
+    async def observe_main(branch, *args, **kwargs):
+        # The effective settings line must exist before the first main request.
+        assert [line for line in lines if line.startswith("[api] input cap ")] == [expected]
+        assert branch.chat_model.max_input_tokens == 50000
+        entered.append(True)
+        return await turn(branch, *args, **kwargs)
+
+    monkeypatch.setattr(agent_mod, "hint", observe_hint)
+    monkeypatch.setattr(agent_mod, "_run_api_turn", observe_main)
+    leg.replies = [_last_round(), _answer("done")]
+    result = await leg.run(
+        _profile(
+            api_tools="read",
+            max_input_tokens=50000,
+            tool_result_max_chars=4000,
+            context_fold_at=0.9,
+            context_fold_target=0.5,
+        )
+    )
+    assert result[3] == "completed" and not leg.replies
+    assert entered == [True]
+    assert [line for line in lines if line.startswith("[api] input cap ")] == [expected]

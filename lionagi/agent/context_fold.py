@@ -161,6 +161,20 @@ def _text(value: Any) -> str:
             return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def _validate_fold_pair(fold_at: float, target: float) -> None:
+    if (
+        not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and 0 < value <= 1
+            and math.isfinite(value)
+            for value in (fold_at, target)
+        )
+        or not target < fold_at
+    ):
+        raise ValueError("need finite numbers with 0 < target < fold_at <= 1")
+
+
 class ContextFold:
     """Fold one branch's active view before its requests reach ``cap`` input tokens."""
 
@@ -176,8 +190,7 @@ class ContextFold:
     ) -> None:
         if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
             raise ValueError("cap must be a positive integer")
-        if not 0 < target < fold_at <= 1:
-            raise ValueError("need 0 < target < fold_at <= 1")
+        _validate_fold_pair(fold_at, target)
         self.branch = branch
         self.cap = cap
         self.fold_at = fold_at
@@ -238,6 +251,15 @@ class ContextFold:
         candidate.metadata["current_progression"] = Progression(
             order=[message.id for message in messages]
         )
+        from lionagi.protocols.messages._result_projection import (
+            _projection_authority,
+            _projection_session,
+        )
+
+        projection = _projection_session(self.branch, self.branch.chat_model)
+        if projection is not None:
+            with _projection_authority(candidate, projection):
+                return int(self._estimate(candidate) * self._provider_scale() * self._scale)
         return int(self._estimate(candidate) * self._provider_scale() * self._scale)
 
     async def on_api_pre_call(self, **_kw: Any) -> None:
@@ -364,7 +386,241 @@ class ContextFold:
             self._compact = ContextTool().bind(self.branch).func_callable
         return self._compact
 
+    async def _clip_bounded_once(self, reason: str, projection: Any) -> bool:
+        """Reduce effective original-source allowances; count every proposed full view."""
+        from lionagi.protocols.generic.progression import Progression
+        from lionagi.protocols.messages import ActionResponse
+        from lionagi.protocols.messages._result_projection import (
+            _projection_authority,
+            _ProjectionError,
+        )
+
+        pile = self.branch.msgs.messages
+        view = [pile[uid] for uid in self.branch.progression]
+        before = self.estimate()
+        target = self.target * self.cap
+        count = before
+        specs = {}
+        candidates = []
+        restored = set(self.branch.metadata.get("context_restored_results", []))
+        read_ranges = self.branch.metadata.get("context_read_results", {})
+        full = self.branch.msgs.progression
+        for slot, message in enumerate(view):
+            if not isinstance(message, ActionResponse):
+                continue
+            source = projection.source(message)
+            original = source.original
+            if original.id in specs or str(original.id) in restored:
+                continue
+            arguments = original.content.arguments
+            if (
+                original.content.function in ("context", "context_tool")
+                and arguments.get("action") == "read_result"
+            ):
+                index = arguments.get("index")
+                if (
+                    isinstance(index, int)
+                    and 0 <= index < len(full)
+                    and str(full[index]) in read_ranges
+                ):
+                    continue
+            projected = projection.project(message)
+            kept = [metric.retained for metric in projected.bodies]
+            spec = {
+                "original": original,
+                "source": source,
+                "metrics": projected.bodies,
+                "kept": kept,
+                "initial": list(kept),
+                "slot": slot,
+                "index": source.index,
+                "response": message,
+            }
+            specs[original.id] = spec
+            for number, metric in enumerate(projected.bodies):
+                floor = min(1024, metric.k_n)
+                if not metric.eligible or metric.retained <= floor:
+                    continue
+                candidates.append((-metric.retained, source.index, number, original.id, floor))
+
+        def build(spec, projected):
+            original = spec["original"]
+            return ActionResponse(
+                content={
+                    "function": original.content.function,
+                    "arguments": copy(original.content.arguments, deep=True),
+                    "output": projected.output,
+                    "error": original.content.error,
+                },
+                sender=original.sender,
+                recipient=original.recipient,
+                metadata={
+                    "clipped_from": str(original.id),
+                    "context_clip_kept": [metric.retained for metric in projected.bodies],
+                },
+            )
+
+        def measure(spec, projected):
+            response = build(spec, projected)
+            candidate_view = list(view)
+            candidate_view[spec["slot"]] = response
+            # Reuse the authoritative originals/positions and descriptor cache for this pass.
+            # The inner scope in _estimate_view keys that authority to the temporary branch.
+            with _projection_authority(self.branch, projection):
+                estimate = self._estimate_view(candidate_view)
+            return estimate, response
+
+        for _negative_length, _index, number, original_id, base_floor in sorted(candidates):
+            if count <= target:
+                break
+            spec = specs[original_id]
+            metric = spec["metrics"][number]
+            body = metric.body
+            current = spec["kept"][number]
+            # Only this body's recovery ranges constrain this body's trial. An unrelated
+            # range already hidden by another body's standing projection must not reject it.
+            protected = tuple(
+                (max(start, body.start), min(end, body.end))
+                for start, end in read_ranges.get(str(original_id), [])
+                if start < body.end and end > body.start and start < end
+            )
+
+            def protected_fit(retained, body=body, protected=protected):
+                head = 3 * retained // 4
+                start = body.start + head
+                stop = body.end - (retained - head)
+                return all(end <= start or begin >= stop for begin, end in protected)
+
+            # Protection containment is monotone in source count; representation fit is not.
+            # Never widen the standing preview to reveal a protected range it already hides.
+            if not protected_fit(current):
+                continue
+            low, high = base_floor, current
+            while low < high:
+                mid = (low + high) // 2
+                if protected_fit(mid):
+                    high = mid
+                else:
+                    low = mid + 1
+            if low >= current:
+                continue
+
+            def project(allowance, minimum, spec=spec, number=number, protected=protected):
+                allowances = list(spec["kept"])
+                allowances[number] = allowance
+                minimums = [0] * len(allowances)
+                minimums[number] = minimum
+                return projection.project(
+                    spec["original"],
+                    allowances=allowances,
+                    minimums=minimums,
+                    protected_ranges=protected,
+                )
+
+            # Decimal marker widths can make the numeric floor infeasible while a larger
+            # retained count fits. Find the actual lowest legal representation, without
+            # treating fit as monotone or probing an empty body that hides its original.
+            floor_projection = None
+            for legal_floor in range(low, current):
+                try:
+                    floor_projection = project(legal_floor, legal_floor)
+                except _ProjectionError:
+                    continue
+                break
+            if floor_projection is None:
+                continue
+            floor = floor_projection.bodies[number].retained
+            floor_count, floor_response = measure(spec, floor_projection)
+
+            while count > target and current > floor:
+                contribution = count - floor_count
+                chosen = None
+                if contribution > 0:
+                    ratio = contribution / (current - floor)
+                    allowance = max(
+                        floor,
+                        current - max(1, math.ceil((count - target) / ratio)),
+                    )
+                    allowance = min(allowance, current - 1)
+                    try:
+                        trial = project(allowance, floor)
+                    except _ProjectionError:
+                        trial = None
+                    if trial is not None:
+                        after, response = measure(spec, trial)
+                        if after < count:
+                            chosen = (after, response, trial)
+                    # A discontinuous marker or tokenizer can defeat the interpolation.
+                    # The measured legal floor is a valid fallback, never an empty probe.
+                    if chosen is None:
+                        chosen = (floor_count, floor_response, floor_projection)
+                else:
+                    # No measured floor contribution: skip this heuristic proposal.
+                    break
+                if chosen is None or chosen[0] >= count:
+                    break
+                after, response, accepted = chosen
+                actual = [item.retained for item in accepted.bodies]
+                if actual[number] >= current:
+                    break
+                # No trial enters the manager, record or local accepted view until both
+                # its original-derived allowance and its complete request strictly shrink.
+                view[spec["slot"]] = response
+                spec["kept"] = actual
+                spec["response"] = response
+                count = after
+                current = actual[number]
+
+        changed = [spec for spec in specs.values() if spec["kept"] != spec["initial"]]
+        landed = bool(changed) and count < before
+        clipped = []
+        for spec in changed:
+            for number, metric in enumerate(spec["metrics"]):
+                if spec["kept"][number] != spec["initial"][number]:
+                    clipped.append(
+                        {
+                            "index": spec["index"],
+                            "chars": metric.original_length,
+                            "kept": spec["kept"][number],
+                        }
+                    )
+        if landed:
+            for spec in changed:
+                response = await self.branch.msgs._a_add_built_response(spec["response"])
+                view[spec["slot"]] = response
+            self.branch.metadata["current_progression"] = Progression(
+                order=[message.id for message in view]
+            )
+        self.records.append(
+            {
+                "at": time.time(),
+                "reason": reason,
+                "stage": "clip",
+                "kept_tail": None,
+                "messages_folded": 0,
+                "tool_calls": [],
+                "tool_calls_total": 0,
+                "summary_source": None,
+                "summary_usage": None,
+                "estimate_before": before,
+                "estimate_after": count if landed else before,
+                "cap": self.cap,
+                "input_scale": round(self._provider_scale() * self._scale, 4),
+                "outcome": "landed" if landed else "rolled_back",
+                "target_reached": (count if landed else before) <= target,
+                "clipped": clipped[:_MAX_RECORDED_CALLS] if landed else [],
+                "clipped_total": len(clipped) if landed else 0,
+            }
+        )
+        return landed
+
     async def _clip_once(self, reason: str) -> bool:
+        from lionagi.protocols.messages._result_projection import _projection_session
+
+        projection = _projection_session(self.branch, self.branch.chat_model)
+        if projection is not None:
+            return await self._clip_bounded_once(reason, projection)
+
         from lionagi.protocols.generic.progression import Progression
         from lionagi.protocols.messages import ActionResponse
         from lionagi.tools.context.context import _result_text
@@ -702,7 +958,12 @@ class ContextFold:
         body = f"\n\nSummary of the folded reasoning:\n{model_summary}" if model_summary else ""
         text = head + body
         if calls:
-            text += f"\n\nTool calls folded ({len(calls)}; function, arguments, output size):"
+            size_label = (
+                "stored-output size"
+                if getattr(self.branch.chat_model, "tool_result_max_chars", None) is not None
+                else "output size"
+            )
+            text += f"\n\nTool calls folded ({len(calls)}; function, arguments, {size_label}):"
             for i, call in enumerate(calls):
                 line = f"\n- [{call['index']}] {call['function']} {call['arguments']} ({call['output_chars']:,} chars)"
                 tail = (
@@ -721,13 +982,24 @@ class ContextFold:
         fold falls back to the host-written list.
         """
         from lionagi.protocols.messages import AssistantResponse
+        from lionagi.protocols.messages._result_projection import _projection_session
         from lionagi.service.imodel import _branch_routing_context
 
+        projection = _projection_session(self.branch, self.branch.chat_model)
         budget_chars = self.cap * 2
         texts: list[str] = []
         used = 0
         for msg in span:
-            rendered = msg.rendered
+            if projection is None:
+                rendered = msg.rendered
+            else:
+                from lionagi.protocols.messages import ActionResponse
+
+                rendered = (
+                    msg.content.with_updates(output=projection.project(msg).output).rendered
+                    if isinstance(msg, ActionResponse)
+                    else msg.rendered
+                )
             text = _text(rendered)
             if not text:
                 continue
@@ -767,7 +1039,12 @@ class ContextFold:
 
 
 def install_context_fold(
-    branch: Branch, *, cap: int, log: Callable[[str], None] | None = None
+    branch: Branch,
+    *,
+    cap: int,
+    fold_at: float = _FOLD_AT,
+    target: float = _FOLD_TARGET,
+    log: Callable[[str], None] | None = None,
 ) -> ContextFold:
     """Attach a ContextFold to the branch's API_PRE_CALL hook point and return it.
 
@@ -777,20 +1054,23 @@ def install_context_fold(
 
     A branch with no HookBus yet gets one of its own; a Session joined later takes the handler
     over through ``attach_hook_bus``, as it does for every queued branch handler. A branch keeps
-    one fold: installing again returns it, and a different cap is refused.
+    one fold: installing again returns it only when cap, line and target agree.
     """
     from lionagi.hooks.bus import HookBus, HookPoint
 
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+        raise ValueError("cap must be a positive integer")
+    _validate_fold_pair(fold_at, target)
     # One fold per branch: a second install returns the first instead of adding a second handler.
     for point, handler in branch._pending_hook_bus_entries:
         existing = getattr(handler, "__self__", None)
         if point == HookPoint.API_PRE_CALL and isinstance(existing, ContextFold):
-            if existing.cap != cap:
+            if (existing.cap, existing.fold_at, existing.target) != (cap, fold_at, target):
                 raise ValueError(
-                    f"branch already folds at a cap of {existing.cap:,} tokens, not {cap:,}"
+                    "branch already has a fold with a different cap, fold_at or target"
                 )
             return existing
-    fold = ContextFold(branch, cap=cap, log=log)
+    fold = ContextFold(branch, cap=cap, fold_at=fold_at, target=target, log=log)
     branch._pending_hook_bus_entries.append((HookPoint.API_PRE_CALL, fold.on_api_pre_call))
     branch._pending_hook_bus_entries.append((HookPoint.API_POST_CALL, fold.on_api_post_call))
     branch.attach_hook_bus(branch._hooks if branch._hooks is not None else HookBus())
