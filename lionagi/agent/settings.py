@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import logging
 from collections.abc import Callable
@@ -205,7 +204,9 @@ def _import_hook(
             f"Untrusted hook module {module_path!r}. Add it to trusted_hook_modules to allow."
         )
     try:
-        module = importlib.import_module(module_path)
+        from lionagi.ln import _utils as _ln_utils
+
+        module = _ln_utils.import_module(module_path)
         return getattr(module, func_name)
     except (ImportError, AttributeError):
         return None

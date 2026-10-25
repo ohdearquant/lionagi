@@ -1,7 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib
 import sys
 import types
 from typing import TypeVar
@@ -143,7 +142,7 @@ def get_class(class_name: str) -> type:
 
     for mod_name in _BUILTIN_MODULES:
         try:
-            module = importlib.import_module(mod_name)
+            module = _ln_utils.import_module(mod_name)
         except ImportError:
             continue
         cls = getattr(module, name, None)
