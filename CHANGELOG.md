@@ -36,6 +36,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
   | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
 
+- The core no longer imports `lionagi.cli`. The agent-profile path resolver and
+  `AmbiguousProfileNameError` move to `lionagi._paths`, and the progress, hint,
+  warning and error output channels to `lionagi._log_channels`; both stay importable
+  from their `lionagi.cli` modules, and the exception now reports
+  `lionagi._paths` as its `__module__`.
+
 - Reuse shared module-loading, worker, delay and process start-time helpers at
   equivalent call sites, with scoped lint rules and documented native boundaries.
 

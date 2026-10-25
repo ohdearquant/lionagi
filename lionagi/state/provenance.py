@@ -15,8 +15,7 @@ def agent_definition_hash(agent_name: str | None) -> str | None:
     """Return a short SHA-256 fingerprint of the agent profile, or None if not found."""
     if not agent_name:
         return None
-    from lionagi._paths import find_lionagi_dirs
-    from lionagi.cli._providers import _resolve_profile_path
+    from lionagi._paths import _resolve_profile_path, find_lionagi_dirs
 
     for d in find_lionagi_dirs():
         path = _resolve_profile_path(d / "agents", agent_name)

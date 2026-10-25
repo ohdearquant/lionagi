@@ -678,6 +678,66 @@ def test_the_lionhub_check_sees_each_form_of_reference():
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
 
 
+# Wave 2 moves these out of the core (D6), so the rest of lionagi must not import them. Logger
+# names such as "lionagi.cli.warn" are strings, not imports, and D5 keeps them.
+WAVE_2 = ("cli", "mcp", "studio")
+_WAVE_2_NAME = re.compile(rf"lionagi\.({'|'.join(WAVE_2)})(\.[A-Za-z_][A-Za-z0-9_]*)*")
+_IMPORT_CALLS = frozenset({"import_module", "__import__"})
+
+
+def _wave_2_imports(path: Path, source: str | None = None) -> list[str]:
+    """Every import of a wave-2 package in ``path``: absolute, relative, or a literal dynamic one."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    package = path.relative_to(ROOT).with_suffix("").parts[:-1]
+    hits = []
+    for node in ast.walk(ast.parse(text, filename=str(path))):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: len(package) - node.level + 1] if node.level else ()
+            module = ".".join((*base, *filter(None, [node.module])))
+            names = [module, *(f"{module}.{alias.name}" for alias in node.names)]
+        elif (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "attr", getattr(node.func, "id", None)) in _IMPORT_CALLS
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            names = [str(node.args[0].value)]
+        else:
+            continue
+        hits += [f"{path}:{node.lineno}: {n}" for n in names if _WAVE_2_NAME.fullmatch(n)][:1]
+    return hits
+
+
+def test_the_core_imports_no_package_that_moves_in_wave_2():
+    lionagi = SOURCE_ROOTS[0]
+    hits = [
+        hit
+        for path in sorted(lionagi.rglob("*.py"))
+        if path.relative_to(lionagi).parts[0] not in WAVE_2
+        for hit in _wave_2_imports(path)
+    ]
+    assert hits == [], hits
+
+
+def test_the_wave_2_check_sees_each_form_of_import():
+    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    source = (
+        "from lionagi.cli._runs import RunDir\n"
+        "from ..mcp import server\n"
+        "importlib.import_module('lionagi.studio.app')\n"
+        "import lionagi.cli\n"
+        "from lionagi import studio\n"
+        "from .. import cli\n"
+        "WARN = 'lionagi.cli.warn'\n"
+        "from lionagi.client import x\n"
+        "from . import cli\n"
+    )
+    hits = _wave_2_imports(probe, source)
+    assert sorted(int(hit.split(":")[1]) for hit in hits) == [1, 2, 3, 4, 5, 6], hits
+
+
 def test_changelog_names_every_move():
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     for row in _moved.MOVED:

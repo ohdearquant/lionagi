@@ -7,7 +7,18 @@ from __future__ import annotations
 import logging
 import sys
 
-from lionagi.state.engine import mask_credentials
+# The channels and their emitters live in the core so code outside the CLI can write to them;
+# this module decides how they print.
+from lionagi._log_channels import (
+    ERROR_LOGGER_NAME,
+    HINT_LOGGER_NAME,
+    PROGRESS_LOGGER_NAME,
+    WARN_LOGGER_NAME,
+    hint,
+    log_error,
+    progress,
+    warn,
+)
 
 __all__ = (
     "configure_cli_logging",
@@ -17,10 +28,11 @@ __all__ = (
     "log_error",
 )
 
-_PROGRESS_LOGGER_NAME = "lionagi.cli.progress"
-_HINT_LOGGER_NAME = "lionagi.cli.hint"
-_WARN_LOGGER_NAME = "lionagi.cli.warn"
-_ERROR_LOGGER_NAME = "lionagi.cli.error"
+# The names this module used to define; callers still import them from here.
+_PROGRESS_LOGGER_NAME = PROGRESS_LOGGER_NAME
+_HINT_LOGGER_NAME = HINT_LOGGER_NAME
+_WARN_LOGGER_NAME = WARN_LOGGER_NAME
+_ERROR_LOGGER_NAME = ERROR_LOGGER_NAME
 
 # Library loggers silenced in non-verbose mode — they emit the provider's
 # own streaming chunks, which duplicate our progress if both are on.
@@ -95,23 +107,3 @@ def configure_cli_logging(verbose: bool) -> None:
     library_level = logging.INFO if verbose else logging.WARNING
     for name in _LIBRARY_LOGGERS:
         logging.getLogger(name).setLevel(library_level)
-
-
-def progress(msg: str) -> None:
-    """Emit a progress update. Suppressed in verbose mode."""
-    logging.getLogger(_PROGRESS_LOGGER_NAME).info(msg)
-
-
-def hint(msg: str) -> None:
-    """Emit a post-run hint (e.g. resume command). Always visible."""
-    logging.getLogger(_HINT_LOGGER_NAME).info(msg)
-
-
-def warn(msg: str) -> None:
-    """Emit a non-fatal warning. Always visible, auto-prefixed with 'warning:'."""
-    logging.getLogger(_WARN_LOGGER_NAME).warning(msg)
-
-
-def log_error(msg: str) -> None:
-    """Emit a user-facing error. Always visible, auto-prefixed with 'error:'."""
-    logging.getLogger(_ERROR_LOGGER_NAME).error(mask_credentials(msg))
