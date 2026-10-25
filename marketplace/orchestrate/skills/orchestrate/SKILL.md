@@ -125,7 +125,7 @@ For someone working inside a lionagi checkout — informational, not part of the
 
 | Component | Path |
 |---|---|
-| MCP server + verb catalog | `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py`, `lionagi/mcp/dispatch.py` |
+| MCP server + verb catalog | `lionhub/src/lionhub/serve/mcp/server.py`, `lionhub/src/lionhub/serve/mcp/verbs.py`, `lionhub/src/lionhub/serve/mcp/dispatch.py` |
 | CLI entrypoint | `lionagi/cli/main.py` |
 | Flow engine (`TaskAssignment` DAG) | `lionagi/cli/orchestrate/flow.py` |
 | Fanout engine | `lionagi/cli/orchestrate/fanout.py` |

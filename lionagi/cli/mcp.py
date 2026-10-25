@@ -53,11 +53,11 @@ def run_mcp(args: argparse.Namespace) -> int:
         log_error(f"unknown mcp action: {args.action}")
         return 2
     try:
-        # `lionagi.mcp` is dependency-free; the server module needs the extra,
+        # `lionhub.serve.mcp` is dependency-free; the server module needs the extra,
         # so it's imported here explicitly, before serving, so a failure here
         # (not mid-session) is what gets classified as "nothing was started".
-        import lionagi.mcp.server  # noqa: F401
-        from lionagi.mcp import serve
+        import lionhub.serve.mcp.server  # noqa: F401
+        from lionhub.serve.mcp import serve
     except ModuleNotFoundError as exc:
         # The extra is not installed. The server never started and nothing ran,
         # so this is the environment rather than a failed command, and returning

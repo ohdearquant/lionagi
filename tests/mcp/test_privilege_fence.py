@@ -21,7 +21,7 @@ import asyncio
 import pytest
 
 from lionagi.cli import machine
-from lionagi.mcp import dispatch, jobs, projection, verbs
+from lionhub.serve.mcp import dispatch, jobs, projection, verbs
 
 # Named by the operation an agent could otherwise perform on itself, not by a
 # spelling: a rename that keeps the capability must still fail this.

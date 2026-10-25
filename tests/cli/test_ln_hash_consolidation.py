@@ -12,9 +12,9 @@ import pytest
 
 from lionagi.cli.engine import _engine_outcome
 from lionagi.ln._hash import MAX_HASH_INPUT_BYTES
-from lionagi.mcp._child_actor import _CONFIG, mint_child_actor_config
 from lionagi.service.accounts._pricing import CURRENT_REVISION, quote_ceiling
 from lionagi.studio.services.schedule_declaration import _digest_of
+from lionhub.serve.mcp._child_actor import _CONFIG, mint_child_actor_config
 
 
 @pytest.mark.parametrize(

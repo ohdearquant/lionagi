@@ -611,7 +611,7 @@ def deliver_terminal_notice(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="lionagi.mcp._notify_hook")
+    ap = argparse.ArgumentParser(prog="lionhub.serve.mcp._notify_hook")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--status", default="completed")
     ap.add_argument("--target", default=None, help="value for the {target} placeholder")

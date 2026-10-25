@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from lionagi.mcp import dispatch
+from lionhub.serve.mcp import dispatch
 
 SCHEDULE_ROW = {
     "id": "sched-1",
@@ -368,7 +368,7 @@ def test_disable_rejects_a_blank_reason_before_calling_studio(studio, reason):
 
 
 def test_disable_verb_admits_reason():
-    from lionagi.mcp import verbs
+    from lionhub.serve.mcp import verbs
 
     assert verbs.VERBS["schedule.disable"].admits == ("id", "reason")
 
@@ -446,7 +446,7 @@ def test_every_admitted_parameter_is_one_the_child_parser_accepts():
     rejection a caller cannot anticipate from the schema it was given.
     """
     from lionagi.cli.machine_schedule import _schedule_subparsers
-    from lionagi.mcp import verbs
+    from lionhub.serve.mcp import verbs
 
     parsers = _schedule_subparsers()
     for verb in verbs.VERBS.values():

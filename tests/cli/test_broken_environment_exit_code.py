@@ -41,6 +41,9 @@ from lionagi.cli._util import (
 cli_main = importlib.import_module("lionagi.cli.main")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Both import roots of this checkout, so a child process runs this tree's lionagi and
+# lionhub rather than whichever checkout the installed distribution points at.
+SOURCE_PATH = os.pathsep.join([str(REPO_ROOT), str(REPO_ROOT / "lionhub" / "src")])
 
 
 def test_environment_code_collides_with_no_run_status() -> None:
@@ -200,7 +203,7 @@ def test_a_missing_command_module_reports_the_environment_end_to_end():
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
         timeout=120,
     )
 
@@ -323,7 +326,7 @@ def test_li_mcp_separates_a_missing_extra_from_a_broken_one(raised, expected_cod
     installation is broken".
 
     The dependency blocked here is `fastmcp`, the package the extra actually
-    supplies, and the command is driven through `main()`. Blocking `lionagi.mcp`
+    supplies, and the command is driven through `main()`. Blocking `lionhub.serve.mcp`
     instead would prove nothing: that package is deliberately dependency-free and
     imports fine without the extra, so the real failure happens one level deeper
     and would have been missed by a test that never reached it.
@@ -356,7 +359,7 @@ def test_li_mcp_separates_a_missing_extra_from_a_broken_one(raised, expected_cod
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
         timeout=120,
     )
 
@@ -379,7 +382,7 @@ def test_serve_reports_a_missing_extra_as_a_missing_module(raised, expected_type
 
     `li mcp` does not depend on this: it imports the server module itself, so it
     sees the original error before `serve()` is ever called. The caller that does
-    depend on it is `python -m lionagi.mcp`, which calls `serve()` directly and
+    depend on it is `python -m lionhub.serve.mcp`, which calls `serve()` directly and
     has nothing else to key off. Without this test the type is pinned only where
     it happens to be redundant, and flattening it to a plain ImportError would
     leave every test passing while that entry point lost the distinction.
@@ -404,7 +407,7 @@ def test_serve_reports_a_missing_extra_as_a_missing_module(raised, expected_type
             del sys.modules[name]
         sys.meta_path.insert(0, _RefuseOne())
 
-        from lionagi.mcp import serve
+        from lionhub.serve.mcp import serve
 
         try:
             serve()
@@ -420,7 +423,7 @@ def test_serve_reports_a_missing_extra_as_a_missing_module(raised, expected_type
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={**os.environ, "PYTHONPATH": SOURCE_PATH},
         timeout=120,
     )
 

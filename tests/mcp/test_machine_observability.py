@@ -18,7 +18,7 @@ import subprocess
 
 import pytest
 
-from lionagi.mcp import config, dispatch, verbs
+from lionhub.serve.mcp import config, dispatch, verbs
 
 # Every verb in the tranche that answers with no arguments, so one parametrized
 # call covers the whole set the same way a caller would reach it.

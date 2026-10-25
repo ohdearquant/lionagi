@@ -14,7 +14,7 @@ import json
 import pytest
 
 from lionagi.cli._mcp_resolve import McpConfigError, discover_mcp_config, resolve_spawn_mcp_servers
-from lionagi.mcp import config, dispatch, jobs
+from lionhub.serve.mcp import config, dispatch, jobs
 
 
 @pytest.fixture

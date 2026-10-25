@@ -615,7 +615,7 @@ def _locks_beside_artifacts(root: Path) -> list[Path]:
     if root.name == "artifacts":
         run_dir = root.parent
         candidates.append(run_dir / "finalize.lock")
-        from lionagi.mcp import config as mcp_config
+        from lionhub.serve.mcp import config as mcp_config
 
         candidates.append(mcp_config.JOBS_DIR / run_dir.name / "job.lock")
     return candidates
