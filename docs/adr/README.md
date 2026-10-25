@@ -141,6 +141,8 @@ its area block.
 - 0025-0026 — unused (intentional gaps)
 - [ADR-0132](ADR-0132-batched-lndl-rounds-for-api-model-legs.md) — Batched LNDL rounds for
   API-model legs (sequential number; see Numbering)
+- [ADR-0137](ADR-0137-failed-rounds-and-the-output-limit-on-api-model-legs.md) — Failed
+  rounds and the output limit on API-model legs (sequential number; see Numbering)
 
 ### service-providers (0027-0032)
 

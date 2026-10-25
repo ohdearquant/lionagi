@@ -1,5 +1,7 @@
 """Tests for lionagi/ln/fuzzy/_extract_json.py"""
 
+import json
+
 from lionagi.ln.fuzzy._extract_json import extract_json
 
 
@@ -170,3 +172,70 @@ More text
     assert {"block1": "valid"} in result
     assert ["valid", "array"] in result
     assert {"block2": "also valid"} in result
+
+
+def test_a_fence_inside_a_json_string_does_not_end_the_block():
+    """A JSON string holds its newlines as escapes, so a fence it carries never starts a line."""
+    payload = {"content": "# notes\n```python\nprint(1)\n```\n", "n": 1}
+    for body in (json.dumps(payload), json.dumps(payload, indent=2)):
+        text = "Plan:\n```json\n" + body + "\n```\nDone."
+        assert extract_json(text) == payload
+        assert extract_json(text, fuzzy_parse=True) == payload
+
+
+def test_a_closing_fence_may_be_indented_longer_or_followed_by_spaces():
+    assert extract_json('````json\n{"a": 1}\n```` \n') == {"a": 1}
+    assert extract_json('  ```json\n{"a": 1}\n  ```') == {"a": 1}
+    assert extract_json('```json\r\n{"a": 1}\r\n```\r\n') == {"a": 1}
+
+
+def test_an_indented_block_beside_a_top_level_block_is_read_with_it():
+    # A block in a list item is indented four spaces or more; each block is read.
+    text = '1. first\n\n    ```json\n    {"a": 1}\n    ```\n\nthen\n```json\n{"b": 2}\n```'
+    assert extract_json(text, return_one_if_single=False) == [{"a": 1}, {"b": 2}]
+    assert extract_json('\t```json\n{"a": 1}\n\t```') == {"a": 1}
+
+
+def test_a_block_on_one_line_beside_a_fenced_block_is_read_in_its_place():
+    text = 'first\n```json\n{"a": 1}\n```\nthen ```json {"b": 2}``` and\n```json\n{"c": 3}\n```'
+    assert extract_json(text, return_one_if_single=False) == [{"a": 1}, {"b": 2}, {"c": 3}]
+    assert extract_json('```json\n{"a": 1}\n```\nand ```json {"b": 2}```') == [{"a": 1}, {"b": 2}]
+
+
+def test_a_span_beside_a_fenced_block_that_does_not_parse_leaves_the_single_result():
+    text = 'first\n```json\n{"a": 1}\n```\nthen ```json {not json} ``` and ```json```'
+    for fuzzy in (False, True):
+        assert extract_json(text, fuzzy_parse=fuzzy) == {"a": 1}
+    assert extract_json(text, return_one_if_single=False) == [{"a": 1}]
+
+
+def test_a_fenced_block_that_does_not_parse_still_counts_toward_the_result():
+    # The blocks on lines of their own count as found whether or not they parse, as do all
+    # spans when the text has no such block.
+    assert extract_json('```json\n{not json}\n```\nthen ```json {"b": 2} ```') == [{"b": 2}]
+    assert extract_json('```json\n{"a": 1}\n```\n\n```json\n{not json}\n```') == [{"a": 1}]
+    assert extract_json('```json {not json} ``` and ```json {"b": 2} ```') == [{"b": 2}]
+
+
+def test_a_reply_with_a_stray_json_span_beside_its_block_validates():
+    from pydantic import BaseModel
+
+    from lionagi.ln.fuzzy._fuzzy_validate import fuzzy_validate_pydantic
+
+    class Count(BaseModel):
+        n: int
+
+    text = 'Result:\n```json\n{"n": 3}\n```\nwrapped in ```json``` as asked'
+    assert fuzzy_validate_pydantic(text, Count) == Count(n=3)
+
+
+def test_a_block_whose_fences_share_its_lines_is_still_read():
+    assert extract_json('```json {"a": 1} ```') == {"a": 1}
+    assert extract_json('see ```json\n{"a": 1}```') == {"a": 1}
+
+
+def test_each_block_of_several_is_read_with_its_own_inner_fences():
+    first = {"content": "```sh\nls\n```"}
+    second = {"k": "v"}
+    text = "```json\n" + json.dumps(first) + "\n```\nthen\n```json\n" + json.dumps(second) + "\n```"
+    assert extract_json(text, return_one_if_single=False) == [first, second]
