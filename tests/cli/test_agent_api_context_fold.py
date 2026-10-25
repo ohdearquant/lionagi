@@ -2203,7 +2203,7 @@ async def test_no_cap_manifest_reports_initialized_effective_endpoint_policy(
     manifest = _manifest(tmp_path)
     assert manifest["prompt_caching"] is declares
     assert manifest["tool_result_max_chars"] == 4000
-    assert manifest["context_fold"] is None
+    assert "context_fold" in manifest and manifest["context_fold"] is None
     assert manifest["context_folds"] == []
     assert leg.branch.metadata["api_launch"]["prompt_caching"] is True
     assert leg.branch.metadata["api_launch"]["context_fold_at"] == 0.9
