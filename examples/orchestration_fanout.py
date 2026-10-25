@@ -17,13 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from lionhub.orchestration import fanout, spawn_roles
-
 from lionagi.agent import AgentSpec
 from lionagi.casts.emission import TaskAssignment
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.orchestration import fanout, spawn_roles
 
 logging.basicConfig(level=logging.WARNING)
 
