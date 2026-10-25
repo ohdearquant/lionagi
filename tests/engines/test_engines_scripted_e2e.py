@@ -9,6 +9,8 @@ import json
 
 import pytest
 import yaml
+
+from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 from lionhub.orchestration.engines.coding import (
     ChangeProposed,
     CodeResultRecorded,
@@ -35,8 +37,6 @@ from lionhub.orchestration.engines.review import (
     ReviewVerdict,
     VerifyResult,
 )
-
-from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 
 SCRIPTED_MODEL = "scripted/scripted-test"
 

@@ -10,6 +10,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+
 from lionhub.orchestration.engines.coding import (
     CodingEngine,
     WorkPlanned,
@@ -514,10 +515,9 @@ def test_cli_repair_instruction_fenced_block_validates_against_emission():
     import json
     import re
 
-    from lionhub.orchestration.engines.coding import WorkPlanned
-
     from lionagi.casts.emission import build_emission_operable
     from lionagi.operations._observe import attempt_extract
+    from lionhub.orchestration.engines.coding import WorkPlanned
 
     hint = emission_keys((WorkPlanned,))
     msg = _cli_repair_instruction(hint, (WorkPlanned,))

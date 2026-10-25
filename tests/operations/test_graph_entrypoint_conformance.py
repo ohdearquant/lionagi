@@ -3459,14 +3459,13 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     from types import SimpleNamespace as _SimpleNamespace
     from uuid import UUID
 
-    from lionhub.orchestration.engines.engine import EngineRun
-    from lionhub.orchestration.engines.planning import PlanningEngine
-
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
     from lionagi.casts.emission import TaskAssignment
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.engines.engine import EngineRun
+    from lionhub.orchestration.engines.planning import PlanningEngine
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -3702,10 +3701,9 @@ async def test_orchestration_fanout_submits_built_graph_through_injected_session
 async def test_planning_engine_run_delegates_to_engine_run_run_dag():
     from types import SimpleNamespace
 
+    from lionagi.casts.emission import TaskAssignment
     from lionhub.orchestration.engines.engine import EngineRun
     from lionhub.orchestration.engines.planning import PlanningEngine
-
-    from lionagi.casts.emission import TaskAssignment
 
     eng = PlanningEngine(reactive=False)
     run = eng.new_run()
@@ -3748,10 +3746,9 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
 
 @pytest.mark.asyncio
 async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_path):
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import fanout as fanout_mod
+    from lionhub.orchestration.engines import PlanningEngine
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
 
     env = _make_env(tmp_path)
@@ -3922,10 +3919,9 @@ async def test_execute_dag_delegates_to_planning_engine_run_dag(tmp_path):
     engine-run-dag; this only pins that _execute_dag reaches run_dag once
     with the built graph — reusing the same fake-env/PlanningEngine.new_run
     seam tests/cli/orchestrate/test_flow_phases.py already established."""
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionhub.orchestration.engines import PlanningEngine
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
 
     env = _make_env(tmp_path)

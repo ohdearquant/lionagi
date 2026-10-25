@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 import pytest
+
+from lionagi import Branch
+from lionagi.casts.emission import build_emission_operable
+from lionagi.session.signal import StructuredOutput
 from lionhub.orchestration.engines.engine import Engine, EngineBudgetError, JudgeVerdict
 from lionhub.orchestration.engines.hypothesis import (
     ApplicationMapped,
@@ -16,10 +20,6 @@ from lionhub.orchestration.engines.hypothesis import (
     QuestionRaised,
 )
 from lionhub.orchestration.engines.research import FindingEmitted
-
-from lionagi import Branch
-from lionagi.casts.emission import build_emission_operable
-from lionagi.session.signal import StructuredOutput
 
 
 class _StubEngine(Engine):

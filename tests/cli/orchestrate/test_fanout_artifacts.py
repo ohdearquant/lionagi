@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from lionhub.orchestration.engines import PlanningEngine
 
 from lionagi import Branch, Session
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -19,6 +18,7 @@ from lionagi.cli.orchestrate import fanout as fanout_module
 from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.signal import NodeCompleted
+from lionhub.orchestration.engines import PlanningEngine
 
 
 def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:

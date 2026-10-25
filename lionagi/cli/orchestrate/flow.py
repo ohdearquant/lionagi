@@ -2218,9 +2218,8 @@ async def _execute_dag(
                     )
                     _persist_control_log()
 
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+    from lionhub.orchestration.engines import PlanningEngine
 
     env.session.observe(NodeStarted, handler=_on_node_started)
     env.session.observe(NodeCompleted, handler=_on_node_completed)

@@ -16,10 +16,10 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from lionhub.orchestration.engines.engine import Engine
 
 from lionagi import Branch, iModel
 from lionagi.service.connections.endpoint import Endpoint
+from lionhub.orchestration.engines.engine import Engine
 
 pytestmark = pytest.mark.asyncio
 

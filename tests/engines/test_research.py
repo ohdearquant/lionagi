@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import pytest
+
 from lionhub.orchestration.engines.research import (
     DepthRequested,
     FindingEmitted,

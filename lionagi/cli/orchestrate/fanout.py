@@ -473,9 +473,8 @@ async def _run_fanout_inner(
     saved_workers: dict[int, dict] = {}
     artifact_failures: dict[int, dict] = {}
 
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.session.signal import NodeCompleted, NodeFailed
+    from lionhub.orchestration.engines import PlanningEngine
 
     # Keyed by op_id so the same observer serves the fanned workers here and
     # the synthesis node later. A failed op has no entry in operation_results,

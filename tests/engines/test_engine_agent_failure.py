@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+
 from lionhub.orchestration.engines.engine import Engine, EngineRun
 
 # EngineRun._agent_errors accumulation via notify()

@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from lionhub.orchestration.engines.review import ReviewEngine
 
 from lionagi.ln.concurrency import BaseExceptionGroup  # 3.10 compat shim
+from lionhub.orchestration.engines.review import ReviewEngine
 
 
 class _OKAgent:

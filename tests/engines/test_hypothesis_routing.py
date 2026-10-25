@@ -10,10 +10,13 @@ import asyncio
 import json
 from unittest.mock import patch
 
-import lionhub.orchestration.engines.engine as engine_mod
-import lionhub.orchestration.engines.hypothesis as hyp_mod
 import pydantic
 import pytest
+
+import lionhub.orchestration.engines.engine as engine_mod
+import lionhub.orchestration.engines.hypothesis as hyp_mod
+from lionagi import Branch
+from lionagi._errors import ContainmentRefusedError
 from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     ConclusionDrawn,
@@ -27,9 +30,6 @@ from lionhub.orchestration.engines.hypothesis import (
     _judge_bar,
     filing_queue,
 )
-
-from lionagi import Branch
-from lionagi._errors import ContainmentRefusedError
 
 
 @pytest.fixture(autouse=True)

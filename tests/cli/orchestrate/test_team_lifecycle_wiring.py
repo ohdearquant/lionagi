@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from lionhub.orchestration.engines import PlanningEngine
 
 from lionagi.casts.emission import TaskAssignment
 from lionagi.cli import team
@@ -27,6 +26,7 @@ from lionagi.operations.node import Operation
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.exchange import Exchange
 from lionagi.session.session import Session
+from lionhub.orchestration.engines import PlanningEngine
 
 from .test_flow_phases import _FakeBranch, _make_env
 
