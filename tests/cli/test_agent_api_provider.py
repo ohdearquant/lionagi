@@ -963,3 +963,340 @@ async def test_a_loop_without_the_read_set_is_refused_on_resume_without_a_record
 
     with pytest.raises(ConfigurationError, match="sets api_loop but no api_tools"):
         await leg.run(_profile(api_loop="lndl"), "again", resume=branch_id)
+
+
+# ── the output limit and a pass that ends on a failed round ──────────────
+
+
+def _cut_off(*blocks: dict) -> dict:
+    """A response that stopped at its output token limit, carrying only ``blocks``."""
+    reply = _reply({})
+    reply["content"] = list(blocks) or [{"type": "thinking", "thinking": "...", "signature": "s"}]
+    reply["stop_reason"] = "max_tokens"
+    reply["usage"] = {"input_tokens": 1, "output_tokens": 32_768}
+    return reply
+
+
+# A reply with text that does not parse is repaired by reformat requests before the round gives
+# up; a reply with no text is not repaired at all.
+_REPAIRS = 4
+
+
+@pytest.mark.asyncio
+async def test_an_anthropic_leg_sends_the_api_output_limit(leg):
+    import lionagi.cli.agent as agent_mod
+
+    leg.replies = [_last_round(), _answer("hello")]
+
+    await leg.run(_profile(api_tools="read"))
+
+    assert [p["max_tokens"] for p in leg.payloads] == [agent_mod._API_MAX_OUTPUT_TOKENS] * 2
+
+
+@pytest.mark.asyncio
+async def test_the_failed_round_check_reads_the_last_round_and_the_answer_by_position(
+    leg, monkeypatch
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.protocols.messages import AssistantResponse
+
+    seen = []
+    check = agent_mod._failed_round
+
+    def spy(branch, before, rounds):
+        added = [
+            m
+            for m in branch.msgs.messages
+            if m.id not in before and isinstance(m, AssistantResponse)
+        ]
+        seen.append(([json.dumps(m.model_response) for m in added], list(rounds)))
+        return check(branch, before, rounds)
+
+    monkeypatch.setattr(agent_mod, "_failed_round", spy)
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("hello")]
+
+    await leg.run(_profile(api_tools="read"))
+
+    [(added, rounds)] = seen
+    # Each round's analysis, then the answer: [-2] is the round that ended the loop.
+    assert [getattr(r, "analysis", None) for r in rounds[:-1]] == [
+        "read the notes first",
+        "the file says hello",
+    ]
+    assert rounds[-1].answer == "hello"
+    # The pass's last two responses are that round's and the answer turn's.
+    assert len(added) == 3
+    assert "the file says hello" in added[-2]
+    assert '\\"answer\\": \\"hello\\"' in added[-1]
+
+
+def test_a_model_that_names_its_output_limit_keeps_it():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    named = iModel(provider="anthropic", model="claude-haiku-5-5", api_key="k", max_tokens=64)
+    unnamed = iModel(provider="anthropic", model="claude-haiku-5-5", api_key="k")
+    branch = Branch(chat_model=unnamed, parse_model=named)
+
+    assert agent_mod._install_api_input_cap(branch, "none") is None
+
+    assert branch.parse_model.endpoint.config.kwargs["max_tokens"] == 64
+    assert branch.chat_model.endpoint.config.kwargs["max_tokens"] == (
+        agent_mod._API_MAX_OUTPUT_TOKENS
+    )
+    # The model the caller built is left as it was.
+    assert unnamed.endpoint.config.kwargs.get("max_tokens") is None
+
+
+@pytest.mark.asyncio
+async def test_an_anthropic_leg_request_waits_at_most_the_endpoint_timeout():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    branch = Branch(chat_model=iModel(provider="anthropic", model="claude-haiku-5-5", api_key="k"))
+    agent_mod._install_api_input_cap(branch, "none")
+    endpoint = branch.chat_model.endpoint
+
+    assert endpoint.config.timeout == 600
+    # The client a request is sent on, direct or routed, takes the configured timeout.
+    for client in (
+        endpoint._create_http_session(),
+        endpoint._create_http_session({}, timeout=endpoint.config.timeout),
+    ):
+        try:
+            assert client.timeout.read == 600
+            assert client.timeout.connect == 600
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_round_spent_on_thinking_is_continued_and_the_turn_finishes(leg):
+    leg.replies = [
+        _read_round("notes.txt"),
+        _cut_off(),
+        _answer("half an answer"),
+        _last_round(),
+        _answer("the notes say hello"),
+    ]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.replies == []
+    resumed = _last_user_text(leg.payloads[3])
+    assert "reached its output token limit before it wrote any text or tool call" in resumed
+    assert not any("text_to_format" in json.dumps(p, default=str) for p in leg.payloads)
+
+
+@pytest.mark.asyncio
+async def test_an_answer_with_no_text_is_continued_and_the_turn_finishes(leg):
+    leg.replies = [
+        _read_round("notes.txt"),
+        _last_round(),
+        _text(""),
+        _last_round(),
+        _answer("the notes say hello"),
+    ]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.replies == []
+    assert "Your last reply had no text" in _last_user_text(leg.payloads[3])
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_keeps_having_no_text_fails_the_turn(leg):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _text("")])
+
+    with pytest.raises(FailedRoundError, match="the answer had no text") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert raised.value.details == {"continued": agent_mod._API_ROUND_RESUMES}
+    assert leg.replies == []
+    assert leg.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_keeps_stopping_at_the_output_limit_fails_the_turn(leg):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _cut_off()])
+
+    with pytest.raises(FailedRoundError, match="no text and no tool call") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert raised.value.details == {"continued": agent_mod._API_ROUND_RESUMES}
+    assert leg.replies == []
+    assert len(leg.payloads) == 2 * (agent_mod._API_ROUND_RESUMES + 1)
+    assert not any("text_to_format" in json.dumps(p, default=str) for p in leg.payloads)
+    assert leg.status == "failed"
+    assert leg.exception is raised.value
+    spend = leg.branch.metadata["api_launch"]["spend"]
+    assert spend["requests"] == 2 * (agent_mod._API_ROUND_RESUMES + 1)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_does_not_parse_is_continued_with_the_reason(leg):
+    leg.replies = [
+        _text("I will read the notes next."),
+        *(_text("Still no JSON here.") for _ in range(_REPAIRS)),
+        _answer("read them"),
+        _last_round(),
+        _answer("the notes say hello"),
+    ]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.replies == []
+    resumed = _last_user_text(leg.payloads[1 + _REPAIRS + 1])
+    assert "could not be read in the required response format" in resumed
+    assert "no JSON object could be read from it" in resumed
+    assert "none of the actions in it ran" in resumed
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_round_cut_off_with_nothing_is_repaired_inside_its_rounds(leg):
+    leg.replies = [_cut_off(), _text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.replies == []
+    assert len(leg.payloads) == 3
+
+
+@pytest.mark.asyncio
+async def test_actions_in_a_reply_whose_text_holds_a_fenced_block_run(leg):
+    content = {
+        "analysis": "the notes may hold a block like ```python\nprint(1)\n``` so read them",
+        "action_requests": [
+            {"function": "reader", "arguments": {"action": "read", "path": "notes.txt"}}
+        ],
+        "action_strategy": "sequential",
+        "extension_needed": True,
+        "reason": {"title": "read", "content": "the answer is in the file"},
+    }
+    leg.replies = [
+        _text("Reading the notes.\n\n```json\n" + json.dumps(content, indent=2) + "\n```\n"),
+        _last_round(),
+        _answer("the notes say hello"),
+    ]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert len(leg.payloads) == 3 and leg.replies == []
+    responses = [m for m in leg.branch.msgs.messages if type(m).__name__ == "ActionResponse"]
+    assert len(responses) == 1
+    assert "hello from the notes" in json.dumps(responses[0].content.to_dict())
+
+
+def test_li_agent_exits_failed_on_a_failed_round_without_a_traceback(monkeypatch):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    async def failed_run(*args, **kwargs):
+        raise FailedRoundError("3 passes of the tool loop in a row ended on a failed round: x")
+
+    errors: list[str] = []
+    monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors.append(msg))
+    monkeypatch.setattr(agent_mod, "_resolve_model_and_prompt", lambda args: (MODEL, "x"))
+    monkeypatch.setattr(agent_mod, "_run_agent", failed_run)
+    args = SimpleNamespace(
+        list_profiles=False,
+        form=None,
+        image=None,
+        agent="reader-leg",
+        resume=None,
+        continue_last=False,
+        yolo=False,
+        verbose=False,
+        theme=None,
+        effort=None,
+        cwd=None,
+        timeout=None,
+        fast=False,
+    )
+
+    assert agent_mod.run_agent(args) == 1
+    assert errors == []
+
+
+_THINKING = {"type": "thinking", "thinking": "...", "signature": "s"}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_cut_off(_THINKING), True),
+        (_cut_off(_THINKING, {"type": "text", "text": "  \n"}), True),
+        (_cut_off(_THINKING, {"type": "text", "text": "partial"}), False),
+        (
+            _cut_off(_THINKING, {"type": "tool_use", "id": "t", "name": "reader", "input": {}}),
+            False,
+        ),
+        ({**_cut_off(_THINKING), "stop_reason": "end_turn"}, False),
+        ({"choices": [{"finish_reason": "length", "message": {"content": ""}}]}, True),
+        ({"choices": [{"finish_reason": "length", "message": {"content": "part"}}]}, False),
+        (
+            {
+                "choices": [
+                    {"finish_reason": "length", "message": {"content": None, "tool_calls": [{}]}}
+                ]
+            },
+            False,
+        ),
+        ({"choices": [{"finish_reason": "stop", "message": {"content": ""}}]}, False),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "reasoning", "summary": []}],
+            },
+            True,
+        ),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "part"}]}
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "function_call", "name": "reader", "arguments": "{}"}],
+            },
+            False,
+        ),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": [],
+            },
+            False,
+        ),
+        ([_cut_off(_THINKING)], False),
+        ("not a response", False),
+    ],
+)
+def test_a_response_cut_off_with_nothing_is_read_in_each_provider_shape(response, expected):
+    import lionagi.cli.agent as agent_mod
+
+    assert agent_mod._stopped_at_output_limit_with_nothing(response) is expected

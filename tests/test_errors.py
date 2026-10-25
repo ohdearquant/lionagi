@@ -13,6 +13,7 @@ from lionagi._errors import (
     EmptyOutgoingContentError,
     ExecutionError,
     ExistsError,
+    FailedRoundError,
     InputTokenCapError,
     ItemExistsError,
     ItemNotFoundError,
@@ -44,6 +45,7 @@ _EXPECTED_ALL = (
     "EmptyOutgoingContentError",
     "CLIInputRefusedError",
     "InputTokenCapError",
+    "FailedRoundError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -341,6 +343,18 @@ class TestInputTokenCapError:
         pydantic would wrap together with the whole request payload."""
         assert issubclass(InputTokenCapError, LionError)
         assert not issubclass(InputTokenCapError, ValueError)
+
+
+class TestFailedRoundError:
+    def test_default_message(self):
+        error = FailedRoundError()
+        assert error.message == "The agent loop ended on a failed round"
+        assert error.status_code == 502
+
+    def test_details_carry_the_continuations(self):
+        error = FailedRoundError("again", details={"continued": 2})
+        assert error.details == {"continued": 2}
+        assert issubclass(FailedRoundError, LionError)
 
 
 class TestAliases:
