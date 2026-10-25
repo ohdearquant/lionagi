@@ -192,6 +192,7 @@ def _opens_fence(delim: str, trailing: str) -> bool:
 # here and a rename fails loudly instead of quietly.
 DOC_SOURCE_ROOTS: tuple[str, ...] = (
     "lionagi/",
+    "lionhub/",
     "apps/",
     "tests/",
     "marketplace/",
