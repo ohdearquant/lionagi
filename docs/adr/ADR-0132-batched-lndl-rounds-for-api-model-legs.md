@@ -1,6 +1,6 @@
 # ADR-0132: Batched LNDL rounds for API-model legs
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-18, #3628); D4 is decided by `r5`, as Implementation-status states
 - **Kind**: Aspirational
 - **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran four times
   (D4, Result); read against the source (Amendment 1), `r5`, the run that decides, does not meet
