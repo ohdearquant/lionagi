@@ -95,9 +95,15 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 48)
-    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 166)
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 167)
+    assert "DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 48
+    )
+    assert "ack_required: bool = False" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 166
+    )
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 167
+    )
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
@@ -359,7 +365,7 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
+    assert "lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four

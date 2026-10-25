@@ -33,7 +33,7 @@ suggestions collapsed. `round` is 1-indexed; the codex-pr-review skill writes on
 
 ---
 
-## lionagi.work.rules — Rule/RuleSet contract
+## lionhub.orchestration.work.rules — Rule/RuleSet contract
 
 ### CheckKind values and params
 

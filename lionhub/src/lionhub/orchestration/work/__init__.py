@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""lionagi.work — WorkForm lifecycle (form.py) + declarative validation rules (rules.py)."""
+"""lionhub.orchestration.work — WorkForm lifecycle (form.py) + declarative validation rules (rules.py)."""
 
 from .form import (
     VALID_TRANSITIONS,

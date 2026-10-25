@@ -28,16 +28,16 @@ def _redirect_state_db(monkeypatch, tmp_path: Path) -> Path:
 
 
 async def _seed(db_path: Path, **kwargs) -> str:
-    from lionagi.dispatch import enqueue_dispatch
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import enqueue_dispatch
 
     async with StateDB(db_path) as db:
         return await enqueue_dispatch(db, **kwargs)
 
 
 async def _row(db_path: Path, dispatch_id: str):
-    from lionagi.dispatch import get_dispatch
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import get_dispatch
 
     async with StateDB(db_path) as db:
         return await get_dispatch(db, dispatch_id)
@@ -155,7 +155,7 @@ def test_ack_reports_conflict_not_success_when_the_row_moved_under_it(monkeypatc
     )
     token = asyncio.run(_row(db_path, dispatch_id))["ack_token"]
 
-    from lionagi.dispatch import outbox
+    from lionhub.orchestration.dispatch import outbox
 
     real_transition = outbox.transition
 
@@ -195,8 +195,8 @@ def test_a_lost_race_on_a_row_that_is_then_deleted_is_not_found_not_a_null_confl
     if verb == "retry":
         asyncio.run(_force_status(db_path, dispatch_id, "dead_letter"))
 
-    from lionagi.dispatch import outbox, purge_dispatch
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import outbox, purge_dispatch
 
     real_transition = outbox.transition
 

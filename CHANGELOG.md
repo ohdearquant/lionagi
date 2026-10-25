@@ -33,6 +33,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | --- | --- | --- |
   | `lionagi.orchestration` | `lionhub.orchestration` | 2.0.0 |
   | `lionagi.engines` | `lionhub.orchestration.engines` | 2.0.0 |
+  | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
+  | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
 
 - Reuse shared module-loading, worker, delay and process start-time helpers at
   equivalent call sites, with scoped lint rules and documented native boundaries.

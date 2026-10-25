@@ -231,7 +231,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.ln.types.registry:381:24": "``Generic[ItemT]``, the typing generic base",
     "lionagi.protocols._concepts:110:21": "``Generic[E]``, the typing generic base",
     "lionagi.protocols._concepts:98:23": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols.generic.element:286:10": "``Generic[E]``, the typing generic base",
+    "lionagi.protocols.generic.element:301:10": "``Generic[E]``, the typing generic base",
     "lionagi.protocols.generic.flow:25:21": "``Generic[E, P]``, the typing generic base",
     "lionagi.protocols.generic.pile:187:21": "``Collective[T]``, the collection base on ``Element``",
     "lionagi.protocols.generic.pile:187:36": "``Generic[T]``, the typing generic base",
@@ -243,8 +243,8 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
     # A base reached through a submodule import (``import importlib.abc``), which the scan
     # does not resolve; each class is an import hook, not a model:
-    "lionagi._moved:103:20": "``importlib.abc.Loader``, the import system's loader base",
-    "lionagi._moved:130:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
+    "lionagi._moved:105:20": "``importlib.abc.Loader``, the import system's loader base",
+    "lionagi._moved:132:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
