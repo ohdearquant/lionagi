@@ -37,6 +37,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | `lionagi.engines` | `lionhub.orchestration.engines` | 2.0.0 |
   | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
   | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
+  | `lionagi.mcp` | `lionhub.serve.mcp` | 2.0.0 |
+
+- The core no longer imports `lionagi.cli`: no import statement or literal
+  `import_module` call outside `lionagi.cli`, `lionagi.mcp` and `lionagi.studio`
+  names those packages. Modules loaded by a name read from data or settings are not
+  covered by this. The agent-profile path resolver and
+  `AmbiguousProfileNameError` move to `lionagi._paths`, and the progress, hint,
+  warning and error output channels to `lionagi._log_channels`; both stay importable
+  from their `lionagi.cli` modules, and the exception now reports
+  `lionagi._paths` as its `__module__`. The core callers import them from the new
+  modules, so a patch on the old name (for example `lionagi.cli._logging.warn`)
+  no longer reaches them.
 
 - Reuse shared module-loading, worker, delay and process start-time helpers at
   equivalent call sites, with scoped lint rules and documented native boundaries.

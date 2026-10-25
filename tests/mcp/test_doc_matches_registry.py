@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.mcp.verbs import ABSENT, VERBS
+from lionhub.serve.mcp.verbs import ABSENT, VERBS
 
 DOC = Path(__file__).resolve().parents[2] / "docs" / "reference" / "mcp-server.md"
 
@@ -96,7 +96,7 @@ def _explain(kind: str, documented: set[str], registry: set[str]) -> str:
         )
     parts.append(
         "  Regenerate the table from the registry rather than editing single rows: "
-        "`help=true` (or lionagi.mcp.verbs.VERBS / ABSENT) is the authority."
+        "`help=true` (or lionhub.serve.mcp.verbs.VERBS / ABSENT) is the authority."
     )
     return "\n".join(parts)
 

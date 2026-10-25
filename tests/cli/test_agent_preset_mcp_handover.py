@@ -259,7 +259,7 @@ async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
     elif config_case == "submitted-snapshot":
         # What a leg submitted through the MCP server is pointed at: the set the
         # submission found, which nobody named.
-        from lionagi.mcp.jobs import _write_mcp_server_snapshot
+        from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
         snapshot = tmp_path / "job" / "mcp.json"
         snapshot.parent.mkdir()
@@ -375,7 +375,7 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
     the submission found. The snapshot is what a resume must read again, even
     though it is not a file anyone named."""
     from lionagi.cli.agent import _MCP_LAUNCH_KEY, _run_agent
-    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
     server_dir = tmp_path / "server"
     server_dir.mkdir()

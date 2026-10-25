@@ -18,13 +18,13 @@ import json
 
 import pytest
 
-from lionagi.mcp._terminal_cause import allowed_cause_classes, read_terminal_cause
 from lionagi.providers._provider_errors import (
     ProviderAdapterError,
     ProviderError,
     ProviderPermissionError,
     classify_provider_error,
 )
+from lionhub.serve.mcp._terminal_cause import allowed_cause_classes, read_terminal_cause
 
 # Verbatim from lionagi/providers/google/gemini_code.py, where it is raised.
 AUTO_DENY = (

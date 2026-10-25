@@ -253,7 +253,7 @@ def test_the_snapshot_is_read_once_not_once_per_call(loaded_from: Path) -> None:
 def test_the_server_snapshots_its_position_before_it_starts_serving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from lionagi.mcp import server
+    from lionhub.serve.mcp import server
 
     monkeypatch.setattr(_code_identity, "_SNAPSHOT", None)
     seen: dict[str, object] = {}
@@ -771,7 +771,7 @@ def test_handshake_carries_code_identity() -> None:
 
 
 def test_server_info_carries_code_identity() -> None:
-    from lionagi.mcp.dispatch import _server_info
+    from lionhub.serve.mcp.dispatch import _server_info
 
     info = _server_info()
     assert info["code_identity"]["version"] == info["lionagi_version"]

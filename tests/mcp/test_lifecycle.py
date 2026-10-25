@@ -17,6 +17,7 @@ classifier.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -27,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.mcp import config, jobs
+from lionhub.serve.mcp import config, jobs
 
 # A stand-in for the installed console script. Named `li` because the kill
 # path verifies a pid's identity from its command line before signalling it,
@@ -153,7 +154,12 @@ def home(monkeypatch, tmp_path):
         #
         # To see the difference, run any script by absolute path with and without
         # this variable and print `lionagi.__file__`.
-        monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            os.pathsep.join(
+                str(Path(__file__).resolve().parents[2] / root) for root in (".", "lionhub/src")
+            ),
+        )
         monkeypatch.delenv("LIONAGI_SESSION_ID", raising=False)
         monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
         monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")

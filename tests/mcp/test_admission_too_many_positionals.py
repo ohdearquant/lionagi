@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from lionagi.mcp import dispatch, jobs, verbs
+from lionhub.serve.mcp import dispatch, jobs, verbs
 
 
 def call(**kwargs):

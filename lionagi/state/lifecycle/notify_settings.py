@@ -16,7 +16,8 @@ import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any, Protocol
 
 from lionagi.agent.settings import load_settings
 from lionagi.ln import (
@@ -37,15 +38,13 @@ from .callbacks import (
     TerminalCallbackRegistry,
 )
 
-if TYPE_CHECKING:
-    from lionagi.cli._runs import RunDir
-
 logger = logging.getLogger(__name__)
 
 __all__ = (
     "NotifyConfigResolution",
     "PayloadBuilder",
     "ResolvedNotifyHandler",
+    "RunNotifyRecord",
     "build_handler",
     "record_notify_outcome_to_run",
     "record_notify_rejection_to_run",
@@ -317,12 +316,20 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
     return _rejected("adapter_kind_unsupported")
 
 
+class RunNotifyRecord(Protocol):
+    """Where a run keeps its notify outcome; the CLI's run directory is one."""
+
+    def write_notify_outcome(self, data: dict) -> None: ...
+
+    def write_notify_stderr(self, text: str) -> Path: ...
+
+
 # Returns the path the adapter's stderr was captured to, or None.
 OutcomeFn = Callable[..., "str | None"]
 
 
 def record_notify_outcome_to_run(
-    run: RunDir, *, ok: bool, exit_code: int | None, stderr_text: str | None
+    run: RunNotifyRecord, *, ok: bool, exit_code: int | None, stderr_text: str | None
 ) -> str | None:
     """Best-effort: record the exec adapter's outcome into *run*'s own
     notify_outcome.json (a single file, replacement semantics, never merged
@@ -358,7 +365,7 @@ def record_notify_outcome_to_run(
     return stderr_path
 
 
-def record_notify_rejection_to_run(run: RunDir, reason: str) -> None:
+def record_notify_rejection_to_run(run: RunNotifyRecord, reason: str) -> None:
     """Best-effort: record into *run*'s own notify_outcome.json that a notifier
     was configured for this run and refused, so the run says which of the two
     silences it is. A run with nothing configured writes no file at all; a run
@@ -380,7 +387,7 @@ def record_notify_rejection_to_run(run: RunDir, reason: str) -> None:
 
 def _warn_adapter_failure(msg: str) -> None:
     try:
-        from lionagi.cli._logging import warn
+        from lionagi._log_channels import warn
 
         warn(msg)
     except Exception:  # noqa: BLE001 -- surfacing the failure must never affect the run
@@ -674,7 +681,7 @@ def register_settings_terminal_callback(
 
 
 def register_run_notify_outcome_scope(
-    run: RunDir,
+    run: RunNotifyRecord,
     *,
     entity_kind: str,
     entity_id: str,

@@ -26,7 +26,9 @@ dependencies = [
     "tomli>=2.0.1; python_version < '3.11'",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
-    "aiosqlite>=0.22.0",
+    # lionagi/state/engine.py reads the private Connection._thread; widen the
+    # bound once a new release is checked (tests/state/test_failed_open_worker.py).
+    "aiosqlite>=0.22.0,<0.23",
     "sqlalchemy[asyncio]>=2.0.0",
     "orjson>=3.11.8",
     "psutil>=5.9.0",
@@ -121,7 +123,7 @@ postgres = [
 sqlite = [
     # aiosqlite is now a core dependency; this extra is kept for backwards
     # compatibility with existing `pip install lionagi[sqlite]` invocations.
-    "aiosqlite>=0.22.0",
+    "aiosqlite>=0.22.0,<0.23",
 ]
 
 graph = [
@@ -180,7 +182,7 @@ ignore = [
 # pydantic.Field in a default is the documented way to attach a description to a
 # parameter; the FieldInfo it returns is inert, so B008's mutable-default hazard
 # does not apply.
-extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
+extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 # Enforce shared helpers only in the migrated import and concurrency modules.

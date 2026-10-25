@@ -259,7 +259,7 @@ async def test_ambient_job_control_is_withheld_from_leaf_workers(tmp_run):
 @pytest.mark.asyncio
 async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
     granted = {
-        "nested-control": {"command": "python3", "args": ["-m", "lionagi.mcp"]},
+        "nested-control": {"command": "python3", "args": ["-m", "lionhub.serve.mcp"]},
         "knowledge": {"command": "kkernel", "args": ["mcp"]},
     }
     named = tmp_path / "nested.json"
@@ -596,7 +596,7 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
     """A run submitted through the MCP server is pointed at a snapshot of the
     config the submission found, with the same --mcp-config a caller names a
     file with. Found is still found: the snapshot grants nothing by name."""
-    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
     snapshot = tmp_path / "job" / "mcp.json"
     snapshot.parent.mkdir()
@@ -750,18 +750,24 @@ async def test_a_worker_with_no_spawn_grant_is_not_told_to_spawn(tmp_run):
         {"command": "uv", "args": ["run", "li", "mcp"]},
         {"command": "uvx", "args": ["--from", "lionagi", "li", "mcp"]},
         {"command": "env", "args": ["LIONAGI_HOME=/x", "li", "mcp"]},
+        {"command": "python3.12", "args": ["-m", "lionhub.serve.mcp"]},
+        {"command": "py", "args": ["-m", "lionhub.serve.mcp"]},
+        {"command": "uv", "args": ["run", "python", "-m", "lionhub.serve.mcp"]},
+        {"command": "python", "args": ["-mlionhub.serve.mcp"]},
         {"command": "python3.12", "args": ["-m", "lionagi.mcp"]},
-        {"command": "py", "args": ["-m", "lionagi.mcp"]},
         {"command": "uv", "args": ["run", "python", "-m", "lionagi.mcp"]},
         {"command": "python", "args": ["-mlionagi.mcp"]},
+        {"command": "python", "args": ["-m", "lionagi.mcp.server"]},
         {"command": "python", "args": ["-m", "lionagi.cli", "mcp"]},
         {"command": "python3", "args": ["-mlionagi.cli", "--verbose", "mcp"]},
         {"command": "uv", "args": ["run", "python", "-m", "lionagi.cli.main", "mcp"]},
-        {"command": "python", "args": ["-m", "lionagi.mcp.server"]},
+        {"command": "python", "args": ["-m", "lionhub.serve.mcp.server"]},
         {"command": "python", "args": ["-m", "lionagi.cli.__main__", "mcp"]},
-        {"command": "python", "args": ["-Im", "lionagi.mcp"]},
+        {"command": "python", "args": ["-Im", "lionhub.serve.mcp"]},
         {"command": "python", "args": ["-Imlionagi.cli", "mcp"]},
         {"command": "python", "args": ["-X", "dev", "-m", "lionagi.cli", "mcp"]},
+        {"command": "python", "args": ["/opt/venv/site-packages/lionhub/serve/mcp/__main__.py"]},
+        {"command": "python", "args": ["/opt/venv/site-packages/lionhub/serve/mcp/server.py"]},
         {"command": "python", "args": ["/opt/venv/site-packages/lionagi/mcp/__main__.py"]},
         {"command": "python3", "args": ["/opt/venv/site-packages/lionagi/cli/main.py", "mcp"]},
     ],
@@ -779,8 +785,10 @@ def test_job_control_is_recognised_through_launchers(config):
         {"command": "python", "args": ["-m", "lionagi.cli"]},
         {"command": "python", "args": ["-m", "lionagi.cli", "agent", "mcp"]},
         {"command": "python", "args": ["-m", "other.cli", "mcp"]},
+        {"command": "python", "args": ["-m", "lionhub.serve.mcp._notify_hook"]},
+        {"command": "python", "args": ["-Xm", "lionhub.serve.mcp"]},
         {"command": "python", "args": ["-m", "lionagi.mcp._notify_hook"]},
-        {"command": "python", "args": ["-Xm", "lionagi.mcp"]},
+        {"command": "python", "args": ["/opt/venv/site-packages/other/serve/mcp/__main__.py"]},
         {"command": "python", "args": ["/opt/venv/site-packages/lionagi/cli/main.py", "agent"]},
         {"command": "kkernel", "args": ["mcp"]},
         {"command": "uvx", "args": ["some-mcp-server"]},

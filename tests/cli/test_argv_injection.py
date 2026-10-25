@@ -712,7 +712,7 @@ class TestBuildArgvPromptSentinelRejection:
     """
 
     def test_prompt_double_dash_raises(self):
-        """action_prompt='--' must raise ValueError (silently eaten by argparse)."""
+        """Stored '--' stays forbidden after rendering and cannot be lost to argparse."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="'--'"):
@@ -990,14 +990,6 @@ class TestBuildArgvTemplateInjection:
         assert tmp is None
         sentinel_idx = argv.index("--")
         assert "--bypass" in argv[sentinel_idx + 1 :]
-
-    def test_template_literal_sentinel_in_stored_prompt_raises(self):
-        """A stored prompt that IS literally '--' (no template) is still rejected —
-        pre-render path unchanged."""
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        with pytest.raises(ValueError, match="'--'"):
-            build_argv(_schedule(action_prompt="--"), {})
 
 
 # CWE-918 github_repo path manipulation — validator unit tests

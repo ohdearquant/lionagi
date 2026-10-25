@@ -22,11 +22,11 @@ uv pip install 'lionagi[mcp]'
 ```
 
 That installs two things you will use below: the `li` console script, and the
-`lionagi.mcp` package the script serves from. Both land in the environment's
+`lionhub.serve.mcp` package the script serves from. Both land in the environment's
 `bin/` and `site-packages/`, so a virtualenv that contains nothing else is
 enough.
 
-Importing `lionagi.mcp` does not pull the extra — only serving does. If the
+Importing `lionhub.serve.mcp` does not pull the extra — only serving does. If the
 extra is missing, `li mcp` refuses to start with a message naming the install
 command and exits with the environment-error code, so a misconfigured client
 sees a failed launch rather than a server that half-works.
@@ -51,14 +51,14 @@ shell's:
 }
 ```
 
-`python -m lionagi.mcp` is equivalent if you would rather name the interpreter:
+`python -m lionhub.serve.mcp` is equivalent if you would rather name the interpreter:
 
 ```json
 {
   "mcpServers": {
     "lion": {
       "command": "/absolute/path/to/venv/bin/python",
-      "args": ["-m", "lionagi.mcp"]
+      "args": ["-m", "lionhub.serve.mcp"]
     }
   }
 }

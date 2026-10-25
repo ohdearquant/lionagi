@@ -15,10 +15,11 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
-from lionagi.mcp import config, dispatch, verbs
+from lionhub.serve.mcp import config, dispatch, verbs
 
 # Every verb in the tranche that answers with no arguments, so one parametrized
 # call covers the whole set the same way a caller would reach it.
@@ -471,7 +472,9 @@ def unreadable_store(home):
 @pytest.mark.parametrize(
     "verb", ["monitor", "stats.runs", "invoke.list", "dispatch.ls", "state.ls", "state.stats"]
 )
-def test_a_store_that_will_not_open_is_not_an_implementation_crash(unreadable_store, verb):
+def test_a_store_that_will_not_open_is_not_an_implementation_crash(
+    unreadable_store, verb, monkeypatch
+):
     """Existing-but-unopenable is a third answer, and it is the store's, not ours.
 
     `internal` is this contract's word for our own bug, and a consumer is
@@ -482,8 +485,29 @@ def test_a_store_that_will_not_open_is_not_an_implementation_crash(unreadable_st
     exception string into a versioned contract, where the next release of that
     driver quietly changes it.
     """
+    completed_children = []
+    real_run = subprocess.run
+
+    def observe_child(*args, **kwargs):
+        completed = real_run(*args, **kwargs)
+        completed_children.append(completed)
+        return completed
+
+    monkeypatch.setattr(subprocess, "run", observe_child)
     op = run_op(verb)
-    assert op["ok"] is True, op
+    assert completed_children, "the real CLI child was not observed"
+    child_stderr = []
+    for child in completed_children:
+        stderr = child.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        child_stderr.append(stderr)
+    full_stderr = "\n".join(child_stderr)
+    failure = f"{op!r}\nComplete child stderr for {verb}:\n{full_stderr}"
+    if op["ok"] is not True or "Exception in thread" in full_stderr:
+        sys.stderr.write(f"{failure}\n")
+    assert op["ok"] is True, failure
+    assert "Exception in thread" not in full_stderr, failure
     wrapper = op["result"]["data"][AVAILABILITY_KEY[verb]]
     assert wrapper["available"] is False, wrapper
     assert wrapper["reason_code"] == "unreadable", wrapper

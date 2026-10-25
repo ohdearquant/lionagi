@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 __all__ = (
+    "AmbiguousProfileNameError",
     "LIONAGI_HOME",
     "RUNS_ROOT",
     "ensure_lionagi_dir",
@@ -132,6 +133,73 @@ def ensure_lionagi_dir(path: Path) -> Path:
     """Create *path* (with parents) if missing; the creation boundary for `.lionagi/` topology."""
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# Agent profile files: `<agents_dir>/<name>/<name>.md` or `<agents_dir>/<name>.md`.
+
+
+def _unreadable_symlink_target(path: Path) -> str | None:
+    """Return a broken/non-file symlink's declared target, if applicable."""
+    if not path.is_symlink() or path.is_file():
+        return None
+    try:
+        return str(path.readlink())
+    except OSError:
+        return "<unreadable>"
+
+
+class AmbiguousProfileNameError(ValueError):
+    """One agents dir declares a name under both '-' and '_' spellings."""
+
+
+def _name_spellings(name: str) -> tuple[str, ...]:
+    """NAME plus its separator spellings, requested spelling first.
+
+    '-' and '_' are interchangeable in a profile name, so a role written
+    ``postmortem-lead`` everywhere else still finds ``postmortem_lead.md``.
+    """
+    return tuple(dict.fromkeys((name, name.replace("-", "_"), name.replace("_", "-"))))
+
+
+def _resolve_profile_path(
+    agents_dir: Path,
+    name: str,
+    *,
+    unreadable_symlinks: list[tuple[Path, str]] | None = None,
+) -> Path | None:
+    """Return profile path for NAME, recording unreadable candidate symlinks.
+
+    The spelling actually asked for wins outright when it exists. Only a
+    request that does *not* name an existing file falls back to the other
+    separator spelling, so a directory deliberately holding two profiles that
+    differ only in separator keeps resolving both, exactly as it did before
+    the spellings became interchangeable.
+
+    Failing that, two spellings matching one request in a single directory are
+    an error rather than a ranking: whichever one lost would be invisible to
+    the caller. Two spellings in *different* roots are ordinary shadowing,
+    decided by root order, and are resolved by the caller walking the roots.
+    """
+    resolved: dict[str, Path] = {}
+    for spelling in _name_spellings(name):
+        for candidate in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md"):
+            if candidate.is_file():
+                resolved.setdefault(spelling, candidate)
+                continue
+            target = _unreadable_symlink_target(candidate)
+            if target is not None and unreadable_symlinks is not None:
+                unreadable_symlinks.append((candidate, target))
+
+    if name in resolved:
+        return resolved[name]
+    if len(resolved) > 1:
+        matched = ", ".join(str(p) for p in resolved.values())
+        raise AmbiguousProfileNameError(
+            f"Agent profile name '{name}' is ambiguous in {agents_dir}: "
+            f"'-' and '_' are interchangeable, and both spellings exist ({matched}). "
+            "Rename or remove one of them."
+        )
+    return next(iter(resolved.values()), None)
 
 
 # Private alias for callers that imported the old name.

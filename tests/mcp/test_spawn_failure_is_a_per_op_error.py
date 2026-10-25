@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from lionagi.mcp import dispatch, jobs
+from lionhub.serve.mcp import dispatch, jobs
 
 
 def _submit_op(**args: Any) -> dict[str, Any]:
@@ -29,7 +29,7 @@ def _submit_op(**args: Any) -> dict[str, Any]:
     schema moves, and the op is then refused for the wrong reason — which still
     looks like a failed op to any assertion that only checks ``ok``.
     """
-    from lionagi.mcp.verbs import VERBS
+    from lionhub.serve.mcp.verbs import VERBS
 
     verb = VERBS["agent.submit"]
     schema = dispatch.verb_schema(verb)

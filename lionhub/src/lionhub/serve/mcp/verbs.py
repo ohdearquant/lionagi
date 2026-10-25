@@ -5,7 +5,7 @@
 A verb is reachable only because it appears in this file — adding a command
 to the CLI does not widen this surface (the projector can read any parser,
 but reading is not permission to run). Depending on the verb: spawn/job verbs
-run through :mod:`lionagi.mcp.jobs`; long-tail verbs run
+run through :mod:`lionhub.serve.mcp.jobs`; long-tail verbs run
 ``li <path> --machine`` and return its versioned envelope; a command with no
 machine envelope is listed as absent, with a reason, rather than reached by
 scraping its console output — the absent entries are part of the catalog.

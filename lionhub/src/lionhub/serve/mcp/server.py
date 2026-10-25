@@ -5,8 +5,8 @@
 An advertised tool schema is sent to the model on every request in every
 session, so this server advertises exactly one tool (``ops`` and ``help``) and
 a verb's parameters are fetched by asking rather than carried in the tool
-list. Verbs live in :mod:`lionagi.mcp.verbs`, dispatch in
-:mod:`lionagi.mcp.dispatch`; a CLI command doesn't become a verb automatically.
+list. Verbs live in :mod:`lionhub.serve.mcp.verbs`, dispatch in
+:mod:`lionhub.serve.mcp.dispatch`; a CLI command doesn't become a verb automatically.
 """
 
 from __future__ import annotations

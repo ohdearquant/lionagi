@@ -43,7 +43,7 @@ from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
 from ._errors import SubmitInputError
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.mcp.jobs")  # its name before the move
 
 # Per-run mutation lock: platform's own advisory file lock.
 if sys.platform == "win32":  # pragma: no cover - POSIX is what CI runs
@@ -245,7 +245,7 @@ UNRESOLVED_SPAWN_AFTER_SECONDS = WAIT_MAX_SECONDS
 
 # The terminal hook module, invoked by the CLI's --notify by absolute
 # interpreter path so it runs regardless of PATH in the CLI's environment.
-_NOTIFY_MODULE = "lionagi.mcp._notify_hook"
+_NOTIFY_MODULE = "lionhub.serve.mcp._notify_hook"
 
 # Re-exported so this surface's own comparisons and any sweep that has to agree
 # with them read the same number.

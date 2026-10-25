@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from lionagi.mcp._notify_hook import (
+from lionhub.serve.mcp._notify_hook import (
     _ALLOWED_FAILURE_CLASSES,
     _FAILURE_UNKNOWN,
     _classify_failure,
@@ -82,7 +82,7 @@ def test_classifier_failure_yields_unknown_and_carries_nothing_out(monkeypatch):
     def _explode(text):
         raise RuntimeError(f"boom while reading {text}")
 
-    monkeypatch.setattr("lionagi.mcp._notify_hook._classify_failure", _explode)
+    monkeypatch.setattr("lionhub.serve.mcp._notify_hook._classify_failure", _explode)
     out = _classify_quietly("password=hunter2")
     assert out == _FAILURE_UNKNOWN
     assert "hunter2" not in out
@@ -238,7 +238,7 @@ def test_a_classifier_that_returns_free_text_cannot_get_it_into_the_record(monke
     """
 
     monkeypatch.setattr(
-        "lionagi.mcp._notify_hook._classify_failure",
+        "lionhub.serve.mcp._notify_hook._classify_failure",
         lambda text: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
     )
     out = _deliver(_py("import sys; sys.stderr.write('anything'); sys.exit(1)"), {})

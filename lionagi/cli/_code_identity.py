@@ -455,7 +455,7 @@ def _distribution_version() -> tuple[str | None, str | None]:
 
 def _verb_count() -> tuple[int | None, str | None]:
     try:
-        from lionagi.mcp.verbs import VERBS
+        from lionhub.serve.mcp.verbs import VERBS
     except Exception as exc:  # noqa: BLE001 — a broken verb table must not break the handshake
         return None, f"could not import the verb table: {type(exc).__name__}: {exc}"
     return len(VERBS), None

@@ -560,9 +560,9 @@ def _aliases_for_path(path: str, alias_by_head: dict[str, tuple[str, ...]]) -> l
 
 
 def capture_mcp() -> dict[str, Any]:
-    from lionagi.mcp import dispatch as mcp_dispatch
-    from lionagi.mcp import projection as mcp_projection
-    from lionagi.mcp.verbs import ABSENT
+    from lionhub.serve.mcp import dispatch as mcp_dispatch
+    from lionhub.serve.mcp import projection as mcp_projection
+    from lionhub.serve.mcp.verbs import ABSENT
 
     available = list(mcp_projection.available_paths())
     catalog = mcp_dispatch.catalog()

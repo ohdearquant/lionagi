@@ -30,7 +30,6 @@ from lionagi.ln.concurrency import (
     run_async,
     sleep,
 )
-from lionagi.mcp.config import JOB_MARKER_ENV_VAR
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
 from lionagi.providers._subagent_admission import (
@@ -42,6 +41,7 @@ from lionagi.providers._subagent_admission import (
 from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
+from lionhub.serve.mcp.config import JOB_MARKER_ENV_VAR
 
 from ._agent_depth import stamp_agent_depth
 from ._api_usage import APIUsageCollector
@@ -2247,7 +2247,7 @@ async def _run_agent(
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
-        from lionagi.mcp._terminal_cause import write_terminal_cause
+        from lionhub.serve.mcp._terminal_cause import write_terminal_cause
 
         # Written on the timeout path too, even though a timeout is never one of
         # the typed provider errors. A recorded `unknown` says the cause was
@@ -2262,7 +2262,7 @@ async def _run_agent(
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         _terminal_exc = exc
-        from lionagi.mcp._terminal_cause import write_terminal_cause
+        from lionhub.serve.mcp._terminal_cause import write_terminal_cause
 
         # Before the re-raise: this is the last point that still holds the
         # exception object, and the hook that records the run's end runs in a
