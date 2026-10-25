@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
-from lionagi.dispatch.outbox import enqueue_dispatch
+from lionhub.orchestration.dispatch.outbox import enqueue_dispatch
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons

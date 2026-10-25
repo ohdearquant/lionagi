@@ -1,6 +1,6 @@
 # ADR-0001: Element identity and polymorphic serialization envelope
 
-- **Status**: Accepted, amended 2026-10-19 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-19 and 2026-10-25 (see Amendments 1 and 2)
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09
@@ -45,6 +45,26 @@ bounds the module a name points at, not what that module's own code imports: imp
 allowed module runs its top-level code, and the imports that code makes are not restricted.
 Delta 1's registration half, third-party models round-tripping without being admitted first,
 stays open.
+
+## Amendment 2 (2026-10-25) — `lionhub.` joins the default allow-list
+
+Classes whose modules move from `lionagi` into `lionhub` (ADR-0136) are serialized under their new
+module path, and `lionhub` ships in the same distribution as `lionagi`. The default allow-list of
+Amendment 1 is therefore `lionagi.` and `lionhub.`, plus every prefix added with
+`register_type_prefix()`. Without `lionhub.`, a payload written after a move names a path that a
+process which has not yet imported the class's module refuses to load.
+
+A payload written before a move names the old `lionagi` path. That path still imports until 2.0,
+because the old module name returns the same module object as the new one (ADR-0136), so step 3
+loads the class. The metadata check that rejects a `lion_class` naming another class reads such an
+old path as the class's path at its new module, so `model_validate` accepts metadata written before
+the move.
+
+Step 5 is unchanged: a bare short name matches only a class defined under `lionagi.` in
+`_BUILTIN_MODULES`, or a registered class.
+
+Limits: deserialization may now import any module in `lionhub`, code from the same distribution and
+so trusted like `lionagi`. A separate `lionhub` distribution reopens this decision.
 
 ## Context
 

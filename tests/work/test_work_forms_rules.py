@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.work: WorkForm, FieldSpec, Rule, RuleSet."""
+"""Tests for lionhub.orchestration.work: WorkForm, FieldSpec, Rule, RuleSet."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from uuid import UUID
 
 import pytest
 
-from lionagi.work import (
+from lionhub.orchestration.work import (
     REGEX_MAX_INPUT_LENGTH,
     VALID_TRANSITIONS,
     FieldSpec,
@@ -726,7 +726,7 @@ class TestRulePattern:
 
     def test_no_timeout_mechanism_exists(self):
         """Confirm the removed threat: REGEX_MATCH_TIMEOUT is not exported."""
-        import lionagi.work as work_module
+        import lionhub.orchestration.work as work_module
 
         assert not hasattr(work_module, "REGEX_MATCH_TIMEOUT"), (
             "REGEX_MATCH_TIMEOUT was removed because thread-join timeout cannot "

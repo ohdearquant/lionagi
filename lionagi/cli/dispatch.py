@@ -29,7 +29,7 @@ def _format_time(ts: float | None) -> str:
 
 
 async def _cmd_ls(*, status: str | None, limit: int) -> int:
-    from lionagi.dispatch import list_dispatches
+    from lionhub.orchestration.dispatch import list_dispatches
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -53,7 +53,7 @@ async def _cmd_ls(*, status: str | None, limit: int) -> int:
 async def _cmd_show(dispatch_id: str) -> int:
     import json
 
-    from lionagi.dispatch import get_dispatch
+    from lionhub.orchestration.dispatch import get_dispatch
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -82,7 +82,7 @@ async def _ack_outcome(db: Any, dispatch_id: str, ack_token: str) -> dict[str, A
     message is prose for a person, and a reword would silently move a caller
     from one outcome to another.
     """
-    from lionagi.dispatch import ack_dispatch, get_dispatch
+    from lionhub.orchestration.dispatch import ack_dispatch, get_dispatch
 
     try:
         applied = await ack_dispatch(db, dispatch_id, ack_token)
@@ -110,7 +110,7 @@ async def _ack_outcome(db: Any, dispatch_id: str, ack_token: str) -> dict[str, A
 
 async def _retry_outcome(db: Any, dispatch_id: str) -> dict[str, Any]:
     """What forcing a retry of this row did. Same discipline as _ack_outcome."""
-    from lionagi.dispatch import get_dispatch, retry_dispatch
+    from lionhub.orchestration.dispatch import get_dispatch, retry_dispatch
 
     try:
         applied = await retry_dispatch(db, dispatch_id)
@@ -136,7 +136,7 @@ async def _retry_outcome(db: Any, dispatch_id: str) -> dict[str, Any]:
 # asserted as such. Making it a printed line is a change to this surface, not
 # part of giving the machine channel a seam, so it is left alone here.
 async def _cmd_ack(dispatch_id: str, ack_token: str) -> int:
-    from lionagi.dispatch import ack_dispatch
+    from lionhub.orchestration.dispatch import ack_dispatch
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -150,7 +150,7 @@ async def _cmd_ack(dispatch_id: str, ack_token: str) -> int:
 
 
 async def _cmd_retry(dispatch_id: str) -> int:
-    from lionagi.dispatch import retry_dispatch
+    from lionhub.orchestration.dispatch import retry_dispatch
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -164,7 +164,7 @@ async def _cmd_retry(dispatch_id: str) -> int:
 
 
 async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
-    from lionagi.dispatch import get_dispatch, purge_dispatch
+    from lionhub.orchestration.dispatch import get_dispatch, purge_dispatch
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -196,7 +196,7 @@ async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
 
 
 async def _cmd_purge_bulk(*, status: str | None, before: float | None, dry_run: bool) -> int:
-    from lionagi.dispatch import purge_dispatches
+    from lionhub.orchestration.dispatch import purge_dispatches
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -365,7 +365,7 @@ _SHOW_FIELDS = (*_LIST_FIELDS, "ack_token", "payload")
 
 
 async def _machine_ls_data(*, status: str | None, limit: int) -> dict[str, Any]:
-    from lionagi.dispatch import list_dispatches
+    from lionhub.orchestration.dispatch import list_dispatches
 
     from .machine import available, readonly_state_db
 
@@ -382,7 +382,7 @@ async def _machine_ls_data(*, status: str | None, limit: int) -> dict[str, Any]:
 
 
 async def _machine_show_data(dispatch_id: str) -> dict[str, Any]:
-    from lionagi.dispatch import get_dispatch
+    from lionhub.orchestration.dispatch import get_dispatch
 
     from .machine import MachineError, readonly_state_db, store_unreachable
 
@@ -552,7 +552,7 @@ async def _machine_retry_data(dispatch_id: str) -> dict[str, Any]:
 
 
 async def _machine_purge_data(dispatch_id: str, *, dry_run: bool) -> dict[str, Any]:
-    from lionagi.dispatch import get_dispatch, purge_dispatch
+    from lionhub.orchestration.dispatch import get_dispatch, purge_dispatch
 
     from .machine import MachineError
 

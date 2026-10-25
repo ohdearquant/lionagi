@@ -627,7 +627,7 @@ def _load_form_spec(path: str) -> dict:
 
 def _build_work_form(spec: dict, spec_path: str):
     """Construct a WorkForm from a parsed spec dict (keys: title, fields, values)."""
-    from lionagi.work import FieldSpec, WorkForm, fill_form
+    from lionhub.orchestration.work import FieldSpec, WorkForm, fill_form
 
     # Enforce closed top-level schema.
     unknown_keys = set(spec) - _FORM_SPEC_ALLOWED_KEYS

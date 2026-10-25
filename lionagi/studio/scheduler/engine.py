@@ -1719,7 +1719,7 @@ class SchedulerEngine:
 
     async def _deliver_due_dispatches(self, now: float) -> None:
         """Scan due dispatch_outbox rows and attempt delivery; not interval-gated."""
-        from lionagi.dispatch import deliver_due_dispatches
+        from lionhub.orchestration.dispatch import deliver_due_dispatches
         from lionagi.state.db import StateDB
 
         async with StateDB() as db:

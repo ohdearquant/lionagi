@@ -21,7 +21,7 @@ import pytest_asyncio
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
-from lionagi.dispatch.outbox import list_dispatches
+from lionhub.orchestration.dispatch.outbox import list_dispatches
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition

@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from lionagi.dispatch import enqueue_dispatch, get_dispatch
+from lionhub.orchestration.dispatch import enqueue_dispatch, get_dispatch
 from lionagi.state.db import StateDB
 from lionagi.state.lifecycle import (
     ActorRecord,

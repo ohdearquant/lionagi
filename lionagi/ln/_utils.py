@@ -344,7 +344,9 @@ def is_import_installed(package_name: str) -> bool:
 
 _TYPE_CACHE: dict[str, type] = {}
 
-_DEFAULT_ALLOWED_PREFIXES: frozenset[str] = frozenset({"lionagi."})
+# lionhub ships in the lionagi distribution, so its classes load like lionagi's own:
+# a class whose module moved there (lionagi._moved) is serialized under a lionhub path.
+_DEFAULT_ALLOWED_PREFIXES: frozenset[str] = frozenset({"lionagi.", "lionhub."})
 _ALLOWED_MODULE_PREFIXES: set[str] = set(_DEFAULT_ALLOWED_PREFIXES)
 
 
