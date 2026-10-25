@@ -153,7 +153,12 @@ class _MovedFinder(importlib.abc.MetaPathFinder):
         return spec
 
 
+# One retry is the usual case: once this side has given way, its next attempt waits for the
+# package instead of failing again. The rest is headroom for a thread that is slow to wake.
 _DEADLOCK_RETRIES = 20
+# importlib's deadlock error is private. On a Python without it nothing is retried, and an
+# import error still surfaces as itself, not as a failure to evaluate the except clause.
+_DEADLOCK_ERROR = getattr(importlib._bootstrap, "_DeadlockError", ())
 
 
 def _import_new(new_name: str) -> ModuleType:
@@ -162,7 +167,7 @@ def _import_new(new_name: str) -> ModuleType:
     for attempt in range(1, _DEADLOCK_RETRIES + 1):
         try:
             return importlib.import_module(new_name)
-        except importlib._bootstrap._DeadlockError:
+        except _DEADLOCK_ERROR:
             # An old name reaches the new package through its top, so the package's __init__
             # can ask for a submodule lock that a thread importing the new name already holds
             # while it waits for the package. importlib breaks that cycle by failing this side,
