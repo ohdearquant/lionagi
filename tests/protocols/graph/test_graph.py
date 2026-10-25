@@ -119,7 +119,7 @@ class TestGraphBasics:
         assert edge.id not in graph.node_edge_mapping[node2.id]["out"]
 
     def test_add_invalid_edge(self, empty_graph):
-        with pytest.raises(RelationError):
+        with pytest.raises(RelationError, match="Invalid edge type"):
             empty_graph.add_edge("not an edge")
 
     def test_add_edge_missing_nodes(self, empty_graph):
