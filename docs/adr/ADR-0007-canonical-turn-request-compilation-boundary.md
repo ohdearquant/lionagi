@@ -571,14 +571,14 @@ lines:
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
-  (`lionagi/tools/context/context.py:373-387`, `:389-406`) by excluding them from
+  (`lionagi/tools/context/context.py:390-404`, `:406-423`) by excluding them from
   `metadata["current_progression"]` (`:164-171`), which `Branch.progression` returns in place of
   the manager's progression when it is present (`lionagi/session/branch.py:251-257`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py:458-545`, the summary at `:527-538`).
+  from the active view (`lionagi/tools/context/context.py:484-571`, the summary at `:553-564`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
