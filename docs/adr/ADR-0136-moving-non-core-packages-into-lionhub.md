@@ -1,9 +1,12 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-25)
 - **Kind**: Aspirational
-- **Implementation-status**: not-started. Changes implementing D1 to D5 for the four wave-1 packages
-  (D6) are open and wait on this record; the removal release (D4) and waves 2 and 3 (D6) remain.
+- **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
+  `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
+  `lionagi.orchestration`; #3753 moves `lionagi.engines`; #3754 moves `lionagi.dispatch` and
+  `lionagi.work`, with ADR-0001 Amendment 2 for D5's class paths. `integrations` is held (D6). The
+  removal release (D4) and waves 2 and 3 (D6) remain.
 - **Area**: governance
 - **Date**: 2026-10-25
 - **Relations**: follows ADR-0122 D1 (layer order), D7's interim single-distribution rule and
