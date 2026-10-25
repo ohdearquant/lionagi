@@ -261,7 +261,7 @@ def test_the_reference_check_sees_each_form_of_old_reference():
 # core, which reach lionhub only from inside functions. Every other package is core and
 # never names it. The set must match what the tree does, so a package that stops naming
 # lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "engines"})
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
