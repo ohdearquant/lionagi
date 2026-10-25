@@ -833,7 +833,7 @@ protocol is `lion`:
 }
 ```
 
-Job records live under `~/.lionhub/src/lionhub/serve/mcp/jobs/<run_id>/`; the authoritative run
+Job records live under `~/.lionagi/mcp/jobs/<run_id>/`; the authoritative run
 state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job.status`, the
 top-level `status` is authoritative: the embedded `run` manifest is advisory and
 its own `status` may lag.
