@@ -414,10 +414,9 @@ async def _planning_workers(
     defer_spawn=None,
 ):
     """Construct real worker templates and DAG clones without executing a provider."""
-    from lionhub.orchestration import patterns
-
     from lionagi.casts.emission import TaskAssignment
     from lionagi.engines import engine as engine_mod
+    from lionhub.orchestration import patterns
 
     specs = []
     workers = []
@@ -963,12 +962,11 @@ async def test_planning_independent_unassigned_spawn_keeps_the_engine_settings(
     too: the role router treats it the same way, so it must not skip the
     template.
     """
-    from lionhub.orchestration.patterns import build_dag_graph
-
     from lionagi.casts.emission import SpawnRequest, TaskAssignment
     from lionagi.engines import PlanningEngine
     from lionagi.engines.planning import _inherit_worker_providers, _role_template_node_builder
     from lionagi.operations.flow import ReactiveExecutor
+    from lionhub.orchestration.patterns import build_dag_graph
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     engine = PlanningEngine(
