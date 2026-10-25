@@ -95,9 +95,15 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionhub/src/lionhub/orchestration/dispatch/outbox.py", 48)
-    assert "ack_required: bool = False" in _line("lionhub/src/lionhub/orchestration/dispatch/outbox.py", 166)
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionhub/src/lionhub/orchestration/dispatch/outbox.py", 167)
+    assert "DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 48
+    )
+    assert "ack_required: bool = False" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 166
+    )
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 167
+    )
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:

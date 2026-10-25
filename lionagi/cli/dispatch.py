@@ -30,6 +30,7 @@ def _format_time(ts: float | None) -> str:
 
 async def _cmd_ls(*, status: str | None, limit: int) -> int:
     from lionhub.orchestration.dispatch import list_dispatches
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -54,6 +55,7 @@ async def _cmd_show(dispatch_id: str) -> int:
     import json
 
     from lionhub.orchestration.dispatch import get_dispatch
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -137,6 +139,7 @@ async def _retry_outcome(db: Any, dispatch_id: str) -> dict[str, Any]:
 # part of giving the machine channel a seam, so it is left alone here.
 async def _cmd_ack(dispatch_id: str, ack_token: str) -> int:
     from lionhub.orchestration.dispatch import ack_dispatch
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -151,6 +154,7 @@ async def _cmd_ack(dispatch_id: str, ack_token: str) -> int:
 
 async def _cmd_retry(dispatch_id: str) -> int:
     from lionhub.orchestration.dispatch import retry_dispatch
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -165,6 +169,7 @@ async def _cmd_retry(dispatch_id: str) -> int:
 
 async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
     from lionhub.orchestration.dispatch import get_dispatch, purge_dispatch
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -197,6 +202,7 @@ async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
 
 async def _cmd_purge_bulk(*, status: str | None, before: float | None, dry_run: bool) -> int:
     from lionhub.orchestration.dispatch import purge_dispatches
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:

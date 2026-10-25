@@ -20,8 +20,6 @@ import pytest
 
 pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from sqlalchemy import text
-
 from lionhub.orchestration.dispatch import (
     ack_dispatch,
     backoff_seconds,
@@ -33,6 +31,8 @@ from lionhub.orchestration.dispatch import (
     purge_dispatches,
     retry_dispatch,
 )
+from sqlalchemy import text
+
 from lionagi.state.db import StateDB
 
 _SUCCESS_TEMPLATE = [
@@ -330,7 +330,9 @@ async def test_transport_success_transitions_to_delivered(tmp_path: Path):
 
 async def test_no_notify_template_configured_is_a_transport_failure(tmp_path: Path, monkeypatch):
     """With no dispatch.notify_template configured, delivery backs off rather than crashing."""
-    monkeypatch.setattr("lionhub.orchestration.dispatch.outbox.resolve_notify_template", lambda: None)
+    monkeypatch.setattr(
+        "lionhub.orchestration.dispatch.outbox.resolve_notify_template", lambda: None
+    )
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
         dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
