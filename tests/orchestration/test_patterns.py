@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.orchestration.patterns — the thin glue over flow.
+"""Tests for lionhub.orchestration.patterns — the thin glue over flow.
 
 Graph construction and role wiring are exercised directly; execution itself
 is covered by tests/operations/test_reactive_flow.py (no LLM needed).
@@ -12,9 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
-from lionagi.casts.emission import SpawnRequest, TaskAssignment
-from lionagi.orchestration import (
+from lionhub.orchestration import (
     build_dag_graph,
     build_fanout_graph,
     grant_spawn,
@@ -22,7 +20,9 @@ from lionagi.orchestration import (
     role_node_builder,
     spawn_roles,
 )
-from lionagi.orchestration.patterns import normalize_dep_indices
+from lionhub.orchestration.patterns import normalize_dep_indices
+
+from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 
@@ -376,7 +376,7 @@ class TestBuildDagGraph:
         import types
         import typing
 
-        import lionagi.orchestration.patterns as _mod
+        import lionhub.orchestration.patterns as _mod
 
         # Session/Branch are TYPE_CHECKING-only; inject them so
         # get_type_hints can resolve the full signature.

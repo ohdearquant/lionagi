@@ -40,6 +40,11 @@ import lionagi.state.db as state_db_mod
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIONAGI_ROOT = REPO_ROOT / "lionagi"
+# lionhub ships in the same distribution and is scanned the same way, so code that
+# moves out of lionagi/ stays under these checks.
+LIONHUB_ROOT = REPO_ROOT / "lionhub" / "src" / "lionhub"
+SOURCE_ROOTS = (LIONAGI_ROOT, LIONHUB_ROOT)
+IMPORT_ROOTS = (REPO_ROOT, LIONHUB_ROOT.parent)
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +155,8 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="orchestration-fanout",
-        symbol="lionagi.orchestration.patterns.fanout",
-        location=("lionagi/orchestration/patterns.py", "fanout"),
+        symbol="lionhub.orchestration.patterns.fanout",
+        location=("lionhub/src/lionhub/orchestration/patterns.py", "fanout"),
         role="adapter",
         expected_target="session.flow",
         persistence="inherited",
@@ -314,8 +319,8 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="build-fanout-graph",
-        symbol="lionagi.orchestration.patterns.build_fanout_graph",
-        location=("lionagi/orchestration/patterns.py", "build_fanout_graph"),
+        symbol="lionhub.orchestration.patterns.build_fanout_graph",
+        location=("lionhub/src/lionhub/orchestration/patterns.py", "build_fanout_graph"),
         role="builder",
         expected_target=None,
         persistence="not_applicable",
@@ -323,8 +328,8 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="build-dag-graph",
-        symbol="lionagi.orchestration.patterns.build_dag_graph",
-        location=("lionagi/orchestration/patterns.py", "build_dag_graph"),
+        symbol="lionhub.orchestration.patterns.build_dag_graph",
+        location=("lionhub/src/lionhub/orchestration/patterns.py", "build_dag_graph"),
         role="builder",
         expected_target=None,
         persistence="not_applicable",
@@ -1219,6 +1224,17 @@ def discover_call_and_construct_sites(root: Path, *, base: Path = REPO_ROOT) -> 
     )
 
 
+def discover_shipped_sites() -> _DiscoveryResult:
+    """Feed 1 over every shipped source root (lionagi/ and lionhub's src tree)."""
+    merged = _DiscoveryResult(call_sites={}, call_linenos={}, executor_sites=set())
+    for root in SOURCE_ROOTS:
+        found = discover_call_and_construct_sites(root)
+        merged.call_sites.update(found.call_sites)
+        merged.call_linenos.update(found.call_linenos)
+        merged.executor_sites.update(found.executor_sites)
+    return merged
+
+
 def discover_session_facade_locations() -> dict[tuple[str, str], int]:
     """Feed 3 (reflection): independently re-derive every *public* Session
     method that itself performs a kernel sink call, by parsing each
@@ -1289,7 +1305,7 @@ def test_every_ast_discovered_graph_candidate_is_registered():
     new OperationGraphBuilder/executor/Graph construction site, anywhere
     under lionagi/, must be classified in GRAPH_SURFACES — otherwise this
     fails with file:line and why."""
-    discovery = discover_call_and_construct_sites(LIONAGI_ROOT)
+    discovery = discover_shipped_sites()
     facade_locations = discover_session_facade_locations()
     discovered = set(discovery.call_sites) | set(facade_locations)
     registered = {s.location for s in GRAPH_SURFACES if s.location is not None}
@@ -1316,7 +1332,7 @@ def test_only_flow_kernels_construct_graph_executors():
     string argument, or an alias chained through more than one intermediate
     assignment remains an unanalyzable residual bypass -- see the module
     docstring."""
-    discovery = discover_call_and_construct_sites(LIONAGI_ROOT)
+    discovery = discover_shipped_sites()
     assert discovery.executor_sites == {
         ("lionagi/operations/flow.py", "flow"),
         ("lionagi/operations/flow.py", "flow_stream"),
@@ -3182,12 +3198,13 @@ def _resolve_module_and_suffix(dotted: str) -> tuple[Path, list[str]] | None:
     parts = dotted.split(".")
     for split in range(len(parts), 1, -1):
         module_parts = parts[:split]
-        candidate = REPO_ROOT.joinpath(*module_parts).with_suffix(".py")
-        if candidate.is_file():
-            return candidate, parts[split:]
-        pkg_init = REPO_ROOT.joinpath(*module_parts, "__init__.py")
-        if pkg_init.is_file():
-            return pkg_init, parts[split:]
+        for import_root in IMPORT_ROOTS:
+            candidate = import_root.joinpath(*module_parts).with_suffix(".py")
+            if candidate.is_file():
+                return candidate, parts[split:]
+            pkg_init = import_root.joinpath(*module_parts, "__init__.py")
+            if pkg_init.is_file():
+                return pkg_init, parts[split:]
     return None
 
 
@@ -3647,8 +3664,9 @@ async def test_flow_kernel_executes_via_dependency_aware_executor_when_not_react
 async def test_orchestration_fanout_submits_built_graph_through_injected_session_flow():
     from uuid import uuid4
 
+    from lionhub.orchestration.patterns import fanout
+
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.orchestration.patterns import fanout
     from lionagi.session.branch import Branch
 
     class _FakeFanoutSession:
@@ -4211,7 +4229,7 @@ def test_operation_graph_builder_stays_a_pure_builder():
 
 
 def test_pattern_graph_builders_are_synchronous_pure_constructors():
-    from lionagi.orchestration.patterns import build_dag_graph, build_fanout_graph
+    from lionhub.orchestration.patterns import build_dag_graph, build_fanout_graph
 
     assert inspect.iscoroutinefunction(build_fanout_graph) is False
     assert inspect.iscoroutinefunction(build_dag_graph) is False

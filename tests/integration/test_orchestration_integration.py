@@ -61,8 +61,9 @@ async def test_cancelled_exc_cache_populated_after_explicit_cache():
 
 def test_aggregation_params_in_metadata_not_parameters():
     """build_fanout_graph must place aggregation_sources/aggregation_count in metadata, not parameters."""
+    from lionhub.orchestration.patterns import build_fanout_graph
+
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.orchestration.patterns import build_fanout_graph
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
 
@@ -382,9 +383,10 @@ def test_aggregation_metadata_survives_without_parameters_leak():
     This directly verifies the regression: aggregation_sources must NOT appear
     in the parameters dict that gets spread into branch.operate(**params).
     """
+    from lionhub.orchestration.patterns import build_fanout_graph
+
     from lionagi.casts.emission import TaskAssignment
     from lionagi.operations.node import Operation
-    from lionagi.orchestration.patterns import build_fanout_graph
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
 

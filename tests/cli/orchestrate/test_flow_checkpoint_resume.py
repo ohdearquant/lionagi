@@ -2166,8 +2166,9 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
 
 def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
     """role_node_builder(..., start=2) must issue spawn-2 for the first live spawn, not spawn-1 -- the exact id/artifact-directory collision a resumed run's fresh closure would otherwise reissue against an already-restored spawn-1."""
+    from lionhub.orchestration.patterns import role_node_builder
+
     from lionagi.casts.emission import SpawnRequest
-    from lionagi.orchestration.patterns import role_node_builder
 
     build = role_node_builder({}, start=2)
     node = build(SpawnRequest(instruction="follow-up"), None)

@@ -8,10 +8,10 @@ from __future__ import annotations
 import json
 
 import pytest
+from lionhub.orchestration import grant_spawn
 
 from lionagi.casts.emission import SpawnRequest
 from lionagi.operations.node import create_operation
-from lionagi.orchestration import grant_spawn
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.session import Session
 from lionagi.testing import TestBranch

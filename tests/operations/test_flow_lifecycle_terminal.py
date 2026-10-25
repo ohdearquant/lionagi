@@ -115,8 +115,9 @@ async def test_reactive_spawn_shares_one_name_across_queued_started_terminal():
     queued-forever node plus a separately-named started node."""
     import json
 
+    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
+
     from lionagi.operations.node import create_operation
-    from lionagi.orchestration.patterns import grant_spawn, role_node_builder
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
     from lionagi.testing import TestBranch
@@ -187,8 +188,9 @@ async def test_reactive_spawn_shares_one_name_when_spawn_branch_setup_names_the_
     correlate under."""
     import json
 
+    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
+
     from lionagi.operations.node import create_operation
-    from lionagi.orchestration.patterns import grant_spawn, role_node_builder
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
     from lionagi.testing import TestBranch

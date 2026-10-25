@@ -14,9 +14,9 @@ import inspect
 import logging
 
 import pytest
+from lionhub.orchestration.patterns import role_node_builder
 
 from lionagi.casts.emission import SPAWN_ALLOWED_OPERATIONS, SpawnRequest
-from lionagi.orchestration.patterns import role_node_builder
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 

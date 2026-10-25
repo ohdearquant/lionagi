@@ -2,7 +2,7 @@
 
 Extracted rationale for `lionagi/casts/`, `lionagi/lndl/`, `lionagi/testing/`,
 `lionagi/libs/`, `lionagi/adapters/`, `lionagi/dispatch/`, `lionagi/models/`,
-`lionagi/work/`, `lionagi/orchestration/`, and the top-level `lionagi/*.py`
+`lionagi/work/`, `lionhub/src/lionhub/orchestration/`, and the top-level `lionagi/*.py`
 modules — material that a maintainer needs but that doesn't belong as an
 in-source essay. Source points here with `# See docs/internals/support-libs.md#<anchor>`.
 

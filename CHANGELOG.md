@@ -19,6 +19,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Packages built on top of the core move to `lionhub`, a second top-level package
+  shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
+  Each old import path keeps working until lionagi 2.0: it returns the same module
+  object as the new path and emits one `DeprecationWarning` naming the new path.
+  Update imports to the new path; `lionagi._moved.MOVED` lists every move.
+
+  | Old import path | New import path | Removed in |
+  | --- | --- | --- |
+  | `lionagi.orchestration` | `lionhub.orchestration` | 2.0.0 |
+
 - `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
   as offload controls. For a callable that takes either keyword, prebind its
   arguments with `functools.partial` and pass that callable to `run_sync`.

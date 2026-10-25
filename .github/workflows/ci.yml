@@ -117,8 +117,12 @@ jobs:
             "lionagi.session.branch",
             "lionagi.session.session",
             "lionagi.service.imodel",
+            "lionhub.orchestration",
         ):
             importlib.import_module(module)
+        # A moved module's old import path is the same module object as its new one.
+        old = importlib.import_module("lionagi.orchestration.patterns")
+        assert old is importlib.import_module("lionhub.orchestration.patterns")
         print("core surface imported with base dependencies only")
         PY
 
