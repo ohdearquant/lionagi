@@ -275,6 +275,7 @@ build-backend = "hatchling.build"
 packages = ["lionagi", "lionhub/src/lionhub"]
 artifacts = [
     "lionagi/py.typed",
+    "lionhub/src/lionhub/py.typed",
     "lionagi/casts/packs/*.yaml",
     "lionagi/studio/builtin_playbooks/*.playbook.yaml",
 ]
