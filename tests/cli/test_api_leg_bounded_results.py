@@ -97,7 +97,16 @@ def _check_output(original, actual, bound, index):
         shown = actual[body.key] if isinstance(actual, dict) else actual
         length = body.end - body.start
         if body.protected or length <= bound:
-            assert shown == before and type(shown) is type(before)
+            # Message content tracks mutable values with private dict/list subclasses.
+            # The provider payload preserves their serialized container kind and value.
+            kind = (
+                dict
+                if isinstance(before, dict)
+                else list
+                if isinstance(before, list)
+                else type(before)
+            )
+            assert shown == before and type(shown) is kind
             continue
         assert isinstance(shown, str) and len(shown) <= bound
         matches = list(_MARKER.finditer(shown))

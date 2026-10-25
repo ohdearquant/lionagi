@@ -463,6 +463,9 @@ async def test_bound_projects_both_result_collection_seams_with_one_source_sessi
         await branch.msgs._a_add_built_response(result)
         outputs.append(result)
         if number == 0:
+            # A historical instruction is sent only after an assistant turn; adjacent
+            # instructions are deliberately coalesced by the existing compiler.
+            await branch.msgs.a_add_message(assistant_response="continue with the evidence")
             await branch.msgs.a_add_message(instruction="historical collection boundary")
     original = [result.to_dict() for result in outputs]
     progression = list(branch.progression)
