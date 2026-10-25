@@ -1,255 +1,81 @@
 # Clocks, timestamps and identifiers
 
-Issue #3581 baseline: `ee5783cc689fbff53afef49f772e6584121b70e6`. Positions use this revision. Changed entries are implemented; focused validation passed. KEEP rows describe source contracts.
+Use the shared clock, identifier and coercion helpers where their admission and representation match the caller. Native clocks and formatters remain at boundaries that need a different time domain, precision or error surface.
 
-| Unit | Current disposition|
-| --- | ---|
-| N1 | UTC wall-clock calls already share `now_utc`; each caller retains its ISO/strftime output.|
-| N2 | Seven epoch conversions already delegate. Four broader admission/error surfaces remain individually kept.|
-| N3 | Keep gmtime fractional-second truncation for session role labels.|
-| N4 | Shared AnyIO clock and companion sleep already adopted; preserve the wait cadence and run liveness reads.|
-| N5 | 49 short-id call sites already share lengths/defaults. The owning path-builder suffix keeps permissive bool/overlength slicing.|
-| N6 | Canonical `protocols.to_uuid` or structural `ID.get_id` already used after each existing gate.|
-| N7 | Four spelling-only uuid4 calls already share the import; formatting remains str(uuid4()).|
-| B1 | Keep all paired native monotonic clock domains, including one synchronous abandoned-terminal path;35physical lines contain36AST calls.|
-| B2 | Loop-clock calls already delegate `current_time`; adopted backend behavior is already landed.|
-| B3 | `assert_eventually` already uses the shared elapsed clock.|
-| B4 | Keep Element timestamp admission, precision and diagnostics.|
-| B5 | The public coercer fixes are already landed; its numeric-before-ISO policy is unchanged.|
-| B6 | Timestamp adapters already delegate with their own fallback/catch behavior.|
-| B7 | Scheduler log conversions already delegate; preserve current recompute error boundary.|
-| B8 | Three duration adapters already delegate with distinct flags/return/error adapters; stats has no independent parser.|
-| B9 | Keep the durable native JSON codec and all four current SQLAlchemy serializer bindings, including the additional read-only engine binding.|
-| B10 | Keep exact inline team message shape; its ids are already shared.|
-| H1 | Strict `short_id` helper is already landed and public behavior is retained.|
-| H2 | Positive finite `parse_duration` helper and caller flags are already landed.|
+## Operation boundaries
 
-The baseline address index uses `U:` plus the unit name for these original unit populations.
+| Operation | Behavior |
+| --- | --- |
+| UTC wall-clock formatting | `now_utc` supplies UTC wall time; each caller retains its ISO or strftime representation. |
+| Epoch conversion adapters | Compatible epoch adapters use the shared coercer; epoch-only properties and formatters retain bool/string admission, local-zone interpretation and native errors. |
+| Session role labels | Role labels use gmtime truncation before HH:MM formatting, preserving fractional-second boundaries and None/name/id omission. |
+| Polling clock and cadence | The shared AnyIO clock and sleep retain polling cadence, remaining-budget clipping, cancellation and run-liveness reads. |
+| Short identifiers and path suffixes | `short_id` serves bounded identifiers. Path-builder suffixes retain Python slicing, including bool and lengths above 32. |
+| UUID and structural ID admission | `protocols.to_uuid` and structural `ID.get_id` preserve existing admission, normalization, lookup and type errors. |
+| Full-width generated identifiers | Full generated identities use `uuid4` and their existing full-width string representation. |
+| Paired monotonic durations | Native paired monotonic reads retain one clock domain for starts, deadlines and elapsed output, including synchronous abandoned-terminal handling. |
+| Async loop clock | `current_time` supplies the active backend loop clock at async elapsed-time consumers. |
+| Eventually polling | `assert_eventually` uses the shared elapsed clock and retains its observation cadence. |
+| Element timestamp validation | Element keeps float precision/non-finite handling, local-naive datetime interpretation, numeric/string admission and its exact diagnostics. |
+| Public timestamp coercion | `coerce_created_at` rejects bool, preserves aware datetime identity, normalizes naive UTC and ISO suffix/fractions, and tries numeric strings before ISO. |
+| Timestamp display adapters | Timestamp display adapters use the shared coercer while preserving their own catches and fallback values. |
+| Scheduler log timestamps | Scheduler log adapters preserve the existing conversion and recompute error boundary. |
+| Duration adapters | Duration adapters preserve distinct flags, errors and return shapes; stats has no separate parser. |
+| Durable JSON codecs | Durable native JSON and SQLAlchemy bindings retain UUID-only defaults, spacing/ASCII behavior and allow_nan=False refusal, including read-only engines. |
+| Team inbox message shape | Team messages retain `from_op` even when None and omit kind; their identifiers use the shared helper. |
+| Short-id validation | `short_id` accepts integer lengths 1..32 and rejects bool with its existing public validation. |
+| Duration validation | `parse_duration` retains positive finite admission, caller flags, maximum and errors. |
 
-## Exact call and factory contracts
+## Shared helpers
 
-**Contracts**
+`now_utc`, `coerce_created_at`, `short_id`, `parse_duration` and the canonical protocol ID helpers serve matching callers. Polling uses `ln.concurrency.current_time` and `sleep`; paired native monotonic measurements keep their own clock domain.
 
-- **K2.1** — UTC wall-clock calls already share `now_utc`; each caller retains its ISO/strftime output. Preserve the enclosing expression at each indexed baseline position.
-- **K2.2** — Seven epoch conversions already delegate. Four broader admission/error surfaces remain individually kept. Preserve the enclosing expression at each indexed baseline position.
-- **K2.3** — `_iso` only guards None. Native fromtimestamp keeps epoch-only admission (including bool) and native TypeError for strings; shared coerce rejects bool and accepts strings/datetime. Do not widen or alter errors merely from float annotation.
-- **K2.4** — Normal validated floats convert equivalently, but `created_datetime` currently delegates epoch-only conversion even for `model_construct`/bypassed values. coerce broadens string/datetime admission and rejects bool differently. No caller-domain proof excludes those observable property inputs; retain original conversion without a new guard.
-- **K2.5** — `_fmt_rfc3339` only guards None, then epoch→UTC→local zone→seconds text. coerce changes bool/string admission and exceptions. Preserve local astimezone formatting and epoch-only boundary.
-- **K2.6** — The at-trigger row uses a truthiness guard, then native epoch conversion. True is an epoch1 here; coerce rejects it, and string epochs would become newly accepted. Keep exact malformed-row errors and exported fire-time spelling.
-- **K2.7** — gmtime truncates fractional seconds before HH:MM; datetime.fromtimestamp can round across the minute. Preserve deterministic role labels and None/name/id omission.
-- **K2.8** — Shared AnyIO clock and companion sleep already adopted; preserve the wait cadence and run liveness reads. Preserve the enclosing expression at each indexed baseline position.
-- **K2.9** — The issue's companion polling sleep already delegates to ln.concurrency.sleep; `eff_poll`/remaining clipping and cancellation stay at the original wait seam.
-- **K2.10** — 49 short-id call sites already share lengths/defaults. The owning path-builder suffix keeps permissive bool/overlength slicing. Preserve the enclosing expression at each indexed baseline position.
-- **K2.11** — The existing `random_hash_digits`>0 gate and Python slicing accept bool and lengths>32; `short_id` explicitly rejects them. This public path-builder input surface is broader than the bounded logger caller. Keep permissive suffix behavior; no public helper tightening.
-- **K2.12** — Canonical `protocols.to_uuid`/`ID.get_id` is already used. Retain Observable normalization and lookup/type/error contracts; do not switch back to UUID(str(...)) or deprecated `ln.to_uuid`.
-- **K2.13** — Four spelling-only uuid4 calls already share the import; formatting remains str(uuid4()). Preserve the enclosing expression at each indexed baseline position.
-- **K2.14** — Decompose/fanout/synthesis/total timings share native starts and elapsed reads. Preserve progress/timing outputs and synchronous time access.
-- **K2.15** — Execution/synthesis/planning/total phase durations share native monotonic starts and reads. Preserve CLI progress and timing data; do not swap clock domains as a spelling change.
-- **K2.16** — The paired clock feeds operation elapsed output and the synchronous abandoned-terminal fallback. Preserve the same monotonic domain for start/read/default and eligibility without active AnyIO context.
-- **K2.17** — Run-start and both terminal duration paths share monotonic scalars. Replacing the clock changes backend/context and test-patching/telemetry behavior; keep the paired domain.
-- **K2.18** — Observed-run/ReAct start/finally duration signals use the same monotonic domain. Keep emitted duration values and the existing clock boundary.
-- **K2.19** — Both reads conserve one tick deadline across stray cancellation; keep native monotonic deadline arithmetic while sleep delegation is handled separately.
-- **K2.20** — Stream heartbeat initialization/activity/read/reset calls share one native monotonic domain. Preserve5second emission cadence across generator resumption and existing clock-patch behavior.
-- **K2.21** — Loop-clock calls already delegate `current_time`; adopted backend behavior is already landed. Preserve the enclosing expression at each indexed baseline position.
-- **K2.22** — `assert_eventually` already uses the shared elapsed clock. Preserve the enclosing expression at each indexed baseline position.
-- **K2.23** — Element preserves float pass-through (including precision/nonfinite), local-naive datetime.timestamp, ISO-first strings, numeric fallback including Decimal/bool, and exact Invalid* errors. The shared UTC helper has different admission/order/error contracts; leave the validator unchanged.
-- **K2.24** — Current helper already rejects bool, preserves aware datetime identity, normalizes naive UTC/trailingZ/z/Python3.10 fractions and keeps numeric-before-ISO strings. Do not revise this public behavior.
-- **K2.25** — Timestamp adapters already delegate with their own fallback/catch behavior. Preserve the enclosing expression at each indexed baseline position.
-- **K2.26** — Scheduler log conversions already delegate; preserve current recompute error boundary. Preserve the enclosing expression at each indexed baseline position.
-- **K2.27** — Three duration adapters already delegate with distinct flags/return/error adapters; stats has no independent parser. Preserve the enclosing expression at each indexed baseline position.
-- **K2.28** — Native json.dumps(default=`_json_serializer`,`allow_nan`=False) is the actual current durable codec. Preserve refusal and bytes; do not describe this path as permissive NaN.
-- **K2.29** — All engine JSON binds retain `_dumps_with_uuid`: native spacing/ASCII/key coercion, UUID-only custom default and `allow_nan`=False durable refusal. `ln.json_dumps` broadens supported values/changes bytes; keep the existing codec policy.
-- **K2.30** — Inline result messages intentionally retain `from_op` even when None and omit kind. `_build_message` adds kind and omits falsy `from_op`. Keep these exact persisted inbox shapes; N5id alone is already shared.
-- **K2.31** — Existing strict1..32 integer helper, bool refusal and public export are landed. No new name or semantics needed.
-- **K2.32** — Existing positive finite duration helper, flags, maximum and public export are landed. Preserve its current errors and caller adapters.
+## Behavioral reference
 
-**Operations**
-
-- **2.1** — N1 / Already shared / #3602; K2.1.
-- **2.2** — N1 / Already shared / #3629; K2.1.
-- **2.3** — N2 / Already shared / #3629; K2.2.
-- **2.4** — N2 / KEEP / ; K2.3.
-- **2.5** — N2 / KEEP / ; K2.4.
-- **2.6** — N2 / KEEP / ; K2.5.
-- **2.7** — N2 / KEEP / ; K2.6.
-- **2.8** — N3 / KEEP / ; K2.7.
-- **2.9** — N4 / Already shared / #3629; K2.8.
-- **2.10** — N4 / Already shared / #3602; K2.8.
-- **2.11** — N4 / Already shared / #3629; K2.9.
-- **2.12** — N5 / Already shared / #3629; K2.10.
-- **2.13** — N5 / KEEP / ; K2.11.
-- **2.14** — N6 / Already shared / #3621; K2.12.
-- **2.15** — N6 / Already shared / #3629; K2.12.
-- **2.16** — N6 / Already shared / #3714; K2.12.
-- **2.17** — N7 / Already shared / #3629; K2.13.
-- **2.18** — B1 / KEEP / ; K2.14.
-- **2.19** — B1 / KEEP / ; K2.15.
-- **2.20** — B1 / KEEP / ; K2.16.
-- **2.21** — B1 / KEEP / ; K2.17.
-- **2.22** — B1 / KEEP / ; K2.18.
-- **2.23** — B1 / KEEP / ; K2.19.
-- **2.24** — B1 / KEEP / ; K2.20.
-- **2.25** — B2 / Already shared / #3629; K2.21.
-- **2.26** — B3 / Already shared / #3629; K2.22.
-- **2.27** — B4 / KEEP / ; K2.23.
-- **2.28** — B5 / Already shared / #3629; K2.24.
-- **2.29** — B6 / Already shared / #3629; K2.25.
-- **2.30** — B7 / Already shared / #3629; K2.26.
-- **2.31** — B8 / Already shared / #3629; K2.27.
-- **2.32** — B9 / KEEP / ; K2.28.
-- **2.33** — B9 / KEEP / ; K2.29.
-- **2.34** — B10 / KEEP / ; K2.30.
-- **2.35** — H1 / Already shared / #3629; K2.31.
-- **2.36** — H2 / Already shared / #3629; K2.32.
-
-## Additional static native candidates
-
-These are separate from the original issue-arm counts. Operations and baseline positions are retained; dynamic receiver types are not inferred from spelling alone. They remain unchanged.
-
-**Contracts**
-
-- **K3.1** — Preserve the native floating-point epoch value and its precision at this consumer; a UTC datetime round-trip changes representation/admission and can round sub-microsecond values.
-- **K3.2** — Preserve the full UUID object or unsliced full-width spelling consumed here; `short_id` returns a bounded string and is not the same type/width contract.
-- **K3.3** — Preserve the native monotonic clock domain, paired starts/deadlines and operation outside an active AnyIO context; replacing the clock also changes caller patching and scheduling assumptions.
-- **K3.4** — Preserve the explicit format, supplied `struct_time` and local/platform formatting semantics; `now_utc` is a wall-clock datetime constructor, not this formatter.
-- **K3.5** — Preserve host-local timezone/DST `struct_time` semantics; UTC datetime coercion changes the value and formatting contract.
-- **K3.6** — Preserve synchronous blocking delay and native value/error behavior; an async sleep returns an awaitable and requires a different caller contract.
-- **K3.7** — Preserve this epoch-only conversion, explicit timezone/local interpretation and native admission/errors rather than broadening through a multi-type coercer.
-- **K3.8** — Preserve strict ISO parsing, native errors and timezone/naive interpretation at this consumer; general coercion also accepts numeric strings and other input types.
-- **K3.9** — Preserve this UUID constructor form, argument/keyword admission and native errors; structural UUID helpers accept a different set of objects.
-- **K3.10** — Preserve deterministic namespace/name UUID identity; a random short identifier is a different value and representation.
-- **K3.11** — Preserve UTC `struct_time` conversion and fractional-second truncation used by this formatter.
-- **K3.12** — Preserve the paired native high-resolution elapsed counter and synchronous availability; a backend loop clock changes the domain/context and instrumentation boundary.
-- **K3.13** — Preserve the supplied format grammar, structuring/timezone interpretation and native refusal surface; general timestamp coercion is broader.
-
-**Operations**
-
-- **3.1** — time.time; K3.1.
-- **3.2** — uuid.uuid4; K3.2.
-- **3.3** — time.monotonic; K3.3.
-- **3.4** — time.strftime; K3.4.
-- **3.5** — time.localtime; K3.5.
-- **3.6** — time.sleep; K3.6.
-- **3.7** — datetime.datetime.fromtimestamp; K3.7.
-- **3.8** — datetime.datetime.fromisoformat; K3.8.
-- **3.9** — uuid.UUID; K3.9.
-- **3.10** — uuid.uuid5; K3.10.
-- **3.11** — time.gmtime; K3.11.
-- **3.12** — `time.perf_counter`; K3.12.
-- **3.13** — datetime.datetime.strptime; K3.13.
-
-## Baseline address index
-
-Entries use `contract=lines`, or `line:column` for JSON calls. `U:` identifies unit rows; `×N` preserves occurrences. Ranges cover original spans only. All positions use the baseline.
-
-- `lionagi/agent/context_fold.py`: `3.1=542,634`.
-- `lionagi/agent/factory.py`: `3.1=1330; 3.2=1380`.
-- `lionagi/agent/nudge.py`: `3.1=172`.
-- `lionagi/cli/_code_identity.py`: `2.1=101; 3.3=109,112; U:N1=101`.
-- `lionagi/cli/_providers.py`: `2.3=521; 3.1=520; U:N2=521`.
-- `lionagi/cli/_runs.py`: `2.12=66; 2.17=2029,2034,2072,2073; 3.1=470,586,638,1013,1585,2116; 3.2=2029,2034,2072,2073; U:N5=66; U:N7=2029,2034,2072,2073`.
-- `lionagi/cli/agent.py`: `3.1=1680,1728,1856,2095,2157; 3.3=498,548,884,904,1871,1876,1895`.
-- `lionagi/cli/dispatch.py`: `3.4=28; 3.5=28`.
-- `lionagi/cli/engine.py`: `3.1=274,354,398,420,440,544,576; 3.2=273`.
-- `lionagi/cli/invoke.py`: `2.12=30; 3.1=40,91; U:N5=30`.
-- `lionagi/cli/kill.py`: `3.1=500,601,752,926,1042,1090,1147,1196; 3.3=325,327; 3.6=333`.
-- `lionagi/cli/machine_schedule.py`: `3.1=210; 3.3=63,77; 3.7=227`.
-- `lionagi/cli/mirror.py`: `2.31=330; 3.1=560,798; U:B8=330`.
-- `lionagi/cli/monitor.py`: `2.31=144; 3.1=128,150,1672,2021,2028; 3.3=1337,1351,1643,1646; 3.4=570,573,725,866,1171; 3.5=570,573,725,866; 3.6=1179,1586; U:B8=144`.
-- `lionagi/cli/orchestrate/__init__.py`: `3.2=1231`.
-- `lionagi/cli/orchestrate/_common.py`: `2.12=354,383,396; 2.34=381,394; U:B10=381,394; U:N5=354,383,396`.
-- `lionagi/cli/orchestrate/_notify.py`: `3.2=262`.
-- `lionagi/cli/orchestrate/_orchestration.py`: `3.1=1996,2079,2225,2298; 3.2=1970,2130`.
-- `lionagi/cli/orchestrate/_quiescence.py`: `3.3=277,278; 3.6=286`.
-- `lionagi/cli/orchestrate/fanout.py`: `2.18=352,376,469,553,618,641,722; 3.1=198; 3.3=352,376,469,553,618,641,722; U:B1=352,376,469,553,618,641,722`.
-- `lionagi/cli/orchestrate/flow.py`: `2.14=1379,1403,1891,1912; 2.19=2421,2501,2837,2873,3530,3615,3807; 2.3=677; 3.1=516,1834,1836,1844,1989,2216,3119,3320,3395; 3.2=3483; 3.3=2421,2501,2837,2873,3530,3615,3807; U:B1=2421,2501,2837,2873,3530,3615,3807; U:N2=677; U:N6=1379,1403,1891,1912`.
-- `lionagi/cli/state.py`: `2.12=1336; 2.29=134,139,1345; 3.1=59,123,505,709,710,766,964,992,1021,1118,1218; 3.2=159,246; 3.4=419; 3.5=419; U:B6=134,139,1345; U:N5=1336`.
-- `lionagi/cli/stats.py`: `2.4=48; 3.7=48; U:N2=48`.
-- `lionagi/cli/status.py`: `3.4=537; 3.5=537`.
-- `lionagi/cli/team.py`: `2.12=154,178,704; U:N5=154,178,704`.
-- `lionagi/dispatch/outbox.py`: `3.1=178,339,590; 3.2=179,180,246`.
-- `lionagi/engines/coding.py`: `3.3=938,970,975`.
-- `lionagi/engines/engine.py`: `2.12=460; 3.3=489,567,576,1088; U:N5=460`.
-- `lionagi/hooks/builtins.py`: `3.1=87,135,220`.
-- `lionagi/integrations/ruvector/memory.py`: `2.14=64; 2.15=97; U:N6=64,97`.
-- `lionagi/ln/_utils.py`: `2.13=203; 2.28=443; 2.35=67; 2.36=74; U:B5=443; U:H1=67; U:H2=74; U:N5=203`.
-- `lionagi/mcp/_notify_hook.py`: `3.3=51,82`.
-- `lionagi/mcp/_run_detail.py`: `3.1=167,325`.
-- `lionagi/mcp/dispatch.py`: `2.1=56; 3.1=57,872; U:N1=56`.
-- `lionagi/mcp/jobs.py`: `2.11=3104; 2.12=289,398; 2.2=283,288,2974; 2.3=1786; 2.9=3066,3097; 3.8=2969; U:N1=283,288,2974; U:N2=1786; U:N4=3066,3097,3104; U:N5=289,398`.
-- `lionagi/operations/_turn_origin.py`: `3.2=45`.
-- `lionagi/operations/act/act.py`: `3.2=55`.
-- `lionagi/operations/flow.py`: `2.20=577×2,666,677,678; 2.3=85; 3.3=577×2,666,677,678; U:B1=577×2,666,677,678; U:N2=85`.
-- `lionagi/operations/run/run.py`: `2.21=443,810,841; 2.9=95,207,221,288,574; 3.3=443,810,841; U:B1=443,810,841; U:N4=95,207,221,288,574`.
-- `lionagi/protocols/action/manager.py`: `3.3=37`.
-- `lionagi/protocols/generic/element.py`: `2.27=75; 2.5=119; 3.7=119; 3.8=87; 3.9=109,253,274,310; U:B4=75; U:N2=119`.
-- `lionagi/protocols/generic/flow.py`: `2.16=120; U:N6=120`.
-- `lionagi/protocols/graph/node.py`: `2.1=125,158; U:N1=125,158`.
-- `lionagi/protocols/messages/prepare.py`: `3.1=63,86`.
-- `lionagi/providers/_subagent_admission.py`: `3.1=672; 3.3=522,524,537,539,666,751,757; 3.6=541`.
-- `lionagi/providers/google/gemini_code.py`: `2.25=587,719; U:B2=587,719`.
-- `lionagi/providers/openai/codex.py`: `2.25=3003,3474; U:B2=3003,3474`.
-- `lionagi/providers/pi/cli.py`: `2.25=441,595; U:B2=441,595`.
-- `lionagi/service/accounts/_router.py`: `3.2=125`.
-- `lionagi/service/connections/endpoint.py`: `3.2=577,639,641`.
-- `lionagi/service/hooks/hook_event.py`: `2.10=36,77; U:N4=36,77`.
-- `lionagi/service/imodel.py`: `3.2=189`.
-- `lionagi/service/resilience.py`: `3.1=125,142,176,202`.
-- `lionagi/session/branch.py`: `2.22=480,502,1206,1249; 3.3=480,502,1206,1249; U:B1=480,502,1206,1249`.
-- `lionagi/session/observer.py`: `3.1=487; 3.3=232,556`.
-- `lionagi/state/artifact_verifier.py`: `3.1=236,274`.
-- `lionagi/state/claude_mirror.py`: `2.29=57; 3.10=45; 3.9=33; U:B6=57`.
-- `lionagi/state/codex_mirror.py`: `2.29=213; 3.1=227; 3.10=201; 3.9=81; U:B6=213`.
-- `lionagi/state/db.py`: `2.12=6416,6520; 3.1=1780,1971,2685,3153,3167,3342,3537,3915,4085,4295,4360,4722,4771,4841,4881,5335,5371,5461,5559,5645,5928,6117,6186,6415,6529,6573,6683,6789,6911,6931,7043,7111,7517,7617,7653,7727,7816,7880,7902,7950; 3.2=7105,7210,7780; U:N5=6416,6520`.
-- `lionagi/state/engine.py`: `2.32=258; 2.33=777,834,859,913; U:B9=258,777,834,859,913`.
-- `lionagi/state/lifecycle/deliveries.py`: `3.1=30`.
-- `lionagi/state/lifecycle/schedules.py`: `3.1=365`.
-- `lionagi/state/lifecycle/service.py`: `2.12=497,644; 3.1=209,358; 3.2=208; U:N5=497,644`.
-- `lionagi/state/session_naming.py`: `2.8=144; 3.11=144; 3.4=144; U:N3=144`.
-- `lionagi/state/staleness.py`: `3.1=33`.
-- `lionagi/studio/cli.py`: `2.2=1386; 2.6=1578; 3.1=1391; 3.3=1055,1057,1238,1248,1640,1642,1649,1650,1709,1710; 3.6=1643,1651,1711; 3.7=1578; U:N1=1386; U:N2=1578`.
-- `lionagi/studio/config.py`: `2.3=553; 3.1=528; U:N2=553`.
-- `lionagi/studio/launch_access.py`: `3.3=188,257,303,340`.
-- `lionagi/studio/operator/application_mcp.py`: `3.1=1240`.
-- `lionagi/studio/operator/cancel_run.py`: `3.1=346,423`.
-- `lionagi/studio/operator/coordinator.py`: `2.12=541; 3.1=467,549,918,919; U:N5=541`.
-- `lionagi/studio/operator/permission_mcp.py`: `3.1=97`.
-- `lionagi/studio/operator/rename_session.py`: `3.1=175`.
-- `lionagi/studio/operator/resume_run.py`: `3.1=236`.
-- `lionagi/studio/operator/run_control.py`: `3.1=381`.
-- `lionagi/studio/operator/run_progress.py`: `3.1=650`.
-- `lionagi/studio/operator/store.py`: `2.12=1970,2247,2306,2424,2518,2569; 3.1=563,656,768,903,922,1033,1040,1086,1135,1141,1222,1365,1459,1702,1733,1797,1998,2042,2202,2386,2464,2538,2625; 3.2=564,729,787,827,1082,1364,1730,2039,2040; U:N5=1970,2247,2306,2424,2518,2569`.
-- `lionagi/studio/reconnect.py`: `3.3=257,265; 3.6=267`.
-- `lionagi/studio/scheduler/admit.py`: `3.1=254`.
-- `lionagi/studio/scheduler/engine.py`: `2.12=506,963,1183,1362,1475,1502,1958,2273,2331,2465,2526,2818,3207; 2.23=992,994; 2.25=1059,1060; 2.3=597,604; 2.30=824,825; 3.1=526,557,647,658,775,807,881,1083,1150,1154,1266,1375,1536,1684,1710,2207,2768,2792,2813,2894,3107,3232,3327; 3.2=2168; 3.3=992,994; 3.7=3418; U:B1=992,994; U:B2=1059,1060; U:B7=824,825; U:N2=597,604; U:N5=506,963,1183,1362,1475,1502,1958,2273,2331,2465,2526,2818,3207`.
-- `lionagi/studio/scheduler/signals.py`: `3.1=288`.
-- `lionagi/studio/scheduler/worker.py`: `2.12=256; 3.1=207,268,360,555,576,633; U:N5=256`.
-- `lionagi/studio/services/admin.py`: `3.1=845,960,1182; 3.12=146,183,198,324,334; 3.2=1328; 3.3=358,368,568,693,697`.
-- `lionagi/studio/services/approvals.py`: `3.1=194,318,354,362,400,503; 3.2=193,363`.
-- `lionagi/studio/services/attention.py`: `3.1=184,271,305; 3.2=221,284`.
-- `lionagi/studio/services/db_maintenance.py`: `3.1=699,762,843,844; 3.12=202,211`.
-- `lionagi/studio/services/definitions.py`: `3.1=454,507`.
-- `lionagi/studio/services/engine_defs.py`: `2.12=145; 3.1=146; U:N5=145`.
-- `lionagi/studio/services/invocations.py`: `3.1=95,285`.
-- `lionagi/studio/services/launches.py`: `2.12=209; 3.1=210,323,364; U:N5=209`.
-- `lionagi/studio/services/leo.py`: `3.1=42,75,85,88,352,368; 3.2=78`.
-- `lionagi/studio/services/lifecycle.py`: `3.1=117,238,342,437,559,681`.
-- `lionagi/studio/services/mcp_servers.py`: `3.1=374,483,495,543`.
-- `lionagi/studio/services/operator.py`: `2.25=286,300,302; U:B2=286,300,302`.
-- `lionagi/studio/services/projects.py`: `3.1=171,205,243`.
-- `lionagi/studio/services/retention_archive.py`: `2.12=45; U:N5=45`.
-- `lionagi/studio/services/run_tags.py`: `3.1=52`.
-- `lionagi/studio/services/runs.py`: `3.1=225,348`.
-- `lionagi/studio/services/schedule_declaration.py`: `2.12=796,1832; 2.31=335; 3.1=797,1372,1820; 3.8=351; U:B8=335; U:N5=796,1832`.
-- `lionagi/studio/services/schedule_export.py`: `2.7=204; 3.7=204; U:N2=204`.
-- `lionagi/studio/services/schedules.py`: `2.12=1240; 3.1=560,1149,1241; 3.13=115; 3.7=439; U:N5=1240`.
-- `lionagi/studio/services/sessions.py`: `2.24=1747,1785,1791,1793,1832,1844,1854,1856; 3.1=1798,1859; 3.3=1747,1785,1791,1793,1832,1844,1854,1856; U:B1=1747,1785,1791,1793,1832,1844,1854,1856`.
-- `lionagi/studio/services/shows.py`: `2.29=614,619,626; 3.1=492,633,747,769,772; 3.2=498,591; U:B6=614,619,626`.
-- `lionagi/studio/services/stats.py`: `3.1=49,122,173`.
-- `lionagi/studio/services/task_applications.py`: `3.1=123; 3.2=149,202`.
-- `lionagi/studio/services/workflow_defs.py`: `2.12=160; 3.1=161; U:N5=160`.
-- `lionagi/studio/services/workflow_run.py`: `3.1=57; 3.2=38`.
-- `lionagi/testing/_endpoint.py`: `2.12=236,258,260; U:N5=236,258,260`.
-- `lionagi/testing/helpers.py`: `2.26=34,35; 3.1=197; U:B3=34,35`.
-- `lionagi/tools/khive_injection.py`: `2.12=423; U:N5=423`.
-- `lionagi/tools/sandbox.py`: `2.12=267; U:N5=267`.
+| Operation | Example consumer | Behavior |
+| --- | --- | --- |
+| UTC wall-clock formatting | `lionagi/cli/_code_identity.py` — `_now`; `lionagi/mcp/dispatch.py` — `module initialization` | UTC wall-clock calls share `now_utc`; each caller retains its ISO/strftime output. |
+| Epoch conversion adapters | `lionagi/cli/_providers.py` — `build_deadline_preamble`; `lionagi/cli/orchestrate/flow.py` — `_format_budget_preamble` | Epoch adapters use the shared coercer where its input and error contracts match; broader epoch-only interfaces retain native conversion. |
+| Epoch conversion adapters | `lionagi/cli/stats.py` — `_iso` | `_iso` only guards None. Native fromtimestamp keeps epoch-only admission (including bool) and native TypeError for strings; the shared coercer rejects bool and accepts strings/datetime. The float annotation does not add a runtime admission check. |
+| Epoch conversion adapters | `lionagi/protocols/generic/element.py` — `Element.created_datetime` | `created_datetime` uses epoch-only conversion for validated floats and for values supplied through `model_construct` or other validation bypasses. The shared coercer accepts strings/datetime and rejects bool differently, so this property retains native admission and errors. |
+| Epoch conversion adapters | `lionagi/studio/cli.py` — `_fmt_rfc3339` | `_fmt_rfc3339` only guards None, then epoch→UTC→local zone→seconds text. The shared coercer has different bool/string admission and exceptions. This formatter retains local astimezone formatting and epoch-only admission. |
+| Epoch conversion adapters | `lionagi/studio/services/schedule_export.py` — `_convert_legacy_trigger` | The at-trigger row uses a truthiness guard, then native epoch conversion. True is an epoch1 here; the shared coercer rejects it and accepts string epochs. Native conversion retains the malformed-row errors and exported fire-time spelling. |
+| Session role labels | `lionagi/state/session_naming.py` — `agent_role_label` | gmtime truncates fractional seconds before HH:MM; datetime.fromtimestamp can round across the minute. Preserve deterministic role labels and None/name/id omission. |
+| Polling clock and cadence | `lionagi/mcp/jobs.py` — `wait`; `lionagi/operations/run/run.py` — `_stream_with_deadline` | The shared AnyIO clock and companion sleep retain the wait cadence and run-liveness reads. |
+| Polling clock and cadence | `lionagi/mcp/jobs.py` — `wait` | The companion polling sleep delegates to ln.concurrency.sleep; `eff_poll`/remaining clipping and cancellation stay at the original wait seam. |
+| Short identifiers and path suffixes | `lionagi/cli/_runs.py` — `_new_run_id`; `lionagi/cli/invoke.py` — `_start_invocation` | Bounded identifiers share their existing lengths and defaults. The owning path-builder suffix keeps permissive bool/overlength slicing. |
+| Short identifiers and path suffixes | `lionagi/ln/_utils.py` — `_build_safe_path` | The existing `random_hash_digits`>0 gate and Python slicing accept bool and lengths>32; `short_id` explicitly rejects them. This public path-builder retains its permissive suffix behavior, distinct from the bounded logger input. |
+| UUID and structural ID admission | `lionagi/cli/orchestrate/flow.py` — `_reconstruct_spawned_nodes`; `lionagi/cli/orchestrate/flow.py` — `_execute_dag._checkpoint_record` | Canonical `protocols.to_uuid`/`ID.get_id` retain Observable normalization and lookup/type/error contracts. UUID(str(...)) and deprecated `ln.to_uuid` have different admission contracts. |
+| Full-width generated identifiers | `lionagi/cli/_runs.py` — `setup_agent_persist` | Generated run identities use uuid4 with full-width str(uuid4()) formatting. |
+| Paired monotonic durations | `lionagi/cli/orchestrate/fanout.py` — `_run_fanout_inner` | Decompose/fanout/synthesis/total timings share native starts and elapsed reads. Preserve progress/timing outputs and synchronous time access. |
+| Paired monotonic durations | `lionagi/cli/orchestrate/flow.py` — `_execute_dag`; `lionagi/cli/orchestrate/flow.py` — `_synthesize` | Execution/synthesis/planning/total phase durations share native monotonic starts and reads. This monotonic domain retains CLI progress and timing data. |
+| Paired monotonic durations | `lionagi/operations/flow.py` — `DependencyAwareExecutor._emit_abandoned_terminal`; `lionagi/operations/flow.py` — `DependencyAwareExecutor._execute_operation` | The paired clock feeds operation elapsed output and the synchronous abandoned-terminal fallback. Preserve the same monotonic domain for start/read/default and eligibility without active AnyIO context. |
+| Paired monotonic durations | `lionagi/operations/run/run.py` — `run` | Run-start and both terminal duration paths share monotonic scalars. The paired native clock domain retains backend/context availability and clock-patching/telemetry behavior. |
+| Paired monotonic durations | `lionagi/session/branch.py` — `Branch._observed_run`; `lionagi/session/branch.py` — `Branch.ReAct` | Observed-run/ReAct start/finally duration signals use the same monotonic domain, preserving emitted duration values and the existing clock boundary. |
+| Paired monotonic durations | `lionagi/studio/scheduler/engine.py` — `SchedulerEngine._sleep_between_ticks` | Both reads conserve one tick deadline across stray cancellation. Native monotonic deadline arithmetic and shared sleep remain separate operations. |
+| Paired monotonic durations | `lionagi/studio/services/sessions.py` — `stream_session_route.generate`; `lionagi/studio/services/sessions.py` — `stream_signals.generate` | Stream heartbeat initialization/activity/read/reset calls share one native monotonic domain. Preserve the five-second emission cadence across generator resumption and existing clock-patch behavior. |
+| Async loop clock | `lionagi/providers/google/gemini_code.py` — `stream_gemini_cli`; `lionagi/providers/openai/codex.py` — `stream_codex_cli` | Loop-clock calls delegate `current_time`; the backend clock behavior is unchanged. |
+| Eventually polling | `lionagi/testing/helpers.py` — `AsyncTestHelpers.assert_eventually` | `assert_eventually` uses the shared elapsed clock. |
+| Element timestamp validation | `lionagi/protocols/generic/element.py` — `Element._coerce_created_at` | Element preserves float pass-through (including precision/nonfinite), local-naive datetime.timestamp, ISO-first strings, numeric fallback including Decimal/bool, and exact Invalid* errors. The shared UTC helper has different admission/order/error contracts, so Element retains its own validator. |
+| Public timestamp coercion | `lionagi/ln/_utils.py` — `coerce_created_at` | Current helper rejects bool, preserves aware datetime identity, normalizes naive UTC/trailingZ/z/Python3.10 fractions and keeps numeric-before-ISO strings. These are the public admission and normalization contracts. |
+| Timestamp display adapters | `lionagi/cli/state.py` — `_derive_timestamps`; `lionagi/cli/state.py` — `_import_teams` | Timestamp adapters delegate with their own fallback/catch behavior. |
+| Scheduler log timestamps | `lionagi/studio/scheduler/engine.py` — `SchedulerEngine.recompute_next_fire` | Scheduler log conversions delegate; preserve current recompute error boundary. |
+| Duration adapters | `lionagi/cli/mirror.py` — `_parse_window`; `lionagi/cli/monitor.py` — `_since_timestamp` | Duration adapters use the shared parser with their own flags, returns and errors; stats has no independent parser. |
+| Durable JSON codecs | `lionagi/state/engine.py` — `_dumps_with_uuid` | Native json.dumps(default=`_json_serializer`,`allow_nan`=False) is the actual current durable codec. The codec rejects non-finite values and retains native output bytes. |
+| Durable JSON codecs | `lionagi/state/engine.py` — `make_engine`; `lionagi/state/engine.py` — `make_compatibility_engine` | All engine JSON binds retain `_dumps_with_uuid`: native spacing/ASCII/key coercion, UUID-only custom default and `allow_nan`=False durable refusal. `ln.json_dumps` supports a broader value domain and emits different bytes, so the engine retains this codec policy. |
+| Team inbox message shape | `lionagi/cli/orchestrate/_common.py` — `_post_results_to_team` | Inline result messages intentionally retain `from_op` even when None and omit kind. `_build_message` adds kind and omits falsy `from_op`. These inbox messages retain that persisted shape while their identifiers use the shared helper. |
+| Short-id validation | `lionagi/ln/_utils.py` — `short_id` | `short_id` accepts integer lengths 1..32 and rejects bool; its public export and errors are unchanged. |
+| Duration validation | `lionagi/ln/_utils.py` — `parse_duration` | `parse_duration` retains positive finite admission, caller flags, maximum, errors and its public export. |
+| time.time | `lionagi/agent/context_fold.py` — `ContextFold._clip_once`; `lionagi/agent/context_fold.py` — `ContextFold._fold_once` | Preserve the native floating-point epoch value and its precision at this consumer; a UTC datetime round-trip changes representation/admission and can round sub-microsecond values. |
+| uuid.uuid4 | `lionagi/agent/factory.py` — `_write_codex_mcp_secret_profile`; `lionagi/cli/_runs.py` — `setup_agent_persist` | Preserve the full UUID object or unsliced full-width spelling consumed here; `short_id` returns a bounded string and is not the same type/width contract. |
+| time.monotonic | `lionagi/cli/_code_identity.py` — `_Budget.__init__`; `lionagi/cli/_code_identity.py` — `_Budget.remaining` | Preserve the native monotonic clock domain, paired starts/deadlines and operation outside an active AnyIO context; replacing the clock also changes caller patching and scheduling assumptions. |
+| time.strftime | `lionagi/cli/dispatch.py` — `_format_time`; `lionagi/cli/monitor.py` — `_detail_session` | Preserve the explicit format, supplied `struct_time` and local/platform formatting semantics; `now_utc` is a wall-clock datetime constructor, not this formatter. |
+| time.localtime | `lionagi/cli/dispatch.py` — `_format_time`; `lionagi/cli/monitor.py` — `_detail_session` | Preserve host-local timezone/DST `struct_time` semantics; UTC datetime coercion changes the value and formatting contract. |
+| time.sleep | `lionagi/cli/kill.py` — `_terminate_pid`; `lionagi/cli/monitor.py` — `_watch_loop` | Preserve synchronous blocking delay and native value/error behavior; an async sleep returns an awaitable and requires a different caller contract. |
+| datetime.datetime.fromtimestamp | `lionagi/cli/machine_schedule.py` — `_resolved_next_fire`; `lionagi/cli/stats.py` — `_iso` | Preserve this epoch-only conversion, explicit timezone/local interpretation and native admission/errors rather than broadening through a multi-type coercer. |
+| datetime.datetime.fromisoformat | `lionagi/mcp/jobs.py` — `_unresolved_spawn_age`; `lionagi/protocols/generic/element.py` — `Element._coerce_created_at` | Preserve strict ISO parsing, native errors and timezone/naive interpretation at this consumer; general coercion also accepts numeric strings and other input types. |
+| uuid.UUID | `lionagi/protocols/generic/element.py` — `Element._ensure_uuid`; `lionagi/protocols/generic/element.py` — `_observable_uuid` | Preserve this UUID constructor form, argument/keyword admission and native errors; structural UUID helpers accept a different set of objects. |
+| uuid.uuid5 | `lionagi/state/claude_mirror.py` — `_det`; `lionagi/state/codex_mirror.py` — `_det` | Preserve deterministic namespace/name UUID identity; a random short identifier is a different value and representation. |
+| time.gmtime | `lionagi/state/session_naming.py` — `agent_role_label` | Preserve UTC `struct_time` conversion and fractional-second truncation used by this formatter. |
+| `time.perf_counter` | `lionagi/studio/services/admin.py` — `store_probe`; `lionagi/studio/services/admin.py` — `_capture_ps_snapshot` | Preserve the paired native high-resolution elapsed counter and synchronous availability; a backend loop clock changes the domain/context and instrumentation boundary. |
+| datetime.datetime.strptime | `lionagi/studio/services/schedules.py` — `_svc_validate_github_cursor` | Preserve the supplied format grammar, structuring/timezone interpretation and native refusal surface; general timestamp coercion is broader. |
