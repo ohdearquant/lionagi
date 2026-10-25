@@ -84,6 +84,9 @@ model whose config names none:
 - a model that names its own `max_tokens` keeps it;
 - any other provider is unchanged.
 
+The limit assumes a model that accepts at least 32,768 output tokens, as every current Claude
+model does; a model with a smaller cap names its own `max_tokens` in its config and keeps it.
+
 It applies on a new leg and on a resumed one, as the per-model settings it sits beside do.
 
 Why this number: the two cut-off responses of P1 took 39.7 and 40.5 seconds for 8,192 tokens,

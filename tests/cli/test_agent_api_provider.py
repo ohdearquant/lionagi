@@ -993,6 +993,43 @@ async def test_an_anthropic_leg_sends_the_api_output_limit(leg):
     assert [p["max_tokens"] for p in leg.payloads] == [agent_mod._API_MAX_OUTPUT_TOKENS] * 2
 
 
+@pytest.mark.asyncio
+async def test_the_failed_round_check_reads_the_last_round_and_the_answer_by_position(
+    leg, monkeypatch
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.protocols.messages import AssistantResponse
+
+    seen = []
+    check = agent_mod._failed_round
+
+    def spy(branch, before, rounds):
+        added = [
+            m
+            for m in branch.msgs.messages
+            if m.id not in before and isinstance(m, AssistantResponse)
+        ]
+        seen.append(([json.dumps(m.model_response) for m in added], list(rounds)))
+        return check(branch, before, rounds)
+
+    monkeypatch.setattr(agent_mod, "_failed_round", spy)
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("hello")]
+
+    await leg.run(_profile(api_tools="read"))
+
+    [(added, rounds)] = seen
+    # Each round's analysis, then the answer: [-2] is the round that ended the loop.
+    assert [getattr(r, "analysis", None) for r in rounds[:-1]] == [
+        "read the notes first",
+        "the file says hello",
+    ]
+    assert rounds[-1].answer == "hello"
+    # The pass's last two responses are that round's and the answer turn's.
+    assert len(added) == 3
+    assert "the file says hello" in added[-2]
+    assert '\\"answer\\": \\"hello\\"' in added[-1]
+
+
 def test_a_model_that_names_its_output_limit_keeps_it():
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
