@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -24,6 +25,7 @@ from ._types import (
     CompleteUsage,
     Quote,
     RouterErrorCode,
+    UnknownOutcome,
 )
 
 __all__ = (
@@ -38,6 +40,7 @@ __all__ = (
     "quote_ceiling",
     "request_ttls",
     "revision_by_id",
+    "usage_outcome",
 )
 
 _NANODOLLARS_PER_TOKEN_PER_USD_PER_MTOK = 1000
@@ -500,41 +503,75 @@ def price_usage(
 
     Returns None, leaving the cost unknown and the ceiling held, for an unpriced model, a
     missing or inconsistent count, a tier or region the revision does not price, or any
-    usage field it does not know.
+    usage field it does not know. ``usage_outcome`` says which.
     """
+    outcome = usage_outcome(revision, ttls, served_model, usage, request_id)
+    return outcome if isinstance(outcome, CompleteUsage) else None
+
+
+# A reason code is at most 64 characters (the ledger's grammar), so a usage field it names
+# is at most 46: 64 less the prefix and its underscore.
+_UNKNOWN_KEY = "unknown_usage_key"
+_NAMEABLE_KEY = re.compile(rf"[a-z0-9_]{{1,{63 - len(_UNKNOWN_KEY)}}}\Z")
+
+
+def usage_outcome(
+    revision: PriceRevision,
+    ttls: frozenset[str],
+    served_model: Any,
+    usage: Any,
+    request_id: str | None = None,
+) -> CompleteUsage | UnknownOutcome:
+    """Price usage as ``price_usage`` does, or name the first thing that left it unpriced.
+
+    The reason is ``unpriced_model``, ``unknown_usage_key_<field>`` (the alphabetically
+    first unknown field the reason can carry, else ``unknown_usage_key``),
+    ``unpriced_tier``, ``unpriced_speed``, ``unpriced_region`` or
+    ``unpriced_server_tool``. A report that cannot be read (a missing or inconsistent
+    count, a malformed field, a cost past the ledger's range) is ``usage_incomplete``.
+    """
+    incomplete = UnknownOutcome("usage_incomplete")
     if not isinstance(served_model, str) or not isinstance(usage, Mapping):
-        return None
+        return incomplete
     price = revision.models.get(served_model)
-    if price is None or not set(usage) <= _USAGE_KEYS:
-        return None
+    if price is None:
+        return UnknownOutcome("unpriced_model")
+    unknown = set(usage) - _USAGE_KEYS
+    if unknown:
+        named = sorted(k for k in unknown if isinstance(k, str) and _NAMEABLE_KEY.match(k))
+        return UnknownOutcome(f"{_UNKNOWN_KEY}_{named[0]}" if named else _UNKNOWN_KEY)
     fresh = usage.get("input_tokens")
     output = usage.get("output_tokens")
     if not (_is_count(fresh) and _is_count(output)):
-        return None
+        return incomplete
     read = usage.get("cache_read_input_tokens")
     if read is None:
         if ttls:
-            return None
+            return incomplete
         read = 0
     elif not _is_count(read):
-        return None
+        return incomplete
     writes = _cache_writes(usage, ttls)
     if writes is None:
-        return None
+        return incomplete
     w5, w1 = writes
     if usage.get("service_tier") not in (None, "standard"):
-        return None
+        return UnknownOutcome("unpriced_tier")
     if usage.get("speed") not in (None, "standard"):
-        return None
+        return UnknownOutcome("unpriced_speed")
     geo = usage.get("inference_geo")
-    if not (geo is None or isinstance(geo, str)) or geo not in revision.geo_multipliers:
-        return None
+    if not (geo is None or isinstance(geo, str)):
+        return incomplete
+    if geo not in revision.geo_multipliers:
+        return UnknownOutcome("unpriced_region")
     server_tools = usage.get("server_tool_use")
-    if server_tools is not None and (
-        not isinstance(server_tools, Mapping)
-        or any(not _is_count(v) or v for v in server_tools.values())
-    ):
-        return None
+    if server_tools is not None:
+        if not isinstance(server_tools, Mapping) or not all(
+            _is_count(v) for v in server_tools.values()
+        ):
+            return incomplete
+        if any(server_tools.values()):
+            return UnknownOutcome("unpriced_server_tool")
 
     tier = price.tier_for(fresh + read + w5 + w1)
     cost = math.ceil(
@@ -548,7 +585,7 @@ def price_usage(
         * revision.geo_multipliers[geo]
     )
     if cost > INT64_MAX:
-        return None
+        return incomplete
     return CompleteUsage(
         served_model=served_model,
         input_tokens=fresh,
