@@ -1,11 +1,11 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib
 import sys
 import types
 from typing import TypeVar
 
+from lionagi import ln
 from lionagi.ln import _utils as _ln_utils
 from lionagi.ln._utils import load_type_from_string
 
@@ -143,7 +143,7 @@ def get_class(class_name: str) -> type:
 
     for mod_name in _BUILTIN_MODULES:
         try:
-            module = importlib.import_module(mod_name)
+            module = ln.import_module(mod_name)
         except ImportError:
             continue
         cls = getattr(module, name, None)
