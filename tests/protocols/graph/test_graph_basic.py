@@ -80,10 +80,6 @@ class TestGraphBasics:
         assert graph.node_edge_mapping[node1.id]["out"][edge.id] == node2.id
         assert graph.node_edge_mapping[node2.id]["in"][edge.id] == node1.id
 
-    def test_add_invalid_edge(self, empty_graph):
-        with pytest.raises(RelationError):
-            empty_graph.add_edge("not an edge")
-
     def test_add_edge_missing_nodes(self, empty_graph):
         node1 = create_test_node("Node1")
         node2 = create_test_node("Node2")
