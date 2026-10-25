@@ -19,6 +19,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `LionTool` lives in `lionagi.protocols.action.lion_tool`; its old import remains an alias.
+
 - Packages built on top of the core move to `lionhub`, a second top-level package
   shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
   Each old import path keeps working until lionagi 2.0: it returns the same module
