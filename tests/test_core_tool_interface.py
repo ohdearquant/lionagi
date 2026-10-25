@@ -18,7 +18,7 @@ from lionagi.session.branch import Branch
 pytestmark = pytest.mark.unit
 
 
-def echo(value: str) -> str:
+def echo(value):
     return value
 
 
