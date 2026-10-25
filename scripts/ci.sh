@@ -54,7 +54,7 @@ lint-python() {
   # is silently left out of the other.
   local paths=("$@")
   if [ $# -eq 0 ]; then
-    paths=(lionagi/ apps/ tests/ marketplace/ scripts/)
+    paths=(lionagi/ lionhub/ apps/ tests/ marketplace/ scripts/)
   fi
   echo "==> ruff check"
   uv run ruff check "${paths[@]}"
@@ -125,7 +125,7 @@ test-python-cov() {
     --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
     -m "$markexpr" \
     --disable-warnings \
-    --cov=lionagi --cov-report=xml --cov-report=term \
+    --cov=lionagi --cov=lionhub --cov-report=xml --cov-report=term \
     -o junit_family=legacy --junitxml="$junit" \
     "${targets[@]}" || rc=$?
   _check_suite_coverage "$junit" "$markexpr" "${targets[@]}" || rc=1
@@ -426,7 +426,7 @@ lint-hygiene() {
   # which is exactly what makes the source trees safe to scan and what the
   # narrower scope was leaving unscanned.
   if uv run python "$PY_HYGIENE_SCRIPT" \
-    docs/ notebooks/ cookbooks/ examples/ lionagi/ tests/ scripts/ benchmarks/ marketplace/ lion1/ apps/; then
+    docs/ notebooks/ cookbooks/ examples/ lionagi/ lionhub/ tests/ scripts/ benchmarks/ marketplace/ lion1/ apps/; then
     :
   else
     scan_rc=$?

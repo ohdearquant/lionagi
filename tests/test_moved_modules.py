@@ -38,12 +38,20 @@ def _release(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.groups())
 
 
+def _inner_rows(row: _moved.Moved) -> list[_moved.Moved]:
+    """Rows whose new package sits inside ``row``'s new package."""
+    return [other for other in _moved.MOVED if other.new.startswith(row.new + ".")]
+
+
 def _module_pairs() -> list[tuple[str, str]]:
     pairs = []
     for row in _moved.MOVED:
         package = importlib.import_module(row.new)
         names = [row.new]
         names += [info.name for info in pkgutil.walk_packages(package.__path__, row.new + ".")]
+        # A package moved inside this one is paired under its own row, by the name it had.
+        inner = tuple(other.new for other in _inner_rows(row))
+        names = [n for n in names if not any(n == p or n.startswith(p + ".") for p in inner)]
         pairs += [(row.old + name[len(row.new) :], name) for name in sorted(names)]
     return pairs
 
@@ -244,6 +252,20 @@ def test_names_outside_the_table_are_left_to_the_normal_import_system():
     assert _moved.resolve(first.old + ".a.b") == first.new + ".a.b"
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module(first.old + ".no_such_module")
+
+
+def test_a_package_moved_inside_another_has_one_module_under_every_name():
+    # lionhub.orchestration holds lionhub.orchestration.engines, so the old orchestration
+    # prefix also names the engines ("lionagi.orchestration.engines"), a name that never
+    # existed. It imports as the same module object: left to the normal import system it
+    # would load a second copy of the engines from the aliased parent package's path.
+    nested = [(outer, inner) for outer in _moved.MOVED for inner in _inner_rows(outer)]
+    assert nested
+    for outer, inner in nested:
+        name = outer.old + inner.new[len(outer.new) :]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            assert importlib.import_module(name) is importlib.import_module(inner.new)
 
 
 @pytest.mark.parametrize(("old", "new"), PAIRS, ids=[old for old, _ in PAIRS])
