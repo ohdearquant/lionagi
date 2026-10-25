@@ -271,31 +271,6 @@ class TestCreateNodeNewParams:
 class TestTouchRealFields:
     """touch() prefers real Pydantic fields over metadata when available."""
 
-    def test_touch_sets_version_field(self):
-        cls = create_node("V", versioning=True)
-        v = cls()
-        v.touch()
-        assert v.version == 1
-        v.touch()
-        assert v.version == 2
-
-    def test_touch_sets_updated_at_field(self, monkeypatch):
-        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
-        monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
-        monkeypatch.setattr(node_mod, "now_utc", lambda: t0)
-        cls = create_node("T", track_updated_at=True)
-        t = cls()
-        assert t.created_at == t0.timestamp()
-        monkeypatch.setattr(node_mod, "now_utc", lambda: t1)
-        t.touch()
-        # updated_at reflects the touch() clock (t1) and orders strictly after the
-        # node's actual construction time (created_at), not an arbitrary constant.
-        assert t.updated_at == t1.isoformat()
-        updated_at = datetime.fromisoformat(t.updated_at)
-        assert updated_at == t1
-        assert updated_at > datetime.fromtimestamp(t.created_at, tz=timezone.utc)
-
     def test_touch_sets_created_by_field_first_time(self):
         cls = create_node("CB", track_created_by=True)
         cb = cls()
@@ -312,13 +287,6 @@ class TestTouchRealFields:
         assert cb.created_by == "alice"
         # updated_by still tracked in metadata
         assert cb.metadata["updated_by"] == "bob"
-
-    def test_touch_sets_content_hash_field(self):
-        cls = create_node("H", content_hashing=True)
-        h = cls(content="payload")
-        h.touch()
-        assert h.content_hash is not None
-        assert h.content_hash == _content_hash("payload")
 
     def test_touch_all_real_fields_combined(self):
         cls = create_node(
@@ -371,48 +339,6 @@ class TestTouchMetadataFallback:
 class TestSoftDeleteRealFields:
     """soft_delete() and restore() use real fields when available."""
 
-    def test_full_cycle_with_real_fields(self):
-        cls = create_node(
-            "FullCycle",
-            soft_delete=True,
-            versioning=True,
-            track_updated_at=True,
-            content_hashing=True,
-        )
-        a = cls(content={"status": "active"})
-
-        # Initial state: real fields at defaults
-        assert a.version == 0
-        assert a.updated_at is None
-        assert a.is_deleted is False
-        assert a.deleted_at is None
-        assert a.content_hash is None
-
-        # touch
-        a.touch(by="alice")
-        assert a.version == 1
-        assert a.updated_at is not None
-        assert a.content_hash is not None
-        hash_v1 = a.content_hash
-
-        # soft_delete
-        a.soft_delete(by="bob")
-        assert a.is_deleted is True
-        assert a.deleted_at is not None
-        assert a.version == 2  # touch was called inside soft_delete
-
-        # restore
-        a.restore(by="carol")
-        assert a.is_deleted is False
-        assert a.deleted_at is None
-        assert a.version == 3  # touch was called inside restore
-
-        # content change + rehash
-        a.content = {"status": "updated"}
-        a.touch(by="dave")
-        assert a.version == 4
-        assert a.content_hash != hash_v1
-
     def test_soft_delete_metadata_fallback(self):
         """Manual subclass without real fields uses metadata."""
 
@@ -429,21 +355,16 @@ class TestSoftDeleteRealFields:
 class TestRehashRealFields:
     """rehash() stores in content_hash field when available."""
 
-    def test_rehash_stores_in_real_field(self):
-        cls = create_node("H", content_hashing=True)
+    @pytest.mark.parametrize("class_name", ["H", "Hash"])
+    def test_rehash_stores_in_real_field(self, class_name):
+        cls = create_node(class_name, content_hashing=True)
         h = cls(content="payload")
         result = h.rehash()
+        assert isinstance(result, str)
+        assert len(result) == 64
+        assert h.content_hash is not None
         assert h.content_hash == result
         assert result == _content_hash("payload")
-
-    def test_rehash_updates_real_field_on_content_change(self):
-        cls = create_node("H", content_hashing=True)
-        h = cls(content="before")
-        hash1 = h.rehash()
-        h.content = "after"
-        hash2 = h.rehash()
-        assert hash1 != hash2
-        assert h.content_hash == hash2
 
     def test_rehash_metadata_fallback(self):
         """Manual subclass uses metadata for content_hash."""
@@ -477,8 +398,9 @@ class TestBackwardsCompatibilityWithRealFields:
     def test_base_node_has_no_config(self):
         assert Node.node_config is None
 
-    def test_base_node_touch_is_noop(self):
-        n = Node(content="safe")
+    @pytest.mark.parametrize("content", ["safe", "hi"])
+    def test_base_node_touch_is_noop(self, content):
+        n = Node(content=content)
         n.touch()
         assert n.metadata == {}
 

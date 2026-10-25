@@ -299,21 +299,6 @@ class TestCreateNodeExtraFields:
 class TestCreateNodeConfigPropagation:
     """create_node: config flags propagate to lifecycle methods."""
 
-    def test_touch_increments_version(self):
-        cls = create_node("Versioned", versioning=True)
-        v = cls(content="data")
-        v.touch()
-        assert v.version == 1
-        v.touch()
-        assert v.version == 2
-
-    def test_content_hashing_on_touch(self):
-        cls = create_node("Hashed", content_hashing=True)
-        h = cls(content="payload")
-        h.touch()
-        assert h.content_hash is not None
-        assert len(h.content_hash) == 64
-
     def test_full_config(self):
         cls = create_node(
             "FullAudit",
@@ -336,13 +321,6 @@ class TestCreateNodeConfigPropagation:
 class TestNodeTouch:
     """Node.touch() behaviour with various configs."""
 
-    def test_touch_noop_on_base_node(self):
-        """Base Node has node_config=None; touch is a no-op."""
-        n = Node(content="hi")
-        n.touch()
-        assert "version" not in n.metadata
-        assert "updated_at" not in n.metadata
-
     def test_touch_noop_when_config_none(self):
         """Subclass without config should also be a no-op."""
 
@@ -353,13 +331,20 @@ class TestNodeTouch:
         b.touch()
         assert "version" not in b.metadata
 
-    def test_touch_track_updated_at(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("class_name", "node_kwargs"),
+        [
+            pytest.param("T", {}, id="default-content"),
+            pytest.param("Tracked", {"content": "x"}, id="explicit-content"),
+        ],
+    )
+    def test_touch_track_updated_at(self, monkeypatch, class_name, node_kwargs):
         t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
         monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
         monkeypatch.setattr(node_mod, "now_utc", lambda: t0)
-        cls = create_node("Tracked", track_updated_at=True)
-        t = cls(content="x")
+        cls = create_node(class_name, track_updated_at=True)
+        t = cls(**node_kwargs)
         assert t.created_at == t0.timestamp()
         monkeypatch.setattr(node_mod, "now_utc", lambda: t1)
         t.touch()
@@ -370,25 +355,35 @@ class TestNodeTouch:
         assert updated_at == t1
         assert updated_at > datetime.fromtimestamp(t.created_at, tz=timezone.utc)
 
-    def test_touch_versioning_starts_at_one(self):
-        cls = create_node("V", versioning=True)
-        v = cls()
-        v.touch()
-        assert v.version == 1
-
-    def test_touch_versioning_increments(self):
-        cls = create_node("V", versioning=True)
-        v = cls()
+    @pytest.mark.parametrize(
+        ("class_name", "node_kwargs"),
+        [
+            pytest.param("V", {}, id="default-content"),
+            pytest.param("Versioned", {"content": "data"}, id="explicit-content"),
+        ],
+    )
+    def test_touch_versioning_increments(self, class_name, node_kwargs):
+        cls = create_node(class_name, versioning=True)
+        v = cls(**node_kwargs)
         for expected in range(1, 6):
             v.touch()
             assert v.version == expected
 
-    def test_touch_content_hashing_calls_rehash(self):
-        cls = create_node("H", content_hashing=True)
-        h = cls(content="data")
+    @pytest.mark.parametrize(
+        ("class_name", "content"),
+        [
+            pytest.param("H", "data", id="data"),
+            pytest.param("H", "payload", id="payload"),
+            pytest.param("Hashed", "payload", id="factory-payload"),
+        ],
+    )
+    def test_touch_content_hashing_calls_rehash(self, class_name, content):
+        cls = create_node(class_name, content_hashing=True)
+        h = cls(content=content)
         h.touch()
         assert h.content_hash is not None
-        expected_hash = _content_hash("data")
+        assert len(h.content_hash) == 64
+        expected_hash = _content_hash(content)
         assert h.content_hash == expected_hash
 
     def test_touch_by_param_sets_updated_by(self):

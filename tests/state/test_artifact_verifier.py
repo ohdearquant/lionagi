@@ -26,14 +26,6 @@ class TestSafeJoin:
         result = _safe_join(str(tmp_path), "report.md")
         assert result == os.path.realpath(os.path.join(str(tmp_path), "report.md"))
 
-    def test_subdir_relative(self, tmp_path):
-        result = _safe_join(str(tmp_path), "subdir/file.txt")
-        assert result.startswith(os.path.realpath(str(tmp_path)))
-
-    def test_dotdot_rejected(self, tmp_path):
-        with pytest.raises(ArtifactPathError, match="segments not allowed"):
-            _safe_join(str(tmp_path), "../escape.txt")
-
     def test_glob_question_rejected(self, tmp_path):
         with pytest.raises(ArtifactPathError, match="glob characters"):
             _safe_join(str(tmp_path), "file?.md")
@@ -62,17 +54,6 @@ class TestValidateArtifactContract:
         with pytest.raises(ArtifactPathError, match="must be a dict"):
             validate_artifact_contract("invalid")  # type: ignore
 
-    def test_duplicate_id(self):
-        with pytest.raises(ArtifactPathError, match="duplicate id"):
-            validate_artifact_contract(
-                {
-                    "expected": [
-                        {"id": "report", "path": "report.md"},
-                        {"id": "report", "path": "other.md"},
-                    ]
-                }
-            )
-
     def test_invalid_id_with_space(self):
         with pytest.raises(ArtifactPathError, match="alphanumeric"):
             validate_artifact_contract({"expected": [{"id": "bad id", "path": "x.md"}]})
@@ -91,16 +72,6 @@ class TestValidateArtifactContract:
 
 
 class TestResolveArtifactContract:
-    def test_playbook_overrides_agent_same_id(self):
-        result = resolve_artifact_contract(
-            playbook_artifacts={"expected": [{"id": "report", "path": "playbook_report.md"}]},
-            agent_defaults={"expected": [{"id": "report", "path": "agent_report.md"}]},
-        )
-        assert result is not None
-        assert len(result["expected"]) == 1
-        assert result["expected"][0]["path"] == "playbook_report.md"
-        assert result["expected"][0]["source"] == "playbook"
-
     def test_required_defaults_to_true(self):
         result = resolve_artifact_contract(
             playbook_artifacts=None,
@@ -151,20 +122,6 @@ class TestVerifyArtifactContract:
         assert result["status"] == "failed"
         assert len(result["missing_required"]) == 1
         assert len(result["missing_optional"]) == 1
-
-    def test_all_present_passes(self, tmp_path):
-        (tmp_path / "a.md").write_text("a")
-        (tmp_path / "b.md").write_text("b")
-        contract = {
-            "expected": [
-                {"id": "a", "path": "a.md"},
-                {"id": "b", "path": "b.md"},
-            ]
-        }
-        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
-        assert result is not None
-        assert result["status"] == "passed"
-        assert len(result["produced"]) == 2
 
 
 # missing_artifact_summary / evidence
@@ -227,14 +184,18 @@ def test_resolve_contract_merge_union():
     assert ids == {"brief", "log"}
 
 
-def test_resolve_contract_merge_override():
+@pytest.mark.parametrize(
+    ("playbook_path", "agent_path"),
+    [("playbook_report.md", "agent_report.md"), ("playbook.md", "agent.md")],
+)
+def test_resolve_contract_merge_override(playbook_path, agent_path):
     result = resolve_artifact_contract(
-        playbook_artifacts={"expected": [{"id": "report", "path": "playbook.md"}]},
-        agent_defaults={"expected": [{"id": "report", "path": "agent.md"}]},
+        playbook_artifacts={"expected": [{"id": "report", "path": playbook_path}]},
+        agent_defaults={"expected": [{"id": "report", "path": agent_path}]},
     )
     assert result is not None
     assert len(result["expected"]) == 1
-    assert result["expected"][0]["path"] == "playbook.md"
+    assert result["expected"][0]["path"] == playbook_path
     assert result["expected"][0]["source"] == "playbook"
 
 
@@ -242,13 +203,16 @@ def test_validate_contract_valid():
     validate_artifact_contract({"expected": [{"id": "report", "path": "report.md"}]})
 
 
-def test_validate_contract_duplicate_id():
+@pytest.mark.parametrize(
+    ("first_path", "second_path"), [("report.md", "other.md"), ("a.md", "b.md")]
+)
+def test_validate_contract_duplicate_id(first_path, second_path):
     with pytest.raises(ArtifactPathError, match="duplicate id"):
         validate_artifact_contract(
             {
                 "expected": [
-                    {"id": "report", "path": "a.md"},
-                    {"id": "report", "path": "b.md"},
+                    {"id": "report", "path": first_path},
+                    {"id": "report", "path": second_path},
                 ]
             }
         )
@@ -286,9 +250,12 @@ def test_verify_no_artifacts_dir(tmp_path):
     assert len(result["missing_required"]) == 1
 
 
-def test_verify_all_present(tmp_path):
-    (tmp_path / "a.md").write_text("content a")
-    (tmp_path / "b.md").write_text("content b")
+@pytest.mark.parametrize(
+    ("first_content", "second_content"), [("a", "b"), ("content a", "content b")]
+)
+def test_verify_all_present(tmp_path, first_content, second_content):
+    (tmp_path / "a.md").write_text(first_content)
+    (tmp_path / "b.md").write_text(second_content)
     contract = {"expected": [{"id": "a", "path": "a.md"}, {"id": "b", "path": "b.md"}]}
     result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
     assert result is not None
@@ -357,10 +324,14 @@ def test_verify_mixed_required_optional_missing_dir(tmp_path):
     assert len(result["missing_optional"]) == 1
 
 
-def test_safe_join_normal(tmp_path):
-    result = _safe_join(str(tmp_path), "subdir/report.md")
+@pytest.mark.parametrize(
+    ("relative_path", "filename"),
+    [("subdir/file.txt", "file.txt"), ("subdir/report.md", "report.md")],
+)
+def test_safe_join_normal(tmp_path, relative_path, filename):
+    result = _safe_join(str(tmp_path), relative_path)
     assert result.startswith(os.path.realpath(str(tmp_path)))
-    assert result.endswith("report.md")
+    assert result.endswith(filename)
 
 
 def test_safe_join_absolute_rejects(tmp_path):
@@ -368,9 +339,10 @@ def test_safe_join_absolute_rejects(tmp_path):
         _safe_join(str(tmp_path), "/etc/passwd")
 
 
-def test_safe_join_dotdot_rejects(tmp_path):
+@pytest.mark.parametrize("relative_path", ["../escape.txt", "../escape.md"])
+def test_safe_join_dotdot_rejects(tmp_path, relative_path):
     with pytest.raises(ArtifactPathError, match="segments not allowed"):
-        _safe_join(str(tmp_path), "../escape.md")
+        _safe_join(str(tmp_path), relative_path)
 
 
 def test_safe_join_glob_rejects(tmp_path):
