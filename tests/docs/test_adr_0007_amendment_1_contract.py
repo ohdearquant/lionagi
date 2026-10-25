@@ -566,11 +566,11 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
         'if "current_progression" not in branch.metadata:',
         'branch.metadata["current_progression"] = cp',
     )
-    _in_span(_CONTEXT, 373, 387, 'if action == "evict":', "cp.exclude(uids)")
+    _in_span(_CONTEXT, 390, 404, 'if action == "evict":', "cp.exclude(uids)")
     _in_span(
         _CONTEXT,
-        389,
         406,
+        423,
         'if action == "evict_action_results":',
         "cp.exclude(to_evict)",
     )
@@ -584,11 +584,11 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
 
 
 def test_compaction_path_replaces_a_span_with_one_summary() -> None:
-    _in_span(_CONTEXT, 458, 545, 'if action == "compact":')
+    _in_span(_CONTEXT, 484, 571, 'if action == "compact":')
     _in_span(
         _CONTEXT,
-        527,
-        538,
+        553,
+        564,
         "[CONTEXT COMPACTION]",
         "cp.insert(summary_at, note.id)",
         "cp.exclude(collapse)",
