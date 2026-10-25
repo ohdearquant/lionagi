@@ -66,8 +66,14 @@ class Element(BaseModel):
             return {}
         if not isinstance(val, dict):
             val = to_dict(val, recursive=True, suppress=True)
-        if "lion_class" in val and _current_path(val["lion_class"]) != cls.class_name(full=True):
-            raise ValueError("Metadata class mismatch.")
+        if "lion_class" in val:
+            current = _current_path(val["lion_class"])
+            if current != cls.class_name(full=True):
+                raise ValueError("Metadata class mismatch.")
+            if current != val["lion_class"]:
+                # Metadata written before a move names the old path. An element nested in
+                # another is saved with this metadata, so it is saved under the current path.
+                val = {**val, "lion_class": current}
         if not isinstance(val, dict):
             raise ValueError("Invalid metadata.")
         return val

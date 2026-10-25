@@ -4,9 +4,10 @@ The table is ``lionagi._moved.MOVED``. For every module under each moved package
 tests check that the old name imports, that it is the same module object as the new
 name, that it warns once and points the warning at the importing code, that the
 removal release is still ahead of this version, that data naming a moved Element
-class by either path loads in a fresh process, that the ``lionhub.`` class-path prefix
-reaches only modules that had an old name, that no source file in lionagi or lionhub
-imports an old name, and that the CHANGELOG names every move.
+class by either path loads in a fresh process and saves under the new path, that the
+class-path allow-list adds only the moved packages' new prefixes to ``lionagi.``, that no
+source file in lionagi or lionhub imports an old name, and that the CHANGELOG names every
+move.
 """
 
 from __future__ import annotations
@@ -141,7 +142,10 @@ ELEMENT_CLASSES = _moved_element_classes()
 
 def _work_form(cls: type) -> object:
     field_spec = importlib.import_module(cls.__module__).FieldSpec
-    return cls(title="intake", fields={"amount": field_spec(name="amount", type="int")})
+    # The field is given in its saved form, as a form loaded from storage holds it, so the
+    # nested element's metadata names its class too.
+    field = field_spec(name="amount", type="int").to_dict()
+    return cls(title="intake", fields={"amount": field})
 
 
 # One instance of every Element subclass a moved module defines. Element data names its
@@ -193,6 +197,14 @@ def test_every_moved_element_class_has_a_sample():
     assert {f"{cls.__module__}.{cls.__qualname__}" for _, cls in ELEMENT_CLASSES} == set(SAMPLES)
 
 
+def test_the_form_sample_nests_an_element_that_names_its_class():
+    # The test below rewrites every class path in the data, the nested one included, and
+    # expects each to be saved under the new path again.
+    cls = next(cls for _, cls in ELEMENT_CLASSES if cls.__qualname__ == "WorkForm")
+    saved = json.loads(SAMPLES[f"{cls.__module__}.WorkForm"](cls).to_json())
+    assert saved["fields"]["amount"]["metadata"]["lion_class"] == f"{cls.__module__}.FieldSpec"
+
+
 @pytest.mark.parametrize(
     ("old", "cls"), ELEMENT_CLASSES, ids=[cls.__qualname__ for _, cls in ELEMENT_CLASSES]
 )
@@ -217,12 +229,22 @@ def test_moved_element_data_loads_in_a_fresh_process_under_either_path(old, cls)
     assert json.loads(result["json"]) == expected
 
 
-def test_a_path_outside_the_allowed_prefixes_is_refused_in_a_fresh_process():
+@pytest.mark.parametrize(
+    "module",
+    [
+        # Names that share letters with an allowed prefix but not the prefix itself.
+        "lionhubx.orchestration.work.form",
+        "lionhub_x.orchestration.work.form",
+        # lionhub code outside the moved packages: the top-level package and a sibling.
+        "lionhub",
+        "lionhub.canon.work.form",
+    ],
+)
+def test_a_path_outside_the_allowed_prefixes_is_refused_in_a_fresh_process(module):
     _, cls = ELEMENT_CLASSES[0]
     new = cls.__module__
     text = SAMPLES[f"{new}.{cls.__qualname__}"](cls).to_json()
-    # "lionhubx." shares the "lionhub" letters but not the prefix "lionhub.".
-    outside = text.replace(f'"{new}.', f'"lionhubx.{new.partition(".")[2]}.')
+    outside = text.replace(f'"{new}.', f'"{module}.')
     assert outside != text
 
     result = _load_in_fresh_process(outside, "from_dict")
@@ -252,49 +274,18 @@ def test_a_malformed_lionhub_path_is_refused_before_anything_is_imported(path):
     assert result["lionhub_after"] == []
 
 
-def _old_name(module: str) -> str | None:
-    """The lionagi name a lionhub module had before it moved, or None if it had none."""
-    rows = [r for r in _moved.MOVED if module == r.new or module.startswith(r.new + ".")]
-    if not rows:
-        return None
-    new = max((r.new for r in rows), key=len)
-    old = next(r.old for r in rows if r.new == new)
-    return old + module[len(new) :]
+def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
+    # Data may import a module under a moved package's new prefix (ADR-0001 Amendment 2)
+    # because the finder serves every module under that prefix by its old lionagi name,
+    # which "lionagi." already admits; the old-name tests above import each one that way.
+    # Any other prefix would reach code no lionagi name reaches and needs its own decision.
+    from lionagi.ln._utils import _DEFAULT_ALLOWED_PREFIXES
 
-
-def _lionhub_modules() -> list[str]:
-    src = ROOT / "lionhub" / "src"
-    names = []
-    for path in sorted((src / "lionhub").rglob("*.py")):
-        parts = path.relative_to(src).with_suffix("").parts
-        names.append(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
-    return names
-
-
-def _holds_only_a_docstring_and_all(source: str) -> bool:
-    for stmt in ast.parse(source).body:
-        if isinstance(stmt, ast.Expr) and isinstance(getattr(stmt.value, "value", None), str):
-            continue
-        if isinstance(stmt, ast.Assign) and [getattr(t, "id", None) for t in stmt.targets] == [
-            "__all__"
-        ]:
-            continue
-        return False
-    return True
-
-
-def test_the_lionhub_prefix_reaches_only_modules_the_lionagi_prefix_already_reached():
-    # The class-path allow-list admits "lionhub." (ADR-0001 Amendment 2) because every
-    # lionhub module except the top-level package was importable from data by its old
-    # lionagi name, and the top-level package holds nothing that runs. A lionhub module
-    # with no old name ends that argument, and the entry has to be decided again.
-    modules = _lionhub_modules()
-    assert _old_name("lionhub.orchestration.work.form") == "lionagi.work.form"
-    assert "lionhub.orchestration.work.form" in modules
-    assert [m for m in modules if _old_name(m) is None] == ["lionhub"]
-    package = ROOT / "lionhub" / "src" / "lionhub" / "__init__.py"
-    assert _holds_only_a_docstring_and_all(package.read_text(encoding="utf-8"))
-    assert not _holds_only_a_docstring_and_all("__all__ = ()\nimport os\n")
+    added = _DEFAULT_ALLOWED_PREFIXES - {"lionagi."}
+    moved = {f"{row.new}." for row in _moved.MOVED}
+    assert added
+    assert added <= moved
+    assert all(any(prefix.startswith(a) for a in added) for prefix in moved)
 
 
 def test_reload_through_the_old_name_keeps_the_real_spec():

@@ -46,30 +46,35 @@ allowed module runs its top-level code, and the imports that code makes are not 
 Delta 1's registration half, third-party models round-tripping without being admitted first,
 stays open.
 
-## Amendment 2 (2026-10-25) — `lionhub.` joins the default allow-list
+## Amendment 2 (2026-10-25) — the new prefixes of moved packages join the default allow-list
 
 Classes whose modules move from `lionagi` into `lionhub` (ADR-0136) are serialized under their new
-module path, and `lionhub` ships in the same distribution as `lionagi`. The default allow-list of
-Amendment 1 is therefore `lionagi.` and `lionhub.`, plus every prefix added with
-`register_type_prefix()`. Without `lionhub.`, a payload written after a move names a path that a
+module path. The default allow-list of Amendment 1 is therefore `lionagi.`, the new prefix of every
+row in `lionagi._moved.MOVED`, plus every prefix added with `register_type_prefix()`. A row whose new
+package sits inside another row's adds no prefix of its own, so the list today adds
+`lionhub.orchestration.`. Without these prefixes, a payload written after a move names a path that a
 process which has not yet imported the class's module refuses to load.
 
 A payload written before a move names the old `lionagi` path. That path still imports until 2.0,
 because the old module name returns the same module object as the new one (ADR-0136), so step 3
 loads the class. The metadata check that rejects a `lion_class` naming another class reads such an
 old path as the class's path at its new module, so `model_validate` accepts metadata written before
-the move.
+the move. The check returns the metadata naming the new path, so an element nested inside another
+is saved under the new path as well.
 
 Step 5 is unchanged: a bare short name matches only a class defined under `lionagi.` in
 `_BUILTIN_MODULES`, or a registered class.
 
-Limits: deserialization may now import any module in `lionhub`, code from the same distribution and
-so trusted like `lionagi`. Every `lionhub` module except the top-level package, which holds only a
-docstring and `__all__`, is a moved module that the `lionagi.` prefix already reached through its
-old name, so the added prefix makes no new import-time code reachable.
-`tests/test_moved_modules.py` checks that statement against the tree and fails when `lionhub` gains
-a module with no old name. That change, like a separate `lionhub` distribution, reopens this
-decision.
+Limits: the added prefixes come from the table, so they make no new import-time code reachable.
+The finder serves every module under a row's new prefix by its old name under `lionagi.`, which
+Amendment 1 already admits, and importing a module by its old name imports it by its new name, with
+the new name's parent packages, the top-level `lionhub` package included. A module added under a
+moved prefix is therefore admitted the way a new `lionagi` module is. A class path in the top-level
+`lionhub` package, a `lionhub` package outside the table, and a name that only shares letters with
+a prefix, such as `lionhubx.`, stay refused, and admitting any of them is a new decision.
+`tests/test_moved_modules.py` checks that every added prefix is a row's new prefix, that every row's
+new prefix falls under an added one, and that each of those names is refused. A separate `lionhub`
+distribution reopens this decision.
 
 ## Context
 
