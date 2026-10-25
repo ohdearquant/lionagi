@@ -12,7 +12,9 @@ and pickles that name the old path still load. Each old module emits one
 
 There are no forwarding files at the old locations, so listing ``lionagi.__path__`` with
 ``pkgutil`` does not show a moved package; list the new package instead. Removing a move
-is deleting its row.
+is deleting its row and updating the docs that still name its old path; its CHANGELOG
+lines stay, as the history of the release that made the move. lionagi 2.0 removes every
+row, this module and the tests that enumerate the table.
 """
 
 from __future__ import annotations
