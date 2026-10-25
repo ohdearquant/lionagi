@@ -168,7 +168,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "No flow- or" in flat
     assert "invocation-terminal session Signal exists today" in flat
     assert "the bus carries `RunEnd` per operation" in flat
-    assert "lionagi/state/lifecycle/callbacks.py:84" in flat
+    assert "lionagi/state/lifecycle/callbacks.py:85" in flat
     assert "lionhub/src/lionhub/orchestration/engines/flow_signals.py:148-154" in flat
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat

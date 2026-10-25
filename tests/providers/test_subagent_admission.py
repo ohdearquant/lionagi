@@ -854,7 +854,7 @@ async def test_each_wait_gives_a_clearing_holder_met_after_it_its_own_quick_rere
         await anyio.sleep(0)
 
     monkeypatch.setattr(admission, "_read_pool", _counted)
-    monkeypatch.setattr(admission, "anyio", SimpleNamespace(sleep=_sleep))
+    monkeypatch.setattr(admission, "_sleep", _sleep)
     try:
         lease = await _admit(env)
     finally:
@@ -896,7 +896,7 @@ async def test_a_wait_spent_on_a_clearing_holder_ends_without_quick_rereads_past
         await anyio.sleep(0)
 
     monkeypatch.setattr(admission, "_read_pool", _counted)
-    monkeypatch.setattr(admission, "anyio", SimpleNamespace(sleep=_sleep))
+    monkeypatch.setattr(admission, "_sleep", _sleep)
     monkeypatch.setattr(admission, "random", SimpleNamespace(uniform=lambda low, high: low))
     monkeypatch.setattr(
         admission,

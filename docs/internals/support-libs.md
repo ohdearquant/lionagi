@@ -62,7 +62,8 @@ scanning the filesystem.
 `get_class` resolves a name in this order: `LION_CLASS_REGISTRY`, a dotted path
 whose module is already imported (read from the module's namespace, so a
 module-level `__getattr__` is not called), a dotted path under an allowed
-module prefix (`lionagi.`, `lionhub.` and any prefix added with
+module prefix (`lionagi.`, the new prefix of each package moved out of
+lionagi such as `lionhub.orchestration.`, and any prefix added with
 `lionagi.ln.register_type_prefix`, loaded through `load_type_from_string`),
 then the short-name lookup above, then a `LION_CLASS_REGISTRY` key ending in
 the short name. Of dotted names, only one under an allowed prefix reaches the

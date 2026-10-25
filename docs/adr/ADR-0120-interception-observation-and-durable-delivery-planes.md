@@ -686,7 +686,7 @@ invocation-terminal session Signal exists today: the bus carries `RunEnd` per op
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
 emissions emits no terminal (`lionhub/src/lionhub/orchestration/engines/flow_signals.py:148-154`), and the invocation
 terminal that does exist is a process-local registry envelope rather than a session Signal
-(`lionagi/state/lifecycle/callbacks.py:84`, `:170`), so the owner-scoped finalizer that records
+(`lionagi/state/lifecycle/callbacks.py:85`, `:171`), so the owner-scoped finalizer that records
 closure is a prerequisite delta below. At most `max_wakes_per_attempt - 1` interim batches and one closing
 batch are minted; closure wakes only for remaining admitted facts. Closure drains admitted
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
@@ -818,7 +818,7 @@ everything since; facts past the range belong to the next wake.
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:464`, `:531-539`; `lionagi/state/db.py:5386-5388`, `:5518`;
-  `lionagi/studio/scheduler/engine.py:2056-2057`; ADR-0070, Accepted); a direct `update_schedule` or
+  `lionagi/studio/scheduler/engine.py:2057-2058`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with

@@ -163,6 +163,7 @@ line-length = 100
 src = [".", "lionhub/src"]
 
 [tool.ruff.lint]
+extend-select = ["TID251"]
 select = ["E", "F", "W", "B", "I", "UP", "N", "S", "A", "RUF013"]
 ignore = [
     "N805",   # pydantic validator first-arg naming
@@ -182,6 +183,8 @@ ignore = [
 extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
+# Enforce shared helpers only in the migrated import and concurrency modules.
+"!lionagi/{agent/settings,_class_registry,cli/monitor,cli/orchestrate/_notify,providers/_subagent_admission,state/lifecycle/callbacks,studio/scheduler/engine,studio/services/admin}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)
@@ -203,6 +206,12 @@ extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
     "S108",   # /tmp in dev server
     "B007",   # unused loop vars
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.import_module" = {msg = "Use lionagi.ln.import_module in this migrated module."}
+"asyncio.sleep" = {msg = "Use lionagi.ln.concurrency.sleep in this migrated module."}
+"anyio.sleep" = {msg = "Use lionagi.ln.concurrency.sleep in this migrated module."}
+"anyio.to_thread.run_sync" = {msg = "Use lionagi.ln.concurrency.run_sync in this migrated module."}
 
 [tool.pytest.ini_options]
 # --max-worker-restart belongs here rather than only in scripts/ci.sh, so that it
@@ -266,6 +275,7 @@ build-backend = "hatchling.build"
 packages = ["lionagi", "lionhub/src/lionhub"]
 artifacts = [
     "lionagi/py.typed",
+    "lionhub/src/lionhub/py.typed",
     "lionagi/casts/packs/*.yaml",
     "lionagi/studio/builtin_playbooks/*.playbook.yaml",
 ]

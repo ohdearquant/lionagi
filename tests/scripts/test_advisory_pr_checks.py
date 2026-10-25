@@ -1151,6 +1151,7 @@ CI_CHANGES_FILTERS = {
     "studio": [
         "apps/studio/**",
         "lionagi/**",
+        "lionhub/**",
         "pyproject.toml",
         "README.md",
         "LICENSE",
@@ -1160,7 +1161,13 @@ CI_CHANGES_FILTERS = {
         ".github/workflows/ci.yml",
     ],
     "adr": ["docs/adr/**", "lionagi/state/lifecycle/**"],
-    "imports": ["lionagi/**", "pyproject.toml", "uv.lock", ".github/workflows/ci.yml"],
+    "imports": [
+        "lionagi/**",
+        "lionhub/**",
+        "pyproject.toml",
+        "uv.lock",
+        ".github/workflows/ci.yml",
+    ],
     "lionrs": ["lionrs/**", ".github/workflows/ci.yml"],
     "lion1": ["lion1/**", ".github/workflows/ci.yml"],
 }

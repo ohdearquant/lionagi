@@ -1021,13 +1021,12 @@ async def _gather_table_rows(
 
 
 async def _subagent_status() -> dict[str, Any]:
-    from anyio import to_thread
-
+    from lionagi.ln.concurrency import run_sync as _run_sync
     from lionagi.providers._subagent_admission import subagent_admission_status
 
     try:
         # Off the event loop: the read waits on each pool's admission lock.
-        return await to_thread.run_sync(subagent_admission_status)
+        return await _run_sync(subagent_admission_status)
     except OSError as exc:
         return {"error": type(exc).__name__}
 
