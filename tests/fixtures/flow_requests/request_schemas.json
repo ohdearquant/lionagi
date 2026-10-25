@@ -1,0 +1,107 @@
+{
+  "EscalationRequest": {
+    "additionalProperties": false,
+    "description": "Hand off to a human or higher authority, or ask for help while continuing.\n``urgency`` is authoritative; ``blocking`` is a deprecated read-only alias for ``urgency == \"blocked\"``.",
+    "properties": {
+      "context": {
+        "additionalProperties": true,
+        "description": "Structured context the recipient needs to decide (relevant state, options).",
+        "title": "Context",
+        "type": "object"
+      },
+      "from_role": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The role raising the escalation.",
+        "title": "From Role"
+      },
+      "reason": {
+        "description": "Why escalation is needed \u2014 the blocker, uncertainty, or decision beyond your authority.",
+        "title": "Reason",
+        "type": "string"
+      },
+      "urgency": {
+        "default": "blocked",
+        "description": "'fyi': soft \u2014 you are continuing, this is informational (a help signal). 'blocked': hard \u2014 you cannot proceed until this is resolved (the default, matching the historical 'blocking=True' behavior).",
+        "enum": [
+          "fyi",
+          "blocked"
+        ],
+        "title": "Urgency",
+        "type": "string"
+      }
+    },
+    "required": [
+      "reason"
+    ],
+    "title": "EscalationRequest",
+    "type": "object"
+  },
+  "SpawnRequest": {
+    "additionalProperties": false,
+    "description": "Request to add a new operation to the running workflow.",
+    "properties": {
+      "assignee": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Role to execute it (researcher, implementer, critic, ...). Omit to reuse the emitter's own role/branch.",
+        "title": "Assignee"
+      },
+      "independent": {
+        "default": false,
+        "description": "If true the new op starts immediately with no dependency on you. If false (default) it runs after you and inherits your output as context.",
+        "title": "Independent",
+        "type": "boolean"
+      },
+      "instruction": {
+        "description": "The new unit of work, stated as a concrete, self-contained objective.",
+        "title": "Instruction",
+        "type": "string"
+      },
+      "operation": {
+        "default": "operate",
+        "description": "lionagi operation to run: operate | chat | communicate | ReAct. Default operate.",
+        "enum": [
+          "operate",
+          "chat",
+          "communicate",
+          "ReAct"
+        ],
+        "title": "Operation",
+        "type": "string"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Why this work is needed now and why it fell outside the original plan.",
+        "title": "Reason"
+      }
+    },
+    "required": [
+      "instruction"
+    ],
+    "title": "SpawnRequest",
+    "type": "object"
+  }
+}

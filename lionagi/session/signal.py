@@ -277,7 +277,7 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
     # StructuredOutput carrying an EscalationRequest also projects to escalated,
     # unless it is a soft ("fyi") help signal.
     if isinstance(sig, StructuredOutput):
-        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+        from lionagi.protocols.flow_requests import EscalationRequest  # noqa: PLC0415
 
         if isinstance(sig.data, EscalationRequest) and sig.data.urgency != "fyi":
             return "escalated"

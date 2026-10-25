@@ -1123,7 +1123,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
     ):
         super().__init__(*args, on_branch_created=on_branch_created, **kwargs)
         if spawn_type is None:
-            from lionagi.casts.emission import SpawnRequest
+            from lionagi.protocols.flow_requests import SpawnRequest
 
             spawn_type = SpawnRequest
         self.spawn_type = spawn_type
@@ -1159,7 +1159,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         self._running = True
         observer = self.session.observer
-        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+        from lionagi.protocols.flow_requests import EscalationRequest  # noqa: PLC0415
 
         self.session.observe(self.spawn_type, self._on_bus_spawn)
         self.session.observe(EscalationRequest, self._on_bus_escalation)
@@ -1225,7 +1225,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         observer = self.session.observer
-        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+        from lionagi.protocols.flow_requests import EscalationRequest  # noqa: PLC0415
 
         self.session.observe(self.spawn_type, self._on_bus_spawn)
         self.session.observe(EscalationRequest, self._on_bus_escalation)
@@ -1303,7 +1303,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             _CURRENT_OP.reset(token)
         if self._result_sink is not None:
             self._result_sink.send_nowait(self._make_event(node))
-        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+        from lionagi.protocols.flow_requests import EscalationRequest  # noqa: PLC0415
 
         for req in _extract_spawn_requests(self.results.get(node.id), self.spawn_type):
             self._inject_request(req, emitter=node)
