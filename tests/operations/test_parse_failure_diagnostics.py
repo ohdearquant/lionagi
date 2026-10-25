@@ -277,3 +277,38 @@ class TestUnparsedResponseIsStillAnOrdinaryString:
         assert f"{response}" == raw
         assert json.dumps(response) == json.dumps(raw)
         assert {raw: "value"}[response] == "value"
+
+
+class TestEmptyText:
+    """A reply with no text has nothing a reformat turn could recover."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ["", "  \n\t"])
+    async def test_no_reformat_turn_is_sent_for_an_empty_reply(self, body):
+        branch = Branch()
+        sent = []
+
+        async def fake_chat(*_a, **_kw):
+            sent.append(1)
+            raise AssertionError("a reformat turn was sent for an empty reply")
+
+        param = make_parse_param(Transcript, None)
+        with patch.object(Branch, "chat", fake_chat):
+            result = await _parse(branch, body, param)
+
+        assert sent == []
+        assert isinstance(result, UnparsedResponse)
+        assert result == body
+        assert result.failure_kind == "extraction"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_reply_raises_an_extraction_error_when_asked_to(self):
+        branch = Branch()
+
+        async def fake_chat(*_a, **_kw):
+            raise AssertionError("a reformat turn was sent for an empty reply")
+
+        param = make_parse_param(Transcript, None, handle_validation="raise")
+        with patch.object(Branch, "chat", fake_chat):
+            with pytest.raises(ExtractionError, match="no text to parse"):
+                await _parse(branch, "", param)

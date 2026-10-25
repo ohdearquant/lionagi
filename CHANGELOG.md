@@ -43,7 +43,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   as offload controls. For a callable that takes either keyword, prebind its
   arguments with `functools.partial` and pass that callable to `run_sync`.
 
+- `parse()` sends no reformat request for a reply with no text, or only whitespace, and
+  returns its `handle_validation` outcome at once, through `operate()` and `ReAct()` too.
+  An empty reply used to get up to four reformat requests, each a new answer written from
+  the conversation; to keep that reach, retry the call yourself on the outcome: the
+  `ExtractionError` under `"raise"`, or the `UnparsedResponse` of kind `extraction` under
+  `"return_value"`.
+
+- An Anthropic API-model `li agent` leg whose model names no output limit sends
+  `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
+
 ### Fixed
+
+- An API-model `li agent` run whose ReAct pass ends on a response cut off at its output
+  limit with no text and no tool call, or on a reply that does not parse, is continued with
+  a prompt that names what failed, at most twice, and then fails with `FailedRoundError`;
+  it used to end completed with the work undone.
+
+- `extract_json` reads a ```` ```json ```` block whose JSON holds a fenced block of its own,
+  such as file content with a code fence, and a block indented in a list item; it used to
+  stop at the first fence inside a JSON string.
 
 - Routed Anthropic responses whose usage reports `speed: "standard"` are priced again;
   every response carrying `speed` had been settled as unknown with its spending ceiling

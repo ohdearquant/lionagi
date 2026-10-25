@@ -413,7 +413,7 @@ def _swallowing_pass(monkeypatch, refused_model, refusal):
     """A loop pass that a refused request ends inside, caught there, the earlier text returned."""
     import lionagi.cli.agent as agent_mod
 
-    async def swallowed(branch, instruction, loop, max_extensions):
+    async def swallowed(branch, instruction, loop, max_extensions, rounds=None):
         refused_model.input_cap_refusal = refusal
         return "an earlier round's text"
 
