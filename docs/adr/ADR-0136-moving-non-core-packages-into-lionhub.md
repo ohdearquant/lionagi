@@ -78,8 +78,8 @@ belongs to the CLI's catalog and leaves the core with it (A4, step 3).
   a reply and join them in source order. A core extractor takes the language name as an argument, and LNDL's
   extractor is built on it. The change keeps every current rule of `lndl/extract.py:12-27`: only fences whose
   language is LNDL, matched case-insensitively (JSON fences are not taken); backtick and tilde fences; a closing
-  fence at least as long as the opening one, at matching indentation, so shorter interior fences stay content;
-  CRLF normalized inside blocks; trailing block newlines kept; blocks joined in source order; and the reply
+  fence identical to the opening one (same character, same length) at the same indentation, so a shorter or longer
+  interior fence stays content; CRLF normalized inside blocks; trailing block newlines kept; blocks joined in source order; and the reply
   returned unchanged when it has no block.
 - **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:14` imports 15 LNDL names. It is LNDL's opt-in
   Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
