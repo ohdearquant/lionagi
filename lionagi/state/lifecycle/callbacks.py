@@ -12,8 +12,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import anyio.to_thread  # noqa: F401 -- retain the existing module binding
-
 from lionagi.ln.concurrency import (
     create_task_group,
     get_cancelled_exc_class,

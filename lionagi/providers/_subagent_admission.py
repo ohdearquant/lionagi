@@ -69,8 +69,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import anyio  # noqa: F401 -- retain the existing module binding
-
 from lionagi.ln._proc import process_create_time, start_time_matches
 from lionagi.ln.concurrency import sleep as _sleep
 

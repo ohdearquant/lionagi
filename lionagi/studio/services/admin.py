@@ -18,7 +18,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-import anyio  # noqa: F401 -- retain the existing module binding
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, bindparam, text
@@ -33,6 +32,7 @@ from lionagi.cli._util import (
     pid_alive as _pid_is_live,
 )
 from lionagi.ln import now_utc
+from lionagi.ln.concurrency import run_sync as _run_sync
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
@@ -42,10 +42,6 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import require_file_store, store_exists, store_path
 from ._path_safety import public_path
-
-# isort: split
-# State initialization above already loads the shared concurrency helpers.
-from lionagi.ln.concurrency import run_sync as _run_sync
 
 _log = logging.getLogger(__name__)
 

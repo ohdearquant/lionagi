@@ -14,8 +14,6 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import anyio.to_thread  # noqa: F401 -- retain the existing module binding
-
 from lionagi.cli.status import _classify
 from lionagi.ln.concurrency import is_coro_func, maybe_await
 from lionagi.ln.concurrency import run_sync as _run_sync

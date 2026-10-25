@@ -1021,8 +1021,6 @@ async def _gather_table_rows(
 
 
 async def _subagent_status() -> dict[str, Any]:
-    from anyio import to_thread  # noqa: F401 -- retain the existing lazy import
-
     from lionagi.ln.concurrency import run_sync as _run_sync
     from lionagi.providers._subagent_admission import subagent_admission_status
 
