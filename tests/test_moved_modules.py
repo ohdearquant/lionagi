@@ -362,6 +362,55 @@ def test_the_reference_check_sees_each_form_of_old_reference():
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 2, 3, 3, 4], hits
 
 
+# The packages under lionagi/ that may name lionhub: ones a later move takes out of the
+# core, which reach lionhub only from inside functions. Every other package is core and
+# never names it. The set must match what the tree does, so a package that stops naming
+# lionhub is removed from it too.
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "studio"})
+
+_LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _lionhub_names(path: Path, source: str | None = None) -> list[str]:
+    """Every import of lionhub, or string naming a lionhub module, in ``path``."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    hits = []
+    for node in ast.walk(ast.parse(text, filename=str(path))):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            names = [node.module or ""]
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names = [node.value]
+        else:
+            continue
+        hits += [f"{path}:{node.lineno}: {n}" for n in names if _LIONHUB_NAME.fullmatch(n)]
+    return hits
+
+
+def test_only_packages_that_move_later_name_lionhub():
+    lionagi = SOURCE_ROOTS[0]
+    users = {}
+    # _moved.py names lionhub as data: the table of new paths it serves old names from.
+    for path in lionagi.rglob("*.py"):
+        if path.name != "_moved.py" and _lionhub_names(path):
+            top = path.relative_to(lionagi).parts[0]
+            users.setdefault(top.removesuffix(".py"), []).append(str(path.relative_to(ROOT)))
+    assert set(users) == LIONHUB_USERS_UNDER_LIONAGI, users
+
+
+def test_the_lionhub_check_sees_each_form_of_reference():
+    probe = ROOT / "lionagi" / "cli" / "_probe.py"
+    source = (
+        "import lionhub.orchestration\n"
+        "from lionhub.orchestration import patterns\n"
+        "importlib.import_module('lionhub.orchestration.patterns')\n"
+        "PREFIXES = ('lionhub.', 'lionhubx.orchestration')\n"
+    )
+    hits = _lionhub_names(probe, source)
+    assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
 def test_changelog_names_every_move():
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     for row in _moved.MOVED:
