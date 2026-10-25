@@ -543,13 +543,10 @@ A separate record chooses the form before any wave-2 change depends on the backe
 change filed as a CLI move. It defines activation and absence, version compatibility, route
 ownership, start, stop and readiness, failure and cancellation isolation, state ownership, and how
 the browser and the CLI connect and authenticate. The same record defines how the free container
-image gets and installs its backend and frontend from versioned public sources: moving the backend
-outside the wheel needs an explicit install or build step, since `.[studio]` adds server
-dependencies but does not install the backend. Before backend or frontend source leaves this
-repository, the decision to remove it names the public source and build inputs that keep the free
-image reproducible without private credentials, with its supported versions and release and
-rollback steps. When and where the source goes remain the maintainer's decisions. Wave 1 does not
-depend on the backend's form.
+image gets and installs its backend and frontend from versioned public sources, reproducibly and
+without private credentials, with its supported versions and release and rollback steps: moving the
+backend outside the wheel needs an explicit install or build step, since `.[studio]` adds server
+dependencies but does not install the backend. Wave 1 does not depend on the backend's form.
 
 ## Consequences
 
