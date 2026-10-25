@@ -532,9 +532,9 @@ def current_pid_markers() -> dict[str, Any]:
   for a different caller.
 - `pid_create_time` alone (without a matching cmdline/cgroup check) is not treated as
   sufficient proof of *this specific* process on non-Linux platforms where
-  `pidfd_open()`-equivalent guarantees do not exist — `_CREATE_TIME_TOLERANCE = 0.1`
-  (an existing constant in `cli/kill.py`) already encodes the platform-specific fuzz this
-  identity check needs; reused, not reinvented.
+  `pidfd_open()`-equivalent guarantees do not exist — `CREATE_TIME_TOLERANCE = 0.1`
+  in `ln/_proc.py` encodes the platform-specific fuzz this identity check needs.
+  `cli/kill.py` reuses its `start_time_matches()` comparator.
 
 **Why this way.** The prior-art review's V3 (pidfd/birth-identity requirement,
 CONFIRMED-BY-ANALYSIS 0.98) is already satisfied by code lionagi shipped for a different
