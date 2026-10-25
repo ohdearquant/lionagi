@@ -324,6 +324,8 @@ def _profile_api_launch(profile) -> dict | None:
 
 def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -> dict:
     """Validate requested settings, preserving unset values separately from defaults."""
+    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET
+
     settings = {key: values.get(key) for key in _API_POLICY_KEYS}
     for key, value in settings.items():
         if key not in values or (stored and value is None):
@@ -343,8 +345,8 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
             raise ConfigurationError(f"{label} sets invalid {key}: {value!r}")
     fold_at = settings["context_fold_at"]
     target = settings["context_fold_target"]
-    fold_at = 0.8 if fold_at is None else fold_at
-    target = 0.6 if target is None else target
+    fold_at = _FOLD_AT if fold_at is None else fold_at
+    target = _FOLD_TARGET if target is None else target
     if not 0 < target < fold_at <= 1:
         raise ConfigurationError(
             f"{label} needs 0 < context_fold_target < context_fold_at <= 1; "
@@ -488,7 +490,7 @@ def _install_api_input_cap(
 
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
-    from lionagi.agent.context_fold import install_context_fold
+    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET, install_context_fold
     from lionagi.ln import copy
 
     # Profile nulls have already been refused. Here None is an unset requested value.
@@ -502,8 +504,8 @@ def _install_api_input_cap(
         label="API launch policy",
         stored=True,
     )
-    fold_at = 0.8 if context_fold_at is None else context_fold_at
-    target = 0.6 if context_fold_target is None else context_fold_target
+    fold_at = _FOLD_AT if context_fold_at is None else context_fold_at
+    target = _FOLD_TARGET if context_fold_target is None else context_fold_target
     cap, source = _resolve_api_input_cap(policy, branch.chat_model)
     # Check an existing fold before changing models. A rejected pair must leave its
     # model policy and pending pre/post-call state intact.

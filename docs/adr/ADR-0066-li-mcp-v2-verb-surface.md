@@ -413,11 +413,13 @@ detached child leads its own process group and the whole tree shares the pgid.
 
 It is not sufficient once `play.submit` exists. `li kill` performs transitive
 `play → session → invocation` reaping, implied for plays without `--recursive`
-(`cli/kill.py:246` resolves the play's session via `plays.session_id`, `:258` recurses into
-that session's children, `:287-306` walks the frontier transitively, `:491` invokes the walk
-for plays with no `recursive` guard). That path also writes the lifecycle status transitions
-and fires the terminal-notify emit. A raw `killpg` stops the processes while leaving those
-rows un-transitioned and skipping the notify.
+(`_list_running_children` in `cli/kill.py:379` documents which plays carry a session,
+`:384` joins that session, and `:393-419` follows the session/invocation frontier;
+`_do_kill` at `:827-833` invokes the play walk without a `recursive` guard). That path also
+writes the lifecycle status transitions and fires the terminal-notify emit. The cancellation
+write guards running invocations and clears a session's live phase in the same update
+(`_persist_cancel`, `cli/kill.py:489-499`). A raw `killpg` stops the processes while leaving
+those rows un-transitioned and skipping the notify.
 
 **Decision:**
 
@@ -447,7 +449,7 @@ so delegation adds no new dependency.
 
 **Known gap, inherited deliberately:** show-level reaping is deferred — `li kill <show_id>`
 marks the show row terminal and does not reap its plays or their workers
-(`cli/kill.py:493-503`). The MCP surface therefore does **not** expose a show-level kill. A
+(`_do_kill`, `cli/kill.py:816-825`). The MCP surface therefore does **not** expose a show-level kill. A
 verb that silently half-stops a tree is worse than no verb; if a show-level operation is
 added later, it must either recurse properly or fail explicitly.
 

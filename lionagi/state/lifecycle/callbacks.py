@@ -12,8 +12,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import anyio.to_thread
-
 from lionagi.ln.concurrency import (
     create_task_group,
     get_cancelled_exc_class,
@@ -21,6 +19,7 @@ from lionagi.ln.concurrency import (
     maybe_await,
     move_on_after,
 )
+from lionagi.ln.concurrency import run_sync as _run_sync
 
 logger = logging.getLogger(__name__)
 
@@ -186,9 +185,7 @@ class TerminalCallbackRegistry:
                 else:
                     # offloaded so a sync handler body never blocks the loop; see runtime.md
                     await maybe_await(
-                        await anyio.to_thread.run_sync(
-                            reg.handler, envelope, abandon_on_cancel=True
-                        )
+                        await _run_sync(reg.handler, envelope, abandon_on_cancel=True)
                     )
             except get_cancelled_exc_class():
                 raise
