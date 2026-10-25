@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from lionagi.agent.settings import load_settings
+from lionagi._settings import load_settings
 from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
