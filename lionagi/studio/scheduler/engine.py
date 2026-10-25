@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
+from lionagi.ln.concurrency import sleep as _sleep
 from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
@@ -566,7 +567,7 @@ class SchedulerEngine:
 
     async def _restart_tick_loop(self, delay: float) -> None:
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(delay)
+            await _sleep(delay)
         if self._stopping:
             return
         self._task = self._spawn_tick_loop()
@@ -995,7 +996,7 @@ class SchedulerEngine:
             if remaining <= 0:
                 return
             try:
-                await asyncio.sleep(remaining)
+                await _sleep(remaining)
                 return
             except asyncio.CancelledError:
                 if self._stopping:
