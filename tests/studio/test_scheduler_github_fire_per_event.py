@@ -472,17 +472,21 @@ def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None =
 
 @pytest.mark.asyncio
 async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(monkeypatch):
-    """A merged-mode poll that hits the page cap must not permanently skip an
-    event too close to the unproven boundary, nor re-fire an event it already
-    dispatched, once that event becomes safely reachable on a later poll."""
-    schedule = _minimal_schedule(github_filter={"event": "pr_merged"})
+    """A capped scan releases nothing; a complete retry dispatches every merge once."""
+    from tests._scheduler_claims import claiming_advance, persisting_update_schedule
 
-    # Tick 1: 5 full pages of closed PRs (hits _MERGED_MODE_MAX_PAGES). The
-    # 5th page itself is full and links to a 6th (never fetched) page, so it
-    # is genuinely unsafe -- not a short/terminal page. PR 1405 sits mid
-    # page 5, merged_at close to the truncation boundary -- unsafe to
-    # dispatch this poll. PR 1410 merged long before the fetched window --
-    # safely below the boundary, dispatchable this poll.
+    initial_cursor = _cursor_for("2026-07-01T00:00:00Z", 1)
+    schedule = _minimal_schedule(
+        github_filter={"event": "pr_merged"},
+        github_cursor=initial_cursor,
+        next_fire_at=9_000.0,
+        poll_interval_sec=60,
+    )
+
+    # Five full pages link to a sixth, so the first poll is genuinely capped.
+    # The fetched PR 1410 merged after the unfetched PR 1505. Releasing 1410
+    # would advance the merge cursor past 1505, even though both merge times
+    # precede the fetched pages' updated_at values.
     pages_tick1 = [
         _closed_page(15, 1000),
         _closed_page(14, 1100),
@@ -491,68 +495,82 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
         _closed_page(
             11,
             1400,
-            merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
+            merges={10: "2026-07-03T00:00:00Z"},
         ),
-        _closed_page(10, 1500),  # 6th page: proves page 5 had a real next link.
+        _closed_page(10, 1500, merges={5: "2026-07-02T00:00:00Z"}),
     ]
 
     async def _fake_token():
         return "faketoken"
 
     monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
-    monkeypatch.setattr(gh_mod, "_get_client", lambda: _FakePaginatedClient(pages_tick1))
+    first_client = _FakePaginatedClient(pages_tick1)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: first_client)
 
     svc = _make_svc()
+    stored = dict(schedule)
     fired_prs: list[int] = []
-
-    async def _create_schedule_run_and_advance(
-        payload,
-        *,
-        schedule_id,
-        schedule_fields,
-        expect_next_fire_at,
-        expect_github_cursor=NO_CURSOR_CLAIM,
-    ):
-        fired_prs.append(payload["trigger_context"]["github_events"][0]["pr_number"])
-        return True
-
-    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
+    svc.update_schedule = AsyncMock(side_effect=persisting_update_schedule(stored))
+    svc.create_schedule_run_and_advance = AsyncMock(
+        side_effect=claiming_advance(
+            stored,
+            on_write=lambda payload: fired_prs.append(
+                payload["trigger_context"]["github_events"][0]["pr_number"]
+            ),
+        )
+    )
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: len(fired_prs))
 
     engine = SchedulerEngine(svc=svc)
 
     p_build, p_spawn = _spawn_patches()
-    with p_build, p_spawn:
+    with p_build, p_spawn as first_spawn:
         await engine._tick_github(schedule, now=10_000.0)
 
-    # Only the safely-below-the-boundary PR fired. PR 1405 (unsafe) did not.
-    assert fired_prs == [1410]
+    assert fired_prs == []
+    assert len(first_client.requests) == gh_mod._MERGED_MODE_MAX_PAGES
+    first_spawn.assert_not_awaited()
+    svc.create_invocation.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_not_awaited()
+    assert stored["github_cursor"] == initial_cursor
+    assert not any("github_cursor" in call.kwargs for call in svc.update_schedule.await_args_list)
+    assert schedule["id"] not in engine._github_batches
+    assert engine._global_inflight == 0
 
-    persisted_cursor = None
-    for call in svc.update_schedule.await_args_list:
-        if "github_cursor" in call.kwargs:
-            persisted_cursor = call.kwargs["github_cursor"]
-    assert persisted_cursor == _cursor_for("2020-01-01T00:00:00Z", 1410)
-
-    # Tick 2: the underlying data has moved on (real GitHub would no longer
-    # surface the now-stale closed-unmerged noise ahead of PR 1405) -- a
-    # single short page is enough this time, so the scan completes safely.
+    # A later short page completes the scan. Its updated_at ordering still
+    # lists 1410 before 1505, so dispatch must use merge order instead.
     pages_tick2 = [
         [
-            _pr(2000, "2026-07-06T12:00:00Z", state="closed", merged_at=None),
-            _pr(1405, "2026-07-06T11:44:00Z", state="closed", merged_at="2026-07-06T11:44:00Z"),
+            _pr(2000, "2026-07-06T16:00:00Z", state="closed", merged_at=None),
+            pages_tick1[4][10],
+            pages_tick1[5][5],
         ]
     ]
     monkeypatch.setattr(gh_mod, "_get_client", lambda: _FakePaginatedClient(pages_tick2))
 
-    schedule_next = {**schedule, "github_cursor": persisted_cursor, "last_fired_at": 10_000.0}
+    schedule_next = {**schedule, "github_cursor": stored["github_cursor"]}
     p_build2, p_spawn2 = _spawn_patches()
-    with p_build2, p_spawn2:
+    with p_build2, p_spawn2 as second_spawn:
         await engine._tick_github(schedule_next, now=20_000.0)
 
-    # PR 1405 is now dispatched exactly once; PR 1410 (already dispatched in
-    # tick 1) is not re-fired.
-    assert fired_prs == [1410, 1405]
+    assert fired_prs == [1505, 1410]
+    assert second_spawn.await_count == 2
+    assert svc.create_invocation.await_count == 2
+    assert svc.create_schedule_run_and_advance.await_count == 2
+    assert [
+        call.kwargs["schedule_fields"]["github_cursor"]
+        for call in svc.create_schedule_run_and_advance.await_args_list
+    ] == [
+        _cursor_for("2026-07-02T00:00:00Z", 1505),
+        _cursor_for("2026-07-03T00:00:00Z", 1410),
+    ]
+    assert stored["github_cursor"] == _cursor_for("2026-07-03T00:00:00Z", 1410)
+    assert schedule["id"] not in engine._github_batches
+    assert engine._global_inflight == 0
+
+    repeated = await gh_mod.github_poll({**schedule_next, "github_cursor": stored["github_cursor"]})
+    assert repeated.scan_complete is True
+    assert repeated.items == []
 
 
 # Observer self-health: _tick_github stamps last_healthy_poll_at /

@@ -43,6 +43,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Mark GitHub schedules overdue after three settled capped polls with no dispatch or retained batch, while preserving successful-read and authentication health tracking.
 
+- Defer every merged pull request from an incomplete GitHub poll until a complete
+  scan establishes merge order, preventing the cursor from skipping older merges. (#3741)
+
 ## [0.36.0] - 2026-10-24
 
 `httpx` replaces `aiohttp` as the HTTP client, a model or branch restored from saved data no
