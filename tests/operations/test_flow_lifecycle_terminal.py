@@ -116,10 +116,10 @@ async def test_reactive_spawn_shares_one_name_across_queued_started_terminal():
     import json
 
     from lionagi.operations.node import create_operation
-    from lionagi.orchestration.patterns import grant_spawn, role_node_builder
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
     from lionagi.testing import TestBranch
+    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
 
     def _capability_chunk(**spawn_fields) -> dict:
         payload = json.dumps({"spawn_request": spawn_fields})
@@ -188,10 +188,10 @@ async def test_reactive_spawn_shares_one_name_when_spawn_branch_setup_names_the_
     import json
 
     from lionagi.operations.node import create_operation
-    from lionagi.orchestration.patterns import grant_spawn, role_node_builder
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
     from lionagi.testing import TestBranch
+    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
 
     def _capability_chunk(**spawn_fields) -> dict:
         payload = json.dumps({"spawn_request": spawn_fields})

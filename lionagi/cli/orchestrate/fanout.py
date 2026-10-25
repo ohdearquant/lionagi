@@ -12,10 +12,10 @@ import time
 from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import CancelScope, create_task_group, move_on_after
-from lionagi.orchestration import plan
-from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
+from lionhub.orchestration import plan
+from lionhub.orchestration.prompts import SYNTHESIS_INSTRUCTION
 
 from .._agent_depth import stamp_worker_depth
 from .._logging import log_error, progress, warn

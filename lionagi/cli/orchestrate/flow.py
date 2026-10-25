@@ -23,9 +23,9 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import CancelScope, current_time, move_on_after, sleep
-from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
+from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 
 from .._agent_depth import stamp_worker_depth
 from .._logging import progress

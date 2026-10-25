@@ -475,7 +475,7 @@ A **playbook** is the declarative tier of orchestration: a reusable YAML input
 to the flow planner. It is not the plan itself. Each invocation combines the
 playbook with that run's input, the orchestrator produces a run-specific
 FlowPlan, and each plan assignment becomes a branch-bound FlowOp. Source:
-`lionagi/orchestration/patterns.py` and `cli/orchestrate/flow.py`.
+`lionhub/src/lionhub/orchestration/patterns.py` and `cli/orchestrate/flow.py`.
 
 Bare names resolve project-local `.lionagi/playbooks/` first, then user-global
 `~/.lionagi/playbooks/`, then active trusted plugins. Use `<plugin>/<name>` to

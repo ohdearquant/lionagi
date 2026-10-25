@@ -12,7 +12,7 @@ the same object:
 The code does not define a `FlowPlan` container class. The runtime representation
 is a list of `TaskAssignment` values with `task`, `assignee`, `inputs`,
 `exit_criteria`, `depends_on`, and `modes`. “FlowPlan” names that run-specific
-planning tier. Source: `lionagi/orchestration/patterns.py` and
+planning tier. Source: `lionhub/src/lionhub/orchestration/patterns.py` and
 `lionagi/casts/emission.py`.
 
 ```mermaid
@@ -31,7 +31,7 @@ turns every assignment into an `operate` node bound to a worker branch and
 wires its declared dependencies. With reactivity enabled, accepted
 `SpawnRequest` values add operations to that live graph without rerunning the
 initial planner. Source: `lionagi/cli/orchestrate/flow.py` (`_run_flow_inner`,
-`_build_dag`, and `_execute_dag`) and `lionagi/orchestration/patterns.py`
+`_build_dag`, and `_execute_dag`) and `lionhub/src/lionhub/orchestration/patterns.py`
 (`role_node_builder`).
 
 ## A complete example

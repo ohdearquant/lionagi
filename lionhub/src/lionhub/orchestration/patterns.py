@@ -35,7 +35,9 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
 
-logger = logging.getLogger(__name__)
+# The logger keeps its name from before the move, so logging set up for "lionagi"
+# still covers it.
+logger = logging.getLogger("lionagi.orchestration.patterns")
 
 __all__ = (
     "grant_spawn",
