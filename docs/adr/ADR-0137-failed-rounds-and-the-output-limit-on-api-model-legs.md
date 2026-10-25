@@ -2,9 +2,8 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial: D1 to D4 are implemented; the cost measurement that decides
-  whether D1's limit stays, or a bounded-thinking request replaces it, has not run (Consequences,
-  Cost)
+- **Implementation-status**: implemented: D1 to D4; the cost measurement has run and keeps D1's
+  limit (Consequences, Cost)
 - **Area**: operations
 - **Date**: 2026-10-25
 - **Relations**: extends ADR-0041 Amendment 1 (API-model `li agent` legs) and ADR-0130 Amendment 1
@@ -281,7 +280,29 @@ a benchmark, run with the limit at 8,192 and at 32,768, it records output tokens
 run and the task pass rate for each. A third arm bounds thinking through the request instead
 (Anthropic's `output_config` effort, or `thinking` disabled at an effort that allows it) at the
 old limit. If the bounded request keeps Claude Haiku 5.5 under 8,192 at the same pass rate, a
-further decision bounds thinking and D1's limit is revisited. Result: not yet measured.
+further decision bounds thinking and D1's limit is revisited.
+
+Result, from one run of each of 26 tasks per arm on Claude Haiku 5.5, each task checking a design
+record against the code it describes, with the same code, profile and tasks in every arm and each
+run scored against a recorded reference answer for its task; all 78 runs completed:
+
+| Arm | Output tokens | Dollars | Conclusion matches the reference | Reference files also cited |
+| --- | ---: | ---: | ---: | ---: |
+| 8,192 | 537,589 | 0.70 | 15 of 26 | 0.28 |
+| 32,768 | 514,318 | 0.69 | 20 of 26 | 0.33 |
+| 8,192, effort low | 284,042 | 0.44 | 15 of 26 | 0.23 |
+
+- Paired per task, 32,768 cited more of the reference's files than 8,192 by 0.044 (standard
+  error 0.022) and more than effort low by 0.092 (0.022).
+- One run at 8,192 stopped at the limit twice with no text, was continued once (D2) and finished.
+  No run at 32,768 stopped at it, and its largest single response was 10,615 tokens, which 8,192
+  would have cut.
+- So the larger limit cost no more than 8,192 and lost nothing measured. Effort low cut the cost
+  by about a third and every response stayed under 8,192, with fewer matching conclusions and fewer of
+  the reference's files cited, so it does not meet the condition above. D1's limit stays.
+- Limits: one run per task, and the share of cited files moved by about 0.12 between runs of one
+  task in earlier runs of this benchmark; the reference reaches the same conclusion on 24 of the
+  26 tasks, so the conclusion count mostly shows how often a run reaches that one.
 
 Reversing a decision: D1 is one constant; D2 removes a check and a constant and restores the
 completed status of a failed pass; D3 and D4 each restore one pattern or one branch.
