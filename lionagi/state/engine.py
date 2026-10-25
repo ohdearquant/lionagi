@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -14,7 +15,9 @@ import sqlite3
 import threading
 import uuid
 from bisect import bisect_left
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
 from lionagi._paths import LIONAGI_HOME
@@ -247,6 +250,93 @@ def _stop_aiosqlite_once(driver_connection) -> None:
             " connection's cleanup can leave that cleanup waiting forever",
             cls.__qualname__,
         )
+
+
+# How long a failed open waits for its driver worker to exit. The worker finishes
+# the failed connector and then runs the stop the driver queued, so it normally
+# exits at once; a connector that never returns (a hung filesystem) would hold it,
+# and past this bound the open fails with that worker still running.
+_FAILED_OPEN_WORKER_JOIN_SECONDS = 5.0
+
+
+class _SQLiteConnectionAwaitable:
+    """Keep a failed driver connection until its worker has exited, within a bound.
+
+    Reads the driver's private ``Connection._thread``, present in the aiosqlite
+    releases the dependency range admits.
+    """
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    @property
+    def daemon(self) -> bool:
+        return self._connection._thread.daemon
+
+    @daemon.setter
+    def daemon(self, value: bool) -> None:
+        # Older SQLAlchemy versions set daemon on the awaitable itself.
+        self._connection._thread.daemon = value
+
+    def __await__(self) -> Generator[Any, None, Any]:
+        return self._connect().__await__()
+
+    async def _connect(self) -> Any:
+        try:
+            return await self._connection
+        except BaseException as failed_open:
+            from lionagi.ln.concurrency import CancelScope, run_sync
+
+            worker = self._connection._thread
+            if worker.ident is not None:
+                # The driver's failed await has already queued its stop. Join off-loop,
+                # retaining this connection through a cancellation during the cleanup.
+                interrupted = None
+                with CancelScope(shield=True):
+                    joining = asyncio.create_task(
+                        run_sync(worker.join, _FAILED_OPEN_WORKER_JOIN_SECONDS)
+                    )
+                    while not joining.done():
+                        try:
+                            await asyncio.shield(joining)
+                        except asyncio.CancelledError as exc:
+                            interrupted = exc
+                    joining.result()
+                if worker.is_alive():
+                    _log.warning(
+                        "SQLite driver worker still running %.1f s after a failed"
+                        " open; leaving it running",
+                        _FAILED_OPEN_WORKER_JOIN_SECONDS,
+                    )
+                if interrupted is not None:
+                    raise interrupted from failed_open
+            raise
+
+
+class _OwnedSQLiteDriver:
+    """A per-engine driver view; the imported aiosqlite module is unchanged."""
+
+    def __init__(self, driver: Any) -> None:
+        self._driver = driver
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._driver, name)
+
+    def connect(self, *args: Any, **kwargs: Any) -> _SQLiteConnectionAwaitable:
+        return _SQLiteConnectionAwaitable(self._driver.connect(*args, **kwargs))
+
+
+def _configure_sqlite_module(url: str, kwargs: dict[str, Any]) -> None:
+    if not url.startswith("sqlite+aiosqlite://") or kwargs.get("module") is not None:
+        return
+    from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
+
+    dbapi = SQLiteDialect_aiosqlite.import_dbapi()
+    dbapi.aiosqlite = _OwnedSQLiteDriver(dbapi.aiosqlite)
+    kwargs["module"] = dbapi
 
 
 def _json_serializer(obj):
@@ -780,6 +870,7 @@ def make_engine(url: str, *, before_settings=None, **overrides):
             "factory": _RollbackOnCloseConnection,
             **kwargs.get("connect_args", {}),
         }
+        _configure_sqlite_module(url, kwargs)
         engine = create_async_engine(url, **kwargs)
 
         def _apply_pragmas(dbapi_conn, connection_record):
@@ -860,6 +951,7 @@ def make_compatibility_engine(url: str, guard, **overrides):
         "connect_args": {"cached_statements": 0},
     }
     kwargs.update(overrides)
+    _configure_sqlite_module(url, kwargs)
     engine = create_async_engine(url, **kwargs)
 
     def _configure(dbapi_conn, connection_record):
@@ -916,6 +1008,7 @@ def make_readonly_engine(url: str, **overrides):
         "factory": _RollbackOnCloseConnection,
         **kwargs.get("connect_args", {}),
     }
+    _configure_sqlite_module(ro_url, kwargs)
     engine = create_async_engine(ro_url, **kwargs)
 
     def _apply_readonly_pragmas(dbapi_conn, connection_record):

@@ -1,6 +1,6 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
-- **Status**: Accepted (2026-10-25)
+- **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendment 1)
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
   `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
@@ -15,6 +15,175 @@
   decision that ADR-0125 D4 requires before a public import path is removed; amends ADR-0001
   (Amendment 2: the new prefixes of moved packages join the class-path allow-list); updates
   ADR-0120's citations of the dispatch outbox to its new file
+
+## Amendment 1 (2026-10-25): where the hook bus and the plugin runtime live, the casts and LNDL seams, and the order of waves 2 and 3
+
+Facts below were measured at development-line commit `6bcd28a0`. Line counts include every newline in the
+named Python files. Import-site counts use an AST walk over absolute, relative, nested and type-only imports,
+counting each import statement once.
+
+### A1. The session hook bus and the plugin runtime stay in the core
+
+D6 places `hooks` and `plugins` in wave 3 and D7 gives them `lionhub/hooks/` and `lionhub/resources/`. This
+amendment narrows both.
+
+**The hook bus.** `lionagi.hooks.bus`, `loader`, `persist`, `builtins` and `_message_retry` (953 lines) are the
+session's event bus and its default persistence handlers. They import only `ln`, `session` and `state`.
+`Session.hooks` builds the bus on first use (`session/session.py:137-146`) with four default handlers (session
+start, session end, branch create, branch end; `hooks/loader.py:25-30, 81-104`), and operations and `Branch`
+take `HookPoint` from it at 9 sites (`operations/_api_hooks.py:150, 179, 219`, `operations/act/act.py:79, 111,
+137`, `operations/chat/chat.py:28`, `operations/run/run.py:451`, `session/branch.py:413`). A bus moved out of
+the core would need its default builder supplied by a bootstrap, and an injected bus that starts empty would
+drop those defaults. These five modules and the package initializer stay in the core under their current
+paths, with no table row.
+
+`lionagi.hooks.external` (883 lines) runs configured hook commands and reads plugin settings. It is what D7's
+`lionhub/hooks/` slot describes, and it moves there in wave 3 as `lionhub.hooks.external`, one module with one
+table row. The core `hooks` initializer does not import it, before or after the move. In the same change, the
+compatibility tests enumerate a row's own module and walk descendants only when the destination is a package
+(today they read `__path__` from every destination), and module identity, old pickles, warning attribution,
+removal version and stale-file checks cover the row.
+
+**The plugin runtime.** `lionagi.plugins` (6 modules, 1,458 lines) is the core's extension mechanism under
+ADR-0088. Its consumers are tool misses and diagnostics for registered tools in `ActionManager`
+(`protocols/action/manager.py:197-215, 251`), provider misses and provider revalidation in `EndpointRegistry`
+(`service/connections/registry.py:336, 368-370, 421, 422, 448-475`). A provider miss currently consults every
+active declared provider module, not only the requested one. Discovery is lazy, trust is read on first use, and
+no caller registers anything (ADR-0088 D3). The runtime imports nothing above the core. Moving it would need an
+automatic bootstrap that preserves all of this in a fresh process; ADR-0088 D8 defers entry points, and no other
+bootstrap is chosen here. An injected runtime that starts empty would change caller behavior. So the runtime
+stays in the core under its current paths, with no table row. Plugin authoring and management commands may move
+with the CLI.
+
+D7 changes accordingly. `lionhub/hooks/` holds `external`. `lionhub/resources/` loses `registry, plugin`; it is
+created only when code other than the runtime needs it, under D7's rule against empty modules.
+
+### A2. The casts seam
+
+The core imports `lionagi.casts.emission` at 5 sites: `SpawnRequest` at `operations/flow.py:1126`, and
+`EscalationRequest` at `operations/flow.py:1162, 1228, 1306` and `session/signal.py:280`. Both classes
+(`casts/emission.py:401, 437`) are request contracts that the flow runner and the session signal consume. They
+are defined once in a core module at or below `session`, and `lionagi.casts.emission` imports and re-exports the
+same class objects. The seam keeps the schemas, the defaults, the refusal of extra fields, the four operation
+values, and `EscalationRequest`'s legacy `blocking` input and property (`casts/emission.py:422-434`). Neither
+class derives from `Element` (both are Pydantic models), so D5's class-path condition does not apply to them;
+pickles that name the old module still load, and the seam change shows it with a test.
+
+`lionagi/_auto.py:158-162` declares a CLI command whose module is `lionagi.casts.surfaces`. That declaration
+belongs to the CLI's catalog and leaves the core with it (A4, step 3).
+
+### A3. The LNDL seams
+
+- **Fence extraction.** `operations/parse/parse.py:315` imports `extract_lndl_blocks` to pull LNDL blocks out of
+  a reply and join them in source order. A core extractor takes the language name as an argument, and LNDL's
+  extractor is built on it. The change keeps every current rule of `lndl/extract.py:12-27`: only fences whose
+  language is LNDL, matched case-insensitively (JSON fences are not taken); backtick and tilde fences; a closing
+  fence identical to the opening one (same character, same length) at the same indentation, so a shorter or longer
+  interior fence stays content; CRLF normalized inside blocks; trailing block newlines kept; blocks joined in source order; and the reply
+  returned unchanged when it has no block.
+- **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:14` imports 15 LNDL names. It is LNDL's opt-in
+  Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
+  `lionagi.operations.lndl_middle`.
+- **Root exports.** `lionagi/__init__.py:97-105` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
+  lazy compatibility names until 2.0, and their entries keep naming the old module paths, which the table
+  serves. This is a stated exception, limited to these nine entries, to D4's rule that no repository module
+  imports an old name and to D2's rule that the core initiates no hub import; it adds no hub name outside the
+  table. A plain `import lionagi` still imports no hub module. The first root access that loads an old module
+  emits D3's warning at the external caller's line: the finder's frame walk treats the lazy-import helper
+  (`ln/_lazy_init.py`) as import machinery, which it does not do today. Root access and a direct old import share
+  one module and one warning history. The move change removes the root's `TYPE_CHECKING` imports of those names,
+  which D3 already lists among the things that change without a warning. Tests enumerate the nine exports and
+  check identity. At 2.0 a release guard that does not read the table, since the rows are gone by then, requires
+  the nine names to be absent from `_LAZY_MAP`, `__all__` and root attribute access, and the release notes name
+  both the root names and the module paths. D5 is unchanged: a class path names the defining module, never the
+  root export, and old `lionagi.lndl.*` pickle paths keep loading.
+
+The LNDL move amends ADR-0051 D1, which names `lionagi.lndl` as the language's package, and the file list in
+ADR-0024 that names the moved files.
+
+### A4. Wave 2, in order
+
+D6's prerequisite that `state` stop importing `cli` is met at `6bcd28a0`: the last three imports were
+`state/lifecycle/notify_settings.py:41, 383` and `state/provenance.py:19` at `1e7be920`.
+
+Two edges decide the order. Studio imports CLI code at 32 statements in 14 files: `_util` 8, `_runs` 5,
+`_providers` 3, `_project` 3, `_code_identity` 2, `_logging` 1, `_argtypes` 1, `orchestrate` 4, and `team`,
+`status`, `kill`, `engine` and `mirror` 1 each, counting imports of names from the CLI package as well as from its
+submodules. The CLI imports Studio code at 11 statements in 4 files (`cli/machine_schedule.py`, `cli/main.py`,
+`cli/mirror.py`, `cli/monitor.py`), including the schedule declaration and export services, and
+`studio/scheduler/subprocess.py:279` builds its parser with the CLI's `add_orchestrate_subparser`.
+
+1. **MCP** to `lionhub.serve.mcp`, with one table row. Landed. The alias loader implements module execution, so
+   `python -m lionagi.mcp` runs the moved module under its old name. D2's set stays `{cli, studio}`.
+2. **Records.** The CLI record and the Studio backend record (D7, DEFERRED) are accepted before any change that
+   depends on their destinations or on the backend boundary. The backend record allocates every scheduler and
+   CLI dependency on Studio code: scheduler state and its cycle with scheduler coordination
+   (`studio/scheduler/engine.py:43`, `studio/services/scheduler_state.py:26`), configuration, project
+   resolution, maintenance, lifecycle reapers, schedule declaration and export, and shared command parsing.
+   Logic the wheel's daemon or CLI needs stays in the wheel through shared modules or core interfaces;
+   application routes and operator presentation move to the backend.
+3. **Break the CLI and Studio cycle, and take the CLI catalog out of the core.** The helpers both sides use move
+   to one shared module set with public names. The command logic and parsing Studio calls move to the
+   `lionhub.orchestration` modules D7 lists (flow, spawn, job, wait, kill, team, notify), and both sides import
+   them from there. Before the first CLI command target moves, the populated CLI seed catalog and its selection
+   and loading entry points leave `lionagi/_auto.py` and their callers are rewritten; this includes the
+   `studio`, `schedule` (`_auto.py:176, 181`) and `casts` declarations. A fresh CLI invocation discovers the same
+   commands with no prior hub import and no caller registration. The generic declaration types may stay in the
+   core if they name no hub module. Wrapper commands may stay at their old paths until their own move. The step
+   is done when `lionagi.studio` imports no private `lionagi.cli` module, the remaining edges run one way, and
+   no seed in the core names a moved target.
+4. **The scheduler** to `lionhub.orchestration.scheduler`, with its rows, together with the wheel-owned helpers
+   the backend record assigns, or after they are extracted. The change records the import graph in both
+   directions and the Studio modules that remain.
+5. **The daemon** to `lionhub.serve`, and the Studio application (operator, routes, app shell) to
+   `apps/studio/backend` in the form the backend record chooses. The HTTP module list in `lionagi/_auto.py`
+   leaves the core in the same change. The CLI's local schedule validation and export keep working with the
+   backend absent, checked on a fresh install.
+6. **The CLI** to `lionhub.serve.cli` in the form the CLI record chooses, and the `li` entry point's target
+   changes. Old and new `python -m` invocations are checked in fresh subprocesses: arguments, package-relative
+   imports and exit status.
+
+Every intermediate change keeps D2 and D4: no package under `lionagi/` names `lionhub` outside the exempt set,
+and no repository module imports an old path. After step 6, D2's set is empty.
+
+### A5. Wave 3, in order
+
+Seams first, one change each. Each core definition keeps the existing defaults and behavior, and each old module
+re-exports the same objects.
+
+1. The tool interface, and the gate and settings contracts. The core settings reader keeps the user-only mode
+   (`include_project=False`) and failure handling that provider secret lookup uses
+   (`providers/_secret_resolution.py:101-104`).
+2. The casts request contracts (A2).
+3. LNDL fence extraction (A3).
+4. The providers record (D6), with no source change.
+
+Then the moves:
+
+1. `tools`, `agent` and `casts` in one change, after the seams and after the CLI catalog has left the core (A4,
+   step 3). `tools/coding.py` imports `agent` at 6 sites and `agent` imports `tools` at 12 sites in five files
+   (`agent/permissions.py:14` at module scope, and `agent/factory.py`, `context_fold.py`, `hooks.py`,
+   `nudge.py`), so neither can move first without a package under `lionagi/` naming `lionhub`. `casts` may join
+   this change or follow it: `agent` imports `casts` and `casts` does not import `agent`. `agent` goes to
+   `lionhub.agent`; `casts` goes to `lionhub.agent.casts` with its own row, so neither package initializer
+   overwrites the other (`agent/__init__.py` exports eagerly, `casts/__init__.py` lazily). The change keeps casts'
+   root exports, its packaged `packs/default.yaml` (checked from an installed wheel, since `casts/catalog.py:21-27`
+   returns `None` on a load failure), and old pickle paths. `providers/_secret_resolution.py:101` reads settings
+   through the core reader from the settings seam, so D2's set does not grow.
+2. `lionagi.hooks.external` to `lionhub.hooks.external` (A1). It goes after `agent` because `agent/factory.py`
+   and `agent/settings.py` import it, as does the CLI's `hooks` command; nothing imports it the other way.
+3. LNDL and its Middle to `lionhub.lndl` (A3).
+4. `providers` last, under its record.
+
+Each move change carries D6's six items, unchanged.
+
+### What this amendment does not decide
+
+- The CLI's home and the owner of `li` at 2.0, and the Studio backend's form: each remains its own record (D7).
+  A4 states what those records must allocate, not their answers.
+- The providers contract: its own record (D6).
+- Entry-point discovery or any other automatic plugin bootstrap: still deferred by ADR-0088 D8. If one is
+  adopted later, the residency in A1 can be revisited by a new amendment.
 
 The maintainer asked for a layout that separates the core from the packages built on it, a first
 migration that breaks no caller, and the removal of the compatibility paths by lionagi 2.0 under a

@@ -21,6 +21,11 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   connection factories and other `connect_args` remain caller-controlled. A
   rollback error is logged and native close still runs; committed rows are
   unaffected.
+- With the default aiosqlite driver, a failed initial connection waits for its
+  actual worker thread to exit before raising the original error. The join runs
+  off the event-loop thread, so failed writable, read-only and compatibility
+  opens cannot leave that worker delivering results after the loop closes.
+  Explicit DBAPI modules and other SQLite drivers remain caller-controlled.
 - `make_readonly_engine()` — read-only `AsyncEngine` over an **existing** SQLite file, opened
   through SQLite's own URI read-only mode (`mode=ro`), not through `make_engine()`. This
   matters because: (1) no schema/PRAGMA write ever reaches the file — the OS-level open is
