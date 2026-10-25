@@ -95,23 +95,22 @@ def test_import_statement_warning_points_at_the_importing_line():
 
 
 def test_objects_are_shared_and_pickles_naming_the_old_path_load():
-    old, new = next((o, n) for o, n in PAIRS if o != _moved.MOVED[0].old)
-    importlib.import_module(old)
-    old_module, new_module = sys.modules[old], sys.modules[new]
-    assert old_module is new_module
-
-    public = [
-        name
-        for name, value in vars(new_module).items()
-        if not name.startswith("_") and getattr(value, "__module__", None) == new
-    ]
-    assert public, f"{new} defines no public objects to check"
-    for name in public:
-        obj = getattr(new_module, name)
-        # Protocol 0 writes module names as text lines, so the rename is byte-safe.
-        payload = pickle.dumps(obj, protocol=0).replace(new.encode(), old.encode())
-        assert old.encode() in payload
-        assert pickle.loads(payload) is obj  # noqa: S301
+    checked = {row.old: 0 for row in _moved.MOVED}
+    for old, new in PAIRS:
+        importlib.import_module(old)
+        assert sys.modules[old] is sys.modules[new]
+        module = sys.modules[new]
+        for name, obj in vars(module).items():
+            if name.startswith("_") or getattr(obj, "__module__", None) != new:
+                continue
+            if getattr(obj, "__qualname__", None) != name:
+                continue
+            # Protocol 0 writes module names as text lines, so the rename is byte-safe.
+            payload = pickle.dumps(obj, protocol=0).replace(new.encode(), old.encode())
+            assert old.encode() in payload
+            assert pickle.loads(payload) is obj  # noqa: S301
+            checked[_moved._row(old).old] += 1
+    assert all(checked.values()), checked
 
 
 def test_reload_through_the_old_name_keeps_the_real_spec():
