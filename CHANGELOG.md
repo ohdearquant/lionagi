@@ -63,7 +63,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `extract_json` reads a ```` ```json ```` block whose JSON holds a fenced block of its own,
   such as file content with a code fence, and a block indented in a list item; it used to
   stop at the first fence inside a JSON string. A block written on one line beside such
-  blocks is read in its place among them.
+  blocks is read in its place among them, and a span beside them that is not JSON no longer
+  turns the one block's object into a list holding it.
 
 - Routed Anthropic responses whose usage reports `speed: "standard"` are priced again;
   every response carrying `speed` had been settled as unknown with its spending ceiling

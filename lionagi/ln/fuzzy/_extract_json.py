@@ -63,21 +63,31 @@ def extract_json(
         for span in spans
         if not any(span[0] < end and start < span[1] for start, end, _ in fenced)
     ]
-    for matches in (
-        [block for _, _, block in sorted(fenced + beside)],
-        [block for _, _, block in spans],
-    ):
+    passes = [[(block, True) for _, _, block in spans]]
+    if fenced:
+        # A span beside the blocks counts toward a single result only when it parses, so a
+        # stray span that is not JSON leaves the result the blocks alone give.
+        merged = sorted(
+            [(*block, True) for block in fenced] + [(*span, False) for span in beside],
+            key=lambda item: item[0],
+        )
+        passes.insert(0, [(block, counts_unparsed) for _, _, block, counts_unparsed in merged])
+    for matches in passes:
         results = []
-        for m in matches:
+        found = 0
+        for m, counts_unparsed in matches:
             try:
                 if fuzzy_parse:
                     results.append(fuzzy_json(m))
                 else:
                     results.append(orjson.loads(m))
             except Exception:  # noqa: S112  # intentional parser fallback: skip unparseable JSON blocks, not an error
+                if counts_unparsed:
+                    found += 1
                 continue
+            found += 1
         if results:
-            if return_one_if_single and len(matches) == 1:
+            if return_one_if_single and found == 1:
                 return results[0]
             return results
     return []

@@ -189,6 +189,11 @@ every such span is read, as before.
   still parses through the earlier pattern, alone or beside blocks on lines of their own, in the
   order the text holds them.
 - Several blocks are each read with their own inner fences.
+- One object is returned alone when one was found. A block on lines of its own counts as found
+  whether it parses or not, as every span does in text without such a block; a span beside the
+  blocks counts only when it parses. A stray span that is not JSON, such as ```` ```json``` ````
+  named in prose, leaves the block's object, where the earlier pattern returned a list holding
+  it, so a caller validating one object reads it.
 
 Every caller of `extract_json` gains this. It changes only text whose direct parse failed and
 which holds a fenced block.
