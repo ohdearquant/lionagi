@@ -4,8 +4,9 @@ The table is ``lionagi._moved.MOVED``. For every module under each moved package
 tests check that the old name imports, that it is the same module object as the new
 name, that it warns once and points the warning at the importing code, that the
 removal release is still ahead of this version, that data naming a moved Element
-class by either path loads in a fresh process, that no source file in lionagi or
-lionhub imports an old name, and that the CHANGELOG names every move.
+class by either path loads in a fresh process, that the ``lionhub.`` class-path prefix
+reaches only modules that had an old name, that no source file in lionagi or lionhub
+imports an old name, and that the CHANGELOG names every move.
 """
 
 from __future__ import annotations
@@ -169,6 +170,9 @@ try:
 except Exception as exc:
     result = {"error": type(exc).__name__ + ": " + str(exc)}
 result["cold"] = cold
+result["lionhub_after"] = sorted(
+    name for name in sys.modules if name == "lionhub" or name.startswith("lionhub.")
+)
 print(json.dumps(result))
 """
 
@@ -224,6 +228,73 @@ def test_a_path_outside_the_allowed_prefixes_is_refused_in_a_fresh_process():
     result = _load_in_fresh_process(outside, "from_dict")
     assert result["cold"]
     assert "register_type_prefix" in result["error"], result
+    assert result["lionhub_after"] == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "lionhub..orchestration.work.form.WorkForm",
+        "lionhub.orchestration..work.form.WorkForm",
+        ".lionhub.orchestration.work.form.WorkForm",
+    ],
+)
+def test_a_malformed_lionhub_path_is_refused_before_anything_is_imported(path):
+    _, cls = ELEMENT_CLASSES[0]
+    name = f"{cls.__module__}.{cls.__qualname__}"
+    text = SAMPLES[name](cls).to_json()
+    malformed = text.replace(json.dumps(name), json.dumps(path), 1)
+    assert malformed != text
+
+    result = _load_in_fresh_process(malformed, "from_dict")
+    assert result["cold"]
+    assert "not a dotted class path" in result["error"], result
+    assert result["lionhub_after"] == []
+
+
+def _old_name(module: str) -> str | None:
+    """The lionagi name a lionhub module had before it moved, or None if it had none."""
+    rows = [r for r in _moved.MOVED if module == r.new or module.startswith(r.new + ".")]
+    if not rows:
+        return None
+    new = max((r.new for r in rows), key=len)
+    old = next(r.old for r in rows if r.new == new)
+    return old + module[len(new) :]
+
+
+def _lionhub_modules() -> list[str]:
+    src = ROOT / "lionhub" / "src"
+    names = []
+    for path in sorted((src / "lionhub").rglob("*.py")):
+        parts = path.relative_to(src).with_suffix("").parts
+        names.append(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
+    return names
+
+
+def _holds_only_a_docstring_and_all(source: str) -> bool:
+    for stmt in ast.parse(source).body:
+        if isinstance(stmt, ast.Expr) and isinstance(getattr(stmt.value, "value", None), str):
+            continue
+        if isinstance(stmt, ast.Assign) and [getattr(t, "id", None) for t in stmt.targets] == [
+            "__all__"
+        ]:
+            continue
+        return False
+    return True
+
+
+def test_the_lionhub_prefix_reaches_only_modules_the_lionagi_prefix_already_reached():
+    # The class-path allow-list admits "lionhub." (ADR-0001 Amendment 2) because every
+    # lionhub module except the top-level package was importable from data by its old
+    # lionagi name, and the top-level package holds nothing that runs. A lionhub module
+    # with no old name ends that argument, and the entry has to be decided again.
+    modules = _lionhub_modules()
+    assert _old_name("lionhub.orchestration.work.form") == "lionagi.work.form"
+    assert "lionhub.orchestration.work.form" in modules
+    assert [m for m in modules if _old_name(m) is None] == ["lionhub"]
+    package = ROOT / "lionhub" / "src" / "lionhub" / "__init__.py"
+    assert _holds_only_a_docstring_and_all(package.read_text(encoding="utf-8"))
+    assert not _holds_only_a_docstring_and_all("__all__ = ()\nimport os\n")
 
 
 def test_reload_through_the_old_name_keeps_the_real_spec():

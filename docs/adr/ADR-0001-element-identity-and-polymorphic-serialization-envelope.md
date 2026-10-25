@@ -64,10 +64,12 @@ Step 5 is unchanged: a bare short name matches only a class defined under `liona
 `_BUILTIN_MODULES`, or a registered class.
 
 Limits: deserialization may now import any module in `lionhub`, code from the same distribution and
-so trusted like `lionagi`. When this amendment was written, every `lionhub` module except the
-top-level package, which defines nothing, was a moved module that the `lionagi.` prefix already
-reached through its old name, so the added prefix made no new import-time code reachable. A
-separate `lionhub` distribution reopens this decision.
+so trusted like `lionagi`. Every `lionhub` module except the top-level package, which holds only a
+docstring and `__all__`, is a moved module that the `lionagi.` prefix already reached through its
+old name, so the added prefix makes no new import-time code reachable.
+`tests/test_moved_modules.py` checks that statement against the tree and fails when `lionhub` gains
+a module with no old name. That change, like a separate `lionhub` distribution, reopens this
+decision.
 
 ## Context
 
