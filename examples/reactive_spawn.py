@@ -28,8 +28,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from lionhub.orchestration import role_node_builder, spawn_roles
-
 from lionagi.agent import AgentSpec
 from lionagi.casts.emission import SpawnRequest
 from lionagi.operations.node import create_operation
@@ -37,6 +35,7 @@ from lionagi.protocols.graph.graph import Graph
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.orchestration import role_node_builder, spawn_roles
 
 logging.basicConfig(level=logging.WARNING)
 

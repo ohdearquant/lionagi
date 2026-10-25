@@ -205,6 +205,53 @@ def test_two_old_names_imported_at_once_leave_the_module_spec_alone():
     assert out.split() == [new, new]
 
 
+# An old and a new name of one submodule, imported for the first time on two threads at once,
+# forty times over. The old name reaches the new package through its top, and the package's
+# __init__ imports the submodule, so without the retry in _moved most rounds fail with
+# importlib's deadlock error on the old-name thread.
+_OLD_AND_NEW_AT_ONCE = """
+import importlib, sys, threading, warnings
+import lionagi
+
+warnings.simplefilter("ignore")
+old, new = {old!r}, {new!r}
+packages = ({old_package!r}, {new_package!r})
+errors = []
+
+def load(barrier, name):
+    barrier.wait()
+    try:
+        importlib.import_module(name)
+    except BaseException as exc:
+        errors.append(repr(exc))
+
+for _ in range(40):
+    for name in [m for m in sys.modules if m in packages or m.startswith(tuple(p + "." for p in packages))]:
+        del sys.modules[name]
+    barrier = threading.Barrier(2)
+    threads = [threading.Thread(target=load, args=(barrier, n)) for n in (new, old)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(15)
+    assert not any(thread.is_alive() for thread in threads)
+    if not errors:
+        assert sys.modules[old] is sys.modules[new]
+print(len(errors), errors[:1])
+"""
+
+
+def test_an_old_and_a_new_name_imported_at_once_both_load():
+    row = _moved.MOVED[0]
+    # The package's __init__ imports this submodule, which is what lets the two imports cross.
+    old, new = row.old + ".patterns", row.new + ".patterns"
+    assert (old, new) in PAIRS
+    out = _run_fresh(
+        _OLD_AND_NEW_AT_ONCE.format(old=old, new=new, old_package=row.old, new_package=row.new)
+    )
+    assert out.split(" ", 1)[0] == "0", out
+
+
 def test_an_old_package_not_yet_imported_is_described_as_a_package():
     row = _moved.MOVED[0]
     out = _run_fresh(
