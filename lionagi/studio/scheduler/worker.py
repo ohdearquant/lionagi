@@ -27,7 +27,6 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from lionhub.orchestration.dispatch.outbox import enqueue_dispatch
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
@@ -47,6 +46,7 @@ from lionagi.studio.scheduler.admit import (
     normalize_action_args,
     notify_request,
 )
+from lionhub.orchestration.dispatch.outbox import enqueue_dispatch
 
 _log = logging.getLogger(__name__)
 

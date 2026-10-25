@@ -20,6 +20,9 @@ import pytest
 
 pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
+from sqlalchemy import text
+
+from lionagi.state.db import StateDB
 from lionhub.orchestration.dispatch import (
     ack_dispatch,
     backoff_seconds,
@@ -31,9 +34,6 @@ from lionhub.orchestration.dispatch import (
     purge_dispatches,
     retry_dispatch,
 )
-from sqlalchemy import text
-
-from lionagi.state.db import StateDB
 
 _SUCCESS_TEMPLATE = [
     sys.executable,

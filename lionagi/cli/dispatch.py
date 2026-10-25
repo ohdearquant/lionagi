@@ -29,9 +29,8 @@ def _format_time(ts: float | None) -> str:
 
 
 async def _cmd_ls(*, status: str | None, limit: int) -> int:
-    from lionhub.orchestration.dispatch import list_dispatches
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import list_dispatches
 
     async with StateDB() as db:
         rows = await list_dispatches(db, status=status, limit=limit)
@@ -54,9 +53,8 @@ async def _cmd_ls(*, status: str | None, limit: int) -> int:
 async def _cmd_show(dispatch_id: str) -> int:
     import json
 
-    from lionhub.orchestration.dispatch import get_dispatch
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import get_dispatch
 
     async with StateDB() as db:
         row = await get_dispatch(db, dispatch_id)
@@ -138,9 +136,8 @@ async def _retry_outcome(db: Any, dispatch_id: str) -> dict[str, Any]:
 # asserted as such. Making it a printed line is a change to this surface, not
 # part of giving the machine channel a seam, so it is left alone here.
 async def _cmd_ack(dispatch_id: str, ack_token: str) -> int:
-    from lionhub.orchestration.dispatch import ack_dispatch
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import ack_dispatch
 
     async with StateDB() as db:
         applied = await ack_dispatch(db, dispatch_id, ack_token)
@@ -153,9 +150,8 @@ async def _cmd_ack(dispatch_id: str, ack_token: str) -> int:
 
 
 async def _cmd_retry(dispatch_id: str) -> int:
-    from lionhub.orchestration.dispatch import retry_dispatch
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import retry_dispatch
 
     async with StateDB() as db:
         applied = await retry_dispatch(db, dispatch_id)
@@ -168,9 +164,8 @@ async def _cmd_retry(dispatch_id: str) -> int:
 
 
 async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
-    from lionhub.orchestration.dispatch import get_dispatch, purge_dispatch
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import get_dispatch, purge_dispatch
 
     async with StateDB() as db:
         if dry_run:
@@ -201,9 +196,8 @@ async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
 
 
 async def _cmd_purge_bulk(*, status: str | None, before: float | None, dry_run: bool) -> int:
-    from lionhub.orchestration.dispatch import purge_dispatches
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import purge_dispatches
 
     async with StateDB() as db:
         result = await purge_dispatches(

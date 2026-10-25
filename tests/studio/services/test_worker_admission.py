@@ -18,7 +18,6 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from lionhub.orchestration.dispatch.outbox import list_dispatches
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
@@ -27,6 +26,7 @@ from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 from lionagi.studio.scheduler.worker import claim_and_execute
 from lionagi.studio.services.task_applications import TaskApplication, submit_task
+from lionhub.orchestration.dispatch.outbox import list_dispatches
 
 
 @pytest_asyncio.fixture

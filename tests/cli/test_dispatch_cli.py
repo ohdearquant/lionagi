@@ -20,9 +20,8 @@ def _redirect_state_db(monkeypatch, tmp_path: Path) -> Path:
 
 
 async def _seed_dispatch(db_path: Path, **kwargs) -> str:
-    from lionhub.orchestration.dispatch import enqueue_dispatch
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import enqueue_dispatch
 
     async with StateDB(db_path) as db:
         return await enqueue_dispatch(db, **kwargs)
@@ -77,9 +76,8 @@ def test_dispatch_ack_no_daemon_running(monkeypatch, tmp_path, capsys):
     db_path = _redirect_state_db(monkeypatch, tmp_path)
     import asyncio
 
-    from lionhub.orchestration.dispatch import get_dispatch
-
     from lionagi.state.db import StateDB
+    from lionhub.orchestration.dispatch import get_dispatch
 
     dispatch_id = asyncio.run(
         _seed_dispatch(db_path, kind="terminal_notify", deliver_to="seat-1", ack_required=True)
@@ -145,8 +143,9 @@ def test_dispatch_purge_bulk_by_status(monkeypatch, tmp_path, capsys):
 
     async def seed():
         async with StateDB(db_path) as db:
-            from lionhub.orchestration.dispatch import enqueue_dispatch
             from sqlalchemy import text
+
+            from lionhub.orchestration.dispatch import enqueue_dispatch
 
             delivered_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
             pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
@@ -184,8 +183,9 @@ def test_dispatch_purge_bulk_dry_run_deletes_nothing(monkeypatch, tmp_path, caps
 
     async def seed():
         async with StateDB(db_path) as db:
-            from lionhub.orchestration.dispatch import enqueue_dispatch
             from sqlalchemy import text
+
+            from lionhub.orchestration.dispatch import enqueue_dispatch
 
             dispatch_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
             async with db._tx() as conn:
@@ -265,8 +265,9 @@ def test_dispatch_purge_bare_before_leaves_pending_row_alone(monkeypatch, tmp_pa
 
     async def seed():
         async with StateDB(db_path) as db:
-            from lionhub.orchestration.dispatch import enqueue_dispatch
             from sqlalchemy import text
+
+            from lionhub.orchestration.dispatch import enqueue_dispatch
 
             old_ts = time.time() - 100_000
             pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")

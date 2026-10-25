@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+
 from lionhub.orchestration.work import (
     REGEX_MAX_INPUT_LENGTH,
     VALID_TRANSITIONS,
