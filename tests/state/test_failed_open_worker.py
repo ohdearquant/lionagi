@@ -22,6 +22,11 @@ from lionagi.state.db import StateDB
 
 pytestmark = [pytest.mark.asyncio(loop_scope="function"), pytest.mark.timeout(40)]
 
+# aiosqlite 0.22.0 has no queued stop: its Connection._connect awaits
+# _stop_running() before re-raising, so the worker has already exited when a
+# failed open reaches the engine and the bounded join returns at once (checked on
+# a 0.22.0 install, opening a directory as the database). The tests below hold
+# the stop that 0.22.1 and later queue instead, so they skip on 0.22.0.
 needs_stop = pytest.mark.skipif(
     not hasattr(aiosqlite.Connection, "stop"),
     reason="the stop future is only present in aiosqlite 0.22.1 and later",
@@ -71,6 +76,18 @@ async def test_the_driver_still_has_the_private_worker_thread_the_wrapper_reads(
         " drain in lionagi/state/engine.py reads; re-check before widening the pin"
     )
     assert connection._thread.ident is None
+
+
+async def test_each_engine_wraps_the_real_driver_module_once():
+    first, second = {}, {}
+    engine._configure_sqlite_module("sqlite+aiosqlite:///first.db", first)
+    engine._configure_sqlite_module("sqlite+aiosqlite:///second.db", second)
+    assert first["module"] is not second["module"]
+    for kwargs in (first, second):
+        wrapper = kwargs["module"].aiosqlite
+        assert isinstance(wrapper, engine._OwnedSQLiteDriver)
+        assert wrapper._driver is aiosqlite
+    assert aiosqlite.connect is driver_core.connect
 
 
 @needs_stop
