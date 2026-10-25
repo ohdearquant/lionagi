@@ -112,7 +112,7 @@ class _AliasLoader(importlib.abc.Loader):
         return None
 
     def exec_module(self, module: ModuleType) -> None:
-        moved = importlib.import_module(self._new_name)
+        moved = _import_new(self._new_name)
         warnings.warn(
             f"{module.__name__} moved to {self._new_name}; the old import path is removed "
             f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead.",
@@ -148,6 +148,28 @@ class _MovedFinder(importlib.abc.MetaPathFinder):
         if new_spec.submodule_search_locations is not None:
             spec.submodule_search_locations = list(new_spec.submodule_search_locations)
         return spec
+
+
+_DEADLOCK_RETRIES = 20
+
+
+def _import_new(new_name: str) -> ModuleType:
+    import time
+
+    for attempt in range(1, _DEADLOCK_RETRIES + 1):
+        try:
+            return importlib.import_module(new_name)
+        except importlib._bootstrap._DeadlockError:
+            # An old name reaches the new package through its top, so the package's __init__
+            # can ask for a submodule lock that a thread importing the new name already holds
+            # while it waits for the package. importlib breaks that cycle by failing this side,
+            # which releases the package. Importing again at once would take it back before the
+            # waiting thread wakes, so this side first gives way; the other thread then finishes
+            # the package and the next attempt returns it.
+            if attempt == _DEADLOCK_RETRIES:
+                raise
+            time.sleep(0.001 * attempt)
+    raise AssertionError("unreachable")
 
 
 def install() -> None:
