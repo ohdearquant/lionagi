@@ -119,14 +119,14 @@ class GithubPollResult(NamedTuple):
 
     ``scan_complete`` is False only when merged-mode pagination stopped for
     an unsafe reason (the ``_MERGED_MODE_MAX_PAGES`` cap, or a fetch/status
-    error) rather than a safe boundary; ``items`` already has any
-    can't-prove-complete event filtered out, so the flag is for observability
-    only. ``poll_status`` distinguishes healthy-but-empty from blind (a 401 or
+    error) rather than a safe boundary. An incomplete merged-mode scan returns
+    no events, so its caller cannot advance past an unfetched merge.
+    ``poll_status`` distinguishes healthy-but-empty from blind (a 401 or
     network failure also returns no items): ``"ok"`` = 2xx/304,
     ``"auth_error"`` = 401 surviving the gh-CLI-token fallback, ``"error"`` =
     anything else. A merged-mode page after the first that fails sets the
-    status the same way (401 = ``"auth_error"``) while the events fetched
-    before it are still returned. Used by ``SchedulerEngine._tick_github`` to
+    status the same way (401 = ``"auth_error"``); fetched events wait for a
+    complete scan. Used by ``SchedulerEngine._tick_github`` to
     stamp the schedule's observer-self-health columns.
     """
 
@@ -142,9 +142,9 @@ _client: httpx.AsyncClient | None = None
 _cached_token: str | None = None
 
 # Bounds pages fetched hunting an older, still-undispatched merged PR
-# (merged_at can trail the API's updated_at sort key). Bounded latency, not
-# bounded correctness: a backlog deeper than this reach is picked up on a
-# later poll, but does not recover on its own if it falls behind.
+# (merged_at can trail the API's updated_at sort key). An incomplete scan
+# releases no events and leaves the cursor unchanged; the scheduler reports
+# repeated capped polls without dispatch as stalled progress.
 _MERGED_MODE_MAX_PAGES = 5
 
 # Page size requested (GitHub's maximum); the page budget above is stated in
@@ -436,8 +436,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             except httpx.HTTPError:
                 _log.warning(
                     "GitHub API pagination request failed for %s while paging "
-                    "for merged PRs; using %d PR(s) fetched so far -- events "
-                    "too close to the unproven boundary are held for a later poll",
+                    "for merged PRs; %d PR(s) fetched so far -- no events "
+                    "released from an incomplete scan",
                     repo,
                     len(prs),
                 )
@@ -450,8 +450,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                     _cached_token = None
                 _log.warning(
                     "GitHub API returned %d for %s during merged-PR pagination; "
-                    "using %d PR(s) fetched so far -- events too close to the "
-                    "unproven boundary are held for a later poll",
+                    "%d PR(s) fetched so far -- no events released from "
+                    "an incomplete scan",
                     resp.status_code,
                     repo,
                     len(prs),
@@ -463,15 +463,10 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             prs.extend(page)
             pages_fetched += 1
 
-    # Once the scan is truncated, any PR whose cursor field sits at or past
-    # the oldest fetched updated_at can't be proven safe to dispatch -- drop
-    # it entirely (not just mark non-dispatchable) so it's re-fetched and
-    # reconsidered on a later poll instead of risking a skipped merge.
-    # (Dispatching one advances the cursor to ITS merged_at, which would step
-    # over any unfetched PR merged earlier -- losing it permanently.)
-    unsafe_floor: str | None = None
-    if merged_mode and not scan_complete and prs:
-        unsafe_floor = min(pr.get("updated_at", "") for pr in prs)
+    # An incomplete merged-mode scan cannot release any event safely: an
+    # unfetched merge may precede even a fetched merge older than the oldest
+    # updated_at seen. Leave every eligible event for a complete scan so the
+    # caller cannot advance its cursor past an unseen merge.
 
     draft_filter = github_filter.get("draft")
     same_repo_filter = github_filter.get("same_repo_only")
@@ -492,7 +487,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         if bound is not None and _event_position(cursor_at, pr.get("number")) <= bound:
             continue
 
-        if unsafe_floor is not None and cursor_at >= unsafe_floor:
+        if merged_mode and not scan_complete:
             held_back.append(pr.get("number"))
             continue
 
@@ -549,20 +544,17 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             )
         )
 
-    # Holding back some events is ordinary (the cursor still advances past
-    # what was returned). Holding back everything is the stuck shape: no
-    # cursor advance, and the next scan repeats this one indistinguishably
-    # from a quiet repo -- that's the only case worth warning about.
+    # Report eligible merges withheld by an incomplete scan: no cursor
+    # advances, so repeated scans otherwise look like a quiet repository.
     if held_back and not items:
         _log.warning(
             "%s: merged-PR scan found %d event(s) past the cursor and dispatched "
-            "none -- all sit at or above the unproven boundary %s of a truncated "
-            "scan (PR numbers: %s). No cursor advances, so the next poll repeats "
-            "this one. If this persists, the backlog above the stored cursor is "
-            "deeper than the scan can reach.",
+            "none -- the scan is incomplete (PR numbers: %s). "
+            "No cursor advances, so the next poll repeats "
+            "this one. If this persists, check pagination failures or whether "
+            "the backlog exceeds the scan cap.",
             repo,
             len(held_back),
-            unsafe_floor,
             ", ".join(str(n) for n in held_back[:10]) + ("..." if len(held_back) > 10 else ""),
         )
 

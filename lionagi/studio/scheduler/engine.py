@@ -1857,8 +1857,8 @@ class SchedulerEngine:
                     _log.info(
                         "Schedule %s (%s): merged-PR scan truncated this poll "
                         "(page cap reached or a pagination fetch error) -- "
-                        "event(s) too close to the unproven boundary are held "
-                        "back for a later poll",
+                        "no events released; the cursor stays unchanged "
+                        "until a complete scan establishes merge order",
                         schedule.get("name"),
                         sid,
                     )
