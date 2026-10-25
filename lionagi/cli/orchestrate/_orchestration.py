@@ -1457,7 +1457,7 @@ async def build_worker_branch(
     env.session.include_branches(wb)
 
     if grant_spawn:
-        from lionagi.orchestration import grant_spawn as _grant_spawn
+        from lionhub.orchestration import grant_spawn as _grant_spawn
 
         _grant_spawn(wb, assignees=spawn_assignees or [role])
 

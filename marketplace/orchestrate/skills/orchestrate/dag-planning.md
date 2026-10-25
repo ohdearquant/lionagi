@@ -25,7 +25,7 @@ modes:         list[str]  # optional reasoning-mode overrides for this assignmen
 The planner must use roles from its supplied roster. Model and profile routing are resolved
 after planning; `assignee` is a role, not a model name.
 
-Source: `lionagi/casts/emission.py`, `lionagi/orchestration/prompts.py`, and
+Source: `lionagi/casts/emission.py`, `lionhub/src/lionhub/orchestration/prompts.py`, and
 `lionagi/cli/orchestrate/flow.py`.
 
 ---
