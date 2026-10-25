@@ -414,3 +414,134 @@ def test_the_scale_is_carried_by_copy_and_serialization():
     assert iModel.from_dict(data).input_token_scale == 1.25
     for bad in ("2", True, float("nan"), float("inf"), 0.5, None):
         assert iModel.from_dict({**data, "input_token_scale": bad}).input_token_scale == 1.0
+
+
+# The tool-result character bound is local presentation policy, independent of
+# the input-token refusal and provider request settings.
+def _tool_bound_model(bound, **kwargs):
+    return iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="test-not-a-key",
+        max_tokens=64,
+        tool_result_max_chars=bound,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("bound", [None, 1024, 4000, 20000])
+def test_tool_result_bound_is_validated_local_model_state(bound):
+    model = _tool_bound_model(bound)
+    assert getattr(model, "tool_result_max_chars", "missing") == bound
+    assert "tool_result_max_chars" not in model.endpoint.config.kwargs
+    assert "tool_result_max_chars" not in model.endpoint.to_dict()["config"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, False, 0, 1, -1, 1023, "4000", "", 1024.0, float("nan"), float("inf")],
+    ids=[
+        "true",
+        "false",
+        "zero",
+        "one",
+        "negative",
+        "below-floor",
+        "string",
+        "empty",
+        "float",
+        "nan",
+        "infinity",
+    ],
+)
+def test_tool_result_bound_rejects_non_integer_or_too_small_values(bad):
+    with pytest.raises(ValueError, match="tool_result_max_chars"):
+        _tool_bound_model(bad)
+
+
+@pytest.mark.parametrize("unfiltered", [False, True], ids=["schema", "schema-less"])
+def test_tool_result_bound_never_reaches_endpoint_or_provider_payload(unfiltered):
+    model = _tool_bound_model(4000)
+    if unfiltered:
+        model.endpoint.request_options = None
+    payload, headers = model.endpoint.create_payload(
+        request={"messages": [{"role": "user", "content": "hello"}]}
+    )
+    assert "tool_result_max_chars" not in payload
+    assert "tool_result_max_chars" not in headers
+    assert "tool_result_max_chars" not in model.endpoint.config.kwargs
+    assert "tool_result_max_chars" not in json.dumps(model.endpoint.to_dict())
+    assert payload["messages"]
+
+
+@pytest.mark.parametrize("bound", [None, 1024, 4000, 20000])
+def test_tool_result_bound_round_trips_without_changing_cap_or_scale(bound):
+    model = _tool_bound_model(bound, max_input_tokens=1234)
+    model.input_token_scale = 1.75
+    data = model.to_dict()
+    if bound is None:
+        assert "tool_result_max_chars" not in data
+    else:
+        assert data.get("tool_result_max_chars") == bound
+    restored = iModel.from_dict(data, api_key="test-not-a-key")
+    assert getattr(restored, "tool_result_max_chars", "missing") == bound
+    assert restored.max_input_tokens == 1234
+    assert restored.input_token_scale == 1.75
+    assert restored.id == model.id
+    assert "tool_result_max_chars" not in restored.endpoint.config.kwargs
+
+
+def test_old_stored_model_without_tool_result_bound_loads_unset():
+    data = _haiku(1234).to_dict()
+    assert "tool_result_max_chars" not in data
+    restored = iModel.from_dict(data, api_key="test-not-a-key")
+    assert getattr(restored, "tool_result_max_chars", "missing") is None
+    assert "tool_result_max_chars" not in restored.to_dict()
+    assert restored.max_input_tokens == 1234
+
+
+@pytest.mark.parametrize("bad", [True, 1023, "4000", 1024.0, float("nan"), {}, []])
+def test_malformed_stored_tool_result_bound_is_rejected(bad):
+    data = _haiku(1234).to_dict()
+    data["tool_result_max_chars"] = bad
+    with pytest.raises(ValueError, match="tool_result_max_chars"):
+        iModel.from_dict(data, api_key="test-not-a-key")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("share_executor", [False, True])
+async def test_copy_keeps_tool_bound_cap_scale_and_actual_stream_hook(share_executor):
+    from lionagi.service.hooks import HookRegistry
+
+    seen = []
+
+    async def hook(_event, _chunk_type, chunk, **_kw):
+        seen.append(chunk["value"])
+        return {"choices": [{"delta": {"content": "hooked"}}]}
+
+    model = _tool_bound_model(
+        4000,
+        max_input_tokens=1234,
+        hook_registry=HookRegistry(stream_handlers={"dict": hook}),
+        exit_hook=True,
+        limit_requests=3,
+    )
+    model.input_token_scale = 1.75
+    copied = model.copy(share_executor=share_executor)
+    assert getattr(copied, "tool_result_max_chars", "missing") == 4000
+    assert copied.max_input_tokens == 1234
+    assert copied.input_token_scale == 1.75
+    assert copied.id != model.id
+    assert copied.endpoint is not model.endpoint
+    assert copied.hook_registry is model.hook_registry
+    assert copied.exit_hook is True
+    assert copied.executor.config == model.executor.config
+    assert (copied.executor is model.executor) is share_executor
+    assert await model.process_chunk({"value": "original"}) == {
+        "choices": [{"delta": {"content": "hooked"}}]
+    }
+    assert await copied.process_chunk({"value": "copy"}) == {
+        "choices": [{"delta": {"content": "hooked"}}]
+    }
+    assert seen == ["original", "copy"]
+    assert "tool_result_max_chars" not in copied.endpoint.config.kwargs
