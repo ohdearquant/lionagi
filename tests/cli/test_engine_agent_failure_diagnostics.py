@@ -209,7 +209,7 @@ async def test_engine_without_total_agent_failure_attr_stays_completed(monkeypat
 
 
 async def _build_all_agents_failed_engine():
-    from lionagi.engines.engine import Engine, EngineRun
+    from lionhub.orchestration.engines.engine import Engine, EngineRun
 
     class AllAgentsFailedEngine(Engine):
         async def _run(self, run: EngineRun, spec: str, **kwargs) -> str:  # type: ignore[override]

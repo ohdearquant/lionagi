@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lionagi.engines.coding import (
+from lionhub.orchestration.engines.coding import (
     AutoRepairApplied,
     ChangeProposed,
     CodingEngine,
@@ -22,7 +22,7 @@ from lionagi.engines.coding import (
     WorkPlanned,
     _looks_mechanical,
 )
-from lionagi.engines.engine import Engine, EngineRun
+from lionhub.orchestration.engines.engine import Engine, EngineRun
 
 # Shared helpers
 
@@ -58,21 +58,21 @@ class _ScriptedBranch:
 
 
 def test_looks_mechanical_returns_false_for_passing_tests():
-    from lionagi.engines.coding import TestsRan
+    from lionhub.orchestration.engines.coding import TestsRan
 
     t = TestsRan(cmd="cargo test", passed=True, returncode=0)
     assert not _looks_mechanical(t)
 
 
 def test_looks_mechanical_returns_false_for_empty_output():
-    from lionagi.engines.coding import TestsRan
+    from lionhub.orchestration.engines.coding import TestsRan
 
     t = TestsRan(cmd="cargo test", passed=False, returncode=1, output_tail="")
     assert not _looks_mechanical(t)
 
 
 def test_looks_mechanical_returns_true_for_rustfmt_output():
-    from lionagi.engines.coding import TestsRan
+    from lionhub.orchestration.engines.coding import TestsRan
 
     tail = "rustfmt would reformat src/lib.rs\nrustfmt would reformat src/main.rs\n"
     t = TestsRan(cmd="cargo fmt --check", passed=False, returncode=1, output_tail=tail)
@@ -80,7 +80,7 @@ def test_looks_mechanical_returns_true_for_rustfmt_output():
 
 
 def test_looks_mechanical_returns_false_for_mixed_output():
-    from lionagi.engines.coding import TestsRan
+    from lionhub.orchestration.engines.coding import TestsRan
 
     tail = "rustfmt would reformat src/lib.rs\nerror[E0308]: mismatched types\n"
     t = TestsRan(cmd="cargo test", passed=False, returncode=1, output_tail=tail)
@@ -88,7 +88,7 @@ def test_looks_mechanical_returns_false_for_mixed_output():
 
 
 def test_looks_mechanical_ruff_format_output():
-    from lionagi.engines.coding import TestsRan
+    from lionhub.orchestration.engines.coding import TestsRan
 
     tail = "ruff format check would reformat 3 files\n"
     t = TestsRan(cmd="ruff format --check", passed=False, returncode=1, output_tail=tail)
@@ -464,7 +464,7 @@ async def test_mechanical_fix_round_skips_judge(tmp_path, monkeypatch):
     async def fake_test(r, change, *, round_no):
         nonlocal call_count
         call_count += 1
-        from lionagi.engines.coding import TestsRan
+        from lionhub.orchestration.engines.coding import TestsRan
 
         if call_count == 1:
             t = TestsRan(
@@ -569,7 +569,7 @@ async def test_fast_test_cmd_used_for_intermediate_rounds(tmp_path, monkeypatch)
     monkeypatch.setattr(eng, "_test", spy_test)
 
     # First full test fails; fast test passes; second full test passes.
-    from lionagi.engines.coding import TestsRan
+    from lionhub.orchestration.engines.coding import TestsRan
 
     full_test_call = 0
 

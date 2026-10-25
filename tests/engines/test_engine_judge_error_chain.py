@@ -18,8 +18,8 @@ import httpx
 import pytest
 
 from lionagi import Branch, iModel
-from lionagi.engines.engine import Engine
 from lionagi.service.connections.endpoint import Endpoint
+from lionhub.orchestration.engines.engine import Engine
 
 pytestmark = pytest.mark.asyncio
 

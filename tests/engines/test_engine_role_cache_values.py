@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import lionagi.cli._providers as provider_module
-import lionagi.engines.engine as engine_module
+import lionhub.orchestration.engines.engine as engine_module
 
 
 @pytest.mark.parametrize("value", (None, False), ids=("silent-profile", "explicit-opt-out"))

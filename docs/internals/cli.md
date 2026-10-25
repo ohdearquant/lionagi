@@ -926,7 +926,7 @@ default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
 `export_dir`: the CLI knows what directory it passed; neither `CodeResultRecorded`
-(`lionagi/engines/coding.py:125-131` — fields: `passed`, `measurements`, `caveats`,
+(`lionhub/src/lionhub/orchestration/engines/coding.py:125-131` — fields: `passed`, `measurements`, `caveats`,
 `experiment_ref`, `verdict_ref`) nor the hypothesis string echo it back. `export_dir` is sourced
 from args directly for kinds that accept the flag, falling back to `result_data` for any future
 engine model that does include it.

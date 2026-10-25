@@ -243,8 +243,8 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
     # A base reached through a submodule import (``import importlib.abc``), which the scan
     # does not resolve; each class is an import hook, not a model:
-    "lionagi._moved:102:20": "``importlib.abc.Loader``, the import system's loader base",
-    "lionagi._moved:129:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
+    "lionagi._moved:103:20": "``importlib.abc.Loader``, the import system's loader base",
+    "lionagi._moved:130:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",

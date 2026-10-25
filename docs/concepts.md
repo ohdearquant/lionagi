@@ -17,7 +17,7 @@ building blocks when an application needs direct control.
 | One stateful worker | `li agent` | `Branch` | A focused task or conversation |
 | Independent workers | `li o fanout` | Separate branches | Research or review that can run in parallel |
 | Dependent or reactive work | `li o flow` / `li play` | `Builder` + `Session.flow()` | Multi-step work with explicit dependencies |
-| A domain pipeline | `li engine run` | `lionagi.engines` | Planning, research, review, hypothesis, or coding workflows |
+| A domain pipeline | `li engine run` | `lionhub.orchestration.engines` | Planning, research, review, hypothesis, or coding workflows |
 
 Start with the smallest shape that fits. A single agent is easier to inspect and
 resume than a graph; use a flow when dependencies or distinct worker contexts are
