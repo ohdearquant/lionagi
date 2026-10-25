@@ -702,7 +702,10 @@ def test_launch_settings_reach_endpoint_config_without_provider_policy_keys(
         "context_fold_target",
         "prompt_caching",
     }.intersection(payload)
+    # The request's own max_tokens is sent over the output limit the leg puts on the config.
+    assert payload["max_tokens"] == 100
     if declares:
         assert _marks(payload) == [ONE_HOUR, FIVE_MINUTES]
     else:
-        assert json.dumps(payload) == json.dumps(before)
+        # Only the position of max_tokens in the payload moves; nothing else changes.
+        assert payload == before
