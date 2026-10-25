@@ -252,6 +252,22 @@ def test_an_old_and_a_new_name_imported_at_once_both_load():
     assert out.split(" ", 1)[0] == "0", out
 
 
+def test_a_python_without_the_private_deadlock_error_still_reports_import_errors():
+    # The retry names a private importlib class. Without it, a failed import of a moved module
+    # must still raise its own error rather than one from evaluating the except clause.
+    out = _run_fresh(
+        "import importlib._bootstrap as b\n"
+        "del b._DeadlockError\n"
+        "from lionagi import _moved\n"
+        "assert _moved._DEADLOCK_ERROR == ()\n"
+        "try:\n"
+        "    _moved._import_new('lionhub.no_such_module')\n"
+        "except ModuleNotFoundError as exc:\n"
+        "    print(type(exc).__name__, exc.name)\n"
+    )
+    assert out.split() == ["ModuleNotFoundError", "lionhub.no_such_module"], out
+
+
 def test_an_old_package_not_yet_imported_is_described_as_a_package():
     row = _moved.MOVED[0]
     out = _run_fresh(

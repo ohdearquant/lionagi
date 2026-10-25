@@ -300,6 +300,7 @@ def test_settlement_prices_each_category_at_the_served_models_rates():
         "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200},
         "inference_geo": "global",
         "service_tier": "standard",
+        "speed": "standard",
         "output_tokens_details": {"thinking_tokens": 400},
         "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
     }
@@ -388,6 +389,7 @@ def test_omitted_cache_counts_are_zero_only_when_the_request_could_not_cache():
         pytest.param({"cache_creation_input_tokens": 3}, id="split-does-not-add-up"),
         pytest.param({"service_tier": "priority"}, id="priority-tier"),
         pytest.param({"service_tier": "batch"}, id="batch-tier"),
+        pytest.param({"speed": "fast"}, id="fast-speed"),
         pytest.param({"inference_geo": "eu"}, id="unpriced-region"),
         pytest.param({"server_tool_use": {"web_search_requests": 1}}, id="server-tool-charge"),
         pytest.param({"cache_creation": {"ephemeral_24h_input_tokens": 0}}, id="unknown-split-key"),
