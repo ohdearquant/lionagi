@@ -95,10 +95,9 @@ def resolve_secret_lookup_config(
     while resolving nothing.
     """
     if settings is None:
-        # Imported here rather than at module scope: this module is reached
-        # from the provider spawn path, and the settings loader pulls in the
-        # agent package.
-        from lionagi.agent.settings import load_settings
+        # Load settings only when the provider spawn path needs them. The core
+        # reader avoids importing agent construction or hook wiring.
+        from lionagi._settings import load_settings
 
         try:
             settings = load_settings(include_project=False)
