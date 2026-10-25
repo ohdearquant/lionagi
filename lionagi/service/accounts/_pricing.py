@@ -427,6 +427,8 @@ _USAGE_KEYS = frozenset(
         "inference_geo",
         "service_tier",
         "server_tool_use",
+        # The speed the request was served at; only standard speed is priced here.
+        "speed",
         # A breakdown of output_tokens, which already bills it; never added again.
         "output_tokens_details",
     }
@@ -521,6 +523,8 @@ def price_usage(
         return None
     w5, w1 = writes
     if usage.get("service_tier") not in (None, "standard"):
+        return None
+    if usage.get("speed") not in (None, "standard"):
         return None
     geo = usage.get("inference_geo")
     if not (geo is None or isinstance(geo, str)) or geo not in revision.geo_multipliers:
