@@ -20,12 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.mcp import _notify_hook, config, jobs
 from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 from lionagi.state.lifecycle.notify_settings import (
     NotifyConfigResolution,
     ResolvedNotifyHandler,
 )
+from lionhub.serve.mcp import _notify_hook, config, jobs
 
 
 @pytest.fixture
@@ -801,7 +801,7 @@ import asyncio, json, os, sys, time
 from pathlib import Path
 
 from lionagi.cli.orchestrate._notify import register_flow_notify_scope
-from lionagi.mcp import config
+from lionhub.serve.mcp import config
 from lionagi.state.lifecycle.callbacks import (
     EntityRef,
     RunTerminalEnvelope,
@@ -877,7 +877,12 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
     ordering rather than calling the two writers sequentially in the test.
     """
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(
+            str(Path(__file__).resolve().parents[2] / root) for root in (".", "lionhub/src")
+        ),
+    )
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
 
@@ -1084,7 +1089,12 @@ def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, 
     # The run is launched by absolute script path, so it imports whichever
     # lionagi its interpreter resolves — which is this checkout only when the
     # installed distribution happens to point here.
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(
+            str(Path(__file__).resolve().parents[2] / root) for root in (".", "lionhub/src")
+        ),
+    )
     # A real delivery that really fails: the outcome the code builds from an
     # exit code of its own, not one handed to it.
     monkeypatch.setenv("LIONAGI_MCP_NOTIFY_COMMAND", json.dumps(["/bin/sh", "-c", "exit 1"]))

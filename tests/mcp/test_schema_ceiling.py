@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("fastmcp", reason="requires the 'mcp' extra")
 
-from lionagi.mcp import server  # noqa: E402 — must follow the extra guard
+from lionhub.serve.mcp import server  # noqa: E402 — must follow the extra guard
 
 # The surface costs a little over 2,100 bytes as one tool. The bound is a little
 # under double that: enough headroom to reword the tool's own documentation,

@@ -20,7 +20,7 @@ import json
 import pytest
 
 from lionagi.cli._mcp_resolve import resolve_spawn_mcp_servers
-from lionagi.mcp import config, dispatch, jobs
+from lionhub.serve.mcp import config, dispatch, jobs
 
 ORCHESTRATION_KINDS = ("flow", "fanout")
 
@@ -272,7 +272,7 @@ def test_the_orchestration_cli_accepts_the_flags_the_surface_renders(sandbox):
     engine prepends would make `li o flow` exit on an unrecognised argument
     before the run ever started.
     """
-    from lionagi.mcp.projection import build_parser_for
+    from lionhub.serve.mcp.projection import build_parser_for
 
     for path in ("orchestrate flow", "orchestrate fanout"):
         parsed = build_parser_for(path).parse_args(["--mcp-config", "/tmp/x.json", "--", "hi"])

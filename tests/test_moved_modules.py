@@ -304,6 +304,30 @@ def _run_fresh(code: str) -> str:
     return proc.stdout
 
 
+# `python -m <old name>` runs a package's __main__ without importing it, through the
+# loader's code (runpy, as `-m` does). MCP client configs start the server this way.
+_SCRIPT_ROWS = [
+    row
+    for row in _moved.MOVED
+    if (ROOT / "lionhub" / "src" / Path(*row.new.split(".")) / "__main__.py").is_file()
+]
+
+
+@pytest.mark.parametrize("row", _SCRIPT_ROWS, ids=lambda row: row.old)
+def test_an_old_package_with_a_main_module_still_runs_as_a_script(row):
+    out = _run_fresh(
+        "import importlib, runpy, sys\n"
+        f"g = runpy.run_module({row.old!r}, run_name='not_main')\n"
+        f"new = importlib.import_module({row.new!r})\n"
+        f"print(g['__spec__'].name, g['__package__'], sys.modules[{row.old!r}] is new)\n"
+    )
+    assert out.split() == [f"{row.old}.__main__", row.old, "True"]
+
+
+def test_some_moved_package_has_a_main_module():
+    assert _SCRIPT_ROWS
+
+
 # Two old names for one module, imported for the first time on two threads. The loader
 # hooks pause each thread at a fixed point so the interleaving is the same on every run:
 # the first thread is inside its load when the second starts its own. The second old name

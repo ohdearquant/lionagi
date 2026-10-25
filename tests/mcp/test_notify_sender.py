@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from lionagi.mcp import _notify_hook, config, jobs
+from lionhub.serve.mcp import _notify_hook, config, jobs
 
 
 def test_sender_substitutes_into_the_delivery_command():
@@ -191,7 +191,7 @@ def test_submit_accepts_the_actor_resolved_from_the_submitting_directory(monkeyp
 
 
 def _job(monkeypatch, tmp_path):
-    from lionagi.mcp import config
+    from lionhub.serve.mcp import config
 
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)

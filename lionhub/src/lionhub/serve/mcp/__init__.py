@@ -1,14 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""lionagi MCP server — submit ``li`` runs as background jobs and query them.
+"""lionhub.serve.mcp — the MCP server: submit ``li`` runs as background jobs and query them.
 
-The server itself lives in :mod:`lionagi.mcp.server` and needs the optional
+The server itself lives in :mod:`lionhub.serve.mcp.server` and needs the optional
 ``mcp`` extra (``pip install lionagi[mcp]``). Importing this package never pulls
-that dependency: the job engine (:mod:`lionagi.mcp.jobs`) and paths
-(:mod:`lionagi.mcp.config`) are stdlib-only, so the terminal hook the CLI runs
+that dependency: the job engine (:mod:`lionhub.serve.mcp.jobs`) and paths
+(:mod:`lionhub.serve.mcp.config`) are stdlib-only, so the terminal hook the CLI runs
 imports cleanly even where the server dependency is absent.
 
-Serve it with ``li mcp`` (or ``python -m lionagi.mcp``).
+Serve it with ``li mcp`` (or ``python -m lionhub.serve.mcp``).
 """
 
 from __future__ import annotations

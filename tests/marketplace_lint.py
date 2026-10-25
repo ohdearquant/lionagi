@@ -348,12 +348,12 @@ def test_documented_mcp_verbs_are_runnable_on_the_published_server() -> None:
     direction nobody is watching, which is how this file's own `li`
     subcommand list went wrong before.
     """
-    from lionagi.mcp.verbs import ABSENT, VERBS
+    from lionhub.serve.mcp.verbs import ABSENT, VERBS
 
     runnable = frozenset(VERBS)
     declined = frozenset(a.name for a in ABSENT)
-    assert runnable, "lionagi.mcp.verbs.VERBS is empty — the check would pass vacuously"
-    assert declined, "lionagi.mcp.verbs.ABSENT is empty — the declined arm would never fire"
+    assert runnable, "lionhub.serve.mcp.verbs.VERBS is empty — the check would pass vacuously"
+    assert declined, "lionhub.serve.mcp.verbs.ABSENT is empty — the declined arm would never fire"
 
     documented: dict[str, list[str]] = {}
     for path in _SKILL_FILES:
@@ -648,7 +648,7 @@ def test_documented_submit_ops_carry_a_schema_fingerprint() -> None:
     rather than listed, since "the spawn verbs" is a fact about the release,
     not about this file.
     """
-    from lionagi.mcp.verbs import VERBS
+    from lionhub.serve.mcp.verbs import VERBS
 
     needs = frozenset(name for name, verb in VERBS.items() if verb.executor == "spawn")
     assert needs, "no spawn verbs found in the registry — the check would pass vacuously"
@@ -702,8 +702,8 @@ def test_a_playbook_qualified_schema_has_its_own_fingerprint(
     """
     import yaml
 
-    from lionagi.mcp.dispatch import schema_fingerprint, verb_schema
-    from lionagi.mcp.verbs import VERBS
+    from lionhub.serve.mcp.dispatch import schema_fingerprint, verb_schema
+    from lionhub.serve.mcp.verbs import VERBS
 
     verb = VERBS["play.submit"]
     base = schema_fingerprint(verb_schema(verb))
@@ -763,7 +763,7 @@ def test_a_playbook_bearing_example_names_a_playbook_qualified_help_source() -> 
     tighter pattern), and a help call written across lines names nothing, so
     an example relying on one is reported as having no source.
     """
-    from lionagi.mcp.verbs import VERBS
+    from lionhub.serve.mcp.verbs import VERBS
 
     aware = frozenset(name for name, verb in VERBS.items() if verb.playbook_aware)
     assert aware, "no playbook-aware verbs in the registry — the check would pass vacuously"
@@ -871,7 +871,7 @@ def test_a_spawn_example_whose_prompt_names_a_path_passes_cwd() -> None:
     path in every teaching example -- hence a pattern over prompts, not a
     blanket requirement.
     """
-    from lionagi.mcp.verbs import VERBS
+    from lionhub.serve.mcp.verbs import VERBS
 
     spawns = frozenset(name for name, verb in VERBS.items() if verb.executor == "spawn")
     assert spawns, "no spawn verbs in the registry — the check would pass vacuously"

@@ -158,8 +158,8 @@ reactive: "off"
 PyYAML parses bare `off` as boolean false, while the playbook loader requires
 `reactive` to be a string. Because validation occurs in the spawned CLI child,
 an MCP `play.submit` can return a run ID before that type error ends the run.
-Source: `lionagi/cli/orchestrate/__init__.py`, `lionagi/mcp/dispatch.py`, and
-`lionagi/mcp/jobs.py`.
+Source: `lionagi/cli/orchestrate/__init__.py`, `lionhub/src/lionhub/serve/mcp/dispatch.py`, and
+`lionhub/src/lionhub/serve/mcp/jobs.py`.
 
 ## Resolve issues independently
 
@@ -236,13 +236,13 @@ malformed schema, and injected as parser flags by
 The loader currently runs `_validate_spec_fields` only after the child process
 has loaded the file. Submission resolving the playbook and returning a run ID
 is not a successful validation. Source: `lionagi/cli/orchestrate/__init__.py`,
-`lionagi/mcp/projection.py`, and `lionagi/mcp/jobs.py`.
+`lionhub/src/lionhub/serve/mcp/projection.py`, and `lionhub/src/lionhub/serve/mcp/jobs.py`.
 
 ## Observe a submitted run
 
 The MCP submit verbs are asynchronous handles. `fanout.submit`, `flow.submit`,
 and `play.submit` return an allocated `run_id`, process metadata, and current
-spawn state—not the worker result. Source: `lionagi/mcp/jobs.py` (`submit`).
+spawn state—not the worker result. Source: `lionhub/src/lionhub/serve/mcp/jobs.py` (`submit`).
 
 Use that ID to read the three different things callers commonly conflate:
 
@@ -260,7 +260,7 @@ not merely the open-ended display `status`.
 `job.output` returns the console tail plus the persisted artifact list and an
 `artifacts_state` that distinguishes an empty list from an unreadable one. Use
 `job.wait` when the caller should block for a bounded interval instead of
-polling. Source: `lionagi/mcp/dispatch.py` and `lionagi/mcp/jobs.py` (`status`,
+polling. Source: `lionhub/src/lionhub/serve/mcp/dispatch.py` and `lionhub/src/lionhub/serve/mcp/jobs.py` (`status`,
 `output`, and `wait`).
 
 For an interactive CLI flow, use `li o ctl status ID` for lifecycle state and

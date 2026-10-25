@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.mcp import dispatch, jobs, verbs
+from lionhub.serve.mcp import dispatch, jobs, verbs
 
 
 def call(**kwargs):
@@ -1202,7 +1202,7 @@ def test_job_list_carries_the_delivery_state_out_to_the_caller(monkeypatch, tmp_
     ships and does nothing, so the property is asserted at the surface a caller
     actually reads rather than one layer in.
     """
-    from lionagi.mcp import config
+    from lionhub.serve.mcp import config
 
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     rid = jobs.new_run_id()
@@ -1452,8 +1452,8 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
     # Refused in the server, not left to the detached run: a server that exits first
     # would leave that run outside the agent's process tree.
     import lionagi.cli._providers as providers
-    from lionagi.mcp import config
     from lionagi.providers import _subagent_admission
+    from lionhub.serve.mcp import config
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
@@ -1477,8 +1477,8 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
 
 def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, monkeypatch, tmp_path):
     import lionagi.cli._providers as providers
-    from lionagi.mcp import config
     from lionagi.providers import _subagent_admission
+    from lionhub.serve.mcp import config
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)

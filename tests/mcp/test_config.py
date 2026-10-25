@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from lionagi.mcp import config
+from lionhub.serve.mcp import config
 
 
 def test_li_bin_override_wins(monkeypatch):

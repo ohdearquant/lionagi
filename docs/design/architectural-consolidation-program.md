@@ -66,7 +66,7 @@ operational packages account for 87,596 lines before frontend code:
 | `lionagi/studio` | 38,115 |
 | `lionagi/cli` | 28,612 |
 | `lionagi/state` | 14,027 |
-| `lionagi/mcp` | 6,842 |
+| `lionhub/src/lionhub/serve/mcp` | 6,842 |
 
 The default dependency set has seventeen entries and includes SQLAlchemy and aiosqlite even for an
 SDK-only installation. Extras currently add capabilities but cannot remove code from the wheel;

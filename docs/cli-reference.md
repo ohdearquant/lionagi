@@ -572,7 +572,7 @@ li play audit --help
 `play.submit` returns an allocated run ID after spawning the CLI child. The
 child then loads the playbook and calls `_validate_spec_fields`; a run ID is
 therefore a handle, not proof that the YAML is valid or that a result exists.
-Read it with `job.status` and `job.output`. Source: `lionagi/mcp/jobs.py` and
+Read it with `job.status` and `job.output`. Source: `lionhub/src/lionhub/serve/mcp/jobs.py` and
 `cli/orchestrate/__init__.py`.
 
 ### Ad-hoc specs (`-f`)
@@ -811,10 +811,10 @@ a control plane over this CLI: it submits `li` runs as **detached background
 jobs** and answers questions about them, so a submit returns a `run_id`
 immediately instead of blocking and the run keeps going in its own process
 group, surviving an MCP-server restart. Requires the `mcp` extra
-(`pip install 'lionagi[mcp]'`). Source: `lionagi/mcp/`.
+(`pip install 'lionagi[mcp]'`). Source: `lionhub/src/lionhub/serve/mcp/`.
 
 ```bash
-li mcp            # serve over stdio (same as: python -m lionagi.mcp)
+li mcp            # serve over stdio (same as: python -m lionhub.serve.mcp)
 ```
 
 The server advertises a **single** tool, `request`, and every operation is a
@@ -833,7 +833,7 @@ protocol is `lion`:
 }
 ```
 
-Job records live under `~/.lionagi/mcp/jobs/<run_id>/`; the authoritative run
+Job records live under `~/.lionhub/src/lionhub/serve/mcp/jobs/<run_id>/`; the authoritative run
 state is the CLI's own `~/.lionagi/runs/<run_id>/`. In `job.status`, the
 top-level `status` is authoritative: the embedded `run` manifest is advisory and
 its own `status` may lag.
