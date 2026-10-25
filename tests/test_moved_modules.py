@@ -482,6 +482,14 @@ def _absolute(module: str | None, level: int, path: Path) -> str | None:
     return ".".join([*package, module] if module else package)
 
 
+def _module_of(path: Path) -> str | None:
+    root = next((r for r in SOURCE_ROOTS if path.is_relative_to(r)), None)
+    if root is None:
+        return None
+    parts = [root.name, *path.relative_to(root).with_suffix("").parts]
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
 def _old_references(path: Path, source: str | None = None) -> list[str]:
     if source is None:
         source = path.read_text(encoding="utf-8")
@@ -497,14 +505,25 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
         elif isinstance(node, ast.Call):
             func = node.func
             callee = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            # Logger names are kept from before the move on purpose.
-            if callee == "getLogger":
-                continue
             names = [
                 arg.value
                 for arg in node.args
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
             ]
+            # A moved module keeps the logger name it had before the move, so logging
+            # configuration keyed on that name still applies. Only its own old name or an
+            # old package containing it; any other old name is a reference.
+            if callee == "getLogger":
+                own = _module_of(path)
+                names = [
+                    name
+                    for name in names
+                    if not (
+                        own
+                        and (new := _moved.resolve(name))
+                        and (own == new or own.startswith(new + "."))
+                    )
+                ]
         found += [
             f"{path.relative_to(ROOT)}:{node.lineno}: {name}"
             for name in names
@@ -533,7 +552,19 @@ def test_the_reference_check_sees_each_form_of_old_reference():
         f"logging.getLogger({old!r})\n"
     )
     hits = _old_references(probe, source)
-    assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 2, 3, 3, 4], hits
+    assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 2, 3, 3, 4, 5], hits
+
+
+def test_a_moved_module_may_keep_only_its_own_old_logger_name():
+    row = _moved.MOVED[0]
+    inside = ROOT / "lionhub" / "src" / Path(*row.new.split(".")) / "_probe.py"
+    source = (
+        f"logging.getLogger({row.old!r})\n"
+        f"logging.getLogger({row.old + '._probe'!r})\n"
+        f"logging.getLogger({row.old + '._other'!r})\n"
+    )
+    hits = _old_references(inside, source)
+    assert [int(hit.split(":")[1]) for hit in hits] == [3], hits
 
 
 # The packages under lionagi/ that may name lionhub: ones a later move takes out of the

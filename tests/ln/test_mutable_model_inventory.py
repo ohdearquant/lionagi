@@ -231,7 +231,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.ln.types.registry:381:24": "``Generic[ItemT]``, the typing generic base",
     "lionagi.protocols._concepts:110:21": "``Generic[E]``, the typing generic base",
     "lionagi.protocols._concepts:98:23": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols.generic.element:286:10": "``Generic[E]``, the typing generic base",
+    "lionagi.protocols.generic.element:301:10": "``Generic[E]``, the typing generic base",
     "lionagi.protocols.generic.flow:25:21": "``Generic[E, P]``, the typing generic base",
     "lionagi.protocols.generic.pile:187:21": "``Collective[T]``, the collection base on ``Element``",
     "lionagi.protocols.generic.pile:187:36": "``Generic[T]``, the typing generic base",
@@ -241,6 +241,10 @@ _ALLOWLIST: dict[str, str] = {
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
     "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
+    # A base reached through a submodule import (``import importlib.abc``), which the scan
+    # does not resolve; each class is an import hook, not a model:
+    "lionagi._moved:105:20": "``importlib.abc.Loader``, the import system's loader base",
+    "lionagi._moved:132:20": "``importlib.abc.MetaPathFinder``, the import system's finder base",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
@@ -2549,9 +2553,14 @@ def _violations(scan: _Scan, expected: set[str]) -> list[str]:
 
 
 def _production_sources() -> dict[str, tuple[str, str]]:
+    # Both import roots of the wheel: ``lionhub`` holds packages that moved out of
+    # ``lionagi`` and still subclass its models.
     sources = {}
-    for path in sorted((_ROOT / "lionagi").rglob("*.py")):
-        parts = list(path.relative_to(_ROOT).with_suffix("").parts)
+    paths = [(_ROOT, p) for p in sorted((_ROOT / "lionagi").rglob("*.py"))]
+    lionhub_src = _ROOT / "lionhub" / "src"
+    paths += [(lionhub_src, p) for p in sorted((lionhub_src / "lionhub").rglob("*.py"))]
+    for base, path in paths:
+        parts = list(path.relative_to(base).with_suffix("").parts)
         package = parts[-1] == "__init__"
         if package:
             parts.pop()
@@ -2567,6 +2576,13 @@ def _production() -> _Scan:
 
 def _inventory() -> dict:
     return json.loads(_INVENTORY.read_text())
+
+
+def test_the_scan_reads_both_import_roots():
+    modules = _production_sources()
+    assert "lionagi.protocols.generic.element" in modules
+    assert any(module.startswith("lionhub.") for module in modules)
+    assert not any(module.startswith("src.") for module in modules)
 
 
 def test_production_mutable_model_inventory_is_closed():
