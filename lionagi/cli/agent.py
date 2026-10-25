@@ -156,6 +156,10 @@ _API_CAPPED_RESUME_PROMPT = (
     "so nothing from it was received. The task instruction above is unchanged. Continue the "
     "task from where you stopped: keep the reasoning short, then act or answer."
 )
+_API_EMPTY_ANSWER_RESUME_PROMPT = (
+    "Your last reply had no text, so no answer was received. The task instruction above is "
+    "unchanged. Continue the task from where you stopped, then give your answer."
+)
 _API_UNPARSED_RESUME_PROMPT = (
     "Your last reply could not be read in the required response format ({reason}), so none of "
     "the actions in it ran. The task instruction above is unchanged. Continue the task from "
@@ -164,7 +168,7 @@ _API_UNPARSED_RESUME_PROMPT = (
 # The output limit, thinking included, an Anthropic API leg's requests send when its model names
 # none; the provider's own default is 8,192. Claude Haiku 5.5 thinks by default, and at 8,192 a
 # request could spend the whole limit on thinking and write nothing. At about 200 output tokens a
-# second this limit takes some 160 seconds, inside the endpoint's 300-second request timeout.
+# second this limit takes some 160 seconds, inside the endpoint's 600-second request timeout.
 _API_MAX_OUTPUT_TOKENS = 32_768
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
@@ -732,7 +736,7 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
     ``before`` holds the ids of the branch's messages before the pass, and ``rounds`` is what the
     pass returned with ``return_analysis=True``: each round's analysis, then the answer. The
     responses checked against the output limit are the pass's last two, the round that ended the
-    loop and the answer turn after it.
+    loop and the answer turn after it; an answer with no text fails the pass whatever its stop.
     """
     from lionagi.operations.types import UnparsedResponse
 
@@ -754,6 +758,11 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
         else:
             reason = "no JSON object could be read from it"
         return _API_UNPARSED_RESUME_PROMPT.format(reason=reason), f"a reply did not parse: {reason}"
+    # An answer turn whose reply had no text, cut off or not, ends ReAct with that empty text.
+    answer = rounds[-1] if rounds else None
+    text = getattr(answer, "answer", answer)
+    if text is None or not str(text).strip():
+        return _API_EMPTY_ANSWER_RESUME_PROMPT, "the answer had no text"
     return None
 
 

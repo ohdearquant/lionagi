@@ -16,8 +16,8 @@ _JSON_FENCED_BLOCK_PATTERN = re.compile(
     r"^[ \t]*(`{3,})json[ \t]*\r?\n(.*?)\r?\n[ \t]*\1`*[ \t]*\r?$",
     re.DOTALL | re.MULTILINE,
 )
-# Any ```json ... ``` span, a fence on the same line included; read when the pattern above finds
-# no block that parses.
+# Any ```json ... ``` span, a fence on the same line included. Read in place beside the blocks
+# above where it lies outside them, and over the whole text when none of those parses.
 _JSON_BLOCK_PATTERN = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -54,9 +54,18 @@ def extract_json(
         logger.debug("Direct JSON parse failed; falling back to markdown block extraction.")
 
     # 2. Attempt extracting JSON blocks from markdown
+    fenced = [
+        (m.start(), m.end(), m.group(2)) for m in _JSON_FENCED_BLOCK_PATTERN.finditer(input_str)
+    ]
+    spans = [(m.start(), m.end(), m.group(1)) for m in _JSON_BLOCK_PATTERN.finditer(input_str)]
+    beside = [
+        span
+        for span in spans
+        if not any(span[0] < end and start < span[1] for start, end, _ in fenced)
+    ]
     for matches in (
-        [m.group(2) for m in _JSON_FENCED_BLOCK_PATTERN.finditer(input_str)],
-        _JSON_BLOCK_PATTERN.findall(input_str),
+        [block for _, _, block in sorted(fenced + beside)],
+        [block for _, _, block in spans],
     ):
         results = []
         for m in matches:

@@ -1013,6 +1013,29 @@ def test_a_model_that_names_its_output_limit_keeps_it():
 
 
 @pytest.mark.asyncio
+async def test_an_anthropic_leg_request_waits_at_most_the_endpoint_timeout():
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    branch = Branch(chat_model=iModel(provider="anthropic", model="claude-haiku-5-5", api_key="k"))
+    agent_mod._install_api_input_cap(branch, "none")
+    endpoint = branch.chat_model.endpoint
+
+    assert endpoint.config.timeout == 600
+    # The client a request is sent on, direct or routed, takes the configured timeout.
+    for client in (
+        endpoint._create_http_session(),
+        endpoint._create_http_session({}, timeout=endpoint.config.timeout),
+    ):
+        try:
+            assert client.timeout.read == 600
+            assert client.timeout.connect == 600
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_a_round_spent_on_thinking_is_continued_and_the_turn_finishes(leg):
     leg.replies = [
         _read_round("notes.txt"),
@@ -1029,6 +1052,39 @@ async def test_a_round_spent_on_thinking_is_continued_and_the_turn_finishes(leg)
     resumed = _last_user_text(leg.payloads[3])
     assert "reached its output token limit before it wrote any text or tool call" in resumed
     assert not any("text_to_format" in json.dumps(p, default=str) for p in leg.payloads)
+
+
+@pytest.mark.asyncio
+async def test_an_answer_with_no_text_is_continued_and_the_turn_finishes(leg):
+    leg.replies = [
+        _read_round("notes.txt"),
+        _last_round(),
+        _text(""),
+        _last_round(),
+        _answer("the notes say hello"),
+    ]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.replies == []
+    assert "Your last reply had no text" in _last_user_text(leg.payloads[3])
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_keeps_having_no_text_fails_the_turn(leg):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _text("")])
+
+    with pytest.raises(FailedRoundError, match="the answer had no text") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert raised.value.details == {"continued": agent_mod._API_ROUND_RESUMES}
+    assert leg.replies == []
+    assert leg.status == "failed"
 
 
 @pytest.mark.asyncio

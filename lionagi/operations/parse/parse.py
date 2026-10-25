@@ -246,7 +246,10 @@ async def parse(
             # Nothing to reformat. A repair request carries the conversation, so what it would
             # get back is a new answer written from that, not this reply: a retry under a
             # repair's name. A reply cut off before it wrote any text ends here.
-            raise ExtractionError("the response has no text to parse")
+            empty = ExtractionError("the response has no text to parse")
+            # The outcome reports this, not what the first attempt made of no text.
+            attempts.record_failure(empty)
+            raise empty
         result = await _call([0], _inner_parse)
     except get_cancelled_exc_class():
         raise

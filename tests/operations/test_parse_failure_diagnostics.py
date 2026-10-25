@@ -25,6 +25,7 @@ from lionagi.operations.parse import (
 )
 from lionagi.operations.parse.parse import _validate_dict_or_model
 from lionagi.operations.parse.parse import parse as _parse
+from lionagi.operations.types import ParseParam
 from lionagi.protocols.types import AssistantResponse
 from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
@@ -312,3 +313,32 @@ class TestEmptyText:
         with patch.object(Branch, "chat", fake_chat):
             with pytest.raises(ExtractionError, match="no text to parse"):
                 await _parse(branch, "", param)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ["", "   "])
+    @pytest.mark.parametrize("fuzzy", [True, False], ids=["fuzzy-keys", "no-fuzzy-keys"])
+    async def test_an_empty_reply_is_an_extraction_failure_whatever_its_schema(self, body, fuzzy):
+        # Without fuzzy key matching the first attempt reads no text as a value the schema
+        # rejects; the outcome still says there was nothing to parse.
+        class Count(BaseModel):
+            n: int
+
+        def param(mode):
+            if fuzzy:
+                return make_parse_param(Count, None, handle_validation=mode)
+            return ParseParam(response_format=Count, handle_validation=mode)
+
+        branch = Branch()
+
+        async def fake_chat(*_a, **_kw):
+            raise AssertionError("a reformat turn was sent for an empty reply")
+
+        with patch.object(Branch, "chat", fake_chat):
+            with pytest.raises(ExtractionError, match="no text to parse") as raised:
+                await _parse(branch, body, param("raise"))
+            unparsed = await _parse(branch, body, param("return_value"))
+
+        assert type(raised.value) is ExtractionError
+        assert isinstance(unparsed, UnparsedResponse)
+        assert unparsed.failure_kind == "extraction"
+        assert unparsed.validation_error is None

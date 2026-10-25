@@ -88,9 +88,12 @@ It applies on a new leg and on a resumed one, as the per-model settings it sits 
 
 Why this number: the two cut-off responses of P1 took 39.7 and 40.5 seconds for 8,192 tokens,
 about 200 a second. 32,768 tokens at that rate take about 160 seconds, inside the endpoint's
-300-second request timeout (`EndpointConfig.timeout`), so the larger limit does not turn a
-cut-off into a timeout. Four times the old limit leaves a thinking model room to think and then
-act, which is what the cut-off responses did not have.
+600-second request timeout, so the larger limit does not turn a cut-off into a timeout. The
+provider registry builds the Anthropic endpoint's config with that timeout (the
+`EndpointConfig` field's own default is 300), both request paths of the endpoint, direct and
+routed, hand it to the HTTP client as its `httpx.Timeout`, and a test pins the 600 seconds on a
+leg's model. Four times the old limit leaves a thinking model room to think and then act, which
+is what the cut-off responses did not have.
 
 ### D2: a failed round is continued, then fails the turn
 
@@ -122,16 +125,22 @@ input-cap refusal, `_run_api_turn` asks `_failed_round` whether the pass ended o
   - any other shape, a list of responses included, reads False.
 - **Did not parse.** The analysis of the round that ended the loop is an `UnparsedResponse`: a
   reply the parse repairs could not turn into the schema. The reason names the schema's own error
-  (truncated at 800 characters) or says no JSON object could be read.
+  (truncated at 800 characters) or says no JSON object could be read. That error can repeat text
+  of the reply and of the tool results it quoted, and the reason goes into the continuation prompt
+  and into `run.json`'s error; the same text is already in the branch history every request sends,
+  so the copy adds no exposure.
+- **No answer text.** The answer the pass returned has no text. When the answer turn's reply does
+  not parse, `ReActStream` ends with that reply's text (its `except Exception`), so an answer turn
+  that wrote nothing, cut off or not, ends the pass with empty text.
 
 Then:
 
 - no failed round: the turn ends as before;
 - a failed round, fewer than `_API_ROUND_RESUMES` continuations so far: a new ReAct pass runs on
   the same branch, with its own `max_turns`, and with a prompt in place of the instruction that
-  says what failed: the output limit (keep the reasoning short, then act or answer), or the parse
-  failure with its reason (send the actions again in the required format). The task instruction
-  stays in the history;
+  says what failed: the output limit (keep the reasoning short, then act or answer), the parse
+  failure with its reason (send the actions again in the required format), or an answer with no
+  text (continue, then give the answer). The task instruction stays in the history;
 - a failed round after `_API_ROUND_RESUMES` continuations: the turn raises `FailedRoundError`
   ("3 passes of the tool loop in a row ended on a failed round: ..."), with
   `details={"continued": 2}`.
@@ -166,14 +175,16 @@ _JSON_BLOCK_PATTERN = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
 
 When the direct parse fails, `extract_json` first reads each ```` ```json ```` block whose opening
 and closing fences stand on lines of their own, after any indentation, the closing fence at least
-as long as the opening one. When no such block parses, the earlier pattern, any
-```` ```json ```` span up to the next fence, is read.
+as long as the opening one, and beside them, in its place, every ```` ```json ```` span up to
+the next fence (the earlier pattern) that lies outside those blocks. When none of these parses,
+every such span is read, as before.
 
 - A JSON string holds its newlines as escapes, so a fence inside one never starts a line and no
   longer ends the block, compact or indented JSON alike.
 - A block in a list item, indented four spaces or more, is read beside a block at the top level.
 - A block written on one line (```` ```json {...} ``` ````) or closed on its last line of JSON
-  still parses through the earlier pattern.
+  still parses through the earlier pattern, alone or beside blocks on lines of their own, in the
+  order the text holds them.
 - Several blocks are each read with their own inner fences.
 
 Every caller of `extract_json` gains this. It changes only text whose direct parse failed and
@@ -184,12 +195,19 @@ which holds a fenced block.
 ```python
 # lionagi/operations/parse/parse.py, parse()
 if not str(text or "").strip():
-    raise ExtractionError("the response has no text to parse")
+    empty = ExtractionError("the response has no text to parse")
+    attempts.record_failure(empty)
+    raise empty
 ```
 
 `parse()` sends no reformat request for a reply with no text, or only whitespace, and goes
 straight to its `handle_validation` outcome: an `ExtractionError` under `"raise"`, `None` under
-`"return_none"`, or an `UnparsedResponse` of kind `extraction` under `"return_value"`.
+`"return_none"`, or an `UnparsedResponse` of kind `extraction` under `"return_value"`. The
+outcome reports the empty text, whatever the first attempt made of it: a schema with a required
+field rejects the mapping an empty reply reads as, and without the recorded failure the outcome
+would be a `SchemaRejectedError` and an `UnparsedResponse` of kind `validation`. A `parse()` with
+no response format returns what its first attempt read, `None`, before this check, as it did
+before this record.
 
 Why: a reformat request with no reply text is a retry (P3). On the agent route D2's continuation
 is that retry, named in its prompt and bounded. Any other caller of `parse()` now gets the empty
@@ -201,15 +219,18 @@ before.
 - `tests/cli/test_agent_api_provider.py`: an Anthropic leg sends the output limit; a model that
   names its own limit keeps it; a round spent on thinking is continued and the turn finishes; an
   answer that keeps stopping at the output limit fails the turn; a reply that does not parse is
-  continued with the reason; an LNDL round cut off with nothing is repaired inside its rounds; the
+  continued with the reason; an answer with no text is continued, and one that keeps having none
+  fails the turn; an Anthropic leg's request waits at most the endpoint's 600-second timeout; an
+  LNDL round cut off with nothing is repaired inside its rounds; the
   actions in a reply whose text holds a fenced block run; `li agent` exits failed on a failed round
   without a traceback; the cut-off reading of each provider shape (16 cases).
 - `tests/operations/test_parse_failure_diagnostics.py`: no reformat request for an empty or blank
-  reply; an extraction error for one under `handle_validation="raise"`.
+  reply; an extraction error for one under `handle_validation="raise"`; the same outcome for a
+  schema whose required field the first attempt rejects.
 - `tests/libs/fuzzy/test_extract_json.py`: a fence inside a JSON string, compact and indented; an
   indented, longer or space-followed closing fence and CRLF line ends; an indented block beside a
-  top-level one; a block whose fences share its lines; several blocks, each with its own inner
-  fence.
+  top-level one; a block on one line beside fenced blocks, read in its place; a block whose fences
+  share its lines; several blocks, each with its own inner fence.
 
 Each decision's code was switched off in turn and the suite run against it: the failed-round
 check, the output limit, the line-anchored pattern, its indentation, the empty-reply rule and the
@@ -241,8 +262,11 @@ CLI exit clause each turn at least one of these tests red.
 
 A cut-off response now runs to 32,768 tokens before it ends, so a pass that keeps cutting off
 spends up to that on its loop-ending round and again on its answer, for each of up to three
-passes; the leg's `--timeout` bounds the whole turn. Before this record the same pass spent 8,192
-on each, plus up to four reformat requests after each, which D4 removes.
+passes. In wall time the worst case is those six responses at about 160 seconds each, some 16
+minutes before `FailedRoundError`; each request waits at most the endpoint's 600 seconds (D1), and
+the leg's `--timeout` bounds the whole turn when it is given, while `li agent` sets none by default.
+Before this record the same pass spent 8,192 on each, plus up to four reformat requests after each,
+which D4 removes.
 
 This record stays Proposed until the cost is measured rather than argued. On the agent tasks of
 a benchmark, run with the limit at 8,192 and at 32,768, it records output tokens and dollars per

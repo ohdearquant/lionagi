@@ -196,6 +196,12 @@ def test_an_indented_block_beside_a_top_level_block_is_read_with_it():
     assert extract_json('\t```json\n{"a": 1}\n\t```') == {"a": 1}
 
 
+def test_a_block_on_one_line_beside_a_fenced_block_is_read_in_its_place():
+    text = 'first\n```json\n{"a": 1}\n```\nthen ```json {"b": 2}``` and\n```json\n{"c": 3}\n```'
+    assert extract_json(text, return_one_if_single=False) == [{"a": 1}, {"b": 2}, {"c": 3}]
+    assert extract_json('```json\n{"a": 1}\n```\nand ```json {"b": 2}```') == [{"a": 1}, {"b": 2}]
+
+
 def test_a_block_whose_fences_share_its_lines_is_still_read():
     assert extract_json('```json {"a": 1} ```') == {"a": 1}
     assert extract_json('see ```json\n{"a": 1}```') == {"a": 1}
