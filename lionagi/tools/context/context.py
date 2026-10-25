@@ -5,15 +5,25 @@
 
 from __future__ import annotations
 
-import json
 from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
+from lionagi.protocols.messages._result_projection import (
+    _projection_session,
+)
+from lionagi.protocols.messages._result_projection import (
+    _result_json as _result_json,
+)
+from lionagi.protocols.messages._result_projection import (
+    _result_text as _result_text,
+)
+from lionagi.protocols.messages._result_projection import (
+    _ResultBody as _ResultBody,
+)
 from lionagi.service.token_calculator import TokenCalculator
 
 from ..base import LionTool
@@ -22,57 +32,6 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 _automatic_summary: ContextVar[bool] = ContextVar("context_automatic_summary", default=False)
-
-
-@dataclass(frozen=True)
-class _ResultBody:
-    key: object
-    start: int
-    end: int
-    is_json: bool = False
-    protected: bool = False
-
-
-def _result_json(value) -> str:
-    """Use the signed encoder acceptance, with sorted keys and no fallback."""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _result_text(output) -> tuple[str, tuple[_ResultBody, ...]]:
-    """Original-derived recovery text and exact global Unicode body spans.
-
-    Outer mapping order is preserved. Raw strings are never JSON-escaped; labels and
-    separators count toward offsets. The returned string/spans are immutable snapshots.
-    """
-    if isinstance(output, str):
-        return output, (_ResultBody(None, 0, len(output)),)
-    if not isinstance(output, dict):
-        text = _result_json(output)
-        return text, (_ResultBody(None, 0, len(text), is_json=True),)
-    pieces: list[str] = []
-    bodies: list[_ResultBody] = []
-    position = 0
-    for ordinal, (key, value) in enumerate(output.items()):
-        is_json = not isinstance(value, str)
-        try:
-            body = _result_json(value) if is_json else value
-        except (TypeError, ValueError):
-            # YAML-renderable values without JSON text stay whole, outside the bodies.
-            continue
-        try:
-            label_key = _result_json(key)
-        except (TypeError, ValueError):
-            # The mapping key is retained verbatim in the output. An ordinal label
-            # needs no stringification of a YAML-only key and adds no API selector.
-            label_key = _result_json({"entry": ordinal})
-        label = f"[body key={label_key} kind={'json' if is_json else 'raw'} chars={len(body)}]\n"
-        start = position + len(label)
-        bodies.append(
-            _ResultBody(key, start, start + len(body), is_json, key in ("success", "error"))
-        )
-        pieces.extend((label, body, "\n"))
-        position = start + len(body) + 1
-    return "".join(pieces), tuple(bodies)
 
 
 class ContextAction(str, Enum):
@@ -257,8 +216,9 @@ class ContextTool(LionTool):
 
         async def _auto_summarize(uids: list, pile) -> str | None:
             """Generate a compact summary over `uids` with one direct model call.
-            Never raises — returns None on failure so the caller can fall back to writing the summary itself.
+            Model-call failures return None for caller fallback; invalid result projections propagate.
             """
+            projection = _projection_session(branch, branch.chat_model)
             texts: list[str] = []
             total = 0
             max_chars = 6000
@@ -267,6 +227,8 @@ class ContextTool(LionTool):
                     continue
                 m = pile[u]
                 c = getattr(m, "content", "") or ""
+                if projection is not None and isinstance(m, ActionResponse):
+                    c = c.with_updates(output=projection.project(m).output)
                 c = c if isinstance(c, str) else str(c)
                 if not c:
                     continue
@@ -345,16 +307,23 @@ class ContextTool(LionTool):
                     text, _bodies = _result_text(original.content.output)
                 except (TypeError, ValueError):
                     return {"success": False, "error": "Result has no JSON recovery text."}
-                stop = min(len(text), offset + min(limit, 16000))
+                applied_limit = min(limit, 16000)
+                bound = getattr(branch.chat_model, "tool_result_max_chars", None)
+                if bound is not None:
+                    applied_limit = min(applied_limit, bound)
+                stop = min(len(text), offset + applied_limit)
                 if stop > offset:
                     ranges = branch.metadata.setdefault("context_read_results", {})
                     ranges.setdefault(str(original.id), []).append([offset, stop])
-                return {
+                result = {
                     "success": True,
                     "text": text[offset:stop],
                     "total": len(text),
                     "next_offset": stop if stop < len(text) else None,
                 }
+                if bound is not None:
+                    result["limit"] = applied_limit
+                return result
 
             if action == "status":
                 by_type: dict[str, int] = {}

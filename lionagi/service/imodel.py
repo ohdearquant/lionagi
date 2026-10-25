@@ -160,6 +160,7 @@ class iModel:  # noqa: N801
         id: UUID | str | None = None,  # noqa: A002
         created_at: float | None = None,
         max_input_tokens: int | None = None,
+        tool_result_max_chars: int | None = None,
         **kwargs,
     ) -> None:
         self.id = None
@@ -170,12 +171,20 @@ class iModel:  # noqa: N801
             or max_input_tokens < 1
         ):
             raise ValueError("max_input_tokens must be a positive integer or None.")
+        if tool_result_max_chars is not None and (
+            isinstance(tool_result_max_chars, bool)
+            or not isinstance(tool_result_max_chars, int)
+            or tool_result_max_chars < 1024
+        ):
+            raise ValueError("tool_result_max_chars must be an integer >= 1024 or None.")
         # Every APICalling this model builds refuses a request whose estimated input exceeds
         # it. The first refusal is kept, and every later request on this model is refused with
         # it: callers that catch exceptions mid-loop (a ReAct final-answer turn, a parse
         # repair) would otherwise lose it, or go on to send a smaller request after the run
         # was already refused. A caller clears input_cap_refusal to send again.
         self.max_input_tokens: int | None = max_input_tokens
+        # Local presentation policy; never an endpoint or provider request setting.
+        self.tool_result_max_chars: int | None = tool_result_max_chars
         self.input_cap_refusal: Exception | None = None
         # The cap counts o200k_base tokens and a provider counts its own way: Anthropic reported
         # about 1.37 times the count on agent transcripts. Each completed response raises this to
@@ -821,6 +830,7 @@ class iModel:  # noqa: N801
             hook_registry=self.hook_registry,
             exit_hook=self.exit_hook,
             max_input_tokens=self.max_input_tokens,
+            tool_result_max_chars=self.tool_result_max_chars,
             **self.executor.config,
         )
         new.input_token_scale = self.input_token_scale
@@ -848,6 +858,8 @@ class iModel:  # noqa: N801
         if self.max_input_tokens is not None:
             # Only when set, so a model without a cap serializes as it always has.
             data["max_input_tokens"] = self.max_input_tokens
+        if self.tool_result_max_chars is not None:
+            data["tool_result_max_chars"] = self.tool_result_max_chars
         if self.input_token_scale != 1.0:
             data["input_token_scale"] = self.input_token_scale
         return data
@@ -924,6 +936,7 @@ class iModel:  # noqa: N801
             id=data.get("id"),
             created_at=data.get("created_at"),
             max_input_tokens=data.get("max_input_tokens"),
+            tool_result_max_chars=data.get("tool_result_max_chars"),
             **{name: stored_limits[name] for name in _EXECUTOR_LIMITS if name in stored_limits},
         )
         scale = data.get("input_token_scale")
