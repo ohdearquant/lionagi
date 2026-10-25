@@ -56,10 +56,10 @@ def _amendment_flat() -> str:
 
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
-    assert "run.spawn" in _span("lionagi/engines/hypothesis.py", 890, 961)
-    assert "run.spawn" in _line("lionagi/engines/review.py", 616)
-    assert "run.spawn" in _line("lionagi/engines/research.py", 187)
-    assert "run.spawn" in _line("lionagi/engines/research.py", 191)
+    assert "run.spawn" in _span("lionhub/src/lionhub/orchestration/engines/hypothesis.py", 890, 961)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 616)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
 
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
@@ -82,8 +82,12 @@ def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
 
 
 def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
-    assert "class ReviewVerdict(Verdict)" in _line("lionagi/engines/review.py", 281)
-    assert "await run.emit(final)" in _line("lionagi/engines/review.py", 842)
+    assert "class ReviewVerdict(Verdict)" in _line(
+        "lionhub/src/lionhub/orchestration/engines/review.py", 281
+    )
+    assert "await run.emit(final)" in _line(
+        "lionhub/src/lionhub/orchestration/engines/review.py", 842
+    )
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
@@ -91,9 +95,15 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 48)
-    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 166)
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 167)
+    assert "DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 48
+    )
+    assert "ack_required: bool = False" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 166
+    )
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 167
+    )
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
@@ -159,7 +169,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "invocation-terminal session Signal exists today" in flat
     assert "the bus carries `RunEnd` per operation" in flat
     assert "lionagi/state/lifecycle/callbacks.py:85" in flat
-    assert "lionagi/engines/flow_signals.py:148-154" in flat
+    assert "lionhub/src/lionhub/orchestration/engines/flow_signals.py:148-154" in flat
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
@@ -179,7 +189,7 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionagi/engines/review.py:281`, `:842" in flat
+    assert "lionhub/src/lionhub/orchestration/engines/review.py:281`, `:842" in flat
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven
@@ -355,7 +365,7 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
+    assert "lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four

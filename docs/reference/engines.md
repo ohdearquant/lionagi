@@ -1,6 +1,6 @@
 # Engine Reference
 
-Parameter catalogs for the engine classes in `lionagi.engines`.
+Parameter catalogs for the engine classes in `lionhub.orchestration.engines`.
 All engines inherit from `Engine` (base parameters documented first).
 
 ## Engine (base)
@@ -27,7 +27,7 @@ Every CLI process started under an engine run through the shared provider spawn 
 
 ## CodingEngine
 
-Gated implement/test/fix-loop engine (`lionagi.engines.coding`).
+Gated implement/test/fix-loop engine (`lionhub.orchestration.engines.coding`).
 
 Extends `Engine` with:
 
@@ -59,7 +59,7 @@ Pipeline shape: plan → implement → test → [fix loop, up to `max_fix_rounds
 
 ## HypothesisEngine
 
-Evidence-chain engine for hypothesis-driven development (`lionagi.engines.hypothesis`).
+Evidence-chain engine for hypothesis-driven development (`lionhub.orchestration.engines.hypothesis`).
 
 Extends `Engine` with one casts role per stage:
 
@@ -90,7 +90,7 @@ Pipeline shape: seed findings → extract questions → gather evidence → form
 
 ## PlanningEngine
 
-Plan-then-execute engine over the reactive DAG executor (`lionagi.engines.planning`).
+Plan-then-execute engine over the reactive DAG executor (`lionhub.orchestration.engines.planning`).
 
 This is the engine `li o flow` uses as its CLI front-end.
 
@@ -131,7 +131,7 @@ Pipeline shape: orchestrate (produce DAG) → execute reactively → synthesize 
 
 ## ResearchEngine
 
-Recursive, reaction-driven research engine (`lionagi.engines.research`).
+Recursive, reaction-driven research engine (`lionhub.orchestration.engines.research`).
 
 Extends `Engine` with:
 
@@ -150,7 +150,7 @@ Pipeline shape: explore topic (team of agents) → spawn deeper nodes on high-no
 
 ## ReviewEngine
 
-Dimensional review engine (`lionagi.engines.review`).
+Dimensional review engine (`lionhub.orchestration.engines.review`).
 
 Extends `Engine` with:
 

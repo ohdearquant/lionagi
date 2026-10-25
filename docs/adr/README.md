@@ -307,6 +307,8 @@ its area block.
   optional runtime profiles (sequential number; see Numbering)
 - [ADR-0125](ADR-0125-bringing-the-lion1-runtime-into-lionagi.md) — Bringing the lion1 runtime into
   lionagi: order, the internal actor, and consolidation (sequential number; see Numbering)
+- [ADR-0136](ADR-0136-moving-non-core-packages-into-lionhub.md) — Moving the packages built on the
+  core into lionhub, and removing their old import paths in 2.0 (sequential number; see Numbering)
 
 ### substrates (0090-0095)
 

@@ -22,7 +22,8 @@ pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from sqlalchemy import text
 
-from lionagi.dispatch import (
+from lionagi.state.db import StateDB
+from lionhub.orchestration.dispatch import (
     ack_dispatch,
     backoff_seconds,
     deliver_due_dispatches,
@@ -33,7 +34,6 @@ from lionagi.dispatch import (
     purge_dispatches,
     retry_dispatch,
 )
-from lionagi.state.db import StateDB
 
 _SUCCESS_TEMPLATE = [
     sys.executable,
@@ -105,7 +105,7 @@ async def test_a_notify_template_past_its_timeout_kills_its_process_group(tmp_pa
     ``TimeoutError`` before Python 3.11, so the timeout branch must catch both; it names
     the timeout, and by the time it returns the command and the child it started are
     gone, the command reaped rather than left behind."""
-    from lionagi.dispatch.outbox import _exec_notify_template
+    from lionhub.orchestration.dispatch.outbox import _exec_notify_template
 
     template, pids_file = _pid_reporting_template(tmp_path)
     pids: list[int] = []
@@ -125,7 +125,7 @@ async def test_a_notify_template_past_its_timeout_kills_its_process_group(tmp_pa
 
 async def test_cancelling_a_notify_delivery_kills_the_command_and_its_child(tmp_path):
     """A cancelled caller does not leave the notify command or its child running."""
-    from lionagi.dispatch.outbox import _exec_notify_template
+    from lionhub.orchestration.dispatch.outbox import _exec_notify_template
 
     template, pids_file = _pid_reporting_template(tmp_path)
     task = asyncio.create_task(
@@ -330,7 +330,9 @@ async def test_transport_success_transitions_to_delivered(tmp_path: Path):
 
 async def test_no_notify_template_configured_is_a_transport_failure(tmp_path: Path, monkeypatch):
     """With no dispatch.notify_template configured, delivery backs off rather than crashing."""
-    monkeypatch.setattr("lionagi.dispatch.outbox.resolve_notify_template", lambda: None)
+    monkeypatch.setattr(
+        "lionhub.orchestration.dispatch.outbox.resolve_notify_template", lambda: None
+    )
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
         dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
@@ -946,7 +948,7 @@ async def test_deliver_due_dispatches_survives_row_purged_mid_batch(tmp_path: Pa
         purged_id = ids[0]
         survivor_ids = ids[1:]
 
-        import lionagi.dispatch.outbox as outbox_mod
+        import lionhub.orchestration.dispatch.outbox as outbox_mod
 
         real_transition = outbox_mod.transition
         deleted_once = {"done": False}

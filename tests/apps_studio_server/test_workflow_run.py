@@ -474,7 +474,7 @@ def test_real_coding_engine_run_accepts_compile_invocation_kwargs():
     the exact invocation shape against the real CodingEngine.run signature."""
     import inspect
 
-    from lionagi.engines.coding import CodingEngine
+    from lionhub.orchestration.engines.coding import CodingEngine
 
     sig = inspect.signature(CodingEngine.run)
     sig.bind(

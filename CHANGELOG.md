@@ -19,6 +19,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Packages built on top of the core move to `lionhub`, a second top-level package
+  shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
+  Each old import path keeps working until lionagi 2.0: it returns the same module
+  object as the new path and emits one `DeprecationWarning` naming the new path.
+  Update imports to the new path; `lionagi._moved.MOVED` lists every move.
+  Three things change without a warning: the moved modules and their objects report
+  the new path in `__name__`, `__module__`, `__file__` and tracebacks; listing
+  `lionagi.__path__` with `pkgutil` does not show a moved package, so list the new
+  package instead; and a static type checker finds no module at an old path.
+
+  | Old import path | New import path | Removed in |
+  | --- | --- | --- |
+  | `lionagi.orchestration` | `lionhub.orchestration` | 2.0.0 |
+  | `lionagi.engines` | `lionhub.orchestration.engines` | 2.0.0 |
+  | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
+  | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
+
 - Reuse shared module-loading, worker, delay and process start-time helpers at
   equivalent call sites, with scoped lint rules and documented native boundaries.
 
@@ -27,6 +44,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   arguments with `functools.partial` and pass that callable to `run_sync`.
 
 ### Fixed
+
+- Routed Anthropic responses whose usage reports `speed: "standard"` are priced again;
+  every response carrying `speed` had been settled as unknown with its spending ceiling
+  held. A response that still cannot be priced records why in its settlement reason:
+  `unpriced_model`, `unknown_usage_key_<field>`, `unpriced_tier`, `unpriced_speed`,
+  `unpriced_region` or `unpriced_server_tool`, and `usage_incomplete` for a usage report
+  that cannot be read.
 
 - Pilot summaries select reading citations from the recorded source commit and name
   task or loop subset refusals; pilot documentation records the checked historical

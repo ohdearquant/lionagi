@@ -43,7 +43,7 @@ __all__ = (
     "retry_dispatch",
 )
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lionagi.dispatch.outbox")  # its name before the move
 
 DEFAULT_MAX_ATTEMPTS = 8
 NOTIFY_TIMEOUT_SECONDS = 10.0

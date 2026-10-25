@@ -973,6 +973,27 @@ async def test_other_client_errors_are_not_retried_and_unknown_usage_keeps_the_c
     assert row[2] == "open" and row[3] is None and row[4] == "usage_incomplete"
 
 
+@pytest.mark.parametrize(
+    ("extra", "reason"),
+    [
+        ({"speed": "fast"}, "unpriced_speed"),
+        ({"cache_storage_hours": 1}, "unknown_usage_key_cache_storage_hours"),
+    ],
+    ids=["fast_speed", "unknown_field"],
+)
+@pytest.mark.asyncio
+async def test_a_response_left_unpriced_settles_with_the_reason(
+    monkeypatch, tmp_path, extra, reason
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    usage = {"input_tokens": 3, "output_tokens": 2, **extra}
+    model, transport = _model(
+        monkeypatch, [StubResponse(body={"id": "msg_unpriced", "model": MODEL, "usage": usage})]
+    )
+    await model.endpoint.call(REQUEST)
+    assert _attempts(path)[-1][2:] == ("open", None, reason)
+
+
 @pytest.mark.asyncio
 async def test_stream_replaces_usage_fields_and_masks_a_split_secret(monkeypatch, tmp_path):
     path = _install_accounts(monkeypatch, tmp_path)
@@ -2363,6 +2384,14 @@ async def test_a_failed_routed_stream_reports_the_error_text_the_consumer_was_sh
             ],
             ("settled", 270_000, "complete"),
         ),
+        (
+            [{"type": "message_delta", "usage": {"output_tokens": 5, "speed": "fast"}}],
+            ("open", None, "unpriced_speed"),
+        ),
+        (
+            [{"type": "message_delta", "usage": {"output_tokens": 5, "cache_storage_hours": 1}}],
+            ("open", None, "unknown_usage_key_cache_storage_hours"),
+        ),
     ],
     ids=[
         "no_message_delta",
@@ -2376,6 +2405,8 @@ async def test_a_failed_routed_stream_reports_the_error_text_the_consumer_was_sh
         "delta_with_float_output_count",
         "count_then_empty_usage",
         "two_counts_the_last_one_kept",
+        "fast_speed_named",
+        "unknown_field_named",
     ],
 )
 @pytest.mark.asyncio

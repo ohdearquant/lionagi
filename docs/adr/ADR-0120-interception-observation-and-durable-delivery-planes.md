@@ -650,9 +650,9 @@ idempotency identity `(attempt, boundary, subject, subscriber, fact range)`: rep
 execution attempt reuses its run identity, and retrying a known failed execution creates the next
 attempt under the same wake identity, so deduplication spans the attempts even though delivery may
 repeat. That is the practice `enqueue_dispatch` already uses for its `dedup_key`, extended from one
-dispatch to one wake (`lionagi/dispatch/outbox.py:159-205`). The outbox row's persistence is not what
+dispatch to one wake (`lionhub/src/lionhub/orchestration/dispatch/outbox.py:159-205`). The outbox row's persistence is not what
 `retryable` copies: `enqueue_dispatch` inserts a row unconditionally
-(`lionagi/dispatch/outbox.py:207`), acknowledgement is the opt-in (`:166`), and the only per-call
+(`lionhub/src/lionhub/orchestration/dispatch/outbox.py:207`), acknowledgement is the opt-in (`:166`), and the only per-call
 bound is `max_attempts` (`:167`).
 
 A failed execution is not terminal delivery. `state/` owns subscription/source scope, cursor,
@@ -662,7 +662,7 @@ the first. Failure retains the batch and cursor until retry succeeds or the boun
 guarded transaction records success or durable dead-letter and advances the cursor. Each batch is
 persisted on its own, and a dead-letter row is re-queueable regardless of cursor position: the
 shape the outbox already uses for an exhausted row, retained and re-queued by an operator override
-(`lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609`). Recovery scans unfinished batch rows as
+(`lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, `:506-523`, `:579-609`). Recovery scans unfinished batch rows as
 well as the source log.
 
 Queue depth per observing subscriber is declared and bounded. A full queue drops a `best_effort`
@@ -684,7 +684,7 @@ cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent
 before the enclosing flow returns (`lionagi/operations/flow.py:1717`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
-emissions emits no terminal (`lionagi/engines/flow_signals.py:148-154`), and the invocation
+emissions emits no terminal (`lionhub/src/lionhub/orchestration/engines/flow_signals.py:148-154`), and the invocation
 terminal that does exist is a process-local registry envelope rather than a session Signal
 (`lionagi/state/lifecycle/callbacks.py:85`, `:171`), so the owner-scoped finalizer that records
 closure is a prerequisite delta below. At most `max_wakes_per_attempt - 1` interim batches and one closing
@@ -790,7 +790,7 @@ bound it cannot enforce. Omitted, `delivery` selects `retryable`, and registrati
 it cannot use fails explicitly rather than being silently downgraded to `best_effort`.
 `max_attempts` is the bound on the total automatic execution attempts of a failed woken run,
 including the first: the same kind of per-row attempt bound the dispatch outbox declares for its
-own row (`lionagi/dispatch/outbox.py:48`, whose default is 8), enforced the same way the outbox
+own row (`lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, whose default is 8), enforced the same way the outbox
 enforces its bound, by dead-lettering the row once it is spent and retaining it for an operator
 re-queue (`:506-523`, `:579-609`).
 A wake carries its own identity, `(attempt, boundary, subject, subscriber, fact
@@ -804,8 +804,8 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:298-322`, `:359-396`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionagi/engines/hypothesis.py:948-1028`, `lionagi/engines/review.py:616`,
-  `lionagi/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
+  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:948-1028`, `lionhub/src/lionhub/orchestration/engines/review.py:616`,
+  `lionhub/src/lionhub/orchestration/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1164-1165`, `:1457-1501`), under ADR-0023 D6, which decides that the
   executor accepts bus spawns and escalations while running. These are in-process spawns inside a
@@ -829,10 +829,10 @@ everything since; facts past the range belong to the next wake.
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
   (`lionagi/casts/emission.py:153`); the review operation emits a `ReviewVerdict` into the session
-  observer (`lionagi/engines/review.py:281`, `:842`), which is one emit site, but a `Verdict` cast
+  observer (`lionhub/src/lionhub/orchestration/engines/review.py:281`, `:842`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
   reading (`lionagi/service/token_budget.py:140`); the nearest crossing is the engine's
-  `budget_exhausted` notification (`lionagi/engines/engine.py:569-577`), whose `kind` is a bare
+  `budget_exhausted` notification (`lionhub/src/lionhub/orchestration/engines/engine.py:569-577`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary
   is closed at registration; the emit site still missing for each is row 7 of the delta, not
   current behavior.

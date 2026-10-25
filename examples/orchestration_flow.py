@@ -10,7 +10,7 @@ Requires a codex CLI installation and API access.
     uv run python examples/orchestration_flow.py
 
 Production users: don't drive this reactive substrate directly — use
-lionagi/engines/ instead, which adds an agent budget cap, a deadline, and a
+lionhub/src/lionhub/orchestration/engines/ instead, which adds an agent budget cap, a deadline, and a
 quality gate before allowing expansion.
 """
 
@@ -22,15 +22,15 @@ import logging
 from lionagi.agent import AgentSpec
 from lionagi.casts.emission import SpawnRequest
 from lionagi.hooks import HookBus, HookPoint, HookSignal
-from lionagi.orchestration import (
+from lionagi.service.imodel import iModel
+from lionagi.session.branch import Branch
+from lionagi.session.session import Session
+from lionhub.orchestration import (
     build_dag_graph,
     plan,
     role_node_builder,
     spawn_roles,
 )
-from lionagi.service.imodel import iModel
-from lionagi.session.branch import Branch
-from lionagi.session.session import Session
 
 logging.basicConfig(level=logging.WARNING)
 

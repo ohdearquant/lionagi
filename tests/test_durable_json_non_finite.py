@@ -127,7 +127,7 @@ def test_team_inbox_refuses_non_finite(tmp_path):
 
 
 def test_coding_measurements_refuse_non_finite():
-    from lionagi.engines.coding import CodeResultRecorded, CodingRun
+    from lionhub.orchestration.engines.coding import CodeResultRecorded, CodingRun
 
     class _Run(CodingRun):
         def __init__(self, measurements):  # bypass the Engine wiring
@@ -277,7 +277,7 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
 
 def test_hypothesis_chains_export_refuses_non_finite(tmp_path):
     """The chains artifact reaches the guard before ``chains.json`` is created."""
-    from lionagi.engines.hypothesis import HypothesisEngine, HypothesisRun
+    from lionhub.orchestration.engines.hypothesis import HypothesisEngine, HypothesisRun
 
     run = HypothesisRun(HypothesisEngine())
     run.root = "r"

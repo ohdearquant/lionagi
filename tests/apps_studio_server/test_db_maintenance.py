@@ -724,7 +724,7 @@ def test_prune_old_schedule_runs(tmp_path, monkeypatch):
 
 
 async def _make_dispatch(db: StateDB, *, status: str, updated_at: float) -> str:
-    from lionagi.dispatch import enqueue_dispatch
+    from lionhub.orchestration.dispatch import enqueue_dispatch
 
     dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
     await db.execute(
@@ -737,8 +737,8 @@ async def _make_dispatch(db: StateDB, *, status: str, updated_at: float) -> str:
 def test_prune_nullifies_dispatch_fks_before_parent_delete(tmp_path, monkeypatch):
     """A young dispatch referencing an old session/schedule_run must not abort
     the prune: its soft FKs are nullified before the parent rows are deleted."""
-    from lionagi.dispatch import enqueue_dispatch
     from lionagi.studio.services import db_maintenance as maint
+    from lionhub.orchestration.dispatch import enqueue_dispatch
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -966,9 +966,9 @@ def test_schedule_run_retention_is_chunked_and_archived(tmp_path, monkeypatch):
 
 def test_session_prune_archives_preimages_of_nullified_soft_fk_rows(tmp_path, monkeypatch):
     """Rows whose session_id a prune nullifies get their pre-nullify state captured, or a restore orphans them permanently."""
-    from lionagi.dispatch import enqueue_dispatch
     from lionagi.studio.services import db_maintenance as maint
     from lionagi.studio.services.retention_archive import read_archive_chunk
+    from lionhub.orchestration.dispatch import enqueue_dispatch
 
     db_path = tmp_path / "state.db"
     archive_dir = tmp_path / "archive"

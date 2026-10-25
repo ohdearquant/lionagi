@@ -2776,7 +2776,7 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -2854,7 +2854,7 @@ async def test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids(
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -2924,7 +2924,7 @@ async def test_execute_dag_escalation_evidence_survives_uuid_node_ids(
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -2970,8 +2970,8 @@ async def test_execute_dag_drains_inflight_branch_status_before_teardown(
 
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
     from lionagi.session.signal import NodeCompleted
+    from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
     worker = Branch(name="worker")
@@ -3054,8 +3054,8 @@ async def test_execute_dag_drains_escalation_link_retries_before_teardown(
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.node import create_operation
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRIES", 3)
     monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRY_INTERVAL", 0.02)
@@ -3140,8 +3140,8 @@ async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
 
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.node import create_operation
+    from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
     await start_live_persist(env, invocation_kind="flow")
@@ -3242,8 +3242,8 @@ async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
 
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.node import create_operation
+    from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
     await start_live_persist(env, invocation_kind="flow")
@@ -3357,8 +3357,8 @@ async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
 
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.node import create_operation
+    from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
     await start_live_persist(env, invocation_kind="flow")
@@ -3455,8 +3455,8 @@ async def test_execute_dag_late_cancellation_does_not_clobber_dag_exception(
 
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.node import create_operation
+    from lionhub.orchestration.engines import PlanningEngine
 
     class _DagBoomError(RuntimeError):
         pass
@@ -3537,9 +3537,9 @@ async def test_flow_timeout_shields_completed_branch_status_until_commit(
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate._orchestration import register_branch_hook
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted
+    from lionhub.orchestration.engines import PlanningEngine
 
     env = _minimal_env()
     env.run.run_id = "timeout-status-drain"
@@ -3681,7 +3681,7 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     # whose auto-attributes would otherwise look like a "found" node.
     env.builder.get_graph = lambda: SimpleNamespace(nodes=[], internal_nodes={})
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -3763,7 +3763,7 @@ async def test_execute_dag_records_failed_operation_evidence(
         worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -3870,7 +3870,7 @@ async def test_dead_terminal_node_flips_completed_to_failed_end_to_end(
         worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         # The real executor, not a hand-built dict -- proves the rollup
@@ -3944,7 +3944,7 @@ async def test_execute_dag_records_lost_operation_evidence_for_missing_result(
         worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -4012,7 +4012,7 @@ async def test_execute_dag_skipped_node_does_not_trip_lost_operation_evidence(
         worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -4072,7 +4072,7 @@ async def test_execute_dag_dropped_spawn_does_not_trip_lost_operation_evidence(
         worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -4230,7 +4230,7 @@ async def test_execute_dag_cancelled_spawn_records_lost_operation_evidence(
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -4322,7 +4322,7 @@ async def test_execute_dag_reinjected_initial_node_yields_one_lost_operation_ent
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     executor_ref: dict = {}
     injected_once = {"done": False}
@@ -4397,7 +4397,7 @@ async def test_execute_dag_run_level_cancellation_skips_reconciliation_entirely(
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_raises():
         raise asyncio.CancelledError()
@@ -4430,7 +4430,7 @@ async def test_execute_dag_records_control_log_write_failure_when_update_session
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.setattr(flow_module, "_CONTROL_POLL_INTERVAL", 0.01)
 
@@ -4527,7 +4527,7 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate import flow as flow_module
     from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.setattr(flow_module, "_CONTROL_POLL_INTERVAL", 0.01)
 

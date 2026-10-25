@@ -1341,7 +1341,7 @@ submitter is no longer on the wire by then: `worker.py`'s claim loop, on a
 terminal `AdmissionDecision`, transitions the row `queued -> skipped`
 carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
-`lionagi.dispatch.outbox.enqueue_dispatch`.
+`lionhub.orchestration.dispatch.outbox.enqueue_dispatch`.
 
 ## lionagi/studio/scheduler/engine.py — admission and dispatch details
 

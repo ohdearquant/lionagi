@@ -25,7 +25,7 @@ and must be a relative path.
 
 ### ReviewOutcome
 
-Ops-plane artifact contract (ADR-0021 §A). Distinct from `lionagi.engines.review.ReviewVerdict`
+Ops-plane artifact contract (ADR-0021 §A). Distinct from `lionhub.orchestration.engines.review.ReviewVerdict`
 (reactive-bus emission). The frontend renders `ReviewOutcome` as the `ReviewVerdictCard`
 (ADR-0021 §E): severity/category breakdown on top, blocking findings expanded, minor
 suggestions collapsed. `round` is 1-indexed; the codex-pr-review skill writes one
@@ -33,7 +33,7 @@ suggestions collapsed. `round` is 1-indexed; the codex-pr-review skill writes on
 
 ---
 
-## lionagi.work.rules — Rule/RuleSet contract
+## lionhub.orchestration.work.rules — Rule/RuleSet contract
 
 ### CheckKind values and params
 

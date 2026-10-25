@@ -22,27 +22,27 @@ from ._logging import log_error, progress, warn
 
 _KIND_META: dict[str, dict[str, Any]] = {
     "research": {
-        "cls_path": ("lionagi.engines", "ResearchEngine"),
+        "cls_path": ("lionhub.orchestration.engines", "ResearchEngine"),
         "pos_arg": "topic",
         "pos_help": "Research topic or question.",
     },
     "review": {
-        "cls_path": ("lionagi.engines", "ReviewEngine"),
+        "cls_path": ("lionhub.orchestration.engines", "ReviewEngine"),
         "pos_arg": "artifact",
         "pos_help": "Artifact text or path to review.",
     },
     "coding": {
-        "cls_path": ("lionagi.engines", "CodingEngine"),
+        "cls_path": ("lionhub.orchestration.engines", "CodingEngine"),
         "pos_arg": "spec",
         "pos_help": "Coding specification (natural-language or JSON string).",
     },
     "hypothesis": {
-        "cls_path": ("lionagi.engines", "HypothesisEngine"),
+        "cls_path": ("lionhub.orchestration.engines", "HypothesisEngine"),
         "pos_arg": "findings",
         "pos_help": "Research findings or background text for hypothesis generation.",
     },
     "planning": {
-        "cls_path": ("lionagi.engines", "PlanningEngine"),
+        "cls_path": ("lionhub.orchestration.engines", "PlanningEngine"),
         "pos_arg": "prompt",
         "pos_help": "Goal or task description to plan and execute.",
     },

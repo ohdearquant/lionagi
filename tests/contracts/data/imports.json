@@ -516,7 +516,9 @@
         "enqueue_dispatch",
         "enqueue_revival_heartbeat"
       ],
-      "warning_categories": []
+      "warning_categories": [
+        "DeprecationWarning"
+      ]
     }
   },
   "import_laziness": {

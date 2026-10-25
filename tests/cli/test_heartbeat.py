@@ -320,9 +320,9 @@ async def test_execute_dag_heartbeat_tracks_samples_and_terminal_state(
 ):
     from lionagi import Branch, Session
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+    from lionhub.orchestration.engines import PlanningEngine
 
     # Resolve the backend before replacing asyncio.sleep: a cold backend
     # must not capture this test's controlled sleep for later tests.

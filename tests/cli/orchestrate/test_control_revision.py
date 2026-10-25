@@ -443,7 +443,7 @@ async def test_dag_poller_marker_lifecycle_and_failed_stop_write(
         engine_run = MagicMock()
         engine_run.run_dag = run_dag
         monkeypatch.setattr(
-            "lionagi.engines.PlanningEngine.new_run", lambda *args, **kw: engine_run
+            "lionhub.orchestration.engines.PlanningEngine.new_run", lambda *args, **kw: engine_run
         )
         await flow._execute_dag(env, plan, dag, max_concurrent=1, max_ops=0)
         assert marker_writes == ["active", "stopped"]
@@ -903,7 +903,9 @@ async def test_cancelled_stopped_marker_cannot_skip_exchange_stop(tmp_path, monk
 
     engine_run = MagicMock()
     engine_run.run_dag = run_dag
-    monkeypatch.setattr("lionagi.engines.PlanningEngine.new_run", lambda *args, **kw: engine_run)
+    monkeypatch.setattr(
+        "lionhub.orchestration.engines.PlanningEngine.new_run", lambda *args, **kw: engine_run
+    )
     monkeypatch.setattr(flow, "_persist_control_poller_state", marker)
     try:
         with pytest.raises(asyncio.CancelledError):
@@ -1031,7 +1033,9 @@ async def test_poller_stop_is_published_before_the_loop_is_cancelled(
 
         engine_run = MagicMock()
         engine_run.run_dag = run_dag
-        monkeypatch.setattr("lionagi.engines.PlanningEngine.new_run", lambda *a, **k: engine_run)
+        monkeypatch.setattr(
+            "lionhub.orchestration.engines.PlanningEngine.new_run", lambda *a, **k: engine_run
+        )
         await flow._execute_dag(env, plan, dag, max_concurrent=1, max_ops=0)
 
         assert seen["marker"] == "stopped"
