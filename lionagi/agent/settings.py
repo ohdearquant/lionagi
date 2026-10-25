@@ -204,9 +204,9 @@ def _import_hook(
             f"Untrusted hook module {module_path!r}. Add it to trusted_hook_modules to allow."
         )
     try:
-        from lionagi.ln import _utils as _ln_utils
+        from lionagi import ln
 
-        module = _ln_utils.import_module(module_path)
+        module = ln.import_module(module_path)
         return getattr(module, func_name)
     except (ImportError, AttributeError):
         return None

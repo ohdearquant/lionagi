@@ -11,6 +11,7 @@ import pytest
 
 import lionagi._class_registry as registry
 import lionagi.agent.settings as settings
+from lionagi import ln
 from lionagi.ln import _utils as ln_utils
 
 
@@ -383,7 +384,7 @@ class TestSharedImportDelegation:
         selected = type("Selected", (), {"__module__": name})
         _module(monkeypatch, name, handler=handler, Selected=selected)
         monkeypatch.setattr(isolated_registry, "_BUILTIN_MODULES", (name,))
-        actual_import = ln_utils.import_module
+        actual_import = ln.import_module
         calls = []
 
         def observe(module_name, *args, **kwargs):
@@ -391,7 +392,7 @@ class TestSharedImportDelegation:
             return actual_import(module_name, *args, **kwargs)
 
         with monkeypatch.context() as patch:
-            patch.setattr(ln_utils, "import_module", observe)
+            patch.setattr(ln, "import_module", observe)
             if caller == "hook":
                 result = settings._import_hook(name + ":handler", trusted_hook_modules={name})
                 expected = handler
