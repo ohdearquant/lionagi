@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import psutil
-from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 
 from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -26,6 +25,7 @@ from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import CancelScope, current_time, move_on_after, sleep
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
+from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 
 from .._agent_depth import stamp_worker_depth
 from .._logging import progress
@@ -2218,9 +2218,8 @@ async def _execute_dag(
                     )
                     _persist_control_log()
 
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+    from lionhub.orchestration.engines import PlanningEngine
 
     env.session.observe(NodeStarted, handler=_on_node_started)
     env.session.observe(NodeCompleted, handler=_on_node_completed)

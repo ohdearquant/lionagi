@@ -12,6 +12,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+
+from lionagi.casts.emission import SpawnRequest, TaskAssignment
+from lionagi.session.branch import Branch
+from lionagi.session.session import Session
 from lionhub.orchestration import (
     build_dag_graph,
     build_fanout_graph,
@@ -21,10 +25,6 @@ from lionhub.orchestration import (
     spawn_roles,
 )
 from lionhub.orchestration.patterns import normalize_dep_indices
-
-from lionagi.casts.emission import SpawnRequest, TaskAssignment
-from lionagi.session.branch import Branch
-from lionagi.session.session import Session
 
 
 def _roles(*names: str) -> tuple[Session, dict[str, Branch]]:

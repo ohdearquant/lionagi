@@ -71,10 +71,9 @@ async def test_queued_and_started_share_the_same_name_when_reference_id_set():
     executor callback passed — this is what makes queued and started resolve
     to one name regardless of the executor's own (still divergent) internal
     fallback chain, exercised directly by the next test below."""
-    from lionhub.orchestration.engines import Engine
-
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeQueued, NodeStarted
+    from lionhub.orchestration.engines import Engine
 
     async def work(**kw):
         return "ok"
@@ -116,12 +115,11 @@ async def test_reactive_spawn_shares_one_name_across_queued_started_terminal():
     queued-forever node plus a separately-named started node."""
     import json
 
-    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
-
     from lionagi.operations.node import create_operation
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
     from lionagi.testing import TestBranch
+    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
 
     def _capability_chunk(**spawn_fields) -> dict:
         payload = json.dumps({"spawn_request": spawn_fields})
@@ -189,12 +187,11 @@ async def test_reactive_spawn_shares_one_name_when_spawn_branch_setup_names_the_
     correlate under."""
     import json
 
-    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
-
     from lionagi.operations.node import create_operation
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
     from lionagi.testing import TestBranch
+    from lionhub.orchestration.patterns import grant_spawn, role_node_builder
 
     def _capability_chunk(**spawn_fields) -> dict:
         payload = json.dumps({"spawn_request": spawn_fields})
@@ -266,12 +263,11 @@ async def test_branch_name_colliding_with_op_id_prefix_stays_pinned_through_late
     operation across two names on the Studio-facing signal bus. Structural
     provenance (name_is_fallback, computed by the producer) replaces the
     string comparison."""
-    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
-
     from lionagi.operations.flow import DependencyAwareExecutor
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
 
     op = Operation(operation="work", parameters={})
     collision_name = str(op.id)[:8]  # no reference_id -> queued's own fallback too
@@ -345,9 +341,8 @@ async def test_on_progress_seam_requires_provenance_instead_of_defaulting():
     probe above must now fail loudly (TypeError) rather than silently
     guessing fallback=True and risking the split-identity render.
     """
-    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
-
     from lionagi.session.branch import Branch
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
 
     op = Operation(operation="work", parameters={})
     session = Session()
@@ -702,10 +697,9 @@ async def test_gate_skipped_node_projects_to_the_skipped_lane_on_the_signal_bus(
     flow result would pass just as happily while the canvas painted the node
     red, which is exactly how this defect survived.
     """
-    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
-
     from lionagi.operations.flow import flow
     from lionagi.session.signal import NodeFailed, NodeSkipped, lane_for
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
 
     async def first(**kw):
         return "first ok"
@@ -810,10 +804,9 @@ async def test_preterminal_cancelled_is_announced_with_its_own_outcome():
 async def test_preterminal_cancelled_reaches_signal_bus_cancelled_lane():
     """The Flow-to-Studio bridge persists NodeCancelled and lane_for projects
     it as cancelled, so the execution graph cannot keep showing queued."""
-    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
-
     from lionagi.operations.flow import flow
     from lionagi.session.signal import NodeCancelled, lane_for
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
 
     async def work(**kw):  # pragma: no cover - terminal work never reruns
         raise AssertionError("an already-terminal operation must not run again")
@@ -839,10 +832,9 @@ async def test_preterminal_completed_reaches_the_signal_bus_and_leaves_the_queue
     the node waiting, so this follows the same path a viewer sees: through
     ``flow_progress_signals`` to ``lane_for``.
     """
-    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
-
     from lionagi.operations.flow import flow
     from lionagi.session.signal import NodeCompleted, lane_for
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
 
     async def work(**kw):  # pragma: no cover - a terminal op must not re-execute
         raise AssertionError("an already-terminal operation must not run again")

@@ -14,10 +14,10 @@ import re
 from typing import Any
 
 import pytest
-from lionhub.orchestration.engines import Engine
 from pydantic import BaseModel, ConfigDict
 
 from lionagi.providers._cli_subprocess import reveal_redacted
+from lionhub.orchestration.engines import Engine
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,9 +91,8 @@ async def test_the_overlay_keeps_the_inherited_environment():
 )
 async def test_planning_engine_refuses_unverified_worker_clone_settings(settings):
     """Managed-DAG clones still require proven environment/containment provenance."""
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.engines import PlanningEngine
 
     with pytest.raises(ConfigurationError, match="PlanningEngine does not support") as exc:
         PlanningEngine(**settings)
@@ -106,9 +105,8 @@ async def test_planning_engine_refuses_unverified_worker_clone_settings(settings
 
 async def test_planning_engine_refuses_a_setting_added_after_construction(monkeypatch):
     """The check runs again before planning, so no model call is made."""
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def fail_plan(self, run, prompt, max_ops):
         raise AssertionError("planned despite the refused setting")
@@ -715,7 +713,6 @@ async def test_a_setting_changed_while_make_agent_builds_is_not_recorded_as_the_
 ):
     """make_agent reads the settings once, before it awaits the build, and records that reading."""
     import lionhub.orchestration.engines.engine as engine_module
-
     from lionagi._errors import ConfigurationError
     from lionagi.operations.builder import OperationGraphBuilder
 

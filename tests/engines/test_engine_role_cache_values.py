@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import lionhub.orchestration.engines.engine as engine_module
 import pytest
 
 import lionagi.cli._providers as provider_module
+import lionhub.orchestration.engines.engine as engine_module
 
 
 @pytest.mark.parametrize("value", (None, False), ids=("silent-profile", "explicit-opt-out"))

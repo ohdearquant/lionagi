@@ -18,7 +18,6 @@ import argparse
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from lionhub.orchestration.engines import PlanningEngine
 
 from lionagi._errors import EmptyOutgoingContentError
 from lionagi.casts.emission import TaskAssignment
@@ -27,6 +26,7 @@ from lionagi.cli.orchestrate import add_orchestrate_subparser, run_orchestrate
 from lionagi.cli.orchestrate import fanout as fanout_module
 from lionagi.cli.orchestrate._orchestration import WorkerBuildError, resolve_modes
 from lionagi.cli.orchestrate.fanout import FanoutPlanError
+from lionhub.orchestration.engines import PlanningEngine
 
 from .test_fanout_artifacts import _fanout_env
 

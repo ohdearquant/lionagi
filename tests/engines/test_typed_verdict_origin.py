@@ -8,9 +8,16 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+from pydantic import BaseModel
+
 import lionhub.orchestration.engines.engine as engine_mod
 import lionhub.orchestration.engines.hypothesis as hyp_mod
-import pytest
+from lionagi import Branch
+from lionagi.ln.types import Operable, Spec
+from lionagi.operations._observe import emit_message
+from lionagi.protocols.messages import AssistantResponse
+from lionagi.session.signal import StructuredOutput
 from lionhub.orchestration.engines.engine import Engine, JudgeVerdict
 from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
@@ -20,13 +27,6 @@ from lionhub.orchestration.engines.hypothesis import (
     filing_queue,
     render_evidence,
 )
-from pydantic import BaseModel
-
-from lionagi import Branch
-from lionagi.ln.types import Operable, Spec
-from lionagi.operations._observe import emit_message
-from lionagi.protocols.messages import AssistantResponse
-from lionagi.session.signal import StructuredOutput
 
 pytestmark = pytest.mark.asyncio
 

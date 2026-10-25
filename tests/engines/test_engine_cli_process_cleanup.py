@@ -14,9 +14,9 @@ from pathlib import Path
 
 import psutil
 import pytest
-from lionhub.orchestration.engines.engine import Engine, EngineRun
 
 from lionagi.providers._cli_subprocess import ndjson_from_cli
+from lionhub.orchestration.engines.engine import Engine, EngineRun
 
 
 def _process_is_live(pid: int) -> bool:
@@ -631,10 +631,9 @@ async def test_a_cli_started_by_the_partial_export_belongs_to_the_run(
 ) -> None:
     """The export that follows a budget or deadline stop still runs under the
     run's spawn tracking, so a CLI it leaves running is reaped with the run."""
-    from lionhub.orchestration.engines.engine import EngineBudgetError
-
     import lionagi.providers._cli_subprocess as cli_subprocess
     from lionagi.providers._cli_subprocess import SpawnedProcess
+    from lionhub.orchestration.engines.engine import EngineBudgetError
 
     reaped: list[int] = []
 
@@ -666,9 +665,8 @@ async def test_a_cli_still_running_at_a_budget_stop_is_reaped_before_the_partial
     not supposed to keep burning while it runs. A run-owned CLI that is still
     live when the budget stops the run is reaped before the export starts, even
     when no task is left to cancel."""
-    from lionhub.orchestration.engines.engine import EngineBudgetError
-
     import lionagi.providers._cli_subprocess as cli_subprocess
+    from lionhub.orchestration.engines.engine import EngineBudgetError
 
     reaped: list[int] = []
     reaped_before_export: list[int] = []

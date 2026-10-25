@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from lionhub.orchestration.engines.coding import CodingChainEvent, CodingRun, WorkPlanned
 from lionhub.orchestration.engines.engine import ChainRun, Engine, EngineEvent, EngineRun
 from lionhub.orchestration.engines.hypothesis import (

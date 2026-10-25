@@ -234,6 +234,26 @@ def test_reload_through_the_old_name_keeps_the_real_spec():
     assert module.__name__ == new
 
 
+def _lionhub_modules_after(statement: str) -> list[str]:
+    code = (
+        f"import sys; {statement}; "
+        "print(sorted(m for m in sys.modules if m == 'lionhub' or m.startswith('lionhub.')))"
+    )
+    proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed statement
+        [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return ast.literal_eval(proc.stdout.strip().splitlines()[-1])
+
+
+def test_importing_lionagi_imports_nothing_from_lionhub():
+    # Old names resolve on demand, so the core alone loads no lionhub module. The second
+    # import shows the same probe does see lionhub modules once an old name is imported.
+    assert _lionhub_modules_after("import lionagi") == []
+    old = _moved.MOVED[0].old
+    assert _moved.resolve(old) in _lionhub_modules_after(f"import lionagi, {old}")
+
+
 def test_finder_is_installed_once_and_first_on_the_import_path():
     finders = [f for f in sys.meta_path if getattr(f, "lionagi_moved", False)]
     assert len(finders) == 1
@@ -363,9 +383,8 @@ def test_the_reference_check_sees_each_form_of_old_reference():
 
 
 # The packages under lionagi/ that may name lionhub: ones a later move takes out of the
-# core, which reach lionhub only from inside functions. Every other package is core and
-# never names it. The set must match what the tree does, so a package that stops naming
-# lionhub is removed from it too.
+# core. Every other package is core and never names it. The set must match what the
+# tree does, so a package that stops naming lionhub is removed from it too.
 LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
@@ -414,4 +433,5 @@ def test_the_lionhub_check_sees_each_form_of_reference():
 def test_changelog_names_every_move():
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     for row in _moved.MOVED:
-        assert f"`{row.old}`" in changelog and f"`{row.new}`" in changelog, row
+        line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
+        assert line in changelog, row

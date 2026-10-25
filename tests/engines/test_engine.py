@@ -10,6 +10,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from lionhub.orchestration.engines import Engine, EngineEvent
 
 
@@ -413,10 +414,9 @@ async def _planning_workers(
     defer_spawn=None,
 ):
     """Construct real worker templates and DAG clones without executing a provider."""
+    from lionagi.casts.emission import TaskAssignment
     from lionhub.orchestration import patterns
     from lionhub.orchestration.engines import engine as engine_mod
-
-    from lionagi.casts.emission import TaskAssignment
 
     specs = []
     workers = []
@@ -649,9 +649,8 @@ async def test_planning_role_templates_stay_within_a_tight_agent_budget(
     fixed, not discretionary agents. The orchestrator the real pipeline builds
     first is what consumes this budget.
     """
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.casts.emission import TaskAssignment
+    from lionhub.orchestration.engines import PlanningEngine
 
     engine = PlanningEngine(
         model="codex/gpt-5.5",
@@ -696,12 +695,11 @@ async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_b
     first turn and the cadence adds no block of its own. The child is cloned
     only after the emitter has answered, as it is in a live run.
     """
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.casts.emission import SpawnRequest
     from lionagi.operations.flow import ReactiveExecutor
     from lionagi.testing import scripted_imodel
     from lionagi.tools.khive_injection import KhiveInjectionProvider
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     namespaces = []
@@ -810,11 +808,10 @@ async def _reactive_planning_run(monkeypatch, tmp_path, replies_by_clone):
     ``spawn_request``. Real construction, cloning, capability inheritance and
     emission extraction all run; only the transport is scripted.
     """
-    from lionhub.orchestration.engines import PlanningEngine
-    from lionhub.orchestration.engines import planning as planning_mod
-
     from lionagi.casts.emission import TaskAssignment
     from lionagi.testing import scripted_imodel
+    from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.engines import planning as planning_mod
 
     engine = PlanningEngine(
         model="codex/gpt-5.5",
@@ -894,11 +891,10 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
     """
     from unittest.mock import AsyncMock
 
-    from lionhub.orchestration.engines import PlanningEngine
-
     from lionagi.operations.fields import ActionResponseModel
     from lionagi.testing import scripted_imodel
     from lionagi.tools.khive_injection import KhiveInjectionProvider
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     queries: list[str] = []
@@ -966,15 +962,14 @@ async def test_planning_independent_unassigned_spawn_keeps_the_engine_settings(
     too: the role router treats it the same way, so it must not skip the
     template.
     """
+    from lionagi.casts.emission import SpawnRequest, TaskAssignment
+    from lionagi.operations.flow import ReactiveExecutor
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.engines.planning import (
         _inherit_worker_providers,
         _role_template_node_builder,
     )
     from lionhub.orchestration.patterns import build_dag_graph
-
-    from lionagi.casts.emission import SpawnRequest, TaskAssignment
-    from lionagi.operations.flow import ReactiveExecutor
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     engine = PlanningEngine(
@@ -1026,10 +1021,9 @@ async def test_planning_provider_inheritance_is_idempotent_and_skips_an_empty_so
     and a source with a registry but no providers would allocate an empty
     registry on the clone and claim it had injection.
     """
+    from lionagi.protocols.context_providers import ContextProviderRegistry
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.engines.planning import _inherit_worker_providers
-
-    from lionagi.protocols.context_providers import ContextProviderRegistry
 
     engine = PlanningEngine(
         model="codex/gpt-5.5",

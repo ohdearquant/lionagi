@@ -16,7 +16,6 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from lionhub.orchestration.engines import PlanningEngine
 
 from lionagi import Branch, Session
 from lionagi.casts.emission import TaskAssignment
@@ -30,6 +29,7 @@ from lionagi.cli.orchestrate.fanout import (
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
+from lionhub.orchestration.engines import PlanningEngine
 
 
 def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:

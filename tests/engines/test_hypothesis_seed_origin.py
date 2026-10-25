@@ -9,6 +9,10 @@ import asyncio
 import json
 
 import pytest
+
+from lionagi.ln.types import Operable, Spec
+from lionagi.operations._observe import emit_message
+from lionagi.protocols.messages import AssistantResponse
 from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     DedupChecked,
@@ -20,10 +24,6 @@ from lionhub.orchestration.engines.hypothesis import (
     filing_queue,
     render_evidence,
 )
-
-from lionagi.ln.types import Operable, Spec
-from lionagi.operations._observe import emit_message
-from lionagi.protocols.messages import AssistantResponse
 
 
 def _wire(engine, run, monkeypatch):
