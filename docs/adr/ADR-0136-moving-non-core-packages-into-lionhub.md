@@ -602,5 +602,6 @@ dependencies but does not install the backend. Wave 1 does not depend on the bac
 ## Notes
 
 - Moves land on the development line; 0.37.0 is the first release that contains them (D4).
-- Implementation, per decision: D1 to D5 are implemented for the four wave-1 packages in open changes
-  that wait on this record; nothing has merged. D4's removal and waves 2 and 3 remain.
+- Implementation, per decision: D1 to D5 are implemented for the four wave-1 packages by #3752, #3753
+  and #3754, merged on the development line (see Implementation-status). D4's removal and waves 2 and 3
+  remain.
