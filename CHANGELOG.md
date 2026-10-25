@@ -42,6 +42,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Routed Anthropic responses whose usage reports `speed: "standard"` are priced again;
+  every response carrying `speed` had been settled as unknown with its spending ceiling
+  held. A response that still cannot be priced records why in its settlement reason:
+  `unpriced_model`, `unknown_usage_key_<field>`, `unpriced_tier`, `unpriced_speed`,
+  `unpriced_region` or `unpriced_server_tool`, and `usage_incomplete` for a usage report
+  that cannot be read.
+
 - Pilot summaries select reading citations from the recorded source commit and name
   task or loop subset refusals; pilot documentation records the checked historical
   source mappings.
