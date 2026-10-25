@@ -800,6 +800,13 @@ jobs:
         persist-credentials: false
     - name: Install ripgrep
       run: sudo apt-get install -y ripgrep
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Install dependencies
+      run: uv sync --frozen
     - name: Lint marketplace
       run: scripts/ci.sh lint-marketplace
 
