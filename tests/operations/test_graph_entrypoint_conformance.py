@@ -3667,10 +3667,9 @@ async def test_flow_kernel_executes_via_dependency_aware_executor_when_not_react
 async def test_orchestration_fanout_submits_built_graph_through_injected_session_flow():
     from uuid import uuid4
 
-    from lionhub.orchestration.patterns import fanout
-
     from lionagi.casts.emission import TaskAssignment
     from lionagi.session.branch import Branch
+    from lionhub.orchestration.patterns import fanout
 
     class _FakeFanoutSession:
         """Duck-typed session — build_fanout_graph only needs .id/.include_branches,
