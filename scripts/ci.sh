@@ -290,6 +290,10 @@ sys.exit(rc)
   echo "  running pytest-based surface validation..."
   if _has_cmd uv; then
     uv run pytest tests/marketplace_lint.py -v --timeout=60 --no-header -q || rc=1
+  elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+    # A CI job that reports this lint must have run it.
+    echo "  FAIL: uv not found, so pytest marketplace validation did not run"
+    rc=1
   else
     echo "  SKIP: uv not found for pytest marketplace validation"
   fi
