@@ -23,6 +23,7 @@ __all__ = (
     "EmptyOutgoingContentError",
     "CLIInputRefusedError",
     "InputTokenCapError",
+    "FailedRoundError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -215,6 +216,18 @@ class InputTokenCapError(LionError):
 
     default_message = "Request input exceeds max_input_tokens"
     default_status_code = 400
+    __slots__ = ()
+
+
+class FailedRoundError(LionError):
+    """Raised when an API-model leg's tool loop keeps ending on a failed round: a response that
+    stopped at its output token limit with no text and no tool call, a reply that did not parse,
+    or an answer with no text. Raised once the loop has been continued past it as many times as it
+    may be, so the run fails instead of ending as finished work. ``details`` carries ``continued``.
+    """
+
+    default_message = "The agent loop ended on a failed round"
+    default_status_code = 502
     __slots__ = ()
 
 
