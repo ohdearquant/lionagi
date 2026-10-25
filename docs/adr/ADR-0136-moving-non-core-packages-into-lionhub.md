@@ -6,10 +6,12 @@
   (D6) are open and wait on this record; the removal release (D4) and waves 2 and 3 (D6) remain.
 - **Area**: governance
 - **Date**: 2026-10-25
-- **Relations**: follows ADR-0122 D1 (layer order), D7 (one distribution first) and D8 (compatibility
-  is explicit and finite); is the explicitly versioned compatibility decision that ADR-0125 D4
-  requires before a public import path is removed; amends ADR-0001 (Amendment 2: `lionhub.` joins
-  the class-path allow-list); updates ADR-0120's citations of the dispatch outbox to its new file
+- **Relations**: follows ADR-0122 D1 (layer order), D7's interim single-distribution rule and
+  distribution gates, and D8 (compatibility is explicit and finite); amends ADR-0122 D7's post-split
+  compatibility-distribution requirement as stated in D1; is the explicitly versioned compatibility
+  decision that ADR-0125 D4 requires before a public import path is removed; amends ADR-0001
+  (Amendment 2: the new prefixes of moved packages join the class-path allow-list); updates
+  ADR-0120's citations of the dispatch outbox to its new file
 
 The maintainer asked for a layout that separates the core from the packages built on it, a first
 migration that breaks no caller, and the removal of the compatibility paths by lionagi 2.0 under a
@@ -36,11 +38,14 @@ and its Phase 0 adds a static checker. At `1e7be920` no import-rule check exists
 `unittest.mock.patch("lionagi.engines…")` string, every pickle and every serialized class path names
 the old module. A plain move breaks all of them in the release that ships it.
 
-**P4. A second distribution now forms a cycle.** Old paths kept in `lionagi` would forward to
-`lionhub`, and `lionhub` imports `lionagi`, so two distributions would each need the other. ADR-0122
-D7 also measured a cycle between `cli` and `studio` (14 files one way, 3 the other) and ruled that a
-split waits for a clean graph. Once providers move, a separate `lionhub` distribution would make
-`iModel(provider="openai")` fail for every user who installed only `lionagi`.
+**P4. A second distribution now would tie two release contracts together.** Old paths kept in
+`lionagi` would forward to `lionhub`, and `lionhub` imports `lionagi`, so each distribution would
+depend on the other during the transition. Compatible version requirements can resolve such a cycle,
+but the split would keep ownership running both ways and require coordinated releases and upgrades
+while the boundary is still changing. ADR-0122 D7 also measured a cycle between `cli` and `studio`
+(14 files one way, 3 the other), and its seven gates for a split have not been met. Providers stay
+in `lionagi` during wave 1; moving them later also needs discovery and installation contracts that
+keep `iModel(provider="openai")` working throughout 1.x (D6).
 
 **P5. Serialized data names classes by module path.** `Element` data records its class in
 `metadata["lion_class"]`, and deserialization imports a module only under an allowed prefix
@@ -58,17 +63,18 @@ release written into the code and checked by a test, old paths stay indefinitely
 | Distribution | D1: one `lionagi` distribution ships two top-level packages, `lionagi` (the core) and `lionhub`, until 2.0. |
 | Layering | D2: the core never names `lionhub`; a test lists the packages under `lionagi/` that still do, each of which moves later. |
 | Old import paths | D3: one table, `lionagi._moved.MOVED`, served by a meta-path finder that returns the moved module object itself under its old name, with one `DeprecationWarning`. |
-| Deprecation plan | D4: every row is deprecated in 0.37.0 and removed in 2.0.0; a test fails the release that reaches the removal version; the CHANGELOG carries the table. |
-| Persisted names | D5: serialized class paths load under either path until 2.0 and are saved under the new one; logger names do not change; each move searches persisted data first. |
+| Deprecation plan | D4: each row records the first release that deprecates it, 0.37.0 for wave 1, and removal in 2.0.0; a test fails the release that reaches the removal version; the CHANGELOG carries the table. |
+| Persisted names | D5: serialized class paths load under either path until 2.0 and are saved under the new one, nested elements included; logger names do not change; each move searches persisted data first; 2.0 ships a published mapping and a converter. |
 | Order | D6: three waves by import graph: packages the core never imports, then the CLI, MCP and Studio once their cycle is broken, then packages the core imports, each after a core seam. |
 | Layout | D7: all of `lionhub` lives under `lionhub/src/lionhub/`; the target layout and where each part comes from. |
 
 Out of scope:
 
 - **The Studio backend's form** (its own process beside the daemon, or a plugin the daemon loads):
-  DEFERRED to its own record before wave 2 moves Studio (D7 records both forms).
-- **Where the CLI lives**: DEFERRED to wave 2. In one distribution `pip install lionagi` provides
-  `li` wherever the code sits (D7).
+  DEFERRED to its own record before any wave-2 change depends on the backend boundary; D7 lists
+  what that record decides, including how the free container image is built.
+- **Where the CLI lives and who owns `li` at 2.0**: DEFERRED to its own record before the wave-2 CLI
+  move. Until 2.0 the `lionagi` distribution provides `li` wherever the code sits (D7).
 - **The 2.0 release date**: the maintainer's. This record fixes the version, not the date.
 - **Changing core mechanisms**: ADR-0125 and later records. The moves here change no behaviour,
   including the older safeguards in the core that current models may no longer need.
@@ -102,7 +108,9 @@ Exact semantics:
 - `lionhub` has no version of its own; it is the distribution's. No `lionhub` distribution is
   published before 2.0.
 - A non-editable install of the base dependency set imports `lionhub.orchestration`, and one moved
-  module under both names, in the CI `core-install` job.
+  module under both names, in the CI `core-install` job. The job runs outside the checkout and
+  asserts that `lionagi` and `lionhub` both load from the installed environment, since run from the
+  repository root Python would import the source tree's `lionagi` instead.
 - An editable install built by hatchling without `dev-mode-exact` puts each package's parent
   directory on `sys.path`: the repository root for `lionagi` and `lionhub/src` for `lionhub`
   (hatchling 1.32 `build_editable_detection`, `add_to_path(os.path.dirname(...))`). Every directory
@@ -113,21 +121,33 @@ Exact semantics:
   `extraPaths`; ruff's `src`, so `lionhub` sorts as first-party; the lint, format, coverage and
   hygiene paths in `scripts/ci.sh`; the documentation-source roots of the skill linter; the Studio
   container build, which copies `lionhub/src/lionhub/` beside `lionagi/`; and the source roots of
-  `tests/test_moved_modules.py` and `tests/operations/test_graph_entrypoint_conformance.py`. A root
-  missing from one of them is a package that tool does not see.
+  `tests/test_moved_modules.py` and `tests/operations/test_graph_entrypoint_conformance.py`; and the
+  CI change filters of the container job and the import and startup jobs, which include
+  `lionhub/**`. A root missing from one of them is a package that tool does not see. Each root ships
+  its own `py.typed` marker.
 - ADR-0122 D7 keeps the `lionagi` top-level namespace intact. It stays intact: every existing
   `lionagi.*` path imports until 2.0 (D3). `lionhub` is a second regular package, not a namespace
   package, which that record does not approve.
-- At 2.0 `lionhub` gets its own project file and distribution and depends on `lionagi`. By then no
-  table row is left (D4), so `lionagi` imports nothing from `lionhub` and no cycle exists. From 2.0,
-  `pip install lionagi` alone no longer installs `lionhub`; the 2.0 record decides the release
-  mechanics against ADR-0122 D7's seven gates.
+- At 2.0 `lionhub` gets its own project file and distribution and depends on `lionagi`, and the
+  `lionagi` wheel no longer contains the `lionhub` package. By then no table row is left (D4), so
+  `lionagi` imports nothing from `lionhub` and no cycle exists. This amends ADR-0122 D7's requirement
+  that `lionagi` stay a compatibility distribution for a documented window after a split: the 1.x
+  line is the transition window, and the 2.0 `lionagi` distribution is the core alone. Changing
+  imports during 1.x is one migration step; code that uses `lionhub` also adds `lionhub` to its
+  declared requirements for 2.0. Before the split, its release record provides the installation
+  matrix, compatible version constraints, the one distribution that owns each package file and
+  console script, and tested fresh-install, upgrade, uninstall and rollback procedures that keep a
+  bundled pre-2.0 `lionhub` and a separately installed one from owning the same files. A core-only
+  2.0 install keeps the core and adapters passed in by the caller; capabilities that moved to
+  `lionhub` need it installed. The record decides the release mechanics against ADR-0122 D7's
+  seven gates.
 
 Why this way:
 
-- **A separate distribution now** fails P4: old paths in `lionagi` would need `lionhub`, which needs
-  `lionagi`, and once providers move every user who installed only `lionagi` breaks in the first
-  release, however good the error text.
+- **A separate distribution now** could keep installs working by declaring the dependencies both
+  ways. It would add release, version-compatibility and upgrade obligations before ADR-0122 D7's
+  gates are met (P4). The cycle itself can be resolved; the reason to wait is the unfinished
+  boundary and release contract.
 - **A subpackage, `lionagi.hub`**, keeps one import root but moves every caller twice: to
   `lionagi.hub.x` now and to `lionhub.x` at the split. A second top-level root now means the 2.0
   split changes distribution metadata and leaves import paths alone.
@@ -160,10 +180,10 @@ Exact semantics:
   constant naming a `lionhub` module. Imports under `TYPE_CHECKING` count because they are import
   statements.
 - `lionagi/_moved.py` names `lionhub` only as table data (D3) and is excluded by name.
-- The class-path allow-list in `lionagi/ln/_utils.py` holds the prefix string `"lionhub."`, which the
-  pattern does not match. That is deliberate and recorded here rather than hidden: the allow-list is
-  trust policy, and the core imports a `lionhub` module through it only when serialized data names
-  one (ADR-0001 Amendment 2). The core imports no `lionhub` module on any path of its own.
+- The class-path allow-list in `lionagi/ln/_utils.py` takes its added prefixes from the table (D5)
+  and names no `lionhub` module itself. That is deliberate and recorded here rather than hidden: the
+  allow-list is trust policy, and the core imports a `lionhub` module through it only when serialized
+  data names one (ADR-0001 Amendment 2). The core imports no `lionhub` module on any path of its own.
 
 Until wave 2, imports between the two roots run both ways: `lionhub` imports the core, and the two
 listed packages, `lionagi.cli` and `lionagi.studio`, import `lionhub`. That is the accepted interim
@@ -213,13 +233,21 @@ Exact semantics:
 
 - **Lookup**: the row with the longest `old` that equals the name or is followed by `.` in it.
   `lionagi.orchestrationx` matches no row and goes to the normal import system.
-- **First import of an old name**: the loader imports the new name and returns that module object,
-  which the import system then also registers under the old name. One `DeprecationWarning`,
+- **First import of an old name**: the import system creates a placeholder for the old name, and the
+  loader imports the new name and replaces the placeholder in `sys.modules` with that module object,
+  which the import system then returns. The loader writes nothing onto the moved module, its
+  `__spec__`, `__name__`, `__package__` and loader included, so imports through two old names of one
+  module, at the same time in two threads, cannot disturb each other. One `DeprecationWarning`,
   attributed to the code that wrote the import, for an `import` statement and for
   `importlib.import_module`.
 - **Later imports of the old name**: a `sys.modules` hit, no warning.
 - **Spec**: the module keeps its real `__spec__` and `__name__` (the new name), so
   `importlib.reload` and the relative imports inside it resolve against the new name.
+- **Before the first import**: `importlib.util.find_spec` on an old name returns a spec that
+  describes it the way the new module is described, a package with the new package's search
+  locations where the new module is one, and resource reads through the old name, such as
+  `pkgutil.get_data`, go to the new module's loader. An old name whose new module does not exist
+  gets no spec.
 - **Below a prefix**: `lionagi.engines.coding` maps to `lionhub.orchestration.engines.coding`; a name
   with no module under the new prefix raises `ModuleNotFoundError`.
 - **A module file still at the old location** in `lionagi/` is never served: the finder steps aside,
@@ -236,8 +264,15 @@ Exact semantics:
 - **Laziness**: `import lionagi` imports no `lionhub` module; old names resolve on demand
   (`test_importing_lionagi_imports_nothing_from_lionhub`, in a fresh interpreter, with a second
   import through an old name showing the probe sees `lionhub` modules when they load).
-- **Scope**: the finder serves imports only. Logger names, entry points and other strings that name a
-  module are D5's.
+- **Scope**: the finder covers imports, old-path module identity, and spec and resource lookup
+  before the first import. Logger names, entry points and other strings that name a module are D5's.
+- **What it does not cover**: there are no files at the old locations, so listing `lionagi.__path__`
+  with `pkgutil.iter_modules` or `pkgutil.walk_packages` does not show a moved package, and a static
+  type checker reading the installed wheel finds no module at an old path. Code that enumerates
+  packages lists the new package instead; typed code changes its imports. No code in this
+  repository enumerates `lionagi.__path__`. The moved modules and their objects also report the new
+  path in `__name__`, `__module__`, `__file__` and tracebacks. None of these warns, and the
+  CHANGELOG entry for the moves names them.
 - **Cost**: the finder is first on `sys.meta_path`, so every import in a process that imported
   `lionagi` passes one prefix scan over the table (four rows in wave 1) before the normal finders.
 
@@ -251,13 +286,23 @@ Why this way:
 - **Eager aliasing in `lionagi/__init__.py`** (registering every new module under its old name at
   import) keeps identity but imports all of `lionhub` on every `import lionagi`, against the
   lazy-import contract.
+- **Generated files at the old locations**, so that `pkgutil` lists the moved packages and type
+  checkers find the old paths. Any such file is a module or package on disk at an old location,
+  which the stale-copy rule above exists to keep out, and a generated package would need its own
+  `__path__` handling to keep one module object under both names. Type stubs generated from the
+  table remain possible later without changing the runtime mechanism.
+- **Writing the old-name spec onto the moved module while it loads, then restoring it**: two old
+  names of one module imported at the same time in two threads interleave the save and the restore,
+  and leave an old-name spec on the moved module.
 - **One table** makes removal the deletion of rows (D4), and the tests enumerate the table, so a move
   without a row, or a row without its tests, cannot pass.
 
 ### D4 — The deprecation plan
 
-1. **Deprecated in 0.37.0**, the first release cut from the development line that contains the moves.
-   If that release takes another number, the rows change with it before it ships.
+1. **Deprecated in the first release that contains each move.** Wave-1 rows use 0.37.0, the first
+   release cut from the development line that contains them; if that release takes another number,
+   the rows change with it before it ships. Rows added by later waves use their own first release,
+   and a later move leaves callers a documented migration window before 2.0.0.
 2. **Removed in 2.0.0**, every row. The version is fixed here; the date is the maintainer's. The old
    paths survive 1.0, so callers can change import paths at any point across the 1.x line, apart from
    the runtime changes 1.0 brings (ADR-0125).
@@ -274,6 +319,10 @@ Why this way:
    - `test_import_statement_warning_points_at_the_importing_line`
    - `test_objects_are_shared_and_pickles_naming_the_old_path_load`
    - `test_reload_through_the_old_name_keeps_the_real_spec`
+   - `test_two_old_names_imported_at_once_leave_the_module_spec_alone`: two old names of one module
+     imported in two threads, with the loader steps interleaved in a fixed order
+   - `test_an_old_package_not_yet_imported_is_described_as_a_package`: spec and resource reads
+     through an old name in a fresh interpreter
    - `test_finder_is_installed_once_and_first_on_the_import_path`
    - `test_importing_lionagi_imports_nothing_from_lionhub`
    - `test_names_outside_the_table_are_left_to_the_normal_import_system`
@@ -288,17 +337,23 @@ Why this way:
    - D2's and D5's tests
 
    The CI `core-install` job imports `lionhub.orchestration` and checks that an old path is the same
-   module object as its new path, from a non-editable install with base dependencies only.
+   module object as its new path, from a non-editable install with base dependencies only, run
+   outside the checkout (D1).
 5. **CHANGELOG**: the release that adds rows has a Changed entry that says what moved and why, and a
    table of old path, new path and removal release, one line per row.
 6. **The removal**: one change at 2.0 deletes every row, `lionagi/_moved.py`, its `install()` call, the
-   old-path resolution in `Element` (D5) and the tests that enumerate the table. The CHANGELOG's
-   Removed section repeats the table. Item 4's version test is what forces the change.
+   old-path resolution in `Element` (D5) and the tests that enumerate the table, after exporting the
+   table as the published mapping D5 requires. Tests that old imports fail, and that data converted
+   by the published procedure loads without the table, replace the compatibility tests. The
+   CHANGELOG's Removed section repeats the import table and the installation change (D1). Item 4's
+   version test is what forces the change.
 
 ### D5 — Persisted names
 
-The class-path allow-list is `{"lionagi.", "lionhub."}` (ADR-0001 Amendment 2), and the metadata check
-in `lionagi/protocols/generic/element.py` reads an old path as the class's path at its new module:
+The class-path allow-list is `lionagi.` plus the new prefix of each moved package, taken from the
+table, which in wave 1 adds `lionhub.orchestration.` (ADR-0001 Amendment 2). The metadata check in
+`lionagi/protocols/generic/element.py` reads an old path as the class's path at its new module and
+returns the metadata naming that path:
 
 ```python
 def _current_path(lion_class: Any) -> Any:
@@ -309,31 +364,45 @@ def _current_path(lion_class: Any) -> Any:
     return lion_class
 
 # in the validator
-if "lion_class" in val and _current_path(val["lion_class"]) != cls.class_name(full=True): ...
+if "lion_class" in val:
+    current = _current_path(val["lion_class"])
+    if current != cls.class_name(full=True): ...      # a different class: refused
+    if current != val["lion_class"]:
+        val = {**val, "lion_class": current}
 ```
 
 Exact semantics:
 
 - **Data written before a move** names the old path. `Element.from_dict` loads it through the old
   module name (D3) whether or not the process has imported the class; `model_validate` on the class
-  accepts it; saving the loaded object writes the new path.
+  accepts it; saving the loaded object writes the new path. That holds for an element nested inside
+  another one as well, since the nested element is saved from the metadata the check returned. It
+  covers class paths in element metadata only: other strings in user data that name a moved module,
+  such as a stored callable path, are not rewritten, and keep loading until 2.0 through the old name.
 - **Data written after a move** names the new path and loads in a process that has not imported
-  `lionhub`, because `lionhub.` is allowed.
-- **A prefix outside the allow-list** (`lionhubx.` in the test) is still refused, the error names
-  `register_type_prefix`, and nothing from `lionhub` is imported. A malformed path under the prefix
-  (an empty segment or a leading dot) is refused before anything is imported.
-- **What the prefix reaches**: every `lionhub` module except the top-level package, which holds only
-  a docstring and `__all__`, is a moved module that the `lionagi.` prefix already reached by its old
-  name, so `lionhub.` makes no new import-time code reachable from data.
-  `test_the_lionhub_prefix_reaches_only_modules_the_lionagi_prefix_already_reached` fails when
-  `lionhub` gains a module with no old name or the top-level package gains code, and that change
-  reopens the allow-list decision (ADR-0001 Amendment 2).
+  `lionhub`, because the moved packages' prefixes are allowed.
+- **A path outside the allow-list** is still refused, the error names `register_type_prefix`, and
+  nothing from `lionhub` is imported. The tests refuse `lionhubx.` and `lionhub_x.`, which share
+  letters with an allowed prefix, a class in the top-level `lionhub` package, and `lionhub.canon`,
+  a `lionhub` package outside the table. A malformed path under an allowed prefix (an empty segment
+  or a leading dot) is refused before anything is imported.
+- **What the prefixes reach**: every module under a moved package's new prefix also imports by its
+  old name under `lionagi.` (D3), with the same parent packages, so the added prefixes make no new
+  import-time code reachable from data. A module added later under a moved prefix is admitted the
+  way a new `lionagi` module is. Admitting anything else in `lionhub`, a new top-level package such
+  as `canon` included, is a new allow-list decision (ADR-0001 Amendment 2), as is the 2.0
+  distribution split. `test_the_allow_list_adds_only_the_moved_packages_to_lionagi` fails when the
+  added prefixes stop matching the table. The prefixes check names, not distributions: an allowed
+  module's top-level code runs when data names it, as for any `lionagi.` module.
 - **Tests**: for every `Element` subclass a moved module defines, a fresh interpreter, asserted to have
   imported nothing from `lionhub` before reading the data, loads data naming the new path and data
   naming the old one, and checks the loaded class and that saving it gives the new-path data back;
-  `model_validate` is checked with old metadata. `test_every_moved_element_class_has_a_sample` fails a
-  moved class that has no sample instance. Removing `lionhub.` from the allow-list, or restoring the
-  exact-match metadata check, fails these tests for both wave-1 classes.
+  `model_validate` is checked with old metadata. The form sample nests an element whose metadata
+  names its own class, so the nested path is checked too
+  (`test_the_form_sample_nests_an_element_that_names_its_class`).
+  `test_every_moved_element_class_has_a_sample` fails a moved class that has no sample instance.
+  Removing the moved prefixes from the allow-list, restoring the exact-match metadata check, or
+  returning the metadata unchanged fails these tests.
 - **Condition on each move**: a move of a module that defines a registered or serialized class lands
   with these tests in the same change. A move with no such class says so in its description, with the
   AST read that shows it.
@@ -352,11 +421,16 @@ Exact semantics:
   values.
 - **Entry points and configuration strings** in this repository that name a moved module are
   rewritten in the move change.
-- **At 2.0**: the table goes (D4), so data naming an old path no longer loads. The migration is to load
-  and save it under any release from 0.37.0 through 1.x, which writes the new path; the 2.0 release
-  notes say so. A data-only class-path rename table kept past 2.0 was weighed and lost: the plan
-  removes every compatibility path at 2.0 and such a table is one. If data naming old paths is still
-  in use near 2.0, that release's record can reopen it with the measurement.
+- **At 2.0**: the table goes (D4), so neither old imports nor old class paths resolve at run time.
+  Before the table is deleted it is published as a fixed, versioned old-to-new mapping, with a
+  standalone conversion procedure for the supported stored formats. The procedure covers nested
+  class paths and declared class, type and callable fields outside `lion_class`, works on files it
+  is given, keeps the originals, reports references it cannot resolve, and never replaces matching
+  text wholesale. The mapping is data for that procedure; it registers no import alias. Loading and
+  saving under a 1.x release is a migration only for formats whose conversion has been shown
+  complete; the 2.0 release notes list those formats and the manual steps for other configuration
+  and third-party entry-point strings. Removing the table is not evidence that stored data has
+  migrated.
 
 ### D6 — Order: three waves by import graph
 
@@ -365,7 +439,7 @@ Exact semantics:
 | 1 | `orchestration`, `engines`, `dispatch`, `work` (7,801 lines) | `cli`, `studio` and each other | none: the core never imports them |
 | 1, held | `integrations` (548) | nothing | open outside contributions that edit it land or close first, so their authors do not rebase across a move |
 | 2 | `cli`, `mcp`, `studio` | each other; `state` imports `cli` in 2 files | the `cli`/`studio` cycle broken (Studio imports private `lionagi.cli` modules 32 times) and the `state`-to-`cli` inversion removed; the Studio backend goes to `apps/studio/backend`, outside the wheel; the daemon and its scheduler go into `lionhub` |
-| 3 | `providers`, `tools`, `agent`, `casts`, `hooks`, `plugins`, `lndl` | the core: `providers` by `service` (3 files) and `operations` (2); `tools`, `agent`, `casts` by `session` (1 each); `hooks` by `operations` (4) and `session` (2); `plugins` by `service` (1) and `protocols` (1); `lndl` by `operations` (2) | a seam in the core for each, first; providers are found by registry key rather than by the module paths `lionagi/service/connections/registry.py` and `lionagi/service/token_budget.py` list today |
+| 3 | `providers`, `tools`, `agent`, `casts`, `hooks`, `plugins`, `lndl` | the core: `providers` by `service` (3 files) and `operations` (2); `tools`, `agent`, `casts` by `session` (1 each); `hooks` by `operations` (4) and `session` (2); `plugins` by `service` (1) and `protocols` (1); `lndl` by `operations` (2) | a seam in the core for each, first. For providers, the record before the move specifies discovery, key ownership and duplicates, contract versions, lazy selection, behaviour when a provider is missing or fails, and context-window metadata. Both endpoint registration (`lionagi/service/connections/registry.py`) and token-budget lookup (`lionagi/service/token_budget.py`) use that contract instead of the module paths they list today. A fresh process resolves today's `iModel(provider=...)` call throughout 1.x with no earlier `lionhub` import and no new registration step for the caller, shown with `lionhub` present and absent; a core-only 2.0 install reports an absent provider at the public boundary rather than falling back silently |
 
 Wave 1's destinations are `lionhub.orchestration`, `lionhub.orchestration.engines`,
 `lionhub.orchestration.dispatch` and `lionhub.orchestration.work`.
@@ -387,7 +461,8 @@ Every move change carries:
 `lionhub`'s paths become public with the first release that ships them. Until then they can change on
 the development line at no cost to anyone; from then on they are kept until 2.0, and the table maps
 only paths under `lionagi.` (`test_no_old_module_is_still_on_disk` asserts it). D7's layout for the
-wave-1 packages is therefore settled before 0.37.0 ships.
+wave-1 packages, and the lookup behaviour D3 states for old names, are therefore settled before
+0.37.0 ships.
 
 Waves 2 and 3 start with their own change lists. Packages move one change each, or one change per
 set that must move together.
@@ -443,23 +518,38 @@ Departures from the draft:
 from those concepts (ADR-0125 D1), not as copies. Each port is its own change with its own tests. A
 port is not a move, so it adds no table row.
 
-**DEFERRED: the CLI's home.** The draft puts it in `serve/cli`. In one distribution
-`pip install lionagi` provides `li` wherever the code sits: the `li` entry point stays declared by the
-`lionagi` distribution, and only its target changes when the CLI moves. The cost of a CLI in
-`lionhub` appears at the 2.0 split, where `pip install lionagi` alone would no longer provide `li`.
-D2 already fixes that the CLI leaves the core package, because it imports `lionhub`; wave 2 decides
-where it goes and which distribution declares `li` from 2.0.
+**DEFERRED: the CLI's home and who owns `li` at 2.0.** The draft puts it in `serve/cli`. Until 2.0 the
+`lionagi` distribution declares `li` wherever the code sits, and only the entry point's target
+changes when the CLI moves. Before the wave-2 CLI move, its record chooses the CLI's public path, the
+one distribution that declares `li` from 2.0, and what a core-only 2.0 install has: no `li`, or a
+launcher with no dependencies that says what to install. It documents the install command for the
+working CLI and tests fresh installs and upgrades for missing, stale and doubly owned scripts. Where
+the code sits does not by itself decide who owns the script. D2 already fixes that the CLI leaves the
+core package, because it imports `lionhub`.
 
 **DEFERRED: the Studio backend's form.** The Studio application (operator, routes, app shell, frontend
-connection) goes to `apps/studio/backend`, outside the wheel, and not into `lionhub`. Two forms remain:
+connection) goes to `apps/studio/backend`, outside the wheel, and not into `lionhub`; the daemon and
+its scheduler go into `lionhub`. Two forms remain:
 
-- A plugin the daemon loads: one port and one lifecycle, and simpler pairing for a browser page. The
-  daemon already mounts its HTTP modules from one list (`lionagi/_auto.py`), the existing seam for
-  this form. Against it: backend code runs inside the daemon's process.
+- A plugin the daemon loads: one port and one lifecycle, and simpler pairing for a browser page.
+  Against it: backend code runs inside the daemon's process.
 - Its own process beside the daemon: a clean boundary. Against it: two ports and two lifecycles.
 
-Either way the Studio container image builds from public sources. Decided in its own record before
-wave 2 moves Studio.
+There is no plugin host today. The fixed HTTP module list in `lionagi/_auto.py` and its loader have
+no caller yet, unlike the CLI declarations in the same module, and are a candidate starting point
+for one; the running app mounts its routes through `lionagi.studio.registry`.
+
+A separate record chooses the form before any wave-2 change depends on the backend boundary, even a
+change filed as a CLI move. It defines activation and absence, version compatibility, route
+ownership, start, stop and readiness, failure and cancellation isolation, state ownership, and how
+the browser and the CLI connect and authenticate. The same record defines how the free container
+image gets and installs its backend and frontend from versioned public sources: moving the backend
+outside the wheel needs an explicit install or build step, since `.[studio]` adds server
+dependencies but does not install the backend. Before backend or frontend source leaves this
+repository, the decision to remove it names the public source and build inputs that keep the free
+image reproducible without private credentials, with its supported versions and release and
+rollback steps. When and where the source goes remain the maintainer's decisions. Wave 1 does not
+depend on the backend's form.
 
 ## Consequences
 
@@ -467,7 +557,10 @@ wave 2 moves Studio.
   integration code; ADR-0125's core changes are read against a smaller package.
 - A layer inversion is a test failure (D2), before ADR-0122's full checker exists.
 - Code outside this repository gets one warning per old module, naming the new path and the removal
-  release, and nothing breaks before 2.0.
+  release, and imports, patches and pickles that name an old path keep working before 2.0. What
+  changes without a warning is listed in D3: listing `lionagi.__path__`, static type checking of old
+  paths, and the new path in `__name__`, `__module__`, `__file__` and tracebacks.
+- Code that depends on `lionhub` adds it to its requirements at 2.0 (D1).
 - Contributors work with two import roots, and the source roots are listed in every place D1 names;
   a new place that lists roots and misses `lionhub` is a tool that silently skips it.
 - The finder is import machinery that runs first for every import in a process that imported
@@ -481,12 +574,12 @@ wave 2 moves Studio.
 
 ## Alternatives considered
 
-- **A separate `lionhub` distribution now, depending on `lionagi`.** It would have given `lionhub`
-  its own release cadence from the start. It lost on P4: old paths in `lionagi` would need `lionhub`,
-  forming a cycle, and once providers move, users who installed only `lionagi` break in the first
-  release. ADR-0122 D7's gates for a split are not met.
-- **`lionagi` depending on a separate `lionhub`.** It would keep `pip install lionagi` complete. It
-  lost because `lionhub` imports `lionagi`: the cycle is the same in the other direction.
+- **Separate `lionagi` and `lionhub` distributions now.** It would have given `lionhub` its own
+  release cadence from the start, and declaring the dependencies both ways could keep old callers
+  working while the compatibility layer and `lionhub` depend on each other. That needs compatible
+  version constraints, coordinated publication and upgrade tests while the boundary is still
+  changing (P4). No benefit in independent releases or install size has been shown that would
+  justify that cost before ADR-0122 D7's gates are met.
 - **A `lionagi[hub]` extra installing a separate `lionhub`.** A separate distribution with a name on
   it: an old path then fails for anyone without the extra, a break in the first release.
 - **Old paths that resolve only when `lionhub` is installed, else an `ImportError` naming the
