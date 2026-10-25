@@ -24,6 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Each old import path keeps working until lionagi 2.0: it returns the same module
   object as the new path and emits one `DeprecationWarning` naming the new path.
   Update imports to the new path; `lionagi._moved.MOVED` lists every move.
+  Three things change without a warning: the moved modules and their objects report
+  the new path in `__name__`, `__module__`, `__file__` and tracebacks; listing
+  `lionagi.__path__` with `pkgutil` does not show a moved package, so list the new
+  package instead; and a static type checker finds no module at an old path.
 
   | Old import path | New import path | Removed in |
   | --- | --- | --- |
