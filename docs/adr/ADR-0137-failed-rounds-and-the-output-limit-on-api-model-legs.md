@@ -1,6 +1,6 @@
 # ADR-0137: Failed rounds and the output limit on API-model legs
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-25, #3763)
 - **Kind**: Aspirational
 - **Implementation-status**: implemented: D1 to D4; the cost measurement has run and keeps D1's
   limit (Consequences, Cost)
