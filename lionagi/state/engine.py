@@ -252,8 +252,19 @@ def _stop_aiosqlite_once(driver_connection) -> None:
         )
 
 
+# How long a failed open waits for its driver worker to exit. The worker finishes
+# the failed connector and then runs the stop the driver queued, so it normally
+# exits at once; a connector that never returns (a hung filesystem) would hold it,
+# and past this bound the open fails with that worker still running.
+_FAILED_OPEN_WORKER_JOIN_SECONDS = 5.0
+
+
 class _SQLiteConnectionAwaitable:
-    """Keep a failed driver connection until its worker has exited."""
+    """Keep a failed driver connection until its worker has exited, within a bound.
+
+    Reads the driver's private ``Connection._thread``, present in the aiosqlite
+    releases the dependency range admits.
+    """
 
     def __init__(self, connection: Any) -> None:
         self._connection = connection
@@ -285,13 +296,21 @@ class _SQLiteConnectionAwaitable:
                 # retaining this connection through a cancellation during the cleanup.
                 interrupted = None
                 with CancelScope(shield=True):
-                    joining = asyncio.create_task(run_sync(worker.join))
+                    joining = asyncio.create_task(
+                        run_sync(worker.join, _FAILED_OPEN_WORKER_JOIN_SECONDS)
+                    )
                     while not joining.done():
                         try:
                             await asyncio.shield(joining)
                         except asyncio.CancelledError as exc:
                             interrupted = exc
                     joining.result()
+                if worker.is_alive():
+                    _log.warning(
+                        "SQLite driver worker still running %.1f s after a failed"
+                        " open; leaving it running",
+                        _FAILED_OPEN_WORKER_JOIN_SECONDS,
+                    )
                 if interrupted is not None:
                     raise interrupted from failed_open
             raise

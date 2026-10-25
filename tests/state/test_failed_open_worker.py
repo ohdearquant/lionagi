@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import logging
+import sqlite3
 import threading
 import traceback
 
@@ -14,22 +17,19 @@ import aiosqlite.core as driver_core
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from lionagi.state import engine
 from lionagi.state.db import StateDB
 
 pytestmark = [pytest.mark.asyncio(loop_scope="function"), pytest.mark.timeout(40)]
 
-
-@pytest.mark.skipif(
+needs_stop = pytest.mark.skipif(
     not hasattr(aiosqlite.Connection, "stop"),
     reason="the stop future is only present in aiosqlite 0.22.1 and later",
 )
-@pytest.mark.parametrize("readonly", [False, True], ids=["writable", "readonly"])
-async def test_failed_open_waits_for_the_actual_driver_worker(
-    tmp_path, monkeypatch, readonly, request
-):
-    loop = asyncio.get_running_loop()
-    stopping = asyncio.Event()
-    release_stop = threading.Event()
+
+
+def _hold_the_driver_stop(monkeypatch, loop, stopping, release_stop):
+    """Record each driver connection and hold its worker inside the queued stop."""
     connections = []
     stopped_by = []
     original_init = driver_core.Connection.__init__
@@ -59,6 +59,29 @@ async def test_failed_open_waits_for_the_actual_driver_worker(
 
     monkeypatch.setattr(driver_core.Connection, "__init__", record_connection)
     monkeypatch.setattr(driver_core, "_connection_worker_thread", gated_worker)
+    return connections, stopped_by
+
+
+async def test_the_driver_still_has_the_private_worker_thread_the_wrapper_reads():
+    # engine._SQLiteConnectionAwaitable reads Connection._thread, and pyproject
+    # bounds aiosqlite to the releases that have it. A release without it fails here.
+    connection = aiosqlite.Connection(functools.partial(sqlite3.connect, ":memory:"), 64)
+    assert isinstance(getattr(connection, "_thread", None), threading.Thread), (
+        "aiosqlite.Connection no longer has the private _thread the failed-open"
+        " drain in lionagi/state/engine.py reads; re-check before widening the pin"
+    )
+    assert connection._thread.ident is None
+
+
+@needs_stop
+@pytest.mark.parametrize("readonly", [False, True], ids=["writable", "readonly"])
+async def test_failed_open_waits_for_the_actual_driver_worker(
+    tmp_path, monkeypatch, readonly, request
+):
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    release_stop = threading.Event()
+    connections, stopped_by = _hold_the_driver_stop(monkeypatch, loop, stopping, release_stop)
 
     # A directory cannot be a SQLite database, so the real native connector
     # fails without relying on chmod behavior or replacing the DBAPI connection.
@@ -106,3 +129,42 @@ async def test_failed_open_waits_for_the_actual_driver_worker(
                 assert not connection._thread.is_alive(), "the test left a driver worker running"
 
     assert alive_when_returned is False, "the failed read returned before its worker exited"
+
+
+@needs_stop
+@pytest.mark.parametrize("cancel", [False, True], ids=["returns", "cancelled"])
+async def test_failed_open_stops_waiting_for_a_worker_that_does_not_exit(
+    tmp_path, monkeypatch, caplog, cancel
+):
+    monkeypatch.setattr(engine, "_FAILED_OPEN_WORKER_JOIN_SECONDS", 0.2)
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    release_stop = threading.Event()
+    connections, _ = _hold_the_driver_stop(monkeypatch, loop, stopping, release_stop)
+    store = tmp_path / "state.db"
+    store.mkdir()
+    state = StateDB(store)
+
+    async def read_store():
+        async with state:
+            await state.fetch_all("SELECT 1")
+
+    caplog.set_level(logging.WARNING, logger=engine.__name__)
+    reading = asyncio.create_task(read_store())
+    try:
+        await asyncio.wait_for(stopping.wait(), 10)
+        if cancel:
+            reading.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else OperationalError):
+            await asyncio.wait_for(reading, 5)
+        assert connections[0]._thread.is_alive(), "the held stop did not keep the worker"
+        assert any(
+            "still running" in record.getMessage()
+            for record in caplog.records
+            if record.name == engine.__name__
+        ), "a failed open past the bound did not say it left the worker running"
+    finally:
+        release_stop.set()
+        for connection in connections:
+            await asyncio.to_thread(connection._thread.join, 10)
+            assert not connection._thread.is_alive(), "the test left a driver worker running"
