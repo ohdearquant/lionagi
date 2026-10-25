@@ -15,10 +15,13 @@ def test_remaining_core_lndl_imports_are_exactly_the_allowed_sites():
     assert ROOT / "lionagi" / "__init__.py" in files
     assert ROOT / "lionagi" / "_auto.py" in files
     actual = [hit for path in files for hit in package_imports(path, "lndl", root=ROOT)]
-    assert actual == [
-        "lionagi/__init__.py:30: lionagi.lndl",
-        "lionagi/operations/lndl_middle/lndl_middle.py:14: lionagi.lndl",
-    ]
+    # Hits read "path:line: module"; the line is dropped so edits elsewhere in a file
+    # do not move the boundary.
+    sites = [(hit.split(":", 1)[0], hit.rsplit(": ", 1)[1]) for hit in actual]
+    assert sites == [
+        ("lionagi/__init__.py", "lionagi.lndl"),
+        ("lionagi/operations/lndl_middle/lndl_middle.py", "lionagi.lndl"),
+    ], actual
 
 
 def test_nine_root_lazy_exports_are_the_explicit_compatibility_catalog():

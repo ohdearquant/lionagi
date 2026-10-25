@@ -71,7 +71,7 @@ def test_all_three_legacy_exports_are_one_function():
 
 @pytest.mark.parametrize("first", ["parse", "legacy"], ids=["parse-no-lndl", "legacy-import"])
 def test_fresh_parse_and_legacy_import_boundary(first):
-    script = """
+    script = r"""
 import importlib
 import json
 import sys
@@ -80,12 +80,13 @@ from pathlib import Path
 root, first = Path(sys.argv[1]), sys.argv[2]
 core_name = "lionagi.libs.schema.extract_code_block"
 samples = json.loads((root / "tests/fixtures/fenced_blocks.json").read_text())["cases"]
-sample = next(case for case in samples if case["id"] == "fence-argument-language-case-control")
+sample = next(case for case in samples if case["id"] == "existing-extract-multiple-lndl-blocks")
+assert len(sample["blocks"]) > 1
 assert not any(n == "lionagi.lndl" or n.startswith("lionagi.lndl.") for n in sys.modules)
 if first == "parse":
     parser = importlib.import_module("lionagi.operations.parse.parse")
     result = parser._extract_lndl(sample["text"], None)
-    assert result == "\\n\\n".join(sample["blocks"])
+    assert result == "\n\n".join(sample["blocks"])
     loaded = sorted(n for n in sys.modules if n == "lionagi.lndl" or n.startswith("lionagi.lndl."))
     assert not loaded, loaded
     assert Path(parser.__file__).resolve() == root / "lionagi/operations/parse/parse.py"
