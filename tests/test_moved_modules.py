@@ -122,6 +122,97 @@ def test_reload_through_the_old_name_keeps_the_real_spec():
     assert module.__name__ == new
 
 
+def _run_fresh(code: str) -> str:
+    proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed program
+        [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    return proc.stdout
+
+
+# Two old names for one module, imported for the first time on two threads. The loader
+# hooks pause each thread at a fixed point so the interleaving is the same on every run:
+# the first thread is inside its load when the second starts its own. The second old name
+# comes from an extra row for the same package, the shape later nested rows produce.
+_TWO_OLD_NAMES_AT_ONCE = """
+import importlib, sys, threading
+from lionagi import _moved
+
+row = _moved.MOVED[0]
+twin = row.old + "_twin"
+_moved.MOVED = _moved.MOVED + (_moved.Moved(twin, row.new, row.deprecated_in, row.removed_in),)
+old, new = {old!r}, {new!r}
+other = twin + old[len(row.old):]
+moved = importlib.import_module(new)
+importlib.import_module(old.rpartition(".")[0])
+importlib.import_module(other.rpartition(".")[0])
+assert old not in sys.modules and other not in sys.modules
+
+first_inside, second_started, first_done = threading.Event(), threading.Event(), threading.Event()
+create, execute = _moved._AliasLoader.create_module, _moved._AliasLoader.exec_module
+
+def paused_create(loader, spec):
+    module = create(loader, spec)
+    if spec.name == other:
+        second_started.set()
+        assert first_done.wait(10)
+    return module
+
+def paused_execute(loader, module):
+    if threading.current_thread().name == "first":
+        first_inside.set()
+        assert second_started.wait(10)
+        execute(loader, module)
+        first_done.set()
+    else:
+        execute(loader, module)
+
+_moved._AliasLoader.create_module = paused_create
+_moved._AliasLoader.exec_module = paused_execute
+errors = []
+
+def load(name):
+    try:
+        importlib.import_module(name)
+    except BaseException as exc:
+        errors.append(repr(exc))
+
+first = threading.Thread(target=load, args=(old,), name="first")
+second = threading.Thread(target=load, args=(other,), name="second")
+first.start()
+assert first_inside.wait(10)
+second.start()
+first.join(15)
+second.join(15)
+assert not first.is_alive() and not second.is_alive()
+assert not errors, errors
+assert sys.modules[old] is moved and sys.modules[other] is moved
+print(moved.__spec__.name, moved.__name__)
+"""
+
+
+def test_two_old_names_imported_at_once_leave_the_module_spec_alone():
+    old, new = next((o, n) for o, n in PAIRS if n.count(".") > _moved.MOVED[0].new.count("."))
+    out = _run_fresh(_TWO_OLD_NAMES_AT_ONCE.format(old=old, new=new))
+    assert out.split() == [new, new]
+
+
+def test_an_old_package_not_yet_imported_is_described_as_a_package():
+    row = _moved.MOVED[0]
+    out = _run_fresh(
+        "import importlib.util, pkgutil, sys\n"
+        "import lionagi\n"
+        f"assert {row.old!r} not in sys.modules\n"
+        f"spec = importlib.util.find_spec({row.old!r})\n"
+        f"new = importlib.util.find_spec({row.new!r})\n"
+        "assert list(spec.submodule_search_locations) == list(new.submodule_search_locations)\n"
+        f"old_bytes = pkgutil.get_data({row.old!r}, '__init__.py')\n"
+        f"assert old_bytes and old_bytes == pkgutil.get_data({row.new!r}, '__init__.py')\n"
+        "print('ok')\n"
+    )
+    assert out.split() == ["ok"]
+
+
 def _lionhub_modules_after(statement: str) -> list[str]:
     code = (
         f"import sys; {statement}; "
@@ -170,6 +261,7 @@ def test_no_old_module_is_still_on_disk(old, new):
 
 def test_finder_steps_aside_for_a_module_still_at_its_old_path(tmp_path, monkeypatch):
     old = _moved.MOVED[0].old
+    submodule = next(name for name, _ in PAIRS if name.startswith(old + "."))
     package = tmp_path.joinpath(*old.split(".")[1:])
     package.mkdir(parents=True)
     finder = next(f for f in sys.meta_path if getattr(f, "lionagi_moved", False))
@@ -178,7 +270,7 @@ def test_finder_steps_aside_for_a_module_still_at_its_old_path(tmp_path, monkeyp
     (package / "__init__.py").write_text("")
     assert _moved.still_on_disk(old)
     assert finder.find_spec(old) is None
-    assert finder.find_spec(old + ".x") is not None
+    assert finder.find_spec(submodule) is not None
 
 
 @pytest.mark.parametrize("row", _moved.MOVED, ids=[row.old for row in _moved.MOVED])
