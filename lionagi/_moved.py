@@ -40,6 +40,7 @@ class Moved(NamedTuple):
 
 MOVED: tuple[Moved, ...] = (
     Moved("lionagi.orchestration", "lionhub.orchestration", "0.37.0", "2.0.0"),
+    Moved("lionagi.engines", "lionhub.orchestration.engines", "0.37.0", "2.0.0"),
 )
 
 

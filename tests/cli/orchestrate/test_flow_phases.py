@@ -589,7 +589,8 @@ async def test_execute_dag_collects_planned_results(tmp_path):
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
 
     fake_engine_run = MagicMock()
@@ -630,7 +631,7 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -689,7 +690,7 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -760,8 +761,9 @@ async def test_a_reactively_spawned_codex_node_runs_without_the_user_config(tmp_
     planned worker is isolated, and the emitter's own model keeps its settings."""
     spec, user_key, user_value = "codex/gpt-5", "profile", "work"
     flag_key, flag_value = "ignore_user_config", True
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.cli._providers import build_imodel_from_spec
-    from lionagi.engines import PlanningEngine
     from lionagi.session.branch import Branch
 
     env = _make_env(tmp_path)
@@ -813,8 +815,9 @@ async def test_a_spawn_cloned_from_the_orchestrator_drops_its_derived_effort(tmp
     A node cloned from it no longer loads that config, so it runs at what a planned
     worker with no role effort gets; a clone of a worker keeps that worker's effort,
     and a run-wide effort the caller asked for is kept."""
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.cli._providers import build_imodel_from_spec
-    from lionagi.engines import PlanningEngine
     from lionagi.session.branch import Branch
 
     (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
@@ -1001,7 +1004,7 @@ async def test_execute_dag_escalated_spawned_node_evidence_uses_spawn_id(tmp_pat
         nodes=[], internal_nodes={"node-escalated": escalated_node}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -1069,7 +1072,7 @@ async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
         nodes=[], internal_nodes={"node-spawn-1": spawned_node}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -1139,7 +1142,7 @@ async def test_execute_dag_spawned_node_without_role_defaults_no_contract(tmp_pa
         nodes=[], internal_nodes={"node-spawn-1": spawned_node}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -1199,7 +1202,7 @@ async def test_execute_dag_spawned_ids_independent_of_completion_order(tmp_path)
         nodes=[], internal_nodes={"node-b": node_b, "node-a": node_a}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -1262,7 +1265,7 @@ async def test_execute_dag_unstamped_node_fallback_skips_stamped_ids(tmp_path):
         internal_nodes={"node-stamped": stamped_node, "node-unstamped": unstamped_node},
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -1315,7 +1318,7 @@ async def test_execute_dag_role_attributed_node_missing_spawn_id_fails_loud(tmp_
         nodes=[], internal_nodes={"node-broken": broken_node}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = MagicMock(
@@ -1380,7 +1383,8 @@ async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_pa
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.session.signal import NodeCompleted, NodeStarted
 
     async def _run_dag_and_emit_node_signals(*_args, **_kwargs):
@@ -1456,7 +1460,8 @@ async def test_synthesis_drains_the_reused_observers_second_write_wave(tmp_path)
         worker_models=["codex/gpt-5.5"],
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.session.signal import NodeCompleted, NodeStarted
 
     pass_number = 0
@@ -1642,7 +1647,8 @@ async def _executed_with_live_observers(
     given. With *escalated*, the first pass also completes an escalated node, which queues an
     escalation link. *exchange*, if given, is the run's message exchange, and *in_first_pass*,
     if given, is awaited with the engine's keyword arguments at the end of the first pass."""
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.operations.node import create_operation
     from lionagi.session.signal import NodeCompleted, NodeStarted
 
@@ -2348,6 +2354,8 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
     missing OR present-but-empty, and stay completed only when a real
     non-empty file is written — the actual enforcement the role declaration
     exists for, now that the spawned node is told its artifact dir up front."""
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi import Branch, Session
     from lionagi.casts.pattern import Role
     from lionagi.cli._runs import allocate_run
@@ -2356,7 +2364,6 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
         start_live_persist,
         stop_live_persist,
     )
-    from lionagi.engines import PlanningEngine
     from lionagi.state.db import StateDB
 
     orc_branch = Branch(name="orchestrator")
@@ -2466,13 +2473,14 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
     the result back off a real StateDB."""
     import asyncio
 
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi import Branch, Session
     from lionagi.cli._runs import allocate_run
     from lionagi.cli.orchestrate._orchestration import (
         OrchestrationEnv,
         start_live_persist,
     )
-    from lionagi.engines import PlanningEngine
     from lionagi.session.signal import NodeCompleted, NodeStarted
     from lionagi.state.db import StateDB
 

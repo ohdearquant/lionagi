@@ -8,14 +8,11 @@ from __future__ import annotations
 import asyncio
 import json
 
+import lionhub.orchestration.engines.engine as engine_mod
+import lionhub.orchestration.engines.hypothesis as hyp_mod
 import pytest
-from pydantic import BaseModel
-
-import lionagi.engines.engine as engine_mod
-import lionagi.engines.hypothesis as hyp_mod
-from lionagi import Branch
-from lionagi.engines.engine import Engine, JudgeVerdict
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.engine import Engine, JudgeVerdict
+from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     DedupChecked,
     FindingPosted,
@@ -23,6 +20,9 @@ from lionagi.engines.hypothesis import (
     filing_queue,
     render_evidence,
 )
+from pydantic import BaseModel
+
+from lionagi import Branch
 from lionagi.ln.types import Operable, Spec
 from lionagi.operations._observe import emit_message
 from lionagi.protocols.messages import AssistantResponse

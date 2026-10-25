@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from lionagi.engines.coding import (
+from lionhub.orchestration.engines.coding import (
     ChangeProposed,
     CodingEngine,
     VerifyResult,
@@ -22,7 +21,7 @@ from lionagi.engines.coding import (
     WorkPlanned,
     _lint_spec,
 )
-from lionagi.engines.engine import Engine, EngineRun
+from lionhub.orchestration.engines.engine import Engine, EngineRun
 
 # Helpers shared across sections
 
@@ -227,7 +226,7 @@ def test_lint_spec_no_warnings_for_complete_spec(tmp_path):
 
 
 def test_lint_spec_strict_raises_on_warnings():
-    from lionagi.engines.coding import _lint_spec
+    from lionhub.orchestration.engines.coding import _lint_spec
 
     with pytest.raises(ValueError, match="acceptance"):
         _lint_spec("no acceptance here", workspace=None, strict=True)

@@ -18,7 +18,7 @@ Requires a codex CLI installation and API access.
     uv run python examples/reactive_spawn.py
 
 Production users: don't drive the reactive substrate directly like this —
-use lionagi/engines/ (Engine class), which wraps it with an agent budget
+use lionhub/src/lionhub/orchestration/engines/ (Engine class), which wraps it with an agent budget
 cap, a wall-clock deadline, and a JudgeVerdict quality gate before allowing
 expansion.
 """

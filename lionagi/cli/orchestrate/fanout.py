@@ -474,7 +474,8 @@ async def _run_fanout_inner(
     saved_workers: dict[int, dict] = {}
     artifact_failures: dict[int, dict] = {}
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi.session.signal import NodeCompleted, NodeFailed
 
     # Keyed by op_id so the same observer serves the fanned workers here and

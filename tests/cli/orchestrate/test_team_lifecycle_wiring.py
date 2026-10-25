@@ -16,13 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from lionhub.orchestration.engines import PlanningEngine
 
 from lionagi.casts.emission import TaskAssignment
 from lionagi.cli import team
 from lionagi.cli.orchestrate import flow as _flow
 from lionagi.cli.orchestrate._orchestration import make_team_lifecycle_coordinator
 from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
-from lionagi.engines import PlanningEngine
 from lionagi.operations.node import Operation
 from lionagi.protocols.graph.graph import Graph
 from lionagi.session.exchange import Exchange

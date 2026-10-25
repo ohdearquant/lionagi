@@ -7,8 +7,7 @@ pending experiments, chain tracing, synthesis. No LLM."""
 from __future__ import annotations
 
 import pytest
-
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.hypothesis import (
     ApplicationMapped,
     ChainEvent,
     ConclusionDrawn,

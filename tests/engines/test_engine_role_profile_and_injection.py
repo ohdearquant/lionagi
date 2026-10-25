@@ -10,11 +10,11 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
+import lionhub.orchestration.engines.engine as engine_mod
 import pytest
+from lionhub.orchestration.engines.engine import Engine
 
 import lionagi.cli._providers as providers_mod
-import lionagi.engines.engine as engine_mod
-from lionagi.engines.engine import Engine
 from lionagi.tools.khive_injection import KhiveInjectionProvider
 
 # Role-profile cache: keyed by (role, cwd), never caches an exception fallback

@@ -16,13 +16,13 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from lionhub.orchestration.engines import PlanningEngine
 
 from lionagi._errors import CLIInputRefusedError
 from lionagi.cli.orchestrate import fanout as fanout_module
 from lionagi.cli.orchestrate import flow as flow_module
 from lionagi.cli.orchestrate.fanout import FanoutPlanError
 from lionagi.cli.orchestrate.flow import FlowPlanError
-from lionagi.engines import PlanningEngine
 
 from .test_fanout_artifacts import _fanout_env
 from .test_flow_planning import _env as _flow_env

@@ -71,7 +71,8 @@ async def test_queued_and_started_share_the_same_name_when_reference_id_set():
     executor callback passed — this is what makes queued and started resolve
     to one name regardless of the executor's own (still divergent) internal
     fallback chain, exercised directly by the next test below."""
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeQueued, NodeStarted
 
@@ -155,7 +156,7 @@ async def test_reactive_spawn_shares_one_name_across_queued_started_terminal():
     root.branch_id = spawner.id
     graph.add_node(root)
 
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
 
     run = Engine().new_run(session=session)
     result = await run.run_dag(
@@ -228,7 +229,7 @@ async def test_reactive_spawn_shares_one_name_when_spawn_branch_setup_names_the_
     root.branch_id = spawner.id
     graph.add_node(root)
 
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
 
     def _name_the_clone(_op, clone) -> None:
         clone.name = "explicit-child-name"
@@ -265,7 +266,8 @@ async def test_branch_name_colliding_with_op_id_prefix_stays_pinned_through_late
     operation across two names on the Studio-facing signal bus. Structural
     provenance (name_is_fallback, computed by the producer) replaces the
     string comparison."""
-    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
+
     from lionagi.operations.flow import DependencyAwareExecutor
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -343,7 +345,8 @@ async def test_on_progress_seam_requires_provenance_instead_of_defaulting():
     probe above must now fail loudly (TypeError) rather than silently
     guessing fallback=True and risking the split-identity render.
     """
-    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
+
     from lionagi.session.branch import Branch
 
     op = Operation(operation="work", parameters={})
@@ -699,7 +702,8 @@ async def test_gate_skipped_node_projects_to_the_skipped_lane_on_the_signal_bus(
     flow result would pass just as happily while the canvas painted the node
     red, which is exactly how this defect survived.
     """
-    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
+
     from lionagi.operations.flow import flow
     from lionagi.session.signal import NodeFailed, NodeSkipped, lane_for
 
@@ -806,7 +810,8 @@ async def test_preterminal_cancelled_is_announced_with_its_own_outcome():
 async def test_preterminal_cancelled_reaches_signal_bus_cancelled_lane():
     """The Flow-to-Studio bridge persists NodeCancelled and lane_for projects
     it as cancelled, so the execution graph cannot keep showing queued."""
-    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
+
     from lionagi.operations.flow import flow
     from lionagi.session.signal import NodeCancelled, lane_for
 
@@ -834,7 +839,8 @@ async def test_preterminal_completed_reaches_the_signal_bus_and_leaves_the_queue
     the node waiting, so this follows the same path a viewer sees: through
     ``flow_progress_signals`` to ``lane_for``.
     """
-    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionhub.orchestration.engines.flow_signals import flow_progress_signals
+
     from lionagi.operations.flow import flow
     from lionagi.session.signal import NodeCompleted, lane_for
 

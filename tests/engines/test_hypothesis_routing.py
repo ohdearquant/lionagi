@@ -10,14 +10,11 @@ import asyncio
 import json
 from unittest.mock import patch
 
+import lionhub.orchestration.engines.engine as engine_mod
+import lionhub.orchestration.engines.hypothesis as hyp_mod
 import pydantic
 import pytest
-
-import lionagi.engines.engine as engine_mod
-import lionagi.engines.hypothesis as hyp_mod
-from lionagi import Branch
-from lionagi._errors import ContainmentRefusedError
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     ConclusionDrawn,
     DedupChecked,
@@ -31,13 +28,16 @@ from lionagi.engines.hypothesis import (
     filing_queue,
 )
 
+from lionagi import Branch
+from lionagi._errors import ContainmentRefusedError
+
 
 @pytest.fixture(autouse=True)
 def _no_local_profiles(monkeypatch):
     """Stage routing must not depend on this machine's agent profiles."""
     monkeypatch.setattr(engine_mod, "_ROLE_PROFILE_CACHE", {})
     monkeypatch.setattr(engine_mod, "role_profile_route", lambda role: (None, None))
-    import lionagi.engines.hypothesis as hyp_mod
+    import lionhub.orchestration.engines.hypothesis as hyp_mod
 
     monkeypatch.setattr(hyp_mod, "role_profile_route", lambda role: (None, None))
 
@@ -128,7 +128,7 @@ def test_effort_suffix_in_model_suppresses_table_effort():
 
 
 def test_role_profile_layer_beats_table(monkeypatch):
-    import lionagi.engines.hypothesis as hyp_mod
+    import lionhub.orchestration.engines.hypothesis as hyp_mod
 
     monkeypatch.setattr(
         hyp_mod,

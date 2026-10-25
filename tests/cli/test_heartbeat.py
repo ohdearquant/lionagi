@@ -318,9 +318,10 @@ async def test_execute_dag_heartbeat_tracks_samples_and_terminal_state(
     tmp_path,
     terminal_status,
 ):
+    from lionhub.orchestration.engines import PlanningEngine
+
     from lionagi import Branch, Session
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
 

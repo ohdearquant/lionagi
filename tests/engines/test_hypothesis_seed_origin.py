@@ -9,8 +9,7 @@ import asyncio
 import json
 
 import pytest
-
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     DedupChecked,
     ExperimentDesigned,
@@ -21,6 +20,7 @@ from lionagi.engines.hypothesis import (
     filing_queue,
     render_evidence,
 )
+
 from lionagi.ln.types import Operable, Spec
 from lionagi.operations._observe import emit_message
 from lionagi.protocols.messages import AssistantResponse

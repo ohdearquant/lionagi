@@ -236,7 +236,8 @@ def test_node_escalated_request_not_payload_matched():
 
 @pytest.mark.asyncio
 async def test_run_dag_emits_node_queued_before_started():
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -285,7 +286,8 @@ async def test_run_dag_calls_session_flow_once_with_same_graph():
     AsyncMock(wraps=...), which would drop the bound `self` and mis-route
     the graph argument into it.
     """
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -327,7 +329,8 @@ async def test_run_dag_calls_session_flow_once_with_same_graph():
 
 @pytest.mark.asyncio
 async def test_projection_contract_end_to_end():
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -386,8 +389,9 @@ async def test_projection_contract_end_to_end():
 
 @pytest.mark.asyncio
 async def test_reactive_injected_child_receives_node_queued():
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.casts.emission import SpawnRequest
-    from lionagi.engines import Engine
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.node import create_operation
     from lionagi.session.branch import Branch
@@ -449,7 +453,8 @@ async def test_skipped_node_projects_to_skipped_lane():
     that does not know the kind projects the node straight back to 'queued' --
     the very failure this test was written to catch.
     """
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.operations.node import Operation
     from lionagi.protocols.graph.edge import Edge, EdgeCondition
     from lionagi.protocols.graph.graph import Graph
@@ -620,7 +625,8 @@ async def test_second_pass_does_not_replay_terminal_signals_for_finished_nodes()
     reported again by that pass, and signalling them a second time records work this
     pass never did -- a resume rebuilt from those events treats the replay as completed.
     """
-    from lionagi.engines import Engine
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -659,8 +665,9 @@ async def test_second_pass_does_not_replay_terminal_signals_for_finished_nodes()
 async def test_skip_signal_ops_does_not_suppress_nodes_spawned_during_the_pass():
     """A restricted pass names the work that already ran, which cannot name a node
     that does not exist yet. A spawn is new work, not a replay, so it still signals."""
+    from lionhub.orchestration.engines import Engine
+
     from lionagi.casts.emission import SpawnRequest
-    from lionagi.engines import Engine
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.operations.node import create_operation
     from lionagi.session.branch import Branch

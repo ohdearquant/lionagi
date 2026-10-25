@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from lionhub.orchestration.engines.engine import Engine
 
 from lionagi import Branch, iModel
-from lionagi.engines.engine import Engine
 from lionagi.service.connections.endpoint import Endpoint
 
 pytestmark = pytest.mark.asyncio

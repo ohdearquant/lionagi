@@ -10,8 +10,7 @@ import subprocess
 import sys
 
 import pytest
-
-from lionagi.engines.coding import (
+from lionhub.orchestration.engines.coding import (
     ChangeProposed,
     CodeResultRecorded,
     CodingChainEvent,
@@ -23,7 +22,7 @@ from lionagi.engines.coding import (
     _resolve_cmd,
     _tail,
 )
-from lionagi.engines.hypothesis import ResultRecorded
+from lionhub.orchestration.engines.hypothesis import ResultRecorded
 
 
 class _ScriptedBranch:

@@ -9,19 +9,18 @@ import json
 
 import pytest
 import yaml
-
-from lionagi.engines.coding import (
+from lionhub.orchestration.engines.coding import (
     ChangeProposed,
     CodeResultRecorded,
     CodingEngine,
     TestsRan,
     WorkPlanned,
 )
-from lionagi.engines.coding import (
+from lionhub.orchestration.engines.coding import (
     VerifyResult as CodeVerifyResult,
 )
-from lionagi.engines.engine import JudgeVerdict
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.engine import JudgeVerdict
+from lionhub.orchestration.engines.hypothesis import (
     ApplicationMapped,
     ConclusionDrawn,
     EvidenceCollected,
@@ -29,8 +28,14 @@ from lionagi.engines.hypothesis import (
     QuestionRaised,
     ResultRecorded,
 )
-from lionagi.engines.research import FindingEmitted, ResearchEngine
-from lionagi.engines.review import IssueFound, ReviewEngine, ReviewVerdict, VerifyResult
+from lionhub.orchestration.engines.research import FindingEmitted, ResearchEngine
+from lionhub.orchestration.engines.review import (
+    IssueFound,
+    ReviewEngine,
+    ReviewVerdict,
+    VerifyResult,
+)
+
 from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 
 SCRIPTED_MODEL = "scripted/scripted-test"

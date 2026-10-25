@@ -33,9 +33,10 @@ def test_engine_invocation_defaults_from_environment_and_explicit_flag_wins(
 async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
     monkeypatch, tmp_path, capsys
 ) -> None:
+    from lionhub.orchestration.engines.engine import EngineResult
+
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
-    from lionagi.engines.engine import EngineResult
     from lionagi.state.db import StateDB
 
     db_path = tmp_path / "state.db"
@@ -114,8 +115,9 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
 
 
 async def test_workflow_engine_nodes_return_distinct_span_ids(monkeypatch) -> None:
+    from lionhub.orchestration.engines.engine import EngineResult
+
     import lionagi.cli.engine as engine_mod
-    from lionagi.engines.engine import EngineResult
     from lionagi.studio.services.workflow_compile import make_engine_operation
 
     counter = 0
