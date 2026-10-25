@@ -230,7 +230,7 @@ before.
   fails the turn; an Anthropic leg's request waits at most the endpoint's 600-second timeout; an
   LNDL round cut off with nothing is repaired inside its rounds; the
   actions in a reply whose text holds a fenced block run; `li agent` exits failed on a failed round
-  without a traceback; the cut-off reading of each provider shape (16 cases).
+  without a traceback; the cut-off reading of each provider shape (15 cases).
 - `tests/operations/test_parse_failure_diagnostics.py`: no reformat request for an empty or blank
   reply; an extraction error for one under `handle_validation="raise"`; the same outcome for a
   schema whose required field the first attempt rejects.
