@@ -103,13 +103,19 @@ jobs:
         uv pip install .
     # Starting the CLI traverses the real import chain rather than a subset a
     # test happens to reach, so an undeclared import on a startup path fails
-    # here instead of in a seat's environment.
+    # here instead of on a user's machine. The step runs outside the
+    # checkout: from the repository root, Python would import the source
+    # tree's lionagi instead of the installed one.
     - name: Core surface starts without extras
+      working-directory: ${{ runner.temp }}
       run: |
-        .venv/bin/li --version
-        .venv/bin/python - <<'PY'
+        "$GITHUB_WORKSPACE/.venv/bin/li" --version
+        "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
         import importlib
+        import os
+        import sys
 
+        venv = os.path.join(os.environ["GITHUB_WORKSPACE"], ".venv")
         for module in (
             "lionagi",
             "lionagi.cli.main",
@@ -120,6 +126,10 @@ jobs:
             "lionhub.orchestration",
         ):
             importlib.import_module(module)
+        # Both packages come from the installed wheel, not from the checkout.
+        for name in ("lionagi", "lionhub"):
+            origin = sys.modules[name].__file__
+            assert origin.startswith(venv + os.sep), (name, origin)
         # A moved module's old import path is the same module object as its new one.
         old = importlib.import_module("lionagi.orchestration.patterns")
         assert old is importlib.import_module("lionhub.orchestration.patterns")
@@ -552,6 +562,7 @@ jobs:
           studio:
             - 'apps/studio/**'
             - 'lionagi/**'
+            - 'lionhub/**'
             - 'pyproject.toml'
             - 'README.md'
             - 'LICENSE'
@@ -567,6 +578,7 @@ jobs:
             - 'lionagi/state/lifecycle/**'
           imports:
             - 'lionagi/**'
+            - 'lionhub/**'
             - 'pyproject.toml'
             - 'uv.lock'
             - '.github/workflows/ci.yml'

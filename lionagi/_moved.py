@@ -10,7 +10,9 @@ same objects, ``isinstance`` and ``unittest.mock.patch`` on the old path keep wo
 and pickles that name the old path still load. Each old module emits one
 ``DeprecationWarning`` naming its new path and the release that removes the old one.
 
-There are no forwarding files at the old locations. Removing a move is deleting its row.
+There are no forwarding files at the old locations, so listing ``lionagi.__path__`` with
+``pkgutil`` does not show a moved package; list the new package instead. Removing a move
+is deleting its row.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import importlib
 import importlib.abc
 import importlib.machinery
+import importlib.util
 import os
 import sys
 import warnings
@@ -101,24 +104,27 @@ class _AliasLoader(importlib.abc.Loader):
     def __init__(self, row: Moved, new_name: str) -> None:
         self._row = row
         self._new_name = new_name
-        self._spec: importlib.machinery.ModuleSpec | None = None
 
-    def create_module(self, spec: importlib.machinery.ModuleSpec) -> ModuleType:
-        module = importlib.import_module(self._new_name)
-        self._spec = module.__spec__
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+        # The import system makes a placeholder, and exec_module replaces it in
+        # ``sys.modules`` with the moved module, which the import system then returns.
+        # Nothing is written onto the moved module itself, its spec included, so
+        # imports through two old names of one module cannot disturb each other.
+        return None
+
+    def exec_module(self, module: ModuleType) -> None:
+        moved = importlib.import_module(self._new_name)
         warnings.warn(
-            f"{spec.name} moved to {self._new_name}; the old import path is removed in "
-            f"lionagi {self._row.removed_in}. Import from {self._new_name} instead.",
+            f"{module.__name__} moved to {self._new_name}; the old import path is removed "
+            f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead.",
             DeprecationWarning,
             stacklevel=_caller_stacklevel(),
         )
-        return module
+        sys.modules[module.__name__] = moved
 
-    def exec_module(self, module: ModuleType) -> None:
-        # The import system stamped the alias spec onto the shared module object.
-        # Put the module's own spec back, so ``importlib.reload`` and relative imports
-        # inside it still resolve against its real name.
-        module.__spec__ = self._spec
+    def get_data(self, path: str) -> bytes:
+        # Resource readers such as ``pkgutil.get_data`` ask the old name's loader.
+        return importlib.import_module(self._new_name).__spec__.loader.get_data(path)
 
 
 class _MovedFinder(importlib.abc.MetaPathFinder):
@@ -129,7 +135,20 @@ class _MovedFinder(importlib.abc.MetaPathFinder):
         if row is None or still_on_disk(fullname):
             return None
         new_name = row.new + fullname[len(row.old) :]
-        return importlib.machinery.ModuleSpec(fullname, _AliasLoader(row, new_name))
+        new_spec = importlib.util.find_spec(new_name)
+        if new_spec is None:
+            return None
+        # Describe the old name the way the new module is described, so a lookup that
+        # has not imported it yet still sees a package where the new module is one.
+        spec = importlib.machinery.ModuleSpec(
+            fullname,
+            _AliasLoader(row, new_name),
+            origin=new_spec.origin,
+            is_package=new_spec.submodule_search_locations is not None,
+        )
+        if new_spec.submodule_search_locations is not None:
+            spec.submodule_search_locations = list(new_spec.submodule_search_locations)
+        return spec
 
 
 def install() -> None:
