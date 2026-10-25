@@ -207,13 +207,6 @@ class ContextTool(LionTool):
             c = c[:120].replace("\n", " ") + ("..." if len(c) > 120 else "")
             return f"[{idx}]{tag} {role}: {c}"
 
-        def _chronology(uid) -> int:
-            message = msgs.messages[uid]
-            original = message.metadata.get("clipped_from")
-            if original is not None and original in msgs.messages:
-                return msgs.progression.index(msgs.messages[original].id)
-            return message.metadata.get("context_first_index", msgs.progression.index(uid))
-
         async def _auto_summarize(uids: list, pile) -> str | None:
             """Generate a compact summary over `uids` with one direct model call.
             Model-call failures return None for caller fallback; invalid result projections propagate.
@@ -281,6 +274,30 @@ class ContextTool(LionTool):
             active = branch.progression  # current view (respects evictions)
             full = msgs.progression  # complete durable record
             pile = msgs.messages
+            positions = None
+            chronology = {}
+
+            def _chronology(uid) -> int:
+                nonlocal positions
+                if uid in chronology:
+                    return chronology[uid]
+                message = pile[uid]
+                original = message.metadata.get("clipped_from")
+                is_copy = original is not None and original in pile
+                recorded_uid = pile[original].id if is_copy else uid
+                if positions is None:
+                    positions = {}
+                    for position, full_uid in enumerate(full):
+                        positions.setdefault(full_uid, position)
+                # Keep native missing-record errors, including notes with a supplied key.
+                position = (
+                    positions[recorded_uid]
+                    if recorded_uid in positions
+                    else full.index(recorded_uid)
+                )
+                key = position if is_copy else message.metadata.get("context_first_index", position)
+                chronology[uid] = key
+                return key
 
             if action == "read_result":
                 if (
@@ -418,23 +435,32 @@ class ContextTool(LionTool):
                     if message.metadata.get("clipped_from") is not None
                 }
 
+                visible = set(view)
+                copies_by_original = None
                 for i in range(s, e):
                     uid = full[i]
                     message = pile[uid]
-                    if message.metadata.get("clipped_from") or uid in view:
+                    if message.metadata.get("clipped_from") or uid in visible:
                         continue
-                    copies = [
-                        au for au in view if pile[au].metadata.get("clipped_from") == str(uid)
-                    ]
+                    if copies_by_original is None:
+                        copies_by_original = {}
+                        for au in view:
+                            original = pile[au].metadata.get("clipped_from")
+                            if isinstance(original, str):
+                                copies_by_original.setdefault(original, []).append(au)
+                    copies = copies_by_original.pop(str(uid), [])
                     if copies:
                         insert_at = view.index(copies[0])
-                        view = [au for au in view if au not in copies]
+                        removed = set(copies)
+                        view = [au for au in view if au not in removed]
+                        visible.difference_update(removed)
                     else:
                         key = _chronology(uid)
                         insert_at = next(
                             (j for j, au in enumerate(view) if _chronology(au) > key), len(view)
                         )
                     view.insert(insert_at, uid)
+                    visible.add(uid)
                     if isinstance(message, ActionResponse) and str(uid) in clipped_originals:
                         originals.append(uid)
                     restored += 1
