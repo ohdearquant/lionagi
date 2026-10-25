@@ -631,6 +631,9 @@ async def test_bound_read_result_reports_applied_limit_without_changing_original
 
 
 async def test_restore_range_uses_one_record_map_without_index_scans(monkeypatch):
+    import sys
+
+    from lionagi.protocols.generic.pile import Pile
     from lionagi.protocols.generic.progression import Progression
 
     branch = _build_branch()
@@ -644,7 +647,7 @@ async def test_restore_range_uses_one_record_map_without_index_scans(monkeypatch
 
     def iterate(self):
         if self is full:
-            iterations.append(True)
+            iterations.append(sys._getframe(1).f_code)
         return original_iter(self)
 
     def index(self, item, start=0, end=None):
@@ -658,7 +661,10 @@ async def test_restore_range_uses_one_record_map_without_index_scans(monkeypatch
     assert result["success"] is True and result["restored"] == 16
     assert list(branch.progression) == expected
     assert calls == []
-    assert iterations == [True]
+    # The clipped-result inventory takes one existing Pile snapshot. The
+    # chronology lookup adds one shared record map for the whole restore.
+    assert iterations.count(Pile.__iter__.__code__) == 1
+    assert sum(code is not Pile.__iter__.__code__ for code in iterations) == 1
 
 
 async def test_compact_uses_one_record_position_map_without_index_scans(monkeypatch):
