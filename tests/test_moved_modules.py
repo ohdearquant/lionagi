@@ -304,6 +304,30 @@ def _run_fresh(code: str) -> str:
     return proc.stdout
 
 
+# `python -m <old name>` runs a package's __main__ without importing it, through the
+# loader's code (runpy, as `-m` does). MCP client configs start the server this way.
+_SCRIPT_ROWS = [
+    row
+    for row in _moved.MOVED
+    if (ROOT / "lionhub" / "src" / Path(*row.new.split(".")) / "__main__.py").is_file()
+]
+
+
+@pytest.mark.parametrize("row", _SCRIPT_ROWS, ids=lambda row: row.old)
+def test_an_old_package_with_a_main_module_still_runs_as_a_script(row):
+    out = _run_fresh(
+        "import importlib, runpy, sys\n"
+        f"g = runpy.run_module({row.old!r}, run_name='not_main')\n"
+        f"new = importlib.import_module({row.new!r})\n"
+        f"print(g['__spec__'].name, g['__package__'], sys.modules[{row.old!r}] is new)\n"
+    )
+    assert out.split() == [f"{row.old}.__main__", row.old, "True"]
+
+
+def test_some_moved_package_has_a_main_module():
+    assert _SCRIPT_ROWS
+
+
 # Two old names for one module, imported for the first time on two threads. The loader
 # hooks pause each thread at a fixed point so the interleaving is the same on every run:
 # the first thread is inside its load when the second starts its own. The second old name
@@ -676,6 +700,110 @@ def test_the_lionhub_check_sees_each_form_of_reference():
     )
     hits = _lionhub_names(probe, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
+# Wave 2 moves these out of the core (D6), so the rest of lionagi must not import them. Logger
+# names such as "lionagi.cli.warn" are strings, not imports, and D5 keeps them.
+WAVE_2 = ("cli", "mcp", "studio")
+_WAVE_2_NAME = re.compile(rf"lionagi\.({'|'.join(WAVE_2)})(\.[A-Za-z_][A-Za-z0-9_]*)*")
+_IMPORT_CALLS = frozenset({"import_module", "__import__"})
+
+
+def _call_argument(node: ast.Call, position: int, keyword: str) -> ast.expr | None:
+    if len(node.args) > position:
+        return node.args[position]
+    return next((kw.value for kw in node.keywords if kw.arg == keyword), None)
+
+
+def _literal_import_name(node: ast.Call, call: str, package: tuple[str, ...]) -> str | None:
+    """The module a literal ``import_module``/``__import__`` call names, resolved like importlib."""
+    name = _call_argument(node, 0, "name")
+    if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+        return None
+    if not name.value.startswith("."):
+        return name.value
+    if call != "import_module":
+        # ``__import__`` takes ``globals`` second and its level as an argument of its own.
+        return None
+    # A relative name resolves against the ``package`` argument; ``__package__`` is this module's.
+    anchor = _call_argument(node, 1, "package")
+    if isinstance(anchor, ast.Constant) and isinstance(anchor.value, str):
+        parts = tuple(anchor.value.split("."))
+    elif isinstance(anchor, ast.Name) and anchor.id == "__package__":
+        parts = package
+    else:
+        return None
+    level = len(name.value) - len(name.value.lstrip("."))
+    return ".".join((*parts[: len(parts) - level + 1], *filter(None, [name.value[level:]])))
+
+
+def _wave_2_imports(path: Path, source: str | None = None) -> list[str]:
+    """Every import of a wave-2 package in ``path``: absolute, relative, or a literal dynamic one."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    package = path.relative_to(ROOT).with_suffix("").parts[:-1]
+    tree = ast.parse(text, filename=str(path))
+    # ``from importlib import import_module as load`` makes ``load(...)`` an import call too.
+    calls = {name: name for name in _IMPORT_CALLS} | {
+        alias.asname: alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "importlib"
+        for alias in node.names
+        if alias.name in _IMPORT_CALLS and alias.asname
+    }
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: len(package) - node.level + 1] if node.level else ()
+            module = ".".join((*base, *filter(None, [node.module])))
+            names = [module, *(f"{module}.{alias.name}" for alias in node.names)]
+        elif (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "attr", getattr(node.func, "id", None)) in calls
+        ):
+            call = calls[getattr(node.func, "attr", getattr(node.func, "id", None))]
+            names = [n for n in [_literal_import_name(node, call, package)] if n]
+        else:
+            continue
+        hits += [f"{path}:{node.lineno}: {n}" for n in names if _WAVE_2_NAME.fullmatch(n)][:1]
+    return hits
+
+
+def test_the_core_imports_no_package_that_moves_in_wave_2():
+    lionagi = SOURCE_ROOTS[0]
+    hits = [
+        hit
+        for path in sorted(lionagi.rglob("*.py"))
+        if path.relative_to(lionagi).parts[0] not in WAVE_2
+        for hit in _wave_2_imports(path)
+    ]
+    assert hits == [], hits
+
+
+def test_the_wave_2_check_sees_each_form_of_import():
+    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    source = (
+        "from lionagi.cli._runs import RunDir\n"
+        "from ..mcp import server\n"
+        "importlib.import_module('lionagi.studio.app')\n"
+        "import lionagi.cli\n"
+        "from lionagi import studio\n"
+        "from .. import cli\n"
+        "importlib.import_module(name='lionagi.mcp')\n"
+        "importlib.import_module('.cli._runs', package='lionagi')\n"
+        "importlib.import_module('..studio', __package__)\n"
+        "from importlib import import_module as load\n"
+        "load('lionagi.cli')\n"
+        "WARN = 'lionagi.cli.warn'\n"
+        "from lionagi.client import x\n"
+        "from . import cli\n"
+        "importlib.import_module('.client', package='lionagi')\n"
+        "__import__('.cli', globals())\n"
+        "importlib.import_module(name=module_name)\n"
+    )
+    hits = _wave_2_imports(probe, source)
+    assert sorted(int(hit.split(":")[1]) for hit in hits) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 11], hits
 
 
 def test_changelog_names_every_move():

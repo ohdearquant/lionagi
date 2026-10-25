@@ -103,7 +103,7 @@ async def test_an_external_hook_does_not_see_the_store(probe, tmp_path):
 
 
 def test_an_mcp_terminal_notice_does_not_see_the_store(probe, tmp_path):
-    from lionagi.mcp._notify_hook import _deliver
+    from lionhub.serve.mcp._notify_hook import _deliver
 
     out = tmp_path / "terminal-notice.txt"
     _deliver([str(probe), str(out)], {}, None, program=PROBE, cwd=str(tmp_path), timeout=30)

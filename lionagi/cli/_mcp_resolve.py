@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._paths import is_account_home
-from lionagi.mcp._errors import SubmitInputError
+from lionhub.serve.mcp._errors import SubmitInputError
 
 __all__ = (
     "MCP_CONFIG_FILENAME",

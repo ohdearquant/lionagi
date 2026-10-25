@@ -1030,11 +1030,11 @@ child exists and before any output is read. Three things about that record are l
   basis reaches the stranger. `create_time` binds them, it is readable only while the child is
   known to exist, and a consumer acting on the record later must compare a live read against
   it. `None` means nothing was established and is never a claim about the process; this mirrors
-  what `lionagi/mcp/jobs.py` does with `pid_create_time`.
+  what `lionhub/src/lionhub/serve/mcp/jobs.py` does with `pid_create_time`.
 - **The three fields are one observation, within limits worth stating.** The group and the start
   time are separate reads by pid, so `observe_spawned()` brackets the group read between two
   start-time reads and drops `create_time` to `None` if they disagree, the same shape as
-  `_pinned_member` in `lionagi/mcp/jobs.py`. That rejects a replacement arriving *during* the
+  `_pinned_member` in `lionhub/src/lionhub/serve/mcp/jobs.py`. That rejects a replacement arriving *during* the
   observation. It does not speak for one that arrived before the first read, and the window
   where that is possible is a child that exits and is reaped between the spawn call returning
   and the first probe — covered not by the bracket but by the probe, which answers `None` for

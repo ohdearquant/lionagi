@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from lionagi.mcp import _notify_hook, config, jobs
 from lionagi.state.reasons import RunReasons
+from lionhub.serve.mcp import _notify_hook, config, jobs
 
 _SPAWNED_AT = 1_700_000_000.0
 
@@ -1272,7 +1272,7 @@ def test_a_child_recorded_end_wins_over_a_later_reaper_observation(
     """Ties the general hook-wins-over-reaper guarantee (see
     ``test_a_hook_end_that_lands_first_survives_the_reaper`` above) to the
     concrete mechanism: `--notify` for an MCP-spawned run always resolves to
-    `lionagi.mcp._notify_hook`, so calling it IS how a run records its own
+    `lionhub.serve.mcp._notify_hook`, so calling it IS how a run records its own
     end, whichever CLI-side notify path triggered it. Ordering matters here
     specifically: the child's hook runs and wins the write BEFORE the reaper
     ever observes this run, and the reap that follows must decline rather

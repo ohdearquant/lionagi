@@ -19,8 +19,8 @@ from typing import Any
 
 import pytest
 
-from lionagi.mcp import _child_actor, config, dispatch, jobs
-from lionagi.mcp._child_actor import (
+from lionhub.serve.mcp import _child_actor, config, dispatch, jobs
+from lionhub.serve.mcp._child_actor import (
     ChildActorError,
     SubmittingActorError,
     child_actor_for,

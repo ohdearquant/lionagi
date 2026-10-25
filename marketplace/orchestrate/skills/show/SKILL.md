@@ -85,4 +85,4 @@ For the complete procedure with the exact MCP calls, see [procedure.md](procedur
 | `lionagi/studio/registry.py` | Registers that service with the app |
 | `lionagi/studio/config.py` | `LIONAGI_SHOWS_ROOT` and the root it falls back to |
 | `apps/studio/frontend/src/components/shows/PlayDag.tsx` | DAG visualization component; present in the tree, imported by nothing |
-| `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` | MCP verb registry — `play.submit`, `job.*` |
+| `lionhub/src/lionhub/serve/mcp/server.py`, `lionhub/src/lionhub/serve/mcp/verbs.py` | MCP verb registry — `play.submit`, `job.*` |

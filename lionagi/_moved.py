@@ -26,7 +26,7 @@ import importlib.util
 import os
 import sys
 import warnings
-from types import ModuleType
+from types import CodeType, ModuleType
 from typing import NamedTuple
 
 __all__ = ("MOVED", "Moved", "install", "resolve", "still_on_disk")
@@ -48,6 +48,7 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.engines", "lionhub.orchestration.engines", "0.37.0", "2.0.0"),
     Moved("lionagi.dispatch", "lionhub.orchestration.dispatch", "0.37.0", "2.0.0"),
     Moved("lionagi.work", "lionhub.orchestration.work", "0.37.0", "2.0.0"),
+    Moved("lionagi.mcp", "lionhub.serve.mcp", "0.37.0", "2.0.0"),
 )
 
 
@@ -127,6 +128,11 @@ class _AliasLoader(importlib.abc.Loader):
     def get_data(self, path: str) -> bytes:
         # Resource readers such as ``pkgutil.get_data`` ask the old name's loader.
         return importlib.import_module(self._new_name).__spec__.loader.get_data(path)
+
+    def get_code(self, fullname: str) -> CodeType | None:
+        # ``python -m <old name>`` runs a module's code instead of importing it, so runpy
+        # asks the old name's loader for the code of the module at the new name.
+        return importlib.util.find_spec(self._new_name).loader.get_code(self._new_name)
 
 
 class _MovedFinder(importlib.abc.MetaPathFinder):

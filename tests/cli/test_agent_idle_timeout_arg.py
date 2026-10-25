@@ -13,7 +13,7 @@ import argparse
 import pytest
 
 from lionagi.cli._argtypes import BoundedInt
-from lionagi.mcp.projection import build_parser_for, project_parser
+from lionhub.serve.mcp.projection import build_parser_for, project_parser
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:

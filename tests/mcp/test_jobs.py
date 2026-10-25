@@ -22,7 +22,7 @@ import pytest
 
 from lionagi.cli import _mcp_resolve
 from lionagi.ln import _proc
-from lionagi.mcp import _notify_hook, config, jobs
+from lionhub.serve.mcp import _notify_hook, config, jobs
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_notify_template_bakes_hook_and_target(sandbox, monkeypatch):
     jobs.submit("agent", ["-a", "reviewer"], prompt="x", notify_target="downstream")
     argv = captured["argv"]
     template = argv[argv.index("--notify") + 1]
-    assert "-m lionagi.mcp._notify_hook" in template
+    assert "-m lionhub.serve.mcp._notify_hook" in template
     assert "--status {status}" in template
     assert "--target downstream" in template
 
@@ -2066,7 +2066,7 @@ def test_listing_a_jobs_directory_it_cannot_get_at_is_not_an_empty_listing(sandb
 
         import asyncio
 
-        from lionagi.mcp import dispatch
+        from lionhub.serve.mcp import dispatch
 
         out = asyncio.run(dispatch.request([{"op": "job.list"}]))["ops"][0]
         assert out["ok"] is False

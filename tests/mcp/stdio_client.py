@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Drive a real ``python -m lionagi.mcp`` over stdio, the way a client does.
+"""Drive a real ``python -m lionhub.serve.mcp`` over stdio, the way a client does.
 
 Every other module under ``tests/mcp/`` exercises the Python objects beneath
 the transport, so a defect in the wire shape itself (a key read from the op
@@ -51,7 +51,7 @@ class StdioMCPClient:
         self._inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         self._stderr: list[str] = []
         self._proc = subprocess.Popen(
-            [sys.executable, "-m", "lionagi.mcp"],
+            [sys.executable, "-m", "lionhub.serve.mcp"],
             cwd=cwd,
             env={**os.environ, **(env or {})},
             stdin=subprocess.PIPE,

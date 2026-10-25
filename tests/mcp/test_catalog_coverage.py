@@ -22,7 +22,7 @@ import argparse
 import pytest
 
 from lionagi._auto import iter_cli_seeds, load_cli_command
-from lionagi.mcp.verbs import ABSENT, FENCED_PATHS, VERBS
+from lionhub.serve.mcp.verbs import ABSENT, FENCED_PATHS, VERBS
 
 
 def _leaves(parser: argparse.ArgumentParser, prefix: str) -> dict[str, str]:

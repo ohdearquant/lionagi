@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from lionagi.mcp import dispatch, jobs
+from lionhub.serve.mcp import dispatch, jobs
 
 
 def call(**kwargs):

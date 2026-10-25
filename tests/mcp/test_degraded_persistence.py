@@ -14,7 +14,7 @@ from lionagi import Branch, Session
 from lionagi.cli import _runs
 from lionagi.cli.orchestrate import _checkpoint, _orchestration
 from lionagi.cli.orchestrate._checkpoint import FlowResumeError
-from lionagi.mcp import config, jobs
+from lionhub.serve.mcp import config, jobs
 
 
 def _env(run: _runs.RunDir) -> _orchestration.OrchestrationEnv:

@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from lionagi.mcp import _notify_hook, config, jobs
+from lionhub.serve.mcp import _notify_hook, config, jobs
 
 _SPAWNED_AT = 1_700_000_000.0
 

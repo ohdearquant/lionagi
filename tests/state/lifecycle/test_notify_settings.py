@@ -416,7 +416,7 @@ async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, 
     run.write_manifest({"status": "completed", "ended_at": 123.0})
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     class _FakeProc:
         pid = 123
@@ -476,7 +476,7 @@ async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
     run = allocate_run(run_id="notify-secret-run")
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     secret = "sekret123"
     secret_argv = ("notify", "--token", secret)
@@ -524,7 +524,7 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
     run = allocate_run(run_id="notify-timeout-run")
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     class _FakeProc:
         pid = 456
@@ -594,7 +594,7 @@ async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, t
     run = allocate_run(run_id="notify-spawn-error-run")
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     async def _fake_exec(*argv, **kwargs):
         raise FileNotFoundError("no such file: notify-hook")
@@ -627,7 +627,7 @@ async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tm
     run = allocate_run(run_id="notify-ok-run")
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     class _FakeProc:
         returncode = 0
@@ -1266,7 +1266,7 @@ async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch
     run = allocate_run(run_id="redaction-run")
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     secret = "wh0-t0ken-abcdef123456"
     secret_argv = ("/usr/local/bin/notify-hook", "--token", secret)
@@ -1320,7 +1320,7 @@ async def test_env_sourced_credential_in_adapter_stderr_reaches_no_shared_surfac
     run = allocate_run(run_id="env-secret-run")
 
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     # The secret is NOT an argv element -- the adapter inherited it.
     env_secret = "env-cred-9f8e7d6c5b4a"
@@ -1366,7 +1366,7 @@ async def test_unbound_handler_drops_adapter_stderr_rather_than_sharing_it(monke
     """With no run bound there is nowhere owner-only to put the stderr, so it
     is dropped -- never rerouted onto the log or the warning channel."""
     warn_calls: list[str] = []
-    monkeypatch.setattr("lionagi.cli._logging.warn", warn_calls.append)
+    monkeypatch.setattr("lionagi._log_channels.warn", warn_calls.append)
 
     secret = "unbound-secret-abc123"
 
