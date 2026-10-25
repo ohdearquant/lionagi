@@ -1,10 +1,53 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-17 and 2026-10-25 (see Amendments 1 and 2)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 2 (2026-10-25) — the write set runs its editor and bash under the macOS sandbox
+
+Amendment 1 offered an API model the read tools only, and left the tools that write files or run
+commands to a later decision that runs them inside an operating-system sandbox. This is that
+decision, for macOS. It replaces Amendment 1's statement that `read` is the only tool set.
+
+Decision:
+
+- `api_tools: write` is a second tool set: the read set plus `editor` and `bash`. It runs only
+  under macOS Seatbelt (`/usr/bin/sandbox-exec`). A profile, or a stored launch record, that names
+  it on a host without an executable `/usr/bin/sandbox-exec` is refused before a run exists.
+- Every bash command, and the write that ends every editor `write` or `edit`, runs in a child
+  process under one policy. The policy denies by default, leaves reads unrestricted, and allows
+  writes only under three roots: the leg's working directory, the uv cache (the directory
+  `uv cache dir` reports, or uv's default location when `uv` is not on the path) and the
+  temporary directory. The working directory's `.git` stays
+  read-only, since a hook written there would later run outside the sandbox. Network is off
+  unless the profile sets `api_network: true`, which is valid only with the write set. The policy
+  takes the shape of the OpenAI Codex CLI's macOS sandbox.
+- Seatbelt judges the resolved path, so each root is resolved before it is passed, and a write
+  through a symlink that points outside the roots is refused wherever the link sits. The roots
+  reach the policy as parameters, never inside its text.
+- The editor still reads and checks paths in this process, and the child that writes opens the
+  file without following a final symlink. `guard_paths` and `guard_destructive` stay registered as
+  pre-hooks. They are the inner layer; the sandbox is the boundary.
+- `AgentSpec` gains `seatbelt`, the policy the coding editor and bash run under, and
+  `CodingToolkit` takes the same policy. `None`, the default for both, runs them in this process
+  as before.
+- The launch record gains `network`. A record written before it reads as off. A record that
+  names the write set with a network value that is not a boolean, or the read set with network
+  on, is refused like any other record this version does not run. A resume binds the recorded set
+  again, under a policy built for the resume's working directory.
+
+Limits:
+
+- macOS only. On another host the write set is refused; confinement on Linux is a later decision.
+- Reads are not confined. A command can read any file the user can and print it into the
+  conversation, so the write set suits a workspace where that is acceptable.
+- A command that writes outside the three roots fails: a commit in a worktree whose repository
+  lives elsewhere, a `uv tool` install, a write under the home directory.
+- `sandbox-exec` is marked deprecated in its manual page. It is present and enforced on current
+  macOS; a release that removes it turns the write set into a refusal, never into unconfined tools.
 
 ## Amendment 1 (2026-10-17) — an API-model `li agent` leg binds the read tools only
 

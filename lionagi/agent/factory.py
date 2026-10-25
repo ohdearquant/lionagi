@@ -653,7 +653,9 @@ def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
         )
     else:
         tools = tuple(t for t in selected if context_management or t != "context")
-    toolkit = CodingToolkit(workspace_root=workspace_root, tools=tools)
+    toolkit = CodingToolkit(
+        workspace_root=workspace_root, tools=tools, seatbelt=getattr(spec, "seatbelt", None)
+    )
 
     for key, handlers in spec.hook_handlers.items():
         parts = key.split(":", 1)
