@@ -79,23 +79,29 @@ depends on." The number is the round's call limit (`_API_LNDL_MAX_ACTIONS` in
 `lionagi/cli/agent.py`), from which the sentence is built, so the two cannot drift apart. An `lndl`
 leg's guidance is unchanged, because the sentence was measured on `lndl-calls` only.
 
-The reason is how little an `lndl-calls` leg read before it answered. Measured on 23 code-review
-tasks on `anthropic/claude-haiku-5-5`, one run per arm per task with a task's two runs adjacent in
-time, on source identical apart from this sentence:
+The reason is how little an `lndl-calls` leg read before it answered. It was measured on 26
+code-review tasks on `anthropic/claude-haiku-5-5`, on source identical apart from this sentence, in
+two passes over the tasks. Each pass runs each task once per arm, with a task's two runs adjacent in
+time, and the second pass reverses which arm runs first. The first pass covered 23 of the tasks and
+the second all 26, so the figures below are over 49 pairs:
 
 | | without the sentence | with it |
 |---|---|---|
-| tool calls per run | 10.0 | 14.7 |
-| requests per run | 3.87 | 4.26 |
-| recall of the files the reference review cites | 0.176 | 0.256 |
-| verdicts that match the reference | 18 of 23 | 19 of 23 |
-| cost per run | | 34% higher |
+| tool calls per run | 9.7 | 16.4 |
+| requests per run | 4.04 | 4.29 |
+| recall of the files the reference review cites | 0.175 | 0.254 |
+| verdicts that match the reference | 36 of 49 | 39 of 49 |
+| cost per run | | 36% higher |
 
-Recall rose on 15 tasks, fell on 3 and was equal on 5 (paired difference +0.080, standard error
-0.032). Precision, the share of a run's cited files that the reference also cites, fell: over the 19
-tasks on which both runs cited a file it went from 0.704 to 0.575 (paired difference -0.129,
-standard error 0.051; lower on 12 tasks, higher on 3, equal on 4). Both readings come from one
-run per task.
+Recall rose in 29 pairs, fell in 7 and was equal in 13 (paired difference +0.079, standard error
+0.022). Averaging each task's pairs first, it rose on 19 of the 26 tasks and fell on 3 (+0.075,
+standard error 0.021). Precision, the share of a run's cited files that the reference also cites,
+fell: over the 40 pairs in which both runs cited a file it went from 0.693 to 0.581 (paired
+difference -0.111, standard error 0.038; lower in 26 pairs, higher in 8, equal in 6). Each pass
+shows both changes on its own: recall +0.080 and +0.077, precision -0.129 and -0.095. The sentence
+buys recall at a cost in precision and in money. The verdict counts are close: in the second pass,
+on 12 of the 26 tasks one arm's verdict matched the reference and the other's did not, 7 times the
+arm with the sentence, and one task split that way in both passes.
 
 ## Context
 
