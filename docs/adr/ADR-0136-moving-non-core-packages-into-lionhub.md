@@ -124,8 +124,8 @@ amendment narrows both.
 session's event bus and its default persistence handlers. They import only `ln`, `session` and `state`.
 `Session.hooks` builds the bus on first use (`session/session.py:137-146`) with four default handlers (session
 start, session end, branch create, branch end; `hooks/loader.py:25-30, 81-104`), and operations and `Branch`
-take `HookPoint` from it at 9 sites (`operations/_api_hooks.py:150, 179, 219`, `operations/act/act.py:106, 111,
-137`, `operations/chat/chat.py:28`, `operations/run/run.py:451`, `session/branch.py:413`). A bus moved out of
+take `HookPoint` from it at 9 sites (`operations/_api_hooks.py:150, 179, 219`, `operations/act/act.py:106, 138,
+164`, `operations/chat/chat.py:28`, `operations/run/run.py:451`, `session/branch.py:413`). A bus moved out of
 the core would need its default builder supplied by a bootstrap, and an injected bus that starts empty would
 drop those defaults. These five modules and the package initializer stay in the core under their current
 paths, with no table row.
@@ -220,7 +220,7 @@ submodules. The CLI imports Studio code at 11 statements in 4 files (`cli/machin
    `lionhub.orchestration` modules D7 lists (flow, spawn, job, wait, kill, team, notify), and both sides import
    them from there. Before the first CLI command target moves, the populated CLI seed catalog and its selection
    and loading entry points leave `lionagi/_auto.py` and their callers are rewritten; this includes the
-   `studio`, `schedule` (`_auto.py:175, 181`) and `casts` declarations. A fresh CLI invocation discovers the same
+   `studio`, `schedule` (`_auto.py:175, 180`) and `casts` declarations. A fresh CLI invocation discovers the same
    commands with no prior hub import and no caller registration. The generic declaration types may stay in the
    core if they name no hub module. Wrapper commands may stay at their old paths until their own move. The step
    is done when `lionagi.studio` imports no private `lionagi.cli` module, the remaining edges run one way, and
