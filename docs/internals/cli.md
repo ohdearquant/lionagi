@@ -1184,16 +1184,27 @@ bounded as a whole by `--timeout` (`anyio.fail_after`; past it the run ends `tim
 is opt-in per profile and refused otherwise, with the same "only supports CLI endpoints" error as
 before plus a pointer to the opt-in:
 
-- `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
+- `api_tools: read` — `reader`, `search` and `context`, bound through
   `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
   (`search` resolves its path inside the workspace itself, and leaves out the matches of any
   file whose path holds a name the reader refuses, such as `.env`; it reads each match from the
   NUL grep writes after the file name, so a name holding a newline is read whole, and skips
-  binary files, so no notice names a matching file). Tools that write files or run
-  commands are not offered: they would run with this process's own permissions, and this path
-  has no operating-system sandbox. Any other value is refused before a run exists.
+  binary files, so no notice names a matching file). These run with this process's own
+  permissions.
+- `api_tools: write` — the read set plus `editor` and `bash`, on macOS only (ADR-0041
+  Amendment 2). `_make_api_agent_spec` sets `AgentSpec.seatbelt` to
+  `SeatbeltPolicy.for_workspace(cwd)` (`lionagi/tools/_seatbelt.py`), and every bash command and
+  the final write of every editor `write` or `edit` run as `sandbox-exec -D ... -p <policy> --
+  <argv>`: deny by default, reads unrestricted, writes under the resolved `cwd`, the uv cache
+  and the temporary directory, `cwd/.git` read-only. The editor's write child is
+  `python -I -S -c` with the content on stdin, opening the file with `O_NOFOLLOW`. On a host
+  without an executable `/usr/bin/sandbox-exec` the set is refused before a run exists, on a new
+  leg and on a resume. Any value other than `read` or `write` is refused before a run exists.
+- `api_network` — `true` lets the write set's commands reach the network; `false`, the default,
+  keeps them off it. Any other value, or the key with the read set or without `api_tools`, is
+  refused before a run exists.
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
-- `api_loop` — the tool loop (ADR-0132): `react`, the default, or `lndl`. An `lndl` leg runs
+- `api_loop` — the tool loop (ADR-0132): `react`, the default, `lndl` or `lndl-calls`. An `lndl` leg runs
   `branch.operate(..., middle=build_lndl_middle(round_budget=1 + max_extensions,
   max_actions=16, lacts_with_out=False))` with the same tools, guards and timeout, and guidance
   that keeps calls and the answer in separate rounds. A round either declares tool calls as
@@ -1205,8 +1216,13 @@ before plus a pointer to the opt-in:
   next round only, and the last round's notice says it is the last. A turn that spends its
   rounds without an accepted answer raises the Middle's `LNDLError`, which ends the turn as any
   other turn failure does: the session records `failed` and the error's message, and `li agent`
-  reports the error and exits non-zero. Any other value, or `api_loop` without `api_tools`, is
-  refused before a run exists.
+  reports the error and exits non-zero. An `lndl-calls` leg runs the same rounds with
+  `tools_as_calls=True`: the first round's guidance shows each tool as an LNDL call with its
+  descriptions, and no round's request carries the tool schemas, in the request or in a cached
+  system block (ADR-0132 Amendment 2). Its guidance also asks the model to declare in each calling
+  round every read it already knows it needs, up to 16 calls, and to answer only after reading
+  what the answer depends on (ADR-0132 Amendment 3). Any other value, or `api_loop` without
+  `api_tools`, is refused before a run exists.
 - `max_input_tokens`: the ceiling on each request's estimated input (ADR-0130), a positive whole
   number of tokens, `auto` (the default) or `none`. `auto` is the first price tier's prompt bound
   for an Anthropic model the pricing table prices by prompt length (100,000 for `claude-haiku-5-5`)
@@ -1232,7 +1248,7 @@ The Anthropic endpoint requires an output limit, so an API leg on it sets `max_t
 unless the endpoint's settings already carry one. The default role is `reviewer` (a
 declared `role:` key still wins).
 
-The branch records `{"tools", "max_extensions", "loop"}` under `metadata["api_launch"]`. When a
+The branch records `{"tools", "network", "max_extensions", "loop"}` under `metadata["api_launch"]`. When a
 turn ends, however it ends, `_run_api_turn` adds what the turn spent to the record's `spend`,
 the total for this `li agent` invocation (its turn and any queued messages it drains as further
 turns; a resume is a new invocation and clears the stored total first): `requests` (the
@@ -1244,7 +1260,7 @@ counted once), `tool_calls` (the `ActionResponse` messages the turn added) and `
 decimal, and then writes the snapshot to the run's branches dir, so `li agent -r` finds both and
 runs the loop again from that record, on the recorded loop; a record written before `loop`
 existed runs `react`. A stored branch keeps its messages, not its
-tools, so the resume binds the read set again, guarded to its own working directory; a profile's
+tools, so the resume binds the recorded set again, guarded (and for the write set confined) to its own working directory; a profile's
 current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
 recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
 or of a record naming a tool set, a bound or a loop this version does not run, is refused before

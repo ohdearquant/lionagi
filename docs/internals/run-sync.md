@@ -18,6 +18,9 @@ result = await run_sync(blocking_function, "input", limiter=limiter)
 
 The keyword-only controls belong to the offload:
 
+`abandon_on_cancel` accepts only `bool` values. Other values raise `TypeError`
+before a worker starts; they are not coerced through their truth value.
+
 - `abandon_on_cancel=False` keeps AnyIO's default shielding of the active worker
   wait from cancellation by an enclosing AnyIO cancel scope. Waiting for a
   capacity token can still be cancelled before the callable starts.
