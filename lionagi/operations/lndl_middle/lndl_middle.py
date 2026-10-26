@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
 __all__ = ("DEFAULT_ROUND_BUDGET", "build_lndl_middle", "lndl_middle")
 
 DEFAULT_ROUND_BUDGET = 3
+
+logger = logging.getLogger(__name__)
 
 # Shared by every round's action bridge: concurrent, error-suppressed so a
 # failed tool call becomes a result the model reacts to, not an aborting exception.
@@ -241,11 +244,17 @@ def _render_tool_calls(tool_schemas: list[Any] | None, described: bool = False) 
     calls, so the model is not left to write calls in a provider's own markup. *described*
     puts each tool's description and its parameters' under its call."""
     signatures = []
+    unnamed = 0
     for schema in tool_schemas or ():
         function = schema.get("function", schema) if isinstance(schema, dict) else None
         if isinstance(function, dict) and (signature := _signature(function)):
             notes = _tool_notes(function) if described else []
             signatures.append((signature[0], signature[1], notes))
+        else:
+            unnamed += 1
+    if unnamed:
+        # A tool with no name has no call to show, and the schemas are not sent either.
+        logger.warning("%d tool schema(s) have no name; the model is not shown them", unnamed)
     if not signatures:
         return None
     lines = "\n".join("\n".join([signature, *notes]) for signature, _, notes in signatures)
@@ -458,7 +467,8 @@ def build_lndl_middle(
         # <lact> names a tool, and an endpoint that does not place the prompt cache shows the
         # model its tools only in the current instruction. With none passed, every tool the
         # branch registers is listed, since a <lact> may call any of them. With tools_as_calls
-        # they are shown as LNDL calls in the guidance instead, and no round sends a schema.
+        # they are shown as LNDL calls in the guidance instead, and no round sends a schema,
+        # even when none renders as a call (a schema with no name cannot be called).
         tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
         tool_calls = _render_tool_calls(tool_schemas, described=True) if tools_as_calls else None
         if tool_calls:
@@ -470,7 +480,7 @@ def build_lndl_middle(
             guidance_parts.append(base_guidance)
         lndl_guidance = "\n\n".join(guidance_parts)
         stripped_chat_param = chat_param.with_updates(
-            tool_schemas=[] if tool_calls else tool_schemas, response_format=None
+            tool_schemas=[] if tools_as_calls else tool_schemas, response_format=None
         )
 
         action_results: dict[str, Any] = {}
@@ -497,7 +507,7 @@ def build_lndl_middle(
 
             # Tools shown as calls are shown nowhere else: the round's request carries no
             # tool section in a cached system block either.
-            token = _no_tool_section.set(True) if tool_calls else None
+            token = _no_tool_section.set(True) if tools_as_calls else None
             try:
                 text = await _run_round_chat(branch, round_instruction, round_chat_param)
             finally:

@@ -1269,6 +1269,24 @@ class TestToolsAsCalls:
         assert "    Run a shell command." not in _render_tool_calls(self._TOOLS[:1]).splitlines()
 
     @pytest.mark.asyncio
+    async def test_tools_as_calls_sends_no_schema_when_no_tool_renders_as_a_call(self, caplog):
+        # A schema with no name cannot be called by a <lact>, so it renders no call; the
+        # leg still sends no schema rather than falling back to the schema list, and says so.
+        unnamed = [{"type": "function", "function": {"description": "an unnamed tool"}}]
+        branch = TestBranch.from_text(["```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```"])
+        middle = build_lndl_middle(round_budget=2, lacts_with_out=False, tools_as_calls=True)
+        param = ChatParam(response_format=AnswerModel, tool_schemas=unnamed)
+
+        with caplog.at_level("WARNING", logger="lionagi.operations.lndl_middle.lndl_middle"):
+            result = await middle(branch, "look it up", param)
+
+        assert result.answer == "read"
+        assert "1 tool schema(s) have no name" in caplog.text
+        (sent,) = [call.last_user_message for call in TestBranch.calls(branch)]
+        assert "an unnamed tool" not in sent
+        assert not any(line.startswith("Tools:") for line in sent.splitlines())
+        assert "CALLING TOOLS" not in sent
+
     async def test_tools_as_calls_shows_the_block_and_leaves_the_schemas_out_of_every_round(self):
         def counted_lookup(query: str) -> str:
             """Return a canned lookup result for a query."""
@@ -1299,6 +1317,11 @@ class TestToolsAsCalls:
             assert len(sent) == 2
             for text in sent:
                 assert ("name: counted_lookup" in text) is not as_calls
+            # Each round's instruction is what its request rendered from.
+            rounds = list(branch.msgs.instructions)
+            assert len(rounds) == 2
+            for instruction in rounds:
+                assert (instruction.content.tool_schemas == []) is as_calls
             first = [line.strip() for line in sent[0].splitlines()]
             assert ("CALLING TOOLS" in first) is as_calls
             if as_calls:
