@@ -963,7 +963,9 @@ async def _fetch_messages_by_ids(
     return ordered
 
 
-async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> dict[str, int]:
+async def _fetch_role_counts(
+    db: aiosqlite.Connection, msg_ids: list[str], *, collection_json: str | None = None
+) -> dict[str, int]:
     """Role histogram over msg_ids via SQL GROUP BY — no message content is hydrated."""
     counts: dict[str, int] = {}
     if not msg_ids:
@@ -974,7 +976,7 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
            FROM json_each(?) AS ids
            JOIN messages m ON m.id = ids.value
            GROUP BY m.role""",
-        (json.dumps(msg_ids),),
+        (json.dumps(msg_ids) if collection_json is None else collection_json,),
     )
     for row in await cur.fetchall():
         role = row["role"] or ""
@@ -984,7 +986,7 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
 
 
 async def _fetch_message_bounds(
-    db: aiosqlite.Connection, msg_ids: list[str]
+    db: aiosqlite.Connection, msg_ids: list[str], *, collection_json: str | None = None
 ) -> tuple[float | None, float | None]:
     """Return persisted timestamp bounds without hydrating message content."""
     if not msg_ids:
@@ -994,7 +996,7 @@ async def _fetch_message_bounds(
                   MAX(m.created_at) AS last_message_at
            FROM json_each(?) AS ids
            JOIN messages m ON m.id = ids.value""",
-        (json.dumps(msg_ids),),
+        (json.dumps(msg_ids) if collection_json is None else collection_json,),
     )
     row = await cur.fetchone()
     if row is None:
@@ -1368,6 +1370,7 @@ async def get_session(
         next_branch_anchors: dict[str, str] = {}
 
         progression_ids: dict[str, list[str]] = {}
+        stats_collection_json: str | None = None
         for br in branch_rows:
             ids: list[str] = []
             prog_id = br["progression_id"]
@@ -1383,6 +1386,18 @@ async def get_session(
                     except (json.JSONDecodeError, TypeError):
                         ids = []
             progression_ids[br["id"]] = ids
+            # The single row is already retained here. Reuse its captured JSON only when
+            # decoding cannot change member values, and whitespace cannot inflate the bind.
+            if (
+                len(branch_rows) == 1
+                and isinstance(ids, list)
+                and ids
+                and all(isinstance(mid, str) and mid.isascii() for mid in ids)
+                and isinstance(prog_row["collection"], str)
+                and "\\" not in prog_row["collection"]
+                and len(prog_row["collection"]) <= sum(len(mid) + 4 for mid in ids)
+            ):
+                stats_collection_json = prog_row["collection"]
 
         # One budget for the whole read, so it isn't multiplied by branch count;
         # display windows spend first and the action aggregate takes what's left.
@@ -1432,8 +1447,12 @@ async def get_session(
             message_total = len(full_msg_ids)
             messages, has_older = window_by_branch[branch_id]
 
-            role_counts = await _fetch_role_counts(db, full_msg_ids)
-            first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
+            role_counts = await _fetch_role_counts(
+                db, full_msg_ids, collection_json=stats_collection_json
+            )
+            first_message_at, last_message_at = await _fetch_message_bounds(
+                db, full_msg_ids, collection_json=stats_collection_json
+            )
             action_messages = action_by_branch[branch_id]
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.
