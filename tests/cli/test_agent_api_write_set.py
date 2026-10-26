@@ -163,6 +163,31 @@ async def test_the_workspace_git_directory_stays_read_only(roots):
     assert ignore["success"] is True, ignore
 
 
+@needs_seatbelt
+@pytest.mark.asyncio
+async def test_a_hard_link_to_a_file_outside_the_roots_or_in_git_cannot_be_made(roots):
+    workspace = roots / "workspace"
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text("original\n")
+    outside = roots / "outside" / "target.txt"
+    outside.write_text("original\n")
+    tools = _bound_tools(workspace)
+
+    to_outside = await tools["bash"](f"ln {outside} outside-link", cwd=str(workspace))
+    to_git = await tools["bash"]("ln .git/config git-link", cwd=str(workspace))
+    (workspace / "made.txt").write_text("inside\n")
+    inside = await tools["bash"]("ln made.txt made-link", cwd=str(workspace))
+
+    for result in (to_outside, to_git):
+        assert result["return_code"] != 0
+        assert "Operation not permitted" in result["stderr"]
+    assert not (workspace / "outside-link").exists()
+    assert not (workspace / "git-link").exists()
+    assert outside.read_text() == "original\n"
+    assert inside["return_code"] == 0, inside
+    assert (workspace / "made-link").stat().st_nlink == 2
+
+
 @pytest.mark.parametrize("host", ["no-sandbox-exec", "not-macos"])
 @pytest.mark.parametrize("resumed", [False, True], ids=["new", "resumed"])
 @pytest.mark.asyncio

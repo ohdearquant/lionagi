@@ -43,9 +43,22 @@ Limits:
 
 - macOS only. On another host the write set is refused; confinement on Linux is a later decision.
 - Reads are not confined. A command can read any file the user can and print it into the
-  conversation, so the write set suits a workspace where that is acceptable.
+  conversation, so the write set suits a workspace where that is acceptable. With
+  `api_network: true` the same reads can leave the machine: a command can read any file the user
+  can and send it to any host, so the network is for a workspace and a task where that is
+  acceptable too.
 - A command that writes outside the three roots fails: a commit in a worktree whose repository
   lives elsewhere, a `uv tool` install, a write under the home directory.
+- The uv cache is a writable root, and `uv` runs outside the sandbox install from it, so a command
+  can change what a later unconfined `uv` run installs. Files in the working directory that run
+  later outside the sandbox (tests, build files, scripts) are writable because editing them is what
+  the write set is for. The sandbox bounds where writes land, not what they contain, so read a
+  leg's changes before running them. `.git` alone is read-only because git runs its hooks without
+  anyone reading them.
+- Seatbelt judges a write by the path the command names. Making a hard link to a file outside the
+  roots, or to a file in `.git`, is refused. A hard link that already exists inside a root is
+  written through to the file it shares, wherever else that file is named, so a working directory
+  handed to a write-set leg is assumed to hold no hard links to files outside the roots.
 - `sandbox-exec` is marked deprecated in its manual page. It is present and enforced on current
   macOS; a release that removes it turns the write set into a refusal, never into unconfined tools.
 
