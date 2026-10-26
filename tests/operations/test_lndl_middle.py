@@ -1287,6 +1287,7 @@ class TestToolsAsCalls:
         assert not any(line.startswith("Tools:") for line in sent.splitlines())
         assert "CALLING TOOLS" not in sent
 
+    @pytest.mark.asyncio
     async def test_tools_as_calls_shows_the_block_and_leaves_the_schemas_out_of_every_round(self):
         def counted_lookup(query: str) -> str:
             """Return a canned lookup result for a query."""
