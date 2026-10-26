@@ -101,8 +101,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   when that handshake ends because the server closed the connection, the pool retries
   once with `mode="legacy"` (`initialize` only) and logs a warning naming the server.
   A server config can set `"handshake": "legacy"` to skip the first attempt; a value
-  other than `"auto"` or `"legacy"` is refused at connect. A timeout, a cancellation
-  or an error reply is not retried. URL connections keep the client's default.
+  other than `"auto"` or `"legacy"` is refused at connect. A timeout or a cancellation
+  is not retried, nor is an error reply, except one carrying code -32000: the SDK raises
+  that same error for a closed pipe, so such a reply is retried once. The retry gets its
+  own handshake timeout, so a retried connect can take about twice the configured
+  `timeout`. URL connections keep the client's default.
 
 - An API-model `li agent` run whose ReAct pass ends on a response cut off at its output
   limit with no text and no tool call, on a reply that does not parse, or on an answer with

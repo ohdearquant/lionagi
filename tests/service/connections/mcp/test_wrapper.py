@@ -423,20 +423,31 @@ class TestMCPConnectionPoolCreateClient:
         self, caplog
     ):
         MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
-        calls = []
+        calls, events = [], []
         first, second = MagicMock(), MagicMock()
+        for transport in (first, second):
+            transport.close = AsyncMock(side_effect=lambda t=transport: events.append(("close", t)))
+        pending = [first, second]
+
+        def open_transport(**_kwargs):
+            transport = pending.pop(0)
+            events.append(("open", transport))
+            return transport
+
         factory = self._recording_client(
             calls, takes_mode=True, failures={"auto": _sdk_connection_closed()}
         )
 
         with (
             patch("fastmcp.Client", factory),
-            patch("fastmcp.client.transports.StdioTransport", side_effect=[first, second]),
+            patch("fastmcp.client.transports.StdioTransport", side_effect=open_transport),
             caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
         ):
             await MCPConnectionPool._create_client({"command": "kserver", "args": []})
 
         assert calls == [(first, "auto"), (second, "legacy")]
+        # The failed attempt's process is closed before the retry starts another one.
+        assert events == [("open", first), ("close", first), ("open", second)]
         assert "'kserver' closed the connection during the default handshake" in caplog.text
 
     @pytest.mark.asyncio
