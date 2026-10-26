@@ -23,15 +23,19 @@
 This amendment preserves D1's single-distribution transition and its promise that every existing
 `lionagi.*` import path remains available until 2.0 with its existing dependency requirements.
 It changes the timing of the Studio application extraction in D6, D7, and Amendment 1 A4.
-It also extends the existing `studio` exemption in D2 until that extraction. No core package gains
-permission to depend on the application or to name `lionhub`.
+It withdraws D7's requirement that the backend record define how the container image gets and
+installs its backend and frontend from versioned public sources, with its release and rollback steps;
+how the application and its frontend are distributed after extraction is decided outside these records.
+It also extends the existing `studio` exemption in D2 until that extraction: D2's exempt set is
+`{cli, studio}` until B2 step 6 moves the CLI, `{studio}` from that step through the last 1.x release,
+and empty from 2.0. No core package gains permission to depend on the application or to name `lionhub`.
 
 ### B1. Keep application imports available through 1.x
 
 The Studio application remains at its current `lionagi.studio` paths in the `lionagi` wheel through
 1.x. This includes its application routes, Operator, app factory and app export, and module launch
 surface. The daemon, scheduler, and shared execution code still move to `lionhub` during wave 2.
-The application moves to `apps/studio/backend` at 2.0, outside both library wheels and never into
+The application moves to `apps/studio/backend/src/` at 2.0, outside both library wheels and never into
 `lionhub`. D7's target destination is unchanged.
 
 The backend record (ADR-0138) defines and establishes the application attachment, route ownership, lifecycle,
@@ -60,8 +64,8 @@ conversion, and release documentation obligations also cover the application pat
 1. MCP remains moved to `lionhub.serve.mcp` under A4 item 1. Its compatibility and module-execution
    checks are unchanged.
 2. Accept the CLI record and the Studio backend record before any change depends on their destinations
-   or boundary. The backend record allocates every dependency listed in A4 item 2 and states both the
-   1.x bundled installation and the 2.0 application installation.
+   or boundary. The backend record allocates every dependency listed in A4 item 2, states the 1.x
+   bundled installation, and states the behavior any 2.0 application installation must keep.
 3. Break the CLI and Studio cycle and move the populated CLI catalog, its selection and loading entry
    points, and shared command logic as specified in A4 item 3. A Studio launcher may select the retained
    application explicitly; daemon-only and local schedule commands must not import it. The application
@@ -82,20 +86,22 @@ conversion, and release documentation obligations also cover the application pat
 Steps 3 through 5 may contain preparatory service extraction and explicitly specified behavior fixes
 before package moves. The moves themselves retain D6's restriction to relocation and import rewrites.
 In particular, a lifecycle cleanup correction or client authentication correction is not hidden in a
-move. Every intermediate state keeps D2 and D4. After step 6, D2's exempt set is `{studio}`, rather than
-empty. The retained application is not core code, even though its compatibility path is under `lionagi`.
+move. Every intermediate state keeps D2 and D4. D2's exempt set is `{cli, studio}` before step 6 and
+`{studio}` after it, rather than the empty set the original D6 order reached at the end of wave 2. The
+retained application is not core code, even though its compatibility path is under `lionagi`.
 The test continues to require exact agreement with the packages that actually name `lionhub`; it does
 not gain a blanket exemption for retained compatibility files elsewhere.
 
 ### B3. Complete extraction at 2.0
 
-At 2.0, move the retained application to `apps/studio/backend`, update its imports and activation source,
-and remove its old import paths and the `studio` exemption. The route, identity, state, and lifecycle
-contracts are already established by wave 2 and do not change because files move. The CLI record and
-D1's distribution release record determine console-script and package ownership. The backend record
-determines the versioned public application and frontend installation, exact supported release pairs,
-and free-image release and rollback procedure. A fresh core-and-hub installation with the application
-bundle physically absent must pass the local schedule validation and export test required by A4 item 5.
+At 2.0, move the retained application to `apps/studio/backend/src/`, update its imports and activation
+source, and remove its old import paths and the `studio` exemption. The route, identity, state, and
+lifecycle contracts are already established by wave 2 and do not change because files move. The CLI
+record and D1's distribution release record determine console-script and package ownership. The backend
+record states the installation behavior the extracted application must keep; how the application and
+its frontend are distributed after extraction is outside this record and the backend record. A fresh
+core-and-hub installation with the application physically absent must pass the local schedule
+validation and export test required by A4 item 5.
 
 The remaining `lionagi` package contains no application code and names no `lionhub` module after the
 compatibility removals. D7's statement that an extracted backend needs its own install or build step
