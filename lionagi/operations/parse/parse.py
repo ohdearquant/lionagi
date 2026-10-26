@@ -312,9 +312,9 @@ def _is_lndl_operable(response_format: Any) -> bool:
 
 def _extract_lndl(text: str, operable: "Operable") -> Any:
     """Route text through the LNDL Phase 1 extract path."""
-    from lionagi.lndl.extract import extract_lndl_blocks
+    from lionagi.libs.schema.extract_code_block import extract_fenced_blocks
 
-    blocks = extract_lndl_blocks(text)
+    blocks = extract_fenced_blocks(text, "lndl")
     if blocks:
         return "\n\n".join(blocks)
     return text

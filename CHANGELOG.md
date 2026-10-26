@@ -34,11 +34,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
+  shares its existing fence and newline rules.
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
   call sites; patch `lionagi.protocols.action.gate` or `lionagi._settings` instead.
 - `LionTool` lives in `lionagi.protocols.action.lion_tool`; its old import remains an alias.
+- Flow request contracts live in `lionagi.protocols.flow_requests`; existing casts imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
 
 - Packages built on top of the core move to `lionhub`, a second top-level package
   shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
@@ -87,6 +91,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
 ### Fixed
+
+- The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
+  `key_env`) into CLI children; only the account router reads it, for the request it signs.
 
 - A stdio MCP server that closes its pipe on a first request other than `initialize`
   connects again under FastMCP 4: the pool opens stdio connections with

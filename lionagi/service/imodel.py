@@ -16,7 +16,6 @@ from lionagi._errors import InputTokenCapError
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import Event, EventStatus, Log
 from lionagi.protocols.ids import to_uuid
-from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
 from .connections.endpoint import (
@@ -24,6 +23,7 @@ from .connections.endpoint import (
     _names_credential_setting,
     _stored_base_url,
 )
+from .connections.endpoint_config import RUNTIME_STATE_NAMES
 from .hooks import (
     HookedEvent,
     HookEvent,
