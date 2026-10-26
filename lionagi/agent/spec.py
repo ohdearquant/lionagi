@@ -13,6 +13,7 @@ from lionagi.casts.profile import Profile
 
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
+    from lionagi.tools._seatbelt import SeatbeltPolicy
 
     from .permissions import PermissionPolicy
 
@@ -79,6 +80,8 @@ class AgentSpec(HooksMixin):
     context_management: bool = True
     # The coding tools to bind when `tools` names "coding"; None binds the default set.
     coding_tools: tuple[str, ...] | None = None
+    # When set, the coding editor and bash run under this macOS Seatbelt policy.
+    seatbelt: SeatbeltPolicy | None = None
     khive_injection: Any = None
     # Codex only: turn the signed-in account's apps and plugins off for this
     # agent's endpoint by default (a call can still lift it; see create_agent).

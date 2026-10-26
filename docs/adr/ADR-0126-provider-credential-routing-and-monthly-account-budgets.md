@@ -66,8 +66,8 @@ The request this record answers, and where each part is carried:
 ## Context
 
 **P1 — One provider credential cannot distribute a workload over named budgets.**
-`AppSettings` declares one `ANTHROPIC_API_KEY` and reads `.env`, `.env.local`, then
-`.secrets.env` (`lionagi/config.py:167`, `lionagi/config.py:187`). Provider metadata
+`AppSettings` declares one `ANTHROPIC_API_KEY` and reads `$LIONAGI_HOME/.env`, `.env`,
+`.env.local`, then `.secrets.env` (`lionagi/config.py:169`, `lionagi/config.py:191`). Provider metadata
 supplies that name to endpoint configuration
 (`lionagi/providers/anthropic/_config.py:23`,
 `lionagi/service/connections/provider_config.py:98`). A missing settings name
