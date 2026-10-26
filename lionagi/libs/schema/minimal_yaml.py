@@ -9,10 +9,32 @@ from lionagi.ln._json_load import json_loads
 # YAML Dumper with minimal, readable settings
 
 
+def _block_printable(ch: str) -> bool:
+    # The emitter's printable test under allow_unicode=True, plus tab and carriage return,
+    # which YAML permits inside literal block content.
+    return (
+        ch in "\t\n\r"
+        or " " <= ch <= "~"
+        or ch == "\x85"
+        or "\xa0" <= ch <= "퟿"
+        or "" <= ch <= "�"
+        or "\U00010000" <= ch < "\U0010ffff"
+    ) and ch != "﻿"
+
+
 class MinimalDumper(yaml.SafeDumper):
     # Disable anchors/aliases (&id001, *id001) for repeated objects.
     def ignore_aliases(self, data: Any) -> bool:  # type: ignore[override]
         return True
+
+    # PyYAML refuses a literal block for text holding a tab, a carriage return or a space
+    # before a line break, and falls back to one double-quoted line with every newline
+    # escaped. A literal block carries those characters as written, so keep it.
+    def analyze_scalar(self, scalar: str):  # type: ignore[override]
+        analysis = super().analyze_scalar(scalar)
+        if analysis.multiline and not analysis.allow_block and all(map(_block_printable, scalar)):
+            analysis.allow_block = True
+        return analysis
 
 
 def _represent_str(dumper: yaml.SafeDumper, data: str):

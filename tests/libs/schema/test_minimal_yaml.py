@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import yaml
 
 from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
@@ -166,6 +167,32 @@ class TestMultilineStrings:
         assert "text: |" in result
         assert "First line" in result
         assert "Second line with spaces" in result
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "def f():\n\treturn 1\n",
+            "Windows line\r\nendings\r\n",
+            "space before a break  \nnext line\n",
+            "ends with a space\nlast ",
+        ],
+        ids=["tab", "crlf", "space-before-break", "trailing-space"],
+    )
+    def test_multiline_whitespace_keeps_block_scalar(self, text):
+        result = minimal_yaml({"text": text})
+
+        assert result.startswith("text: |")
+        for line in text.split("\n"):
+            if line:
+                assert "  " + line in result
+        assert yaml.safe_load(result)["text"] == text.replace("\r\n", "\n")
+
+    def test_multiline_control_character_stays_quoted(self):
+        text = "red \x1b[31mtext\nnext\n"
+        result = minimal_yaml({"text": text})
+
+        assert result.startswith('text: "')
+        assert yaml.safe_load(result)["text"] == text
 
 
 class TestNestedStructures:
