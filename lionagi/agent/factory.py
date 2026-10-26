@@ -105,6 +105,14 @@ async def create_agent(
     built here, is not held to it. The endpoint is recognised by its class, so
     a registered provider that wraps codex in another endpoint class is not
     contained.
+
+    ``spec.prompt_caching`` turns the endpoint's ``prompt_caching`` option
+    (ADR-0127) on for the model this factory builds. Only an endpoint that
+    declares prefix caching places the marks; any other endpoint, a CLI agent
+    included, sends its requests unchanged without an error. Like the
+    containment default, it raises with a caller-supplied ``chat_model`` or
+    with no ``spec.model``, because either way this factory builds no endpoint
+    to set it on.
     """
     spec = config
 
