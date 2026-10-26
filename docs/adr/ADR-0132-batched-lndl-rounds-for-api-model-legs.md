@@ -92,7 +92,7 @@ The LNDL Middle has no separate answer request. In a round a model declares tool
 aliases and may write its answer as an `OUT{}` block. A round with no `OUT{}` runs every declared
 call, concurrently and through the ordinary `act()` path with its permissions and hooks, and the
 next round sees the results; a round whose `OUT{}` validates ends the turn
-(`lionagi/operations/lndl_middle/lndl_middle.py:483-544`; ADR-0024 D3-D4). The same one-read task
+(`lionagi/operations/lndl_middle/lndl_middle.py:493-554`; ADR-0024 D3-D4). The same one-read task
 takes two requests: the round that declares the read, and the round that reads the result and
 writes the answer. With the same number of rounds, then, the batched loop saves the request ReAct
 makes for the answer, one per turn, a turn with no tool calls included (two requests against one).
@@ -117,7 +117,7 @@ calls and the answer in separate rounds, and its guidance tells the model so: a 
 declares `<lact>` calls, with no `OUT{}`, or writes the answer, with no `<lact>`. A round that does
 both is a repair round, in which none of its calls runs and its answer is not taken. Left to the
 Middle's own rule, such a round would run only the calls its `OUT{}` binds and drop the rest
-(`lndl_middle.py:402-414`), so a model could answer beside a read it never saw. The answer model
+(`lndl_middle.py:411-423`), so a model could answer beside a read it never saw. The answer model
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
@@ -129,7 +129,7 @@ provider's prompt-cache placement. Before this decision the Middle stripped the 
 rounds, and only an endpoint that places the prompt cache rendered the branch's tool set into the
 request (`lionagi/operations/chat/_prepare.py:209-227`), so on any other endpoint the model would
 have been asked to call tools it was never shown. The Middle now passes the branch's tool schemas
-to every round (`lndl_middle.py:462-474`).
+to every round (`lndl_middle.py:472-484`).
 
 The branch records `api_loop` beside the tool set and bound under `metadata["api_launch"]`, and a
 resume runs the recorded loop. A record with no `api_loop` was written before this key existed and
