@@ -26,6 +26,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   before a run starts. `AgentSpec.seatbelt` and `CodingToolkit(seatbelt=...)` carry the
   policy for other callers.
 
+- Settings also read a user-wide `.env` under `LIONAGI_HOME` (`~/.lionagi/.env` by
+  default), below the working directory's `.env`, `.env.local` and `.secrets.env` and
+  below the environment. A value set there, such as `LIONAGI_STATE_DB_URL` or a provider
+  key, reaches every lionagi process of that user whatever its working directory; any
+  other source still replaces it.
+
 ### Changed
 
 - Security-control contracts and settings reading live in core modules; existing agent imports
