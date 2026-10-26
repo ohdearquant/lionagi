@@ -1204,7 +1204,7 @@ before plus a pointer to the opt-in:
   keeps them off it. Any other value, or the key with the read set or without `api_tools`, is
   refused before a run exists.
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
-- `api_loop` — the tool loop (ADR-0132): `react`, the default, or `lndl`. An `lndl` leg runs
+- `api_loop` — the tool loop (ADR-0132): `react`, the default, `lndl` or `lndl-calls`. An `lndl` leg runs
   `branch.operate(..., middle=build_lndl_middle(round_budget=1 + max_extensions,
   max_actions=16, lacts_with_out=False))` with the same tools, guards and timeout, and guidance
   that keeps calls and the answer in separate rounds. A round either declares tool calls as
@@ -1216,7 +1216,10 @@ before plus a pointer to the opt-in:
   next round only, and the last round's notice says it is the last. A turn that spends its
   rounds without an accepted answer raises the Middle's `LNDLError`, which ends the turn as any
   other turn failure does: the session records `failed` and the error's message, and `li agent`
-  reports the error and exits non-zero. Any other value, or `api_loop` without `api_tools`, is
+  reports the error and exits non-zero. An `lndl-calls` leg runs the same rounds with
+  `tools_as_calls=True`: the first round's guidance shows each tool as an LNDL call with its
+  descriptions, and no round's request carries the tool schemas, in the request or in a cached
+  system block (ADR-0132 Amendment 2). Any other value, or `api_loop` without `api_tools`, is
   refused before a run exists.
 - `max_input_tokens`: the ceiling on each request's estimated input (ADR-0130), a positive whole
   number of tokens, `auto` (the default) or `none`. `auto` is the first price tier's prompt bound
