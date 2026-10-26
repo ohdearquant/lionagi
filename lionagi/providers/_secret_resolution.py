@@ -370,10 +370,19 @@ def _cli_value(program: str, name: str, stdout_bytes: bytes) -> str | None:
     return value
 
 
+def _routed_account_key_names() -> frozenset[str]:
+    # Imported here rather than at module scope, like the settings loader above:
+    # this module is reached from the provider spawn path.
+    from lionagi.config import settings as app_settings
+
+    return frozenset(account.key_env for account in app_settings.ANTHROPIC_ACCOUNTS)
+
+
 async def fill_declared_secrets(
     env: Mapping[str, str] | None,
     *,
     settings: dict[str, Any] | None = None,
+    account_key_names: frozenset[str] | None = None,
 ) -> Mapping[str, str] | None:
     """Return the environment a CLI child should get, with declared secrets filled.
 
@@ -386,14 +395,24 @@ async def fill_declared_secrets(
     the child dies the same way (missing variable) whether the lookup was
     absent or misconfigured, with nothing pointing at the operator's own
     config.
+
+    A declared name that is a routed account's key reference (a ``key_env`` in
+    ``ANTHROPIC_ACCOUNTS``; ``account_key_names`` overrides the configured set)
+    is never looked up for a CLI child: that key is read by the account router
+    alone, for the one request it signs.
     """
-    return await _fill_from_resolution(env, resolve_secret_lookup_config(settings=settings))
+    return await _fill_from_resolution(
+        env,
+        resolve_secret_lookup_config(settings=settings),
+        skip=_routed_account_key_names() if account_key_names is None else account_key_names,
+    )
 
 
 async def fill_declared_secrets_and_names(
     env: Mapping[str, str] | None,
     *,
     settings: dict[str, Any] | None = None,
+    account_key_names: frozenset[str] | None = None,
 ) -> tuple[Mapping[str, str] | None, tuple[str, ...]]:
     """The child's environment and the names it was filled against, from one config read.
 
@@ -403,16 +422,21 @@ async def fill_declared_secrets_and_names(
     edit the first did not — handing the child a value the redactor was never
     told about, which is exactly the secret named for its purpose that declaring
     exists to cover. The operator's declaration is what makes a value a secret;
-    a name that reads like one is only a guess.
+    a name that reads like one is only a guess. A routed account's key reference
+    is not filled, as in ``fill_declared_secrets``, but stays among the names, so
+    a value the child inherits under it is still redacted.
     """
     resolution = resolve_secret_lookup_config(settings=settings)
     names = () if resolution.lookup is None else resolution.lookup.names
-    return await _fill_from_resolution(env, resolution), names
+    skip = _routed_account_key_names() if account_key_names is None else account_key_names
+    return await _fill_from_resolution(env, resolution, skip=skip), names
 
 
 async def _fill_from_resolution(
     env: Mapping[str, str] | None,
     resolution: SecretLookupResolution,
+    *,
+    skip: frozenset[str],
 ) -> Mapping[str, str] | None:
     lookup = resolution.lookup
     if lookup is None:
@@ -429,7 +453,7 @@ async def _fill_from_resolution(
         return env
 
     source: Mapping[str, str] = os.environ if env is None else env
-    missing = [name for name in lookup.names if not source.get(name)]
+    missing = [name for name in lookup.names if name not in skip and not source.get(name)]
     if not missing:
         return env
 
