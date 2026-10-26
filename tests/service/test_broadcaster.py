@@ -403,3 +403,104 @@ class TestBroadcasterCoroutineOnlyRegression:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert later_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["future", "task"])
+    async def test_pending_future_or_task_does_not_delay_later_subscribers(self, kind, caplog):
+        loop = asyncio.get_running_loop()
+        gate = loop.create_future()
+        marker = object()
+        task = None
+        if kind == "task":
+
+            async def work():
+                return await gate
+
+            task = asyncio.create_task(work())
+            returned = task
+        else:
+            returned = gate
+        calls = []
+        states = []
+
+        def first(_event):
+            calls.append("first")
+            return returned
+
+        def later(_event):
+            calls.append("later")
+            states.append(returned.done())
+
+        # A changed classifier can complete rather than hang, then fail the state oracle.
+        release = loop.call_soon(gate.set_result, marker)
+        self.TaskBroadcaster.subscribe(first)
+        self.TaskBroadcaster.subscribe(later)
+        try:
+            with caplog.at_level(logging.ERROR, logger="lionagi.service.broadcaster"):
+                await self.TaskBroadcaster.broadcast(SampleEvent())
+            assert calls == ["first", "later"]
+            assert states == [False]
+            assert not returned.done()
+            assert not [r for r in caplog.records if r.name == "lionagi.service.broadcaster"]
+        finally:
+            release.cancel()
+            if not gate.done():
+                gate.set_result(marker)
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                await gate
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["future", "task"])
+    async def test_returned_future_or_task_failure_remains_subscriber_owned(self, kind, caplog):
+        error = RuntimeError("subscriber-owned failure")
+        task = None
+        if kind == "task":
+
+            async def fail():
+                raise error
+
+            task = asyncio.create_task(fail())
+            await asyncio.wait({task})
+            returned = task
+        else:
+            returned = asyncio.get_running_loop().create_future()
+            returned.set_exception(error)
+        later_calls = []
+        self.TaskBroadcaster.subscribe(lambda _event: returned)
+        self.TaskBroadcaster.subscribe(lambda _event: later_calls.append("later"))
+        try:
+            with caplog.at_level(logging.ERROR, logger="lionagi.service.broadcaster"):
+                await self.TaskBroadcaster.broadcast(SampleEvent())
+            assert later_calls == ["later"]
+            assert not [r for r in caplog.records if r.name == "lionagi.service.broadcaster"]
+        finally:
+            assert returned.exception() is error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["future", "task"])
+    async def test_returned_future_or_task_cancellation_does_not_cancel_broadcast(self, kind):
+        task = None
+        if kind == "task":
+
+            async def work():
+                return None
+
+            task = asyncio.create_task(work())
+            returned = task
+        else:
+            returned = asyncio.get_running_loop().create_future()
+        returned.cancel()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        later_calls = []
+        self.TaskBroadcaster.subscribe(lambda _event: returned)
+        self.TaskBroadcaster.subscribe(lambda _event: later_calls.append("later"))
+        try:
+            await self.TaskBroadcaster.broadcast(SampleEvent())
+            assert later_calls == ["later"]
+            assert returned.cancelled()
+        finally:
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)

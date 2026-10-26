@@ -28,6 +28,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
+  default. Broadcaster uses the coroutine-only classifier so returned Futures and
+  Tasks remain subscriber-owned.
+
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
@@ -80,6 +84,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
 ### Fixed
+
+- `run_sync` rejects non-boolean `abandon_on_cancel` values before starting a worker.
 
 - An API-model `li agent` run whose ReAct pass ends on a response cut off at its output
   limit with no text and no tool call, on a reply that does not parse, or on an answer with

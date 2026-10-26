@@ -325,3 +325,30 @@ async def test_run_sync_rejects_wrong_limiter_type_before_worker_starts(kind):
     ):
         await run_sync(entered.set, limiter=limiter)
     assert not entered.is_set()
+
+
+class _TruthinessTrap:
+    def __bool__(self) -> bool:
+        raise AssertionError("abandon_on_cancel must not be coerced to bool")
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(1, id="one"),
+        pytest.param(None, id="none"),
+        pytest.param(1.0, id="float"),
+        pytest.param("false", id="string"),
+        pytest.param([], id="empty-list"),
+        pytest.param(object(), id="object"),
+        pytest.param(_TruthinessTrap(), id="truthiness-trap"),
+    ],
+)
+async def test_run_sync_rejects_non_bool_abandon_before_worker_starts(setting):
+    entered = threading.Event()
+    try:
+        with pytest.raises(TypeError, match=r"abandon_on_cancel.*bool"):
+            await run_sync(entered.set, abandon_on_cancel=setting)
+    finally:
+        assert not entered.is_set()
