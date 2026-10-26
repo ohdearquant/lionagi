@@ -69,6 +69,8 @@ async def run_sync(
     """
     if limiter is not None and not isinstance(limiter, CapacityLimiter):
         raise TypeError("limiter must be a lionagi.ln.concurrency.CapacityLimiter or None")
+    if type(abandon_on_cancel) is not bool:
+        raise TypeError("abandon_on_cancel must be a bool")
     if kwargs:
         func = partial(func, **kwargs)
     return await anyio.to_thread.run_sync(
@@ -237,8 +239,10 @@ def run_async(coro: Awaitable[T]) -> T:
     return result_container[0]
 
 
-async def maybe_await(result: Any) -> Any:
-    if inspect.isawaitable(result):
+async def maybe_await(result: Any, *, classifier: Callable[[Any], bool] | None = None) -> Any:
+    """Await one result if the selected classifier accepts it; otherwise return it unchanged."""
+    predicate = inspect.isawaitable if classifier is None else classifier
+    if predicate(result):
         return await result
     return result
 

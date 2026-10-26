@@ -121,9 +121,10 @@ _API_CONFINED_TOOL_SETS = ("write",)
 _API_LAUNCH_KEY = "api_launch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
-# The tool loops an API leg can run (`api_loop`): ReAct, the default, or batched LNDL
-# rounds (ADR-0132). A launch record written before the key existed runs ReAct.
-_API_LOOPS = ("react", "lndl")
+# The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
+# (ADR-0132), or those rounds with the tools shown only as LNDL calls (`lndl-calls`, ADR-0132
+# Amendment 2). A launch record written before the key existed runs ReAct.
+_API_LOOPS = ("react", "lndl", "lndl-calls")
 _API_DEFAULT_LOOP = "react"
 # The <lact> calls one LNDL round may declare; a round that declares more runs none.
 _API_LNDL_MAX_ACTIONS = 16
@@ -858,7 +859,7 @@ async def _api_loop_pass(
 
     For ReAct, *rounds* (when given) receives each round's analysis and then the answer.
     """
-    if loop == "lndl":
+    if loop in ("lndl", "lndl-calls"):
         from lionagi.operations.lndl_middle import build_lndl_middle
 
         schemas = branch.acts.get_tool_schema(tools=True)
@@ -873,6 +874,7 @@ async def _api_loop_pass(
                 round_budget=1 + max_extensions,
                 max_actions=_API_LNDL_MAX_ACTIONS,
                 lacts_with_out=False,
+                tools_as_calls=loop == "lndl-calls",
             ),
         )
     outs = await branch.ReAct(
