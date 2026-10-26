@@ -815,6 +815,22 @@ async def test_an_lndl_calls_leg_shows_its_tools_as_calls_and_no_round_names_the
         assert "Tools:" in json.dumps([payload.get("system") for payload in leg.payloads])
 
 
+@pytest.mark.parametrize("loop", ["lndl", "lndl-calls"])
+@pytest.mark.asyncio
+async def test_only_an_lndl_calls_leg_is_asked_to_declare_every_known_read_in_one_round(leg, loop):
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    await leg.run(_profile(api_tools="read", api_loop=loop))
+
+    first = " ".join(_last_user_text(leg.payloads[0]).split())
+    assert "a tool result is never the answer." in first
+    asked = (
+        "In each calling round, declare every read you already know you need, up to 16 calls, "
+        "and answer only after reading what the answer depends on."
+    )
+    assert (asked in first) is (loop == "lndl-calls")
+
+
 @pytest.mark.asyncio
 async def test_an_lndl_answer_that_is_a_tool_result_is_refused_and_repaired(leg):
     leg.replies = [

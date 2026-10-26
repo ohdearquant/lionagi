@@ -71,6 +71,32 @@ difference, and the rest is fewer requests and shorter output. The measurement c
 `lndl-calls` with `lndl`, never with ReAct, so it does not reopen D4: `lndl-calls` is an opt-in
 setting as `lndl` is, and the default stays `react`.
 
+## Amendment 3 (2026-10-26): an `lndl-calls` leg is asked for every read it already needs
+
+An `lndl-calls` leg's guidance ends with one more sentence: "In each calling round, declare every
+read you already know you need, up to 16 calls, and answer only after reading what the answer
+depends on." The number is the round's call limit (`_API_LNDL_MAX_ACTIONS` in
+`lionagi/cli/agent.py`), from which the sentence is built, so the two cannot drift apart. An `lndl`
+leg's guidance is unchanged, because the sentence was measured on `lndl-calls` only.
+
+The reason is how little an `lndl-calls` leg read before it answered. Measured on 23 code-review
+tasks on `anthropic/claude-haiku-5-5`, one run per arm per task with a task's two runs adjacent in
+time, on source identical apart from this sentence:
+
+| | without the sentence | with it |
+|---|---|---|
+| tool calls per run | 10.0 | 14.7 |
+| requests per run | 3.87 | 4.26 |
+| recall of the files the reference review cites | 0.176 | 0.256 |
+| verdicts that match the reference | 18 of 23 | 19 of 23 |
+| cost per run | | 34% higher |
+
+Recall rose on 15 tasks, fell on 3 and was equal on 5 (paired difference +0.080, standard error
+0.032). Precision, the share of a run's cited files that the reference also cites, read 0.68
+without the sentence and 0.56 with it. That reading is taken over the runs that cited a file (20 and
+22), not paired per task, from one run per task, so this measurement does not establish the
+direction of the change in precision.
+
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,

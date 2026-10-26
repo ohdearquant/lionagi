@@ -136,6 +136,12 @@ _API_LNDL_GUIDANCE = (
     "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
     "tool result is never the answer."
 )
+# An lndl-calls leg is also asked to declare in one round every read it already knows it needs.
+_API_LNDL_CALLS_GUIDANCE = (
+    f"{_API_LNDL_GUIDANCE} In each calling round, declare every read you already know you "
+    f"need, up to {_API_LNDL_MAX_ACTIONS} calls, and answer only after reading what the answer "
+    "depends on."
+)
 # A profile's `max_input_tokens` for an API leg: a positive integer, "auto" (the model's first
 # price-tier boundary, none for a model priced flat) or "none". Unset reads as "auto".
 _API_INPUT_CAP_WORDS = ("auto", "none")
@@ -865,7 +871,7 @@ async def _api_loop_pass(
         schemas = branch.acts.get_tool_schema(tools=True)
         return await branch.operate(
             instruction=instruction,
-            guidance=_API_LNDL_GUIDANCE,
+            guidance=_API_LNDL_CALLS_GUIDANCE if loop == "lndl-calls" else _API_LNDL_GUIDANCE,
             response_format=_LndlAnswer,
             tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
             invoke_actions=False,
