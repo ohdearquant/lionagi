@@ -18,6 +18,7 @@ __all__ = (
     "ExecutionError",
     "ProviderStreamError",
     "ConfigurationError",
+    "CredentialMissingError",
     "ContainmentRefusedError",
     "TimeoutError",
     "EmptyOutgoingContentError",
@@ -161,6 +162,17 @@ class ConfigurationError(LionError, ValueError):
     default_message = "Invalid configuration"
     default_status_code = 500
     __slots__ = ()
+
+
+class CredentialMissingError(ConfigurationError):
+    """A declared credential variable has no configured value at dispatch."""
+
+    reason: ClassVar[str] = "credential_missing"
+
+    def __init__(self, variable_name: str):
+        super().__init__(
+            f"Credential variable '{variable_name}' is not set.", details={"reason": self.reason}
+        )
 
 
 class ContainmentRefusedError(ConfigurationError):

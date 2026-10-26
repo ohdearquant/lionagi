@@ -69,6 +69,7 @@ class EndpointConfig(BaseModel):
     default_headers: dict = {}
     request_options: B | None = None
     api_key: str | SecretStr | None = Field(None, exclude=True, repr=False)
+    api_key_env: str | None = Field(None, exclude=True, repr=False)
     timeout: int = 300
     max_retries: int = 3
     # A retried POST to a non-idempotent creation endpoint (image generation,
@@ -115,7 +116,9 @@ class EndpointConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_api_key(self):
-        if self.api_key is not None:
+        if name := self._api_key_reference():
+            self._api_key = self._resolve_api_key_reference(name)
+        elif self.api_key is not None:
             if isinstance(self.api_key, SecretStr):
                 self._api_key = self.api_key.get_secret_value()
             elif isinstance(self.api_key, str):
@@ -132,6 +135,34 @@ class EndpointConfig(BaseModel):
                         self._api_key = os.getenv(self.api_key, self.api_key)
 
         return self
+
+    def _api_key_reference(self) -> str | None:
+        if not self.api_key_env or isinstance(self.api_key, SecretStr):
+            return None
+        if isinstance(self.api_key, str) and (
+            self.api_key.startswith("dummy-key")
+            or (self.provider == "ollama" and self.api_key == "ollama_key")
+        ):
+            return None
+        return self.api_key_env if self.api_key in (None, self.api_key_env) else None
+
+    @staticmethod
+    def _resolve_api_key_reference(name: str) -> str | None:
+        from lionagi.config import settings
+
+        try:
+            return settings.get_secret(name)
+        except (AttributeError, ValueError):
+            return os.getenv(name)
+
+    def _require_api_key(self) -> None:
+        if self.auth_type != "none" and (name := self._api_key_reference()):
+            if not self._api_key:
+                self._api_key = self._resolve_api_key_reference(name)
+            if not self._api_key:
+                from lionagi._errors import CredentialMissingError
+
+                raise CredentialMissingError(name) from None
 
     @field_validator("provider", mode="before")
     def _validate_provider(cls, v: str):

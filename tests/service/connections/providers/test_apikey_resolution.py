@@ -104,6 +104,7 @@ def test_endpoint_meta_resolves_api_key_from_settings():
 
     mock_settings = MagicMock()
     mock_settings.OPENAI_API_KEY = SecretStr("sk-from-settings")
+    mock_settings.get_secret.return_value = "sk-from-settings"
 
     meta = EndpointMeta(
         provider="openai",
@@ -119,10 +120,12 @@ def test_endpoint_meta_resolves_api_key_from_settings():
     assert config._api_key == "sk-from-settings"
 
 
-def test_endpoint_meta_falls_back_to_dummy_when_setting_is_none():
-    """When the settings attribute is None, api_key falls back to dummy-key-for-testing."""
+def test_endpoint_meta_preserves_an_unresolved_credential_reference(monkeypatch):
+    """A missing credential remains a reference until a request is dispatched."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mock_settings = MagicMock()
     mock_settings.OPENAI_API_KEY = None
+    mock_settings.get_secret.side_effect = ValueError("Secret is not set")
 
     meta = EndpointMeta(
         provider="openai",
@@ -135,7 +138,9 @@ def test_endpoint_meta_falls_back_to_dummy_when_setting_is_none():
     with patch("lionagi.config.settings", mock_settings):
         config = meta.create_config()
 
-    assert config._api_key == "dummy-key-for-testing"
+    assert config.api_key_env == "OPENAI_API_KEY"
+    assert config.api_key == "OPENAI_API_KEY"
+    assert config._api_key is None
 
 
 def test_endpoint_meta_respects_api_key_override():
@@ -185,6 +190,7 @@ def test_anthropic_endpoint_uses_x_api_key_header():
 
     mock_settings = MagicMock()
     mock_settings.ANTHROPIC_API_KEY = SecretStr("anthro-test-key")
+    mock_settings.get_secret.return_value = "anthro-test-key"
 
     from lionagi.providers.anthropic._config import AnthropicConfigs
 

@@ -73,18 +73,14 @@ class EndpointMeta:
         is_agentic = self.endpoint_type == EndpointType.AGENTIC
         api_key: Any = "internal" if is_agentic else None
         if not is_agentic and self.api_key_env and "api_key" not in overrides:
-            from lionagi.config import settings
-
-            raw = getattr(settings, self.api_key_env, None)
-            # Pass SecretStr directly so _validate_api_key uses its dedicated branch;
-            # None means the env var is unset, fall back to the testing sentinel.
-            api_key = raw if raw is not None else "dummy-key-for-testing"
+            api_key = self.api_key_env
         defaults = dict(
             name=f"{self.provider}_{self.endpoint}",
             provider=self.provider,
             base_url=self.base_url or ("internal" if is_agentic else ""),
             endpoint=self.endpoint,
             api_key=api_key,
+            api_key_env=None if is_agentic else self.api_key_env,
             request_options=self.options,
             timeout=3600 if is_agentic else 600,
             auth_type=self.auth_type or ("bearer" if not is_agentic else "bearer"),
