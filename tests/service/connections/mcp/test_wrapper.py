@@ -313,6 +313,71 @@ class TestMCPConnectionPoolCreateClient:
                 # In debug mode we must NOT force LOG_LEVEL=ERROR
                 assert env.get("LOG_LEVEL") != "ERROR"
 
+    @staticmethod
+    def _recording_client(calls, *, takes_mode):
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+        if takes_mode:
+
+            def factory(target, mode="auto"):
+                calls.append((target, mode))
+                return _Client()
+
+        else:
+
+            def factory(target):
+                calls.append((target,))
+                return _Client()
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_stdio_pins_the_initialize_handshake_when_the_client_takes_mode(self, caplog):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        transport = MagicMock()
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)),
+            patch("fastmcp.client.transports.StdioTransport", return_value=transport),
+            caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert calls == [(transport, "legacy")]
+        assert "'kserver': stdio handshake mode legacy" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_stdio_client_without_mode_gets_the_transport_alone(self, caplog):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        transport = MagicMock()
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=False)),
+            patch("fastmcp.client.transports.StdioTransport", return_value=transport),
+            caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert calls == [(transport,)]
+        assert "handshake mode" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_url_keeps_the_clients_default_handshake(self):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_urls=True)
+        calls = []
+
+        with patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)):
+            await MCPConnectionPool._create_client({"url": "https://api.example.com/mcp"})
+
+        assert calls == [("https://api.example.com/mcp", "auto")]
+
 
 class TestMCPConnectionPoolCleanup:
     @pytest.fixture(autouse=True)
@@ -452,6 +517,48 @@ class TestMCPConnectionPoolHandshakeBounds:
                 connection.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(connection, timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_stdio_server_that_closes_on_a_first_request_other_than_initialize(
+        self, tmp_path
+    ):
+        """A stdio server that predates server/discover exits when its first request is
+        anything but initialize. The pool still connects to it and lists its tools."""
+        script = tmp_path / "initialize_only_server.py"
+        script.write_text(
+            "import json, sys\n"
+            "def send(msg):\n"
+            "    sys.stdout.write(json.dumps(msg) + '\\n')\n"
+            "    sys.stdout.flush()\n"
+            "first = True\n"
+            "for line in sys.stdin:\n"
+            "    msg = json.loads(line)\n"
+            "    method = msg.get('method')\n"
+            "    if first:\n"
+            "        first = False\n"
+            "        if method != 'initialize':\n"
+            "            sys.exit(0)\n"
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {\n"
+            "            'protocolVersion': msg['params']['protocolVersion'],\n"
+            "            'capabilities': {'tools': {}},\n"
+            "            'serverInfo': {'name': 'initialize-only', 'version': '0'}}})\n"
+            "        continue\n"
+            "    if 'id' not in msg:\n"
+            "        continue\n"
+            "    if method == 'tools/list':\n"
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'tools': []}})\n"
+            "    else:\n"
+            "        send({'jsonrpc': '2.0', 'id': msg['id'],\n"
+            "              'error': {'code': -32601, 'message': 'method not found'}})\n"
+        )
+        try:
+            client = await MCPConnectionPool.get_client(
+                {"command": sys.executable, "args": [str(script)], "timeout": 10},
+                security=MCPSecurityConfig(allow_commands=True),
+            )
+            assert await client.list_tools() == []
+        finally:
+            await MCPConnectionPool.cleanup()
 
     @pytest.mark.asyncio
     async def test_unresponsive_close_is_bounded(self, monkeypatch):

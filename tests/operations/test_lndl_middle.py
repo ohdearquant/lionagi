@@ -27,6 +27,7 @@ from lionagi.operations.lndl_middle import (
 from lionagi.operations.lndl_middle.lndl_middle import (
     _classify_round,
     _render_target_spec,
+    _render_tool_calls,
     _run_round_chat,
     build_lndl_middle,
     lndl_middle,
@@ -1193,3 +1194,113 @@ class TestPackageImportSurface:
 
     def test_package_level_default_round_budget(self):
         assert PACKAGE_DEFAULT_ROUND_BUDGET == 3
+
+
+class TestToolsAsCalls:
+    _TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Run a shell\n command.",
+                "parameters": {
+                    "properties": {
+                        "command": {"type": "string", "description": "one line"},
+                        "timeout": {"default": 120, "type": "integer"},
+                    },
+                    "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_lines",
+                "parameters": {
+                    "properties": {
+                        "path": {"type": "string"},
+                        "start": {"default": 1, "type": "integer"},
+                        "end": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+    ]
+
+    def test_each_tool_is_shown_as_an_lndl_call_and_the_example_round_runs(self):
+        text = _render_tool_calls(self._TOOLS)
+        lines = text.splitlines()
+        assert lines[0] == "CALLING TOOLS"
+        assert "bash(command: str, timeout: int = 120)" in lines
+        assert (
+            "read_lines(path: str, start: int = 1, end: int | None = None, note: str (optional))"
+            in lines
+        )
+        block = text[text.index("```lndl") :]
+        outcome, pending, _ = _classify_round(block, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Continue)
+        assert [(call.function, call.arguments) for call in pending] == [
+            ("bash", {"command": "..."}),
+            ("read_lines", {"path": "..."}),
+        ]
+        assert _render_tool_calls([]) is None
+        assert _render_tool_calls([{"type": "function", "function": {}}]) is None
+
+    def test_a_list_type_and_an_empty_any_of_render_instead_of_raising(self):
+        properties = {
+            "a": {"type": ["string", "null"]},
+            "b": {"anyOf": []},
+            "c": {"type": ["integer"]},
+            "d": {"anyOf": [{"type": ["number", "null"]}, {"type": "string"}]},
+        }
+        tool = {"name": "f", "parameters": {"properties": properties, "required": ["a", "b"]}}
+        lines = _render_tool_calls([{"type": "function", "function": tool}]).splitlines()
+        assert (
+            "f(a: str | None, b: Any, c: int (optional), d: float | None | str (optional))" in lines
+        )
+        assert '<lact c1>f(a="...", b=...)</lact>' in lines
+
+    def test_a_described_block_carries_each_description_under_its_call(self):
+        lines = _render_tool_calls(self._TOOLS[:1], described=True).splitlines()
+        at = lines.index("bash(command: str, timeout: int = 120)")
+        assert lines[at + 1 : at + 3] == ["    Run a shell command.", "    command: one line"]
+        assert "    Run a shell command." not in _render_tool_calls(self._TOOLS[:1]).splitlines()
+
+    @pytest.mark.asyncio
+    async def test_tools_as_calls_shows_the_block_and_leaves_the_schemas_out_of_every_round(self):
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            return f"result for {query}"
+
+        replies = [
+            '```lndl\n<lact a>counted_lookup(query="x")</lact>\n```',
+            "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
+        ]
+        # A calls block says results come back in the next round, so it needs calls and the
+        # answer in separate rounds.
+        with pytest.raises(ValueError, match="tools_as_calls=True needs lacts_with_out=False"):
+            build_lndl_middle(tools_as_calls=True)
+        # (lacts_with_out, tools_as_calls) -> whether the calls block replaces the schemas.
+        for lacts_with_out, tools_as_calls, as_calls in (
+            (False, False, False),
+            (False, True, True),
+            (True, False, False),
+        ):
+            branch = TestBranch.from_text(list(replies))
+            branch.register_tools([counted_lookup])
+            middle = build_lndl_middle(
+                round_budget=3, lacts_with_out=lacts_with_out, tools_as_calls=tools_as_calls
+            )
+            result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+            assert result.answer == "read"
+            sent = [call.last_user_message for call in TestBranch.calls(branch)]
+            assert len(sent) == 2
+            for text in sent:
+                assert ("name: counted_lookup" in text) is not as_calls
+            first = [line.strip() for line in sent[0].splitlines()]
+            assert ("CALLING TOOLS" in first) is as_calls
+            if as_calls:
+                at = first.index("counted_lookup(query: str)")
+                assert first[at + 1] == "Return a canned lookup result for a query."
