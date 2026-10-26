@@ -418,10 +418,11 @@ async def test_all_blocked_and_no_capacity_have_distinct_errors(tmp_path):
 
 @pytest.mark.anyio
 async def test_month_rollover_keeps_attempt_month_and_detects_clock_regression(tmp_path):
-    now = [datetime(2026, 1, 31, 23, 59, tzinfo=timezone.utc)]
+    # The period keyed 2026-02 starts at 00:00 UTC on 2026-01-31, the last day of January.
+    now = [datetime(2026, 1, 30, 23, 59, tzinfo=timezone.utc)]
     ledger = CredentialLedger(tmp_path / "ledger.sqlite3", clock=lambda: now[0])
     january = await reserve_one(ledger, quote=make_quote(4), accounts=(make_spec(budget=10),))
-    now[0] = datetime(2026, 2, 1, 0, 1, tzinfo=timezone.utc)
+    now[0] = datetime(2026, 1, 31, 0, 1, tzinfo=timezone.utc)
     february = await reserve_one(
         ledger,
         quote=make_quote(2),
@@ -442,6 +443,25 @@ async def test_month_rollover_keeps_attempt_month_and_detects_clock_regression(t
         await reserve_one(ledger, accounts=(make_spec(budget=10),))
     assert caught.value.code is RouterErrorCode.LEDGER_UNAVAILABLE
     assert read_attempt(tmp_path / "ledger.sqlite3", february.attempt_id)[0] == "open"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("at", "month"),
+    [
+        (datetime(2026, 10, 30, 23, 59, 59, tzinfo=timezone.utc), "2026-10"),
+        (datetime(2026, 10, 31, 0, 0, tzinfo=timezone.utc), "2026-11"),
+        (datetime(2026, 12, 30, 23, 59, tzinfo=timezone.utc), "2026-12"),
+        (datetime(2026, 12, 31, 0, 0, tzinfo=timezone.utc), "2027-01"),
+        (datetime(2028, 2, 28, 23, 59, tzinfo=timezone.utc), "2028-02"),
+        (datetime(2028, 2, 29, 0, 0, tzinfo=timezone.utc), "2028-03"),
+    ],
+)
+async def test_a_month_starts_at_midnight_utc_on_the_previous_months_last_day(tmp_path, at, month):
+    ledger = CredentialLedger(tmp_path / "ledger.sqlite3", clock=lambda: at)
+    reservation = await reserve_one(ledger, accounts=(make_spec(budget=10),))
+    assert reservation.month_utc == month
+    assert (await ledger.status("anthropic"))[0].open_attempts == 1
 
 
 @pytest.mark.anyio
