@@ -3,6 +3,20 @@
 
 import re
 
+__all__ = ("extract_code_block", "extract_fenced_blocks")
+
+# A fence may be indented, may be longer than three characters (so a block can
+# quote a shorter fence), and may end its lines with CRLF. It closes only on a
+# line holding the same fence at the same indentation, so a block opened at the
+# margin keeps an indented fence inside a value as content.
+_FENCE_PATTERN = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})[ \t]*"
+    r"(?P<lang>[\w+-]*)[ \t]*\r?\n"
+    r"(?P<code>.*?)(?<=\n)"
+    r"^(?P=indent)(?P=fence)[ \t]*\r?$",
+    re.MULTILINE | re.DOTALL,
+)
+
 
 def extract_code_block(
     str_to_parse: str,
@@ -40,3 +54,13 @@ def extract_code_block(
         return code_blocks
     else:
         return "\n\n".join(code_blocks)
+
+
+def extract_fenced_blocks(text: str, language: str) -> list[str]:
+    """Extract a language's fenced blocks, preserving content and normalizing CRLF to LF."""
+    blocks: list[str] = []
+    for match in _FENCE_PATTERN.finditer(text):
+        lang = match.group("lang").lower()
+        if lang == language.lower():
+            blocks.append(match.group("code").replace("\r\n", "\n"))
+    return blocks

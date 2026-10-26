@@ -577,6 +577,33 @@ async def test_an_instruction_a_tool_stores_is_not_taken_for_the_one_carrying_th
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, "", "  "], ids=["null", "empty", "blank"])
+async def test_a_call_that_names_no_function_reaches_the_next_round_as_an_error(chat_server, name):
+    nameless = {"action_required": True, "action_requests": [{"function": name, "arguments": {}}]}
+    base_url, received = await chat_server(
+        [
+            _completion({"analysis": "round 1", "extension_needed": True, **nameless}),
+            _completion({"analysis": "round 2", "extension_needed": False}),
+            _completion({"answer": "done"}),
+        ]
+    )
+    branch = _branch(base_url)
+
+    def lookup() -> str:
+        return "looked up"
+
+    branch.register_tools(Tool(func_callable=lookup))
+
+    result = await branch.ReAct({"instruction": "pick the codes"}, max_extensions=1)
+
+    # The run goes on, and the round after the nameless call shows the model what was wrong.
+    assert result == "done"
+    assert len(received) == 3
+    assert "names no function" not in json.dumps(received[0]["messages"])
+    assert "names no function" in json.dumps(received[1]["messages"])
+
+
+@pytest.mark.asyncio
 async def test_a_tools_own_call_in_a_later_round_keeps_what_it_adds_beside_the_callers_context(
     chat_server,
 ):

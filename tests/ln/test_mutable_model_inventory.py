@@ -194,7 +194,7 @@ _ALLOWLIST: dict[str, str] = {
     # literal. Each is a dynamic attribute name on an already-mutable object or an
     # object's own field slot, none of them a class's ``__hash__`` or a class
     # authority:
-    "lionagi._auto:316:9": "a marker written onto a handler function, not a model",
+    "lionagi._auto:315:9": "a marker written onto a handler function, not a model",
     "lionagi.ln.types.base:224:13": "a declared field set from its layout during init",
     "lionagi.ln.types.base:367:13": "a declared field copied by name during update",
     "lionagi.models.operable_model:132:13": "an extra field set by name",
@@ -266,7 +266,7 @@ _ALLOWLIST: dict[str, str] = {
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:
-    "lionagi.config:168:5": "a pydantic settings config, which sets no frozen option",
+    "lionagi.config:170:5": "a pydantic settings config, which sets no frozen option",
     "lionagi.studio.operator.types:50:5": "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:

@@ -270,8 +270,10 @@ Settings are read once, when `lionagi.config` is first imported, so the conftest
 refuses to start if that module is already loaded (a plugin imported it first)
 rather than run with a store URL it could no longer remove. The settings loader
 also reads `.env`, `.env.local` and `.secrets.env` from the directory the suite
-runs from; the repo keeps none of them, and no test module loads a `.env` of its
-own. `test_an_exported_store_url_reaches_neither_the_suite_nor_its_children`
+runs from, and `.env` under `LIONAGI_HOME`, which the redirect above points at the
+test home; the repo keeps none of them, and no test module loads a `.env` of its own
+except `tests/test_home_dotenv.py`, which writes the test home's `.env`, removes it
+afterwards, and skips rather than replace one a `LIONAGI_TEST_HOME` already holds. `test_an_exported_store_url_reaches_neither_the_suite_nor_its_children`
 checks the removal from outside, opening the default store in a child process
 for each spelling, and
 `test_a_suite_whose_settings_were_read_before_the_removal_refuses_to_run`
