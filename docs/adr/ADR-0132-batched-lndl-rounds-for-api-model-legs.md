@@ -90,7 +90,7 @@ the second all 26, so the figures below are over 49 pairs:
 | tool calls per run | 9.7 | 16.4 |
 | requests per run | 4.04 | 4.29 |
 | recall of the files the reference review cites | 0.175 | 0.254 |
-| verdicts that match the reference | 36 of 49 | 39 of 49 |
+| verdicts that match the reference | 37 of 49 | 40 of 49 |
 | cost per run | | 36% higher |
 
 Recall rose in 29 pairs, fell in 7 and was equal in 13 (paired difference +0.079, standard error
