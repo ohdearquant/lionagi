@@ -1228,7 +1228,8 @@ async def test_snapshot_reclaims_idle_payload_before_rejecting_budget(monkeypatc
         limit = registry.retained_bytes
         monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", limit)
         assert not registry.can_fit("new", 1)
-        mark = registry.snapshot("new", {}, 0)
+        monkeypatch.setattr(tail, "MAX_RETAINED_BYTES", registry.session_retained_bytes("old"))
+        mark = registry.snapshot("old", {}, 0)
         assert mark["message_cursor"] in registry.bootstraps
         assert not owner.log and registry.payload_bytes == 0
         assert registry.retained_bytes <= limit
@@ -1237,20 +1238,21 @@ async def test_snapshot_reclaims_idle_payload_before_rejecting_budget(monkeypatc
         await registry.aclose()
 
 
-async def test_new_tail_reclaims_idle_payload_before_opening_reader(monkeypatch):
+async def test_new_tail_refuses_global_shortfall_without_opening_reader(monkeypatch):
     registry, tail, started = _admission_only_registry(monkeypatch)
     try:
         mark = registry.snapshot("new", {}, 0)
         owner = await _idle_signal_payload(registry)
+        retained = tuple(owner.log)
+        payload = registry.payload_bytes
         limit = registry.retained_bytes
         monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", limit)
         assert not registry.can_fit("new", 1)
-        sub = await registry.subscribe("new", "signals", mark["message_cursor"])
-        assert started == ["old", "new"]
-        assert sub.owner is registry.tails["new"]
-        assert not owner.log and registry.payload_bytes == 0
-        assert registry.retained_bytes <= limit
-        await registry.unsubscribe(sub)
+        with pytest.raises(tail.StreamResyncError, match="resource_limit"):
+            await registry.subscribe("new", "signals", mark["message_cursor"])
+        assert started == ["old"] and set(registry.tails) == {"old"}
+        assert tuple(owner.log) == retained and registry.payload_bytes == payload
+        assert registry.retained_bytes == limit
     finally:
         await registry.aclose()
 
@@ -1294,4 +1296,114 @@ async def test_invalid_new_tail_cannot_evict_another_session(monkeypatch):
         assert registry.metadata_bytes == metadata_bytes
         assert set(registry.tails) == {"old"} and started == ["old"]
     finally:
+        await registry.aclose()
+
+
+async def _closing_reader_failure(live_backend, monkeypatch, failure, expected, reason=None):
+    await seed(live_backend, terminal=True)
+    registry, *_rest = live_backend
+    tail = live_backend[5]
+    closing, release = asyncio.Event(), asyncio.Event()
+    original = tail._Tail._close_unlocked
+
+    async def fail_after_close(owner):
+        if owner.resource is not None:
+            closing.set()
+            await release.wait()
+            await original(owner)
+            raise failure
+        await original(owner)
+
+    monkeypatch.setattr(tail._Tail, "_close_unlocked", fail_after_close)
+    _detail, mark = await bootstrap(live_backend)
+    first = await registry.subscribe("session", "messages", mark["message_cursor"])
+    reader = first.owner.task
+    joiner = None
+    try:
+        await asyncio.wait_for(closing.wait(), 3)
+        assert reader is not None and not reader.done()
+        joiner = asyncio.create_task(
+            registry.subscribe("session", "messages", mark["message_cursor"])
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not joiner.done()
+        release.set()
+        with pytest.raises(expected, match=reason):
+            await joiner
+        assert first.owner.db is None and first.owner.resource is None
+        assert first.owner.task is None and not first.owner.closing
+    finally:
+        release.set()
+        if joiner is not None:
+            await asyncio.gather(joiner, return_exceptions=True)
+        if reader is not None:
+            await asyncio.gather(reader, return_exceptions=True)
+        await registry.unsubscribe(first)
+
+
+async def test_failed_closing_reader_is_a_typed_resync(live_backend, monkeypatch):
+    tail = live_backend[5]
+    await _closing_reader_failure(
+        live_backend,
+        monkeypatch,
+        OSError("reader close failed"),
+        tail.StreamResyncError,
+        "frontier_unavailable",
+    )
+
+
+@pytest.mark.parametrize("failure", ["typed", "cancel"])
+async def test_closing_reader_preserves_control_failures(live_backend, monkeypatch, failure):
+    tail = live_backend[5]
+    if failure == "typed":
+        await _closing_reader_failure(
+            live_backend,
+            monkeypatch,
+            tail.StreamResyncError("anchor_mismatch"),
+            tail.StreamResyncError,
+            "anchor_mismatch",
+        )
+    else:
+        await _closing_reader_failure(
+            live_backend, monkeypatch, asyncio.CancelledError(), asyncio.CancelledError
+        )
+
+
+@pytest.mark.parametrize("admission", ["snapshot", "tail"])
+async def test_admission_never_evicts_another_sessions_queued_payloads(monkeypatch, admission):
+    registry, tail, _started = _admission_only_registry(monkeypatch)
+    mark = registry.snapshot("admitting", {}, 0)
+    other_mark = registry.snapshot("other", {}, 0)
+    other = await registry.subscribe("other", "signals", other_mark["message_cursor"])
+    other.owner.publish("signals", {"seq": 1, "payload": "x" * 4096})
+    before_log, before_queue = tuple(other.owner.log), tuple(other.queue)
+    before_metadata, before_payload = registry.metadata_bytes, registry.payload_bytes
+    limit = registry.retained_bytes
+    monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", limit)
+    try:
+        for _ in range(3):
+            refused = False
+            joined = None
+            try:
+                if admission == "snapshot":
+                    registry.snapshot("admitting", {}, 0)
+                else:
+                    joined = await registry.subscribe(
+                        "admitting", "signals", mark["message_cursor"]
+                    )
+            except tail.StreamResyncError as error:
+                assert error.reason == "resource_limit"
+                refused = True
+            finally:
+                if joined is not None:
+                    await registry.unsubscribe(joined)
+            assert refused, "admission must refuse a global shortfall"
+            assert tuple(other.owner.log) == before_log and tuple(other.queue) == before_queue
+            assert other.control is None and other in other.owner.subscribers
+            assert registry.metadata_bytes == before_metadata
+            assert registry.payload_bytes == before_payload and registry.retained_bytes == limit
+            assert set(registry.tails) == {"other"}
+    finally:
+        await registry.unsubscribe(other)
         await registry.aclose()

@@ -187,6 +187,7 @@ class _Subscriber:
             "stream": self.channel,
         }
         if self.channel == "messages":
+            # Before any payload, keep the subscription start in the client's own form.
             value["resume_cursor"] = (
                 self.starting_cursor
                 if self.delivered_index is None
@@ -263,21 +264,23 @@ class SessionTailRegistry:
             and self.session_retained_bytes(session_id) + extra <= MAX_RETAINED_BYTES
         )
 
-    def make_room(self, session_id: str, extra: int) -> bool:
-        # An oversized admission cannot be cured by dropping healthy viewers.
+    def make_room(self, session_id: str, extra: int, *, own_session_only: bool = False) -> bool:
+        """Reclaim eligible payload; eviction can raise StreamResyncError."""
+        # Dropping payload cannot fix an oversized metadata admission.
         if (
             self.metadata_bytes + extra > MAX_TOTAL_RETAINED_BYTES
             or self.session_metadata_bytes(session_id) + extra > MAX_RETAINED_BYTES
         ):
             return False
-        # Oldest retained payloads are the eviction boundary. Only viewers still
-        # holding those deliveries are lagging; healthy viewers keep their stream.
+        # Subscribers still queueing an evicted delivery are resynced; those
+        # that no longer hold it are unaffected. Admission reclaims only its
+        # own session; publishers may reclaim across sessions.
         while not self.can_fit(session_id, extra):
             local_pressure = self.session_retained_bytes(session_id) + extra > MAX_RETAINED_BYTES
             candidates = [
                 tail
                 for key, tail in self.tails.items()
-                if tail.log and (not local_pressure or key == session_id)
+                if tail.log and (not (local_pressure or own_session_only) or key == session_id)
             ]
             if not candidates:
                 return False
@@ -311,7 +314,7 @@ class SessionTailRegistry:
             raise StreamResyncError("frontier_unavailable")
         token = f"sl1.{self.epoch}.{secrets.token_urlsafe(18)}"
         size = _frontier_bytes(frontiers) + len(token.encode()) + len(session_id.encode()) + 128
-        if not self.make_room(session_id, size):
+        if not self.make_room(session_id, size, own_session_only=True):
             raise StreamResyncError("resource_limit")
         self.bootstraps[token] = _Bootstrap(
             token, session_id, frontiers, signal_seq, time.monotonic(), size
@@ -359,7 +362,12 @@ class SessionTailRegistry:
                 raise StreamResyncError("frontier_unavailable")
             tail = self.tails.get(session_id)
             if tail is not None and tail.closing and tail.task is not None:
-                await asyncio.shield(tail.task)
+                try:
+                    await asyncio.shield(tail.task)
+                except StreamResyncError:
+                    raise
+                except Exception as error:
+                    raise StreamResyncError(tail.error or "frontier_unavailable") from error
             if tail is not None and tail.error is not None:
                 if tail.subscribers:
                     raise StreamResyncError(tail.error)
@@ -375,7 +383,7 @@ class SessionTailRegistry:
                     raise StreamResyncError("resource_limit")
                 tail = _Tail(self, boot)
                 tail.check_retention(boot, channel, index, after_seq, generation)
-                if not self.make_room(session_id, tail.metadata_size):
+                if not self.make_room(session_id, tail.metadata_size, own_session_only=True):
                     raise StreamResyncError("resource_limit")
                 self.metadata_bytes += tail.metadata_size
                 self.tails[session_id] = tail
@@ -843,13 +851,15 @@ class _Tail:
 
         before = await self._scalar("PRAGMA data_version")
         if before == self.completed_data_version and self.completed_state is not None:
+            # Another connection's schema commit changes data_version. A stable
+            # cache-hit return can reuse the completed capability validation.
             state = self.completed_state
             candidate = sessions.is_session_stream_done(state, now=time.time())
             after = await self._scalar("PRAGMA data_version")
             if before != after or candidate:
-                # Time alone can make a cached terminal state eligible. Pin a
-                # fresh own-session snapshot before deciding it is done, even
-                # when both version observations match.
+                # A version change needs fresh capability validation. Time can
+                # also make cached state a done candidate; only that candidate
+                # needs the own-session frontier and terminal predicates.
                 self.completed_data_version = None
                 self.completed_state = None
                 terminal = await self._confirm_terminal(
@@ -894,9 +904,9 @@ class _Tail:
         progressed = progressed or bool(signal_rows)
         terminal = not progressed and sessions.is_session_stream_done(state, now=time.time())
         if before != after:
-            # This short fresh snapshot also revalidates changed signal schema
-            # before any pending data is published. Only terminal candidates
-            # need the additional own-session confirmation predicates.
+            # The initial snapshot's capability check cannot cover a commit
+            # between the version fences. Revalidate for before != after; only
+            # terminal candidates need the own-session confirmation predicates.
             terminal = await self._confirm_terminal(
                 state, pending_positions, pending_signal_seq, candidate=terminal
             )
