@@ -677,6 +677,7 @@ class EngineRun:
             # call and reports success with nothing in it.
             yolo=self.engine.yolo,
             contain_account_integrations=built_under[1],
+            prompt_caching=bool(self.engine.prompt_caching),
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -1525,6 +1526,7 @@ class Engine:
         khive_injection: Any = None,
         yolo: bool = False,
         contain_account_integrations: bool = False,
+        prompt_caching: bool = False,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
@@ -1568,6 +1570,11 @@ class Engine:
         # config set it. PlanningEngine refuses it: its workers are not built by
         # make_agent.
         self.contain_account_integrations = contain_account_integrations
+        # Turn the endpoint's prompt_caching option (ADR-0127) on for every agent
+        # model make_agent builds. An endpoint that does not declare prefix caching
+        # (a CLI agent) sends its requests unchanged. Workers cloned from those
+        # agents share an API model by reference, so they cache too.
+        self.prompt_caching = prompt_caching
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,
         # None defers to each stage role's agent profile).
