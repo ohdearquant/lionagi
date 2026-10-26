@@ -537,22 +537,22 @@ def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
         351,
         'raise ValueError("First message in progression must be an Instruction or System")',
     )
-    _in_span(_PREPARE, 416, 429, "raise EmptyOutgoingContentError(")
+    _in_span(_PREPARE, 420, 433, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
     _in_span(_PREPARE, 374, 375, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 405, 406, "if i == _last_index:", "_current_turn_rendered = rendered")
+    _in_span(_PREPARE, 409, 410, "if i == _last_index:", "_current_turn_rendered = rendered")
     _in_span(
         _PREPARE,
-        416,
-        429,
+        420,
+        433,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
         _PREPARE,
-        470,
-        483,
+        474,
+        487,
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
