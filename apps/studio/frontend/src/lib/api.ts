@@ -331,12 +331,15 @@ function sseSubscribe(
   path: string | (() => string),
   onData: (data: string, eventId?: string) => void,
   onConnectionState?: (state: StreamConnectionState) => void,
+  onResponseError?: (response: Response) => Promise<boolean>,
 ): () => void {
   const controller = new AbortController();
+  let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let closed = false;
   const close = () => {
     closed = true;
     controller.abort();
+    void activeReader?.cancel().catch(() => {});
   };
 
   void (async () => {
@@ -352,6 +355,10 @@ function sseSubscribe(
           signal: controller.signal,
         });
         if (!response.ok) {
+          if (onResponseError && (await onResponseError(response))) {
+            close();
+            break;
+          }
           const permanentClientError =
             response.status >= 400 &&
             response.status < 500 &&
@@ -370,28 +377,35 @@ function sseSubscribe(
         }
         if (!closed) onConnectionState?.("open");
         const reader = response.body.getReader();
+        activeReader = reader;
         const decoder = new TextDecoder();
         let buffer = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buffer.indexOf("\n\n")) !== -1) {
-            const frame = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            const data = frame
-              .split("\n")
-              .filter((line) => line.startsWith("data:"))
-              .map((line) => line.slice(5).replace(/^ /, ""))
-              .join("\n");
-            const eventId = frame
-              .split("\n")
-              .filter((line) => line.startsWith("id:"))
-              .map((line) => line.slice(3).replace(/^ /, ""))
-              .at(-1);
-            if (data && !closed) onData(data, eventId || undefined);
+        try {
+          while (!closed) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buffer.indexOf("\n\n")) !== -1) {
+              const frame = buffer.slice(0, sep);
+              buffer = buffer.slice(sep + 2);
+              const data = frame
+                .split("\n")
+                .filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).replace(/^ /, ""))
+                .join("\n");
+              const eventId = frame
+                .split("\n")
+                .filter((line) => line.startsWith("id:"))
+                .map((line) => line.slice(3).replace(/^ /, ""))
+                .at(-1);
+              if (data && !closed) onData(data, eventId || undefined);
+            }
           }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+          if (activeReader === reader) activeReader = undefined;
         }
       } catch {
         // Aborted by close(), or a network error worth retrying.
@@ -1461,6 +1475,12 @@ export interface SessionBranch {
   agent_name?: string | null;
 }
 
+export interface SessionStreamSnapshot {
+  version: 1;
+  message_cursor: string;
+  signal_seq: number;
+}
+
 export interface SessionDetail {
   id: string;
   name: string;
@@ -1475,6 +1495,8 @@ export interface SessionDetail {
   // than what `branches[].messages` currently carries. Absent/null once every
   // branch's progression has been fully paged.
   message_next_cursor?: string | null;
+  /** Same-snapshot live handoff, requested explicitly with live_snapshot. */
+  stream_snapshot?: SessionStreamSnapshot;
   // ADR-0022: provenance disclosure — mirrors what list_sessions() exposes.
   model?: string | null;
   provider?: string | null;
@@ -1554,24 +1576,91 @@ export const SESSION_MESSAGE_PAGE = 200;
 // but this client only ever asks for a page by cursor.
 export async function getSession(
   id: string,
-  params?: { messageLimit?: number; messageCursor?: string },
+  params?: { messageLimit?: number; messageCursor?: string; liveSnapshot?: boolean },
 ): Promise<SessionDetail> {
   const query = new URLSearchParams();
   if (params?.messageLimit != null) query.set("message_limit", String(params.messageLimit));
   if (params?.messageCursor != null) query.set("message_cursor", params.messageCursor);
+  if (params?.liveSnapshot) query.set("live_snapshot", "true");
   const qs = query.toString();
-  return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
+  const detail = await fetchJson<SessionDetail>(
+    `/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`,
+  );
+  if (params?.liveSnapshot) readSessionStreamSnapshot(detail);
+  return detail;
+}
+
+/** Absent is legacy compatibility; a present invalid snapshot must not become replay. */
+export function readSessionStreamSnapshot(detail: SessionDetail): SessionStreamSnapshot | undefined {
+  if (!("stream_snapshot" in detail)) return undefined;
+  const snapshot = detail.stream_snapshot;
+  if (
+    snapshot == null ||
+    snapshot.version !== 1 ||
+    typeof snapshot.message_cursor !== "string" ||
+    snapshot.message_cursor.length === 0 ||
+    !Number.isSafeInteger(snapshot.signal_seq) ||
+    snapshot.signal_seq < 0
+  ) {
+    throw new Error("Unsupported or invalid session stream snapshot");
+  }
+  return snapshot;
+}
+
+export type SessionStreamResync =
+  | { type: "resync_required"; reason: string; stream: "messages"; resume_cursor?: string }
+  | { type: "resync_required"; reason: string; stream: "signals"; resume_after_seq?: number };
+
+export interface MessageStreamOptions {
+  mode?: "legacy" | "live";
+  initialCursor?: string;
+  onResyncRequired?: (
+    event: SessionStreamResync,
+    applied: { cursor: string | undefined },
+  ) => void;
+}
+
+export interface SignalStreamOptions {
+  mode?: "legacy" | "live";
+  initialSnapshot?: string;
+  initialAfterSeq?: number;
+  onResyncRequired?: (event: SessionStreamResync, applied: { afterSeq: number }) => void;
+}
+
+async function streamResyncReason(response: Response): Promise<string | undefined> {
+  if (response.status !== 409) return undefined;
+  try {
+    const body = (await response.json()) as { detail?: { code?: unknown; reason?: unknown } };
+    if (
+      body.detail?.code === "stream_resync_required" &&
+      typeof body.detail.reason === "string" &&
+      body.detail.reason.length > 0
+    ) return body.detail.reason;
+  } catch {
+    // Other 409 responses keep the existing permanent-client-error policy.
+  }
+  return undefined;
 }
 
 export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
   onConnectionState?: (state: StreamConnectionState) => void,
+  options?: MessageStreamOptions,
 ): () => void {
-  let cursor: string | undefined;
+  const live = options?.mode === "live";
+  if (live && !options?.initialCursor) throw new Error("Live messages require a snapshot cursor");
+  let cursor = options?.initialCursor;
+  const resync = (event: SessionStreamResync) => {
+    close();
+    onConnectionState?.("disconnected");
+    if (options?.onResyncRequired) options.onResyncRequired(event, { cursor });
+    else onEvent(event);
+  };
   const close = sseSubscribe(
     () => {
       const query = new URLSearchParams();
+      if (live) query.set("mode", "live");
       if (cursor) query.set("cursor", cursor);
       const suffix = query.toString();
       return `/api/sessions/${encodeURIComponent(id)}/stream${suffix ? `?${suffix}` : ""}`;
@@ -1581,21 +1670,42 @@ export function streamSession(
       try {
         event = JSON.parse(data) as Record<string, unknown>;
       } catch {
-        /* malformed chunk */
+        if (live) throw new Error("Invalid live message frame");
         return;
       }
+      if (live && (!event || typeof event !== "object" || Array.isArray(event))) {
+        throw new Error("Invalid live message frame");
+      }
+      if (live && event.type === "resync_required") {
+        if (event.stream !== "messages" || typeof event.reason !== "string" || !event.reason) {
+          throw new Error("Invalid message resync control");
+        }
+        resync(event as SessionStreamResync);
+        return;
+      }
+      if (live && event.type !== "heartbeat" && event.type !== "done" && (
+        !eventId || typeof event.id !== "string" || !event.id ||
+        typeof event.branch_id !== "string" || !event.branch_id ||
+        typeof event.role !== "string" || !event.role ||
+        typeof event.timestamp !== "number" || !Number.isFinite(event.timestamp)
+      )) throw new Error("Invalid or unresumable live message frame");
       if (event.type === "done") {
         close();
         onConnectionState?.("closed");
       }
       onEvent(event);
-      // Advance only after the consumer accepted this frame. If the callback
-      // throws, reconnecting from the prior cursor repeats rather than skips it.
-      if (eventId && event.type !== "heartbeat" && event.type !== "done") {
+      // Only a normally returning consumer advances the applied position.
+      if (eventId && !["heartbeat", "done", "resync_required"].includes(String(event.type))) {
         cursor = eventId;
       }
     },
     onConnectionState,
+    live ? async (response) => {
+      const reason = await streamResyncReason(response);
+      if (reason === undefined) return false;
+      resync({ type: "resync_required", stream: "messages", reason });
+      return true;
+    } : undefined,
   );
   return close;
 }
@@ -1625,15 +1735,74 @@ export function normalizeSignalEvent(raw: SignalEvent): SignalEvent {
   return { ...raw, ts: raw.ts * SIGNAL_TS_SECONDS_TO_MS };
 }
 
+export interface SessionSignalPage {
+  signals: SignalEvent[];
+  next_after_seq: number;
+  through_seq: number;
+  has_more: boolean;
+}
+
+export async function getSessionSignalPage(
+  id: string,
+  params: { afterSeq: number; throughSeq: number; limit?: number },
+): Promise<SessionSignalPage> {
+  const { afterSeq, throughSeq } = params;
+  const limit = Math.min(params.limit ?? 500, 500);
+  if (
+    !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
+    !Number.isSafeInteger(throughSeq) || throughSeq < afterSeq ||
+    !Number.isSafeInteger(limit) || limit <= 0
+  ) throw new Error("Invalid signal history page bounds");
+  const query = new URLSearchParams({
+    after_seq: String(afterSeq), through_seq: String(throughSeq), limit: String(limit),
+  });
+  const page = await fetchJson<SessionSignalPage>(
+    `/api/sessions/${encodeURIComponent(id)}/signals/page?${query}`,
+  );
+  if (
+    !Array.isArray(page.signals) || page.signals.length > limit ||
+    page.through_seq !== throughSeq || typeof page.has_more !== "boolean"
+  ) throw new Error("Invalid signal history page");
+  let previous = afterSeq;
+  for (const signal of page.signals) {
+    if (
+      signal.session_id !== id || !Number.isSafeInteger(signal.seq) ||
+      signal.seq <= previous || signal.seq > throughSeq
+    ) throw new Error("Signal history page is outside its snapshot");
+    previous = signal.seq;
+  }
+  if (page.next_after_seq !== previous || (page.has_more && previous === afterSeq)) {
+    throw new Error("Signal history page did not advance");
+  }
+  return { ...page, signals: page.signals.map(normalizeSignalEvent) };
+}
+
 export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
   onConnectionState?: (state: StreamConnectionState) => void,
+  options?: SignalStreamOptions,
 ): () => void {
-  let afterSeq = 0;
+  const live = options?.mode === "live";
+  const initialSnapshot = options?.initialSnapshot;
+  if (live && (!initialSnapshot || !Number.isSafeInteger(options?.initialAfterSeq) ||
+      (options?.initialAfterSeq ?? -1) < 0)) {
+    throw new Error("Live signals require a snapshot ticket and sequence");
+  }
+  let afterSeq = options?.initialAfterSeq ?? 0;
+  const resync = (event: SessionStreamResync) => {
+    close();
+    onConnectionState?.("disconnected");
+    if (options?.onResyncRequired) options.onResyncRequired(event, { afterSeq });
+    else onEvent(event);
+  };
   const close = sseSubscribe(
     () => {
       const query = new URLSearchParams({ after_seq: String(afterSeq) });
+      if (live) {
+        query.set("mode", "live");
+        query.set("snapshot", initialSnapshot!);
+      }
       return `/api/sessions/${encodeURIComponent(id)}/signals?${query}`;
     },
     (data) => {
@@ -1641,10 +1810,21 @@ export function streamSignals(
       try {
         event = JSON.parse(data) as SignalEvent | { type: string };
       } catch {
-        /* malformed chunk */
+        if (live) throw new Error("Invalid live signal frame");
         return;
       }
+      if (live && (!event || typeof event !== "object" || Array.isArray(event))) {
+        throw new Error("Invalid live signal frame");
+      }
       if ("type" in event) {
+        if (live && event.type === "resync_required") {
+          const control = event as SessionStreamResync;
+          if (control.stream !== "signals" || typeof control.reason !== "string" || !control.reason) {
+            throw new Error("Invalid signal resync control");
+          }
+          resync(control);
+          return;
+        }
         if (event.type === "done") {
           close();
           onConnectionState?.("closed");
@@ -1652,15 +1832,25 @@ export function streamSignals(
         onEvent(event);
         return;
       }
+      if (live) {
+        if (event.session_id !== id || !Number.isSafeInteger(event.seq) || event.seq < 0 ||
+            typeof event.ts !== "number" || !Number.isFinite(event.ts) ||
+            !Number.isFinite(event.ts * SIGNAL_TS_SECONDS_TO_MS) ||
+            typeof event.id !== "string" || !event.id || typeof event.kind !== "string" ||
+            typeof event.op_id !== "string") throw new Error("Invalid live signal frame");
+        if (event.seq <= afterSeq) return;
+      }
       onEvent(normalizeSignalEvent(event));
-      // Advanced only after the consumer has taken the event. Advancing first
-      // left a throwing consumer with the cursor already past a signal it
-      // never handled, and the reconnect resumes from that cursor, so the
-      // signal was skipped for good. Redelivering one the consumer already
-      // processed is the cheaper failure of the two.
+      // The snapshot ticket remains fixed; only successfully applied seq advances.
       afterSeq = Math.max(afterSeq, event.seq);
     },
     onConnectionState,
+    live ? async (response) => {
+      const reason = await streamResyncReason(response);
+      if (reason === undefined) return false;
+      resync({ type: "resync_required", stream: "signals", reason });
+      return true;
+    } : undefined,
   );
   return close;
 }

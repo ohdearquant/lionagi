@@ -390,18 +390,40 @@ async def lifespan(app_instance):
         mirror_stop, mirror_task = _start_claude_mirror()
         # Pure maintenance; deferred so readiness isn't gated on it.
         warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
-        yield
-        from .services.launches import shutdown_launches
+        try:
+            yield
+        finally:
+            from lionagi.ln.concurrency import CancelScope, ExceptionGroup
 
-        disarm_traceback_dump()
-        app_instance.state.reconnect_key = None
-        if reconnect is not None:
-            await asyncio.to_thread(reconnect.stop)
-        await _finalize_warmup(warmup_task)
-        await _stop_claude_mirror(mirror_stop, mirror_task)
-        await operator_shutdown()
-        await shutdown_launches()
-        await scheduler.stop()
+            from .services.launches import shutdown_launches
+
+            failures: list[Exception] = []
+
+            async def finish(operation: Any) -> None:
+                try:
+                    await operation()
+                except Exception as exc:
+                    failures.append(exc)
+
+            with CancelScope(shield=True):
+                registry = getattr(app_instance.state, "session_tail_registry", None)
+                if registry is not None:
+                    await finish(registry.aclose)
+                    app_instance.state.session_tail_registry = None
+                try:
+                    disarm_traceback_dump()
+                except Exception as exc:
+                    failures.append(exc)
+                app_instance.state.reconnect_key = None
+                if reconnect is not None:
+                    await finish(lambda: asyncio.to_thread(reconnect.stop))
+                await finish(lambda: _finalize_warmup(warmup_task))
+                await finish(lambda: _stop_claude_mirror(mirror_stop, mirror_task))
+                await finish(operator_shutdown)
+                await finish(shutdown_launches)
+                await finish(scheduler.stop)
+            if failures:
+                raise ExceptionGroup("Studio shutdown failed", failures)
 
 
 # Strict Host-header authority grammar, deliberately stricter than

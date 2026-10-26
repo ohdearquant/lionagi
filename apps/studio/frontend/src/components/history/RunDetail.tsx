@@ -29,6 +29,8 @@ import { useReportOperatorProject } from "@/components/operator/OperatorProjectC
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
+import { loadSessionLiveBootstrap } from "@/lib/sessionStreamBootstrap";
+import type { SessionLiveBootstrap } from "@/lib/sessionStreamBootstrap";
 import type {
   SessionDetail,
   SessionBranch,
@@ -390,6 +392,7 @@ export function mergeCompletedSession(
   }
   return { ...previous, ...fresh, branches };
 }
+
 
 // The BranchesSection identity every branch renders under (RunStepCard's
 // `id="step-${step.step}"` anchor and expandedSteps entry). Factored out so
@@ -2078,6 +2081,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // same id again but not the same visit, so a request from the first visit
   // would match the second and overwrite the reader's own fresh read.
   const visitTokenRef = useRef(0);
+  const streamGenerationRef = useRef(0);
+  const streamResyncRef = useRef(false);
+  const automaticResyncsRef = useRef(0);
+  const streamDataRevisionRef = useRef(0);
+  const [streamBootstrap, setStreamBootstrap] = useState<
+    (SessionLiveBootstrap & { visit: number; generation: number }) | null
+  >(null);
   // The same visit as state, for the one handler that has to compare the
   // visit it was made for against the visit now on screen. A ref cannot
   // answer that: the handler is created during render, and reading a ref's
@@ -2099,12 +2109,14 @@ export default function RunDetail({ id }: RunDetailProps) {
   const readTerminalDetail = useCallback((runId: string) => {
     const visit = visitTokenRef.current;
     const epoch = resumeEpochRef.current;
-    const key = `${visit}:${epoch}`;
+    const generation = streamGenerationRef.current;
+    const key = `${visit}:${epoch}:${generation}`;
     if (terminalReadRef.current === key) return;
     terminalReadRef.current = key;
     getSession(runId)
       .then((fresh) => {
-        if (visitTokenRef.current !== visit || resumeEpochRef.current !== epoch) return;
+        if (visitTokenRef.current !== visit || resumeEpochRef.current !== epoch ||
+            streamGenerationRef.current !== generation) return;
         setSession((prev) =>
           prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
         );
@@ -2112,6 +2124,22 @@ export default function RunDetail({ id }: RunDetailProps) {
       .catch(() => {
         if (terminalReadRef.current === key) terminalReadRef.current = null;
       });
+  }, []);
+
+
+  const installBootstrapMetadata = useCallback((fresh: SessionDetail) => {
+    const status = (fresh.status ?? "").toLowerCase();
+    const terminal = ["completed", "completed_empty", "done", "success", "failed",
+      "failure", "timed_out", "aborted", "cancelled"].includes(status);
+    const resumed = resumeWatchRef.current?.run_id === fresh.id;
+    setDone(terminal && !resumed);
+    setLive(resumed || status === "running");
+    const graph = (fresh as unknown as Record<string, unknown>).graph as
+      | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null } | null | undefined;
+    setRunGraph(graph?.nodes?.length ? {
+      name: fresh.name || fresh.id, description: "", nodes: graph.nodes,
+      edges: resolveGraphEdges(graph.nodes, graph.edges),
+    } : null);
   }, []);
 
   useEffect(() => {
@@ -2164,26 +2192,26 @@ export default function RunDetail({ id }: RunDetailProps) {
     visitTokenRef.current += 1;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setVisitToken(visitTokenRef.current);
-    getSession(id)
-      .then((s) => {
-        if (cancelled) return;
-        if (s.id !== id) throw new Error("Session response does not match the selected session");
+    const visit = visitTokenRef.current;
+    const generation = ++streamGenerationRef.current;
+    streamResyncRef.current = false;
+    automaticResyncsRef.current = 0;
+    streamDataRevisionRef.current = 0;
+    setStreamBootstrap(null);
+    setSessionStreamState("connecting");
+    setSignalStreamState("connecting");
+    setSignalState({ id, snapshot: EMPTY_SIGNAL_SNAPSHOT });
+    loadSessionLiveBootstrap(id, () =>
+      !cancelled && visitTokenRef.current === visit && streamGenerationRef.current === generation,
+    )
+      .then((bootstrap) => {
+        if (!bootstrap || cancelled) return;
+        const s = bootstrap.detail;
         setSession(s);
+        setSignalState({ id, snapshot: bootstrap.projection.snapshot() });
+        setStreamBootstrap({ ...bootstrap, visit, generation });
         setOlderCursor(s.message_next_cursor ?? null);
-        const ss = (s.status ?? "").toLowerCase();
-        if (
-          ss === "completed" ||
-          ss === "completed_empty" ||
-          ss === "done" ||
-          ss === "success" ||
-          ss === "failed" ||
-          ss === "failure" ||
-          ss === "timed_out" ||
-          ss === "aborted" ||
-          ss === "cancelled"
-        ) {
-          setDone(true);
-        }
+        installBootstrapMetadata(s);
         const branchExpansion =
           s.branches.length <= 3
             ? new Set(s.branches.map((b) => b.name || b.id.slice(0, 8)))
@@ -2205,20 +2233,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           }
         }
         if (branchExpansion) setExpandedSteps(branchExpansion);
-        const graph = (s as unknown as Record<string, unknown>).graph as
-          | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
-          | null
-          | undefined;
-        if (graph && graph.nodes && graph.nodes.length > 0) {
-          setRunGraph({
-            name: s.name || id,
-            description: "",
-            nodes: graph.nodes,
-            // A persisted graph may omit edges entirely; WorkerCanvas maps
-            // over the array, so an absent field must normalize to empty.
-            edges: resolveGraphEdges(graph.nodes, graph.edges),
-          });
-        }
+
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(String(e));
@@ -2226,7 +2241,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => {
       cancelled = true;
     };
-  }, [id, initialNodeRunId, initialUrlNodeKey, writeSelectedNodeToUrl]);
+  }, [id, initialNodeRunId, initialUrlNodeKey, writeSelectedNodeToUrl, installBootstrapMetadata]);
 
   // Both streams carry a heartbeat every five seconds. While both are open the
   // accepted continuation is live, so the detail read below would only repeat
@@ -2260,8 +2275,9 @@ export default function RunDetail({ id }: RunDetailProps) {
           setLive(true);
           if (!sessionStreamOpen) {
             try {
+              const generation = streamGenerationRef.current;
               const fresh = await getSession(id);
-              if (cancelled) return;
+              if (cancelled || streamGenerationRef.current !== generation) return;
               setSession((previous) =>
                 previous && previous.id === fresh.id
                   ? mergeCompletedSession(previous, fresh)
@@ -2304,78 +2320,120 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, [id, readTerminalDetail, resumeStreamsHealthy, resumeWatch, sessionStreamOpen, watchResume]);
 
   useEffect(() => {
-    if (!id) return;
-    const stop = streamSession(
-      id,
-      (event) => {
-        if (event.type === "heartbeat") return;
-        if (event.type === "done") {
-          // While a resume accepted on this run is watched, the frame can
-          // describe the end that came before it: the server reports a session
-          // done once it has stayed terminal for a while, and a frame already
-          // on its way when the resume was accepted arrives after it. The
-          // stream closes after this frame either way, which hands the watch to
-          // the fallback above, and the fallback reads the resumed invocation's
-          // own lifecycle, the authority on whether the continuation ended.
-          if (resumeWatchRef.current?.run_id === id) return;
-          setDone(true);
-          setLive(false);
-          // The terminal frame is authoritative: the fallback has nothing
-          // left to watch, so a later stream loss must not restart it.
-          watchResume(null);
-          // The initial fetch's status/reason fields are now stale (the run
-          // just finished) — refetch so the terminal status/verdict derivation
-          // reflects the real outcome instead of the pre-completion snapshot.
-          // The read is the visit's one terminal read: if the viewer navigates
-          // to a different run before it resolves, it must not clobber that
-          // run's freshly-fetched state.
-          readTerminalDetail(id);
-          return;
-        }
-        setLive(true);
-        if (isSessionMessageEvent(event)) {
-          const msg = event as unknown as SessionMessage;
-          setSession((prev) => {
-            if (!prev) return prev;
-            const branchId = String(event.branch_id);
-            return appendStreamedMessage(prev, branchId, msg);
-          });
-        }
-      },
-      (state) => setSessionStreamState(state),
-    );
-    return () => {
-      stop();
-    };
-  }, [id, readTerminalDetail, watchResume]);
-
-  useEffect(() => {
-    if (!id) return;
-    const projection = new SignalProjection();
+    const bootstrap = streamBootstrap;
+    if (!id || !bootstrap || bootstrap.detail.id !== id ||
+        bootstrap.visit !== visitTokenRef.current ||
+        bootstrap.generation !== streamGenerationRef.current) return;
+    const { visit, generation, snapshot } = bootstrap;
+    const projection = bootstrap.projection;
     let cancelled = false;
+    let resyncStarted = false;
     let publishScheduled = false;
+    let stopMessages = () => {};
+    let stopSignals = () => {};
+    const current = () => !cancelled && visitTokenRef.current === visit &&
+      streamGenerationRef.current === generation;
     const publish = () => {
       if (publishScheduled) return;
       publishScheduled = true;
       queueMicrotask(() => {
         publishScheduled = false;
-        if (!cancelled) setSignalState({ id, snapshot: projection.snapshot() });
+        if (current()) setSignalState({ id, snapshot: projection.snapshot() });
       });
     };
-    const stop = streamSignals(
+    const resnapshot = () => {
+      if (!current() || resyncStarted) return;
+      const recover = automaticResyncsRef.current === 0;
+      if (recover) automaticResyncsRef.current = 1;
+      resyncStarted = true;
+      streamResyncRef.current = true;
+      const nextGeneration = ++streamGenerationRef.current;
+      stopMessages();
+      stopSignals();
+      setSessionStreamState("disconnected");
+      setSignalStreamState("disconnected");
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+      if (!recover) {
+        setError("Live updates could not recover. Reload this session to try again.");
+        return;
+      }
+      const stillCurrent = () => !cancelled && visitTokenRef.current === visit &&
+        streamGenerationRef.current === nextGeneration;
+      void loadSessionLiveBootstrap(id, stillCurrent)
+        .then((fresh) => {
+          if (!fresh || !stillCurrent()) return;
+          // The opaque ticket proves no continuity for old-only rows. The fresh
+          // backward cursor reaches the authoritative progression before this window.
+          setSession(fresh.detail);
+          setOlderCursor(fresh.detail.message_next_cursor ?? null);
+          setOlderLoadFailed(false);
+          setSignalState({ id, snapshot: fresh.projection.snapshot() });
+          installBootstrapMetadata(fresh.detail);
+          streamResyncRef.current = false;
+          setStreamBootstrap({ ...fresh, visit, generation: nextGeneration });
+        })
+        .catch((error: unknown) => {
+          if (stillCurrent()) setError(String(error));
+        });
+    };
+    stopMessages = streamSession(
       id,
       (event) => {
-        if ("type" in event) return;
-        const sig = event as SignalEvent;
-        if (projection.append(sig)) publish();
+        if (!current() || event.type === "heartbeat") return;
+        if (event.type === "resync_required") { resnapshot(); return; }
+        if (event.type === "done") {
+          // A delayed end from before a resume is not the resumed run's end.
+          if (resumeWatchRef.current?.run_id === id) return;
+          setDone(true);
+          setLive(false);
+          watchResume(null);
+          readTerminalDetail(id);
+          return;
+        }
+        if (snapshot && !isSessionMessageEvent(event)) throw new Error("Invalid live message frame");
+        setLive(true);
+        if (isSessionMessageEvent(event)) {
+          const msg = event as unknown as SessionMessage;
+          setSession((prev) => {
+            if (!prev) return prev;
+            return appendStreamedMessage(prev, String(event.branch_id), msg);
+          });
+          streamDataRevisionRef.current += 1;
+          automaticResyncsRef.current = 0;
+        }
       },
-      (state) => setSignalStreamState(state),
+      (state) => { if (current()) setSessionStreamState(state); },
+      snapshot ? { mode: "live", initialCursor: snapshot.message_cursor,
+        onResyncRequired: resnapshot } : undefined,
     );
+    if (!resyncStarted) stopSignals = streamSignals(
+      id,
+      (event) => {
+        if (!current()) return;
+        if ("type" in event) {
+          if (event.type === "resync_required") resnapshot();
+          return;
+        }
+        const sig = event as SignalEvent;
+        if (projection.append(sig)) {
+          streamDataRevisionRef.current += 1;
+          automaticResyncsRef.current = 0;
+          publish();
+        }
+      },
+      (state) => { if (current()) setSignalStreamState(state); },
+      snapshot ? { mode: "live", initialSnapshot: snapshot.message_cursor,
+        initialAfterSeq: snapshot.signal_seq, onResyncRequired: resnapshot } : undefined,
+    );
+    // A synchronous subscription callback can request resync before its closer is assigned.
+    if (resyncStarted) { stopMessages(); stopSignals(); }
     return () => {
       cancelled = true;
-      stop();
+      stopMessages();
+      stopSignals();
     };
-  }, [id]);
+  }, [id, streamBootstrap, readTerminalDetail, watchResume, installBootstrapMetadata]);
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -2478,17 +2536,18 @@ export default function RunDetail({ id }: RunDetailProps) {
     // see this handler as idle and issue the same cursor request twice. The
     // state is still what the UI renders from; only the exclusion has to be
     // synchronous.
-    if (!id || loadingOlderRef.current || olderLoadFailed || !cursor) return;
+    if (!id || streamResyncRef.current || loadingOlderRef.current || olderLoadFailed || !cursor) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
     const visit = visitTokenRef.current;
+    const generation = streamGenerationRef.current;
     getSession(id, { messageCursor: cursor })
       .then((older) => {
         // The reader may have switched runs while this page was in flight: a
         // response for a run that is no longer on screen must not set its
         // cursor or merge its rows into the newly selected run.
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || streamGenerationRef.current !== generation) return;
         setOlderCursor(older.message_next_cursor ?? null);
         setSession((prev) => {
           if (!prev) return prev;
@@ -2504,7 +2563,10 @@ export default function RunDetail({ id }: RunDetailProps) {
               return {
                 ...b,
                 messages: [...fresh, ...b.messages],
-                message_total: page.message_total ?? b.message_total,
+                message_total: Math.max(
+                  page.message_total ?? 0, b.message_total ?? b.messages.length,
+                  b.messages.length + fresh.length,
+                ),
               };
             }),
           };
@@ -2516,7 +2578,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         // state replaces the whole pane, and a refusal takes the run it is
         // about off its own cursor — so it must not be written over a run the
         // reader did not ask it for.
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || streamGenerationRef.current !== generation) return;
         // A stale anchor (HTTP 400) means the branch's progression moved on
         // and this cursor no longer resolves — surface the dead-end instead
         // of retrying the same broken request on every scroll-up tick.
@@ -2533,39 +2595,51 @@ export default function RunDetail({ id }: RunDetailProps) {
         // its own in flight — clearing that run's busy state here would
         // re-enable its control and let the reader ask for the same page
         // twice.
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || streamGenerationRef.current !== generation) return;
         loadingOlderRef.current = false;
         setLoadingOlder(false);
       });
   }, [id, olderLoadFailed, olderCursor]);
 
   const handleReloadConversation = useCallback(() => {
-    if (!id) return;
+    if (!id || streamResyncRef.current) return;
     suppressAutoScrollRef.current = true;
     setOlderLoadFailed(false);
     setLoadingOlder(true);
+    loadingOlderRef.current = true;
     // The visit this reload was asked for. A run id alone cannot tell a
     // reload of the run now on screen from a reload of an earlier visit to
     // it, so a reader who leaves and returns would see the first visit's
     // snapshot land on the second.
     const visit = visitTokenRef.current;
+    const generation = streamGenerationRef.current;
+    const revision = streamDataRevisionRef.current;
     getSession(id)
       .then((fresh) => {
         // A reload started on one run and finished after a switch must not
         // replace the view with the run the reader has left.
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || streamGenerationRef.current !== generation) return;
+        if (streamDataRevisionRef.current !== revision) {
+          setOlderLoadFailed(true);
+          return;
+        }
         setOlderCursor(fresh.message_next_cursor ?? null);
         setSession(fresh);
       })
       .catch((e: unknown) => {
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || streamGenerationRef.current !== generation) return;
+        if (streamDataRevisionRef.current !== revision) {
+          setOlderLoadFailed(true);
+          return;
+        }
         setError(String(e));
       })
       .finally(() => {
         // Same as the older-page finally: the busy state belongs to the visit
         // that asked for this reload, not to whichever visit is on screen when
         // its response settles.
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || streamGenerationRef.current !== generation) return;
+        loadingOlderRef.current = false;
         setLoadingOlder(false);
       });
   }, [id]);
@@ -2618,6 +2692,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       // after the resume and put the earlier outcome back.
       resumeEpochRef.current += 1;
       const epoch = resumeEpochRef.current;
+      const generation = streamGenerationRef.current;
       setDone(false);
       setLive(true);
       watchResume(result);
@@ -2632,6 +2707,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (
           visitTokenRef.current !== visitToken ||
           resumeEpochRef.current !== epoch ||
+          streamGenerationRef.current !== generation ||
           resumeWatchRef.current !== result
         )
           return;
