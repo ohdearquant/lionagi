@@ -77,7 +77,7 @@ Allocate every operation in the existing lifespan as follows. Shared modules sup
 | Run-row startup reconciliation, `lionagi/studio/app.py:379-380` | Daemon | Reconcile executions whether or not the backend is enabled. |
 | Operator startup and shutdown, `lionagi/studio/app.py:381-383`, :402 | Backend | Recover application turns when enabled and stop only its own coordinator tasks. |
 | Launch-access epoch, `lionagi/studio/app.py:384-387` | Daemon | Begin one serving epoch, retaining only the current launch's pre-minted codes. |
-| Reconnect socket and proof key, `lionagi/studio/app.py:388-389`, :397-399 | Daemon | Start and stop once; expose the same proof key through the host's health route. |
+| Reconnect socket and proof key, `lionagi/studio/app.py:388-389`, :397-399 | Daemon | Start and stop once; the key leaves only over the same-user reconnect socket, and the host's health route answers a reconnect challenge with the port proof under that key (an HMAC of challenge and port, `lionagi/studio/app.py:629-646`), never the key. |
 | Transcript mirror, `lionagi/studio/app.py:225-300`, :390, :401 | Daemon | Call a wheel-owned mirror service, keep its stop event and task, and use the current shutdown backstop. |
 | Maintenance warmup, `lionagi/studio/app.py:321-344`, :391-392, :400 | Daemon | Schedule off the readiness path; cancel and await it during shutdown. |
 | Detached launch shutdown, `lionagi/studio/app.py:394`, :403 | Daemon | Cancel and await launch tasks so their existing terminal-row behavior remains intact (`lionagi/studio/services/launches.py:252-259`). |
