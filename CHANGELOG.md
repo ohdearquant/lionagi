@@ -95,6 +95,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   default. Broadcaster passes the coroutine-only classifier, so its dispatch is
   unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
   the subscriber.
+- Recent Studio session pages with no filter or an empty filter use the existing
+  timestamp index directly, avoiding a second sort of the selected page.
 
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.

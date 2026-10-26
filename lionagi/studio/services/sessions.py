@@ -523,10 +523,24 @@ async def list_sessions(
         clause, params = (where or SessionFilter()).where(
             user_label_available=user_label != "NULL AS user_label"
         )
-        # CROSS JOIN keeps the limited page in the outer loop, rather than
-        # allowing an outer sessions scan to satisfy the final ORDER BY.
-        cur = await db.execute(
-            f"""
+        recent_unfiltered = sort == "recent" and (
+            where is None
+            or (
+                type(where) is SessionFilter
+                and not any(
+                    (
+                        where.playbook,
+                        where.statuses,
+                        where.project,
+                        where.project_null,
+                        where.tags,
+                        where.search,
+                        where.kinds,
+                    )
+                )
+            )
+        )
+        page_cte = f"""
             WITH page AS (
                 SELECT s.id AS page_id
                 FROM sessions s
@@ -534,6 +548,20 @@ async def list_sessions(
                 ORDER BY {order_by}
                 LIMIT ? OFFSET ?
             )
+        """  # noqa: S608 -- fixed filter/sort SQL; values remain bound
+        page_source = "page CROSS JOIN sessions s ON s.id = page.page_id"
+        page_where = ""
+        page_limit = ""
+        if recent_unfiltered:
+            # The recent index supplies order directly; aggregates stay on
+            # returned rows. Other filters and sorts keep the page-first rail.
+            page_cte = ""
+            page_source = "sessions s"
+            page_where = clause
+            page_limit = "LIMIT ? OFFSET ?"
+        cur = await db.execute(
+            f"""
+            {page_cte}
             SELECT
                 s.id,
                 s.run_id,
@@ -579,9 +607,10 @@ async def list_sessions(
                     JOIN progressions p ON p.id = b.progression_id
                     WHERE b.session_id = s.id
                 ), 0) AS message_count
-            FROM page
-            CROSS JOIN sessions s ON s.id = page.page_id
+            FROM {page_source}
+            {page_where}
             ORDER BY {order_by}
+            {page_limit}
             """,  # noqa: S608
             [*params, limit, offset],
         )
