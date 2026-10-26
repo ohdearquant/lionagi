@@ -153,7 +153,7 @@ async def test_projection_does_not_regroup_page(projection_store, monkeypatch):
             execute = conn.execute
 
             async def capture(sql, parameters=None):
-                if sql.lstrip().startswith("WITH page AS"):
+                if _is_session_listing_projection(sql):
                     cursor = await execute("EXPLAIN QUERY PLAN " + sql, parameters)
                     plans.append([row[3] for row in await cursor.fetchall()])
                 return await execute(sql, parameters)
@@ -185,7 +185,7 @@ async def test_projection_work_stays_bounded_as_unrelated_sessions_grow(
                 return 0
 
             async def capture(sql, parameters=None):
-                if sql.lstrip().startswith("WITH page AS"):
+                if _is_session_listing_projection(sql):
                     await conn.set_progress_handler(tick, 1)
                 return await execute(sql, parameters)
 
@@ -222,3 +222,177 @@ async def test_projection_work_stays_bounded_as_unrelated_sessions_grow(
 
     assert len(work) == 2 and min(work) > 0
     assert max(work) <= 2 * min(work), work
+
+
+def _is_session_listing_projection(sql):
+    return all(
+        marker in sql for marker in ("AS branch_count", "AS message_count", "FROM sessions s")
+    )
+
+
+@asynccontextmanager
+async def _observe_session_projection(monkeypatch, *, reverse_unordered=False):
+    records = []
+    real_open = sessions._open_db
+
+    with monkeypatch.context() as patch:
+
+        @asynccontextmanager
+        async def observed_open(path):
+            async with real_open(path) as conn:
+                if reverse_unordered:
+                    await conn.execute("PRAGMA reverse_unordered_selects = ON")
+                execute = conn.execute
+                ticks = [0]
+                selected = []
+
+                def tick():
+                    ticks[0] += 1
+                    return 0
+
+                async def capture(sql, parameters=None):
+                    if _is_session_listing_projection(sql):
+                        assert not selected, "more than one listing projection on a connection"
+                        plan_cursor = await execute("EXPLAIN QUERY PLAN " + sql, parameters)
+                        plan = [row[3] for row in await plan_cursor.fetchall()]
+                        record = {
+                            "sql": sql,
+                            "parameters": list(parameters or []),
+                            "plan": plan,
+                            "progress_interval": 1,
+                            "progress_ticks": 0,
+                        }
+                        selected.append(record)
+                        records.append(record)
+                        await conn.set_progress_handler(tick, 1)
+                    return await execute(sql, parameters)
+
+                patch.setattr(conn, "execute", capture)
+                before_control = len(records)
+                control = await conn.execute("SELECT 17 AS branch_count, 19 AS message_count")
+                assert tuple(await control.fetchone()) == (17, 19)
+                assert len(records) == before_control, "non-listing query entered the observer"
+                try:
+                    yield conn
+                finally:
+                    await conn.set_progress_handler(None, 0)
+                    for record in selected:
+                        record["progress_ticks"] = ticks[0]
+
+        patch.setattr(sessions, "_open_db", observed_open)
+        yield records
+
+
+@pytest.mark.parametrize(
+    "filter_mode", ["none", "empty", "empty-values"], ids=["none", "empty", "empty-values"]
+)
+async def test_recent_projection_streams_pages_without_a_temporary_order_sort(
+    projection_store, monkeypatch, record_property, filter_mode
+):
+    with sqlite3.connect(projection_store) as conn:
+        conn.executemany(
+            "INSERT INTO sessions (id, progression_id, created_at, updated_at, status) "
+            "VALUES (?, 'session-pool', 0, ?, 'completed')",
+            [(f"page-{i}", 1000 + i) for i in range(256)],
+        )
+        conn.executemany(
+            "INSERT INTO branches (id, created_at, session_id, progression_id) "
+            "VALUES (?, 0, ?, 'session-pool')",
+            [(f"page-branch-{i}", f"page-{i}") for i in range(256)],
+        )
+    filters = {
+        "none": None,
+        "empty": sessions.SessionFilter(),
+        "empty-values": sessions.SessionFilter(
+            playbook="",
+            statuses=set(),
+            project="",
+            project_null=False,
+            tags=[],
+            search="",
+            kinds=set(),
+        ),
+    }
+    page_sizes = (1, 16, 64)
+    async with _observe_session_projection(monkeypatch) as records:
+        for size in page_sizes:
+            rows = await sessions.list_sessions(limit=size, offset=7, where=filters[filter_mode])
+            assert [row["id"] for row in rows] == [f"page-{i}" for i in range(248, 248 - size, -1)]
+            assert {(row["branch_count"], row["message_count"]) for row in rows} == {(1, 0)}
+    record_property("projection_page_work", json.dumps(records))
+    assert len(records) == len(page_sizes), records
+    work = [record["progress_ticks"] for record in records]
+    assert min(work) > 0, records
+    assert work[0] < work[1] < work[2], work
+    assert all(any("idx_sessions_updated" in step for step in r["plan"]) for r in records), records
+    assert not any(
+        "TEMP B-TREE" in step and "ORDER BY" in step
+        for record in records
+        for step in record["plan"]
+    ), records
+
+
+@pytest.mark.parametrize(
+    ("sort", "filter_kwargs", "expected"),
+    [
+        pytest.param("recent", None, ["empty", "free"], id="recent"),
+        pytest.param("cost", None, ["legacy", "free"], id="cost-control"),
+        pytest.param(
+            "recent", {"statuses": {"completed"}}, ["free", "legacy"], id="status-control"
+        ),
+        pytest.param("recent", {"project": "alpha"}, ["empty", "legacy"], id="project-control"),
+    ],
+)
+async def test_projection_keeps_poisoned_collections_outside_nonzero_offset_page(
+    projection_store, monkeypatch, sort, filter_kwargs, expected
+):
+    with sqlite3.connect(projection_store) as conn:
+        conn.execute(
+            "INSERT INTO progressions (id, created_at, collection) VALUES ('off-page-poison', 0, 'not-json')"
+        )
+        conn.executemany(
+            "INSERT INTO sessions (id, progression_id, created_at, updated_at, status) "
+            "VALUES (?, 'session-pool', 0, ?, 'completed')",
+            [(f"off-page-{i}", -1000 - i) for i in range(128)],
+        )
+        conn.executemany(
+            "INSERT INTO branches (id, created_at, session_id, progression_id) "
+            "VALUES (?, 0, ?, 'off-page-poison')",
+            [(f"off-page-branch-{i}", f"off-page-{i}") for i in range(128)]
+            + [("excluded-mirror-branch", "mirror")],
+        )
+    where = sessions.SessionFilter(**filter_kwargs) if filter_kwargs is not None else None
+    async with _observe_session_projection(monkeypatch, reverse_unordered=True) as records:
+        rows = await sessions.list_sessions(limit=2, offset=1, sort=sort, where=where)
+    assert [row["id"] for row in rows] == expected
+    expected_counts = {"empty": (0, 0), "free": (1, 0), "legacy": (1, 0)}
+    assert [(row["branch_count"], row["message_count"]) for row in rows] == [
+        expected_counts[session_id] for session_id in expected
+    ]
+    assert len(records) == 1 and records[0]["progress_ticks"] > 0, records
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["normal", "reverse-unordered"])
+async def test_recent_projection_keeps_tie_semantics_without_a_new_tiebreak(
+    projection_store, monkeypatch, reverse
+):
+    tied = {f"tie-{name}" for name in "abcd"}
+    with sqlite3.connect(projection_store) as conn:
+        conn.executemany(
+            "INSERT INTO sessions (id, progression_id, created_at, updated_at, status) "
+            "VALUES (?, 'session-pool', 0, 100, 'completed')",
+            [(session_id,) for session_id in sorted(tied)],
+        )
+        conn.executemany(
+            "INSERT INTO branches (id, created_at, session_id, progression_id) "
+            "VALUES (?, 0, ?, 'shared')",
+            [(f"branch-{session_id}", session_id) for session_id in sorted(tied)],
+        )
+    async with _observe_session_projection(monkeypatch, reverse_unordered=reverse) as records:
+        rows = await sessions.list_sessions(limit=2, offset=1)
+    assert len(rows) == 2
+    assert len({row["id"] for row in rows}) == 2
+    assert {row["id"] for row in rows} <= tied
+    assert [row["updated_at"] for row in rows] == [100, 100]
+    assert [(row["branch_count"], row["message_count"]) for row in rows] == [(1, 3), (1, 3)]
+    assert len(records) == 1 and records[0]["progress_ticks"] > 0, records
