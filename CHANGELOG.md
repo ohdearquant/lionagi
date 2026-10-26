@@ -34,6 +34,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- An `api_loop: lndl-calls` leg's guidance asks the model to declare in each calling round every
+  read it already knows it needs, up to the round's 16 calls, and to answer only after reading what
+  the answer depends on (ADR-0132 Amendment 3). An `lndl` leg's guidance is unchanged.
+
 - Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
   shares its existing fence and newline rules.
 

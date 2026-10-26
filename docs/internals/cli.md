@@ -1219,8 +1219,10 @@ before plus a pointer to the opt-in:
   reports the error and exits non-zero. An `lndl-calls` leg runs the same rounds with
   `tools_as_calls=True`: the first round's guidance shows each tool as an LNDL call with its
   descriptions, and no round's request carries the tool schemas, in the request or in a cached
-  system block (ADR-0132 Amendment 2). Any other value, or `api_loop` without `api_tools`, is
-  refused before a run exists.
+  system block (ADR-0132 Amendment 2). Its guidance also asks the model to declare in each calling
+  round every read it already knows it needs, up to 16 calls, and to answer only after reading
+  what the answer depends on (ADR-0132 Amendment 3). Any other value, or `api_loop` without
+  `api_tools`, is refused before a run exists.
 - `max_input_tokens`: the ceiling on each request's estimated input (ADR-0130), a positive whole
   number of tokens, `auto` (the default) or `none`. `auto` is the first price tier's prompt bound
   for an Anthropic model the pricing table prices by prompt length (100,000 for `claude-haiku-5-5`)

@@ -71,10 +71,42 @@ difference, and the rest is fewer requests and shorter output. The measurement c
 `lndl-calls` with `lndl`, never with ReAct, so it does not reopen D4: `lndl-calls` is an opt-in
 setting as `lndl` is, and the default stays `react`.
 
+## Amendment 3 (2026-10-26): an `lndl-calls` leg is asked for every read it already needs
+
+An `lndl-calls` leg's guidance ends with one more sentence: "In each calling round, declare every
+read you already know you need, up to 16 calls, and answer only after reading what the answer
+depends on." The number is the round's call limit (`_API_LNDL_MAX_ACTIONS` in
+`lionagi/cli/agent.py`), from which the sentence is built, so the two cannot drift apart. An `lndl`
+leg's guidance is unchanged, because the sentence was measured on `lndl-calls` only.
+
+The reason is how little an `lndl-calls` leg read before it answered. It was measured on 26
+code-review tasks on `anthropic/claude-haiku-5-5`, on source identical apart from this sentence, in
+two passes over the tasks. Each pass runs each task once per arm, with a task's two runs adjacent in
+time, and the second pass reverses which arm runs first. The first pass covered 23 of the tasks and
+the second all 26, so the figures below are over 49 pairs:
+
+| | without the sentence | with it |
+|---|---|---|
+| tool calls per run | 9.7 | 16.4 |
+| requests per run | 4.04 | 4.29 |
+| recall of the files the reference review cites | 0.175 | 0.254 |
+| verdicts that match the reference | 36 of 49 | 39 of 49 |
+| cost per run | | 36% higher |
+
+Recall rose in 29 pairs, fell in 7 and was equal in 13 (paired difference +0.079, standard error
+0.022). Averaging each task's pairs first, it rose on 19 of the 26 tasks and fell on 3 (+0.075,
+standard error 0.021). Precision, the share of a run's cited files that the reference also cites,
+fell: over the 40 pairs in which both runs cited a file it went from 0.693 to 0.581 (paired
+difference -0.111, standard error 0.038; lower in 26 pairs, higher in 8, equal in 6). Each pass
+shows both changes on its own: recall +0.080 and +0.077, precision -0.129 and -0.095. The sentence
+buys recall at a cost in precision and in money. The verdict counts are close: in the second pass,
+on 12 of the 26 tasks one arm's verdict matched the reference and the other's did not, 7 times the
+arm with the sentence, and one task split that way in both passes.
+
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py:690-694`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionagi/cli/agent.py:886-891`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request, and a reply that fails to parse costs more, since it is sent back to
 the model to be reformatted (`lionagi/operations/communicate/communicate.py:119-128`,
 `lionagi/operations/parse/parse.py:187-218`). A round's tool calls run through `act()`, concurrently
