@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
+# lionhub ships in the same distribution from lionhub/src; resolve this checkout's copy.
 sys.path.insert(0, str(root / "lionhub" / "src"))
 sys.path.insert(0, str(root))
 handlers_name = "lionagi.providers._agentic_handlers"
@@ -50,6 +51,7 @@ import lionagi.providers.openai.chat
 from ..providers._agentic_handlers import RUNTIME_STATE_NAMES
 importlib.import_module("lionagi.providers.anthropic.messages")
 """
+    # One hit per import form in the control: statement, relative from-import, import_module.
     assert len(package_imports(_IMODEL, "providers", control)) == 3
     assert package_imports(_IMODEL, "providers") == []
 
@@ -83,9 +85,9 @@ def test_fresh_imodel_import_reports_provider_handler_loading():
     }
     assert report["files"] == expected
     assert report["specs"] == expected
-    assert isinstance(report["loaded_before"], bool)
+    assert report["providers_at_start"] == []
+    assert report["providers_after_imodel"] == [], report
+    assert report["loaded_before"] is False, report
     assert report["loaded_after"] is True
     assert report["same_object"] is True
     assert report["imodel_same_object"] is True
-    print(json.dumps(report, sort_keys=True))
-    assert report["loaded_before"] is False
