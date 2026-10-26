@@ -32,6 +32,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   key, reaches every lionagi process of that user whatever its working directory; any
   other source still replaces it.
 
+- `AgentSpec.prompt_caching` and `Engine(prompt_caching=True)` turn the endpoint's
+  `prompt_caching` option (ADR-0127) on for the model `create_agent` builds, so every
+  agent an engine's `make_agent` builds on a prefix-caching provider places the prompt
+  cache. A CLI model is built unchanged. The spec field is refused with a caller-supplied
+  `chat_model` (set the option on that model's endpoint instead) and without a model.
+
 ### Changed
 
 - An `api_loop: lndl-calls` leg's guidance asks the model to declare in each calling round every

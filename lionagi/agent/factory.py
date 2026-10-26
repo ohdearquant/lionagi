@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 
 class _AgentSettingError(ConfigurationError):
-    """The agent being built cannot carry ``agent_env`` or ``contain_account_integrations``."""
+    """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``
+    or ``prompt_caching``."""
 
     __slots__ = ()
 
@@ -184,6 +185,17 @@ async def create_agent(
             "factory builds no endpoint, and the model the branch builds by default "
             "is not contained."
         )
+    if spec.prompt_caching and chat_model is not None:
+        raise _AgentSettingError(
+            "spec.prompt_caching cannot be combined with a caller-supplied chat_model: it "
+            "is set on the endpoint this factory builds. Set endpoint.config.prompt_caching "
+            "on the model you built, or let this factory build it."
+        )
+    if spec.prompt_caching and chat_model is None and not spec.model:
+        raise _AgentSettingError(
+            "spec.prompt_caching requires spec.model: with no model this factory builds "
+            "no endpoint, and the model the branch builds by default does not cache."
+        )
 
     branch_kwargs = {}
     # The request field holding an effort this factory derived from the codex user
@@ -261,6 +273,8 @@ async def create_agent(
                 f"built for model {model_name!r}: this endpoint takes no environment for "
                 "a child process (the codex and claude_code CLI endpoints do)."
             )
+        if spec.prompt_caching:
+            chat_model.endpoint.config.prompt_caching = True
         if spec.contain_account_integrations or agent_env:
             from lionagi.providers.openai.codex import CodexCLIEndpoint
 
