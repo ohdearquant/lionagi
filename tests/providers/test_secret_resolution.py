@@ -441,6 +441,92 @@ class TestTheSpawnSeamActuallyUsesIt:
         assert seen == [{"marker": "inherited", "seen": None}]
 
 
+@pytest.fixture
+def routed_account(monkeypatch):
+    """``ANTHROPIC_ACCOUNTS`` configured with one account whose key reference is ``NAME``."""
+    import lionagi.config as config
+
+    account = config.ProviderAccount.from_declaration(
+        {"name": "a", "key_env": NAME, "budget_usd": "1"}
+    )
+    monkeypatch.setattr(
+        config, "settings", config.settings.model_copy(update={"ANTHROPIC_ACCOUNTS": (account,)})
+    )
+
+
+@pytest.mark.asyncio
+class TestARoutedAccountKeyIsNotFilledIntoACliChild:
+    """A routed account's key is read by the account router for the one request
+    it signs. Filling it into every CLI child would hand each child every
+    account's key, so a declared name that is an account's ``key_env`` is not
+    looked up for a child. Each arm declares a second name in the same call and
+    asserts it IS filled, so the lookup is shown working while the account name
+    goes unfilled."""
+
+    async def test_a_configured_account_reference_is_not_filled(self, routed_account):
+        env = await fill_declared_secrets({}, settings=_block(_PRINTS_A_VALUE, names=[NAME, OTHER]))
+        assert NAME not in env
+        assert env[OTHER] == f"resolved::{OTHER}"
+
+    async def test_an_explicit_set_overrides_the_configured_one(self, routed_account):
+        env = await fill_declared_secrets(
+            {},
+            settings=_block(_PRINTS_A_VALUE, names=[NAME, OTHER]),
+            account_key_names=frozenset({OTHER}),
+        )
+        assert env[NAME] == f"resolved::{NAME}"
+        assert OTHER not in env
+
+    async def test_the_skipped_name_is_still_named_for_redaction(self, routed_account):
+        env, names = await fill_declared_secrets_and_names(
+            {}, settings=_block(_PRINTS_A_VALUE, names=[NAME, OTHER])
+        )
+        assert names == (NAME, OTHER)
+        assert NAME not in env
+        assert env[OTHER] == f"resolved::{OTHER}"
+
+    async def test_a_value_the_child_already_has_is_left_alone(self, routed_account):
+        """Only the fill is skipped: an environment that already carries the
+        variable keeps it, as before."""
+        env = await fill_declared_secrets(
+            {NAME: "exported", OTHER: ""}, settings=_block(_PRINTS_A_VALUE, names=[NAME, OTHER])
+        )
+        assert env[NAME] == "exported"
+        assert env[OTHER] == f"resolved::{OTHER}"
+
+    async def test_the_child_process_does_not_receive_it(self, lionagi_home, tmp_path, monkeypatch):
+        """A real CLI child, with an account's reference and OPENROUTER_API_KEY both
+        declared: the account's name is absent from the child, the other is filled.
+        The child reports presence and equality, not values, so redaction of its
+        output cannot decide the outcome."""
+        import lionagi.config as config
+
+        account_name = "ANTHROPIC_API_KEY_TEAM"
+        control_name = "OPENROUTER_API_KEY"
+        monkeypatch.delenv(account_name, raising=False)
+        monkeypatch.delenv(control_name, raising=False)
+        account = config.ProviderAccount.from_declaration(
+            {"name": "a", "key_env": account_name, "budget_usd": "1"}
+        )
+        monkeypatch.setattr(
+            config,
+            "settings",
+            config.settings.model_copy(update={"ANTHROPIC_ACCOUNTS": (account,)}),
+        )
+        monkeypatch.chdir(tmp_path)
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE, names=[account_name, control_name]))
+        cmd = [
+            sys.executable,
+            "-c",
+            "import os, json; print(json.dumps({"
+            f"'account': {account_name!r} in os.environ, "
+            f"'control': os.environ.get({control_name!r}) == 'resolved::' + {control_name!r}"
+            "}))",
+        ]
+        seen = [obj async for obj in ndjson_from_cli(cmd)]
+        assert seen == [{"account": False, "control": True}]
+
+
 class TestOneConfigReadPerSpawn:
     """Filling and redacting must agree about which names are secrets.
 
