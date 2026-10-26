@@ -26,6 +26,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   before a run starts. `AgentSpec.seatbelt` and `CodingToolkit(seatbelt=...)` carry the
   policy for other callers.
 
+- Settings also read a user-wide `.env` under `LIONAGI_HOME` (`~/.lionagi/.env` by
+  default), below the working directory's `.env`, `.env.local` and `.secrets.env` and
+  below the environment. A value set there, such as `LIONAGI_STATE_DB_URL` or a provider
+  key, reaches every lionagi process of that user whatever its working directory; any
+  other source still replaces it.
+
 ### Changed
 
 - `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
@@ -33,10 +39,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
   the subscriber.
 
+- Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
+  shares its existing fence and newline rules.
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
   call sites; patch `lionagi.protocols.action.gate` or `lionagi._settings` instead.
+- `LionTool` lives in `lionagi.protocols.action.lion_tool`; its old import remains an alias.
+- Flow request contracts live in `lionagi.protocols.flow_requests`; existing casts imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
 
 - Packages built on top of the core move to `lionhub`, a second top-level package
   shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.

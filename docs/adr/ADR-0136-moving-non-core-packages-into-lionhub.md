@@ -1,12 +1,13 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
-- **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendment 1)
+- **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2)
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
   `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
   `lionagi.orchestration`; #3753 moves `lionagi.engines`; #3754 moves `lionagi.dispatch` and
-  `lionagi.work`, with ADR-0001 Amendment 2 for D5's class paths. `integrations` is held (D6). The
-  removal release (D4) and waves 2 and 3 (D6) remain.
+  `lionagi.work`, with ADR-0001 Amendment 2 for D5's class paths. `integrations` is held (D6). Wave 2
+  has begun: #3769 moves `lionagi.mcp` to `lionhub.serve.mcp` (Amendment 1 A4 item 1). The rest of
+  wave 2, wave 3 (D6) and the removal release (D4) remain.
 - **Area**: governance
 - **Date**: 2026-10-25
 - **Relations**: follows ADR-0122 D1 (layer order), D7's interim single-distribution rule and
@@ -14,7 +15,99 @@
   compatibility-distribution requirement as stated in D1; is the explicitly versioned compatibility
   decision that ADR-0125 D4 requires before a public import path is removed; amends ADR-0001
   (Amendment 2: the new prefixes of moved packages join the class-path allow-list); updates
-  ADR-0120's citations of the dispatch outbox to its new file
+  ADR-0120's citations of the dispatch outbox to its new file; ADR-0138 records the Studio backend's
+  form (D7, Amendment 2)
+
+## Amendment 2 (2026-10-25): the Studio boundary is set in wave 2 and the application extracted at 2.0
+
+This amendment preserves D1's single-distribution transition and its promise that every existing
+`lionagi.*` import path remains available until 2.0 with its existing dependency requirements.
+It changes the timing of the Studio application extraction in D6, D7, and Amendment 1 A4.
+It withdraws D7's requirement that the backend record define how the container image gets and
+installs its backend and frontend from versioned public sources, with its release and rollback steps;
+how the application and its frontend are distributed after extraction is decided outside these records.
+It also extends the existing `studio` exemption in D2 until that extraction: D2's exempt set is
+`{cli, studio}` until B2 step 6 moves the CLI, `{studio}` from that step through the last 1.x release,
+and empty from 2.0. No core package gains permission to depend on the application or to name `lionhub`.
+
+### B1. Keep application imports available through 1.x
+
+The Studio application remains at its current `lionagi.studio` paths in the `lionagi` wheel through
+1.x. This includes its application routes, Operator, app factory and app export, and module launch
+surface. The daemon, scheduler, and shared execution code still move to `lionhub` during wave 2.
+The application moves to `apps/studio/backend/src/` at 2.0, outside both library wheels and never into
+`lionhub`. D7's target destination is unchanged.
+
+The backend record (ADR-0138) defines and establishes the application attachment, route ownership, lifecycle,
+identity authority, and shared services during wave 2. An explicitly selected application attaches
+to the daemon; a daemon started without it does not import application modules. Keeping application
+files in the wheel for compatibility does not make them a daemon dependency. Existing Studio launch
+commands continue to select the bundled application through 1.x without a new install step.
+
+D3 rows are added only for modules or complete subpackages actually moved into the wheel's hub root.
+No broad `lionagi.studio` row may cover application modules retained on disk. Shared definitions
+extracted from a mixed module retain their old exports where necessary, refer to one implementation,
+and preserve object and state ownership. Retained modules are not represented as completed moves.
+The original application paths remain canonical until extraction, so importing those retained paths
+is not an exception to D4's prohibition on importing a path already moved by the table.
+
+The wave-2 release documents the retained application paths and their removal in 2.0. A checked
+inventory covers those paths independently of D3's moved-module table. Fresh-install tests preserve
+their imports and the app and module launch surfaces throughout 1.x. A release guard requires removal
+of the retained application and its exemption at 2.0, when tests require the old application imports
+to fail. D4's compatibility rows still end at 2.0. The application's 2.0 extraction adds no runtime
+alias and needs no row whose destination was unavailable during 1.x. D5's persisted-name inventory,
+conversion, and release documentation obligations also cover the application paths removed at 2.0.
+
+### B2. Replace Amendment 1 A4's wave-2 order
+
+1. MCP remains moved to `lionhub.serve.mcp` under A4 item 1. Its compatibility and module-execution
+   checks are unchanged.
+2. Accept the CLI record and the Studio backend record before any change depends on their destinations
+   or boundary. The backend record allocates every dependency listed in A4 item 2, states the 1.x
+   bundled installation, and states the behavior any 2.0 application installation must keep.
+3. Break the CLI and Studio cycle and move the populated CLI catalog, its selection and loading entry
+   points, and shared command logic as specified in A4 item 3. A Studio launcher may select the retained
+   application explicitly; daemon-only and local schedule commands must not import it. The application
+   calls shared services rather than private CLI command modules. No core seed names a moved target.
+4. Move the scheduler to `lionhub.orchestration.scheduler` with its compatibility rows and wheel-owned
+   helpers, after or together with their extraction. Record both import directions and every retained
+   Studio module, as specified in A4 item 4.
+5. Move the daemon and its API to `lionhub.serve`. Establish the backend record's attachment, route split,
+   identity authority, lifecycle, and shared-service boundaries while the application remains in the
+   wheel. The unused HTTP module list and loading path leave `lionagi._auto` by deletion in this step.
+   The CLI catalog has already left in step 3. Test local schedule validation and export on a fresh
+   installed wheel outside the checkout, with the application disabled and its imports refused by the
+   test. This is the 1.x proof of backend independence; application files remain installed under D1.
+6. Move the CLI to `lionhub.serve.cli` in the form its record chooses and change the `li` entry-point target.
+   Preserve the fresh-subprocess checks of old and new module invocation from A4 item 6. Studio commands
+   select the retained application through the explicit attachment; local commands use wheel services.
+
+Steps 3 through 5 may contain preparatory service extraction and explicitly specified behavior fixes
+before package moves. The moves themselves retain D6's restriction to relocation and import rewrites.
+In particular, a lifecycle cleanup correction or client authentication correction is not hidden in a
+move. Every intermediate state keeps D2 and D4. D2's exempt set is `{cli, studio}` before step 6 and
+`{studio}` after it, rather than the empty set the original D6 order reached at the end of wave 2. The
+retained application is not core code, even though its compatibility path is under `lionagi`.
+The test continues to require exact agreement with the packages that actually name `lionhub`; it does
+not gain a blanket exemption for retained compatibility files elsewhere.
+
+### B3. Complete extraction at 2.0
+
+At 2.0, move the retained application to `apps/studio/backend/src/`, update its imports and activation
+source, and remove its old import paths and the `studio` exemption. The route, identity, state, and
+lifecycle contracts are already established by wave 2 and do not change because files move. The CLI
+record and D1's distribution release record determine console-script and package ownership. The backend
+record states the installation behavior the extracted application must keep; how the application and
+its frontend are distributed after extraction is outside this record and the backend record. A fresh
+core-and-hub installation with the application physically absent must pass the local schedule
+validation and export test required by A4 item 5.
+
+The remaining `lionagi` package contains no application code and names no `lionhub` module after the
+compatibility removals. D7's statement that an extracted backend needs its own install or build step
+applies from this extraction. During 1.x the application still comes from the `lionagi` wheel; the
+`studio` extra continues to add dependencies. No second application distribution is introduced before
+2.0, and this amendment does not change the other residency and seam decisions in Amendment 1.
 
 ## Amendment 1 (2026-10-25): where the hook bus and the plugin runtime live, the casts and LNDL seams, and the order of waves 2 and 3
 

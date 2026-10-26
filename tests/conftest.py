@@ -77,6 +77,15 @@ _TEST_USER_HOME = os.path.realpath(tempfile.mkdtemp(prefix="lionagi-tests-home-"
 os.environ["HOME"] = _TEST_USER_HOME
 atexit.register(_remove_test_home, _TEST_USER_HOME)
 
+if "lionagi.config" in sys.modules:
+    # Settings are read once, when lionagi.config is first imported, so a store URL the caller
+    # exported is already bound and removing it above changed nothing. lionagi.config imports
+    # lionagi._paths, so this check goes first to name the settings that were read.
+    raise RuntimeError(
+        "lionagi.config was imported before tests/conftest.py could remove "
+        "LIONAGI_STATE_DB_URL; this session's settings may name the caller's store."
+    )
+
 if "lionagi._paths" in sys.modules:
     # The constants are already bound to the old value, so the redirect above
     # did nothing and every run-directory write in this session lands in the
@@ -84,14 +93,6 @@ if "lionagi._paths" in sys.modules:
     raise RuntimeError(
         "lionagi._paths was imported before tests/conftest.py could redirect "
         "LIONAGI_HOME; the run directory used by this session is not isolated."
-    )
-
-if "lionagi.config" in sys.modules:
-    # Settings are read once, when lionagi.config is first imported, so a store URL the caller
-    # exported is already bound and removing it above changed nothing.
-    raise RuntimeError(
-        "lionagi.config was imported before tests/conftest.py could remove "
-        "LIONAGI_STATE_DB_URL; this session's settings may name the caller's store."
     )
 
 import inspect

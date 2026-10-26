@@ -14,6 +14,7 @@ from lionagi.models.field_model import FieldModel
 from lionagi.operations.fields import Instruct
 from lionagi.operations.manager import OperationManager
 from lionagi.protocols._concepts import Relational
+from lionagi.protocols.action.lion_tool import LionTool
 from lionagi.protocols.action.manager import ActionManager
 from lionagi.protocols.action.tool import FuncTool, Tool, ToolRef
 from lionagi.protocols.generic import (
@@ -39,7 +40,6 @@ from lionagi.protocols.messages import (
 )
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.manager import iModel, iModelManager
-from lionagi.tools.base import LionTool
 
 from .prompts import LION_SYSTEM_MESSAGE
 

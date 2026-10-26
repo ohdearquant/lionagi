@@ -49,6 +49,33 @@ async def _act(
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
 
+    if _request["function"] is None or (
+        isinstance(_request["function"], str) and not _request["function"].strip()
+    ):
+        # A model can send a call whose function is null or blank. Nothing can be invoked, and
+        # a request message needs a name, so the call is recorded under an empty name with an
+        # error result: the next round reads what was wrong instead of the run failing.
+        _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
+        error = "the call names no function; call a tool from tool_schemas by its name"
+        branch._log_manager.log(
+            {"error": error, "function": None, "arguments": _args, "branch": str(branch.id)}
+        )
+        unnamed = ActionRequest(
+            content={"function": "", "arguments": _args},
+            sender=branch.id,
+            recipient=branch.id,
+        )
+        await branch.msgs.a_add_message(action_request=unnamed)
+        await branch.msgs.a_add_message(
+            action_request=unnamed,
+            action_output={"error": error, "function": None, "arguments": _args},
+            sender=branch.id,
+            recipient=branch.id,
+        )
+        if not suppress_errors:
+            raise ValueError(error)
+        return ActionResponseModel(function="", arguments=_args, output={"error": error})
+
     # ADR-0047: governance gate — denied calls surface as tool results (not exceptions) so ReAct loops can adapt.
     from lionagi.session.control import ToolInvocation
 

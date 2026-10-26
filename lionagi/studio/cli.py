@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi._log_channels import log_error, warn
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
-from lionagi.cli._logging import log_error, warn
 from lionagi.ln import now_utc
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host

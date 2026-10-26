@@ -11,6 +11,8 @@ from typing import Annotated, Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from lionagi._paths import LIONAGI_HOME
+
 _ACCOUNT_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 # The secret lookup's variable-name rule, bounded.
 _ACCOUNT_REFERENCE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -166,7 +168,9 @@ class CacheConfig(BaseModel):
 
 class AppSettings(BaseSettings, frozen=True):
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.local", ".secrets.env"),
+        # A later file overrides an earlier one and the environment overrides every file, so the
+        # user-wide file under LIONAGI_HOME supplies defaults the working directory can replace.
+        env_file=(LIONAGI_HOME / ".env", ".env", ".env.local", ".secrets.env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
