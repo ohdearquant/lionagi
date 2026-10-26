@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-14 and 2026-10-26 (see Amendments 1 to 3)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -48,6 +48,53 @@ block, a citation title or a signature, is therefore matched in each string on i
 unmasked. Unlike a stream it does not mask a beginning of the key shorter than eight characters,
 since it can read the whole text first. A routed call that asks for another response mode is
 refused with `unsupported_pricing` before it is sent.
+
+## Amendment 2 (2026-10-26) — a routed key is not filled into CLI children
+
+D2's third source is the declared secret lookup, so a machine that keeps account keys in a store
+declares each account's `key_env` in `secrets.lookup.names`. The same declaration also drives the
+fill that runs on every CLI spawn (`fill_declared_secrets`, `lionagi/providers/_secret_resolution.py`),
+which looks up each declared name missing from the child's environment and adds it. Without a rule,
+every CLI spawn would run one lookup per routed account, and every CLI child's environment would
+hold every account's key, readable by anything the child runs and outliving the request any one key
+was meant for. The output redactor masks those values in what lionagi captures; it cannot stop a
+child from reading its own environment. A CLI that reads a name such as `ANTHROPIC_API_KEY` would
+also authenticate with an account key instead of its own credential.
+
+Decision: the CLI fill does not look up a name that is the `key_env` of a configured account. The
+key is read only by D2's resolution, for the attempt it signs. The name stays among the declared
+names the spawn path redacts, and a value a child already inherits under it is left as it was:
+the rule withholds the fill, it does not scrub the environment the caller hands the child.
+
+## Amendment 3 (2026-10-26) — accounts declared in the user-wide file, and months that follow the credit refresh
+
+**Where accounts are declared.** Amendment 2's rule keys on the configured accounts, so it holds only
+in a process that sees the declaration. D1 named the process environment and the working directory's
+dotenv files. A process started anywhere else, such as an MCP server or a scheduled run whose working
+directory holds none of those files, would see no accounts, and its CLI fill would look up every
+declared name, each account's key included. AppSettings also reads the user-wide file
+`$LIONAGI_HOME/.env` (`~/.lionagi/.env` by default) as its lowest file source (Context P1). Decision:
+`ANTHROPIC_ACCOUNTS` is declared there. Every lionagi process under the same `LIONAGI_HOME` then sees
+the same accounts, and a working-directory file or the environment still replaces the declaration, as
+D1 allows. A process under another `LIONAGI_HOME`, such as the test suite's, sees no declaration and
+takes the legacy path: its CLI fill looks up every declared name, as before this ADR.
+
+**When a month starts.** This ADR takes the provider's monthly credit to refresh at 00:00 UTC on
+the last day of each calendar month, and credit left unspent at the refresh lapses. D5 keyed an
+attempt by the calendar month in UTC, which starts a day later. On each month's last day the ledger therefore
+charged spend to a month whose credit had already lapsed: an account that had spent that month's
+budget was refused for the day although its new credit was available, on the one day spend is
+pushed before a refresh. In the other direction, each calendar month also held the next credit
+period's first day, so within one credit period the ledger could admit up to a day's spend past the
+budget, which only the provider's own refusal (D6) ends.
+
+Decision: a ledger month is a credit period. The period keyed `YYYY-MM` runs from 00:00 UTC on the
+previous calendar month's last day to 00:00 UTC on that month's own last day, so an admission at
+instant `t` takes the key of `t` plus one day in UTC: `2026-10-30T23:59Z` is in `2026-10` and
+`2026-10-31T00:00Z` in `2026-11`. The rule applies to new admissions; a recorded attempt keeps its
+key. At any instant the new key is never earlier than the calendar key, so D5's clock-regression
+check does not refuse a ledger that holds rows keyed both ways. D5's other month rules are
+unchanged, with its midnight read as the start of the credit period.
 
 ## Requirements
 

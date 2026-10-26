@@ -27,11 +27,34 @@ from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
     MCPSecurityConfig,
     _classify_keyword,
+    _closed_during_handshake,
     _property_is_bounded,
     _schema_is_insufficient,
     create_mcp_tool,
     validate_mcp_tool_admission,
 )
+
+
+def _sdk_error(code, message):
+    """An error in the installed MCP SDK's own shape (MCPError on mcp 2, McpError on mcp 1)."""
+    exceptions = pytest.importorskip("mcp.shared.exceptions")
+    if hasattr(exceptions, "MCPError"):
+        return exceptions.MCPError(code=code, message=message)
+    from mcp.types import ErrorData
+
+    return exceptions.McpError(ErrorData(code=code, message=message))
+
+
+def _sdk_connection_closed():
+    return _sdk_error(-32000, "Connection closed")
+
+
+def _base_exception_group():
+    if sys.version_info >= (3, 11):
+        return BaseExceptionGroup  # noqa: F821 (builtin from 3.11)
+    from exceptiongroup import BaseExceptionGroup as backport
+
+    return backport
 
 
 class TestMCPConnectionPoolContextManager:
@@ -313,6 +336,214 @@ class TestMCPConnectionPoolCreateClient:
                 # In debug mode we must NOT force LOG_LEVEL=ERROR
                 assert env.get("LOG_LEVEL") != "ERROR"
 
+    @staticmethod
+    def _recording_client(calls, *, takes_mode, failures=None):
+        # failures: handshake mode -> exception its __aenter__ raises.
+        failures = failures or {}
+
+        class _Client:
+            def __init__(self, mode=None):
+                self._mode = mode
+
+            async def __aenter__(self):
+                if self._mode in failures:
+                    raise failures[self._mode]
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+        if takes_mode:
+
+            def factory(target, mode="auto"):
+                calls.append((target, mode))
+                return _Client(mode)
+
+        else:
+
+            def factory(target):
+                calls.append((target,))
+                return _Client()
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_stdio_opens_with_the_clients_default_handshake(self, caplog):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        transport = MagicMock()
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)),
+            patch("fastmcp.client.transports.StdioTransport", return_value=transport),
+            caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert calls == [(transport, "auto")]
+        assert "'kserver': stdio handshake mode auto" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_stdio_config_can_pin_the_initialize_handshake(self, caplog):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        transport = MagicMock()
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)),
+            patch("fastmcp.client.transports.StdioTransport", return_value=transport),
+            caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            await MCPConnectionPool._create_client(
+                {"command": "kserver", "args": [], "handshake": "legacy"}
+            )
+
+        assert calls == [(transport, "legacy")]
+        assert "'kserver': stdio handshake mode legacy" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_handshake_value_is_refused_before_a_transport_exists(self):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)),
+            patch("fastmcp.client.transports.StdioTransport") as stdio,
+        ):
+            with pytest.raises(ValueError, match="'handshake' must be 'auto' or 'legacy'"):
+                await MCPConnectionPool._create_client(
+                    {"command": "kserver", "args": [], "handshake": "discover"}
+                )
+
+        stdio.assert_not_called()
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_stdio_retries_once_with_initialize_when_the_default_handshake_finds_the_pipe_closed(
+        self, caplog
+    ):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls, events = [], []
+        first, second = MagicMock(), MagicMock()
+        for transport in (first, second):
+            transport.close = AsyncMock(side_effect=lambda t=transport: events.append(("close", t)))
+        pending = [first, second]
+
+        def open_transport(**_kwargs):
+            transport = pending.pop(0)
+            events.append(("open", transport))
+            return transport
+
+        factory = self._recording_client(
+            calls, takes_mode=True, failures={"auto": _sdk_connection_closed()}
+        )
+
+        with (
+            patch("fastmcp.Client", factory),
+            patch("fastmcp.client.transports.StdioTransport", side_effect=open_transport),
+            caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert calls == [(first, "auto"), (second, "legacy")]
+        # The failed attempt's process is closed before the retry starts another one.
+        assert events == [("open", first), ("close", first), ("open", second)]
+        assert "'kserver' closed the connection during the default handshake" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_closed_pipe_on_the_initialize_retry_fails_the_connect(self):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        first, second = MagicMock(), MagicMock()
+        closed = _sdk_connection_closed()
+        factory = self._recording_client(
+            calls, takes_mode=True, failures={"auto": _sdk_connection_closed(), "legacy": closed}
+        )
+
+        with (
+            patch("fastmcp.Client", factory),
+            patch("fastmcp.client.transports.StdioTransport", side_effect=[first, second]),
+        ):
+            with pytest.raises(type(closed)) as raised:
+                await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert raised.value is closed
+        assert calls == [(first, "auto"), (second, "legacy")]
+
+    @pytest.mark.parametrize(
+        ("handshake", "failure"),
+        [
+            # A pinned initialize handshake has nothing to fall back to.
+            ("legacy", _sdk_connection_closed),
+            # Only a closed connection is retried: an error reply, a timeout and a
+            # failure of another kind propagate from the first attempt.
+            ("auto", lambda: _sdk_error(-32601, "method not found")),
+            ("auto", lambda: TimeoutError("did not complete its handshake")),
+            ("auto", lambda: RuntimeError("server exited")),
+        ],
+        ids=["pinned-closed-pipe", "error-reply", "timeout", "other-failure"],
+    )
+    @pytest.mark.asyncio
+    async def test_stdio_handshake_failures_other_than_a_closed_default_are_not_retried(
+        self, handshake, failure
+    ):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        transport = MagicMock()
+        error = failure()
+
+        with (
+            patch(
+                "fastmcp.Client",
+                self._recording_client(calls, takes_mode=True, failures={handshake: error}),
+            ),
+            patch("fastmcp.client.transports.StdioTransport", return_value=transport),
+        ):
+            with pytest.raises(type(error)) as raised:
+                await MCPConnectionPool._create_client(
+                    {"command": "kserver", "args": [], "handshake": handshake}
+                )
+
+        assert raised.value is error
+        assert calls == [(transport, handshake)]
+
+    def test_closed_during_handshake_requires_every_grouped_failure_to_be_a_closed_pipe(self):
+        group = _base_exception_group()
+        closed = _sdk_connection_closed()
+
+        assert _closed_during_handshake(closed)
+        assert _closed_during_handshake(group("enter", [closed, _sdk_connection_closed()]))
+        assert not _closed_during_handshake(group("enter", [closed, RuntimeError("other")]))
+        assert not _closed_during_handshake(_sdk_error(-32601, "method not found"))
+        assert not _closed_during_handshake(asyncio.CancelledError())
+        assert not _closed_during_handshake(TimeoutError())
+
+    @pytest.mark.asyncio
+    async def test_stdio_client_without_mode_gets_the_transport_alone(self, caplog):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+        transport = MagicMock()
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=False)),
+            patch("fastmcp.client.transports.StdioTransport", return_value=transport),
+            caplog.at_level("INFO", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert calls == [(transport,)]
+        assert "handshake mode" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_url_keeps_the_clients_default_handshake(self):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_urls=True)
+        calls = []
+
+        with patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)):
+            await MCPConnectionPool._create_client({"url": "https://api.example.com/mcp"})
+
+        assert calls == [("https://api.example.com/mcp", "auto")]
+
 
 class TestMCPConnectionPoolCleanup:
     @pytest.fixture(autouse=True)
@@ -452,6 +683,58 @@ class TestMCPConnectionPoolHandshakeBounds:
                 connection.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(connection, timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_stdio_server_that_closes_on_a_first_request_other_than_initialize(
+        self, tmp_path, caplog
+    ):
+        """A stdio server that predates server/discover exits when its first request is
+        anything but initialize. The pool still connects to it and lists its tools: a
+        client that opens with discover retries with initialize, an older client sends
+        initialize first."""
+        import inspect
+
+        from fastmcp import Client
+
+        opens_with_discover = "mode" in inspect.signature(Client).parameters
+        script = tmp_path / "initialize_only_server.py"
+        script.write_text(
+            "import json, sys\n"
+            "def send(msg):\n"
+            "    sys.stdout.write(json.dumps(msg) + '\\n')\n"
+            "    sys.stdout.flush()\n"
+            "first = True\n"
+            "for line in sys.stdin:\n"
+            "    msg = json.loads(line)\n"
+            "    method = msg.get('method')\n"
+            "    if first:\n"
+            "        first = False\n"
+            "        if method != 'initialize':\n"
+            "            sys.exit(0)\n"
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {\n"
+            "            'protocolVersion': msg['params']['protocolVersion'],\n"
+            "            'capabilities': {'tools': {}},\n"
+            "            'serverInfo': {'name': 'initialize-only', 'version': '0'}}})\n"
+            "        continue\n"
+            "    if 'id' not in msg:\n"
+            "        continue\n"
+            "    if method == 'tools/list':\n"
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'tools': []}})\n"
+            "    else:\n"
+            "        send({'jsonrpc': '2.0', 'id': msg['id'],\n"
+            "              'error': {'code': -32601, 'message': 'method not found'}})\n"
+        )
+        try:
+            with caplog.at_level("WARNING", logger="lionagi.service.connections.mcp_wrapper"):
+                client = await MCPConnectionPool.get_client(
+                    {"command": sys.executable, "args": [str(script)], "timeout": 10},
+                    security=MCPSecurityConfig(allow_commands=True),
+                )
+            assert await client.list_tools() == []
+            retried = "closed the connection during the default handshake" in caplog.text
+            assert retried == opens_with_discover
+        finally:
+            await MCPConnectionPool.cleanup()
 
     @pytest.mark.asyncio
     async def test_unresponsive_close_is_bounded(self, monkeypatch):
