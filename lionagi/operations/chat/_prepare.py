@@ -402,6 +402,10 @@ def _prepare_run_kwargs(
                 )
         else:
             rendered = entry.materialize().rendered
+        # Whitespace-only text carries nothing, and some providers refuse the whole request
+        # over it (a model reply of only newlines, cut at max_tokens, is one source).
+        if isinstance(rendered, str) and not rendered.strip():
+            rendered = ""
         if i == _last_index:
             _current_turn_rendered = rendered
         if not rendered:
