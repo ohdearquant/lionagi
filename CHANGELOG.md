@@ -29,8 +29,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
-  default. Broadcaster uses the coroutine-only classifier so returned Futures and
-  Tasks remain subscriber-owned.
+  default. Broadcaster passes the coroutine-only classifier, so its dispatch is
+  unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
+  the subscriber.
 
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.

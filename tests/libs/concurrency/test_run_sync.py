@@ -347,8 +347,6 @@ class _TruthinessTrap:
 )
 async def test_run_sync_rejects_non_bool_abandon_before_worker_starts(setting):
     entered = threading.Event()
-    try:
-        with pytest.raises(TypeError, match=r"abandon_on_cancel.*bool"):
-            await run_sync(entered.set, abandon_on_cancel=setting)
-    finally:
-        assert not entered.is_set()
+    with pytest.raises(TypeError, match=r"abandon_on_cancel.*bool"):
+        await run_sync(entered.set, abandon_on_cancel=setting)
+    assert not entered.is_set()

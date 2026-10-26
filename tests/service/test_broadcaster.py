@@ -475,8 +475,10 @@ class TestBroadcasterCoroutineOnlyRegression:
                 await self.TaskBroadcaster.broadcast(SampleEvent())
             assert later_calls == ["later"]
             assert not [r for r in caplog.records if r.name == "lionagi.service.broadcaster"]
-        finally:
             assert returned.exception() is error
+        finally:
+            # Retrieve the exception so the loop does not report it as never retrieved.
+            returned.exception()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["future", "task"])
