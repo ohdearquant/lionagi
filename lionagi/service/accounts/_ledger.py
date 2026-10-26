@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from pathlib import Path
 from typing import TypeVar
@@ -118,7 +118,10 @@ def _month_and_iso(clock: Callable[[], datetime]) -> tuple[str, str]:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("clock must return an aware datetime")
     value = value.astimezone(timezone.utc)
-    return value.strftime("%Y-%m"), value.isoformat()
+    # A month is a credit period, which starts when the provider refreshes the credit at 00:00 UTC
+    # on a calendar month's last day (ADR-0126 Amendment 3): the one keyed 2026-11 runs from
+    # 2026-10-31T00:00Z to 2026-11-30T00:00Z.
+    return (value + timedelta(days=1)).strftime("%Y-%m"), value.isoformat()
 
 
 def _validate_quote(quote: Quote) -> None:
