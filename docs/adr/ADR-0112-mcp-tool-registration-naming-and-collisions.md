@@ -141,8 +141,9 @@ what was measured and not a proof that there is no fourth:
   otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` is `False` for
   a dict even when that name is registered, the `update=False` guard passes, and `:106`
   overwrites. The displacement is the same as the `update=True` case and it needs no
-  flag. ADR-0011 lines 330-332 record this behavior; it is re-verified at this head.
-  This item's line numbers are at `0b6cabda`.
+  flag. ADR-0011 lines 330-332 record this behavior, and it held when this ADR was
+  written: this item's line numbers are at `0b6cabda`. A later change added the `dict`
+  arm that delta #8 asks for, so `register_tool` now raises for this shape.
 
 The second and third are the shadowing shape. Both are reachable without any private API:
 `update=True` is documented on two public functions, and the dict form is reachable
