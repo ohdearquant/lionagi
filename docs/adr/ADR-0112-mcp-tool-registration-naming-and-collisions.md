@@ -137,11 +137,12 @@ what was measured and not a proof that there is no fourth:
   entry, so a **later-declared** server silently displaces an already-registered tool of
   the same name. Calls a caller believes are going to the first server go to the last one.
 - **With a one-entry MCP dict, regardless of the flag.** `ActionManager.__contains__`
-  (`manager.py:102-113`) has arms for `Tool`, `str` and callable and returns `False`
-  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:116` is `False` for
-  a dict even when that name is registered, the `update=False` guard passes, and `:145`
+  (`manager.py:67-74`) has arms for `Tool`, `str` and callable and returns `False`
+  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` is `False` for
+  a dict even when that name is registered, the `update=False` guard passes, and `:106`
   overwrites. The displacement is the same as the `update=True` case and it needs no
   flag. ADR-0011 lines 330-332 record this behavior; it is re-verified at this head.
+  This item's line numbers are at `0b6cabda`.
 
 The second and third are the shadowing shape. Both are reachable without any private API:
 `update=True` is documented on two public functions, and the dict form is reachable

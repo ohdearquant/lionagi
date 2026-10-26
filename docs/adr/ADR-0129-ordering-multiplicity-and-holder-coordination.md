@@ -225,7 +225,7 @@ holder's, exercised where the holder lives.
 | View | Where the code is | Class |
 |------|-------------------|-------|
 | A collection's default order (`Pile.progression`) | `pile.py:200-203`; uniqueness enforced today at `:141-150`, `:315-319`, `:838-847`, `:719-759` | unique |
-| `Flow` views appended by `add_item` | `flow.py:234-257`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
+| `Flow` views appended by `add_item` | `flow.py:210-233`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
 | `Executor.pending` | `processor.py:197`, `:238` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
 | `Executor.pile` | `processor.py:199-202` | unique |
 | `MessageManager.messages` | `manager.py:79-84` | unique |
@@ -284,7 +284,7 @@ A universal set-like order would simplify membership and align standalone sequen
 collections. It would remove the ability to represent repeated sequence visits and would change
 `append`, `extend`, `insert`, and already serialized data. It lost because the repeated order is
 meaning-bearing where it is used: `Flow` views take the same UUID again on every `add_item`
-(`flow.py:254-257`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
+(`flow.py:230-233`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
 
 ### Keep the two locks and publish their contract
 
