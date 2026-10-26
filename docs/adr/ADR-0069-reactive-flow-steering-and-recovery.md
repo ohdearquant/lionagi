@@ -840,6 +840,112 @@ The format reduces bytes for the measured workload and bounds journal replay bet
 
 When integrating this amendment, mark the earlier D4 as the v2 description and update its summary row and related statements consistently. In `docs/adr/ADR-0069-reactive-flow-steering-and-recovery.md`, the full-snapshot decision at line 47, absence-of-fsync statement at line 59, D4 at line 289, single-file argument at line 651, consequences at line 663, version-dispatch delta at line 688, and rejected journal alternative at line 723 must point to this amendment for v3. The version-dispatch delta remains open until implemented; the new proposal must not mark it complete. The journal alternative becomes the selected v3 design, while Amendment 1's independent output/artifact settlement questions remain unchanged.
 
+## Amendment 3 (2026-10-26) — resumable graceful flow deadlines
+
+**Status:** Proposed.
+
+This amendment addresses #2833 by making explicit flow and playbook deadlines graceful and distinct from task failure, preserving completed work for checkpoint resume, and retaining the already shipped unset `--timeout` default provided by `add_common_cli_args`.
+
+**Relation to the existing decisions.** D4 describes version-2 full snapshots; D5 specifies
+faithful graph reconstruction, explicit failed-operation retry and inherited-context refusal.
+Amendment 1's independent output/artifact settlement requirements remain unchanged.
+Amendment 2, *Journaled flow checkpoints*, is Proposed and specifies version 3; its presence
+does not establish that journal storage has shipped. This amendment changes logical checkpoint
+state and execution admission. The state fields below belong in v2 snapshots and in v3 bases
+and journal entries when Amendment 2 is implemented; they do not introduce another storage
+version or implement the journal.
+
+### Decision
+
+1. **Admission, drain and required phases.** An explicit flow or playbook deadline closes
+   admission to every new assignment, including planner retries, reactive/team/escalation
+   followups and requested synthesis. Assignments already invoked finish; then checkpoint
+   persistence settles and the run exits. Capacity waiters recheck admission after acquiring
+   capacity. No later phase may reopen expired admission or rerun still-pending worker nodes.
+   Requested synthesis counts as required work: if withheld, the run is interrupted even when
+   every worker finished. Resume recomputes withheld synthesis from checkpointed worker results;
+   it does not record a false completed synthesis result. With no required work withheld, a
+   naturally finished run remains completed. Interruption keeps `timed_out`,
+   `run.timed_out.deadline`, `LionTimeoutError` and exit 124. Task failure, external cancellation
+   and checkpoint-write failure retain their own outcomes. Report a resumable checkpoint only
+   after the final persistence boundary succeeds.
+
+2. **Deferred spawned intent.** A spawned entry may additionally have `status="pending"` and
+   `response=null`, meaning recorded but never invoked. A withheld planned assignment remains
+   absent from `ops`. Retain late followup intent rather than dropping it. Pending entries run
+   without `--retry-failed`; failed entries run only with that explicit flag. Execution-sensitive
+   routing, workload and settings-containment checks apply to every entry that will run:
+   pending entries unconditionally, failed entries when retried. A pending entry must not fall
+   back to an orchestrator branch with greater authority. Retain the recorded provenance through
+   further deferral and whole-entry replacement. Refuse missing or incompatible provenance,
+   response-bearing pending entries and unfaithful reconstruction before admitting graph work.
+
+3. **Planned identity and promotion.** Optional `plan[].node_id` associates a plan entry with
+   its operation UUID. Strip this metadata before constructing `TaskAssignment`; remap recorded
+   planned references to the rebuilt graph and refresh the association on every later checkpoint.
+   Do not infer a missing association from a display name. Explicit-deadline checkpoints record
+   these witnesses from their initial snapshot. In **any** run, including fresh untimed runs and
+   legacy resumes, promote the plan before the first snapshot or journal state carrying a splice
+   witness. Promotion and refreshed references must be coherent at the publication boundary;
+   no intermediate unguarded splice state may be published. An ordinary untimed run without
+   splice/deferred recovery requirements may retain the legacy v2 shape.
+
+4. **Every retry state preserves the splice.** Optional `spawned[].escalated_from` identifies
+   the logical emitting operation; `parent_id` identifies its placement anchor. Preserve these
+   remapped fields for **pending, completed and failed** retries, including pending→failed→retry
+   across multiple resumes. Replacing a whole spawned entry must never erase them. Ordinary
+   spawned nodes do not receive a splice witness. Reconstruct successor edges, conditions and
+   labels with `Graph.splice_after`, and restore the executor's replacement chain **before any
+   operation is admitted**. Further escalation must choose the same final anchor as uninterrupted
+   execution. Runtime metadata read by later checkpoint callbacks must retain the remapped
+   emitting/anchor references. Ordinary spawned-parent terminal checks remain; a recorded retry
+   may have a pending earlier retry as its placement anchor, but its logical emitter must have a
+   sound checkpointed emission and the entire replacement chain must be reconstructible.
+
+5. **V2 refusal guards.** The old v2 spawned reader refuses pending. Its plan loader strips only
+   `agent_id` and `dep_indices`; `TaskAssignment` inherits `extra="forbid"` from
+   `lionagi/protocols/flow_requests.py:23–26`, so `plan[].node_id` also causes refusal. Preserve
+   this extra-field policy as a v2 compatibility guard: the guarded reader strips
+   `plan[].node_id` before construction (item 3), and no reader relaxes the model policy for
+   checkpoint-loaded assignments, which would be a contract change. Never emit a splice witness
+   in v2 without a planned UUID
+   witness or pending spawned entry in the same snapshot. Promote planned UUIDs before the first
+   splice publication in any run, and before the final pending entry can stop being pending.
+   Writer refusal is for invalid input/state, not a substitute for promoting valid untimed work.
+   A guarded-v2 reader refuses an unguarded splice rather than interpreting it as an ordinary edge.
+
+6. **V3 interoperability follows Amendment 2.** A reader supporting only guarded v2 must reject
+   v3 before graph construction; it must not parse its base as a complete checkpoint. A
+   v3-capable reader uses Amendment 2's coherent base-plus-journal loader, preserving these fields
+   through complete-entry upserts, compaction and v2→v3→second-resume migration. Its `spawned`
+   entry validation admits deferred pending state in addition to completed/failed outcomes;
+   pending is recorded intent, not a terminal outcome. Planned UUID promotion belongs in the
+   complete base state and must be published coherently before a journal transition needing it;
+   no new journal record kind is introduced here. The explicit version dispatch, supported-reader
+   rollout, acknowledgement, identity and recovery-report requirements remain Amendment 2's.
+
+The shipped old v2 `json.loads` loader does not enforce `version`. Therefore a numeric v3 stamp
+does not protect that old binary, and a pending record found only in a journal cannot guard a
+base-only read. V2 refusal guards do **not** make old v2 readers compatible with v3. All common
+readers must be updated before enabling v3 output as Amendment 2 requires; an incidental extra
+field rejection is not a supported v3 reader. Until that implementation exists, guarded-v2
+readers fail closed on v3 rather than inventing journal replay.
+
+### Verification requirements
+
+Use event-gated A/B/C admission and actual CLI/Session/Invocation results. Cover late spawn/team
+intent; failed retry R still gating B under `--retry-failed`; pending→failed→retry across
+generations; multiple restored retries followed by another escalation with the same final anchor
+as uninterrupted execution; and callback metadata retained through a second resume. Verify
+restricted pending routing/workload/settings without a retry flag and across two deferrals.
+Inspect every intermediate checkpoint from fresh untimed and legacy-resumed retry execution,
+not just the final file. None may contain an unguarded or lost splice witness. Exercise synthesis
+after all workers finish and with workers still pending; neither may reopen expired admission.
+Test old-v2 refusal, guarded-v2 rejection of v3, and, when available, journal-aware v3 roundtrips
+preserving pending/completed/failed retry metadata through replacement and compaction. Retain
+whole-resume refusal and failure reporting; neither storage format settles Amendment 1's separate
+artifact/output questions by recorded status alone.
+
 ## Consequences
 
 - A separate CLI process can steer a live flow through the database without an in-process handle
