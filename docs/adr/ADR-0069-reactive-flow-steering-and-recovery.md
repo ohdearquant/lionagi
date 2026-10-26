@@ -905,8 +905,10 @@ version or implement the journal.
 5. **V2 refusal guards.** The old v2 spawned reader refuses pending. Its plan loader strips only
    `agent_id` and `dep_indices`; `TaskAssignment` inherits `extra="forbid"` from
    `lionagi/protocols/flow_requests.py:23–26`, so `plan[].node_id` also causes refusal. Preserve
-   this extra-field policy as a v2 compatibility guard; relaxing it for checkpoint-loaded
-   assignments is a contract change. Never emit a splice witness in v2 without a planned UUID
+   this extra-field policy as a v2 compatibility guard: the guarded reader strips
+   `plan[].node_id` before construction (item 3), and no reader relaxes the model policy for
+   checkpoint-loaded assignments, which would be a contract change. Never emit a splice witness
+   in v2 without a planned UUID
    witness or pending spawned entry in the same snapshot. Promote planned UUIDs before the first
    splice publication in any run, and before the final pending entry can stop being pending.
    Writer refusal is for invalid input/state, not a substitute for promoting valid untimed work.
