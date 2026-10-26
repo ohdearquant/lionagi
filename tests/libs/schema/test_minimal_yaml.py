@@ -196,14 +196,39 @@ class TestMultilineStrings:
             "Windows line\r\nendings\r\n",
             "bom \ufeff\tinside\nnext\n",
             "next line\x85here\nend\n",
+            "a\x9fb\nc\n",
         ],
-        ids=["escape-code", "lone-cr", "crlf", "byte-order-mark", "next-line"],
+        ids=["escape-code", "lone-cr", "crlf", "byte-order-mark", "next-line", "c1-control"],
     )
     def test_multiline_unsafe_character_stays_quoted(self, text):
         result = minimal_yaml({"text": text})
 
         assert result.startswith('text: "')
         assert yaml.safe_load(result) == {"text": text}
+
+    @pytest.mark.parametrize(
+        "text",
+        ["line\u2028sep\tx\nnext\n", "para\u2029graph \nnext\n"],
+        ids=["line-separator", "paragraph-separator"],
+    )
+    def test_multiline_unicode_line_separator_keeps_block_scalar(self, text):
+        result = minimal_yaml({"text": text})
+
+        assert result.startswith("text: |")
+        assert yaml.safe_load(result) == {"text": text}
+
+    def test_nested_multiline_value_keeps_block_scalar(self):
+        data = {"tools": [{"name": "run", "body": "def f():\n\treturn 1\n"}]}
+        result = minimal_yaml(data)
+
+        assert "  body: |\n    def f():\n    \treturn 1\n" in result
+        assert yaml.safe_load(result) == data
+
+    def test_multiline_key_round_trips(self):
+        data = {"a\tb\nc": "v"}
+        result = minimal_yaml(data)
+
+        assert yaml.safe_load(result) == data
 
     def test_multiline_non_ascii_stays_quoted_without_allow_unicode(self):
         text = "caf\u00e9\tx\ny\n"
