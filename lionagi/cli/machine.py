@@ -16,11 +16,11 @@ import os
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
-from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln import import_module
 
 __all__ = (
     "CONTRACT_VERSION",
@@ -819,7 +819,7 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
 
     module_name = _MACHINE_MODULES.get(name)
     if module_name is not None:
-        return import_module(module_name, __package__).machine_result(rest)
+        return import_module(module_name, package=__package__).machine_result(rest)
 
     from lionagi._auto import command_exists
 

@@ -194,7 +194,7 @@ _ALLOWLIST: dict[str, str] = {
     # literal. Each is a dynamic attribute name on an already-mutable object or an
     # object's own field slot, none of them a class's ``__hash__`` or a class
     # authority:
-    "lionagi._auto:316:9": "a marker written onto a handler function, not a model",
+    "lionagi._auto:315:9": "a marker written onto a handler function, not a model",
     "lionagi.ln.types.base:224:13": "a declared field set from its layout during init",
     "lionagi.ln.types.base:367:13": "a declared field copied by name during update",
     "lionagi.models.operable_model:132:13": "an extra field set by name",

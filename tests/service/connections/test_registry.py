@@ -342,3 +342,139 @@ class TestOptionalDependencyPreflight:
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert warning_records, "a forged/buggy ImportError must be a loud load failure"
         assert not debug_records, "no metadata-based quiet classification should ever occur"
+
+
+@pytest.fixture
+def provider_import_package(tmp_path, monkeypatch):
+    name = "_provider_registry_import_case"
+    root = tmp_path / name
+    root.mkdir()
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield name, root
+    for module_name in tuple(sys.modules):
+        if module_name == name or module_name.startswith(name + "."):
+            sys.modules.pop(module_name, None)
+
+
+def test_provider_loading_registers_a_real_endpoint_through_the_shared_importer(
+    provider_import_package, monkeypatch
+):
+    from lionagi.ln import import_module
+
+    name, root = provider_import_package
+    target = name + ".endpoint"
+    (root / "endpoint.py").write_text(
+        "from lionagi.service.connections.endpoint import Endpoint\n"
+        "from lionagi.service.connections.registry import EndpointRegistry\n"
+        "@EndpointRegistry.register(provider='import-contract-provider', endpoint='chat')\n"
+        "class ExampleEndpoint(Endpoint):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(_registry_mod._PROVIDER_OPTIONAL_DEPENDENCIES, target, ("sys",))
+    bound_importer = getattr(_registry_mod, "import_module", None)
+    calls = []
+
+    def observed_import(module_name, *args, **kwargs):
+        calls.append((module_name, args, kwargs))
+        return import_module(module_name, *args, **kwargs)
+
+    monkeypatch.setattr(_registry_mod, "import_module", observed_import, raising=False)
+    _registry_mod._import_provider_module(target)
+    _registry_mod._import_provider_module(target)
+
+    endpoint = sys.modules[target].ExampleEndpoint
+    entries = [entry for entry in EndpointRegistry._entries if entry.cls is endpoint]
+    assert len(entries) == 1
+    assert entries[0].meta.provider == "import-contract-provider"
+    assert bound_importer is import_module
+    assert [call[0] for call in calls] == [target, target]
+    assert all(not args and kwargs.get("import_name") is None for _, args, kwargs in calls)
+
+
+def test_provider_dependency_preflight_prevents_module_execution_and_import_delegation(
+    provider_import_package, monkeypatch, caplog
+):
+    from lionagi.ln import import_module
+
+    name, root = provider_import_package
+    target = name + ".blocked"
+    marker = root / "executed"
+    (root / "blocked.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+        "raise RuntimeError('provider body must not run')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(
+        _registry_mod._PROVIDER_OPTIONAL_DEPENDENCIES,
+        target,
+        ("_absent_provider_dependency_for_import_contract",),
+    )
+    calls = []
+
+    def observed_import(module_name, *args, **kwargs):
+        calls.append(module_name)
+        return import_module(module_name, *args, **kwargs)
+
+    monkeypatch.setattr(_registry_mod, "import_module", observed_import, raising=False)
+    with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+        _registry_mod._import_provider_module(target)
+
+    assert not marker.exists()
+    assert target not in sys.modules
+    assert calls == []
+    records = [record for record in caplog.records if record.name == _registry_mod.logger.name]
+    assert any(
+        record.levelno == logging.DEBUG and "not installed" in record.getMessage()
+        for record in records
+    )
+    assert not any(record.levelno >= logging.WARNING for record in records)
+
+
+@pytest.mark.parametrize("error_kind", ["ordinary", "subclass", "missing"])
+def test_provider_import_failures_warn_without_reclassifying_exception_metadata(
+    provider_import_package, monkeypatch, caplog, error_kind
+):
+    import types
+
+    name, root = provider_import_package
+
+    class ProviderImportError(ImportError):
+        pass
+
+    error_type = {
+        "ordinary": ImportError,
+        "subclass": ProviderImportError,
+        "missing": ModuleNotFoundError,
+    }[error_kind]
+    original = error_type("provider body failed", name="forged_optional_dependency", path="body.py")
+    state = types.ModuleType(name + ".state")
+    state.error = original
+    monkeypatch.setitem(sys.modules, state.__name__, state)
+    target = name + ".broken"
+    (root / "broken.py").write_text("from .state import error\nraise error\n", encoding="utf-8")
+    monkeypatch.setitem(_registry_mod._PROVIDER_OPTIONAL_DEPENDENCIES, target, ("sys",))
+
+    with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+        assert _registry_mod._import_provider_module(target) is None
+
+    assert target not in sys.modules
+    records = [record for record in caplog.records if record.name == _registry_mod.logger.name]
+    warnings = [record for record in records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert not any(record.levelno == logging.DEBUG for record in records)
+    assert "failed to import and was not registered" in warnings[0].getMessage()
+    reported = warnings[0].args[1]
+    if error_kind == "missing":
+        assert reported is original
+        assert reported.name == "forged_optional_dependency"
+        assert reported.path == "body.py"
+        assert reported.msg == "provider body failed"
+    else:
+        assert type(reported) is ImportError
+        assert str(reported) == f"Failed to import module {target}: {original}"
+        assert reported.msg == str(reported)
+        assert reported.name is None
+        assert reported.path is None
+        assert reported.__cause__ is original

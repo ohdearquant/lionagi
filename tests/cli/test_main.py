@@ -506,3 +506,108 @@ def test_a_command_loader_failing_for_another_reason_is_an_ordinary_failure(caps
     err = capsys.readouterr().err
     assert "failed to load" in err
     assert "Traceback" not in err
+
+
+@pytest.fixture(
+    params=[
+        ("_load_orchestrate", "orchestrate", "lionagi.cli", ".orchestrate"),
+        ("_load_machine", "machine", "lionagi.cli", ".machine"),
+        ("_load_studio", "cli", "lionagi.studio", "lionagi.studio.cli"),
+        ("run_skill", "skill", "lionagi.cli", ".skill"),
+    ],
+    ids=["orchestrate", "machine", "studio", "skill"],
+)
+def lazy_main_import(request, tmp_path, monkeypatch):
+    """Load actual module files without importing a command's heavy dependencies."""
+    from importlib import import_module
+
+    main_module = import_module("lionagi.cli.main")
+    loader, leaf, package, requested = request.param
+    parent = import_module(package)
+    monkeypatch.setattr(parent, "__path__", [str(tmp_path)])
+    monkeypatch.setattr(parent, leaf, None, raising=False)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("_main_loader_errors", f"{package}.{leaf}"):
+        # Register both the previous presence and absence with monkeypatch.
+        monkeypatch.setitem(sys.modules, name, None)
+        monkeypatch.delitem(sys.modules, name)
+    (tmp_path / "_main_loader_errors.py").write_text(
+        "class TaggedImportError(ImportError): pass\n"
+        "broken = TaggedImportError('command body broke', "
+        "name='forged_optional', path='forged/command.py')\n"
+        "missing = ModuleNotFoundError('missing nested dependency', "
+        "name='nested_optional', path='dependency/path.py')\n"
+    )
+    errors = import_module("_main_loader_errors")
+    return main_module, loader, tmp_path / f"{leaf}.py", requested, package, leaf, errors
+
+
+def test_lazy_main_loader_keeps_module_identity_and_skill_arguments(lazy_main_import):
+    main_module, loader, path, _, package, leaf, _ = lazy_main_import
+    path.write_text(
+        "token = object()\n"
+        "def run_skill(argv):\n"
+        "    global received\n"
+        "    received = argv\n"
+        "    return 73\n"
+    )
+    argv = ["chosen-skill", "--", "literal"]
+    if loader == "run_skill":
+        assert main_module.run_skill(argv) == 73
+        loaded = sys.modules[f"{package}.{leaf}"]
+        assert loaded.received is argv
+    else:
+        loaded = getattr(main_module, loader)()
+        assert loaded is sys.modules[f"{package}.{leaf}"]
+        assert getattr(main_module, loader)() is loaded
+    assert loaded.__file__ == str(path)
+
+
+def test_lazy_main_loader_keeps_plain_import_error_cause(lazy_main_import):
+    main_module, loader, path, requested, _, _, errors = lazy_main_import
+    path.write_text("from _main_loader_errors import broken\nraise broken\n")
+    with pytest.raises(ImportError) as caught:
+        if loader == "run_skill":
+            main_module.run_skill(["chosen-skill"])
+        else:
+            getattr(main_module, loader)()
+    assert type(caught.value) is ImportError
+    assert str(caught.value) == f"Failed to import module {requested}: command body broke"
+    assert caught.value.__cause__ is errors.broken
+    assert caught.value.name is None
+    assert caught.value.path is None
+    assert caught.value.msg == str(caught.value)
+    assert errors.broken.name == "forged_optional"
+    assert errors.broken.path == "forged/command.py"
+
+
+def test_lazy_main_loader_preserves_original_missing_module(lazy_main_import):
+    main_module, loader, path, _, _, _, errors = lazy_main_import
+    path.write_text("from _main_loader_errors import missing\nraise missing\n")
+    with pytest.raises(ModuleNotFoundError) as caught:
+        if loader == "run_skill":
+            main_module.run_skill(["chosen-skill"])
+        else:
+            getattr(main_module, loader)()
+    assert caught.value is errors.missing
+    assert caught.value.name == "nested_optional"
+    assert caught.value.path == "dependency/path.py"
+    assert caught.value.msg == "missing nested dependency"
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "lazy_main_import",
+    [("run_skill", "skill", "lionagi.cli", ".skill")],
+    indirect=True,
+    ids=["skill"],
+)
+def test_skill_handler_import_error_is_outside_the_module_load(lazy_main_import):
+    main_module, _, path, _, _, _, errors = lazy_main_import
+    path.write_text(
+        "from _main_loader_errors import broken\ndef run_skill(argv):\n    raise broken\n"
+    )
+    with pytest.raises(ImportError) as caught:
+        main_module.run_skill(["chosen-skill"])
+    assert caught.value is errors.broken
+    assert caught.value.__cause__ is None

@@ -40,6 +40,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Application and provider module loaders use the shared `ln.import_module`
+  contract, retaining relative package anchors, lazy registration and cache behavior.
+  An ordinary import error from these loaders is now a plain `ImportError` whose message
+  names the module path; the original error, including a custom subclass and its `.name`
+  and `.path`, is kept only as `__cause__`, and the outer `.name` and `.path` are `None`.
+  A missing-module error is re-raised unchanged, with its class and metadata.
+
 - An `api_loop: lndl-calls` leg's guidance asks the model to declare in each calling round every
   read it already knows it needs, up to the round's 16 calls, and to answer only after reading what
   the answer depends on (ADR-0132 Amendment 3). An `lndl` leg's guidance is unchanged.

@@ -422,3 +422,89 @@ def test_auto_module_is_not_exported_from_root():
 
     assert "_auto" not in lionagi.__all__
     assert all(target[0] != "_auto" for target in lionagi._LAZY_MAP.values())
+
+
+@pytest.mark.parametrize("surface", ["http", "cli"])
+def test_auto_loaders_delegate_to_shared_import_and_keep_registration(monkeypatch, surface):
+    from lionagi import ln
+
+    name = f"tests.contracts._shared_import_{surface}"
+    marker = (
+        "http=_auto.HttpDeclaration(path='/shared-import', method='GET')"
+        if surface == "http"
+        else "cli=_auto.CliDeclaration(seed='shared-import', parser_factory=lambda s: None)"
+    )
+    module = _make_module(
+        name,
+        "from lionagi import _auto\n"
+        f"@_auto.auto_register(area='shared-import', {marker})\n"
+        "def handler():\n    return 'handled'\n",
+    )
+    real_import = ln.import_module
+    calls = []
+
+    def shared_import(module_name, *args, **kwargs):
+        calls.append((module_name, args, kwargs))
+        return real_import(module_name, *args, **kwargs)
+
+    monkeypatch.setattr(ln, "import_module", shared_import)
+    with _auto._isolated_registry_for_tests():
+        if surface == "http":
+            monkeypatch.setattr(_auto, "_HTTP_MODULES", (name,))
+            _auto.load_http_modules()
+            _auto.load_http_modules()
+            registrations = _auto.iter_http()
+            assert len(registrations) == 1
+            assert registrations[0].handler is module.handler
+            assert calls == [(name, (), {}), (name, (), {})]
+        else:
+            seed = _auto.CliSeed(name="shared-import", help="h", module=name)
+            monkeypatch.setattr(_auto, "_cli_seeds", (seed,))
+            first = _auto.load_cli_command(seed)
+            assert first.handler is module.handler
+            assert _auto.load_cli_command(seed) is first
+            assert calls == [(name, (), {})]
+
+
+@pytest.mark.parametrize("surface", ["http", "cli"])
+@pytest.mark.parametrize("missing", [False, True], ids=["plain-error", "missing-module"])
+def test_auto_import_failure_preserves_the_shared_error_boundary(
+    monkeypatch, tmp_path, surface, missing
+):
+    name = f"auto_import_failure_{surface}"
+    carrier_name = "_auto_import_failure_values"
+    if missing:
+        failure = ModuleNotFoundError("required extra absent", name="auto_dep", path="dep.py")
+    else:
+        error_type = type("AutoDependencyError", (ImportError,), {})
+        failure = error_type("required extra failed", name="auto_dep", path="dep.py")
+    cause = ValueError("original dependency cause")
+    failure.__cause__ = cause
+    carrier = types.ModuleType(carrier_name)
+    carrier.failure = failure
+    monkeypatch.setitem(sys.modules, carrier_name, carrier)
+    (tmp_path / f"{name}.py").write_text(f"from {carrier_name} import failure\nraise failure\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with _auto._isolated_registry_for_tests():
+        with pytest.raises(ImportError) as raised:
+            if surface == "http":
+                monkeypatch.setattr(_auto, "_HTTP_MODULES", (name, "never_imported_after_failure"))
+                _auto.load_http_modules()
+            else:
+                seed = _auto.CliSeed(name="shared-import", help="h", module=name)
+                monkeypatch.setattr(_auto, "_cli_seeds", (seed,))
+                _auto.load_cli_command(seed)
+        assert _auto.iter_http() == ()
+        assert _auto._cli_realized == {}
+        assert "never_imported_after_failure" not in sys.modules
+        if missing:
+            assert raised.value is failure
+            assert failure.name == "auto_dep" and failure.path == "dep.py"
+            assert failure.__cause__ is cause
+        else:
+            assert type(raised.value) is ImportError
+            assert str(raised.value) == f"Failed to import module {name}: required extra failed"
+            assert raised.value.name is None and raised.value.path is None
+            assert raised.value.__cause__ is failure
+            assert failure.name == "auto_dep" and failure.path == "dep.py"
+            assert failure.__cause__ is cause

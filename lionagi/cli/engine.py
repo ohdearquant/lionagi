@@ -12,7 +12,7 @@ import uuid
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi.ln import compute_hash
+from lionagi.ln import compute_hash, import_module
 
 from ._logging import log_error, progress, warn
 
@@ -54,9 +54,7 @@ _OUTCOME_LIST_CAP = 64
 
 
 def _import_engine_class(module: str, name: str) -> type:
-    import importlib
-
-    mod = importlib.import_module(module)
+    mod = import_module(module)
     return getattr(mod, name)
 
 
