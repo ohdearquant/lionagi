@@ -34,13 +34,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- An `api_loop: lndl-calls` leg's guidance asks the model to declare in each calling round every
+  read it already knows it needs, up to the round's 16 calls, and to answer only after reading what
+  the answer depends on (ADR-0132 Amendment 3). An `lndl` leg's guidance is unchanged.
+
 - Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
   shares its existing fence and newline rules.
+
+- `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
+  default. Broadcaster passes the coroutine-only classifier, so its dispatch is
+  unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
+  the subscriber.
+
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
   call sites; patch `lionagi.protocols.action.gate` or `lionagi._settings` instead.
 - `LionTool` lives in `lionagi.protocols.action.lion_tool`; its old import remains an alias.
+- Flow request contracts live in `lionagi.protocols.flow_requests`; existing casts imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
 
 - Packages built on top of the core move to `lionhub`, a second top-level package
   shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
@@ -89,6 +101,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
 ### Fixed
+
+- The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
+  `key_env`) into CLI children; only the account router reads it, for the request it signs.
+
+- `run_sync` rejects non-boolean `abandon_on_cancel` values before starting a worker.
+
+- A stdio MCP server that closes its pipe on a first request other than `initialize`
+  connects again under FastMCP 4: the pool opens stdio connections with
+  `mode="legacy"` when the installed client takes a `mode` argument, and logs that at
+  connect. The client's default `server/discover` probe made such servers exit before
+  the handshake fell back. URL connections keep the client's default.
 
 - An API-model `li agent` run whose ReAct pass ends on a response cut off at its output
   limit with no text and no tool call, on a reply that does not parse, or on an answer with

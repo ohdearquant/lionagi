@@ -641,6 +641,12 @@ logs the distinction first: without that, a child dying on a missing
 variable gives no hint that the operator's own lookup config is what's
 broken.
 
+A declared name that is the `key_env` of a routed account (`ANTHROPIC_ACCOUNTS`,
+ADR-0126 Amendment 2) is not filled: that key is read only by the account
+router for the request it signs, so no CLI child receives it from the lookup.
+The name still counts as declared for redaction, and a value the child
+already inherits under it is left alone.
+
 The resolved value reaches the child only through its environment: never a
 file, an argv, or a log line. A lookup command's stdout can carry the
 secret itself, so `_run_lookup()` only ever logs the program name, the

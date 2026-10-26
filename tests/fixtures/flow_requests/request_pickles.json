@@ -1,0 +1,25 @@
+{
+  "EscalationRequest": {
+    "model_dump": {
+      "context": {
+        "task": "sample"
+      },
+      "from_role": null,
+      "reason": "needs input",
+      "urgency": "fyi"
+    },
+    "payload_base64": "Y2NvcHlfcmVnCl9yZWNvbnN0cnVjdG9yCnAwCihjbGlvbmFnaS5jYXN0cy5lbWlzc2lvbgpFc2NhbGF0aW9uUmVxdWVzdApwMQpjX19idWlsdGluX18Kb2JqZWN0CnAyCk50cDMKUnA0CihkcDUKVl9fZGljdF9fCnA2CihkcDcKVnJlYXNvbgpwOApWbmVlZHMgaW5wdXQKcDkKc1Zjb250ZXh0CnAxMAooZHAxMQpWdGFzawpwMTIKVnNhbXBsZQpwMTMKc3NWdXJnZW5jeQpwMTQKVmZ5aQpwMTUKc1Zmcm9tX3JvbGUKcDE2Ck5zc1ZfX3B5ZGFudGljX2V4dHJhX18KcDE3Ck5zVl9fcHlkYW50aWNfZmllbGRzX3NldF9fCnAxOApjX19idWlsdGluX18Kc2V0CnAxOQooKGxwMjAKZzE0CmFnOAphZzEwCmF0cDIxClJwMjIKc1ZfX3B5ZGFudGljX3ByaXZhdGVfXwpwMjMKTnNiLg==",
+    "protocol": 0
+  },
+  "SpawnRequest": {
+    "model_dump": {
+      "assignee": null,
+      "independent": true,
+      "instruction": "inspect sample",
+      "operation": "ReAct",
+      "reason": null
+    },
+    "payload_base64": "Y2NvcHlfcmVnCl9yZWNvbnN0cnVjdG9yCnAwCihjbGlvbmFnaS5jYXN0cy5lbWlzc2lvbgpTcGF3blJlcXVlc3QKcDEKY19fYnVpbHRpbl9fCm9iamVjdApwMgpOdHAzClJwNAooZHA1ClZfX2RpY3RfXwpwNgooZHA3ClZpbnN0cnVjdGlvbgpwOApWaW5zcGVjdCBzYW1wbGUKcDkKc1Zhc3NpZ25lZQpwMTAKTnNWb3BlcmF0aW9uCnAxMQpWUmVBY3QKcDEyCnNWaW5kZXBlbmRlbnQKcDEzCkkwMQpzVnJlYXNvbgpwMTQKTnNzVl9fcHlkYW50aWNfZXh0cmFfXwpwMTUKTnNWX19weWRhbnRpY19maWVsZHNfc2V0X18KcDE2CmNfX2J1aWx0aW5fXwpzZXQKcDE3CigobHAxOApnOAphZzEzCmFnMTEKYXRwMTkKUnAyMApzVl9fcHlkYW50aWNfcHJpdmF0ZV9fCnAyMQpOc2Iu",
+    "protocol": 0
+  }
+}

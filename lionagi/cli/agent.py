@@ -121,9 +121,10 @@ _API_CONFINED_TOOL_SETS = ("write",)
 _API_LAUNCH_KEY = "api_launch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
-# The tool loops an API leg can run (`api_loop`): ReAct, the default, or batched LNDL
-# rounds (ADR-0132). A launch record written before the key existed runs ReAct.
-_API_LOOPS = ("react", "lndl")
+# The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
+# (ADR-0132), or those rounds with the tools shown only as LNDL calls (`lndl-calls`, ADR-0132
+# Amendment 2). A launch record written before the key existed runs ReAct.
+_API_LOOPS = ("react", "lndl", "lndl-calls")
 _API_DEFAULT_LOOP = "react"
 # The <lact> calls one LNDL round may declare; a round that declares more runs none.
 _API_LNDL_MAX_ACTIONS = 16
@@ -134,6 +135,12 @@ _API_LNDL_GUIDANCE = (
     "<lact>. Calls declared in a round run when it ends, and you read their results in the "
     "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
     "tool result is never the answer."
+)
+# An lndl-calls leg is also asked to declare in one round every read it already knows it needs.
+_API_LNDL_CALLS_GUIDANCE = (
+    f"{_API_LNDL_GUIDANCE} In each calling round, declare every read you already know you "
+    f"need, up to {_API_LNDL_MAX_ACTIONS} calls, and answer only after reading what the answer "
+    "depends on."
 )
 # A profile's `max_input_tokens` for an API leg: a positive integer, "auto" (the model's first
 # price-tier boundary, none for a model priced flat) or "none". Unset reads as "auto".
@@ -858,13 +865,13 @@ async def _api_loop_pass(
 
     For ReAct, *rounds* (when given) receives each round's analysis and then the answer.
     """
-    if loop == "lndl":
+    if loop in ("lndl", "lndl-calls"):
         from lionagi.operations.lndl_middle import build_lndl_middle
 
         schemas = branch.acts.get_tool_schema(tools=True)
         return await branch.operate(
             instruction=instruction,
-            guidance=_API_LNDL_GUIDANCE,
+            guidance=_API_LNDL_CALLS_GUIDANCE if loop == "lndl-calls" else _API_LNDL_GUIDANCE,
             response_format=_LndlAnswer,
             tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
             invoke_actions=False,
@@ -873,6 +880,7 @@ async def _api_loop_pass(
                 round_budget=1 + max_extensions,
                 max_actions=_API_LNDL_MAX_ACTIONS,
                 lacts_with_out=False,
+                tools_as_calls=loop == "lndl-calls",
             ),
         )
     outs = await branch.ReAct(
