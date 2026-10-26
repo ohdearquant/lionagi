@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     from lionagi.agent.nudge import NudgeEngine, NudgeRule
     from lionagi.session.branch import Branch
 
+    from ._seatbelt import SeatbeltPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,17 +176,27 @@ def _list_dir_sync(
     )
 
 
-def _write_file_sync(file_path: str, content: str, workspace_root: Path) -> dict:
+def _write_file_sync(
+    file_path: str,
+    content: str,
+    workspace_root: Path,
+    seatbelt: SeatbeltPolicy | None = None,
+) -> dict:
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
         return {"success": False, "error": str(e)}
 
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    except OSError as e:
-        return {"success": False, "error": str(e)}
+    if seatbelt is not None:
+        refused = seatbelt.write_text(p, content)
+        if refused:
+            return {"success": False, "error": refused}
+    else:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+        except OSError as e:
+            return {"success": False, "error": str(e)}
 
     try:
         mtime = p.stat().st_mtime
@@ -205,6 +217,7 @@ def _edit_file_sync(
     new_string: str,
     replace_all: bool,
     workspace_root: Path,
+    seatbelt: SeatbeltPolicy | None = None,
 ) -> dict:
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
@@ -245,10 +258,15 @@ def _edit_file_sync(
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
 
-    try:
-        _write_text_no_follow(p, updated)
-    except OSError as e:
-        return {"success": False, "error": str(e)}
+    if seatbelt is not None:
+        refused = seatbelt.write_text(p, updated)
+        if refused:
+            return {"success": False, "error": refused}
+    else:
+        try:
+            _write_text_no_follow(p, updated)
+        except OSError as e:
+            return {"success": False, "error": str(e)}
 
     try:
         mtime = p.stat().st_mtime
@@ -350,9 +368,12 @@ class CodingToolkit(LionTool):
         nudge_engine: NudgeEngine | None = None,
         nudge_rules: Sequence[NudgeRule] | None = None,
         sandbox_allow_protected: bool = False,
+        seatbelt: SeatbeltPolicy | None = None,
     ):
         """sandbox_allow_protected: operator-only trust decision (deliberately absent
         from SandboxRequest) gating whether sandbox merge may target a protected branch.
+        seatbelt: when set, the editor's writes and every bash command run in a child
+        process under that macOS Seatbelt policy (ADR-0041 Amendment 2).
         """
         self._security_pre_hooks: dict[str, list[Callable]] = {}
         self._pre_hooks: dict[str, list[Callable]] = {}
@@ -363,6 +384,7 @@ class CodingToolkit(LionTool):
         self.notify_max_tokens = notify_max_tokens
         self.workspace_root = _resolve_workspace_root(workspace_root)
         self.sandbox_allow_protected = sandbox_allow_protected
+        self.seatbelt = seatbelt
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
         if unknown:
@@ -380,6 +402,7 @@ class CodingToolkit(LionTool):
         msgs = branch.msgs
         notify = self.notify
         workspace_root = self.workspace_root
+        seatbelt = self.seatbelt
 
         engine: NudgeEngine | None = None
         if notify:
@@ -510,7 +533,9 @@ class CodingToolkit(LionTool):
                     guard = _check_read_guard(file_path)
                     if guard:
                         return {"success": False, "error": guard}
-                result = await run_sync(_write_file_sync, file_path, content, workspace_root)
+                result = await run_sync(
+                    _write_file_sync, file_path, content, workspace_root, seatbelt
+                )
                 _track(result)
                 return result
             elif action == "edit":
@@ -528,6 +553,7 @@ class CodingToolkit(LionTool):
                     new_string,
                     replace_all,
                     workspace_root,
+                    seatbelt,
                 )
                 _track(result)
                 return result
@@ -563,6 +589,8 @@ class CodingToolkit(LionTool):
                     "return_code": -1,
                     "timed_out": False,
                 }
+            if seatbelt is not None:
+                cmd = seatbelt.wrap(cmd)
 
             result = await run_sync(_subprocess_sync, cmd, False, timeout_s, cwd)
 

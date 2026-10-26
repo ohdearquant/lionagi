@@ -17,6 +17,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   oversized tool results under a per-request input ceiling, while retaining full
   tool content outside the request view.
 
+- An agent profile for an API model can declare `api_tools: write`: the read set plus
+  `editor` and `bash`, on macOS only. Every bash command and every editor write runs in
+  a child process under a Seatbelt policy (`/usr/bin/sandbox-exec`) that allows writes
+  only under the working directory, the uv cache and the temporary directory, keeps the
+  working directory's `.git` read-only, and keeps the network off unless the profile
+  sets `api_network: true`. On a host without `sandbox-exec` the profile is refused
+  before a run starts. `AgentSpec.seatbelt` and `CodingToolkit(seatbelt=...)` carry the
+  policy for other callers.
+
 ### Changed
 
 - Packages built on top of the core move to `lionhub`, a second top-level package

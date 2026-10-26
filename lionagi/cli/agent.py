@@ -108,9 +108,15 @@ _PRESET_CHOICES = ("coding",)
 _MCP_LAUNCH_KEY = "mcp_launch"
 # An API model has no tool loop of its own, so lionagi runs one in-process, and
 # only for a profile that names the tool set the leg may use (`api_tools`). The
-# read set is the only one: the tools run with this process's own permissions,
-# and tools that write or run commands wait for an operating-system sandbox.
-_API_TOOL_SETS: dict[str, tuple[str, ...]] = {"read": ("reader", "search", "context")}
+# read set runs with this process's own permissions. The write set adds the editor
+# and bash, whose writes and commands run in child processes under a macOS Seatbelt
+# policy (ADR-0041 Amendment 2); without sandbox-exec it is refused.
+_API_TOOL_SETS: dict[str, tuple[str, ...]] = {
+    "read": ("reader", "search", "context"),
+    "write": ("reader", "search", "context", "editor", "bash"),
+}
+# The tool sets whose editor and bash run under the Seatbelt policy.
+_API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
@@ -292,31 +298,46 @@ def _recall_only(configured: object) -> object:
 def _profile_api_launch(profile) -> dict | None:
     """The API tool loop a profile declares, or None when it declares none.
 
-    `api_tools` names the tool set; `max_extensions` bounds the rounds after the
-    first (1 to 100); `api_loop` picks the loop, `react` or `lndl`; `max_input_tokens`
-    caps each request's estimated input, a positive integer, `auto` or `none`. A value
-    outside these policies, or any API policy without `api_tools`, is refused
-    here before a run exists. Additional controls remain in the profile's extra mapping.
+    `api_tools` names the tool set, `read` or `write`; `api_network` lets the write
+    set's commands reach the network (default off); `max_extensions` bounds the rounds
+    after the first (1 to 100); `api_loop` picks the loop, `react` or `lndl`;
+    `max_input_tokens` caps each request's estimated input, a positive integer, `auto`
+    or `none`. A value outside these policies, any API policy without `api_tools`, or
+    the write set on a host without sandbox-exec, is refused here before a run exists.
+    Additional controls remain in the profile's extra mapping.
     """
     extra = (getattr(profile, "extra", None) or {}) if profile is not None else {}
     name = getattr(profile, "name", "<unknown>")
     if "api_tools" not in extra:
-        for key in ("api_loop", "max_input_tokens", *_API_POLICY_KEYS):
+        for key in ("api_loop", "max_input_tokens", "api_network", *_API_POLICY_KEYS):
             if key in extra:
                 raise ConfigurationError(
                     f"agent profile {name!r} sets {key} but no api_tools; it applies only "
-                    "to the tool loop of an API model with the read set ('api_tools: "
-                    "read'), and a CLI provider runs its own."
+                    "to the tool loop of an API model ('api_tools: read' or 'api_tools: "
+                    "write'), and a CLI provider runs its own."
                 )
         return None
     tools = extra["api_tools"]
     if not isinstance(tools, str) or tools not in _API_TOOL_SETS:
         raise ConfigurationError(
-            f"agent profile {name!r} sets api_tools to {tools!r}; an API model runs only "
-            f"with the read set ('read': {', '.join(_API_TOOL_SETS['read'])}). Tools that "
-            "write files or run commands are not offered to an API model: they would run "
-            "with this process's own permissions, and this path has no sandbox for them."
+            f"agent profile {name!r} sets api_tools to {tools!r}; an API model runs with "
+            + " or ".join(
+                f"the {key} set ('{key}': {', '.join(names)})"
+                for key, names in _API_TOOL_SETS.items()
+            )
+            + "."
         )
+    network = extra.get("api_network", False)
+    if not isinstance(network, bool):
+        raise ConfigurationError(
+            f"agent profile {name!r} sets api_network to {network!r}; it must be true or false."
+        )
+    if network and tools not in _API_CONFINED_TOOL_SETS:
+        raise ConfigurationError(
+            f"agent profile {name!r} sets api_network with api_tools {tools!r}; it applies "
+            "only to the write set's commands ('api_tools: write')."
+        )
+    _require_seatbelt(tools, label=f"agent profile {name!r}")
     rounds = extra.get("max_extensions", _API_DEFAULT_MAX_EXTENSIONS)
     if not _is_round_bound(rounds):
         raise ConfigurationError(
@@ -338,6 +359,7 @@ def _profile_api_launch(profile) -> dict | None:
     settings = _api_requested_settings(extra, label=f"agent profile {name!r}")
     return {
         "tools": tools,
+        "network": network,
         "max_extensions": rounds,
         "loop": loop,
         "max_input_tokens": cap,
@@ -378,6 +400,17 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
     return settings
 
 
+def _require_seatbelt(tools: str, *, label: str) -> None:
+    from lionagi.tools._seatbelt import SANDBOX_EXEC, seatbelt_available
+
+    if tools in _API_CONFINED_TOOL_SETS and not seatbelt_available():
+        raise ConfigurationError(
+            f"{label} names the {tools} set, whose editor and bash run only under the macOS "
+            f"Seatbelt sandbox, and this host has no executable {SANDBOX_EXEC}; use "
+            "'api_tools: read' here."
+        )
+
+
 def _is_round_bound(rounds: object) -> bool:
     return not isinstance(rounds, bool) and isinstance(rounds, int) and 1 <= rounds <= 100
 
@@ -399,16 +432,22 @@ def _recorded_api_launch(recorded: object) -> dict:
         loop = recorded.get("loop", _API_DEFAULT_LOOP)
         # A record written before the cap existed carries none and reads as unset.
         cap = recorded.get("max_input_tokens", _API_DEFAULT_INPUT_CAP)
+        # A record written before the write set existed carries no network switch.
+        network = recorded.get("network", False)
         if (
             isinstance(tools, str)
             and tools in _API_TOOL_SETS
+            and isinstance(network, bool)
+            and (tools in _API_CONFINED_TOOL_SETS or not network)
             and _is_round_bound(rounds)
             and isinstance(loop, str)
             and loop in _API_LOOPS
             and _is_input_cap_policy(cap)
         ):
+            _require_seatbelt(tools, label="this branch's stored API launch")
             return {
                 "tools": tools,
+                "network": network,
                 "max_extensions": rounds,
                 "loop": loop,
                 "max_input_tokens": cap,
@@ -428,14 +467,20 @@ def _make_api_agent_spec(
     system_prompt: str | None,
     role: str,
     tools: str,
+    network: bool = False,
 ):
-    """The AgentSpec for an API-model leg: the named read tools, path-guarded to cwd."""
+    """The AgentSpec for an API-model leg: the named tool set, path-guarded to cwd, and for
+    the write set the Seatbelt policy its editor and bash run under."""
     from lionagi.agent.spec import AgentSpec, _wire_secure_guards
 
     spec = AgentSpec.compose(
         role, effort=effort, tools=["coding"], system_prompt=system_prompt, cwd=cwd
     )
     spec.coding_tools = _API_TOOL_SETS[tools]
+    if tools in _API_CONFINED_TOOL_SETS:
+        from lionagi.tools._seatbelt import SeatbeltPolicy
+
+        spec.seatbelt = SeatbeltPolicy.for_workspace(cwd or Path.cwd(), network=network)
     _wire_secure_guards(spec, cwd)
     return spec
 
@@ -1610,7 +1655,8 @@ async def _run_agent(
         if api_launch is not None and preset == "coding":
             raise ConfigurationError(
                 "--preset coding binds tools that write files and run commands; an API "
-                "model runs only with its profile's read set (api_tools: read)."
+                "model runs only with its profile's tool set (api_tools: read, or write "
+                "under the macOS sandbox)."
             )
         if api_launch is not None and images:
             raise ConfigurationError("--image is not supported for an API model yet.")
@@ -1651,6 +1697,7 @@ async def _run_agent(
                     system_prompt=profile_extra or None,
                     role=profile_role if has_role_key else "reviewer",
                     tools=api_launch["tools"],
+                    network=api_launch["network"],
                 )
             else:
                 spec = _make_coding_preset(
@@ -1686,10 +1733,18 @@ async def _run_agent(
             )
             if api_launch is not None:
                 branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)
+                confined = ""
+                if spec.seatbelt is not None:
+                    confined = (
+                        "; editor and bash run under the macOS sandbox, writing only to "
+                        f"{', '.join(spec.seatbelt.writable_roots)}, network "
+                        f"{'on' if spec.seatbelt.network else 'off'}"
+                    )
                 hint(
                     f"[api] {provider} runs lionagi's {api_launch['loop']} tool loop with the "
-                    f"read set ({', '.join(_API_TOOL_SETS[api_launch['tools']])}), up to "
-                    f"{api_launch['max_extensions']} more round(s); no MCP server is handed to it"
+                    f"{api_launch['tools']} set ({', '.join(_API_TOOL_SETS[api_launch['tools']])}), "
+                    f"up to {api_launch['max_extensions']} more round(s); no MCP server is handed "
+                    f"to it{confined}"
                 )
             else:
                 # The hand-over happened inside create_agent, so the request it
@@ -1891,6 +1946,7 @@ async def _run_agent(
                     system_prompt=None,
                     role="reviewer",
                     tools=api_launch["tools"],
+                    network=api_launch["network"],
                 ),
             )
 
