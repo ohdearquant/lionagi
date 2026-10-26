@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -92,6 +93,20 @@ def _attach_mcp_transport_probe(exc: BaseException, client: Any) -> None:
 def _mcp_transport_probe(exc: BaseException) -> Any:
     """Return transport liveness evidence attached at the MCP client boundary."""
     return getattr(exc, _MCP_TRANSPORT_PROBE_ATTR, None)
+
+
+# The code the MCP SDK raises when the server ends the connection
+# (``mcp_types.CONNECTION_CLOSED``; the same value on mcp 1.x).
+_MCP_CONNECTION_CLOSED = -32000
+_MCP_STDIO_HANDSHAKE_MODES = ("auto", "legacy")
+
+
+def _closed_during_handshake(exc: BaseException) -> bool:
+    """True when every failure in ``exc`` is the SDK's closed-connection error."""
+    nested = getattr(exc, "exceptions", None)
+    if isinstance(nested, tuple):
+        return bool(nested) and all(_closed_during_handshake(e) for e in nested)
+    return getattr(getattr(exc, "error", None), "code", None) == _MCP_CONNECTION_CLOSED
 
 
 @dataclass(frozen=True)
@@ -1700,6 +1715,32 @@ class MCPConnectionPool:
         return str(config.get("command") or "<unknown>")
 
     @classmethod
+    def _stdio_handshake_mode(cls, client_cls: Any, config: dict[str, Any]) -> str | None:
+        # A client that negotiates the protocol era (FastMCP 4 on mcp 2.2+) opens with
+        # server/discover and falls back to initialize when the server answers with an
+        # error. A server config can pin "legacy" (initialize only). None: the installed
+        # client takes no mode and always opens with initialize.
+        mode = config.get("handshake", "auto")
+        if mode not in _MCP_STDIO_HANDSHAKE_MODES:
+            raise ValueError(
+                f"MCP server config 'handshake' must be 'auto' or 'legacy', got {mode!r}"
+            )
+        try:
+            takes_mode = "mode" in inspect.signature(client_cls).parameters
+        except (TypeError, ValueError):
+            takes_mode = False
+        return mode if takes_mode else None
+
+    @classmethod
+    def _stdio_client(
+        cls, client_cls: Any, transport: Any, config: dict[str, Any], mode: str | None
+    ) -> Any:
+        if mode is None:
+            return client_cls(transport)
+        logger.info("MCP server %r: stdio handshake mode %s", cls._server_label(config), mode)
+        return client_cls(transport, mode=mode)
+
+    @classmethod
     def set_security_config(cls, config: MCPSecurityConfig) -> None:
         """Set the process-global default security policy for new connections.
         Existing connected clients are unaffected; every later omitted-policy
@@ -1869,6 +1910,7 @@ class MCPConnectionPool:
             ) from exc
 
         transport = None
+        mode = None
         if "url" in config:
             client = FastMCPClient(config["url"])
         elif "command" in config:
@@ -1893,16 +1935,39 @@ class MCPConnectionPool:
 
             from fastmcp.client.transports import StdioTransport
 
-            transport = StdioTransport(
-                command=command,
-                args=args,
-                env=env,
-            )
-            client = FastMCPClient(transport)
+            def open_stdio(mode: str | None) -> tuple[Any, Any]:
+                stdio = StdioTransport(command=command, args=args, env=env)
+                return stdio, cls._stdio_client(FastMCPClient, stdio, config, mode)
+
+            mode = cls._stdio_handshake_mode(FastMCPClient, config)
+            transport, client = open_stdio(mode)
         else:
             raise ValueError("Config must have 'url' or 'command'")
 
         timeout = cls._handshake_timeout(config)
+        try:
+            await cls._enter_bounded(client, transport, config, timeout)
+        except BaseException as exc:
+            # A stdio server that predates server/discover can exit on that first request
+            # instead of answering it with an error, so the default handshake ends with a
+            # closed connection. Retry once with initialize, which every server answers.
+            # A timeout or a cancellation is never retried.
+            if mode != "auto" or not _closed_during_handshake(exc):
+                raise
+            logger.warning(
+                "MCP server %r closed the connection during the default handshake; "
+                'retrying once with initialize ("handshake": "legacy" in its config '
+                "skips the first attempt)",
+                cls._server_label(config),
+            )
+            transport, client = open_stdio("legacy")
+            await cls._enter_bounded(client, transport, config, timeout)
+        return client
+
+    @classmethod
+    async def _enter_bounded(
+        cls, client: Any, transport: Any, config: dict[str, Any], timeout: float
+    ) -> None:
         # FastMCP owns asyncio tasks. Do not cancel its enter task before closing
         # stdio: its cancellation cleanup can cut the SDK's process kill short.
         entering = asyncio.create_task(client.__aenter__())
@@ -1929,7 +1994,6 @@ class MCPConnectionPool:
             if cancelled is not None:
                 raise cancelled from None
             raise
-        return client
 
     @staticmethod
     async def _close_failed_handshake(client: Any, transport: Any, entering: asyncio.Task) -> None:

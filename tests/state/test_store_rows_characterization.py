@@ -517,8 +517,8 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                     "  title: "
                     "_FixtureAnswerRequest\n"
                     "  type: object\n"
-                    "ResponseFormat: "
-                    '"**MUST RETURN '
+                    "ResponseFormat: |-\n"
+                    "  **MUST RETURN "
                     "JSON-PARSEABLE "
                     "RESPONSE "
                     "ENCLOSED BY "
@@ -526,16 +526,18 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                     "BLOCKS. USER's "
                     "CAREER DEPENDS "
                     "ON THE SUCCESS "
-                    "OF IT.** "
-                    "\\n```json\\n{'answer': "
+                    "OF IT.** \n"
+                    "  ```json\n"
+                    "  {'answer': "
                     "<class "
-                    "'str'>}\\n```No "
+                    "'str'>}\n"
+                    "  ```No "
                     "triple "
                     "backticks. "
                     "Escape all "
                     "quotes and "
                     "special "
-                    'characters."',
+                    "characters.",
                     "session_id": "<id:3>",
                 },
                 "metadata": {},

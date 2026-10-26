@@ -179,6 +179,33 @@ def test_prepare_run_kwargs_guard_ignores_earlier_history_render_state(monkeypat
     assert any("a real, current prompt" in m["content"] for m in messages)
 
 
+def test_prepare_run_kwargs_drops_whitespace_only_history_message():
+    """A reply of only whitespace (a model cut at max_tokens mid-run of newlines) is not
+    sent back: providers that refuse whitespace-only text would reject every later call."""
+    branch = Branch()
+    param = ChatParam()
+
+    branch.msgs.add_message(instruction="initial question")
+    branch.msgs.add_message(assistant_response="\n" * 500)
+
+    _ins, kw = _prepare_run_kwargs(branch, "follow up", param)
+
+    assert all(m["content"].strip() for m in kw["messages"])
+    assert not any(m["role"] == "assistant" for m in kw["messages"])
+    assert "follow up" in kw["messages"][-1]["content"]
+
+
+def test_prepare_run_kwargs_raises_when_real_instruction_renders_whitespace_only(monkeypatch):
+    """The empty-render guard also covers a current turn that renders only whitespace."""
+    branch = Branch()
+    param = ChatParam()
+
+    monkeypatch.setattr(InstructionContent, "rendered", property(lambda self: " \n\t\n"))
+
+    with pytest.raises(EmptyOutgoingContentError, match="instruction_len="):
+        _prepare_run_kwargs(branch, "a real, non-empty prompt", param)
+
+
 def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeypatch):
     """The guard is scoped to *real* instruction text — a turn with no
     instruction at all (e.g. a bare action-response continuation) that
