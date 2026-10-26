@@ -1591,7 +1591,9 @@ export async function getSession(
 }
 
 /** Absent is legacy compatibility; a present invalid snapshot must not become replay. */
-export function readSessionStreamSnapshot(detail: SessionDetail): SessionStreamSnapshot | undefined {
+export function readSessionStreamSnapshot(
+  detail: SessionDetail,
+): SessionStreamSnapshot | undefined {
   if (!("stream_snapshot" in detail)) return undefined;
   const snapshot = detail.stream_snapshot;
   if (
@@ -1614,10 +1616,7 @@ export type SessionStreamResync =
 export interface MessageStreamOptions {
   mode?: "legacy" | "live";
   initialCursor?: string;
-  onResyncRequired?: (
-    event: SessionStreamResync,
-    applied: { cursor: string | undefined },
-  ) => void;
+  onResyncRequired?: (event: SessionStreamResync, applied: { cursor: string | undefined }) => void;
 }
 
 export interface SignalStreamOptions {
@@ -1635,7 +1634,8 @@ async function streamResyncReason(response: Response): Promise<string | undefine
       body.detail?.code === "stream_resync_required" &&
       typeof body.detail.reason === "string" &&
       body.detail.reason.length > 0
-    ) return body.detail.reason;
+    )
+      return body.detail.reason;
   } catch {
     // Other 409 responses keep the existing permanent-client-error policy.
   }
@@ -1683,12 +1683,21 @@ export function streamSession(
         resync(event as SessionStreamResync);
         return;
       }
-      if (live && event.type !== "heartbeat" && event.type !== "done" && (
-        !eventId || typeof event.id !== "string" || !event.id ||
-        typeof event.branch_id !== "string" || !event.branch_id ||
-        typeof event.role !== "string" || !event.role ||
-        typeof event.timestamp !== "number" || !Number.isFinite(event.timestamp)
-      )) throw new Error("Invalid or unresumable live message frame");
+      if (
+        live &&
+        event.type !== "heartbeat" &&
+        event.type !== "done" &&
+        (!eventId ||
+          typeof event.id !== "string" ||
+          !event.id ||
+          typeof event.branch_id !== "string" ||
+          !event.branch_id ||
+          typeof event.role !== "string" ||
+          !event.role ||
+          typeof event.timestamp !== "number" ||
+          !Number.isFinite(event.timestamp))
+      )
+        throw new Error("Invalid or unresumable live message frame");
       if (event.type === "done") {
         close();
         onConnectionState?.("closed");
@@ -1700,12 +1709,14 @@ export function streamSession(
       }
     },
     onConnectionState,
-    live ? async (response) => {
-      const reason = await streamResyncReason(response);
-      if (reason === undefined) return false;
-      resync({ type: "resync_required", stream: "messages", reason });
-      return true;
-    } : undefined,
+    live
+      ? async (response) => {
+          const reason = await streamResyncReason(response);
+          if (reason === undefined) return false;
+          resync({ type: "resync_required", stream: "messages", reason });
+          return true;
+        }
+      : undefined,
   );
   return close;
 }
@@ -1749,26 +1760,38 @@ export async function getSessionSignalPage(
   const { afterSeq, throughSeq } = params;
   const limit = Math.min(params.limit ?? 500, 500);
   if (
-    !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
-    !Number.isSafeInteger(throughSeq) || throughSeq < afterSeq ||
-    !Number.isSafeInteger(limit) || limit <= 0
-  ) throw new Error("Invalid signal history page bounds");
+    !Number.isSafeInteger(afterSeq) ||
+    afterSeq < 0 ||
+    !Number.isSafeInteger(throughSeq) ||
+    throughSeq < afterSeq ||
+    !Number.isSafeInteger(limit) ||
+    limit <= 0
+  )
+    throw new Error("Invalid signal history page bounds");
   const query = new URLSearchParams({
-    after_seq: String(afterSeq), through_seq: String(throughSeq), limit: String(limit),
+    after_seq: String(afterSeq),
+    through_seq: String(throughSeq),
+    limit: String(limit),
   });
   const page = await fetchJson<SessionSignalPage>(
     `/api/sessions/${encodeURIComponent(id)}/signals/page?${query}`,
   );
   if (
-    !Array.isArray(page.signals) || page.signals.length > limit ||
-    page.through_seq !== throughSeq || typeof page.has_more !== "boolean"
-  ) throw new Error("Invalid signal history page");
+    !Array.isArray(page.signals) ||
+    page.signals.length > limit ||
+    page.through_seq !== throughSeq ||
+    typeof page.has_more !== "boolean"
+  )
+    throw new Error("Invalid signal history page");
   let previous = afterSeq;
   for (const signal of page.signals) {
     if (
-      signal.session_id !== id || !Number.isSafeInteger(signal.seq) ||
-      signal.seq <= previous || signal.seq > throughSeq
-    ) throw new Error("Signal history page is outside its snapshot");
+      signal.session_id !== id ||
+      !Number.isSafeInteger(signal.seq) ||
+      signal.seq <= previous ||
+      signal.seq > throughSeq
+    )
+      throw new Error("Signal history page is outside its snapshot");
     previous = signal.seq;
   }
   if (page.next_after_seq !== previous || (page.has_more && previous === afterSeq)) {
@@ -1785,8 +1808,12 @@ export function streamSignals(
 ): () => void {
   const live = options?.mode === "live";
   const initialSnapshot = options?.initialSnapshot;
-  if (live && (!initialSnapshot || !Number.isSafeInteger(options?.initialAfterSeq) ||
-      (options?.initialAfterSeq ?? -1) < 0)) {
+  if (
+    live &&
+    (!initialSnapshot ||
+      !Number.isSafeInteger(options?.initialAfterSeq) ||
+      (options?.initialAfterSeq ?? -1) < 0)
+  ) {
     throw new Error("Live signals require a snapshot ticket and sequence");
   }
   let afterSeq = options?.initialAfterSeq ?? 0;
@@ -1819,7 +1846,11 @@ export function streamSignals(
       if ("type" in event) {
         if (live && event.type === "resync_required") {
           const control = event as SessionStreamResync;
-          if (control.stream !== "signals" || typeof control.reason !== "string" || !control.reason) {
+          if (
+            control.stream !== "signals" ||
+            typeof control.reason !== "string" ||
+            !control.reason
+          ) {
             throw new Error("Invalid signal resync control");
           }
           resync(control);
@@ -1833,11 +1864,19 @@ export function streamSignals(
         return;
       }
       if (live) {
-        if (event.session_id !== id || !Number.isSafeInteger(event.seq) || event.seq < 0 ||
-            typeof event.ts !== "number" || !Number.isFinite(event.ts) ||
-            !Number.isFinite(event.ts * SIGNAL_TS_SECONDS_TO_MS) ||
-            typeof event.id !== "string" || !event.id || typeof event.kind !== "string" ||
-            typeof event.op_id !== "string") throw new Error("Invalid live signal frame");
+        if (
+          event.session_id !== id ||
+          !Number.isSafeInteger(event.seq) ||
+          event.seq < 0 ||
+          typeof event.ts !== "number" ||
+          !Number.isFinite(event.ts) ||
+          !Number.isFinite(event.ts * SIGNAL_TS_SECONDS_TO_MS) ||
+          typeof event.id !== "string" ||
+          !event.id ||
+          typeof event.kind !== "string" ||
+          typeof event.op_id !== "string"
+        )
+          throw new Error("Invalid live signal frame");
         if (event.seq <= afterSeq) return;
       }
       onEvent(normalizeSignalEvent(event));
@@ -1845,12 +1884,14 @@ export function streamSignals(
       afterSeq = Math.max(afterSeq, event.seq);
     },
     onConnectionState,
-    live ? async (response) => {
-      const reason = await streamResyncReason(response);
-      if (reason === undefined) return false;
-      resync({ type: "resync_required", stream: "signals", reason });
-      return true;
-    } : undefined,
+    live
+      ? async (response) => {
+          const reason = await streamResyncReason(response);
+          if (reason === undefined) return false;
+          resync({ type: "resync_required", stream: "signals", reason });
+          return true;
+        }
+      : undefined,
   );
   return close;
 }

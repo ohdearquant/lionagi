@@ -393,7 +393,6 @@ export function mergeCompletedSession(
   return { ...previous, ...fresh, branches };
 }
 
-
 // The BranchesSection identity every branch renders under (RunStepCard's
 // `id="step-${step.step}"` anchor and expandedSteps entry). Factored out so
 // the graph drill-down (matchGraphNodeToBranch → this) and the step list
@@ -2115,8 +2114,12 @@ export default function RunDetail({ id }: RunDetailProps) {
     terminalReadRef.current = key;
     getSession(runId)
       .then((fresh) => {
-        if (visitTokenRef.current !== visit || resumeEpochRef.current !== epoch ||
-            streamGenerationRef.current !== generation) return;
+        if (
+          visitTokenRef.current !== visit ||
+          resumeEpochRef.current !== epoch ||
+          streamGenerationRef.current !== generation
+        )
+          return;
         setSession((prev) =>
           prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
         );
@@ -2126,20 +2129,36 @@ export default function RunDetail({ id }: RunDetailProps) {
       });
   }, []);
 
-
   const installBootstrapMetadata = useCallback((fresh: SessionDetail) => {
     const status = (fresh.status ?? "").toLowerCase();
-    const terminal = ["completed", "completed_empty", "done", "success", "failed",
-      "failure", "timed_out", "aborted", "cancelled"].includes(status);
+    const terminal = [
+      "completed",
+      "completed_empty",
+      "done",
+      "success",
+      "failed",
+      "failure",
+      "timed_out",
+      "aborted",
+      "cancelled",
+    ].includes(status);
     const resumed = resumeWatchRef.current?.run_id === fresh.id;
     setDone(terminal && !resumed);
     setLive(resumed || status === "running");
     const graph = (fresh as unknown as Record<string, unknown>).graph as
-      | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null } | null | undefined;
-    setRunGraph(graph?.nodes?.length ? {
-      name: fresh.name || fresh.id, description: "", nodes: graph.nodes,
-      edges: resolveGraphEdges(graph.nodes, graph.edges),
-    } : null);
+      | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
+      | null
+      | undefined;
+    setRunGraph(
+      graph?.nodes?.length
+        ? {
+            name: fresh.name || fresh.id,
+            description: "",
+            nodes: graph.nodes,
+            edges: resolveGraphEdges(graph.nodes, graph.edges),
+          }
+        : null,
+    );
   }, []);
 
   useEffect(() => {
@@ -2201,8 +2220,10 @@ export default function RunDetail({ id }: RunDetailProps) {
     setSessionStreamState("connecting");
     setSignalStreamState("connecting");
     setSignalState({ id, snapshot: EMPTY_SIGNAL_SNAPSHOT });
-    loadSessionLiveBootstrap(id, () =>
-      !cancelled && visitTokenRef.current === visit && streamGenerationRef.current === generation,
+    loadSessionLiveBootstrap(
+      id,
+      () =>
+        !cancelled && visitTokenRef.current === visit && streamGenerationRef.current === generation,
     )
       .then((bootstrap) => {
         if (!bootstrap || cancelled) return;
@@ -2233,7 +2254,6 @@ export default function RunDetail({ id }: RunDetailProps) {
           }
         }
         if (branchExpansion) setExpandedSteps(branchExpansion);
-
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(String(e));
@@ -2321,9 +2341,14 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     const bootstrap = streamBootstrap;
-    if (!id || !bootstrap || bootstrap.detail.id !== id ||
-        bootstrap.visit !== visitTokenRef.current ||
-        bootstrap.generation !== streamGenerationRef.current) return;
+    if (
+      !id ||
+      !bootstrap ||
+      bootstrap.detail.id !== id ||
+      bootstrap.visit !== visitTokenRef.current ||
+      bootstrap.generation !== streamGenerationRef.current
+    )
+      return;
     const { visit, generation, snapshot } = bootstrap;
     const projection = bootstrap.projection;
     let cancelled = false;
@@ -2331,8 +2356,8 @@ export default function RunDetail({ id }: RunDetailProps) {
     let publishScheduled = false;
     let stopMessages = () => {};
     let stopSignals = () => {};
-    const current = () => !cancelled && visitTokenRef.current === visit &&
-      streamGenerationRef.current === generation;
+    const current = () =>
+      !cancelled && visitTokenRef.current === visit && streamGenerationRef.current === generation;
     const publish = () => {
       if (publishScheduled) return;
       publishScheduled = true;
@@ -2358,7 +2383,9 @@ export default function RunDetail({ id }: RunDetailProps) {
         setError("Live updates could not recover. Reload this session to try again.");
         return;
       }
-      const stillCurrent = () => !cancelled && visitTokenRef.current === visit &&
+      const stillCurrent = () =>
+        !cancelled &&
+        visitTokenRef.current === visit &&
         streamGenerationRef.current === nextGeneration;
       void loadSessionLiveBootstrap(id, stillCurrent)
         .then((fresh) => {
@@ -2381,7 +2408,10 @@ export default function RunDetail({ id }: RunDetailProps) {
       id,
       (event) => {
         if (!current() || event.type === "heartbeat") return;
-        if (event.type === "resync_required") { resnapshot(); return; }
+        if (event.type === "resync_required") {
+          resnapshot();
+          return;
+        }
         if (event.type === "done") {
           // A delayed end from before a resume is not the resumed run's end.
           if (resumeWatchRef.current?.run_id === id) return;
@@ -2391,7 +2421,8 @@ export default function RunDetail({ id }: RunDetailProps) {
           readTerminalDetail(id);
           return;
         }
-        if (snapshot && !isSessionMessageEvent(event)) throw new Error("Invalid live message frame");
+        if (snapshot && !isSessionMessageEvent(event))
+          throw new Error("Invalid live message frame");
         setLive(true);
         if (isSessionMessageEvent(event)) {
           const msg = event as unknown as SessionMessage;
@@ -2403,31 +2434,46 @@ export default function RunDetail({ id }: RunDetailProps) {
           automaticResyncsRef.current = 0;
         }
       },
-      (state) => { if (current()) setSessionStreamState(state); },
-      snapshot ? { mode: "live", initialCursor: snapshot.message_cursor,
-        onResyncRequired: resnapshot } : undefined,
-    );
-    if (!resyncStarted) stopSignals = streamSignals(
-      id,
-      (event) => {
-        if (!current()) return;
-        if ("type" in event) {
-          if (event.type === "resync_required") resnapshot();
-          return;
-        }
-        const sig = event as SignalEvent;
-        if (projection.append(sig)) {
-          streamDataRevisionRef.current += 1;
-          automaticResyncsRef.current = 0;
-          publish();
-        }
+      (state) => {
+        if (current()) setSessionStreamState(state);
       },
-      (state) => { if (current()) setSignalStreamState(state); },
-      snapshot ? { mode: "live", initialSnapshot: snapshot.message_cursor,
-        initialAfterSeq: snapshot.signal_seq, onResyncRequired: resnapshot } : undefined,
+      snapshot
+        ? { mode: "live", initialCursor: snapshot.message_cursor, onResyncRequired: resnapshot }
+        : undefined,
     );
+    if (!resyncStarted)
+      stopSignals = streamSignals(
+        id,
+        (event) => {
+          if (!current()) return;
+          if ("type" in event) {
+            if (event.type === "resync_required") resnapshot();
+            return;
+          }
+          const sig = event as SignalEvent;
+          if (projection.append(sig)) {
+            streamDataRevisionRef.current += 1;
+            automaticResyncsRef.current = 0;
+            publish();
+          }
+        },
+        (state) => {
+          if (current()) setSignalStreamState(state);
+        },
+        snapshot
+          ? {
+              mode: "live",
+              initialSnapshot: snapshot.message_cursor,
+              initialAfterSeq: snapshot.signal_seq,
+              onResyncRequired: resnapshot,
+            }
+          : undefined,
+      );
     // A synchronous subscription callback can request resync before its closer is assigned.
-    if (resyncStarted) { stopMessages(); stopSignals(); }
+    if (resyncStarted) {
+      stopMessages();
+      stopSignals();
+    }
     return () => {
       cancelled = true;
       stopMessages();
@@ -2536,7 +2582,8 @@ export default function RunDetail({ id }: RunDetailProps) {
     // see this handler as idle and issue the same cursor request twice. The
     // state is still what the UI renders from; only the exclusion has to be
     // synchronous.
-    if (!id || streamResyncRef.current || loadingOlderRef.current || olderLoadFailed || !cursor) return;
+    if (!id || streamResyncRef.current || loadingOlderRef.current || olderLoadFailed || !cursor)
+      return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
@@ -2564,7 +2611,8 @@ export default function RunDetail({ id }: RunDetailProps) {
                 ...b,
                 messages: [...fresh, ...b.messages],
                 message_total: Math.max(
-                  page.message_total ?? 0, b.message_total ?? b.messages.length,
+                  page.message_total ?? 0,
+                  b.message_total ?? b.messages.length,
                   b.messages.length + fresh.length,
                 ),
               };

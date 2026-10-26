@@ -22,7 +22,9 @@ export async function loadSessionLiveBootstrap(
     let afterSeq = 0;
     while (afterSeq < snapshot.signal_seq) {
       const page = await getSessionSignalPage(id, {
-        afterSeq, throughSeq: snapshot.signal_seq, limit: 500,
+        afterSeq,
+        throughSeq: snapshot.signal_seq,
+        limit: 500,
       });
       if (!isCurrent()) return null;
       for (const signal of page.signals) projection.append(signal);

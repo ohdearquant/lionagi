@@ -315,6 +315,17 @@ async def test_shared_resource_has_no_transaction_or_capability_probe_at_idle(
     opened, closed, statements = [], [], []
     waits = asyncio.Queue()
     original = tail.open_db
+    original_collections = tail._Tail._collections
+    original_validate = tail._validate
+    work = {"collections": 0, "validations": 0}
+
+    async def collections(owner):
+        work["collections"] += 1
+        return await original_collections(owner)
+
+    def validate(frontiers, current):
+        work["validations"] += 1
+        return original_validate(frontiers, current)
 
     @asynccontextmanager
     async def counted(path):
@@ -333,6 +344,8 @@ async def test_shared_resource_has_no_transaction_or_capability_probe_at_idle(
         await future
 
     monkeypatch.setattr(tail, "open_db", counted)
+    monkeypatch.setattr(tail._Tail, "_collections", collections)
+    monkeypatch.setattr(tail, "_validate", validate)
     monkeypatch.setattr(tail, "sleep", poll_wait)
     _detail, mark = await bootstrap(live_backend)
     subs = []
@@ -347,10 +360,13 @@ async def test_shared_resource_has_no_transaction_or_capability_probe_at_idle(
     assert len(opened) == 1 and opened[0] is owner.db
     assert not owner.db.in_transaction
     statements.clear()
+    baseline = dict(work)
     for _ in range(3):
         pending.set_result(None)
         pending = await asyncio.wait_for(waits.get(), 3)
         assert not owner.db.in_transaction
+    assert work == baseline
+    assert not any(sql.lstrip().upper().startswith(("BEGIN", "SELECT")) for sql in statements)
     assert len(opened) == 1 and not closed
     assert not any("sqlite_master" in sql for sql in statements)
     for sub in subs:
@@ -447,7 +463,10 @@ async def test_legacy_frames_match_the_frozen_base_bytes(
     assert reference["source_revision"] == "6adc5127ff56256ce17555c366ecd0161ce3881d"
     for name, expected in reference["unchanged_helpers"].items():
         node = ast.parse(inspect.getsource(getattr(sessions, name))).body[0]
-        assert ast.dump(node, include_attributes=False) == expected, name
+        expected_node = ast.parse(expected).body[0]
+        assert ast.dump(node, include_attributes=False) == ast.dump(
+            expected_node, include_attributes=False
+        ), name
 
     def frozen(name, module):
         namespace = dict(vars(module))

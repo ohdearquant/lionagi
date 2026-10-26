@@ -129,6 +129,7 @@ class _Subscriber:
     starting_cursor: str
     starting_seq: int
     after_index: int
+    delivered_index: int | None = None
     queue: deque[tuple[_Delivery, int]] = field(default_factory=deque)
     queued_bytes: int = 0
     changed: Event = field(default_factory=Event)
@@ -186,9 +187,15 @@ class _Subscriber:
             "stream": self.channel,
         }
         if self.channel == "messages":
-            value["resume_cursor"] = self.starting_cursor
+            value["resume_cursor"] = (
+                self.starting_cursor
+                if self.delivered_index is None
+                else f"{self.bootstrap.token}.{self.owner.generation}.{self.delivered_index}"
+            )
         else:
-            value["resume_after_seq"] = self.starting_seq
+            value["resume_after_seq"] = (
+                self.starting_seq if self.delivered_index is None else self.delivered_index
+            )
         self.control = f"data: {_json(value)}\n\n"
         self.changed.set()
 
@@ -203,6 +210,7 @@ class _Subscriber:
                     self.queued_bytes -= size
                     frame = self.frame(delivery)
                     self.owner.release(delivery)
+                    self.delivered_index = delivery.index
                     yield frame
                     continue
                 if self.finished:
@@ -303,7 +311,7 @@ class SessionTailRegistry:
             raise StreamResyncError("frontier_unavailable")
         token = f"sl1.{self.epoch}.{secrets.token_urlsafe(18)}"
         size = _frontier_bytes(frontiers) + len(token.encode()) + len(session_id.encode()) + 128
-        if not self.can_fit(session_id, size):
+        if not self.make_room(session_id, size):
             raise StreamResyncError("resource_limit")
         self.bootstraps[token] = _Bootstrap(
             token, session_id, frontiers, signal_seq, time.monotonic(), size
@@ -351,7 +359,7 @@ class SessionTailRegistry:
                 raise StreamResyncError("frontier_unavailable")
             tail = self.tails.get(session_id)
             if tail is not None and tail.closing and tail.task is not None:
-                await tail.task
+                await asyncio.shield(tail.task)
             if tail is not None and tail.error is not None:
                 if tail.subscribers:
                     raise StreamResyncError(tail.error)
@@ -359,33 +367,42 @@ class SessionTailRegistry:
                 tail.discard()
                 del self.tails[session_id]
                 tail = None
+            created = tail is None
             if tail is None:
                 if index is not None:
                     raise StreamResyncError("frontier_unavailable")
                 if len(self.tails) >= MAX_BROKERS:
                     raise StreamResyncError("resource_limit")
                 tail = _Tail(self, boot)
-                if not self.can_fit(session_id, tail.metadata_size):
+                tail.check_retention(boot, channel, index, after_seq, generation)
+                if not self.make_room(session_id, tail.metadata_size):
                     raise StreamResyncError("resource_limit")
                 self.metadata_bytes += tail.metadata_size
                 self.tails[session_id] = tail
             if len(tail.subscribers) >= MAX_SUBSCRIBERS:
                 raise StreamResyncError("resource_limit")
-            tail.check_retention(boot, channel, index, after_seq, generation)
-            sub = _Subscriber(tail, boot, channel, token, after_seq, index or 0)
-            tail.subscribers.add(sub)
+            sub = None
             try:
+                tail.check_retention(boot, channel, index, after_seq, generation)
+                sub = _Subscriber(tail, boot, channel, token, after_seq, index or 0)
+                tail.subscribers.add(sub)
                 if tail.task is None:
                     await tail.start()
                 await tail.admit(sub, generation)
                 if sub.control is not None:
                     raise StreamResyncError(tail.error or "frontier_unavailable")
             except BaseException:
-                tail.subscribers.discard(sub)
-                sub.clear()
+                if sub is not None:
+                    tail.subscribers.discard(sub)
+                    sub.clear()
                 if not tail.subscribers:
                     with CancelScope(shield=True):
-                        await tail.stop()
+                        try:
+                            await tail.stop()
+                        finally:
+                            if created and self.tails.get(session_id) is tail:
+                                tail.discard()
+                                del self.tails[session_id]
                 raise
             return sub
 
@@ -444,6 +461,8 @@ class _Tail:
         self.resource: Any = None
         self.db: Any = None
         self.schema_version: int | None = None
+        self.completed_data_version: int | None = None
+        self.completed_state: dict[str, Any] | None = None
         self.signal_definition: str | None = None
         self.signal_definition_bytes = 0
         self.has_signals = False
@@ -592,8 +611,11 @@ class _Tail:
     async def start(self) -> None:
         async with self.io_lock:
             self.error = None
-            self.resource = open_db(self.registry.path)
+            # data_version values are comparable only on the same connection.
+            self.completed_data_version = None
+            self.completed_state = None
             try:
+                self.resource = open_db(self.registry.path)
                 self.db = await self.resource.__aenter__()
                 async with self.db.execute("PRAGMA query_only = ON"):
                     pass
@@ -618,6 +640,8 @@ class _Tail:
                 )
                 with CancelScope(shield=True):
                     await self._close_unlocked()
+                if isinstance(exc, Exception) and not isinstance(exc, StreamResyncError):
+                    raise StreamResyncError(self.error) from exc
                 raise
             self.task = asyncio.create_task(self.run(), name="session-tail")
 
@@ -818,6 +842,23 @@ class _Tail:
         from . import sessions, signals
 
         before = await self._scalar("PRAGMA data_version")
+        if before == self.completed_data_version and self.completed_state is not None:
+            state = self.completed_state
+            candidate = sessions.is_session_stream_done(state, now=time.time())
+            after = await self._scalar("PRAGMA data_version")
+            if before != after or candidate:
+                # Time alone can make a cached terminal state eligible. Pin a
+                # fresh own-session snapshot before deciding it is done, even
+                # when both version observations match.
+                self.completed_data_version = None
+                self.completed_state = None
+                terminal = await self._confirm_terminal(
+                    state, self.positions, self.signal_seq, candidate=candidate
+                )
+                return before != after or not terminal, terminal
+            return False, False
+        self.completed_data_version = None
+        self.completed_state = None
         async with self.db.execute("BEGIN"):
             pass
         try:
@@ -875,6 +916,11 @@ class _Tail:
             )
         for value in signal_rows:
             self.publish("signals", value)
+        if not progressed and before == after:
+            # A progressed batch may leave a suffix behind. Only a completed,
+            # empty stable drain permits subsequent idle reads to be skipped.
+            self.completed_data_version = after
+            self.completed_state = state
         return progressed or before != after, terminal
 
     async def _confirm_terminal(

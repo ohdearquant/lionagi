@@ -13,6 +13,7 @@ import pytest
 
 from tests.apps_studio_server.test_session_live_tail import append, bootstrap, data, seed
 from tests.apps_studio_server.test_session_live_tail import live_backend as live_backend
+from tests.apps_studio_server.test_session_live_tail import live_http as live_http
 
 
 async def test_active_admission_rejects_changed_frontier_before_retained_data(
@@ -101,6 +102,8 @@ async def test_admission_queries_wait_for_the_active_drain_transaction(live_back
     monkeypatch.setattr(tail._Tail, "_collections", collections)
     pending = None
     try:
+        # An idle drain deliberately skips collection reads until a commit.
+        await append(live_backend, ["drain-before-admission"])
         await asyncio.wait_for(entered.wait(), 3)
         pending = asyncio.create_task(
             registry.subscribe("session", "signals", mark["message_cursor"], after_seq=0)
@@ -692,10 +695,9 @@ async def test_signal_definition_bytes_reject_oversized_activation_without_uncac
     monkeypatch.setattr(tail, "MAX_RETAINED_BYTES", frontier_only + raw_bytes // 2)
     with pytest.raises(tail.StreamResyncError, match="resource_limit"):
         await registry.subscribe("session", "signals", mark["message_cursor"], after_seq=0)
-    rejected = registry.tails["session"]
-    assert rejected.signal_definition is None and rejected.signal_definition_bytes == 0
-    assert rejected.db is None and rejected.task is None
-    assert registry.session_retained_bytes("session") <= tail.MAX_RETAINED_BYTES
+    assert "session" not in registry.tails
+    assert registry.metadata_bytes == boot.size and registry.payload_bytes == 0
+    assert registry.session_retained_bytes("session") == boot.size
     # A larger legal budget is a positive control for the same real schema.
     monkeypatch.setattr(tail, "MAX_RETAINED_BYTES", frontier_only + 2 * raw_bytes)
     accepted = await registry.subscribe("session", "signals", mark["message_cursor"], after_seq=0)
@@ -730,3 +732,566 @@ async def test_unrelated_schema_revalidation_does_not_double_charge_definition(l
         assert registry.metadata_bytes == metadata and sub.control is None
     finally:
         await registry.unsubscribe(sub)
+
+
+class _IdlePolls:
+    def __init__(self):
+        self.waits = asyncio.Queue()
+
+    async def sleep(self, seconds):
+        if seconds == 0:
+            await asyncio.sleep(0)
+            return
+        future = asyncio.get_running_loop().create_future()
+        self.waits.put_nowait(future)
+        await future
+
+    async def barrier(self):
+        return await asyncio.wait_for(self.waits.get(), 3)
+
+
+def _count_idle_collections(monkeypatch, tail):
+    counts = SimpleNamespace(collections=0)
+    original = tail._Tail._collections
+
+    async def counted(owner):
+        counts.collections += 1
+        return await original(owner)
+
+    monkeypatch.setattr(tail._Tail, "_collections", counted)
+    return counts
+
+
+async def test_idle_collection_cache_rechecks_commits_and_finishes_batched_suffix(
+    live_backend, monkeypatch
+):
+    await seed(live_backend)
+    registry, path, _url, _sessions, _signals, tail, sqlite = live_backend
+    gate = _IdlePolls()
+    monkeypatch.setattr(tail, "sleep", gate.sleep)
+    monkeypatch.setattr(tail, "TAIL_BATCH_ROWS", 1)
+    counts = _count_idle_collections(monkeypatch, tail)
+    _detail, mark = await bootstrap(live_backend)
+    sub = await registry.subscribe("session", "messages", mark["message_cursor"])
+    iterator = sub.frames()
+    try:
+        pending = await gate.barrier()
+        baseline = counts.collections
+        for _ in range(5):
+            pending.set_result(None)
+            pending = await gate.barrier()
+        assert counts.collections == baseline
+        assert not sub.owner.db.in_transaction
+
+        # The cache depends on the reader being unable to commit its own DML
+        # or DDL, which SQLite's connection-local data_version would not notice.
+        async with sub.owner.io_lock:
+            assert await sub.owner._scalar("PRAGMA query_only") == 1
+            version = await sub.owner._scalar("PRAGMA data_version")
+            total_changes = sub.owner.db.total_changes
+            for statement in [
+                "UPDATE sessions SET name='forbidden' WHERE id='session'",
+                "CREATE TABLE forbidden_tail_write (value INTEGER)",
+            ]:
+                try:
+                    with pytest.raises(sqlite.OperationalError, match="readonly"):
+                        async with sub.owner.db.execute(statement):
+                            pass
+                finally:
+                    await sub.owner.db.rollback()
+            assert sub.owner.db.total_changes == total_changes
+            assert await sub.owner._scalar("PRAGMA data_version") == version
+        pending.set_result(None)
+        pending = await gate.barrier()
+        assert counts.collections == baseline
+
+        # An unrelated schema commit must still revalidate capability once.
+        async with sqlite.connect(str(path)) as writer:
+            await writer.execute("CREATE TABLE idle_cache_noise (value INTEGER)")
+            await writer.commit()
+        pending.set_result(None)
+        pending = await gate.barrier()
+        assert counts.collections == baseline + 1
+        assert sub.owner.error is None
+        baseline = counts.collections
+
+        await append(live_backend, ["idle-one", "idle-two", "idle-three"])
+        pending.set_result(None)
+        pending = await gate.barrier()
+        assert [(await data(iterator))[1]["id"] for _ in range(3)] == [
+            "idle-one",
+            "idle-two",
+            "idle-three",
+        ]
+        assert counts.collections >= baseline + 4
+        baseline = counts.collections
+        for _ in range(5):
+            pending.set_result(None)
+            pending = await gate.barrier()
+        assert counts.collections == baseline
+
+        # Retention can change without a SQLite write. Old cuts still fail
+        # synchronously, while the healthy active consumer keeps its stream.
+        sub.owner._evict()
+        with pytest.raises(tail.StreamResyncError, match="frontier_unavailable"):
+            await registry.subscribe("session", "messages", mark["message_cursor"])
+        assert counts.collections == baseline and sub.control is None
+        pending.set_result(None)
+        await gate.barrier()
+        assert counts.collections == baseline and sub.control is None
+    finally:
+        await iterator.aclose()
+        await registry.unsubscribe(sub)
+        assert sub.owner.task is None and sub.owner.db is None
+
+
+async def test_reopened_tail_does_not_reuse_another_connections_completed_version(
+    live_backend, monkeypatch
+):
+    await seed(live_backend)
+    registry, _path, _url, _sessions, _signals, tail, _sqlite = live_backend
+    gate = _IdlePolls()
+    monkeypatch.setattr(tail, "sleep", gate.sleep)
+    original = tail._Tail._scalar
+
+    async def same_numeric_version(owner, query):
+        # Equal numeric cookies on different connections do not imply that
+        # the database stayed unchanged between those connections.
+        return 17 if query == "PRAGMA data_version" else await original(owner, query)
+
+    monkeypatch.setattr(tail._Tail, "_scalar", same_numeric_version)
+    _detail, mark = await bootstrap(live_backend)
+    first = await registry.subscribe("session", "messages", mark["message_cursor"])
+    await gate.barrier()
+    owner = first.owner
+    assert owner.completed_data_version == 17
+    await registry.unsubscribe(first)
+    assert owner.task is None and owner.db is None
+    await append(live_backend, ["after-reopen"])
+    second = await registry.subscribe("session", "messages", mark["message_cursor"])
+    iterator = second.frames()
+    try:
+        assert second.owner is owner
+        assert (await data(iterator))[1]["id"] == "after-reopen"
+    finally:
+        await iterator.aclose()
+        assert owner.task is None and owner.db is None
+
+
+@pytest.mark.parametrize("kind", [None, "message", "signal", "branch"])
+async def test_cached_terminal_age_confirms_own_snapshot_before_done(
+    live_backend, monkeypatch, kind
+):
+    from lionagi.state.db import StateDB
+
+    await seed(live_backend, terminal=True)
+    registry, path, url, sessions, _signals, tail, sqlite = live_backend
+    async with sqlite.connect(str(path)) as writer:
+        await writer.execute("UPDATE sessions SET updated_at=100 WHERE id='session'")
+        await writer.commit()
+    clock = SimpleNamespace(now=100 + sessions.SESSION_DONE_STABLE_SECS - 1)
+    monkeypatch.setattr(
+        tail, "time", SimpleNamespace(time=lambda: clock.now, monotonic=tail.time.monotonic)
+    )
+    gate = _IdlePolls()
+    monkeypatch.setattr(tail, "sleep", gate.sleep)
+    counts = _count_idle_collections(monkeypatch, tail)
+    original = tail._Tail._scalar
+    state = {"armed": False, "fences": 0, "inserted": False}
+
+    async def interleave(owner, query):
+        if state["armed"] and query == "PRAGMA data_version":
+            state["fences"] += 1
+            if state["fences"] == 2 and kind is not None:
+                assert not owner.db.in_transaction
+                state["inserted"] = True
+                if kind == "signal":
+                    async with StateDB(url=url) as writer:
+                        await writer.insert_session_signal(
+                            session_id="session",
+                            kind="NodeCompleted",
+                            op_id="cached-terminal",
+                            ts=1.0,
+                            payload={},
+                        )
+                else:
+                    progression = "branch-pool"
+                    if kind == "branch":
+                        progression = "cached-terminal-pool"
+                        async with StateDB(url=url) as writer:
+                            await writer.create_progression(progression)
+                            await writer.create_branch(
+                                {
+                                    "id": "cached-terminal-branch",
+                                    "session_id": "session",
+                                    "progression_id": progression,
+                                    "created_at": 1.0,
+                                }
+                            )
+                    await append(live_backend, ["before-cached-done"], progression=progression)
+        return await original(owner, query)
+
+    monkeypatch.setattr(tail._Tail, "_scalar", interleave)
+    _detail, mark = await bootstrap(live_backend)
+    channel = "signals" if kind == "signal" else "messages"
+    sub = await registry.subscribe("session", channel, mark["message_cursor"], after_seq=0)
+    iterator = sub.frames()
+    try:
+        pending = await gate.barrier()
+        baseline = counts.collections
+        for _ in range(3):
+            pending.set_result(None)
+            pending = await gate.barrier()
+        assert counts.collections == baseline and not sub.finished
+        state["armed"] = True
+        clock.now = 100 + sessions.SESSION_DONE_STABLE_SECS + 1
+        pending.set_result(None)
+        value = (await data(iterator))[1]
+        if kind is None:
+            assert value == {"type": "done"}
+            assert counts.collections == baseline + 1
+        else:
+            assert state["inserted"] and value.get("type") is None
+            if kind == "signal":
+                assert value["seq"] == 1 and value["op_id"] == "cached-terminal"
+            else:
+                assert value["id"] == "before-cached-done"
+                if kind == "branch":
+                    assert value["branch_id"] == "cached-terminal-branch"
+            assert (await data(iterator))[1] == {"type": "done"}
+        assert sub.control is None
+    finally:
+        await iterator.aclose()
+        await registry.unsubscribe(sub)
+        assert sub.owner.task is None and sub.owner.db is None
+
+
+async def test_cancelled_joiner_does_not_cancel_a_closing_reader(live_backend, monkeypatch):
+    await seed(live_backend, terminal=True)
+    registry, *_rest = live_backend
+    tail = live_backend[5]
+    closing, release = asyncio.Event(), asyncio.Event()
+    original = tail._Tail._close_unlocked
+    cancelled = []
+    closed = []
+
+    async def delayed_close(owner):
+        if owner.resource is not None:
+            closing.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+            await original(owner)
+            closed.append(True)
+        else:
+            await original(owner)
+
+    monkeypatch.setattr(tail._Tail, "_close_unlocked", delayed_close)
+    _detail, mark = await bootstrap(live_backend)
+    first = await registry.subscribe("session", "messages", mark["message_cursor"])
+    reader = first.owner.task
+    joiner = None
+    try:
+        await asyncio.wait_for(closing.wait(), 3)
+        assert reader is not None and not reader.done()
+        joiner = asyncio.create_task(
+            registry.subscribe("session", "messages", mark["message_cursor"])
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not joiner.done()
+        joiner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await joiner
+        assert not cancelled and not reader.done()
+        release.set()
+        await asyncio.wait_for(asyncio.shield(reader), 3)
+        assert closed == [True]
+        assert first.owner.db is None and first.owner.resource is None
+        assert first.owner.task is None
+        assert first.owner.subscribers == {first}
+    finally:
+        release.set()
+        if joiner is not None:
+            if not joiner.done():
+                joiner.cancel()
+            await asyncio.gather(joiner, return_exceptions=True)
+        if reader is not None:
+            await asyncio.gather(reader, return_exceptions=True)
+        await registry.unsubscribe(first)
+
+
+async def test_failed_first_retention_does_not_consume_a_broker_slot(live_backend, monkeypatch):
+    await seed(live_backend)
+    registry, _path, _url, _sessions, _signals, tail, _sqlite = live_backend
+    _detail, mark = await bootstrap(live_backend)
+    boot = registry.bootstraps[mark["message_cursor"]]
+    monkeypatch.setattr(tail, "MAX_BROKERS", 1)
+    for _ in range(3):
+        with pytest.raises(tail.StreamResyncError, match="frontier_unavailable"):
+            await registry.subscribe("session", "signals", mark["message_cursor"], after_seq=1)
+        assert not registry.tails
+        assert registry.metadata_bytes == boot.size and registry.payload_bytes == 0
+    accepted = await registry.subscribe("session", "messages", mark["message_cursor"])
+    try:
+        assert accepted.ready and registry.tails["session"] is accepted.owner
+    finally:
+        await registry.unsubscribe(accepted)
+
+
+async def test_failed_first_admission_releases_its_registered_tail(live_backend, monkeypatch):
+    await seed(live_backend, 1)
+    registry, path, _url, _sessions, _signals, tail, sqlite = live_backend
+    _detail, mark = await bootstrap(live_backend)
+    boot = registry.bootstraps[mark["message_cursor"]]
+    original = tail._Tail.admit
+    rejected = []
+
+    async def remove_cut_before_admission(owner, sub, generation):
+        rejected.append(owner)
+        async with sqlite.connect(str(path)) as writer:
+            await writer.execute("DELETE FROM session_signals WHERE session_id='session'")
+            await writer.commit()
+        await original(owner, sub, generation)
+
+    monkeypatch.setattr(tail._Tail, "admit", remove_cut_before_admission)
+    with pytest.raises(tail.StreamResyncError, match="frontier_unavailable"):
+        await registry.subscribe("session", "signals", mark["message_cursor"], after_seq=1)
+    assert len(rejected) == 1 and not registry.tails
+    owner = rejected[0]
+    assert not owner.subscribers and owner.task is None
+    assert owner.db is None and owner.resource is None and owner.metadata_size == 0
+    assert not owner.log and owner.retained_bytes == 0
+    assert registry.metadata_bytes == boot.size and registry.payload_bytes == 0
+    monkeypatch.setattr(tail._Tail, "admit", original)
+    accepted = await registry.subscribe("session", "messages", mark["message_cursor"])
+    try:
+        assert accepted.ready and accepted.owner is not owner
+    finally:
+        await registry.unsubscribe(accepted)
+
+
+async def test_cancelled_initial_open_keeps_cancellation_and_releases_admission(
+    live_backend, monkeypatch
+):
+    await seed(live_backend)
+    registry, _path, _url, _sessions, _signals, tail, _sqlite = live_backend
+    _detail, mark = await bootstrap(live_backend)
+    boot = registry.bootstraps[mark["message_cursor"]]
+    entered = asyncio.Event()
+    exits = []
+
+    class PendingOpen:
+        async def __aenter__(self):
+            entered.set()
+            await asyncio.Future()
+
+        async def __aexit__(self, *_exc):
+            exits.append(True)
+
+    monkeypatch.setattr(tail, "open_db", lambda _path: PendingOpen())
+    pending = asyncio.create_task(registry.subscribe("session", "messages", mark["message_cursor"]))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert exits == [True]
+        assert not registry.tails
+        assert registry.metadata_bytes == boot.size and registry.payload_bytes == 0
+    finally:
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("channel", ["messages", "signals"])
+@pytest.mark.parametrize("failure", ["factory", "enter"])
+async def test_repeated_live_store_open_failure_has_one_resync_response(
+    live_backend, live_http, monkeypatch, channel, failure
+):
+    await seed(live_backend, terminal=True)
+    registry, path, _url, _sessions, _signals, tail, _sqlite = live_backend
+    _detail, mark = await bootstrap(live_backend)
+    boot = registry.bootstraps[mark["message_cursor"]]
+    original = tail.open_db
+    attempts = []
+
+    class UnavailableOpen:
+        async def __aenter__(self):
+            raise OSError("store unavailable")
+
+        async def __aexit__(self, *_exc):
+            pass
+
+    def unavailable_open(actual_path):
+        attempts.append(actual_path)
+        if failure == "factory":
+            raise OSError("store unavailable")
+        return UnavailableOpen()
+
+    monkeypatch.setattr(tail, "open_db", unavailable_open)
+    if channel == "messages":
+        route = "/api/sessions/session/stream"
+        params = {"mode": "live", "cursor": mark["message_cursor"]}
+    else:
+        route = "/api/sessions/session/signals"
+        params = {"mode": "live", "snapshot": mark["message_cursor"], "after_seq": 0}
+    for _ in range(2):
+        response = await live_http.get(route, params=params)
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": {"code": "stream_resync_required", "reason": "frontier_unavailable"}
+        }
+        assert not registry.tails
+        assert registry.metadata_bytes == boot.size and registry.payload_bytes == 0
+    assert attempts == [str(path), str(path)]
+    monkeypatch.setattr(tail, "open_db", original)
+    response = await asyncio.wait_for(live_http.get(route, params=params), 10)
+    assert response.status_code == 200 and response.text == 'data: {"type":"done"}\n\n'
+
+
+def _admission_only_registry(monkeypatch):
+    from lionagi.studio.services import _session_tail as tail
+
+    registry = tail.SessionTailRegistry("unused")
+    started = []
+
+    async def start(owner):
+        started.append(owner.session_id)
+
+    async def admit(owner, sub, generation):
+        sub.ready = True
+        for item in owner.log:
+            sub.offer(item)
+
+    monkeypatch.setattr(tail._Tail, "start", start)
+    monkeypatch.setattr(tail._Tail, "admit", admit)
+    return registry, tail, started
+
+
+async def _idle_signal_payload(registry):
+    mark = registry.snapshot("old", {}, 0)
+    sub = await registry.subscribe("old", "signals", mark["message_cursor"])
+    sub.owner.publish("signals", {"seq": 1, "payload": "x" * 4096})
+    await registry.unsubscribe(sub)
+    assert not sub.owner.subscribers and sub.owner.log
+    assert sub.owner.task is None and sub.owner.resource is None
+    return sub.owner
+
+
+@pytest.mark.parametrize("channel", ["messages", "signals"])
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_resync_marker_excludes_queued_payloads(monkeypatch, channel, delivered):
+    registry, _tail, _started = _admission_only_registry(monkeypatch)
+    mark = registry.snapshot("session", {}, 7)
+    sub = await registry.subscribe("session", channel, mark["message_cursor"], after_seq=7)
+    iterator = sub.frames()
+    try:
+        for index in range(2):
+            if channel == "messages":
+                sub.owner.publish(
+                    "messages",
+                    {"id": f"message-{index}"},
+                    branch_id="branch",
+                    position=index,
+                    message_id=f"message-{index}",
+                    progression_id="progression",
+                )
+            else:
+                sub.owner.publish("signals", {"seq": 8 + index})
+        expected = mark["message_cursor"] if channel == "messages" else 7
+        if delivered:
+            frame, value = await data(iterator)
+            expected = (
+                next(line[4:] for line in frame.splitlines() if line.startswith("id: "))
+                if channel == "messages"
+                else value["seq"]
+            )
+        sub.resync("overflow")
+        _frame, control = await data(iterator)
+        key = "resume_cursor" if channel == "messages" else "resume_after_seq"
+        assert control[key] == expected
+        assert control["type"] == "resync_required" and control["stream"] == channel
+        assert not sub.queue and sub.queued_bytes == 0
+    finally:
+        await iterator.aclose()
+        await registry.aclose()
+
+
+async def test_snapshot_reclaims_idle_payload_before_rejecting_budget(monkeypatch):
+    registry, tail, _started = _admission_only_registry(monkeypatch)
+    try:
+        owner = await _idle_signal_payload(registry)
+        limit = registry.retained_bytes
+        monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", limit)
+        assert not registry.can_fit("new", 1)
+        mark = registry.snapshot("new", {}, 0)
+        assert mark["message_cursor"] in registry.bootstraps
+        assert not owner.log and registry.payload_bytes == 0
+        assert registry.retained_bytes <= limit
+        assert set(registry.tails) == {"old"}
+    finally:
+        await registry.aclose()
+
+
+async def test_new_tail_reclaims_idle_payload_before_opening_reader(monkeypatch):
+    registry, tail, started = _admission_only_registry(monkeypatch)
+    try:
+        mark = registry.snapshot("new", {}, 0)
+        owner = await _idle_signal_payload(registry)
+        limit = registry.retained_bytes
+        monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", limit)
+        assert not registry.can_fit("new", 1)
+        sub = await registry.subscribe("new", "signals", mark["message_cursor"])
+        assert started == ["old", "new"]
+        assert sub.owner is registry.tails["new"]
+        assert not owner.log and registry.payload_bytes == 0
+        assert registry.retained_bytes <= limit
+        await registry.unsubscribe(sub)
+    finally:
+        await registry.aclose()
+
+
+@pytest.mark.parametrize("admission", ["snapshot", "tail"])
+async def test_impossible_metadata_admission_preserves_retained_payload(monkeypatch, admission):
+    registry, tail, started = _admission_only_registry(monkeypatch)
+    try:
+        mark = registry.snapshot("new", {}, 0) if admission == "tail" else None
+        owner = await _idle_signal_payload(registry)
+        retained = tuple(owner.log)
+        payload_bytes = registry.payload_bytes
+        metadata_bytes = registry.metadata_bytes
+        monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", metadata_bytes)
+        with pytest.raises(tail.StreamResyncError, match="resource_limit"):
+            if mark is None:
+                registry.snapshot("new", {}, 0)
+            else:
+                await registry.subscribe("new", "signals", mark["message_cursor"])
+        assert tuple(owner.log) == retained
+        assert registry.payload_bytes == payload_bytes
+        assert registry.metadata_bytes == metadata_bytes
+        assert set(registry.tails) == {"old"} and started == ["old"]
+    finally:
+        await registry.aclose()
+
+
+async def test_invalid_new_tail_cannot_evict_another_session(monkeypatch):
+    registry, tail, started = _admission_only_registry(monkeypatch)
+    try:
+        mark = registry.snapshot("new", {}, 7)
+        owner = await _idle_signal_payload(registry)
+        retained = tuple(owner.log)
+        payload_bytes = registry.payload_bytes
+        metadata_bytes = registry.metadata_bytes
+        monkeypatch.setattr(tail, "MAX_TOTAL_RETAINED_BYTES", registry.retained_bytes)
+        with pytest.raises(tail.StreamResyncError, match="frontier_unavailable"):
+            await registry.subscribe("new", "signals", mark["message_cursor"], after_seq=8)
+        assert tuple(owner.log) == retained
+        assert registry.payload_bytes == payload_bytes
+        assert registry.metadata_bytes == metadata_bytes
+        assert set(registry.tails) == {"old"} and started == ["old"]
+    finally:
+        await registry.aclose()

@@ -332,12 +332,14 @@ async def test_idle_tail_work_does_not_multiply_by_viewers(
         metrics = trace.metrics("steady")
         record_property("idle_poll_work", json.dumps({"viewers": viewers, "ticks": 3, **metrics}))
         q = metrics["queries"]
-        assert q.get("message_membership", 0) == 3 and q.get("signal_tail", 0) == 3
+        assert all(
+            q.get(name, 0) == 0 for name in ["message_membership", "signal_tail", "terminal_state"]
+        )
         violations = {
             "queries_scale_with_viewers": sum(
                 q.get(name, 0) for name in ["message_membership", "signal_tail", "terminal_state"]
             )
-            > 3 * 3,
+            > 0,
             "new_connections_each_tick": metrics["opens"] != 0,
             "capability_reprobed_each_tick": q.get("signal_capability", 0) != 0,
             "held_read_transaction": any(metrics["active_transactions"].values()),
