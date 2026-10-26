@@ -28,6 +28,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Security-control contracts and settings reading live in core modules; existing agent imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
+  Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
+  call sites; patch `lionagi.protocols.action.gate` or `lionagi._settings` instead.
+
 - Packages built on top of the core move to `lionhub`, a second top-level package
   shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
   Each old import path keeps working until lionagi 2.0: it returns the same module
