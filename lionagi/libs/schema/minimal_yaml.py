@@ -26,13 +26,15 @@ class MinimalDumper(yaml.SafeDumper):
     # and falls back to one double-quoted line with every newline escaped; it also writes a
     # block for text holding a next-line character, which loads back as a line feed. Decide
     # from the characters instead: a block whenever every character is safe to write as is,
-    # double quotes otherwise.
+    # double quotes otherwise. Single quotes are never used for such text: a reader folds a
+    # line break inside them into a space.
     def analyze_scalar(self, scalar: str):  # type: ignore[override]
         analysis = super().analyze_scalar(scalar)
         if analysis.multiline:
             analysis.allow_block = not _NOT_BLOCK_SAFE.search(scalar) and (
                 self.allow_unicode or not _NON_ASCII.search(scalar)
             )
+            analysis.allow_single_quoted = False
         return analysis
 
 

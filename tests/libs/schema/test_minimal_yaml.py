@@ -176,8 +176,9 @@ class TestMultilineStrings:
             "space before a break  \nnext line\n",
             "ends with a space\nlast ",
             "caf\u00e9\tna\u00efve\nnext\n",
+            "max \U0010ffff\tcode point\nnext\n",
         ],
-        ids=["tab", "space-before-break", "trailing-space", "non-ascii-tab"],
+        ids=["tab", "space-before-break", "trailing-space", "non-ascii-tab", "max-code-point"],
     )
     def test_multiline_whitespace_keeps_block_scalar(self, text):
         result = minimal_yaml({"text": text})
@@ -224,10 +225,22 @@ class TestMultilineStrings:
         assert "  body: |\n    def f():\n    \treturn 1\n" in result
         assert yaml.safe_load(result) == data
 
-    def test_multiline_key_round_trips(self):
+    @pytest.mark.parametrize(
+        "text",
+        ["a\x85b", "a\u2028b", "a\u2029b"],
+        ids=["next-line", "line-separator", "paragraph-separator"],
+    )
+    def test_line_break_without_line_feed_is_double_quoted(self, text):
+        result = minimal_yaml({"text": text})
+
+        assert result.startswith('text: "')
+        assert yaml.safe_load(result) == {"text": text}
+
+    def test_multiline_key_keeps_block_scalar(self):
         data = {"a\tb\nc": "v"}
         result = minimal_yaml(data)
 
+        assert result.startswith("? |")
         assert yaml.safe_load(result) == data
 
     def test_multiline_non_ascii_stays_quoted_without_allow_unicode(self):
@@ -238,15 +251,12 @@ class TestMultilineStrings:
         assert result.startswith('text: "')
         assert yaml.safe_load(result) == {"text": text}
 
-    def test_multiline_text_round_trips_exactly(self):
-        alphabet = "a \t\r\n:\x85"
+    def test_text_round_trips_exactly(self):
+        alphabet = "a \t\r\n:'\x85\u2028"
         texts = [
-            "".join(chars)
-            for n in range(1, 5)
-            for chars in itertools.product(alphabet, repeat=n)
-            if "\n" in chars
+            "".join(chars) for n in range(1, 5) for chars in itertools.product(alphabet, repeat=n)
         ]
-        assert len(texts) > 500
+        assert len(texts) > 4000
 
         for text in texts:
             result = minimal_yaml({"t": text}, drop_empties=False)
