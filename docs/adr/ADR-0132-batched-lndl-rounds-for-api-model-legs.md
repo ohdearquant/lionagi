@@ -35,6 +35,42 @@ records the reading answer by answer, and the pilot's `summarize.py` computes th
 from it and the run's results (`d4_rule_by_checks` and `d4_rule_by_substance` in each run's
 `summary.json`).
 
+## Amendment 2 (2026-10-26): `lndl-calls` shows the tools only as LNDL calls
+
+`api_loop` takes a third value, `lndl-calls`. It runs the `lndl` loop of D1 and D2 with the same
+rounds, bounds and endings, and differs only in how the model is shown its tools. The first round's
+guidance lists each tool as an LNDL call: its signature, with each parameter's type and default, the
+tool's description and each parameter's description under it, and an example round that calls
+(`_render_tool_calls` in `lndl_middle.py`). No round's request carries the tools' schemas: the
+Middle passes an empty tool list to every round, and while a round runs, an endpoint that places
+the prompt cache leaves the `Tools:` section out of its cached system block (`_no_tool_section` in
+`lionagi/operations/chat/_prepare.py`). Every later round's request carries the first round's
+instruction as history, so each request still names the tools, as calls. D1's rule that every
+round's request names the tools holds for `lndl-calls` in that form, and stands as written for
+`lndl`. The launch record names `lndl-calls`, and a resume runs it, as D1 says of every loop.
+
+The reason is the round in which nothing runs. With the schemas in the request, a model writes some
+of its calls as the provider's own tool-call markup, an `<invoke>` tag, which the loop does not run;
+that round is a repair round (D1), and the turn spends a request on it. Of 300 such rounds counted
+on 50 coding tasks, 247 carried an `<invoke>` tag. Measured on 26
+code-review tasks on `anthropic/claude-haiku-5-5`, one run per loop per task with a task's two runs
+adjacent in time, on profiles identical apart from `api_loop`:
+
+| | `lndl` | `lndl-calls` |
+|---|---|---|
+| rounds in which nothing ran | 22 | 2 |
+| repair notices, all causes | 26 | 9 |
+| requests | 142 | 95 |
+| cost | | 12.7% lower |
+| cost, the tool section priced back in | | 11.4% lower |
+
+Recall of the files each task's reference review cites was equal (paired difference +0.006,
+standard error 0.023). Part of the cost difference is the tool section `lndl-calls` no longer
+sends; priced back in at each request's own cache class, it accounts for about a tenth of the
+difference, and the rest is fewer requests and shorter output. The measurement compares
+`lndl-calls` with `lndl`, never with ReAct, so it does not reopen D4: `lndl-calls` is an opt-in
+setting as `lndl` is, and the default stays `react`.
+
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
@@ -56,7 +92,7 @@ The LNDL Middle has no separate answer request. In a round a model declares tool
 aliases and may write its answer as an `OUT{}` block. A round with no `OUT{}` runs every declared
 call, concurrently and through the ordinary `act()` path with its permissions and hooks, and the
 next round sees the results; a round whose `OUT{}` validates ends the turn
-(`lionagi/operations/lndl_middle/lndl_middle.py:381-435`; ADR-0024 D3-D4). The same one-read task
+(`lionagi/operations/lndl_middle/lndl_middle.py:479-540`; ADR-0024 D3-D4). The same one-read task
 takes two requests: the round that declares the read, and the round that reads the result and
 writes the answer. With the same number of rounds, then, the batched loop saves the request ReAct
 makes for the answer, one per turn, a turn with no tool calls included (two requests against one).
@@ -81,7 +117,7 @@ calls and the answer in separate rounds, and its guidance tells the model so: a 
 declares `<lact>` calls, with no `OUT{}`, or writes the answer, with no `<lact>`. A round that does
 both is a repair round, in which none of its calls runs and its answer is not taken. Left to the
 Middle's own rule, such a round would run only the calls its `OUT{}` binds and drop the rest
-(`lndl_middle.py:311-323`), so a model could answer beside a read it never saw. The answer model
+(`lndl_middle.py:397-409`), so a model could answer beside a read it never saw. The answer model
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
@@ -93,7 +129,7 @@ provider's prompt-cache placement. Before this decision the Middle stripped the 
 rounds, and only an endpoint that places the prompt cache rendered the branch's tool set into the
 request (`lionagi/operations/chat/_prepare.py:209-227`), so on any other endpoint the model would
 have been asked to call tools it was never shown. The Middle now passes the branch's tool schemas
-to every round (`lndl_middle.py:369-372`).
+to every round (`lndl_middle.py:454-470`).
 
 The branch records `api_loop` beside the tool set and bound under `metadata["api_launch"]`, and a
 resume runs the recorded loop. A record with no `api_loop` was written before this key existed and

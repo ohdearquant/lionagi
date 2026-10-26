@@ -787,6 +787,34 @@ async def test_an_lndl_leg_reads_then_answers_in_two_requests(leg):
         assert "reader" in sent
 
 
+@pytest.mark.parametrize("caching", [False, True])
+@pytest.mark.asyncio
+async def test_an_lndl_calls_leg_shows_its_tools_as_calls_and_no_round_names_them(leg, caching):
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    profile = _profile(api_tools="read", api_loop="lndl-calls", prompt_caching=caching)
+    result, _, _, status, _ = await leg.run(profile)
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.branch.metadata["api_launch"]["loop"] == "lndl-calls"
+    assert len(leg.payloads) == 2
+    for payload in leg.payloads:
+        sent = _last_user_text(payload)
+        assert not any(line.startswith("Tools:") for line in sent.splitlines())
+        assert "name: reader" not in sent
+    first = [line.strip() for line in _last_user_text(leg.payloads[0]).splitlines()]
+    assert "CALLING TOOLS" in first
+    assert any(line.startswith("reader(") for line in first)
+    # Nor does a cached system block carry the tool section, while an lndl leg's does.
+    system = json.dumps([payload.get("system") for payload in leg.payloads])
+    assert "Tools:" not in system
+    if caching:
+        leg.payloads.clear()
+        leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+        await leg.run(_profile(api_tools="read", api_loop="lndl", prompt_caching=True))
+        assert "Tools:" in json.dumps([payload.get("system") for payload in leg.payloads])
+
+
 @pytest.mark.asyncio
 async def test_an_lndl_answer_that_is_a_tool_result_is_refused_and_repaired(leg):
     leg.replies = [

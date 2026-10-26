@@ -31,6 +31,7 @@ from lionagi.lndl import (
 
 from .._defaults import get_default_action_call
 from .._turn_origin import TurnOrigin
+from ..chat._prepare import _no_tool_section
 from ..types import ActionParam, ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
@@ -170,6 +171,91 @@ def _too_many_calls(calls: int, max_actions: int | None) -> str | None:
         f"this round declares {calls} <lact> calls and a round may declare at most "
         f"{max_actions}; none of them ran. Declare at most {max_actions} now and the rest in "
         "a later round."
+    )
+
+
+_PYTHON_TYPES = {
+    "string": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "array": "list",
+    "object": "dict",
+    "null": "None",
+}
+_EXAMPLE_VALUES = {"str": '"..."', "int": "1", "float": "1.0", "bool": "True"}
+
+
+def _signature(function: dict[str, Any]) -> tuple[str, str] | None:
+    """A tool's call signature and an example call, from its schema in the OpenAI form."""
+    name = function.get("name")
+    if not isinstance(name, str):
+        return None
+    parameters = function.get("parameters")
+    parameters = parameters if isinstance(parameters, dict) else {}
+    properties = parameters.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    required = parameters.get("required")
+    required = set(required) if isinstance(required, list) else set()
+    rendered, example = [], []
+    for key, schema in properties.items():
+        schema = schema if isinstance(schema, dict) else {}
+        options = schema.get("anyOf") if isinstance(schema.get("anyOf"), list) else [schema]
+        kinds = [
+            _PYTHON_TYPES.get(option.get("type"), "Any") if isinstance(option, dict) else "Any"
+            for option in options
+        ]
+        text = f"{key}: {' | '.join(dict.fromkeys(kinds))}"
+        if key in required:
+            example.append(f"{key}={_EXAMPLE_VALUES.get(kinds[0], '...')}")
+        elif "default" in schema:
+            text += f" = {schema['default']!r}"
+        else:
+            text += " (optional)"
+        rendered.append(text)
+    return f"{name}({', '.join(rendered)})", f"{name}({', '.join(example)})"
+
+
+def _tool_notes(function: dict[str, Any]) -> list[str]:
+    """A tool's description and its parameters' descriptions, indented to sit under its call."""
+    notes = []
+    description = function.get("description")
+    if isinstance(description, str) and description.strip():
+        notes.append(f"    {' '.join(description.split())}")
+    parameters = function.get("parameters")
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    for key, schema in (properties if isinstance(properties, dict) else {}).items():
+        text = schema.get("description") if isinstance(schema, dict) else None
+        if isinstance(text, str) and text.strip():
+            notes.append(f"    {key}: {' '.join(text.split())}")
+    return notes
+
+
+def _render_tool_calls(tool_schemas: list[Any] | None, described: bool = False) -> str | None:
+    """How a multi-round run calls its tools: each tool as an LNDL call and a round that
+    calls, so the model is not left to write calls in a provider's own markup. *described*
+    puts each tool's description and its parameters' under its call."""
+    signatures = []
+    for schema in tool_schemas or ():
+        function = schema.get("function", schema) if isinstance(schema, dict) else None
+        if isinstance(function, dict) and (signature := _signature(function)):
+            notes = _tool_notes(function) if described else []
+            signatures.append((signature[0], signature[1], notes))
+    if not signatures:
+        return None
+    lines = "\n".join("\n".join([signature, *notes]) for signature, _, notes in signatures)
+    calls = "\n".join(
+        f"<lact c{number}>{example}</lact>"
+        for number, (_, example, _) in enumerate(signatures[:2], start=1)
+    )
+    return (
+        "CALLING TOOLS\n\n"
+        "A tool runs only when it is called as a <lact> line inside a ```lndl block. Tool-call "
+        "markup such as <invoke>, <invoke_tool> or <function_calls> is not run. A call's result "
+        "comes back in the next round, never in your own text, so do not write results "
+        "yourself. The tools, as calls:\n\n"
+        f"{lines}\n\n"
+        f"A round that calls:\n\n```lndl\n{calls}\n```"
     )
 
 
@@ -327,6 +413,7 @@ def build_lndl_middle(
     round_budget: int = DEFAULT_ROUND_BUDGET,
     max_actions: int | None = None,
     lacts_with_out: bool = True,
+    tools_as_calls: bool = False,
 ):
     """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default.
 
@@ -334,6 +421,9 @@ def build_lndl_middle(
     ``lacts_with_out=False`` keeps calls and the answer in separate rounds: a round that declares
     ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs, and so is
     a round with neither a ``<lact>`` nor an ``OUT{}`` in an ``lndl`` block.
+    ``tools_as_calls=True``, with ``lacts_with_out=False``, shows the tools only as LNDL calls in
+    the first round's guidance, each call with its descriptions, and leaves their schemas out of
+    every round's instruction.
     """
     if max_actions is not None and (
         isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
@@ -356,19 +446,27 @@ def build_lndl_middle(
         target = chat_param.response_format
         base_guidance = chat_param.guidance or ""
         guidance_parts = [get_lndl_system_prompt()]
+        # LNDL replies in free text, so the response format is dropped. The tools stay: a
+        # <lact> names a tool, and an endpoint that does not place the prompt cache shows the
+        # model its tools only in the current instruction. With none passed, every tool the
+        # branch registers is listed, since a <lact> may call any of them. With tools_as_calls
+        # they are shown as LNDL calls in the guidance instead, and no round sends a schema.
+        tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
+        tool_calls = (
+            _render_tool_calls(tool_schemas, described=True)
+            if tools_as_calls and not lacts_with_out
+            else None
+        )
+        if tool_calls:
+            guidance_parts.append(tool_calls)
         target_spec = _render_target_spec(target)
         if target_spec:
             guidance_parts.append(target_spec)
         if base_guidance:
             guidance_parts.append(base_guidance)
         lndl_guidance = "\n\n".join(guidance_parts)
-        # LNDL replies in free text, so the response format is dropped. The tools stay: a
-        # <lact> names a tool, and an endpoint that does not place the prompt cache shows the
-        # model its tools only in the current instruction. With none passed, every tool the
-        # branch registers is listed, since a <lact> may call any of them.
-        tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
         stripped_chat_param = chat_param.with_updates(
-            tool_schemas=tool_schemas, response_format=None
+            tool_schemas=[] if tool_calls else tool_schemas, response_format=None
         )
 
         action_results: dict[str, Any] = {}
@@ -393,7 +491,14 @@ def build_lndl_middle(
             )
             repair_error = None
 
-            text = await _run_round_chat(branch, round_instruction, round_chat_param)
+            # Tools shown as calls are shown nowhere else: the round's request carries no
+            # tool section in a cached system block either.
+            token = _no_tool_section.set(True) if tool_calls else None
+            try:
+                text = await _run_round_chat(branch, round_instruction, round_chat_param)
+            finally:
+                if token is not None:
+                    _no_tool_section.reset(token)
             outcome, pending, assembled = _classify_round(
                 text,
                 target,
