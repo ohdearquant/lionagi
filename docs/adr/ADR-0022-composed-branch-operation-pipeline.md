@@ -364,7 +364,10 @@ The accepted action request payload is structurally:
 ```
 
 A list of those mappings, an `ActionRequest`, or a Pydantic model exposing both `function` and
-`arguments` is accepted. Any other shape raises `ValueError` before invocation.
+`arguments` is accepted. Any other shape raises `ValueError` before invocation. A request whose
+`function` is null or blank names no tool, so it is neither authorized nor invoked and no tool hook
+fires: it is recorded as an action request with an empty name plus an error response, returned as an
+error `ActionResponseModel` under `suppress_errors`, and raised as `ValueError` otherwise.
 
 Exact action and enrichment semantics:
 

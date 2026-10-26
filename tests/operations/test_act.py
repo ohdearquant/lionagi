@@ -337,6 +337,75 @@ async def test_act_nonraising_failed_call_suppress_errors_false_persists_and_rer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("function", [None, "", "   "], ids=["null", "empty", "blank"])
+async def test_act_call_that_names_no_function_answers_the_model(function):
+    """A model can send a call whose function is null or blank. Nothing is invoked, the call
+    returns an error, and chat history holds the call with that error so the next round can
+    name a tool."""
+    from lionagi.operations.fields import ActionRequestModel
+    from lionagi.protocols.messages import ActionResponse
+
+    calls: list = []
+
+    def add(a: int, b: int) -> int:
+        """Add two numbers."""
+        calls.append((a, b))
+        return a + b
+
+    branch = _make_branch_with_tool(add)
+    request = ActionRequestModel(function=function, arguments={"a": 1, "b": 2})
+
+    result = await _act(branch, request, suppress_errors=True)
+
+    assert calls == []
+    assert result.function == ""
+    assert result.arguments == {"a": 1, "b": 2}
+    assert "names no function" in result.output["error"]
+    requests = [m for m in branch.messages if isinstance(m, ActionRequest)]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert [r.function for r in requests] == [""]
+    assert len(responses) == 1
+    assert "names no function" in responses[0].output["error"]
+
+
+@pytest.mark.asyncio
+async def test_act_call_that_names_no_function_raises_when_errors_are_not_suppressed():
+    from lionagi.protocols.messages import ActionResponse
+
+    branch = _make_branch_with_tool()
+
+    with pytest.raises(ValueError, match="names no function"):
+        await _act(branch, {"function": None, "arguments": {}}, suppress_errors=False)
+
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(responses) == 1
+    assert "names no function" in responses[0].output["error"]
+
+
+@pytest.mark.asyncio
+async def test_act_batch_with_a_nameless_call_still_runs_the_named_call():
+    """The batch a ReAct round sends: one call without a name beside one with a name."""
+    from lionagi.operations.fields import ActionRequestModel
+
+    branch = _make_branch_with_tool()
+    requests = [
+        ActionRequestModel(function=None, arguments={"path": "out/P09-messaging.md"}),
+        ActionRequestModel(function="add", arguments={"a": 2, "b": 3}),
+    ]
+    action_param = ActionParam(
+        action_call_params=_get_default_call_params(),
+        tools=None,
+        strategy="concurrent",
+    )
+
+    results = await act(branch, requests, action_param)
+
+    by_name = {r.function: r.output for r in results}
+    assert by_name["add"] == 5
+    assert "names no function" in by_name[""]["error"]
+
+
+@pytest.mark.asyncio
 async def test_act_verbose_logging(caplog):
     """verbose_action=True emits debug log lines (lines 52-54, 57-60)."""
     import logging
