@@ -34,6 +34,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
+  shares its existing fence and newline rules.
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
