@@ -34,8 +34,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- An `api_loop: lndl-calls` leg's guidance asks the model to declare in each calling round every
+  read it already knows it needs, up to the round's 16 calls, and to answer only after reading what
+  the answer depends on (ADR-0132 Amendment 3). An `lndl` leg's guidance is unchanged.
+
 - Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
   shares its existing fence and newline rules.
+
+- `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
+  default. Broadcaster passes the coroutine-only classifier, so its dispatch is
+  unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
+  the subscriber.
+
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
@@ -94,6 +104,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
+
+- `run_sync` rejects non-boolean `abandon_on_cancel` values before starting a worker.
 
 - A stdio MCP server that closes its pipe on a first request other than `initialize`
   connects again under FastMCP 4. Stdio connections open with the client's default
