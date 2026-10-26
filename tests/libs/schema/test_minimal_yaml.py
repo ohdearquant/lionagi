@@ -174,11 +174,17 @@ class TestMultilineStrings:
         [
             "def f():\n\treturn 1\n",
             "space before a break  \nnext line\n",
-            "ends with a space\nlast ",
+            "a trailing space inside \nlast",
             "caf\u00e9\tna\u00efve\nnext\n",
             "max \U0010ffff\tcode point\nnext\n",
         ],
-        ids=["tab", "space-before-break", "trailing-space", "non-ascii-tab", "max-code-point"],
+        ids=[
+            "tab",
+            "space-before-break",
+            "inner-trailing-space",
+            "non-ascii-tab",
+            "max-code-point",
+        ],
     )
     def test_multiline_whitespace_keeps_block_scalar(self, text):
         result = minimal_yaml({"text": text})
@@ -187,6 +193,23 @@ class TestMultilineStrings:
         for line in text.split("\n"):
             if line:
                 assert "  " + line in result
+        assert yaml.safe_load(result) == {"text": text}
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ends with a space\nlast ",
+            "ends with a tab\nlast\t",
+            "space then breaks \n\n",
+            "wide\nspace\u3000",
+        ],
+        ids=["space", "tab", "space-then-breaks", "ideographic-space"],
+    )
+    def test_multiline_text_ending_in_whitespace_stays_quoted(self, text):
+        # Callers strip the rendered document, which would cut the whitespace off a block.
+        result = minimal_yaml({"text": text}).strip()
+
+        assert result.startswith('text: "')
         assert yaml.safe_load(result) == {"text": text}
 
     @pytest.mark.parametrize(
@@ -261,6 +284,9 @@ class TestMultilineStrings:
         for text in texts:
             result = minimal_yaml({"t": text}, drop_empties=False)
             assert yaml.safe_load(result) == {"t": text}, (text, result)
+            if not text.endswith("\n"):
+                # Callers strip the document; only trailing line feeds may be lost to that.
+                assert yaml.safe_load(result.strip()) == {"t": text}, (text, result)
 
 
 class TestNestedStructures:
