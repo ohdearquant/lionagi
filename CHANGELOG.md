@@ -31,6 +31,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A stdio MCP server that closes its pipe on a first request other than `initialize`
+  connects again under FastMCP 4: the pool opens stdio connections with
+  `mode="legacy"` when the installed client takes a `mode` argument, and logs that at
+  connect. The client's default `server/discover` probe made such servers exit before
+  the handshake fell back. URL connections keep the client's default.
+
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
 
