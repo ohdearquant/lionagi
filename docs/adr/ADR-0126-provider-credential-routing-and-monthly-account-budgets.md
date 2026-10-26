@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-14 and 2026-10-26 (see Amendments 1 and 2)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -48,6 +48,23 @@ block, a citation title or a signature, is therefore matched in each string on i
 unmasked. Unlike a stream it does not mask a beginning of the key shorter than eight characters,
 since it can read the whole text first. A routed call that asks for another response mode is
 refused with `unsupported_pricing` before it is sent.
+
+## Amendment 2 (2026-10-26) — a routed key is not filled into CLI children
+
+D2's third source is the declared secret lookup, so a machine that keeps account keys in a store
+declares each account's `key_env` in `secrets.lookup.names`. The same declaration also drives the
+fill that runs on every CLI spawn (`fill_declared_secrets`, `lionagi/providers/_secret_resolution.py`),
+which looks up each declared name missing from the child's environment and adds it. Without a rule,
+every CLI spawn would run one lookup per routed account, and every CLI child's environment would
+hold every account's key, readable by anything the child runs and outliving the request any one key
+was meant for. The output redactor masks those values in what lionagi captures; it cannot stop a
+child from reading its own environment. A CLI that reads a name such as `ANTHROPIC_API_KEY` would
+also authenticate with an account key instead of its own credential.
+
+Decision: the CLI fill does not look up a name that is the `key_env` of a configured account. The
+key is read only by D2's resolution, for the attempt it signs. The name stays among the declared
+names the spawn path redacts, and a value a child already inherits under it is left as it was:
+the rule withholds the fill, it does not scrub the environment the caller hands the child.
 
 ## Requirements
 
