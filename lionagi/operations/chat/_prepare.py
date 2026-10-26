@@ -218,7 +218,7 @@ def _prepare_run_kwargs(
     if places_cache:
         from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
-        schemas = branch.acts.schema_list
+        schemas = [] if _no_tool_section.get() else branch.acts.schema_list
         registered = frozenset(name for s in schemas if (name := _tool_name(s)))
         if schemas:
             tool_section = minimal_yaml({"Tools": schemas}).strip()
@@ -402,6 +402,10 @@ def _prepare_run_kwargs(
                 )
         else:
             rendered = entry.materialize().rendered
+        # Whitespace-only text carries nothing, and some providers refuse the whole request
+        # over it (a model reply of only newlines, cut at max_tokens, is one source).
+        if isinstance(rendered, str) and not rendered.strip():
+            rendered = ""
         if i == _last_index:
             _current_turn_rendered = rendered
         if not rendered:
@@ -499,3 +503,8 @@ def _collect_action_dicts(act_res_msgs, projection=None):
         else:
             d_.append(k.content)
     return d_
+
+
+# Set while an LNDL round runs whose tools are shown only as LNDL calls (lndl_middle.py): that
+# round's request carries no tool section in a cached system block.
+_no_tool_section: ContextVar[bool] = ContextVar("_no_tool_section", default=False)
