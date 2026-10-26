@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -1700,6 +1701,25 @@ class MCPConnectionPool:
         return str(config.get("command") or "<unknown>")
 
     @classmethod
+    def _stdio_client(cls, client_cls: Any, transport: Any, config: dict[str, Any]) -> Any:
+        # A client that negotiates the protocol era (FastMCP 4 on mcp 2.2+) opens with
+        # server/discover and falls back to initialize only when the server answers with
+        # an error. A stdio server that predates discover may close the pipe instead, which
+        # fails the connect, so stdio pins the initialize handshake every server answers.
+        # URL connects keep the default: the streamable-HTTP transport turns an HTTP
+        # rejection into an error response, which the fallback handles.
+        try:
+            takes_mode = "mode" in inspect.signature(client_cls).parameters
+        except (TypeError, ValueError):
+            takes_mode = False
+        if not takes_mode:
+            return client_cls(transport)
+        logger.info(
+            "MCP server %r: stdio handshake mode legacy (initialize)", cls._server_label(config)
+        )
+        return client_cls(transport, mode="legacy")
+
+    @classmethod
     def set_security_config(cls, config: MCPSecurityConfig) -> None:
         """Set the process-global default security policy for new connections.
         Existing connected clients are unaffected; every later omitted-policy
@@ -1898,7 +1918,7 @@ class MCPConnectionPool:
                 args=args,
                 env=env,
             )
-            client = FastMCPClient(transport)
+            client = cls._stdio_client(FastMCPClient, transport, config)
         else:
             raise ValueError("Config must have 'url' or 'command'")
 
