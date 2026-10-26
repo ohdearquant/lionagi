@@ -598,7 +598,7 @@ build on decisions this ADR already carries: D4 keys planned nodes by stable `ag
 separate list keyed by node id (`record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:92`), and
 a leg's declared entries are namespaced under that leg's own id — the planned `agent_id`
 (`lionagi/cli/orchestrate/flow.py:1083`), and for a reactively spawned leg its `spawn_id`, which
-`role_node_builder` stamps (`lionagi/orchestration/patterns.py:164`), which the checkpoint stores
+`role_node_builder` stamps (`lionhub/src/lionhub/orchestration/patterns.py:166`), which the checkpoint stores
 beside `node_id` (`CheckpointWriter.record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:127`),
 and which is the key a spawned leg's artifact directory is built from
 (`env.run.agent_artifact_dir(spawn_id)`, `lionagi/cli/orchestrate/flow.py:2337-2339`; the contract

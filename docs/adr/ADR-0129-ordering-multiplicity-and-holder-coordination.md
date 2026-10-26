@@ -38,13 +38,13 @@ collection's invariant whenever a caller holds the order directly.
 **P3 — a caller-supplied order is aliased, not copied.** `_validate_progression` returns the
 `Progression` instance it was given (`pile.py:135-137`, `:150`), so `Pile(order=prog)` installs the
 caller's object as the collection's order, and `Element.model_config`
-(`lionagi/protocols/generic/element.py:36-41`) neither revalidates nor copies an instance assigned
+(`lionagi/protocols/generic/element.py:37-42`) neither revalidates nor copies an instance assigned
 to a model-typed field. A caller that keeps `prog` can append a second position for a resident id
 with `prog.append(uid)` and change the collection's order without touching the collection.
 
 **P4 — every collection type carries locks its holder cannot see the cost of.** `Pile` owns an RLock
 and an AnyIO lock (`pile.py:220-221`) and reaches them through three shapes: `@synchronized`
-(`lionagi/ln/_utils.py:475-484`) takes the RLock alone, `@async_synchronized` (`:487-516`) takes the
+(`lionagi/ln/_utils.py:485-494`) takes the RLock alone, `@async_synchronized` (`:497-526`) takes the
 AnyIO lock and then spins on the RLock with a non-blocking acquire and a 0.5 ms sleep, and the
 `_both_locks` context manager (`pile.py:567-576`) does the same for an unscoped region. The two
 locks therefore do exclude each other: an async method and a `@synchronized` method on the same
@@ -169,9 +169,9 @@ holder's, exercised where the holder lives.
   today (`:370-380`).
 - `adump`'s critical sections become plain reads of the ids and the records it is already ordered by
   (`:1006-1025`).
-- `Flow` drops its RLock (`flow.py:36-41`, `:132`). Its methods — `add_progression` (`:138-151`),
-  `remove_progression` (`:159-171`), `get_progression` (`:173-202`), `add_item` (`:206-229`),
-  `remove_item` (`:231-240`), `clear` (`:242-247`) — become ordinary methods, and `Flow` is a holder
+- `Flow` drops its RLock (`flow.py:36-41`, `:136`). Its methods — `add_progression` (`:142-155`),
+  `remove_progression` (`:163-175`), `get_progression` (`:177-206`), `add_item` (`:210-233`),
+  `remove_item` (`:235-244`), `clear` (`:246-251`) — become ordinary methods, and `Flow` is a holder
   of its views like any other holder.
 - **The holder rule.** The object that owns a collection serializes access to it; the collection
   type does not, and a caller does not hold the collection across an await. The named holders are:
@@ -183,7 +183,7 @@ holder's, exercised where the holder lives.
     (`lionagi/protocols/generic/processor.py:197-202`);
   - `InMemoryStore` over its item `Pile` (`memory.py:53-82`), which owns no lock today and relies
     on `Pile.ainclude`/`aget`; under D2 it takes its own lock for `store` and `retrieve`;
-  - `Flow` over its named views (`flow.py:138-247`).
+  - `Flow` over its named views (`flow.py:142-251`).
 - **Four of those sites are synchronous holders, and two sites genuinely wait.** `Session`'s
   `ainclude_branches` (`session.py:74-76`) takes the lock and calls the synchronous
   `include_branches`; `MessageManager.aclear_messages` (`manager.py:107-109`) takes it and calls the
@@ -225,7 +225,7 @@ holder's, exercised where the holder lives.
 | View | Where the code is | Class |
 |------|-------------------|-------|
 | A collection's default order (`Pile.progression`) | `pile.py:200-203`; uniqueness enforced today at `:141-150`, `:315-319`, `:838-847`, `:719-759` | unique |
-| `Flow` views appended by `add_item` | `flow.py:206-229`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
+| `Flow` views appended by `add_item` | `flow.py:234-257`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
 | `Executor.pending` | `processor.py:197`, `:238` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
 | `Executor.pile` | `processor.py:199-202` | unique |
 | `MessageManager.messages` | `manager.py:79-84` | unique |
@@ -284,7 +284,7 @@ A universal set-like order would simplify membership and align standalone sequen
 collections. It would remove the ability to represent repeated sequence visits and would change
 `append`, `extend`, `insert`, and already serialized data. It lost because the repeated order is
 meaning-bearing where it is used: `Flow` views take the same UUID again on every `add_item`
-(`flow.py:226-229`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
+(`flow.py:254-257`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
 
 ### Keep the two locks and publish their contract
 

@@ -36,9 +36,9 @@ rejected by the provider.
 
 **P1 — price tiers change at a prompt size, and nothing in the request path knows it.** The pricing
 table prices some models by prompt length: `claude-haiku-5-5` carries a first tier bounded at
-100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:125-146`, `PriceTier.max_prompt_tokens`
-at `:54`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
-`ModelPrice.max_input_tokens` (`:64`) is the model's capacity, one million, and is used to reserve
+100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:128-149`, `PriceTier.max_prompt_tokens`
+at `:57`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
+`ModelPrice.max_input_tokens` (`:67`) is the model's capacity, one million, and is used to reserve
 spend; it is not the size a caller wants to stay under. No code before a send compares the request
 against either number.
 

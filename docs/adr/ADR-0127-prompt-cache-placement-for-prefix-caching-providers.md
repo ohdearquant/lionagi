@@ -145,7 +145,7 @@ is a separate characterization, distinct from the acceptance tests in D7):
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
 `Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:211-216`);
-once it is history it is re-rendered without them (`operations/chat/_prepare.py:275`). Rounds 0 to
+once it is history it is re-rendered without them (`operations/chat/_prepare.py:277`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
 content alone), almost all of it those sections, sent uncached on every call.
@@ -169,7 +169,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:514-517`) before `messages.py:1187` looks for it. Building that
+  (`service/connections/endpoint.py:514-517`) before `messages.py:1200` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -177,7 +177,7 @@ that code on one of two paths, and the two paths differ:
   from a plain dict. There the flag is not filtered out, so the flag reaches the mark code and one
   ephemeral five-minute mark lands on the last message's last block.
 
-`iModel` then pops the same flag from the request (`service/imodel.py:394`) and, in `Endpoint.call`,
+`iModel` then pops the same flag from the request (`service/imodel.py:403`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
 (`service/connections/endpoint.py:656`, `:726-744`), a different feature.
 
@@ -246,7 +246,7 @@ run record counts it (D6).
 A **history rewrite** is a turn-segment change, not a new class. It is allowed; it breaks the prefix
 from the rewritten message on, so every later request in the conversation is a cache miss from
 there; and the run record counts it (D6). Today's rewrites are the hide, show and summarize
-directives of ADR-0125 step 2 (`operations/chat/_prepare.py:234-297`).
+directives of ADR-0125 step 2 (`operations/chat/_prepare.py:236-299`).
 
 ### D2: tools render once; an instruction renders the same everywhere
 

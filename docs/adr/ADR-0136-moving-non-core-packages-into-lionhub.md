@@ -124,7 +124,7 @@ amendment narrows both.
 session's event bus and its default persistence handlers. They import only `ln`, `session` and `state`.
 `Session.hooks` builds the bus on first use (`session/session.py:137-146`) with four default handlers (session
 start, session end, branch create, branch end; `hooks/loader.py:25-30, 81-104`), and operations and `Branch`
-take `HookPoint` from it at 9 sites (`operations/_api_hooks.py:150, 179, 219`, `operations/act/act.py:79, 111,
+take `HookPoint` from it at 9 sites (`operations/_api_hooks.py:150, 179, 219`, `operations/act/act.py:106, 111,
 137`, `operations/chat/chat.py:28`, `operations/run/run.py:451`, `session/branch.py:413`). A bus moved out of
 the core would need its default builder supplied by a bootstrap, and an injected bus that starts empty would
 drop those defaults. These five modules and the package initializer stay in the core under their current
@@ -160,9 +160,9 @@ are defined once in a core module at or below `session`, and `lionagi.casts.emis
 same class objects. The seam keeps the schemas, the defaults, the refusal of extra fields, the four operation
 values, and `EscalationRequest`'s legacy `blocking` input and property (`casts/emission.py:422-434`). Neither
 class derives from `Element` (both are Pydantic models), so D5's class-path condition does not apply to them;
-pickles that name the old module still load, and the seam change shows it with a test.
+pickles that name the old module still load, and the seam change shows it with a test. This paragraph's line numbers are at `c4abb363`.
 
-`lionagi/_auto.py:158-162` declares a CLI command whose module is `lionagi.casts.surfaces`. That declaration
+`lionagi/_auto.py:157-161` declares a CLI command whose module is `lionagi.casts.surfaces`. That declaration
 belongs to the CLI's catalog and leaves the core with it (A4, step 3).
 
 ### A3. The LNDL seams
@@ -173,8 +173,8 @@ belongs to the CLI's catalog and leaves the core with it (A4, step 3).
   language is LNDL, matched case-insensitively (JSON fences are not taken); backtick and tilde fences; a closing
   fence identical to the opening one (same character, same length) at the same indentation, so a shorter or longer
   interior fence stays content; CRLF normalized inside blocks; trailing block newlines kept; blocks joined in source order; and the reply
-  returned unchanged when it has no block.
-- **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:14` imports 15 LNDL names. It is LNDL's opt-in
+  returned unchanged when it has no block. Its line numbers are at `c4abb363`.
+- **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:15` imports 15 LNDL names. It is LNDL's opt-in
   Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
   `lionagi.operations.lndl_middle`.
 - **Root exports.** `lionagi/__init__.py:97-105` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
@@ -220,7 +220,7 @@ submodules. The CLI imports Studio code at 11 statements in 4 files (`cli/machin
    `lionhub.orchestration` modules D7 lists (flow, spawn, job, wait, kill, team, notify), and both sides import
    them from there. Before the first CLI command target moves, the populated CLI seed catalog and its selection
    and loading entry points leave `lionagi/_auto.py` and their callers are rewritten; this includes the
-   `studio`, `schedule` (`_auto.py:176, 181`) and `casts` declarations. A fresh CLI invocation discovers the same
+   `studio`, `schedule` (`_auto.py:175, 181`) and `casts` declarations. A fresh CLI invocation discovers the same
    commands with no prior hub import and no caller registration. The generic declaration types may stay in the
    core if they name no hub module. Wrapper commands may stay at their old paths until their own move. The step
    is done when `lionagi.studio` imports no private `lionagi.cli` module, the remaining edges run one way, and
@@ -246,7 +246,7 @@ re-exports the same objects.
 
 1. The tool interface, and the gate and settings contracts. The core settings reader keeps the user-only mode
    (`include_project=False`) and failure handling that provider secret lookup uses
-   (`providers/_secret_resolution.py:101-104`).
+   (`providers/_secret_resolution.py:101-104`). Its line numbers are at `c4abb363`.
 2. The casts request contracts (A2).
 3. LNDL fence extraction (A3).
 4. The providers record (D6), with no source change.
@@ -262,7 +262,7 @@ Then the moves:
    overwrites the other (`agent/__init__.py` exports eagerly, `casts/__init__.py` lazily). The change keeps casts'
    root exports, its packaged `packs/default.yaml` (checked from an installed wheel, since `casts/catalog.py:21-27`
    returns `None` on a load failure), and old pickle paths. `providers/_secret_resolution.py:101` reads settings
-   through the core reader from the settings seam, so D2's set does not grow.
+   through the core reader from the settings seam, so D2's set does not grow. Its line numbers are at `c4abb363`.
 2. `lionagi.hooks.external` to `lionhub.hooks.external` (A1). It goes after `agent` because `agent/factory.py`
    and `agent/settings.py` import it, as does the CLI's `hooks` command; nothing imports it the other way.
 3. LNDL and its Middle to `lionhub.lndl` (A3).
