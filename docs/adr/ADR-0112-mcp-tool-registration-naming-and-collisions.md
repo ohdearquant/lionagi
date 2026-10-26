@@ -136,14 +136,15 @@ what was measured and not a proof that there is no fourth:
   `load_mcp_tools` — `register_tool` skips its duplicate guard entirely and replaces the
   entry, so a **later-declared** server silently displaces an already-registered tool of
   the same name. Calls a caller believes are going to the first server go to the last one.
-- **With a one-entry MCP dict, regardless of the flag.** `ActionManager.__contains__`
-  (`manager.py:67-74`) has arms for `Tool`, `str` and callable and returns `False`
-  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` is `False` for
-  a dict even when that name is registered, the `update=False` guard passes, and `:106`
-  overwrites. The displacement is the same as the `update=True` case and it needs no
-  flag. ADR-0011 lines 330-332 record this behavior, and it held when this ADR was
-  written: this item's line numbers are at `0b6cabda`. A later change added the `dict`
-  arm that delta #8 asks for, so `register_tool` now raises for this shape.
+- **With a one-entry MCP dict, regardless of the flag.** When this ADR was written
+  (this item's line numbers are at `0b6cabda`), `ActionManager.__contains__`
+  (`manager.py:67-74`) had arms for `Tool`, `str` and callable and returned `False`
+  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` was `False` for
+  a dict even when that name was registered, the `update=False` guard passed, and `:106`
+  overwrote. The displacement was the same as the `update=True` case and it needed no
+  flag. ADR-0011 lines 330-332 record this behavior. #2950 later added the `dict` arm
+  that delta #8 asks for, so a one-entry dict whose name is already registered now
+  raises under `update=False` and still replaces under `update=True`.
 
 The second and third are the shadowing shape. Both are reachable without any private API:
 `update=True` is documented on two public functions, and the dict form is reachable
