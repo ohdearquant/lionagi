@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
@@ -8,18 +9,12 @@ from lionagi.ln._json_load import json_loads
 
 # YAML Dumper with minimal, readable settings
 
-
-def _block_printable(ch: str) -> bool:
-    # The emitter's printable test under allow_unicode=True, plus tab and carriage return,
-    # which YAML permits inside literal block content.
-    return (
-        ch in "\t\n\r"
-        or " " <= ch <= "~"
-        or ch == "\x85"
-        or "\xa0" <= ch <= "퟿"
-        or "" <= ch <= "�"
-        or "\U00010000" <= ch < "\U0010ffff"
-    ) and ch != "﻿"
+# Characters a literal block cannot carry as written: the ones PyYAML's emitter will not print
+# (tab and line feed aside, which a literal block holds as they are), the carriage return, which a
+# YAML reader takes as a line break, so a lone CR would end the block early, and the next-line
+# character, which a reader turns into a line feed.
+_NOT_BLOCK_SAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff\ufeff\ufffe\uffff]")
+_NON_ASCII = re.compile(r"[^\x00-\x7f]")
 
 
 class MinimalDumper(yaml.SafeDumper):
@@ -27,13 +22,17 @@ class MinimalDumper(yaml.SafeDumper):
     def ignore_aliases(self, data: Any) -> bool:  # type: ignore[override]
         return True
 
-    # PyYAML refuses a literal block for text holding a tab, a carriage return or a space
-    # before a line break, and falls back to one double-quoted line with every newline
-    # escaped. A literal block carries those characters as written, so keep it.
+    # PyYAML refuses a literal block for text holding a tab or a space before a line break,
+    # and falls back to one double-quoted line with every newline escaped; it also writes a
+    # block for text holding a next-line character, which loads back as a line feed. Decide
+    # from the characters instead: a block whenever every character is safe to write as is,
+    # double quotes otherwise.
     def analyze_scalar(self, scalar: str):  # type: ignore[override]
         analysis = super().analyze_scalar(scalar)
-        if analysis.multiline and not analysis.allow_block and all(map(_block_printable, scalar)):
-            analysis.allow_block = True
+        if analysis.multiline:
+            analysis.allow_block = not _NOT_BLOCK_SAFE.search(scalar) and (
+                self.allow_unicode or not _NON_ASCII.search(scalar)
+            )
         return analysis
 
 

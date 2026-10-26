@@ -1,11 +1,12 @@
 """Tests for minimal_yaml utility."""
 
+import itertools
 import json
 
 import pytest
 import yaml
 
-from lionagi.libs.schema.minimal_yaml import minimal_yaml
+from lionagi.libs.schema.minimal_yaml import MinimalDumper, minimal_yaml
 
 
 class TestBasicConversion:
@@ -172,11 +173,11 @@ class TestMultilineStrings:
         "text",
         [
             "def f():\n\treturn 1\n",
-            "Windows line\r\nendings\r\n",
             "space before a break  \nnext line\n",
             "ends with a space\nlast ",
+            "caf\u00e9\tna\u00efve\nnext\n",
         ],
-        ids=["tab", "crlf", "space-before-break", "trailing-space"],
+        ids=["tab", "space-before-break", "trailing-space", "non-ascii-tab"],
     )
     def test_multiline_whitespace_keeps_block_scalar(self, text):
         result = minimal_yaml({"text": text})
@@ -185,14 +186,46 @@ class TestMultilineStrings:
         for line in text.split("\n"):
             if line:
                 assert "  " + line in result
-        assert yaml.safe_load(result)["text"] == text.replace("\r\n", "\n")
+        assert yaml.safe_load(result) == {"text": text}
 
-    def test_multiline_control_character_stays_quoted(self):
-        text = "red \x1b[31mtext\nnext\n"
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "red \x1b[31mtext\nnext\n",
+            "a\rb: injected\nc\n",
+            "Windows line\r\nendings\r\n",
+            "bom \ufeff\tinside\nnext\n",
+            "next line\x85here\nend\n",
+        ],
+        ids=["escape-code", "lone-cr", "crlf", "byte-order-mark", "next-line"],
+    )
+    def test_multiline_unsafe_character_stays_quoted(self, text):
         result = minimal_yaml({"text": text})
 
         assert result.startswith('text: "')
-        assert yaml.safe_load(result)["text"] == text
+        assert yaml.safe_load(result) == {"text": text}
+
+    def test_multiline_non_ascii_stays_quoted_without_allow_unicode(self):
+        text = "caf\u00e9\tx\ny\n"
+        result = yaml.dump({"text": text}, Dumper=MinimalDumper, allow_unicode=False)
+
+        assert result.isascii()
+        assert result.startswith('text: "')
+        assert yaml.safe_load(result) == {"text": text}
+
+    def test_multiline_text_round_trips_exactly(self):
+        alphabet = "a \t\r\n:\x85"
+        texts = [
+            "".join(chars)
+            for n in range(1, 5)
+            for chars in itertools.product(alphabet, repeat=n)
+            if "\n" in chars
+        ]
+        assert len(texts) > 500
+
+        for text in texts:
+            result = minimal_yaml({"t": text}, drop_empties=False)
+            assert yaml.safe_load(result) == {"t": text}, (text, result)
 
 
 class TestNestedStructures:
