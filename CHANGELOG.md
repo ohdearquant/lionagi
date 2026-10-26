@@ -96,10 +96,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
 
 - A stdio MCP server that closes its pipe on a first request other than `initialize`
-  connects again under FastMCP 4: the pool opens stdio connections with
-  `mode="legacy"` when the installed client takes a `mode` argument, and logs that at
-  connect. The client's default `server/discover` probe made such servers exit before
-  the handshake fell back. URL connections keep the client's default.
+  connects again under FastMCP 4. Stdio connections open with the client's default
+  handshake (`server/discover`, which falls back to `initialize` on an error reply);
+  when that handshake ends because the server closed the connection, the pool retries
+  once with `mode="legacy"` (`initialize` only) and logs a warning naming the server.
+  A server config can set `"handshake": "legacy"` to skip the first attempt; a value
+  other than `"auto"` or `"legacy"` is refused at connect. A timeout, a cancellation
+  or an error reply is not retried. URL connections keep the client's default.
 
 - An API-model `li agent` run whose ReAct pass ends on a response cut off at its output
   limit with no text and no tool call, on a reply that does not parse, or on an answer with
