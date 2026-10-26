@@ -201,10 +201,15 @@ def _signature(function: dict[str, Any]) -> tuple[str, str] | None:
     for key, schema in properties.items():
         schema = schema if isinstance(schema, dict) else {}
         options = schema.get("anyOf") if isinstance(schema.get("anyOf"), list) else [schema]
-        kinds = [
-            _PYTHON_TYPES.get(option.get("type"), "Any") if isinstance(option, dict) else "Any"
-            for option in options
-        ]
+        kinds = []
+        for option in options:
+            # A JSON Schema type may itself be a list, {"type": ["string", "null"]}.
+            kind = option.get("type") if isinstance(option, dict) else None
+            for type_name in kind if isinstance(kind, list) else [kind]:
+                kinds.append(
+                    _PYTHON_TYPES.get(type_name, "Any") if isinstance(type_name, str) else "Any"
+                )
+        kinds = kinds or ["Any"]
         text = f"{key}: {' | '.join(dict.fromkeys(kinds))}"
         if key in required:
             example.append(f"{key}={_EXAMPLE_VALUES.get(kinds[0], '...')}")
@@ -421,14 +426,17 @@ def build_lndl_middle(
     ``lacts_with_out=False`` keeps calls and the answer in separate rounds: a round that declares
     ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs, and so is
     a round with neither a ``<lact>`` nor an ``OUT{}`` in an ``lndl`` block.
-    ``tools_as_calls=True``, with ``lacts_with_out=False``, shows the tools only as LNDL calls in
-    the first round's guidance, each call with its descriptions, and leaves their schemas out of
-    every round's instruction.
+    ``tools_as_calls=True`` shows the tools only as LNDL calls in the first round's guidance, each
+    call with its descriptions, and leaves their schemas out of every round's instruction. It
+    needs ``lacts_with_out=False``, since the guidance says a call's result comes back in the
+    next round.
     """
     if max_actions is not None and (
         isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
     ):
         raise ValueError(f"max_actions must be a positive integer or None, got {max_actions!r}")
+    if tools_as_calls and lacts_with_out:
+        raise ValueError("tools_as_calls=True needs lacts_with_out=False")
 
     async def _lndl_middle(
         branch: Branch,
@@ -452,11 +460,7 @@ def build_lndl_middle(
         # branch registers is listed, since a <lact> may call any of them. With tools_as_calls
         # they are shown as LNDL calls in the guidance instead, and no round sends a schema.
         tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
-        tool_calls = (
-            _render_tool_calls(tool_schemas, described=True)
-            if tools_as_calls and not lacts_with_out
-            else None
-        )
+        tool_calls = _render_tool_calls(tool_schemas, described=True) if tools_as_calls else None
         if tool_calls:
             guidance_parts.append(tool_calls)
         target_spec = _render_target_spec(target)

@@ -1248,6 +1248,20 @@ class TestToolsAsCalls:
         assert _render_tool_calls([]) is None
         assert _render_tool_calls([{"type": "function", "function": {}}]) is None
 
+    def test_a_list_type_and_an_empty_any_of_render_instead_of_raising(self):
+        properties = {
+            "a": {"type": ["string", "null"]},
+            "b": {"anyOf": []},
+            "c": {"type": ["integer"]},
+            "d": {"anyOf": [{"type": ["number", "null"]}, {"type": "string"}]},
+        }
+        tool = {"name": "f", "parameters": {"properties": properties, "required": ["a", "b"]}}
+        lines = _render_tool_calls([{"type": "function", "function": tool}]).splitlines()
+        assert (
+            "f(a: str | None, b: Any, c: int (optional), d: float | None | str (optional))" in lines
+        )
+        assert '<lact c1>f(a="...", b=...)</lact>' in lines
+
     def test_a_described_block_carries_each_description_under_its_call(self):
         lines = _render_tool_calls(self._TOOLS[:1], described=True).splitlines()
         at = lines.index("bash(command: str, timeout: int = 120)")
@@ -1264,11 +1278,15 @@ class TestToolsAsCalls:
             '```lndl\n<lact a>counted_lookup(query="x")</lact>\n```',
             "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
         ]
+        # A calls block says results come back in the next round, so it needs calls and the
+        # answer in separate rounds.
+        with pytest.raises(ValueError, match="tools_as_calls=True needs lacts_with_out=False"):
+            build_lndl_middle(tools_as_calls=True)
         # (lacts_with_out, tools_as_calls) -> whether the calls block replaces the schemas.
         for lacts_with_out, tools_as_calls, as_calls in (
             (False, False, False),
             (False, True, True),
-            (True, True, False),
+            (True, False, False),
         ):
             branch = TestBranch.from_text(list(replies))
             branch.register_tools([counted_lookup])
