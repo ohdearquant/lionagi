@@ -41,6 +41,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
   call sites; patch `lionagi.protocols.action.gate` or `lionagi._settings` instead.
 - `LionTool` lives in `lionagi.protocols.action.lion_tool`; its old import remains an alias.
+- Flow request contracts live in `lionagi.protocols.flow_requests`; existing casts imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
 
 - Packages built on top of the core move to `lionhub`, a second top-level package
   shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
