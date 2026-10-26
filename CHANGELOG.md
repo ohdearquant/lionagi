@@ -34,13 +34,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
+  shares its existing fence and newline rules.
+
 - `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
   default. Broadcaster passes the coroutine-only classifier, so its dispatch is
   unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
   the subscriber.
 
-- Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
-  shares its existing fence and newline rules.
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
@@ -96,6 +97,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
 ### Fixed
+
+- The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
+  `key_env`) into CLI children; only the account router reads it, for the request it signs.
 
 - `run_sync` rejects non-boolean `abandon_on_cancel` values before starting a worker.
 
