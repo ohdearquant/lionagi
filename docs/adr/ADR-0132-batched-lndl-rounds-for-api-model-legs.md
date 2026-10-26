@@ -92,10 +92,10 @@ time, on source identical apart from this sentence:
 | cost per run | | 34% higher |
 
 Recall rose on 15 tasks, fell on 3 and was equal on 5 (paired difference +0.080, standard error
-0.032). Precision, the share of a run's cited files that the reference also cites, read 0.68
-without the sentence and 0.56 with it. That reading is taken over the runs that cited a file (20 and
-22), not paired per task, from one run per task, so this measurement does not establish the
-direction of the change in precision.
+0.032). Precision, the share of a run's cited files that the reference also cites, fell: over the 19
+tasks on which both runs cited a file it went from 0.704 to 0.575 (paired difference -0.129,
+standard error 0.051; lower on 12 tasks, higher on 3, equal on 4). Both readings come from one
+run per task.
 
 ## Context
 
