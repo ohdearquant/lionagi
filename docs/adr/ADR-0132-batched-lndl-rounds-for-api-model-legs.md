@@ -48,6 +48,10 @@ the prompt cache leaves the `Tools:` section out of its cached system block (`_n
 instruction as history, so each request still names the tools, as calls. D1's rule that every
 round's request names the tools holds for `lndl-calls` in that form, and stands as written for
 `lndl`. The launch record names `lndl-calls`, and a resume runs it, as D1 says of every loop.
+ADR-0127 Amendment 1 (Proposed) qualifies this placement on an endpoint that places the prompt cache:
+there the LNDL rules, the target spec and the calls render in the stable segment instead of the first
+round's guidance, and the tool-section suppression travels as an explicit field of the chat
+parameters instead of `_no_tool_section`.
 
 The reason is the round in which nothing runs. With the schemas in the request, a model writes some
 of its calls as the provider's own tool-call markup, an `<invoke>` tag, which the loop does not run;
