@@ -1,22 +1,12 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from abc import ABC, abstractmethod
-
 from pydantic import BaseModel, Field, JsonValue, field_serializer, field_validator
 
 from lionagi.ln.types import Enum
-from lionagi.protocols.action.tool import Tool
+from lionagi.protocols.action.lion_tool import LionTool as LionTool
+from lionagi.protocols.action.tool import Tool as Tool
 from lionagi.protocols.graph.node import Node
-
-
-class LionTool(ABC):
-    is_lion_system_tool: bool = True
-    system_tool_name: str
-
-    @abstractmethod
-    def to_tool(self) -> Tool:
-        pass
 
 
 class ResourceCategory(str, Enum):

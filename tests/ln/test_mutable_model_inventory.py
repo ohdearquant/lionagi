@@ -266,7 +266,7 @@ _ALLOWLIST: dict[str, str] = {
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:
-    "lionagi.config:168:5": "a pydantic settings config, which sets no frozen option",
+    "lionagi.config:170:5": "a pydantic settings config, which sets no frozen option",
     "lionagi.studio.operator.types:50:5": "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:

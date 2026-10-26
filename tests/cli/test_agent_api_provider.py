@@ -1,12 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""`li agent` on an API model: lionagi's own tool loop, with the read set only.
+"""`li agent` on an API model: lionagi's own tool loop over the read set.
 
 An API model has no tool loop of its own, so a leg on one runs ``Branch.ReAct``
-over the tools the profile names. The only tool set offered is the read set
-(reader, search, context); tools that write files or run commands would run
-with this process's own permissions, and this path has no sandbox for them.
+over the tools the profile names. The read set (reader, search, context) runs
+with this process's own permissions; the write set, whose editor and bash run
+under the macOS sandbox, is covered in test_agent_api_write_set.py.
 The endpoint's call is scripted here, so no request leaves the process.
 """
 
@@ -234,6 +234,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
     record = leg.branch.metadata["api_launch"]
     assert set(record) == {
         "tools",
+        "network",
         "max_extensions",
         "loop",
         "max_input_tokens",
@@ -254,6 +255,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
     )
     assert (record["tools"], record["max_extensions"], record["loop"]) == ("read", 10, "react")
     assert record["max_input_tokens"] == "auto"
+    assert record["network"] is False
 
 
 @pytest.mark.asyncio
@@ -371,9 +373,11 @@ async def test_a_turn_past_the_timeout_ends_timed_out(leg):
     assert status == "timed_out"
 
 
-@pytest.mark.parametrize("value", ["coding", "write", True, None, ["read"]])
+@pytest.mark.parametrize("value", ["coding", "Write", True, None, ["read"]])
 @pytest.mark.asyncio
-async def test_a_tool_set_other_than_read_is_refused_before_a_run_exists(leg, monkeypatch, value):
+async def test_a_tool_set_other_than_read_or_write_is_refused_before_a_run_exists(
+    leg, monkeypatch, value
+):
     import lionagi.cli.agent as agent_mod
 
     monkeypatch.setattr(
@@ -407,7 +411,7 @@ async def test_a_profile_without_the_read_set_is_refused_as_before(leg, monkeypa
 
 @pytest.mark.asyncio
 async def test_preset_coding_is_refused_for_an_api_model(leg):
-    with pytest.raises(ConfigurationError, match="read set"):
+    with pytest.raises(ConfigurationError, match="--preset coding binds tools"):
         await leg.run(_profile(api_tools="read"), preset="coding")
 
 
@@ -457,6 +461,8 @@ async def test_a_resumed_branch_without_the_launch_record_runs_as_before(leg, mo
         {"tools": "read", "max_extensions": 5, "loop": "batch"},
         {"tools": "read", "max_extensions": 5, "loop": None},
         {"tools": "read", "max_extensions": 5, "loop": "LNDL"},
+        {"tools": "read", "max_extensions": 5, "network": True},
+        {"tools": "write", "max_extensions": 5, "network": "yes"},
         "read",
         None,
     ],
