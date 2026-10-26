@@ -30,8 +30,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Application and provider module loaders use the shared `ln.import_module`
   contract, retaining relative package anchors, lazy registration and cache behavior.
-  Ordinary import errors now include the module path and preserve their original
-  cause; missing-module errors retain their original identity and metadata.
+  An ordinary import error from these loaders is now a plain `ImportError` whose message
+  names the module path; the original error, including a custom subclass and its `.name`
+  and `.path`, is kept only as `__cause__`, and the outer `.name` and `.path` are `None`.
+  A missing-module error is re-raised unchanged, with its class and metadata.
 
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
