@@ -298,6 +298,9 @@ its area block.
   Numbering)
 - [ADR-0135](ADR-0135-bounded-opt-in-session-and-run-listing.md) — Bounded opt-in session and
   run listing; standalone Proposed v2 contract, preserving v1 (sequential number; see Numbering)
+- [ADR-0138](ADR-0138-studio-backend-attachment-daemon-ownership-and-public-distribution.md) —
+  Studio backend attachment, daemon ownership, and public distribution (sequential number; see
+  Numbering)
 
 ### governance (0086-0089)
 
