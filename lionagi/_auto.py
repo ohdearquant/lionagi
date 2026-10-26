@@ -9,7 +9,6 @@ import dataclasses
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from importlib import import_module
 from typing import Any, Literal, Protocol, TypeVar, overload
 
 Handler = TypeVar("Handler", bound=Callable[..., Any])
@@ -355,6 +354,8 @@ def _compile_http(fn: Callable[..., Any], area: str, http: HttpDeclaration) -> N
 
 def load_http_modules() -> None:
     """Import each HTTP module in fixed order and compile its http markers."""
+    from lionagi.ln import import_module
+
     for module_path in _HTTP_MODULES:
         module = import_module(module_path)
         for fn, marker in _iter_local_http_markers(module):
@@ -390,6 +391,8 @@ def load_cli_command(seed: CliSeed) -> Registration:
     cached = _cli_realized.get(seed.name)
     if cached is not None:
         return cached
+    from lionagi.ln import import_module
+
     module = import_module(seed.module)
     matches: list[tuple[Callable[..., Any], _Marker]] = []
     for obj in vars(module).values():

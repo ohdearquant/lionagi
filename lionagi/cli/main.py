@@ -8,9 +8,9 @@ import argparse
 import signal
 import sys
 import traceback
-from importlib import import_module
 
 from lionagi._auto import build_cli_parser, seed_for
+from lionagi.ln import import_module
 
 from ._logging import configure_cli_logging, log_error
 from ._util import (
@@ -22,11 +22,11 @@ from ._util import (
 
 
 def _load_orchestrate():
-    return import_module(".orchestrate", __package__)
+    return import_module(".orchestrate", package=__package__)
 
 
 def _load_machine():
-    return import_module(".machine", __package__)
+    return import_module(".machine", package=__package__)
 
 
 def _load_studio():
@@ -34,7 +34,7 @@ def _load_studio():
 
 
 def run_skill(argv: list[str]) -> int:
-    return import_module(".skill", __package__).run_skill(argv)
+    return import_module(".skill", package=__package__).run_skill(argv)
 
 
 def _print_playbook_help(name: str) -> int:

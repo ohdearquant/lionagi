@@ -5,10 +5,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from importlib import import_module
 from typing import Any, Literal, TypeVar
 
 from starlette.responses import Response
+
+from lionagi.ln import import_module
 
 Handler = TypeVar("Handler", bound=Callable[..., Any])
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]

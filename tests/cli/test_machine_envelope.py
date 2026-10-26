@@ -593,3 +593,97 @@ def test_lifecycle_summary_still_reports_false_when_the_column_says_measured():
 
     assert out["sessions"][0]["ended_at_is_approximate"] is False
     assert out["ended_at_is_approximate"] is False
+
+
+@pytest.fixture
+def machine_import_file(tmp_path, monkeypatch):
+    cli_package = importlib.import_module("lionagi.cli")
+    monkeypatch.setattr(cli_package, "__path__", [str(tmp_path), *cli_package.__path__])
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("_machine_loader_errors", "lionagi.cli._machine_loader_fixture"):
+        monkeypatch.setitem(sys.modules, name, None)
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(cli_package, "_machine_loader_fixture", None, raising=False)
+    monkeypatch.setitem(machine._MACHINE_MODULES, "fixture", "._machine_loader_fixture")
+    (tmp_path / "_machine_loader_errors.py").write_text(
+        "class TaggedImportError(ImportError): pass\n"
+        "broken = TaggedImportError('backend refused "
+        "postgresql://reader:private-pass@db.example/store', "
+        "name='forged_optional', path='forged/machine.py')\n"
+        "missing = ModuleNotFoundError('missing nested dependency', "
+        "name='nested_optional', path='dependency/path.py')\n"
+    )
+    errors = importlib.import_module("_machine_loader_errors")
+    return tmp_path / "_machine_loader_fixture.py", errors
+
+
+def test_machine_module_dispatch_preserves_relative_result_and_cache(machine_import_file):
+    path, _ = machine_import_file
+    path.write_text(
+        "calls = []\n"
+        "def machine_result(argv):\n"
+        "    calls.append(argv)\n"
+        "    return {'arguments': argv}\n"
+    )
+    assert machine._run_machine_command(["fixture", "first"]) == {"arguments": ["first"]}
+    loaded = sys.modules["lionagi.cli._machine_loader_fixture"]
+    assert machine._run_machine_command(["fixture", "second"]) == {"arguments": ["second"]}
+    assert sys.modules["lionagi.cli._machine_loader_fixture"] is loaded
+    assert loaded.calls == [["first"], ["second"]]
+
+
+def test_machine_registered_handler_does_not_load_its_module(machine_import_file, monkeypatch):
+    path, _ = machine_import_file
+    path.write_text("raise AssertionError('the handler must win before module loading')\n")
+    monkeypatch.setitem(machine._MACHINE_COMMANDS, "fixture", lambda rest: {"direct": rest})
+    assert machine._run_machine_command(["fixture", "value"]) == {"direct": ["value"]}
+    assert "lionagi.cli._machine_loader_fixture" not in sys.modules
+
+
+def test_machine_module_import_error_keeps_cause_and_masks_envelope(machine_import_file, capfd):
+    path, errors = machine_import_file
+    path.write_text("from _machine_loader_errors import broken\nraise broken\n")
+    with pytest.raises(ImportError) as caught:
+        machine._run_machine_command(["fixture"])
+    assert type(caught.value) is ImportError
+    assert caught.value.__cause__ is errors.broken
+    assert str(caught.value) == (
+        "Failed to import module ._machine_loader_fixture: backend refused "
+        "postgresql://reader:private-pass@db.example/store"
+    )
+    assert caught.value.name is None
+    assert caught.value.path is None
+    assert caught.value.msg == str(caught.value)
+
+    assert machine.dispatch_machine(["fixture"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+    assert envelope["ok"] is False
+    assert envelope["data"] is None
+    assert envelope["error"]["kind"] == "internal"
+    message = envelope["error"]["message"]
+    assert message.startswith("ImportError: Failed to import module ._machine_loader_fixture:")
+    assert "postgresql://reader:" in message
+    assert "db.example/store" in message
+    assert "private-pass" not in message
+
+
+def test_machine_module_missing_error_keeps_allocation_boundary(machine_import_file, capfd):
+    path, errors = machine_import_file
+    path.write_text("from _machine_loader_errors import missing\nraise missing\n")
+    with pytest.raises(ModuleNotFoundError) as caught:
+        machine._run_machine_command(["fixture"])
+    assert caught.value is errors.missing
+    assert caught.value.name == "nested_optional"
+    assert caught.value.path == "dependency/path.py"
+    assert caught.value.msg == "missing nested dependency"
+    with pytest.raises(ModuleNotFoundError) as before_allocation:
+        machine.dispatch_machine(["fixture"])
+    assert before_allocation.value is errors.missing
+    assert capfd.readouterr().out == ""
+
+    mark_run_allocated()
+    assert machine.dispatch_machine(["fixture"]) == 0
+    envelope = _one_object(capfd.readouterr().out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "internal"
+    assert envelope["error"]["message"] == "a required module is not installed"

@@ -28,6 +28,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Application and provider module loaders use the shared `ln.import_module`
+  contract, retaining relative package anchors, lazy registration and cache behavior.
+  Ordinary import errors now include the module path and preserve their original
+  cause; missing-module errors retain their original identity and metadata.
+
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core

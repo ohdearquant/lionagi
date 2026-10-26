@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 from pydantic import BaseModel
+
+from lionagi.ln import import_module
 
 from .registry import EndpointType, register_endpoint
 
@@ -27,7 +28,7 @@ class LazyType:
     def resolve(self) -> type[BaseModel]:
         if self._resolved is None:
             module_path, class_name = self._ref.rsplit(":", 1)
-            mod = importlib.import_module(module_path)
+            mod = import_module(module_path)
             self._resolved = getattr(mod, class_name)
         return self._resolved
 

@@ -989,3 +989,139 @@ async def test_maybe_update_db_mirrors_engines_ended_at_onto_the_session(tmp_pat
     assert engine_row["ended_at"] == 130.0
     assert session_row["ended_at"] == 130.0
     assert session_row["duration_ms"] == pytest.approx(30000.0)
+
+
+@pytest.fixture
+def engine_import_package(tmp_path, monkeypatch):
+    package = tmp_path / "_engine_loader_fixture"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "class TaggedImportError(ImportError): pass\n"
+        "broken = TaggedImportError('engine module broke', "
+        "name='forged_optional', path='forged/engine.py')\n"
+        "missing = ModuleNotFoundError('missing engine dependency', "
+        "name='engine_optional', path='dependency/engine.py')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in (
+        "_engine_loader_fixture",
+        "_engine_loader_fixture.engine",
+        "_engine_loader_fixture.Unexported",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
+        monkeypatch.delitem(sys.modules, name)
+    errors = importlib.import_module("_engine_loader_fixture")
+    return package, errors
+
+
+def test_engine_class_loader_keeps_class_identity_and_attribute_boundary(engine_import_package):
+    from lionagi.cli.engine import _import_engine_class
+
+    package, _ = engine_import_package
+    (package / "engine.py").write_text("class SelectedEngine: pass\n")
+    selected = _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
+    assert selected is sys.modules["_engine_loader_fixture.engine"].SelectedEngine
+    assert _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine") is selected
+
+    marker = package / "child-imported"
+    (package / "Unexported.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+    )
+    with pytest.raises(AttributeError, match="Unexported"):
+        _import_engine_class("_engine_loader_fixture", "Unexported")
+    assert not marker.exists()
+    assert "_engine_loader_fixture.Unexported" not in sys.modules
+
+
+def test_engine_class_loader_keeps_plain_import_error_cause(engine_import_package):
+    from lionagi.cli.engine import _import_engine_class
+
+    package, errors = engine_import_package
+    (package / "engine.py").write_text("from . import broken\nraise broken\n")
+    with pytest.raises(ImportError) as caught:
+        _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
+    assert type(caught.value) is ImportError
+    assert str(caught.value) == (
+        "Failed to import module _engine_loader_fixture.engine: engine module broke"
+    )
+    assert caught.value.__cause__ is errors.broken
+    assert caught.value.name is None
+    assert caught.value.path is None
+    assert caught.value.msg == str(caught.value)
+    assert errors.broken.name == "forged_optional"
+    assert errors.broken.path == "forged/engine.py"
+
+
+def test_engine_class_loader_preserves_original_missing_module(engine_import_package):
+    from lionagi.cli.engine import _import_engine_class
+
+    package, errors = engine_import_package
+    (package / "engine.py").write_text("from . import missing\nraise missing\n")
+    with pytest.raises(ModuleNotFoundError) as caught:
+        _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
+    assert caught.value is errors.missing
+    assert caught.value.name == "engine_optional"
+    assert caught.value.path == "dependency/engine.py"
+    assert caught.value.msg == "missing engine dependency"
+
+
+@pytest.mark.parametrize("failure", ["broken", "missing"])
+async def test_actual_engine_import_failure_is_logged_stored_and_closed(
+    engine_import_package, monkeypatch, failure
+):
+    import lionagi.cli.engine as engine_module
+    import lionagi.state.db as db_module
+
+    package, _ = engine_import_package
+    (package / "engine.py").write_text(f"from . import {failure}\nraise {failure}\n")
+    monkeypatch.setitem(
+        engine_module._KIND_META,
+        "research",
+        {"cls_path": ("_engine_loader_fixture.engine", "SelectedEngine"), "pos_arg": "topic"},
+    )
+    errors, updates, outcomes, closed = [], [], [], []
+    monkeypatch.setattr(engine_module, "log_error", errors.append)
+    monkeypatch.setattr(engine_module, "warn", lambda *args, **kwargs: None)
+
+    class RecordingDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            closed.append(True)
+
+        async def insert_engine_run(self, **kwargs):
+            pass
+
+        async def get_session(self, session_id):
+            return None
+
+        async def create_progression(self, progression_id):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, *args, **kwargs):
+            pass
+
+        async def update_engine_run(self, run_id, **kwargs):
+            updates.append(kwargs)
+
+        async def record_engine_run_outcome(self, run_id, outcome):
+            outcomes.append(outcome)
+
+    monkeypatch.setattr(db_module, "StateDB", RecordingDB)
+    assert await engine_module._do_engine_run(_build_args(no_persist=False)) == 1
+    expected = (
+        "Failed to import module _engine_loader_fixture.engine: engine module broke"
+        if failure == "broken"
+        else "missing engine dependency"
+    )
+    assert errors == [f"failed to import engine class for kind 'research': {expected}"]
+    assert len(updates) == 1
+    assert updates[0]["status"] == "failed"
+    assert updates[0]["error"] == expected
+    assert len(outcomes) == 1
+    assert outcomes[0]["reason_code"] == "import_failure"
+    assert closed == [True]

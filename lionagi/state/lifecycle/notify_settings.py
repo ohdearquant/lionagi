@@ -8,7 +8,6 @@ configuration shape ever reaches a shell. See docs/internals/runtime.md.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import logging
 import os
@@ -23,6 +22,7 @@ from lionagi._settings import load_settings
 from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
+    import_module,
     observe_process_group_leader,
     prepare_process_group_env,
 )
@@ -590,7 +590,7 @@ def _make_exec_handler(
 
 def _make_python_handler(ref: str) -> TerminalCallbackHandler:
     module_path, _, func_name = ref.rpartition(":")
-    module = importlib.import_module(module_path)
+    module = import_module(module_path)
     return getattr(module, func_name)
 
 
