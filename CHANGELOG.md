@@ -31,6 +31,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Recent Studio session pages with no filter or an empty filter use the existing
   timestamp index directly, avoiding a second sort of the selected page.
 
+- Single-branch Studio session statistics reuse captured membership JSON for
+  unescaped ASCII string collections within the canonical-size bound, avoiding
+  two JSON encodes while retaining full-history SQL scans and fallback behavior.
+
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
   Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
