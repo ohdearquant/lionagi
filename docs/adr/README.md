@@ -301,6 +301,8 @@ its area block.
 - [ADR-0138](ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md) —
   Studio backend attachment, daemon ownership, and extraction from the wheels (sequential number; see
   Numbering)
+- [ADR-0139](ADR-0139-cli-package-location-and-console-script-ownership.md) — CLI package
+  location and console-script ownership (sequential number; see Numbering)
 
 ### governance (0086-0089)
 
