@@ -16,6 +16,7 @@ from lionagi.protocols.messages import (
     Instruction,
     MessageRole,
 )
+from lionagi.protocols.messages._result_projection import _projection_session
 from lionagi.protocols.messages.assistant_response import AssistantResponseContent
 from lionagi.protocols.messages.instruction import InstructionContent
 from lionagi.protocols.messages.message import Message, MessageContent
@@ -207,6 +208,7 @@ def _prepare_run_kwargs(
     # ADR-0127 D3: an endpoint that places the prompt cache takes the system text as its own
     # block, so it is not folded into the first instruction. Off, the fold is unchanged.
     places_cache = bool(getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False))
+    projection = _projection_session(branch, imodel)
 
     # ADR-0127 D2: there the Branch's tool set renders once, as a section of the system block,
     # and every instruction, current or history, renders the same bytes: its requested tools by
@@ -280,7 +282,7 @@ def _prepare_run_kwargs(
                 updates["prompt_context"] = _without_context(msg, shown)
 
             if _act_res:
-                d_ = _collect_action_dicts(_act_res)
+                d_ = _collect_action_dicts(_act_res, projection)
                 extended_ctx = list(updates.get("prompt_context", msg.content.prompt_context))
                 extended_ctx.extend(z for z in d_ if z not in extended_ctx)
                 updates["prompt_context"] = extended_ctx
@@ -297,7 +299,7 @@ def _prepare_run_kwargs(
             )
 
     if _act_res:
-        d_ = _collect_action_dicts(_act_res)
+        d_ = _collect_action_dicts(_act_res, projection)
         current = _use_ins_content if _use_ins_content is not None else ins.content
         extended_ctx = list(current.prompt_context)
         extended_ctx.extend(z for z in d_ if z not in extended_ctx)
@@ -481,7 +483,7 @@ def _has_real_instruction_text(content) -> bool:
     )
 
 
-def _collect_action_dicts(act_res_msgs):
+def _collect_action_dicts(act_res_msgs, projection=None):
     d_ = []
     for k in to_list(act_res_msgs, flatten=True, unique=True):
         if hasattr(k.content, "function"):
@@ -489,7 +491,9 @@ def _collect_action_dicts(act_res_msgs):
                 {
                     "function": k.content.function,
                     "arguments": k.content.arguments,
-                    "output": k.content.output,
+                    "output": (
+                        k.content.output if projection is None else projection.project(k).output
+                    ),
                 }
             )
         else:

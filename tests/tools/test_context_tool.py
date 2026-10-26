@@ -6,6 +6,8 @@
 evict/compact curate only the active progression; the full message Pile is never pruned.
 """
 
+import pytest
+
 from lionagi.session.branch import Branch
 from lionagi.tools.context.context import ContextTool
 
@@ -37,6 +39,66 @@ def _build_branch() -> Branch:
 
 async def _call(branch, **kw) -> dict:
     return await ContextTool().bind(branch).func_callable(**kw)
+
+
+async def test_read_result_recovers_two_raw_mapping_bodies_and_json_list_after_roundtrip():
+    from lionagi.protocols.messages import ActionResponse, Message
+
+    first = 'Aé🦁 "alpha"\n' * 1700 + "A-END\n"
+    second = '雪B "beta"\nnext 🧭\n' * 1400 + 'B-END "fin"\n'
+    output = {
+        "result": first,
+        "notes": second,
+        "items": ["é", 'quoted "item"', "line\nitem", {"z": 2, "a": "🦁"}],
+        "success": True,
+        "error": None,
+    }
+    original = ActionResponse(content={"function": "reader", "output": output})
+    stored = Message.from_dict(original.to_dict())
+    branch = _make_branch_with_messages()
+    await branch.msgs._a_add_built_response(stored)
+    before_ids = list(branch.progression)
+    before_record = stored.to_dict()
+    index = branch.msgs.progression.index(stored.id)
+    for start, stop, expected in ((809, 20191, first[768:-256]), (21256, 44044, second[768:-256])):
+        recovered = ""
+        offset = start
+        while offset < stop:
+            page = await _call(
+                branch,
+                action="read_result",
+                index=index,
+                offset=offset,
+                limit=min(16000, stop - offset),
+            )
+            assert page["success"] is True
+            assert page["total"] == 44478
+            recovered += page["text"]
+            offset = page["next_offset"]
+        assert recovered == expected
+    page = await _call(branch, action="read_result", index=index, offset=809, limit=20000)
+    assert len(page["text"]) == 16000
+    assert page["text"] == first[768:16768]
+    listed = await _call(branch, action="read_result", index=index, offset=44339, limit=52)
+    assert listed["text"] == r'["é","quoted \"item\"","line\nitem",{"a":"🦁","z":2}]'
+    assert list(branch.progression) == before_ids
+    assert stored.to_dict() == before_record
+    cloned = branch.clone()
+    clone_page = await _call(cloned, action="read_result", index=index, offset=809, limit=16000)
+    assert clone_page == page
+
+
+async def test_read_result_string_offsets_are_characters_and_never_change_the_view():
+    from lionagi.protocols.messages import ActionResponse
+
+    branch = _make_branch_with_messages()
+    response = ActionResponse(content={"function": "bash", "output": 'é🦁 "yes"\nnext'})
+    await branch.msgs._a_add_built_response(response)
+    before = list(branch.progression)
+    index = branch.msgs.progression.index(response.id)
+    result = await _call(branch, action="read_result", index=index, offset=1, limit=3)
+    assert result == {"success": True, "text": '🦁 "', "total": 13, "next_offset": 4}
+    assert list(branch.progression) == before
 
 
 async def test_unknown_action_returns_structured_error():
@@ -344,3 +406,225 @@ async def test_compact_auto_false_without_summary_still_requires_summary():
     res = await _call(_build_branch(), action="compact", start=1, auto=False)
     assert res["success"] is False
     assert "summary" in res["error"].lower()
+
+
+async def _branch_with_bound_result(bound, output):
+    from lionagi.protocols.messages import ActionResponse, Message
+    from lionagi.service.imodel import iModel
+
+    model = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="test-not-a-key",
+        max_tokens=64,
+        tool_result_max_chars=bound,
+    )
+    branch = Branch(system="Keep the original tool result.", chat_model=model)
+    branch.msgs.add_message(instruction="Read the result.")
+    original = ActionResponse(content={"function": "reader", "output": output})
+    stored = Message.from_dict(original.to_dict())
+    await branch.msgs._a_add_built_response(stored)
+    return branch, stored, branch.msgs.progression.index(stored.id)
+
+
+@pytest.mark.parametrize(
+    ("bound", "requested", "offset_kind"),
+    [
+        (1024, 20000, "start"),
+        (4000, 20000, "unicode"),
+        (20000, 20000, "unicode"),
+        (4000, 51, "unicode"),
+        (4000, 20000, "tail"),
+        (4000, 51, "beyond"),
+    ],
+)
+async def test_read_result_uses_applied_model_bound_not_remaining_character_count(
+    bound, requested, offset_kind
+):
+    text = 'é🦁"A\n' * 5000
+    offsets = {"start": 0, "unicode": 1, "tail": len(text) - 7, "beyond": len(text) + 9}
+    offset = offsets[offset_kind]
+    branch, stored, index = await _branch_with_bound_result(bound, text)
+    view_before = list(branch.progression)
+    full_before = list(branch.msgs.progression)
+    record_before = stored.to_dict()
+    applied = min(requested, bound, 16000)
+    stop = min(len(text), offset + applied)
+
+    result = await _call(branch, action="read_result", index=index, offset=offset, limit=requested)
+
+    assert result["success"] is True
+    assert result["text"] == text[offset:stop]
+    assert result.get("limit") == applied
+    assert result == {
+        "success": True,
+        "text": text[offset:stop],
+        "total": len(text),
+        "next_offset": stop if stop < len(text) else None,
+        "limit": applied,
+    }
+    assert list(branch.progression) == view_before
+    assert list(branch.msgs.progression) == full_before
+    assert stored.to_dict() == record_before
+    expected_ranges = [[offset, stop]] if stop > offset else []
+    assert (
+        branch.metadata.get("context_read_results", {}).get(str(stored.id), []) == expected_ranges
+    )
+
+
+def _mapping_recovery_fixture():
+    first = 'Aé🦁 "one"\n' * 1100
+    second = '雪B "two"\n' * 1300
+    items = ["é", 'quoted "item"', "line\nitem", {"z": 2, "a": "🦁"}]
+    json_items = r'["é","quoted \"item\"","line\nitem",{"a":"🦁","z":2}]'
+    output = {"result": first, "notes": second, "items": items, "success": True, "error": None}
+    first_label = f'[body key="result" kind=raw chars={len(first)}]\n'
+    second_label = f'[body key="notes" kind=raw chars={len(second)}]\n'
+    items_label = f'[body key="items" kind=json chars={len(json_items)}]\n'
+    catalog = (
+        first_label + first + "\n" + second_label + second + "\n" + items_label + json_items + "\n"
+        '[body key="success" kind=json chars=4]\ntrue\n'
+        '[body key="error" kind=json chars=4]\nnull\n'
+    )
+    return output, catalog, len(first_label), len(first_label) + len(first) + 1 + len(second_label)
+
+
+@pytest.mark.parametrize("region", ["first", "second", "separator", "json"])
+async def test_bound_recovery_uses_global_raw_mapping_offsets_after_roundtrip(region):
+    output, catalog, first_start, second_start = _mapping_recovery_fixture()
+    offset = {
+        "first": first_start + 3,
+        "second": second_start + 1,
+        "separator": second_start - 9,
+        "json": catalog.index('["é","quoted'),
+    }[region]
+    branch, stored, index = await _branch_with_bound_result(4000, output)
+    record_before = stored.to_dict()
+    view_before = list(branch.progression)
+    result = await _call(branch, action="read_result", index=index, offset=offset, limit=20000)
+
+    assert result["success"] is True
+    assert result["text"] == catalog[offset : offset + 4000]
+    assert result.get("limit") == 4000
+    assert result["total"] == len(catalog)
+    stop = min(len(catalog), offset + 4000)
+    assert result["next_offset"] == (stop if stop < len(catalog) else None)
+    assert stored.to_dict() == record_before
+    assert list(branch.progression) == view_before
+
+
+async def test_bound_recovery_pages_a_long_original_without_overlap_or_view_mutation():
+    text = 'é🦁 "raw"\n' * 4000
+    branch, stored, index = await _branch_with_bound_result(4000, text)
+    record_before = stored.to_dict()
+    view_before = list(branch.progression)
+    offset = 17
+    end = offset + 20003
+    recovered = []
+    for _ in range(6):
+        requested = min(20000, end - offset)
+        result = await _call(
+            branch, action="read_result", index=index, offset=offset, limit=requested
+        )
+        applied = min(requested, 4000, 16000)
+        assert result["success"] is True
+        assert result["text"] == text[offset : offset + applied]
+        assert result.get("limit") == applied
+        assert result["next_offset"] == offset + applied
+        recovered.append(result["text"])
+        offset = result["next_offset"]
+    assert offset == end
+    assert "".join(recovered) == text[17:end]
+    assert stored.to_dict() == record_before
+    assert list(branch.progression) == view_before
+
+
+async def test_unset_result_bound_keeps_exact_old_recovery_keys_and_cap():
+    text = 'é🦁"\n' * 5000
+    branch, stored, index = await _branch_with_bound_result(None, text)
+    record_before = stored.to_dict()
+    view_before = list(branch.progression)
+    result = await _call(branch, action="read_result", index=index, offset=1, limit=20000)
+    assert result == {
+        "success": True,
+        "text": text[1:16001],
+        "total": len(text),
+        "next_offset": 16001,
+    }
+    assert stored.to_dict() == record_before
+    assert list(branch.progression) == view_before
+
+
+async def test_bound_context_summary_projects_before_assembling_source(monkeypatch):
+    from lionagi.protocols.messages import ActionResponse
+    from lionagi.service.imodel import iModel
+
+    model = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="test-not-a-key",
+        max_tokens=64,
+        tool_result_max_chars=1024,
+    )
+    branch = Branch(system="Keep evidence.", chat_model=model, parse_model=model)
+    await branch.msgs.a_add_message(instruction="first task")
+    output = "head " * 300 + "HIDDEN_SUMMARY_MIDDLE" + "tail " * 20000
+    original = ActionResponse(content={"function": "reader", "output": output})
+    await branch.msgs._a_add_built_response(original)
+    before = original.to_dict()
+    prompts = []
+
+    async def fake_chat(self, *, instruction=None, **kwargs):
+        prompts.append(instruction)
+        return "Summary of the projected evidence."
+
+    monkeypatch.setattr(Branch, "chat", fake_chat)
+    try:
+        result = await _call(branch, action="compact", start=1, mode="all", auto=True)
+        assert result["success"] is True and result["compacted"] == 1
+        assert len(prompts) == 1
+        assert "read_result" in prompts[0]
+        assert "HIDDEN_SUMMARY_MIDDLE" not in prompts[0]
+        assert original.to_dict() == before
+    finally:
+        await branch.mdls.shutdown()
+
+
+async def test_bound_read_result_reports_applied_limit_without_changing_original():
+    from lionagi.protocols.messages import ActionResponse
+    from lionagi.service.imodel import iModel
+    from lionagi.tools.context.context import _result_text
+
+    model = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="test-not-a-key",
+        max_tokens=64,
+        tool_result_max_chars=4000,
+    )
+    branch = Branch(system="Keep evidence.", chat_model=model, parse_model=model)
+    await branch.msgs.a_add_message(instruction="first task")
+    original = ActionResponse(content={"function": "reader", "output": "é🦁 " * 10000})
+    await branch.msgs._a_add_built_response(original)
+    text, _bodies = _result_text(original.content.output)
+    index = branch.msgs.progression.index(original.id)
+    before = original.to_dict()
+    progression = list(branch.progression)
+    try:
+        page = await _call(branch, action="read_result", index=index, offset=37, limit=20000)
+        assert page == {
+            "success": True,
+            "text": text[37:4037],
+            "total": len(text),
+            "next_offset": 4037,
+            "limit": 4000,
+        }
+        final = await _call(
+            branch, action="read_result", index=index, offset=len(text) - 2, limit=51
+        )
+        assert final["text"] == text[-2:] and final["limit"] == 51
+        assert final["next_offset"] is None
+        assert original.to_dict() == before
+        assert list(branch.progression) == progression
+    finally:
+        await branch.mdls.shutdown()

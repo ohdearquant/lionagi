@@ -109,8 +109,6 @@ class MessageManager(Manager):
             self.clear_messages()
 
     async def a_add_message(self, **kwargs):
-        from lionagi.ln.concurrency import is_coro_func
-
         async with self.messages:
             _msg = self.create_message(**{k: v for k, v in kwargs.items() if v is not None})
             system = kwargs.get("system")
@@ -118,20 +116,33 @@ class MessageManager(Manager):
                 self.set_system(_msg)
             self.messages.update(_msg)
 
+        await self._a_fire_on_message_added(_msg)
+        return _msg
+
+    async def _a_add_built_response(self, response: ActionResponse) -> ActionResponse:
+        """Admit a host-built response without constructing or relinking a tool call."""
+        if not isinstance(response, ActionResponse):
+            raise TypeError("response must be an ActionResponse")
+        async with self.messages:
+            self.messages.update(response)
+        await self._a_fire_on_message_added(response)
+        return response
+
+    async def _a_fire_on_message_added(self, message: Message) -> None:
+        from lionagi.ln.concurrency import is_coro_func
+
         callbacks = list(self._on_message_added)
         errors: list[BaseException] = []
         for cb in callbacks:
             try:
                 if is_coro_func(cb):
-                    await cb(_msg)
+                    await cb(message)
                 else:
-                    cb(_msg)
+                    cb(message)
             except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
                 errors.append(exc)
         if errors:
             _raise_callback_errors(errors)
-
-        return _msg
 
     @staticmethod
     def create_instruction(

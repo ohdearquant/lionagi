@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from pydantic import SecretStr
 
 from lionagi.ln.concurrency import CancelScope
+from lionagi.service._api_telemetry import record_selected_attempt
 
 from ._credentials import CredentialSources, resolve_account_key
 from ._ledger import CredentialLedger, default_ledger_path
@@ -134,7 +135,19 @@ class AccountRouter:
         except BaseException:
             await self.settle_reservation_not_sent(reservation)
             raise
-        return RouterAttempt(reservation, body, ttls, key)
+        attempt = RouterAttempt(reservation, body, ttls, key)
+        label = attempt.account
+        if (
+            not isinstance(label, str)
+            or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", label) is None
+            or "sk-ant" in label.lower()
+            or mask_key_runs(label, key) != label
+        ):
+            label = None
+        record_selected_attempt(
+            attempt_id=str(attempt.attempt_id), provider="anthropic", account_label=label
+        )
+        return attempt
 
     async def settle_response(self, attempt: RouterAttempt, body: Any) -> None:
         usage = None

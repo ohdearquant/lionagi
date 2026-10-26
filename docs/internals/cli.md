@@ -1254,6 +1254,36 @@ a run exists, and the display options stay off the resumed model's request too. 
 through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
 from a subprocess.
 
+An API leg also writes a versioned `api_usage` section to its `run.json`. Each request
+constructed during the invocation records its provider, requested model, prompt character
+count and input-cap decision. `prompt_chars` counts Unicode characters in the same JSON
+serialization the cap estimates, including system, messages, tools and response format;
+it does not retain their text. A checked decision keeps the raw count, scale, effective
+estimate and cap from construction, even if a later response raises the model's scale.
+A refused construction remains visible with no dispatch. An uncapped request has no cap
+estimate and does not enable token calibration. Repeated fold estimates and rethrows of a
+latched refusal add no requests.
+
+The request's `dispatch_started` marks entry into its API execution, while
+`selected_attempts` associates actual routed account selections and attempt IDs with that
+request. A retry can select another attempt without creating another request. A selection
+precedes transport and does not prove a network send or billed usage. Safe selected labels
+also appear in `account_labels`; non-routed calls have no declared label, and a malformed
+label or one overlapping the resolved credential is omitted. Keys, headers, credential
+references and prompt text are excluded from this section. The model is the requested
+model, not a claim about the model the provider served.
+
+`guard_refusal_count`, with coverage `act_policy_denial_v1`, counts explicit session
+authorization refusals and direct typed governance errors caught by action execution.
+These include tool-pre-hook `deny` and `ask` decisions, unsupported decisions or return
+values, and hook exceptions converted into typed refusals. It excludes errors from
+blocking `TOOL_PRE` HookBus handlers, ordinary tool failures and text that happens to say
+"denied". Compatibility-store refusals retain priority. The record covers the initial
+turn and queued turns of this invocation; a resume starts a new record. A prepared call
+constructed outside that scope is unrecorded. Missing `api_usage` on an older manifest
+means telemetry was not recorded. This section leaves the existing `spend` accounting
+and context-fold records in place.
+
 ## `_agent_depth.py` — inherited agent-depth env marker
 
 `LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = inside an agent lionagi

@@ -676,3 +676,36 @@ async def test_without_the_option_the_tools_render_in_the_turn_as_before():
     assert "Find an order by its id." in _texts(sent[0]["messages"])[-1][1]
     assert "Find an order by its id." not in _texts(sent[2]["messages"])[-1][1]
     assert "approved" not in _texts(sent[2]["messages"])[0][1]
+
+
+@pytest.mark.parametrize("endpoint", [_filtered, _unfiltered], ids=["filtered", "unfiltered"])
+@pytest.mark.parametrize("declares", [True, False], ids=["declaring", "not-declaring"])
+def test_launch_settings_reach_endpoint_config_without_provider_policy_keys(
+    endpoint, declares, monkeypatch
+):
+    from lionagi.cli.agent import _install_api_input_cap
+
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "caches_system_prefix", declares)
+    branch = Branch(chat_model=iModel(endpoint=endpoint()))
+    before = branch.chat_model.endpoint.create_payload(copy.deepcopy(_request()))[0]
+    assert (
+        _install_api_input_cap(branch, "none", tool_result_max_chars=4000, prompt_caching=True)
+        is None
+    )
+    selected = branch.chat_model.endpoint
+    assert selected.config.prompt_caching is True
+    assert selected.places_prompt_cache is declares
+    payload = selected.create_payload(copy.deepcopy(_request()))[0]
+    assert not {
+        "tool_result_max_chars",
+        "context_fold_at",
+        "context_fold_target",
+        "prompt_caching",
+    }.intersection(payload)
+    # The request's own max_tokens is sent over the output limit the leg puts on the config.
+    assert payload["max_tokens"] == 100
+    if declares:
+        assert _marks(payload) == [ONE_HOUR, FIVE_MINUTES]
+    else:
+        # Only the position of max_tokens in the payload moves; nothing else changes.
+        assert payload == before

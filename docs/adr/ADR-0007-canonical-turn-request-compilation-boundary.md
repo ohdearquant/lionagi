@@ -554,31 +554,31 @@ lines:
   `TurnRequest`, `ContextBlock`, `CompiledMessage`, `CompiledChatRequest`, `compile_chat_request`
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
-  (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:66`
+  (`lionagi/operations/chat/_prepare.py:195`, called from `lionagi/operations/chat/chat.py:66`
   and `lionagi/operations/run/run.py:484`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
   (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
-  (`lionagi/operations/chat/_prepare.py:200`), and joined into the guidance fold with no marker
-  (`:335-338`). The prompt therefore shows the kept state alone and never says material was
+  (`lionagi/operations/chat/_prepare.py:201`), and joined into the guidance fold with no marker
+  (`:337-340`). The prompt therefore shows the kept state alone and never says material was
   dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
   and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
-  exposes one turn's names (`lionagi/session/branch.py:293-305`). Those are event counts: they
+  exposes one turn's names (`lionagi/session/branch.py:294-306`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
-  (`lionagi/tools/context/context.py:290-304`, `:306-323`) by excluding them from
-  `metadata["current_progression"]` (`:144-149`), which `Branch.progression` returns in place of
-  the manager's progression when it is present (`lionagi/session/branch.py:250-256`). An evicted
+  (`lionagi/tools/context/context.py:373-387`, `:389-406`) by excluding them from
+  `metadata["current_progression"]` (`:164-171`), which `Branch.progression` returns in place of
+  the manager's progression when it is present (`lionagi/session/branch.py:251-257`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py:353-432`, the summary at `:417-425`).
+  from the active view (`lionagi/tools/context/context.py:458-545`, the summary at `:527-538`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
@@ -591,27 +591,27 @@ lines:
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
   first retained message under a system message is not an Instruction
-  (`lionagi/operations/chat/_prepare.py:349`, quoted by D2 §3 above), and it raises
+  (`lionagi/operations/chat/_prepare.py:351`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:414-427`). That guard tests the current turn, the last entry appended to the
+  or images (`:416-429`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
-  `_last_index` (`:372-373`, `:403-404`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:468-481`). No section boundary refuses
+  `_last_index` (`:374-375`, `:405-406`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`:470-483`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action
-  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:282-287`,
-  `:299-304`); all of them meet in one minimal-YAML rendering, where caller prompt context and
+  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:284-289`,
+  `:301-306`); all of them meet in one minimal-YAML rendering, where caller prompt context and
   tool output share the same "Context" field
   (`lionagi/protocols/messages/instruction.py:207-219`). Material and instruction are one
   untyped list. With ADR-0127's prompt-cache option on
-  (`lionagi/operations/chat/_prepare.py:209`), the system text and the tool set, rendered once
-  (`:216-222`), go out as their own system blocks instead (`:336-337`, `:360-367`), and the rest
+  (`lionagi/operations/chat/_prepare.py:210`), the system text and the tool set, rendered once
+  (`:218-224`), go out as their own system blocks instead (`:338-339`, `:362-369`), and the rest
   still meet in the instruction;
 - a second, narrower removal exists inside one ReAct turn's later calls: the current request
   renders the caller's context once, on the first rendered instruction carrying it, and later
   rendered instructions, the current turn included, go out with those items removed
-  (`lionagi/operations/chat/_prepare.py:234-280`). Only that request's copies change, and no
+  (`lionagi/operations/chat/_prepare.py:236-282`). Only that request's copies change, and no
   marker or record states the removal. No item leaves the request, since each renders once, so
   it is a de-duplication rather than a left-out: D2 §2 now states it as a compiler step, and D7
   records why it carries no `left_out` entry;
