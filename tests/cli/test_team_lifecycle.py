@@ -637,3 +637,85 @@ class TestMachineResult:
         with pytest.raises(MachineError) as exc:
             team.machine_result(["not-a-subcommand"])
         assert exc.value.kind == "invalid_input"
+
+
+def _mixed_mailbox() -> list[dict]:
+    return [
+        {"from": "alice", "to": ["bob"], "content": "direct", "timestamp": "2026-01-01T00:00:00"},
+        {"from": "alice", "to": ["carol"], "content": "other", "timestamp": "2026-01-01T00:00:01"},
+        {"from": "alice", "to": ["*"], "content": "broadcast", "timestamp": "2026-01-01T00:00:02"},
+        {
+            "from": "carol",
+            "to": ["bob"],
+            "content": "seen",
+            "timestamp": "2026-01-01T00:00:03",
+            "read_by": {"bob": "2026-01-01T00:00:04"},
+        },
+        {
+            "from": "carol",
+            "to": ["*"],
+            "content": "legacy",
+            "timestamp": "2026-01-01T00:00:05",
+            "read_by": ["bob"],
+        },
+    ]
+
+
+@pytest.mark.parametrize("member", ["bob", None])
+def test_human_and_machine_receive_select_and_mark_the_same_messages(member, capsys):
+    _make_team("human", ["alice", "bob", "carol"], _mixed_mailbox())
+    _make_team("machine", ["alice", "bob", "carol"], _mixed_mailbox())
+
+    assert team.cmd_receive(argparse.Namespace(team="human", member=member)) == 0
+    printed = capsys.readouterr().out
+    got = team.machine_result(
+        ["receive", "--team", "machine", *(["--as", member] if member else [])]
+    )
+
+    expected = ["direct", "broadcast"] if member else [m["content"] for m in _mixed_mailbox()]
+    assert [m["content"] for m in got["messages"]] == expected
+    for message in _mixed_mailbox():
+        assert (f"  {message['content']}\n" in printed) == (message["content"] in expected)
+    assert f"({len(expected)} messages)" in printed
+
+    def readers(team_id: str) -> list[list[str]]:
+        stored = json.loads((team._teams_dir() / f"{team_id}.json").read_text())["messages"]
+        return [sorted(team._read_by_map(m.get("read_by"))) for m in stored]
+
+    marked = [["bob"], [], ["bob"], ["bob"], ["bob"]] if member else [[], [], [], ["bob"], ["bob"]]
+    assert readers("human") == readers("machine") == marked
+
+
+@pytest.mark.parametrize("team_id", ["human", "machine"])
+def test_receive_reads_a_single_name_recipient_as_the_whole_name(team_id, capsys):
+    _make_team(
+        team_id,
+        ["bob", "bobby"],
+        [
+            {
+                "from": "alice",
+                "to": "bobby",
+                "content": "for bobby",
+                "timestamp": "2026-01-01T00:00:00",
+            },
+            {
+                "from": "alice",
+                "to": "bob",
+                "content": "for bob",
+                "timestamp": "2026-01-01T00:00:01",
+            },
+            {"from": "alice", "to": "*", "content": "for all", "timestamp": "2026-01-01T00:00:02"},
+        ],
+    )
+
+    if team_id == "machine":
+        got = team.machine_result(["receive", "--team", team_id, "--as", "bob"])
+        assert [m["content"] for m in got["messages"]] == ["for bob", "for all"]
+        return
+
+    assert team.cmd_receive(argparse.Namespace(team=team_id, member="bob")) == 0
+    printed = capsys.readouterr().out
+    assert "for bobby" not in printed
+    assert "alice → bob\n  for bob\n" in printed
+    assert "alice → all\n  for all\n" in printed
+    assert "(2 messages)" in printed

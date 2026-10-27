@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment
 from lionagi.libs.path_safety import is_protected_name
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
@@ -91,13 +94,13 @@ class SearchResponse(BaseModel):
     )
 
 
-def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, str | None]:
+def _validate_search_path(path: str, workspace_root: str | None) -> str:
     if workspace_root is not None:
         root = Path(workspace_root).resolve()
         resolved = _resolve_workspace_path(path, root)
     else:
         resolved = Path(path).resolve()
-    return str(resolved), None
+    return str(resolved)
 
 
 def _visible_grep_lines(stdout: str) -> list[str]:
@@ -130,10 +133,10 @@ def _grep_sync(
     include: str | None,
     max_results: int,
     workspace_root: str | None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> SearchResponse:
-    resolved_path, err = _validate_search_path(path, workspace_root)
-    if err:
-        return SearchResponse(success=False, error=err, count=0)
+    resolved_path = _validate_search_path(path, workspace_root)
 
     # -e: a pattern that starts with "-" is a pattern, never an option.
     # --null ends each file name with a NUL, so a row's file is read exactly.
@@ -142,7 +145,9 @@ def _grep_sync(
     if include:
         cmd += ["--include", include]
 
-    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rnI, --null, -E, -e, <pattern>, <validated-path>]; shell=False
+    result = _subprocess_sync(
+        cmd, False, 30.0, None, env=command_environment() if _command_env is None else _command_env
+    )  # noqa: S603  # argv fixed: [grep, -rnI, --null, -E, -e, <pattern>, <validated-path>]; shell=False
 
     if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)
@@ -167,14 +172,16 @@ def _find_sync(
     pattern: str,
     max_results: int,
     workspace_root: str | None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> SearchResponse:
-    resolved_path, err = _validate_search_path(path, workspace_root)
-    if err:
-        return SearchResponse(success=False, error=err, count=0)
+    resolved_path = _validate_search_path(path, workspace_root)
 
     cmd = ["find", resolved_path, "-name", pattern]
 
-    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [find, <validated-path>, -name, <glob>]; shell=False
+    result = _subprocess_sync(
+        cmd, False, 30.0, None, env=command_environment() if _command_env is None else _command_env
+    )  # noqa: S603  # argv fixed: [find, <validated-path>, -name, <glob>]; shell=False
 
     if result.get("timed_out"):
         return SearchResponse(success=False, error="find timed out", count=0)
@@ -196,8 +203,18 @@ class SearchTool(LionTool):
     is_lion_system_tool = True
     system_tool_name = "search_tool"
 
-    def __init__(self, workspace_root: str | None = None) -> None:
+    def __init__(
+        self,
+        workspace_root: str | None = None,
+        *,
+        _command_env_names: frozenset[str] | None = None,
+        _command_env_allowlist: Sequence[str] = (),
+    ) -> None:
         self._tool = None
+        self._command_env_names = (
+            None if _command_env_names is None else frozenset(_command_env_names)
+        )
+        self._command_env_allowlist = normalize_command_env_allowlist(_command_env_allowlist)
         # Resolved to absolute ONCE — a stored relative root would re-resolve
         # against a later os.chdir()'d cwd and could escape the boundary.
         self._workspace_root = (
@@ -226,6 +243,10 @@ class SearchTool(LionTool):
                 request.include,
                 max_results,
                 self._workspace_root,
+                _command_env=command_environment(
+                    declared_names=self._command_env_names,
+                    command_env_allowlist=self._command_env_allowlist,
+                ),
             )
         if request.action == SearchAction.find:
             return await run_sync(
@@ -234,6 +255,10 @@ class SearchTool(LionTool):
                 request.pattern,
                 max_results,
                 self._workspace_root,
+                _command_env=command_environment(
+                    declared_names=self._command_env_names,
+                    command_env_allowlist=self._command_env_allowlist,
+                ),
             )
         return SearchResponse(success=False, error="Unknown action", count=0)
 

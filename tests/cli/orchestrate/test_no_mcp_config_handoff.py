@@ -426,7 +426,9 @@ def home_mcp_config(monkeypatch, tmp_path):
 
     discovered: list[str] = []
 
-    async def _record_discovery(branch, spec, *, trust_project_settings=False):
+    async def _record_discovery(
+        branch, spec, *, trust_project_settings=False, _command_env_supplier=None
+    ):
         # Recorded instead of run: running it starts the servers the file names.
         discovered.append(spec.profile.role.name)
         return frozenset()

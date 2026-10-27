@@ -284,6 +284,7 @@ ALL_TABLES = {
     "progressions",
     "projects",
     "sessions",
+    "cli_worker_spawns",
     "branches",
     "definitions",
     "shows",

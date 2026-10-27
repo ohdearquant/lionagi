@@ -6,23 +6,25 @@ from __future__ import annotations
 import base64
 import logging
 import re
-import shlex
-from collections.abc import Callable, Sequence
+import warnings
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment, configured_command_env_names
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
-from ._subprocess import _SHELL_CONTROL, _subprocess_sync
+from ._subprocess import _subprocess_sync
 from .base import LionTool
 from .code.ast_search import AstSearchRequest, _ast_search_sync
-from .code.bash import BashRequest
+from .code.bash import BashRequest, _run_bash
 from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
 from .code.nav import NavRequest, _find_definition_sync, _find_references_sync, _outline_sync
 from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
@@ -183,6 +185,8 @@ def _write_file_sync(
     content: str,
     workspace_root: Path,
     seatbelt: SeatbeltPolicy | None = None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> dict:
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
@@ -190,7 +194,7 @@ def _write_file_sync(
         return {"success": False, "error": str(e)}
 
     if seatbelt is not None:
-        refused = seatbelt.write_text(p, content)
+        refused = seatbelt.write_text(p, content, _command_env=_command_env)
         if refused:
             return {"success": False, "error": refused}
     else:
@@ -220,6 +224,8 @@ def _edit_file_sync(
     replace_all: bool,
     workspace_root: Path,
     seatbelt: SeatbeltPolicy | None = None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> dict:
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
@@ -261,7 +267,7 @@ def _edit_file_sync(
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
 
     if seatbelt is not None:
-        refused = seatbelt.write_text(p, updated)
+        refused = seatbelt.write_text(p, updated, _command_env=_command_env)
         if refused:
             return {"success": False, "error": refused}
     else:
@@ -351,26 +357,32 @@ class CodingToolkit(LionTool):
         ]
         return _chain_pre_hooks(tool_name, security_hooks, user_hooks)
 
-    def _build_postprocessor(self, tool_name: str) -> Callable | None:
+    def _build_postprocessor(
+        self,
+        tool_name: str,
+        *,
+        _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+    ) -> Callable | None:
         from lionagi.agent.factory import _chain_post_hooks
 
         hooks = [
             *self._post_hooks.get(tool_name, []),
             *self._post_hooks.get("*", []),
         ]
-        return _chain_post_hooks(tool_name, hooks)
+        return _chain_post_hooks(tool_name, hooks, _command_env_supplier=_command_env_supplier)
 
     def __init__(
         self,
         notify: bool = True,
-        notify_threshold: float = 0.7,
-        notify_max_tokens: int = 200_000,
+        notify_threshold: float | None = None,
+        notify_max_tokens: int | None = None,
         workspace_root: str | Path | None = None,
         tools: Sequence[str] | None = None,
         nudge_engine: NudgeEngine | None = None,
         nudge_rules: Sequence[NudgeRule] | None = None,
         sandbox_allow_protected: bool = False,
         seatbelt: SeatbeltPolicy | None = None,
+        command_env_allowlist: Sequence[str] = (),
     ):
         """sandbox_allow_protected: operator-only trust decision (deliberately absent
         from SandboxRequest) gating whether sandbox merge may target a protected branch.
@@ -382,11 +394,23 @@ class CodingToolkit(LionTool):
         self._post_hooks: dict[str, list[Callable]] = {}
         self._error_hooks: dict[str, list[Callable]] = {}
         self.notify = notify
-        self.notify_threshold = notify_threshold
-        self.notify_max_tokens = notify_max_tokens
+        for name, value in (
+            ("notify_threshold", notify_threshold),
+            ("notify_max_tokens", notify_max_tokens),
+        ):
+            if value is not None:
+                warnings.warn(
+                    f"CodingToolkit({name}=...) has no effect and is deprecated; "
+                    "it will be removed in a future minor release.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        self.notify_threshold = 0.7 if notify_threshold is None else notify_threshold
+        self.notify_max_tokens = 200_000 if notify_max_tokens is None else notify_max_tokens
         self.workspace_root = _resolve_workspace_root(workspace_root)
         self.sandbox_allow_protected = sandbox_allow_protected
         self.seatbelt = seatbelt
+        self.command_env_allowlist = normalize_command_env_allowlist(command_env_allowlist)
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
         if unknown:
@@ -396,7 +420,9 @@ class CodingToolkit(LionTool):
         self.nudge_rules = tuple(nudge_rules) if nudge_rules is not None else ()
         self._bound_nudge_engine: NudgeEngine | None = None
 
-    def bind(self, branch: Branch) -> list[Tool]:
+    def bind(
+        self, branch: Branch, *, _command_env_names: frozenset[str] | None = None
+    ) -> list[Tool]:
         from lionagi.protocols.messages import ActionResponse
 
         file_state: dict[str, float] = {}
@@ -405,6 +431,23 @@ class CodingToolkit(LionTool):
         notify = self.notify
         workspace_root = self.workspace_root
         seatbelt = self.seatbelt
+        active_reference = branch.chat_model.endpoint.config.api_key_env
+        declared_names = (
+            configured_command_env_names(
+                active_reference_names=(active_reference,) if active_reference is not None else (),
+            )
+            if _command_env_names is None
+            else _command_env_names
+        )
+        command_allowlist = normalize_command_env_allowlist(self.command_env_allowlist)
+
+        def prepared_command_environment() -> dict[str, str]:
+            return command_environment(
+                declared_names=declared_names, command_env_allowlist=command_allowlist
+            )
+
+        def prepared_fixed_helper_environment() -> dict[str, str]:
+            return command_environment(declared_names=declared_names, command_env_allowlist=())
 
         engine: NudgeEngine | None = None
         if notify:
@@ -539,7 +582,14 @@ class CodingToolkit(LionTool):
                     if guard:
                         return {"success": False, "error": guard}
                 result = await run_sync(
-                    _write_file_sync, file_path, content, workspace_root, seatbelt
+                    _write_file_sync,
+                    file_path,
+                    content,
+                    workspace_root,
+                    seatbelt,
+                    _command_env=prepared_fixed_helper_environment()
+                    if seatbelt is not None
+                    else None,
                 )
                 _track(result)
                 return result
@@ -559,6 +609,9 @@ class CodingToolkit(LionTool):
                     replace_all,
                     workspace_root,
                     seatbelt,
+                    _command_env=prepared_fixed_helper_environment()
+                    if seatbelt is not None
+                    else None,
                 )
                 _track(result)
                 return result
@@ -572,40 +625,19 @@ class CodingToolkit(LionTool):
             """Execute a single shell command and return stdout, stderr, and return code.
             One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected. Commands run in the workspace root; pass cwd= (relative to it, or absolute) to run in another directory. Output is truncated if it exceeds 100 KB per stream.
             """
-            timeout_ms = max(1, min(timeout or 30000, 300000))
-            timeout_s = timeout_ms / 1000.0
-
-            if _SHELL_CONTROL.search(command):
-                return {
-                    "stdout": "",
-                    "stderr": (
-                        f"Shell control operators are not supported: {command!r}. "
-                        "Run one command per call; use cwd= instead of `cd x && cmd`."
-                    ),
-                    "return_code": -1,
-                    "timed_out": False,
-                }
-            try:
-                cmd = shlex.split(command)
-            except ValueError as exc:
-                return {
-                    "stdout": "",
-                    "stderr": f"Malformed command: {exc}",
-                    "return_code": -1,
-                    "timed_out": False,
-                }
-            if seatbelt is not None:
-                cmd = seatbelt.wrap(cmd)
-
             # Without this the command would run in whatever directory the host
             # process was started from, which is not the workspace the other tools
             # read and write; a relative cwd= is likewise taken from the workspace.
             run_cwd = str(workspace_root / cwd) if cwd else str(workspace_root)
-            result = await run_sync(_subprocess_sync, cmd, False, timeout_s, run_cwd)
-
-            result.setdefault("timed_out", False)
-            result["return_code"] = result.pop("returncode", -1)
-            return result
+            wrap = seatbelt.wrap if seatbelt is not None else None
+            response = await _run_bash(
+                command,
+                timeout,
+                run_cwd,
+                wrap=wrap,
+                _command_env_supplier=prepared_command_environment,
+            )
+            return response.model_dump()
 
         async def search(
             action: str,
@@ -629,7 +661,14 @@ class CodingToolkit(LionTool):
                 cmd = ["grep", "-rnI", "--null", "-E", "-e", pattern, search_path]
                 if include:
                     cmd.insert(3, f"--include={include}")
-                raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
+                raw = await run_sync(
+                    _subprocess_sync,
+                    cmd,
+                    False,
+                    30.0,
+                    None,
+                    env=prepared_command_environment(),
+                )
                 # Checked before parsing: the rows read before a timeout are a partial
                 # answer, and with none the result would read as "no matches".
                 if raw.get("timed_out"):
@@ -651,7 +690,14 @@ class CodingToolkit(LionTool):
                     return {"success": False, "error": str(e)}
                 limit = max_results or 100
                 cmd = ["find", search_path, "-name", pattern]
-                raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
+                raw = await run_sync(
+                    _subprocess_sync,
+                    cmd,
+                    False,
+                    30.0,
+                    None,
+                    env=prepared_command_environment(),
+                )
                 if raw.get("returncode", 0) != 0 and raw.get("stderr", "").strip():
                     return {"success": False, "error": raw["stderr"].strip()}
                 lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
@@ -764,7 +810,9 @@ class CodingToolkit(LionTool):
                         "error": "No workspace root — cannot create sandbox.",
                     }
                 try:
-                    session = await create_sandbox(repo)
+                    session = await create_sandbox(
+                        repo, _command_env=prepared_command_environment()
+                    )
                     _sandbox_session[0] = session
                     return {
                         "success": True,
@@ -785,15 +833,26 @@ class CodingToolkit(LionTool):
 
             if action == "diff":
                 try:
-                    return {"success": True, **(await sandbox_diff(session))}
+                    return {
+                        "success": True,
+                        **(
+                            await sandbox_diff(session, _command_env=prepared_command_environment())
+                        ),
+                    }
                 except RuntimeError as e:
                     return {"success": False, "error": str(e)}
             elif action == "commit":
                 if not message:
                     return {"success": False, "error": "'message' required for commit."}
-                return await sandbox_commit(session, message)
+                return await sandbox_commit(
+                    session, message, _command_env=prepared_command_environment()
+                )
             elif action == "merge":
-                result = await sandbox_merge(session, allow_protected=self.sandbox_allow_protected)
+                result = await sandbox_merge(
+                    session,
+                    allow_protected=self.sandbox_allow_protected,
+                    _command_env=prepared_command_environment(),
+                )
                 if not result.get("success"):
                     return result
                 if result.get("worktree_removed") and result.get("branch_deleted"):
@@ -803,7 +862,7 @@ class CodingToolkit(LionTool):
                 # discard) and report non-success so callers can't mistake it for closed.
                 return {**result, "success": False}
             elif action == "discard":
-                result = await sandbox_discard(session)
+                result = await sandbox_discard(session, _command_env=prepared_command_environment())
                 if result.get("worktree_removed") and result.get("branch_deleted"):
                     _sandbox_session[0] = None
                     return {"success": True, **result}
@@ -882,7 +941,12 @@ class CodingToolkit(LionTool):
             resolved_paths, err = _resolve_check_paths(paths, workspace_root)
             if err is not None:
                 return err.model_dump()
-            resp = await run_sync(_ruff_check_sync, resolved_paths, max_diagnostics)
+            resp = await run_sync(
+                _ruff_check_sync,
+                resolved_paths,
+                max_diagnostics,
+                _command_env=prepared_command_environment(),
+            )
             return resp.model_dump()
 
         async def code_nav(action: str, path: str, symbol: str | None = None) -> dict:
@@ -929,7 +993,13 @@ class CodingToolkit(LionTool):
 
                 return AstSearchResponse(status="error", summary=str(exc)).model_dump()
             resp = await run_sync(
-                _ast_search_sync, pattern, resolved, lang, max_results, str(workspace_root)
+                _ast_search_sync,
+                pattern,
+                resolved,
+                lang,
+                max_results,
+                str(workspace_root),
+                _command_env=prepared_command_environment(),
             )
             return resp.model_dump()
 
@@ -955,7 +1025,9 @@ class CodingToolkit(LionTool):
                     func_callable=func,
                     request_options=request_cls,
                     preprocessor=self._build_preprocessor(name),
-                    postprocessor=self._build_postprocessor(name),
+                    postprocessor=self._build_postprocessor(
+                        name, _command_env_supplier=prepared_command_environment
+                    ),
                 )
             )
         return tools
