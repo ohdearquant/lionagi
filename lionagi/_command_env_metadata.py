@@ -32,10 +32,18 @@ def configured_command_env_names(
     try:
         global_settings = load_settings(include_project=False)
     except Exception:
-        raise ConfigurationError("Could not read global credential-name metadata") from None
+        # Not chained: a parse error can quote the file, and the file can hold values.
+        raise ConfigurationError(
+            "~/.lionagi/settings.yaml could not be read, so the credential names coding "
+            "commands must remove are unknown; fix or remove the file"
+        ) from None
     lookup = resolve_secret_lookup_config(settings=global_settings)
     if lookup.reason is not None:
-        raise ConfigurationError("Invalid global credential-name metadata")
+        raise ConfigurationError(
+            f"The secrets.lookup section of ~/.lionagi/settings.yaml is invalid ({lookup.reason}), "
+            "so the credential names coding commands must remove are unknown; fix or remove "
+            "that section"
+        )
 
     with EndpointRegistry._lock:
         provider_names = tuple(

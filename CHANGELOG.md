@@ -43,10 +43,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
-  their child environments, including `GITHUB_TOKEN`. Restore a variable with
-  `command_env_allowlist` using its exact spelling. A name in no declaration
-  that matches no pattern (for example `HF_TOKEN`) still passes. Reads are not
-  confined.
+  their child environments, including `GITHUB_TOKEN`. Patterns match anywhere
+  in a name, so `DATABASE_URL` and `TEST_DATABASE_URL` are removed too. Restore
+  a variable with `command_env_allowlist` using its exact spelling. A name in no
+  declaration that matches no pattern (for example `GH_TOKEN`, `HF_TOKEN` or
+  `NPM_TOKEN`) still passes. Reads are not confined.
+- When `~/.lionagi/settings.yaml` cannot be read, or its `secrets.lookup`
+  section is invalid, building a coding agent or toolkit raises
+  `ConfigurationError` instead of running with an incomplete list of
+  credential names, and so does a standalone coding tool such as `BashTool`.
+  Fix or remove the file or the section.
 
 - Application and provider module loaders use the shared `ln.import_module`
   contract, retaining relative package anchors, lazy registration and cache behavior.

@@ -259,6 +259,39 @@ def test_operator_grants_are_exact_and_never_restore_the_state_store_url(grant):
     assert parent == before
 
 
+@pytest.mark.parametrize(
+    ("global_metadata", "detail"),
+    [("unreadable", "could not be read"), ("invalid-lookup", "secrets.lookup section")],
+)
+def test_unknown_declarations_refuse_instead_of_using_a_partial_deny_set(
+    monkeypatch, global_metadata, detail
+):
+    import lionagi._settings as settings_source
+    from lionagi._command_env_metadata import command_environment
+    from lionagi._errors import ConfigurationError
+
+    file_text = "synthetic-value-quoted-by-the-parser"
+
+    def load(*, include_project):
+        assert include_project is False
+        if global_metadata == "unreadable":
+            raise ValueError(f"cannot parse near {file_text}")
+        return {"secrets": {"lookup": {"names": "GH_TOKEN"}}}
+
+    monkeypatch.setattr(settings_source, "load_settings", load)
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        command_environment()
+
+    message = str(excinfo.value)
+    assert "~/.lionagi/settings.yaml" in message
+    assert detail in message
+    assert file_text not in message
+    assert excinfo.value.__cause__ is None
+    if global_metadata == "unreadable":
+        assert excinfo.value.__suppress_context__ is True
+
+
 @pytest.mark.parametrize("declared", [False, True], ids=["undeclared", "declared"])
 def test_gh_token_is_denied_only_when_declared(declared):
     from lionagi._command_env import scrub_command_env
