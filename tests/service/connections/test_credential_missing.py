@@ -21,29 +21,14 @@ ENV_NAME = "ANTHROPIC_API_KEY"
 REQUEST = {"model": "credential-test", "messages": [{"role": "user", "content": "hello"}]}
 
 
-class _Secrets:
-    ANTHROPIC_ACCOUNTS = ()
-    ANTHROPIC_API_KEY = None
-
-    def get_secret(self, name):
-        if not hasattr(self, name):
-            if "ollama" in name.lower():
-                return "ollama"
-            raise AttributeError(f"Secret key '{name}' not found in settings")
-        value = getattr(self, name)
-        if value is None:
-            if "ollama" in name.lower():
-                return "ollama"
-            raise ValueError(f"Secret key '{name}' is not set")
-        return value.get_secret_value() if isinstance(value, SecretStr) else str(value)
-
-
 @pytest.fixture
 def secrets(monkeypatch):
-    # Every value is synthetic; no user settings file or provider is queried.
     import lionagi.config
 
-    values = _Secrets()
+    # Construct trusted synthetic fields without environment or dotenv settings sources.
+    values = lionagi.config.AppSettings.model_construct(
+        ANTHROPIC_API_KEY=None, ANTHROPIC_ACCOUNTS=()
+    )
     monkeypatch.setattr(lionagi.config, "settings", values)
     for name in (ENV_NAME, "UPPERCASE_LITERAL", "sk-synthetic-literal"):
         monkeypatch.delenv(name, raising=False)
@@ -132,9 +117,10 @@ async def test_credential_reference_uses_the_environment_value(secrets, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_credential_reference_uses_the_settings_secret(secrets):
+async def test_credential_reference_uses_the_settings_secret(secrets, monkeypatch):
     resolved = "synthetic-settings-key"
-    secrets.ANTHROPIC_API_KEY = SecretStr(resolved)
+    values = secrets.model_copy(update={ENV_NAME: SecretStr(resolved)})
+    monkeypatch.setattr("lionagi.config.settings", values)
     endpoint = _endpoint(ENV_NAME)
 
     assert await endpoint.call(REQUEST) == {"ok": True}
@@ -336,3 +322,70 @@ def test_registered_model_restore_preserves_reference(secrets, monkeypatch, avai
     assert restored.endpoint.config.api_key == ENV_NAME
     assert restored.endpoint.config._api_key == resolved
     assert restored.calls_sent == 0
+
+
+@pytest.mark.parametrize("available", [False, True], ids=["unset", "set"])
+def test_a_nonsecret_setting_cannot_be_used_as_a_credential(secrets, monkeypatch, available):
+    name = "ANTHROPIC_ACCOUNTS"
+    if available:
+        monkeypatch.setenv(name, "synthetic-nonsecret-environment-value")
+    else:
+        monkeypatch.delenv(name, raising=False)
+
+    for create_endpoint in (_endpoint, _direct_endpoint):
+        with pytest.raises(TypeError, match="Setting 'ANTHROPIC_ACCOUNTS' is not a secret"):
+            create_endpoint(name)
+
+
+@pytest.mark.parametrize("available", [False, True], ids=["unset", "set"])
+def test_a_nonsecret_setting_cannot_be_a_credential_reference(secrets, monkeypatch, available):
+    name = "ANTHROPIC_ACCOUNTS"
+    if available:
+        monkeypatch.setenv(name, "synthetic-nonsecret-environment-value")
+    else:
+        monkeypatch.delenv(name, raising=False)
+
+    meta = EndpointMeta(
+        provider="anthropic",
+        endpoint="messages",
+        endpoint_type=EndpointType.API,
+        base_url="https://credential-test.invalid",
+        auth_type="x-api-key",
+        api_key_env=name,
+    )
+
+    def direct_config():
+        return EndpointConfig(
+            name="direct_messages",
+            provider="anthropic",
+            endpoint="messages",
+            base_url="https://credential-test.invalid",
+            auth_type="x-api-key",
+            api_key_env=name,
+        )
+
+    for create_config in (meta.create_config, direct_config):
+        with pytest.raises(TypeError, match="Setting 'ANTHROPIC_ACCOUNTS' is not a secret"):
+            create_config()
+
+
+@pytest.mark.parametrize("name", ["LOG_CONFIG", "get_secret"], ids=["property", "method"])
+def test_secret_lookup_refuses_nonsecret_attributes_without_reading_them(
+    secrets, monkeypatch, name
+):
+    if name == "LOG_CONFIG":
+
+        def unread(_):
+            pytest.fail("a nonsecret property must not be read as a credential")
+
+        monkeypatch.setattr(type(secrets), name, property(unread))
+
+    with pytest.raises(TypeError, match=f"Setting '{name}' is not a secret"):
+        secrets.get_secret(name)
+
+
+def test_a_declared_secret_field_retains_an_unvalidated_string_value(secrets):
+    value = "synthetic-unvalidated-settings-key"
+    values = secrets.model_copy(update={ENV_NAME: value})
+
+    assert values.get_secret(ENV_NAME) == value
