@@ -36,26 +36,33 @@ def _whole_file_tail(path: Path, limit: int) -> str:
     return data[-limit:] if len(data) > limit else data
 
 
+@pytest.fixture
+def utf8_locale(monkeypatch):
+    monkeypatch.setattr(jobs.locale, "getpreferredencoding", lambda do_setlocale=True: "UTF-8")
+
+
 def _payload(shift: int, repeats: int) -> bytes:
     pieces = _PIECES[shift % len(_PIECES) :] + _PIECES[: shift % len(_PIECES)]
     return b"".join(pieces) * repeats
 
 
 @pytest.mark.parametrize("shift", range(len(_PIECES)))
-def test_the_tail_matches_a_whole_file_read_at_every_cut(tmp_path, shift):
+def test_the_tail_matches_a_whole_file_read_at_every_cut(tmp_path, shift, utf8_locale):
+    # The read starts four bytes per character before the end, so trailing bytes
+    # move the cut through every offset inside the pieces.
     for repeats in (1, 6):
-        for lead in range(4):
-            log = tmp_path / f"job-{repeats}-{lead}.log"
-            log.write_bytes(b"x" * lead + _payload(shift, repeats))
+        for trail in range(4):
+            log = tmp_path / f"job-{repeats}-{trail}.log"
+            log.write_bytes(_payload(shift, repeats) + b"z" * trail)
             for limit in range(1, 40):
                 assert jobs._tail(str(log), limit=limit) == _whole_file_tail(log, limit), (
                     repeats,
-                    lead,
+                    trail,
                     limit,
                 )
 
 
-def test_a_tail_of_four_byte_characters_needs_every_byte_it_reads(tmp_path):
+def test_a_tail_of_four_byte_characters_comes_back_whole(tmp_path, utf8_locale):
     log = tmp_path / "job.log"
     log.write_bytes("🎉".encode() * 50)
     for limit in range(1, 30):
@@ -63,7 +70,7 @@ def test_a_tail_of_four_byte_characters_needs_every_byte_it_reads(tmp_path):
 
 
 @pytest.mark.parametrize("limit", [0, -1, -5])
-def test_a_limit_below_one_keeps_the_slice_it_always_had(tmp_path, limit):
+def test_a_limit_below_one_keeps_the_slice_it_always_had(tmp_path, limit, utf8_locale):
     log = tmp_path / "job.log"
     log.write_bytes(_payload(3, 4))
     assert jobs._tail(str(log), limit=limit) == _whole_file_tail(log, limit)
@@ -79,30 +86,52 @@ def test_an_empty_or_missing_log(tmp_path):
     assert jobs._tail("") is None
 
 
-def test_a_long_log_is_read_from_its_end_only(tmp_path, monkeypatch):
+class _CountingFile:
+    def __init__(self, fh, sizes):
+        self._fh = fh
+        self._sizes = sizes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._fh.close()
+
+    def seek(self, *args):
+        return self._fh.seek(*args)
+
+    def read(self, *args):
+        data = self._fh.read(*args)
+        self._sizes.append(len(data))
+        return data
+
+
+@pytest.fixture
+def read_sizes(monkeypatch):
+    """Byte counts of every read the tail makes through the module's ``open``."""
+    sizes: list[int] = []
+    real_open = builtins.open
+    monkeypatch.setattr(
+        jobs, "open", lambda *a, **k: _CountingFile(real_open(*a, **k), sizes), raising=False
+    )
+    return sizes
+
+
+def test_a_long_log_is_read_from_its_end_only(tmp_path, read_sizes, utf8_locale):
     log = tmp_path / "job.log"
     log.write_bytes(b"x" * (1 << 20) + b"last line\n")
-    read_sizes: list[int] = []
-    real_open = builtins.open
-
-    class _Counting:
-        def __init__(self, fh):
-            self._fh = fh
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            self._fh.close()
-
-        def seek(self, *args):
-            return self._fh.seek(*args)
-
-        def read(self, *args):
-            data = self._fh.read(*args)
-            read_sizes.append(len(data))
-            return data
-
-    monkeypatch.setattr(jobs, "open", lambda *a, **k: _Counting(real_open(*a, **k)), raising=False)
     assert jobs._tail(str(log), limit=100) == "x" * 90 + "last line\n"
     assert read_sizes and sum(read_sizes) <= 4 * 100
+
+
+def test_a_log_in_another_locale_encoding_is_decoded_whole_in_that_encoding(
+    tmp_path, monkeypatch, read_sizes
+):
+    monkeypatch.setattr(jobs.locale, "getpreferredencoding", lambda do_setlocale=True: "latin-1")
+    log = tmp_path / "job.log"
+    log.write_bytes(b"x" * 50 + "caf\u00e9\r\nna\u00efve".encode("latin-1"))
+    assert jobs._tail(str(log), limit=10) == "caf\u00e9\nna\u00efve"
+    assert jobs._tail(str(log), limit=11) == "xcaf\u00e9\nna\u00efve"
+    assert jobs._tail(str(log), limit=0) == "x" * 50 + "caf\u00e9\nna\u00efve"
+    # Only UTF-8 is read from an offset; another encoding is read whole.
+    assert read_sizes == [log.stat().st_size] * 3

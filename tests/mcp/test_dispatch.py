@@ -145,7 +145,7 @@ def test_help_for_a_name_nobody_registered_is_an_error():
         call(help="agent.summon")
 
 
-@pytest.mark.parametrize("target", [5, ["server.info"]])
+@pytest.mark.parametrize("target", [0, 5, ["server.info"]])
 def test_help_for_something_that_is_not_a_name_is_refused(target):
     with pytest.raises(ValueError, match="help takes true, a verb name"):
         call(help=target)
