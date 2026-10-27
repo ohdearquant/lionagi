@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name
 
+from . import _common
 from .redact import public_project, scrub_text
 from .run_progress import resolve_run
 from .store import OperatorNotFoundError, OperatorStore
@@ -156,14 +157,7 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str:
 
 
 def _identity() -> tuple[OperatorStore, str, str]:
-    import os
-
-    db_path = os.environ.get("LIONAGI_OPERATOR_DB_PATH")
-    conversation_id = os.environ.get("LIONAGI_OPERATOR_CONVERSATION_ID")
-    request_id = os.environ.get("LIONAGI_OPERATOR_REQUEST_ID")
-    if not db_path or not conversation_id or not request_id:
-        raise RuntimeError("Studio application bridge is missing its durable turn identity")
-    return OperatorStore(db_path), conversation_id, request_id
+    return _common._identity(OperatorStore)
 
 
 def _runner_drains_controls(session: dict[str, Any]) -> bool:
@@ -374,17 +368,16 @@ async def _propose_run_control(
     # prompt confirmation still returns promptly, then widened to a ceiling
     # that keeps a full-lifetime wait in the dozens of reads rather than the
     # thousands.
-    poll_interval = _MIN_PROPOSAL_POLL_SECONDS
-    while True:
-        proposal = await store.get_proposal(proposal["id"])
-        status = proposal["status"]
-        if status == "pending" and proposal["expiresAt"] <= time.time():
-            proposal = await store.expire_proposal(proposal["id"])
-            status = proposal["status"]
-        if status in _TERMINAL_PROPOSAL_STATUSES:
-            return _tool_result(proposal, session_id, verb)
-        await sleep(poll_interval)
-        poll_interval = min(poll_interval * 2, _MAX_PROPOSAL_POLL_SECONDS)
+    proposal = await _common.wait_for_proposal(
+        store,
+        proposal,
+        clock=lambda: time.time(),
+        sleep=lambda interval: sleep(interval),
+        poll_interval=_MIN_PROPOSAL_POLL_SECONDS,
+        advance_interval=lambda interval: min(interval * 2, _MAX_PROPOSAL_POLL_SECONDS),
+        is_terminal=lambda status: status in _TERMINAL_PROPOSAL_STATUSES,
+    )
+    return _tool_result(proposal, session_id, verb)
 
 
 async def pause_run(arguments: dict[str, Any]) -> dict[str, Any]:
