@@ -255,6 +255,53 @@ async def test_bash_shell_control_rejected(tmp_path):
     assert "Shell control" in result["stderr"] or "rejected" in result["stderr"]
 
 
+async def test_bash_runs_in_the_workspace_root_not_the_process_cwd(tmp_path, monkeypatch):
+    """A command with no cwd= runs where the other tools read and write.
+
+    The host process can be started from any directory; a command that ran
+    there would test, build or inspect a different tree from the one the
+    editor just changed.
+    """
+    workspace = tmp_path / "workspace"
+    elsewhere = tmp_path / "elsewhere"
+    workspace.mkdir()
+    elsewhere.mkdir()
+    _, _, tools = _make_toolkit(workspace)
+    monkeypatch.chdir(elsewhere)
+
+    result = await _tool_fn(tools, "bash")(command="/bin/pwd -P")
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == str(workspace.resolve())
+
+
+async def test_bash_takes_a_relative_cwd_from_the_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "pkg").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "pkg").mkdir(parents=True)
+    _, _, tools = _make_toolkit(workspace)
+    monkeypatch.chdir(elsewhere)
+
+    result = await _tool_fn(tools, "bash")(command="/bin/pwd -P", cwd="pkg")
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == str((workspace / "pkg").resolve())
+
+
+async def test_bash_keeps_an_absolute_cwd(tmp_path):
+    workspace = tmp_path / "workspace"
+    other = tmp_path / "other"
+    workspace.mkdir()
+    other.mkdir()
+    _, _, tools = _make_toolkit(workspace)
+
+    result = await _tool_fn(tools, "bash")(command="/bin/pwd -P", cwd=str(other))
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == str(other.resolve())
+
+
 @pytest.mark.parametrize(
     "action,pattern",
     [

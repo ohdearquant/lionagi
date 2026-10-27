@@ -565,7 +565,7 @@ class CodingToolkit(LionTool):
             cwd: str | None = None,
         ) -> dict:
             """Execute a single shell command and return stdout, stderr, and return code.
-            One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected; pass cwd= to run in a directory. Output is truncated if it exceeds 100 KB per stream.
+            One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected. Commands run in the workspace root; pass cwd= (relative to it, or absolute) to run in another directory. Output is truncated if it exceeds 100 KB per stream.
             """
             timeout_ms = max(1, min(timeout or 30000, 300000))
             timeout_s = timeout_ms / 1000.0
@@ -592,7 +592,11 @@ class CodingToolkit(LionTool):
             if seatbelt is not None:
                 cmd = seatbelt.wrap(cmd)
 
-            result = await run_sync(_subprocess_sync, cmd, False, timeout_s, cwd)
+            # Without this the command would run in whatever directory the host
+            # process was started from, which is not the workspace the other tools
+            # read and write; a relative cwd= is likewise taken from the workspace.
+            run_cwd = str(workspace_root / cwd) if cwd else str(workspace_root)
+            result = await run_sync(_subprocess_sync, cmd, False, timeout_s, run_cwd)
 
             result.setdefault("timed_out", False)
             result["return_code"] = result.pop("returncode", -1)
