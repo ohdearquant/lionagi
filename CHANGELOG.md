@@ -167,6 +167,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   to deliver it to any member whose name was part of the string, so `bob` received a
   message for `bobby`, and it printed that recipient one letter at a time.
 
+- CLI stream teardown preserves cancellation while reaping helpers and draining abandoned stderr.
+
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
 
