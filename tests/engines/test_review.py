@@ -661,7 +661,7 @@ async def test_clean_audit_that_drops_the_echoed_ref_still_arrives():
     assert len(emitters["verify-clean"].calls) == 1, (
         "a ref-less emission must not trigger a repair pass"
     )
-    assert run._emission_failures == []
+    assert run.emission_failures == []
     results = run.by_type(VerifyResult)
     assert len(results) == 1
     assert results[0].ref == ref, (
@@ -726,7 +726,7 @@ async def test_a_clean_audit_that_echoes_the_ref_is_not_restamped():
     await eng._run(run, "ARTIFACT")
 
     assert [e for e in events if e.get("type") == "verify_clean_ref_stamped"] == []
-    assert run._emission_failures == []
+    assert run.emission_failures == []
     assert run.by_type(VerifyResult)[0].ref == ref
 
 

@@ -15,9 +15,13 @@ Stateless event-driven engine base.
 | `max_concurrent` | `5` | Concurrency semaphore width (simultaneous agent slots). |
 | `max_agents` | `50` | Hard cap on total agents the run may create. |
 | `deadline_s` | `None` | Wall-clock cap in seconds; `None` = unbounded. |
+| `emission_reply_text` | `False` | Put the failed reply's text (capped at `RAW_RESPONSE_TEXT_CAP` characters) on `emission_repair` and `emission_missing` events. Off, those events carry the scalar facts only: stop reason, usage, model, block types and `text_chars`. |
+| `fallback_deadline_s` | `None` | Seconds allowed for the one fallback leg that retries a silent stage on `models["review_fallback"]`. A leg still running at the limit is abandoned (`emission_fallback_timeout`) and the emission stays missing unless it had already arrived. `None` = unbounded. |
 | `judge_model` | `None` | If set, a cheap gate agent runs at expansion points. `None` = no gate (fail-open). |
 | `judge_role` | `"critic"` | Casts role for the judge agent. |
 | `cancel_timeout_s` | `30.0` | Seconds to wait for spawned tasks to settle after cancellation. Tasks still pending at the deadline are warned about and abandoned after one final cancellation request. CLI process-group cleanup starts immediately after task cancellation and has its own bounded TERM-to-KILL grace. |
+
+Emission events carry these fields. `emission_repair` has `repair_index`, the number of repair prompts sent to the leg so far (its operate call number is `repair_index + 1`), and `emission_recovered` has `operate_call`, the operate call number within the fallback leg that produced the emission. `emission_missing` has `attempts`, the operate calls made across both legs, a call cut short by `fallback_deadline_s` included. `emission_fallback_timeout` has `limit_s`, the deadline that ended the fallback leg. If the emission had already arrived when that deadline fired, `emission_recovered` follows the timeout event. `emission_repair` and `emission_recovered` also keep `attempt`, with the same value as `repair_index` and `operate_call`.
 
 On budget exhaustion `Engine.run()` calls `_partial_export()` (override in subclasses to return a partial result) instead of raising. Caller-initiated cancellation still propagates as `CancelledError`.
 

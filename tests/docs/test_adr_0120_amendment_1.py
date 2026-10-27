@@ -16,6 +16,8 @@ class this file exists to catch.
 
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +41,31 @@ def _line(relpath: str, number: int) -> str:
 
 def _span(relpath: str, start: int, end: int) -> str:
     return "\n".join((ROOT / relpath).read_text(encoding="utf-8").splitlines()[start - 1 : end])
+
+
+def _tree(relpath: str) -> ast.Module:
+    return ast.parse((ROOT / relpath).read_text(encoding="utf-8"))
+
+
+def _class(tree: ast.AST, name: str) -> ast.ClassDef:
+    found = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name), None
+    )
+    assert found is not None, f"class {name} is not in the module the amendment cites"
+    return found
+
+
+def _method(cls: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    found = next(
+        (
+            n
+            for n in cls.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+        ),
+        None,
+    )
+    assert found is not None, f"{cls.name}.{name} is not in the class the amendment cites"
+    return found
 
 
 def _amendment() -> str:
@@ -81,13 +108,58 @@ def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
     assert "return []" in body
 
 
+REVIEW = "lionhub/src/lionhub/orchestration/engines/review.py"
+ENGINE = "lionhub/src/lionhub/orchestration/engines/engine.py"
+
+
 def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
-    assert "class ReviewVerdict(Verdict)" in _line(
-        "lionhub/src/lionhub/orchestration/engines/review.py", 281
-    )
-    assert "await run.emit(final)" in _line(
-        "lionhub/src/lionhub/orchestration/engines/review.py", 861
-    )
+    review = _tree(REVIEW)
+    verdict = _class(review, "ReviewVerdict")
+    assert [b.id for b in verdict.bases if isinstance(b, ast.Name)] == ["Verdict"]
+    body = _method(_class(review, "ReviewEngine"), "_verdict").body
+
+    def is_emit_of_final(stmt: ast.stmt) -> bool:
+        call = (
+            stmt.value.value
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Await)
+            else None
+        )
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "emit"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "run"
+            and [a.id for a in call.args if isinstance(a, ast.Name)] == ["final"]
+        )
+
+    def is_rule_into_final(stmt: ast.stmt) -> bool:
+        return (
+            isinstance(stmt, ast.Assign)
+            and [t.id for t in stmt.targets if isinstance(t, ast.Name)] == ["final"]
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Attribute)
+            and stmt.value.func.attr == "_rule"
+        )
+
+    # The verdict the synthesis rules produced is emitted at the method's own level,
+    # after `final = self._rule(...)`; the shared-session refusal emits from inside a branch.
+    ruled = next(i for i, stmt in enumerate(body) if is_rule_into_final(stmt))
+    assert any(is_emit_of_final(stmt) for stmt in body[ruled + 1 :])
+
+
+def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> None:
+    notifier = _method(_class(_tree(ENGINE), "EngineRun"), "_notify_budget_once")
+    notified = [
+        n.args[0].value
+        for n in ast.walk(notifier)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "notify"
+        and n.args
+        and isinstance(n.args[0], ast.Constant)
+    ]
+    assert notified == ["budget_exhausted"]
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
@@ -189,7 +261,21 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionhub/src/lionhub/orchestration/engines/review.py:281`, `:861" in flat
+    assert (
+        "the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, "
+        "both in `lionhub/src/lionhub/orchestration/engines/review.py`" in flat
+    )
+    assert (
+        "`EngineRun._notify_budget_once` in `lionhub/src/lionhub/orchestration/engines/engine.py`"
+        in flat
+    )
+    # A line number in either citation goes stale on the next edit above it and nothing checks it.
+    first = flat.index("the `ReviewVerdict` class and the `await run.emit(final)`")
+    second = (
+        "`EngineRun._notify_budget_once` in `lionhub/src/lionhub/orchestration/engines/engine.py`"
+    )
+    cited = flat[first : flat.index(second) + len(second)]
+    assert re.search(r"engines/(?:review|engine)\.py:\d", cited) is None
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven

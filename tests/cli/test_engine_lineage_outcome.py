@@ -61,7 +61,7 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
 
     class FakeEngine:
         _total_agent_failure = False
-        _emission_failures: list[str] = []
+        emission_failures: list[str] = []
         model = None
         models: dict[str, str] = {}
 

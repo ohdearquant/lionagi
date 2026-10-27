@@ -70,9 +70,9 @@ async def test_emission_failures_written_to_degraded_outcome_on_completed(monkey
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
-    # Engine that returns a result but has _emission_failures populated.
+    # Engine that returns a result but has emission_failures populated.
     mock_engine = MagicMock()
-    mock_engine._emission_failures = ["planner x2", "summariser x1"]
+    mock_engine.emission_failures = ["planner x2", "summariser x1"]
     mock_engine._total_agent_failure = False
 
     async def _mock_run(spec, *, on_event=None, **kwargs):
@@ -110,7 +110,7 @@ async def test_no_emission_failures_error_column_stays_null(monkeypatch):
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
     mock_engine = MagicMock()
-    mock_engine._emission_failures = []  # no failures
+    mock_engine.emission_failures = []  # no failures
     mock_engine._total_agent_failure = False
 
     async def _mock_run(spec, *, on_event=None, **kwargs):
@@ -135,7 +135,7 @@ async def test_no_emission_failures_error_column_stays_null(monkeypatch):
 
 
 async def test_engine_without_emission_failures_attr_error_column_stays_null(monkeypatch):
-    """Engine objects without _emission_failures attr (older subclass) must not crash."""
+    """Engine objects without emission_failures attr (older subclass) must not crash."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -143,7 +143,7 @@ async def test_engine_without_emission_failures_attr_error_column_stays_null(mon
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
-    mock_engine = MagicMock(spec=[])  # spec=[] means no _emission_failures attr
+    mock_engine = MagicMock(spec=[])  # spec=[] means no emission_failures attr
 
     async def _mock_run(spec, *, on_event=None, **kwargs):
         return "result"
@@ -164,7 +164,7 @@ async def test_engine_without_emission_failures_attr_error_column_stays_null(mon
     assert completed[0]["error"] is None
 
 
-# EngineRun._emission_failures accumulation
+# EngineRun.emission_failures accumulation
 
 
 def _make_minimal_engine_run() -> Any:
@@ -184,11 +184,11 @@ def _make_minimal_engine_run() -> Any:
 
 def test_engine_run_emission_failures_starts_empty():
     er = _make_minimal_engine_run()
-    assert er._emission_failures == []
+    assert er.emission_failures == []
 
 
 async def test_operate_with_repair_records_emission_failure(monkeypatch):
-    """Exhausted retries with arrived() always False must add a descriptive entry to _emission_failures."""
+    """Exhausted retries with arrived() always False must add a descriptive entry to emission_failures."""
     from lionhub.orchestration.engines.engine import EngineRun
 
     engine = MagicMock()
@@ -223,10 +223,10 @@ async def test_operate_with_repair_records_emission_failure(monkeypatch):
         retries=2,
     )
 
-    assert len(er._emission_failures) == 1, (
-        f"expected 1 emission_failure entry, got {er._emission_failures}"
+    assert len(er.emission_failures) == 1, (
+        f"expected 1 emission_failure entry, got {er.emission_failures}"
     )
-    entry = er._emission_failures[0]
+    entry = er.emission_failures[0]
     assert "planner" in entry, f"agent name must be in entry; got: {entry!r}"
     assert "x" in entry, f"attempt count must be in entry; got: {entry!r}"
 
@@ -264,8 +264,8 @@ async def test_operate_with_repair_no_failure_when_arrived(monkeypatch):
         retries=2,
     )
 
-    assert er._emission_failures == [], (
-        f"no failure should be recorded when arrived=True; got: {er._emission_failures}"
+    assert er.emission_failures == [], (
+        f"no failure should be recorded when arrived=True; got: {er.emission_failures}"
     )
 
 
@@ -493,12 +493,12 @@ async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
 
     # Run 1: should produce emission_missing on engine
     await real_engine.run("run-1")
-    assert real_engine._emission_failures, "first run should have emission failures"
+    assert real_engine.emission_failures, "first run should have emission failures"
 
-    # Run 2: clean run — engine._emission_failures must be reset
+    # Run 2: clean run — engine.emission_failures must be reset
     await real_engine.run("run-2")
-    assert real_engine._emission_failures == [], (
-        f"second clean run must reset _emission_failures; got: {real_engine._emission_failures}"
+    assert real_engine.emission_failures == [], (
+        f"second clean run must reset emission_failures; got: {real_engine.emission_failures}"
     )
 
 
@@ -532,7 +532,7 @@ async def _run_engine_returning(monkeypatch, capsys, result):
     monkeypatch.setattr(engine_mod, "warn", lambda msg, *a, **kw: warnings.append(str(msg)))
 
     mock_engine = MagicMock()
-    mock_engine._emission_failures = []
+    mock_engine.emission_failures = []
     mock_engine._total_agent_failure = False
 
     async def _mock_run(spec, *, on_event=None, **kwargs):

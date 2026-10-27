@@ -829,10 +829,12 @@ everything since; facts past the range belong to the next wake.
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
   (`lionagi/casts/emission.py:147`); the review operation emits a `ReviewVerdict` into the session
-  observer (`lionhub/src/lionhub/orchestration/engines/review.py:281`, `:861`), which is one emit site, but a `Verdict` cast
+  observer (the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, both in
+  `lionhub/src/lionhub/orchestration/engines/review.py`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
   reading (`lionagi/service/token_budget.py:140`); the nearest crossing is the engine's
-  `budget_exhausted` notification (`lionhub/src/lionhub/orchestration/engines/engine.py:628-636`), whose `kind` is a bare
+  `budget_exhausted` notification (`EngineRun._notify_budget_once` in
+  `lionhub/src/lionhub/orchestration/engines/engine.py`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary
   is closed at registration; the emit site still missing for each is row 7 of the delta, not
   current behavior.
