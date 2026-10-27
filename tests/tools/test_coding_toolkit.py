@@ -547,3 +547,36 @@ async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
     ).model_dump()
 
     assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "text, offset, total_lines, reached_eof, expected_content",
+    [
+        pytest.param("alpha\nbeta\ngamma\n", 0, 3, False, "1\talpha\n2\tbeta\n", id="before-end"),
+        pytest.param(
+            "alpha\nbeta\ngamma\n", 1, 3, True, "2\tbeta\n3\tgamma\n", id="ends-at-last-line"
+        ),
+        pytest.param("alpha\nbeta\ngamma\n", 3, 3, True, None, id="at-end"),
+        pytest.param("alpha\nbeta\ngamma\n", 8, 3, True, None, id="past-end"),
+        pytest.param("", 0, 0, True, "", id="empty"),
+    ],
+)
+async def test_reader_passes_file_extent_through_the_bound_tool(
+    tmp_path, text, offset, total_lines, reached_eof, expected_content
+):
+    path = tmp_path / "window.txt"
+    path.write_text(text)
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "reader")(action="read", path=str(path), offset=offset, limit=2)
+
+    assert result["success"] is True
+    assert result.get("total_lines") == total_lines
+    assert result.get("reached_eof") is reached_eof
+    if expected_content is None:
+        assert result["content"] == (
+            f"Offset {offset} is at or beyond the end of the file ({total_lines} lines). "
+            f"Use an offset below {total_lines} to read file content."
+        )
+    else:
+        assert result["content"] == expected_content

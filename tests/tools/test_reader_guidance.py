@@ -3,7 +3,9 @@
 
 """Tests for ReaderTool guidance improvements — line-prefix framing, windowed reads."""
 
-from lionagi.tools.file.reader import ReaderRequest, ReaderTool
+import pytest
+
+from lionagi.tools.file.reader import ReaderRequest, ReaderResponse, ReaderTool
 
 
 async def test_reader_output_has_numbered_lines(tmp_path):
@@ -72,3 +74,90 @@ async def test_reader_path_required_error_guides_actions(tmp_path):
     resp = await rt.handle_request(req)
     assert not resp.success
     assert "path" in resp.error.lower()
+
+
+@pytest.mark.parametrize("offset", [3, 8], ids=["at-end", "past-end"])
+async def test_reader_explains_an_offset_at_or_past_the_end(tmp_path, offset):
+    path = tmp_path / "lines.txt"
+    path.write_text("alpha\nbeta\ngamma\n")
+    reader = ReaderTool(workspace_root=tmp_path)
+
+    response = await reader.handle_request(
+        ReaderRequest(action="read", path=str(path), offset=offset)
+    )
+    payload = response.model_dump()
+
+    assert response.success is True
+    assert payload.get("total_lines") == 3
+    assert payload.get("reached_eof") is True
+    assert response.content == (
+        f"Offset {offset} is at or beyond the end of the file (3 lines). "
+        "Use an offset below 3 to read file content."
+    )
+    assert response.error is None
+
+
+@pytest.mark.parametrize(
+    "offset, expected_content, reached_eof",
+    [(0, "1\talpha\n2\tbeta\n", False), (1, "2\tbeta\n3\tgamma\n", True)],
+    ids=["before-end", "ends-at-last-line"],
+)
+async def test_reader_reports_the_extent_of_a_read_window(
+    tmp_path, offset, expected_content, reached_eof
+):
+    path = tmp_path / "window.txt"
+    path.write_text("alpha\nbeta\ngamma\n")
+    reader = ReaderTool(workspace_root=tmp_path)
+
+    response = await reader.handle_request(
+        ReaderRequest(action="read", path=str(path), offset=offset, limit=2)
+    )
+    payload = response.model_dump()
+
+    assert response.success is True
+    assert response.content == expected_content
+    assert payload.get("total_lines") == 3
+    assert payload.get("reached_eof") is reached_eof
+
+
+@pytest.mark.parametrize("offset", [0, 7], ids=["from-start", "beyond-empty"])
+async def test_reader_distinguishes_an_empty_file_from_an_exhausted_window(tmp_path, offset):
+    path = tmp_path / "empty.txt"
+    path.write_text("")
+    reader = ReaderTool(workspace_root=tmp_path)
+
+    response = await reader.handle_request(
+        ReaderRequest(action="read", path=str(path), offset=offset)
+    )
+    payload = response.model_dump()
+
+    assert response.success is True
+    assert response.content == ""
+    assert payload.get("total_lines") == 0
+    assert payload.get("reached_eof") is True
+
+
+async def test_reader_counts_a_final_line_without_a_newline(tmp_path):
+    path = tmp_path / "no-newline.txt"
+    path.write_text("alpha\nbeta")
+    reader = ReaderTool(workspace_root=tmp_path)
+
+    response = await reader.handle_request(
+        ReaderRequest(action="read", path=str(path), offset=1, limit=1)
+    )
+    payload = response.model_dump()
+
+    assert response.success is True
+    assert response.content == "2\tbeta"
+    assert payload.get("total_lines") == 2
+    assert payload.get("reached_eof") is True
+
+
+def test_reader_response_accepts_unknown_file_extent():
+    response = ReaderResponse(success=False, error="File is unavailable")
+    payload = response.model_dump()
+
+    assert response.content is None
+    assert response.error == "File is unavailable"
+    assert payload.get("total_lines") is None
+    assert payload.get("reached_eof") is None

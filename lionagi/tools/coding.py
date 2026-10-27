@@ -29,7 +29,7 @@ from .code.search import SearchAction as SearchAction  # re-export: preserves th
 from .code.search import SearchRequest, _visible_grep_lines
 from .context.context import ContextRequest, ContextTool
 from .file.editor import EditorRequest, _write_text_no_follow
-from .file.reader import ReaderRequest
+from .file.reader import ReaderRequest, ReaderResponse
 from .file.reader import _list_dir_sync as _file_list_dir_sync
 from .file.reader import _read_sync as _file_read_sync
 
@@ -160,6 +160,8 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
     return {
         "success": True,
         "content": resp.content,
+        "total_lines": resp.total_lines,
+        "reached_eof": resp.reached_eof,
         "_resolved": str(p.resolve()),
         "_mtime": mtime,
     }
@@ -490,15 +492,18 @@ class CodingToolkit(LionTool):
             recursive: bool | None = None,
             file_types: list[str] | None = None,
         ) -> dict:
-            """Read files or list directory contents."""
+            """Read files or list directory contents.
+
+            Text reads include total_lines and reached_eof. Offsets at or past the
+            end of a nonempty file return an end-of-file notice.
+            """
             # Canonical empty-path contract: every reader action requires path,
             # matching ReaderTool.handle_request's pre-dispatch guard.
             if not path:
-                return {
-                    "success": False,
-                    "content": None,
-                    "error": "'path' is required. Provide a file path for 'read' or a directory path for 'list_dir'.",
-                }
+                return ReaderResponse(
+                    success=False,
+                    error="'path' is required. Provide a file path for 'read' or a directory path for 'list_dir'.",
+                ).model_dump()
             if action == "read":
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
