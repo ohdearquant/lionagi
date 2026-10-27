@@ -8,8 +8,10 @@ of a terminal state, and the per-run locking/outcome contract.
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import json
+import locale
 import logging
 import math
 import os
@@ -752,10 +754,25 @@ def _tail(path: str | None, limit: int = 4000) -> str | None:
     """
     if not path:
         return None
+    # The job writes its log in the locale's encoding, the one a text-mode read
+    # decodes with. Only UTF-8 can be decoded from an arbitrary byte offset.
+    encoding = locale.getpreferredencoding(False)
+    from_end = limit > 0 and codecs.lookup(encoding).name == "utf-8"
     try:
-        data = Path(path).read_text(errors="replace")
+        with open(path, "rb") as fh:
+            if from_end:
+                # Read only the end. The last *limit* characters take at most four
+                # bytes each, so all of them start inside the span. Bytes before the
+                # first character boundary in it decode as replacement characters,
+                # and from that boundary on the decode is the whole-file decode.
+                span = 4 * limit
+                end = fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, end - span))
+            raw = fh.read()
     except OSError:
         return None
+    # Universal newlines, as a text-mode read would apply them.
+    data = raw.decode(encoding, errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     return data[-limit:] if len(data) > limit else data
 
 
