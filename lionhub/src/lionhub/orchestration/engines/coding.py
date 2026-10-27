@@ -18,6 +18,8 @@ from typing import Any
 
 from pydantic import Field
 
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment
 from lionagi.casts.emission import Verdict
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import run_sync, sleep
@@ -342,6 +344,7 @@ class CodingRun(ChainRun):
         self.diff: str = ""
         self.export_dir: Path | None = None
         self._test_runs: int = 0
+        self._worker_command_env_names: frozenset[str] | None = None
         # Pre-implement workspace snapshot: path → porcelain XY status; None
         # means the snapshot could not be taken (non-git or spawn failure).
         self._ws_baseline: dict[str, str] | None = {}
@@ -468,6 +471,7 @@ class CodingEngine(Engine):
         # mechanical-repair efficiency
         auto_repair_cmds: list[str] | None = None,
         fast_test_cmd: str | list[str] | None = None,
+        command_env_allowlist: tuple[str, ...] = (),
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -488,6 +492,7 @@ class CodingEngine(Engine):
         self.worker_extra_prompt = worker_extra_prompt
         self.auto_repair_cmds = list(auto_repair_cmds) if auto_repair_cmds else []
         self.fast_test_cmd = fast_test_cmd
+        self.command_env_allowlist = normalize_command_env_allowlist(command_env_allowlist)
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -630,6 +635,12 @@ class CodingEngine(Engine):
         emits = (ChangeProposed,)
         before = len(run.events_of(ChangeProposed))
         all_worker_tools = self.coding_tools + self.worker_extra_tools
+        worker_names: frozenset[str] | None = None
+
+        def receive_worker_names(names: frozenset[str]) -> None:
+            nonlocal worker_names
+            worker_names = names
+
         async with run._sem:
             agent = await run.make_agent(
                 self.implement_role,
@@ -641,7 +652,11 @@ class CodingEngine(Engine):
                 emits=emits,
                 mcp_servers=self.worker_mcp_servers,
                 extra_prompt=self.worker_extra_prompt,
+                command_env_allowlist=self.command_env_allowlist,
+                _command_env_names_out=receive_worker_names,
             )
+            if worker_names is not None:
+                run._worker_command_env_names = worker_names
             wrapped = self._wrap_turn_timeout(agent, run)
             heartbeat_task = self._start_heartbeat(run, stage="implement")
             try:
@@ -679,7 +694,17 @@ class CodingEngine(Engine):
             except Exception:  # noqa: BLE001
                 logger.debug("auto_repair mtime snapshot failed", exc_info=True)
             cmd, shell = _resolve_cmd(raw_cmd)
-            result = await run_sync(_subprocess_sync, cmd, shell, 120.0, run.workspace)
+            result = await run_sync(
+                _subprocess_sync,
+                cmd,
+                shell,
+                120.0,
+                run.workspace,
+                env=command_environment(
+                    declared_names=run._worker_command_env_names,
+                    command_env_allowlist=self.command_env_allowlist,
+                ),
+            )
             if int(result.get("returncode", -1)) != 0:
                 run.notify(
                     "auto_repair_failed",
@@ -716,7 +741,17 @@ class CodingEngine(Engine):
         cmd, shell = _resolve_cmd(cmd_source)
         cmd_str = cmd_source if isinstance(cmd_source, str) else " ".join(cmd_source)
         run.notify(notify_event, change=change.eid, round=round_no, cmd=cmd_str)
-        result = await run_sync(_subprocess_sync, cmd, shell, self.test_timeout_s, run.workspace)
+        result = await run_sync(
+            _subprocess_sync,
+            cmd,
+            shell,
+            self.test_timeout_s,
+            run.workspace,
+            env=command_environment(
+                declared_names=run._worker_command_env_names,
+                command_env_allowlist=self.command_env_allowlist,
+            ),
+        )
         combined = (result.get("stdout", "") + result.get("stderr", "")).rstrip()
         returncode = int(result.get("returncode", -1))
         timed_out = bool(result.get("timed_out", False))
@@ -996,6 +1031,10 @@ class CodingEngine(Engine):
             False,
             30.0,
             run.workspace,
+            env=command_environment(
+                declared_names=run._worker_command_env_names,
+                command_env_allowlist=self.command_env_allowlist,
+            ),
         )
         if int(result.get("returncode", -1)) != 0:
             return None
@@ -1013,6 +1052,10 @@ class CodingEngine(Engine):
             False,
             30.0,
             run.workspace,
+            env=command_environment(
+                declared_names=run._worker_command_env_names,
+                command_env_allowlist=self.command_env_allowlist,
+            ),
         )
         if int(result.get("returncode", -1)) != 0:
             return [], True
@@ -1026,7 +1069,17 @@ class CodingEngine(Engine):
 
     async def _capture_diff(self, run: CodingRun) -> str:
         """Combine git diff (tracked) with --no-index diffs for untracked candidates; covers emission-failure writes and fix-round additions."""
-        result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
+        result = await run_sync(
+            _subprocess_sync,
+            ["git", "diff"],
+            False,
+            30.0,
+            run.workspace,
+            env=command_environment(
+                declared_names=run._worker_command_env_names,
+                command_env_allowlist=self.command_env_allowlist,
+            ),
+        )
         tracked = result.get("stdout", "") if int(result.get("returncode", -1)) == 0 else ""
 
         # Candidate set: union of the workspace delta and every file any ChangeProposed
@@ -1055,6 +1108,10 @@ class CodingEngine(Engine):
             False,
             30.0,
             run.workspace,
+            env=command_environment(
+                declared_names=run._worker_command_env_names,
+                command_env_allowlist=self.command_env_allowlist,
+            ),
         )
         untracked_set: set[str] = set()
         if int(untracked_result.get("returncode", -1)) == 0:
@@ -1070,6 +1127,10 @@ class CodingEngine(Engine):
                 False,
                 30.0,
                 run.workspace,
+                env=command_environment(
+                    declared_names=run._worker_command_env_names,
+                    command_env_allowlist=self.command_env_allowlist,
+                ),
             )
             # --no-index exits 1 when files differ (always true here) — normal, not an error.
             content = r.get("stdout", "")

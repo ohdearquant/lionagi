@@ -40,6 +40,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
+  repairs and auto-repair commands, and the formatter hook) remove declared
+  credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
+  their child environments, including `GITHUB_TOKEN`. Restore a variable with
+  `command_env_allowlist` using its exact spelling. A name in no declaration
+  that matches no pattern (for example `HF_TOKEN`) still passes. Reads are not
+  confined.
+
 - Application and provider module loaders use the shared `ln.import_module`
   contract, retaining relative package anchors, lazy registration and cache behavior.
   An ordinary import error from these loaders is now a plain `ImportError` whose message

@@ -1,6 +1,6 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17 and 2026-10-25 (see Amendments 1 and 2)
+- **Status**: Accepted, amended 2026-10-17 and 2026-10-25 (see Amendments 1, 2 and 3)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
