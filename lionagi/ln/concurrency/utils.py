@@ -37,6 +37,7 @@ __all__ = (
 
 
 def is_coro_func(func: Callable[..., Any]) -> bool:
+    # Not cached: a cache keyed on a bound method or a closure keeps its owner alive.
     while isinstance(func, partial):
         func = func.func
     return inspect.iscoroutinefunction(func)
