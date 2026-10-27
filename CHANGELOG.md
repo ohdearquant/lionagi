@@ -127,6 +127,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - An Anthropic API-model `li agent` leg whose model names no output limit sends
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
+- `load_mcp_tools(config_path=...)` without `server_names` registers the servers declared in
+  that file, as `ActionManager.load_mcp_config()` already did. It used to register every server
+  the process had loaded from any config file, so an earlier, unrelated config's servers were
+  registered again. Pass `server_names` to choose servers explicitly.
+
 ### Fixed
 
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
