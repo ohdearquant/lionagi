@@ -337,6 +337,38 @@ def test_a_nonsecret_setting_cannot_be_used_as_a_credential(secrets, monkeypatch
             create_endpoint(name)
 
 
+@pytest.mark.parametrize("available", [False, True], ids=["unset", "set"])
+def test_a_nonsecret_setting_cannot_be_a_credential_reference(secrets, monkeypatch, available):
+    name = "ANTHROPIC_ACCOUNTS"
+    if available:
+        monkeypatch.setenv(name, "synthetic-nonsecret-environment-value")
+    else:
+        monkeypatch.delenv(name, raising=False)
+
+    meta = EndpointMeta(
+        provider="anthropic",
+        endpoint="messages",
+        endpoint_type=EndpointType.API,
+        base_url="https://credential-test.invalid",
+        auth_type="x-api-key",
+        api_key_env=name,
+    )
+
+    def direct_config():
+        return EndpointConfig(
+            name="direct_messages",
+            provider="anthropic",
+            endpoint="messages",
+            base_url="https://credential-test.invalid",
+            auth_type="x-api-key",
+            api_key_env=name,
+        )
+
+    for create_config in (meta.create_config, direct_config):
+        with pytest.raises(TypeError, match="Setting 'ANTHROPIC_ACCOUNTS' is not a secret"):
+            create_config()
+
+
 @pytest.mark.parametrize("name", ["LOG_CONFIG", "get_secret"], ids=["property", "method"])
 def test_secret_lookup_refuses_nonsecret_attributes_without_reading_them(
     secrets, monkeypatch, name
