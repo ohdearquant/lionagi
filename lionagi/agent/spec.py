@@ -91,6 +91,7 @@ class AgentSpec(HooksMixin):
     # create_agent builds. A provider that does not declare prefix caching sends
     # its requests unchanged, as the option does everywhere.
     prompt_caching: bool = False
+    command_env_allowlist: tuple[str, ...] = ()
 
     @classmethod
     def compose(
@@ -111,8 +112,11 @@ class AgentSpec(HooksMixin):
         khive_injection: Any = None,
         contain_account_integrations: bool = False,
         prompt_caching: bool = False,
+        command_env_allowlist: tuple[str, ...] = (),
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
+        from lionagi._command_env import normalize_command_env_allowlist
+
         prof = Profile.compose(role, modes=modes)
         perm = _resolve_permissions(permissions)
         return cls(
@@ -130,6 +134,7 @@ class AgentSpec(HooksMixin):
             khive_injection=khive_injection,
             contain_account_integrations=contain_account_integrations,
             prompt_caching=prompt_caching,
+            command_env_allowlist=normalize_command_env_allowlist(command_env_allowlist),
         )
 
     @classmethod
@@ -190,6 +195,7 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
+            command_env_allowlist=data.get("command_env_allowlist", ()),
             **flags,
         )
         # compose() defaults lion_system to True, so a saved False must be
@@ -223,6 +229,8 @@ class AgentSpec(HooksMixin):
 
     def to_yaml(self, path: str | Path) -> None:
         """Save spec to YAML (without hook callables — those are code-only)."""
+        from lionagi._command_env import normalize_command_env_allowlist
+
         data = {
             "role": self.profile.role.name,
             "modes": [m.name for m in self.profile.modes],
@@ -234,6 +242,9 @@ class AgentSpec(HooksMixin):
             "yolo": self.yolo,
             "lion_system": self.lion_system,
             "context_management": self.context_management,
+            "command_env_allowlist": list(
+                normalize_command_env_allowlist(self.command_env_allowlist)
+            ),
         }
         if self.cwd:
             data["cwd"] = self.cwd

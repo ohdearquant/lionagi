@@ -1134,7 +1134,7 @@ LION system text. The post-factory `add_message` on the preset path is skipped t
 
 **`_run_agent` raw_body vs system_prompt** — uses `profile.raw_body` (not
 `profile.system_prompt`) to avoid duplicating `LION_SYSTEM_MESSAGE`: `_parse_profile` prepends
-it into `system_prompt` when `lion_system=True`, and `factory.py:300-303` also prepends it
+it into `system_prompt` when `lion_system=True`, and `factory.py:324-327` also prepends it
 because `spec.lion_system` remains `True`. `raw_body` is the profile body before that expansion;
 the factory adds the header exactly once. When `lion_system=False`, `raw_body == system_prompt`
 so both paths are consistent.

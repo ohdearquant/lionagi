@@ -16,6 +16,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,7 +42,9 @@ def roots(monkeypatch, tmp_path):
     for name in ("workspace", "outside", "tmp", "uv-cache"):
         (base / name).mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(base / "tmp"))
-    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda: base / "uv-cache")
+    monkeypatch.setattr(
+        _seatbelt, "_uv_cache_dir", lambda *, _command_env_names=None: base / "uv-cache"
+    )
     return base
 
 
@@ -242,7 +245,11 @@ def test_api_network_applies_only_to_the_write_set():
 async def test_a_write_set_leg_writes_inside_its_working_directory_through_the_loop(
     leg, monkeypatch
 ):
-    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda: leg.workspace.parent / "uv-cache")
+    monkeypatch.setattr(
+        _seatbelt,
+        "_uv_cache_dir",
+        lambda *, _command_env_names=None: leg.workspace.parent / "uv-cache",
+    )
     write = _reply(
         {
             "analysis": "write the summary",
@@ -270,3 +277,177 @@ async def test_a_write_set_leg_writes_inside_its_working_directory_through_the_l
     record = leg.branch.metadata["api_launch"]
     assert (record["tools"], record["network"]) == ("write", False)
     assert (leg.workspace / "summary.txt").read_text() == "the notes say hello\n"
+
+
+def _fixed_child_parent_environment(monkeypatch, tmp_path):
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "GH_TOKEN": "synthetic-declared-reference",
+        "gh_token": "synthetic-case-alias",
+        "SOMEVENDOR_API_KEY": "synthetic-pattern-credential",
+        "MY_TOKENIZER_PATH": "literal=benign value",
+        "LIONAGI_STATE_DB_URL": "sqlite:///synthetic-parent-store.db",
+    }
+    monkeypatch.setattr(_seatbelt.os, "environ", environment)
+    return environment
+
+
+def _capture_fixed_child(monkeypatch):
+    captured = []
+
+    def completed(argv, **kwargs):
+        captured.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="/reported/uv-cache\n", stderr=b"")
+
+    monkeypatch.setattr(_seatbelt.subprocess, "run", completed)
+    return captured
+
+
+def _assert_fixed_child_environment(environment, parent):
+    assert "GH_TOKEN" not in environment and "gh_token" not in environment
+    assert "SOMEVENDOR_API_KEY" not in environment
+    assert "LIONAGI_STATE_DB_URL" not in environment
+    assert environment["MY_TOKENIZER_PATH"] == parent["MY_TOKENIZER_PATH"]
+    assert environment["PATH"] == parent["PATH"]
+
+
+def test_uv_probe_uses_the_supplied_declared_names_at_policy_construction(monkeypatch, tmp_path):
+    parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
+    before = dict(parent)
+    captured = _capture_fixed_child(monkeypatch)
+    monkeypatch.setattr(_seatbelt.shutil, "which", lambda name: "/synthetic/uv")
+
+    policy = SeatbeltPolicy.for_workspace(
+        tmp_path / "workspace", network=True, _command_env_names=frozenset({"GH_TOKEN"})
+    )
+
+    assert len(captured) == 1
+    argv, kwargs = captured[0]
+    assert argv == ["/synthetic/uv", "cache", "dir"]
+    assert kwargs["timeout"] == 10 and kwargs["check"] is False
+    assert kwargs["stdin"] is _seatbelt.subprocess.DEVNULL
+    _assert_fixed_child_environment(kwargs["env"], parent)
+    assert policy.writable_roots == (
+        str((tmp_path / "workspace").resolve()),
+        "/reported/uv-cache",
+        str(Path(tempfile.gettempdir()).resolve()),
+    )
+    assert policy.read_only == (str((tmp_path / "workspace" / ".git").resolve()),)
+    assert policy.network is True
+    assert parent == before
+
+
+def test_uv_probe_without_branch_names_uses_the_owned_declarations(monkeypatch, tmp_path):
+    from lionagi import _command_env_metadata
+
+    parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
+    captured = _capture_fixed_child(monkeypatch)
+    monkeypatch.setattr(_seatbelt.shutil, "which", lambda name: "/synthetic/uv")
+    monkeypatch.setattr(
+        _command_env_metadata, "configured_command_env_names", lambda: frozenset({"GH_TOKEN"})
+    )
+
+    assert _seatbelt._uv_cache_dir() == Path("/reported/uv-cache")
+
+    assert len(captured) == 1
+    _assert_fixed_child_environment(captured[0][1]["env"], parent)
+
+
+def test_confined_writer_keeps_the_prepared_mapping_and_fixed_child_arguments(
+    monkeypatch, tmp_path
+):
+    captured = _capture_fixed_child(monkeypatch)
+    monkeypatch.setattr(
+        _seatbelt,
+        "command_environment",
+        lambda **kwargs: pytest.fail("a prepared writer mapping was rebuilt"),
+    )
+    policy = SeatbeltPolicy((str(tmp_path),), (str(tmp_path / ".git"),))
+    path = tmp_path / "nested" / "note.txt"
+    environment = {"PATH": "/usr/bin:/bin", "MY_TOKENIZER_PATH": "bound-nonsecret"}
+
+    assert policy.write_text(path, "hello\n", 7.5, _command_env=environment) is None
+
+    assert len(captured) == 1
+    argv, kwargs = captured[0]
+    assert argv == policy.wrap(
+        [sys.executable, "-I", "-S", "-c", _seatbelt._WRITE_CHILD, str(path)]
+    )
+    assert kwargs["input"] == b"hello\n"
+    assert kwargs["timeout"] == 7.5
+    assert kwargs["capture_output"] is True and kwargs["check"] is False
+    assert kwargs["env"] is environment
+    assert environment == {"PATH": "/usr/bin:/bin", "MY_TOKENIZER_PATH": "bound-nonsecret"}
+
+
+def test_confined_writer_without_a_mapping_uses_owned_names_and_no_grants(monkeypatch, tmp_path):
+    from lionagi import _command_env_metadata
+
+    parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
+    before = dict(parent)
+    captured = _capture_fixed_child(monkeypatch)
+    monkeypatch.setattr(
+        _command_env_metadata, "configured_command_env_names", lambda: frozenset({"GH_TOKEN"})
+    )
+    policy = SeatbeltPolicy((str(tmp_path),))
+
+    assert policy.write_text(tmp_path / "note.txt", "hello") is None
+
+    assert len(captured) == 1
+    _assert_fixed_child_environment(captured[0][1]["env"], parent)
+    assert parent == before
+
+
+@pytest.mark.parametrize("resumed", [False, True], ids=["new", "resumed"])
+@pytest.mark.asyncio
+async def test_cli_write_policy_receives_the_active_model_reference_before_uv_probe(
+    leg, monkeypatch, resumed
+):
+    from lionagi import _command_env_metadata
+
+    metadata_calls = []
+    probes = []
+
+    def configured(**kwargs):
+        active = tuple(kwargs.get("active_reference_names", ()))
+        metadata_calls.append((active, tuple(kwargs.get("mcp_auth_env_names", ()))))
+        return frozenset({"GH_TOKEN", *active})
+
+    def probe(*, _command_env_names=None):
+        probes.append((_command_env_names, metadata_calls[-1] if metadata_calls else None))
+        return leg.workspace.parent / "uv-cache"
+
+    monkeypatch.setattr(_command_env_metadata, "configured_command_env_names", configured)
+    monkeypatch.setattr(_seatbelt, "seatbelt_available", lambda: True)
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", probe)
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, first_status, _ = await leg.run(_profile(api_tools="write"))
+    assert first_status == "completed"
+    if resumed:
+        probes.clear()
+        metadata_calls.clear()
+        leg.replies = [_last_round(), _answer("again")]
+        _, _, _, status, _ = await leg.run(_profile(api_tools="write"), "again", resume=branch_id)
+        assert status == "completed"
+
+    assert len(probes) == 1
+    names, source = probes[0]
+    active_reference = leg.branch.chat_model.endpoint.config.api_key_env
+    assert active_reference == "ANTHROPIC_API_KEY"
+    assert source == ((active_reference,), ())
+    assert names == frozenset({"GH_TOKEN", active_reference})
+
+
+def test_api_read_policy_does_not_probe_uv(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(
+        _seatbelt, "_uv_cache_dir", lambda **kwargs: pytest.fail("read policy probed UV")
+    )
+
+    spec = agent_mod._make_api_agent_spec(
+        cwd=str(tmp_path), effort=None, system_prompt=None, role="reviewer", tools="read"
+    )
+
+    assert spec.seatbelt is None

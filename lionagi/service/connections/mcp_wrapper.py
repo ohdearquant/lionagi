@@ -30,7 +30,7 @@ logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Environment variable keys that should never be passed to MCP servers
+# Shared sensitive-name patterns for MCP server and coding command environments.
 _SENSITIVE_ENV_PATTERNS = frozenset(
     {
         "API_KEY",

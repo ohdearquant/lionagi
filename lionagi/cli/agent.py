@@ -475,6 +475,7 @@ def _make_api_agent_spec(
     role: str,
     tools: str,
     network: bool = False,
+    _command_env_names: frozenset[str] | None = None,
 ):
     """The AgentSpec for an API-model leg: the named tool set, path-guarded to cwd, and for
     the write set the Seatbelt policy its editor and bash run under."""
@@ -487,7 +488,9 @@ def _make_api_agent_spec(
     if tools in _API_CONFINED_TOOL_SETS:
         from lionagi.tools._seatbelt import SeatbeltPolicy
 
-        spec.seatbelt = SeatbeltPolicy.for_workspace(cwd or Path.cwd(), network=network)
+        spec.seatbelt = SeatbeltPolicy.for_workspace(
+            cwd or Path.cwd(), network=network, _command_env_names=_command_env_names
+        )
     _wire_secure_guards(spec, cwd)
     return spec
 
@@ -1699,6 +1702,16 @@ async def _run_agent(
             # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
             profile_extra = (getattr(profile, "raw_body", None) or "") if profile else ""
             if api_launch is not None:
+                command_names = None
+                if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
+                    from lionagi._command_env_metadata import configured_command_env_names
+
+                    active_reference = chat_model.endpoint.config.api_key_env
+                    command_names = configured_command_env_names(
+                        active_reference_names=(active_reference,)
+                        if active_reference is not None
+                        else (),
+                    )
                 spec = _make_api_agent_spec(
                     cwd=cwd,
                     effort=effort or "high",
@@ -1706,6 +1719,7 @@ async def _run_agent(
                     role=profile_role if has_role_key else "reviewer",
                     tools=api_launch["tools"],
                     network=api_launch["network"],
+                    _command_env_names=command_names,
                 )
             else:
                 spec = _make_coding_preset(
@@ -1946,6 +1960,16 @@ async def _run_agent(
             # is bound again, guarded to this invocation's working directory.
             from lionagi.agent.factory import _register_coding_tools
 
+            command_names = None
+            if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
+                from lionagi._command_env_metadata import configured_command_env_names
+
+                active_reference = branch.chat_model.endpoint.config.api_key_env
+                command_names = configured_command_env_names(
+                    active_reference_names=(active_reference,)
+                    if active_reference is not None
+                    else (),
+                )
             _register_coding_tools(
                 branch,
                 _make_api_agent_spec(
@@ -1955,6 +1979,7 @@ async def _run_agent(
                     role="reviewer",
                     tools=api_launch["tools"],
                     network=api_launch["network"],
+                    _command_env_names=command_names,
                 ),
             )
 

@@ -16,11 +16,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from lionagi.ln._proc import env_without_state_db_url
+from lionagi._command_env_metadata import command_environment
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
@@ -85,7 +85,7 @@ def seatbelt_available() -> bool:
     return sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK)
 
 
-def _uv_cache_dir() -> Path:
+def _uv_cache_dir(*, _command_env_names: frozenset[str] | None = None) -> Path:
     """The cache uv itself reports, which follows its environment and configuration files."""
     uv = shutil.which("uv")
     if uv:
@@ -97,6 +97,9 @@ def _uv_cache_dir() -> Path:
                 text=True,
                 timeout=10,
                 check=False,
+                env=command_environment(
+                    declared_names=_command_env_names, command_env_allowlist=()
+                ),
             )
         except (OSError, subprocess.SubprocessError):
             out = None
@@ -117,12 +120,22 @@ class SeatbeltPolicy:
     network: bool = False
 
     @classmethod
-    def for_workspace(cls, workspace_root: str | Path, *, network: bool = False) -> SeatbeltPolicy:
+    def for_workspace(
+        cls,
+        workspace_root: str | Path,
+        *,
+        network: bool = False,
+        _command_env_names: frozenset[str] | None = None,
+    ) -> SeatbeltPolicy:
         """Writes to the workspace, the uv cache and the temporary directory; the workspace's
         ``.git`` stays read-only, since a hook written there would run outside the sandbox."""
         workspace = Path(workspace_root).expanduser().resolve()
         roots: list[str] = []
-        for root in (workspace, _uv_cache_dir(), Path(tempfile.gettempdir())):
+        for root in (
+            workspace,
+            _uv_cache_dir(_command_env_names=_command_env_names),
+            Path(tempfile.gettempdir()),
+        ):
             resolved = str(Path(root).expanduser().resolve())
             if resolved not in roots:
                 roots.append(resolved)
@@ -150,7 +163,14 @@ class SeatbeltPolicy:
             params += ["-D", f"READ_ONLY_{i}={path}"]
         return [SANDBOX_EXEC, *params, "-p", self.profile(), "--", *argv]
 
-    def write_text(self, path: Path, content: str, timeout: float = 30.0) -> str | None:
+    def write_text(
+        self,
+        path: Path,
+        content: str,
+        timeout: float = 30.0,
+        *,
+        _command_env: Mapping[str, str] | None = None,
+    ) -> str | None:
         """Write ``content`` to ``path`` from a confined child; the refusal text, or None."""
         if not sys.executable:
             return "no Python interpreter to run the confined write"
@@ -162,7 +182,11 @@ class SeatbeltPolicy:
                 capture_output=True,
                 timeout=timeout,
                 check=False,
-                env=env_without_state_db_url(),
+                env=(
+                    command_environment(command_env_allowlist=())
+                    if _command_env is None
+                    else _command_env
+                ),
             )
         except (OSError, subprocess.SubprocessError) as e:
             return f"confined write failed: {e}"

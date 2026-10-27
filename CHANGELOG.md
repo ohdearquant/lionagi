@@ -40,6 +40,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
+  repairs and auto-repair commands, and the formatter hook) remove declared
+  credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
+  their child environments, including `GITHUB_TOKEN`. Patterns match anywhere
+  in a name, so `DATABASE_URL` and `TEST_DATABASE_URL` are removed too. Restore
+  a variable with `command_env_allowlist` using its exact spelling. A name in no
+  declaration that matches no pattern (for example `GH_TOKEN`, `HF_TOKEN` or
+  `NPM_TOKEN`) still passes. Reads are not confined.
+- When `~/.lionagi/settings.yaml` cannot be read, or its `secrets.lookup`
+  section is invalid, building a coding agent or toolkit raises
+  `ConfigurationError` instead of running with an incomplete list of
+  credential names, and so does a standalone coding tool such as `BashTool`.
+  Fix or remove the file or the section.
+
 - Application and provider module loaders use the shared `ln.import_module`
   contract, retaining relative package anchors, lazy registration and cache behavior.
   An ordinary import error from these loaders is now a plain `ImportError` whose message
@@ -125,6 +139,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   passed. None of them changed the result: `remove_branch()` leaves the branch object with the caller
   either way, and the two message views never filtered on either flag. They will be removed in a
   future minor release; dropping the argument leaves the result unchanged.
+
+### Removed
+
+- The MCP server no longer accepts the flat operation names of its earlier
+  one-tool-per-operation surface (`submit_agent`, `submit_flow`, `submit_fanout`,
+  `submit_play`, `job_status`, `job_output`, `job_kill`, `job_wait`, `jobs_list`,
+  `server_info`) inside `ops`; their removal date has passed. An op that uses one is
+  refused as `not_found`. Use the namespaced verb instead, for example `agent.submit`
+  for `submit_agent` and `job.list` for `jobs_list`. The catalog and `server.info`
+  drop their `synonyms_removed_after` field.
 
 ### Fixed
 
