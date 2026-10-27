@@ -558,7 +558,7 @@ class CodingEngine(Engine):
         run._ws_baseline = await self._capture_ws_baseline(run)
         change = await self._implement(run, plan)
         if run._aborted:
-            return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
+            return await self._conclude(run, passed=False, caveat="stage aborted by watchdog")
         if change is None:
             # Emission is metadata; the workspace delta is ground truth. Delta
             # non-empty -> proceed to test gate; empty -> no-change verdict.
@@ -576,7 +576,7 @@ class CodingEngine(Engine):
                 )
             elif not delta:
                 return await self._conclude(
-                    run, plan, passed=False, caveat="implementer emitted no change"
+                    run, passed=False, caveat="implementer emitted no change"
                 )
             else:
                 # Work detected despite emission failure — synthesize a minimal
@@ -593,9 +593,9 @@ class CodingEngine(Engine):
         tests = await self._test(run, change, round_no=0)
         change, tests = await self._fix_loop(run, plan, change, tests)
         if run._aborted:
-            return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
+            return await self._conclude(run, passed=False, caveat="stage aborted by watchdog")
         await self._verify(run, plan, change, tests)
-        return await self._conclude(run, plan, passed=tests.passed)
+        return await self._conclude(run, passed=tests.passed)
 
     # -- stages ---------------------------------------------------------------
 
@@ -839,7 +839,6 @@ class CodingEngine(Engine):
     async def _conclude(
         self,
         run: CodingRun,
-        plan: WorkPlanned,
         *,
         passed: bool,
         caveat: str = "",
@@ -983,13 +982,12 @@ class CodingEngine(Engine):
         self, run: CodingRun, *args: Any, **kwargs: Any
     ) -> CodeResultRecorded:  # type: ignore[override]
         """Write results.json and report.md even when the run is aborted mid-stage."""
-        plan = run.last(WorkPlanned) or WorkPlanned(approach="(aborted)")
-        return await self._conclude(run, plan, passed=False, caveat="run aborted")
+        return await self._conclude(run, passed=False, caveat="run aborted")
 
     # -- ground-truth helpers -------------------------------------------------
 
     async def _capture_ws_baseline(self, run: CodingRun) -> dict[str, str] | None:
-        """Snapshot git status --porcelain before the implement stage; returns {path: xy} or None on failure (unknown state)."""
+        """Snapshot git status --porcelain as {path: xy}, or None on failure (unknown state); taken before the implement stage and again by _workspace_changed."""
         result = await run_sync(
             _subprocess_sync,
             ["git", "status", "--porcelain"],
@@ -1007,16 +1005,9 @@ class CodingEngine(Engine):
             # Baseline capture failed before _implement — state is unknown.
             # Do not run the post-status call; return check_failed immediately.
             return [], True
-        result = await run_sync(
-            _subprocess_sync,
-            ["git", "status", "--porcelain"],
-            False,
-            30.0,
-            run.workspace,
-        )
-        if int(result.get("returncode", -1)) != 0:
+        after = await self._capture_ws_baseline(run)
+        if after is None:
             return [], True
-        after = _parse_porcelain(result.get("stdout", ""))
         delta = [
             path
             for path, xy in after.items()
