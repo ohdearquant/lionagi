@@ -22,7 +22,7 @@ from lionagi.tools.sandbox import (
 
 def _init_git_repo(path: Path) -> None:
     cmds = [
-        ["git", "init"],
+        ["git", "init", "--initial-branch=master"],
         ["git", "config", "user.email", "test@test.com"],
         ["git", "config", "user.name", "Test"],
     ]
@@ -573,7 +573,7 @@ async def test_sandbox_discard_branch_delete_failure_keeps_session(git_repo):
 
     real_run_git = sandbox_module._run_git
 
-    def fake_run_git(args, cwd=None):
+    def fake_run_git(args, cwd=None, *, _command_env=None):
         if args[:2] == ["branch", "-D"] and args[-1] == branch:
             # Simulate a concurrent checkout grabbing the branch the moment
             # the worktree that held it is removed, before deletion runs.
@@ -583,7 +583,7 @@ async def test_sandbox_discard_branch_delete_failure_keeps_session(git_repo):
                 capture_output=True,
                 check=True,
             )
-        return real_run_git(args, cwd)
+        return real_run_git(args, cwd, _command_env=_command_env)
 
     original = sandbox_module._run_git
     sandbox_module._run_git = fake_run_git
@@ -605,3 +605,108 @@ async def test_sandbox_discard_branch_delete_failure_keeps_session(git_repo):
     subprocess.run(
         ["git", "branch", "-D", branch], cwd=str(git_repo), capture_output=True, check=True
     )
+
+
+async def test_bound_sandbox_actions_keep_declared_names_out_of_every_git_child(
+    git_repo, monkeypatch
+):
+    from lionagi import _command_env_metadata
+    from lionagi.service.imodel import iModel
+    from lionagi.session.branch import Branch
+    from lionagi.tools.coding import CodingToolkit
+
+    monkeypatch.setattr(_command_env_metadata, "configured_command_env_names", lambda: frozenset())
+    monkeypatch.setenv("GH_TOKEN", "synthetic-selected-reference")
+    monkeypatch.setenv("SOMEVENDOR_API_KEY", "synthetic-exact-grant")
+    monkeypatch.setenv("somevendor_api_key", "synthetic-case-alias")
+    real_subprocess = sandbox_module._subprocess_sync
+    observed = []
+
+    def child(cmd, *args, **kwargs):
+        environment = kwargs.get("env")
+        if environment is None:
+            environment = _command_env_metadata.command_environment()
+        observed.append((tuple(cmd), dict(environment)))
+        return real_subprocess(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(sandbox_module, "_subprocess_sync", child)
+    branch = Branch(
+        chat_model=iModel(provider="openai", model="no-request", api_key="dummy-key-for-testing")
+    )
+    toolkit = CodingToolkit(
+        workspace_root=git_repo,
+        tools=("sandbox",),
+        notify=False,
+        sandbox_allow_protected=True,
+        command_env_allowlist=("SOMEVENDOR_API_KEY",),
+    )
+    tools = {
+        tool.func_callable.__name__: tool
+        for tool in toolkit.bind(branch, _command_env_names=frozenset({"GH_TOKEN"}))
+    }
+    sandbox = tools["sandbox"].func_callable
+    active = False
+    try:
+        monkeypatch.setenv("PUBLIC_REFRESH_TAG", "create")
+        created = await sandbox(action="create")
+        assert created["success"]
+        active = True
+        Path(created["worktree"]).joinpath("environment-check.txt").write_text("sample\n")
+        monkeypatch.setenv("PUBLIC_REFRESH_TAG", "diff")
+        assert (await sandbox(action="diff"))["success"]
+        monkeypatch.setenv("PUBLIC_REFRESH_TAG", "commit")
+        assert (await sandbox(action="commit", message="Record the sample"))["success"]
+        monkeypatch.setenv("PUBLIC_REFRESH_TAG", "merge")
+        assert (await sandbox(action="merge"))["success"]
+        active = False
+        assert (git_repo / "environment-check.txt").read_text() == "sample\n"
+        monkeypatch.setenv("PUBLIC_REFRESH_TAG", "create")
+        assert (await sandbox(action="create"))["success"]
+        active = True
+        monkeypatch.setenv("PUBLIC_REFRESH_TAG", "discard")
+        assert (await sandbox(action="discard"))["success"]
+        active = False
+    finally:
+        if active:
+            await sandbox(action="discard")
+
+    assert any(cmd[1:3] == ("ls-files", "--others") for cmd, _ in observed)
+    assert {environment["PUBLIC_REFRESH_TAG"] for _, environment in observed} == {
+        "create",
+        "diff",
+        "commit",
+        "merge",
+        "discard",
+    }
+    assert all(
+        "GH_TOKEN" not in environment
+        and "SOMEVENDOR_API_KEY" in environment
+        and "somevendor_api_key" not in environment
+        for _, environment in observed
+    ), "every Git child must deny selected names and preserve only exact command grants"
+
+
+@pytest.mark.parametrize("sink", ["command", "untracked"])
+def test_standalone_git_sinks_use_owned_credential_names(git_repo, monkeypatch, sink):
+    from lionagi import _command_env_metadata
+
+    monkeypatch.setattr(
+        _command_env_metadata, "configured_command_env_names", lambda: frozenset({"GH_TOKEN"})
+    )
+    monkeypatch.setenv("GH_TOKEN", "synthetic-owned-reference")
+    real_subprocess = sandbox_module._subprocess_sync
+    environments = []
+
+    def child(cmd, *args, **kwargs):
+        environment = kwargs.get("env")
+        if environment is None:
+            environment = _command_env_metadata.command_environment()
+        environments.append(dict(environment))
+        return real_subprocess(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(sandbox_module, "_subprocess_sync", child)
+    if sink == "command":
+        assert sandbox_module._run_git(["status", "--porcelain"], str(git_repo))[2] == 0
+    else:
+        assert sandbox_module._list_untracked_files(str(git_repo)) == []
+    assert len(environments) == 1 and "GH_TOKEN" not in environments[0]

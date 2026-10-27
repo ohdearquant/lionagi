@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from lionhub.orchestration.work import (
     REGEX_MAX_INPUT_LENGTH,
@@ -21,6 +22,7 @@ from lionhub.orchestration.work import (
     fill_form,
     validate_form,
 )
+from lionhub.orchestration.work.form import _PYTHON_TYPE_MAP, FieldType
 
 # Helpers
 
@@ -965,3 +967,40 @@ class TestFillFormWithRuleSetStandalone:
         rs.add(Rule(rule_id="r1", field="name", check="required"))
         errors = rs.apply_all(error_form)
         assert len(errors) == 1
+
+
+class TestRuleTypeLabels:
+    @pytest.mark.parametrize(
+        ("label", "value"),
+        [
+            ("str", "x"),
+            ("int", 1),
+            ("float", 1.5),
+            ("bool", True),
+            ("list", [1]),
+            ("dict", {"k": 1}),
+        ],
+    )
+    def test_every_field_type_label_is_a_rule_type(self, label, value):
+        assert label in get_args(FieldType)
+        rule = Rule(rule_id="r", field="v", check="type", params={"type": label})
+        assert rule.apply(WorkForm(values={"v": value})) is None
+
+    def test_rule_type_labels_are_the_field_type_labels(self):
+        assert set(_PYTHON_TYPE_MAP) == set(get_args(FieldType))
+
+
+class TestFormModelSettings:
+    @pytest.mark.parametrize("cls", [FieldSpec, WorkForm])
+    def test_settings(self, cls):
+        cfg = cls.model_config
+        assert cfg["arbitrary_types_allowed"] is True
+        assert cfg["use_enum_values"] is True
+        assert cfg["populate_by_name"] is True
+        assert cfg["extra"] == "forbid"
+
+    def test_unknown_model_fields_are_rejected(self):
+        with pytest.raises(ValidationError):
+            FieldSpec(name="a", unexpected=1)
+        with pytest.raises(ValidationError):
+            WorkForm(unexpected=1)

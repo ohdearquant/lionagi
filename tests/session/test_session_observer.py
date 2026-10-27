@@ -300,3 +300,33 @@ async def test_profile_emitter_cancellation_propagates_and_cleans_up_handler_wor
     with pytest.raises(asyncio.CancelledError):
         await task
     assert cancelled.is_set()
+
+
+def test_signal_payload_is_the_serialization_measured_against_the_cap():
+    """The stored payload comes from the same bytes whose length the cap checked.
+
+    A value whose fallback text changes per serialization shows how many
+    serializations ran and which one the payload holds.
+    """
+    from lionagi.session.observer import _sanitize_signal_payload
+    from lionagi.session.signal import NodeEscalated
+
+    class Counted:
+        calls = 0
+
+        def __repr__(self) -> str:
+            Counted.calls += 1
+            return f"counted-{Counted.calls}"
+
+    sig = NodeEscalated(
+        op_id="op-esc",
+        name="escstep",
+        reason="no higher tier",
+        route="give_up",
+        escalation_request=Counted(),
+    )
+
+    payload = _sanitize_signal_payload(sig)
+
+    assert payload["escalation_request"] == "counted-1"
+    assert Counted.calls == 1

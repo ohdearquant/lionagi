@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -87,8 +90,17 @@ def _subprocess_sync(
     timeout_sec: float,
     timeout_ms: int,
     cwd: str | None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> BashResponse:
-    raw = _subprocess_sync_inner(cmd, shell, timeout_sec, cwd, timeout_ms=timeout_ms)
+    raw = _subprocess_sync_inner(
+        cmd,
+        shell,
+        timeout_sec,
+        cwd,
+        timeout_ms=timeout_ms,
+        env=command_environment() if _command_env is None else _command_env,
+    )
     return BashResponse(
         stdout=raw["stdout"],
         stderr=raw["stderr"],
@@ -101,8 +113,17 @@ class BashTool(LionTool):
     is_lion_system_tool = True
     system_tool_name = "bash_tool"
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        command_env_allowlist: Sequence[str] = (),
+        _command_env_names: frozenset[str] | None = None,
+    ):
         self._tool = None
+        self._command_env_names = (
+            None if _command_env_names is None else frozenset(_command_env_names)
+        )
+        self._command_env_allowlist = normalize_command_env_allowlist(command_env_allowlist)
 
     async def handle_request(self, request: BashRequest) -> BashResponse:
         if isinstance(request, dict):
@@ -124,6 +145,10 @@ class BashTool(LionTool):
             timeout_sec,
             timeout_ms,
             request.cwd or None,
+            _command_env=command_environment(
+                declared_names=self._command_env_names,
+                command_env_allowlist=self._command_env_allowlist,
+            ),
         )
 
     def to_tool(self) -> Tool:
