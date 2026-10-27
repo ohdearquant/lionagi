@@ -118,6 +118,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the process had loaded from any config file, so an earlier, unrelated config's servers were
   registered again. Pass `server_names` to choose servers explicitly.
 
+### Removed
+
+- The MCP server no longer accepts the flat operation names of its earlier
+  one-tool-per-operation surface (`submit_agent`, `submit_flow`, `submit_fanout`,
+  `submit_play`, `job_status`, `job_output`, `job_kill`, `job_wait`, `jobs_list`,
+  `server_info`) inside `ops`; their removal date has passed. An op that uses one is
+  refused as `not_found`. Use the namespaced verb instead, for example `agent.submit`
+  for `submit_agent` and `job.list` for `jobs_list`. The catalog and `server.info`
+  drop their `synonyms_removed_after` field.
+
 ### Fixed
 
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
