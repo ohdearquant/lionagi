@@ -497,10 +497,11 @@ async def test_late_cleanup_ownership_survives_task_construction_or_prestart_can
         loop.set_exception_handler(previous_handler)
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="asyncio.eager_task_factory is 3.12+")
 @pytest.mark.asyncio(loop_scope="function")
 async def test_late_cleanup_is_retained_before_python312_eager_execution(scripted):
-    # This exact ID is selected only on Python 3.12+. The portable cases above
-    # run on both interpreters; a missing eager API is never counted as PASS.
+    # Runs only on Python 3.12+. The portable cases above run on every
+    # interpreter; a missing eager API is skipped, never counted as PASS.
     eager_factory = asyncio.eager_task_factory
     state = scripted
     loop = asyncio.get_running_loop()
