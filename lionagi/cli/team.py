@@ -145,7 +145,7 @@ def _unread_for(data: Mapping[str, Any], me: str | None) -> list[dict]:
         read_by = _read_by_map(msg.get("read_by"))
         if me and me in read_by:
             continue
-        targets = msg["to"]
+        targets = _message_targets(msg)
         if targets == ["*"] or (me and me in targets) or not me:
             unread.append(msg)
     return unread
@@ -515,7 +515,8 @@ def cmd_receive(args: argparse.Namespace) -> int:
 
     # Print outside the lock — display I/O shouldn't hold the lock.
     for msg in unread:
-        to_str = "all" if msg["to"] == ["*"] else ", ".join(msg["to"])
+        targets = _message_targets(msg)
+        to_str = "all" if targets == ["*"] else ", ".join(targets)
         ts = msg.get("timestamp", "")[:19]
         op = msg.get("from_op")
         op_str = f" op={op}" if op else ""

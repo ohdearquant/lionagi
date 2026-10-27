@@ -684,3 +684,38 @@ def test_human_and_machine_receive_select_and_mark_the_same_messages(member, cap
 
     marked = [["bob"], [], ["bob"], ["bob"], ["bob"]] if member else [[], [], [], ["bob"], ["bob"]]
     assert readers("human") == readers("machine") == marked
+
+
+@pytest.mark.parametrize("team_id", ["human", "machine"])
+def test_receive_reads_a_single_name_recipient_as_the_whole_name(team_id, capsys):
+    _make_team(
+        team_id,
+        ["bob", "bobby"],
+        [
+            {
+                "from": "alice",
+                "to": "bobby",
+                "content": "for bobby",
+                "timestamp": "2026-01-01T00:00:00",
+            },
+            {
+                "from": "alice",
+                "to": "bob",
+                "content": "for bob",
+                "timestamp": "2026-01-01T00:00:01",
+            },
+            {"from": "alice", "to": "*", "content": "for all", "timestamp": "2026-01-01T00:00:02"},
+        ],
+    )
+
+    if team_id == "machine":
+        got = team.machine_result(["receive", "--team", team_id, "--as", "bob"])
+        assert [m["content"] for m in got["messages"]] == ["for bob", "for all"]
+        return
+
+    assert team.cmd_receive(argparse.Namespace(team=team_id, member="bob")) == 0
+    printed = capsys.readouterr().out
+    assert "for bobby" not in printed
+    assert "alice → bob\n  for bob\n" in printed
+    assert "alice → all\n  for all\n" in printed
+    assert "(2 messages)" in printed

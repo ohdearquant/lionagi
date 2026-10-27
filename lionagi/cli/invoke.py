@@ -100,7 +100,7 @@ async def _end_invocation(
                 return InvocationEnd(row=stored, applied=False)
             # The row is already in the status this call requested, so there is
             # no status or end time to move. A --metadata payload is still the
-            # closer's to record, merged onto the row as it now stands.
+            # closer's to record, merged below onto the row as it now stands.
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the run,
             # overwrite per-key with the closer's payload. The merge happens
