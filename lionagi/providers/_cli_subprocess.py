@@ -1451,12 +1451,16 @@ async def ndjson_from_cli(
                 # Drain first, or the warning reports "said nothing" about a child
                 # that spoke; shielded so a timeout cannot cancel it mid-buffer.
                 abandon_drain_incomplete = False
+                abandon_cancelled: asyncio.CancelledError | None = None
                 if stderr_task is not None:
                     try:
                         await asyncio.wait_for(
                             asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
                         )
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    except asyncio.CancelledError as exc:
+                        abandon_cancelled = exc
+                        abandon_drain_incomplete = True
+                    except Exception:  # noqa: BLE001
                         # Whatever it captured stays in the buffer, but the drain
                         # did not finish, so an empty buffer is unknown rather than
                         # evidence the child was quiet.
@@ -1470,18 +1474,27 @@ async def ndjson_from_cli(
                         abandon_drain_incomplete,
                     ),
                 )
+                if abandon_cancelled is not None:
+                    raise abandon_cancelled
 
         finally:
-            # Reap the helper tasks — contextlib.suppress(Exception) does NOT
-            # catch CancelledError (BaseException), so we suppress it explicitly.
+            # wait() does not raise a helper's cancellation. A cancellation here
+            # belongs to this consumer: join every helper before propagating it.
+            reap_cancelled: asyncio.CancelledError | None = None
             for task in (stderr_task, stdin_task, exit_task, read_task):
                 if task is None:
                     continue
                 task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-                    pass
+                while not task.done():
+                    try:
+                        await asyncio.wait({task})
+                    except asyncio.CancelledError as exc:
+                        if reap_cancelled is None:
+                            reap_cancelled = exc
+                if not task.cancelled():
+                    task.exception()
+            if reap_cancelled is not None:
+                raise reap_cancelled
 
 
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
