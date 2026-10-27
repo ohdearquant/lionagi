@@ -147,8 +147,11 @@ async def test_helper_tasks_are_reaped_when_group_teardown_is_cancelled(suspende
     state = suspended_cli
     state.error = asyncio.CancelledError("child group teardown cancelled")
     state.runner.cancel()
-    with pytest.raises(asyncio.CancelledError, match="child group teardown cancelled"):
+    with pytest.raises(asyncio.CancelledError) as raised:
         await asyncio.wait_for(state.runner, 5.0)
+    # Python 3.10 raises a fresh CancelledError for a cancelled task and keeps the
+    # one the coroutine raised as its context; 3.11+ raises that one itself.
+    assert raised.value is state.error or raised.value.__context__ is state.error
 
     assert state.kept == 1
     assert state.released == 0
