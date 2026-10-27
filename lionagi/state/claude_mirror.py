@@ -18,7 +18,7 @@ from lionagi.protocols.messages.instruction import Instruction
 from ._mirror_common import (
     MIRROR_PROVIDER_ERROR_KEY,
     SourceLine,
-    _prepare_mirrored_rows,
+    prepare_mirrored_rows,
     write_mirrored_messages,
 )
 
@@ -336,7 +336,7 @@ async def mirror_session(
         }
     )
 
-    written = await _prepare_mirrored_rows(
+    written = await prepare_mirrored_rows(
         db,
         messages,
         message_sources,

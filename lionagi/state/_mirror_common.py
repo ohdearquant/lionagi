@@ -493,7 +493,7 @@ async def write_mirrored_messages(
         )
 
 
-async def _prepare_mirrored_rows(
+async def prepare_mirrored_rows(
     db: StateDB,
     messages: Sequence[Any],
     message_sources: Sequence[SourceLine | None],
