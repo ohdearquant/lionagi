@@ -414,8 +414,8 @@ detached child leads its own process group and the whole tree shares the pgid.
 It is not sufficient once `play.submit` exists. `li kill` performs transitive
 `play → session → invocation` reaping, implied for plays without `--recursive`
 (`_list_running_children` in `cli/kill.py:367` documents which plays carry a session,
-`:384` joins that session, and `:393-419` follows the session/invocation frontier;
-`_do_kill` at `:827-833` invokes the play walk without a `recursive` guard). That path also
+`:372` joins that session, and `:381-407` follows the session/invocation frontier;
+`_do_kill` at `:815-821` invokes the play walk without a `recursive` guard). That path also
 writes the lifecycle status transitions and fires the terminal-notify emit. The cancellation
 write guards running invocations and clears a session's live phase in the same update
 (`_persist_cancel`, `cli/kill.py:477-487`). A raw `killpg` stops the processes while leaving
