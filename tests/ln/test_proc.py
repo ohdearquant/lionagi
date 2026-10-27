@@ -162,22 +162,27 @@ def test_raw_create_time_reader_takes_monotonic_where_the_adjustment_exists(monk
 
 
 class _LinuxBackendProcess:
-    def create_time(self, monotonic=False): ...
+    """psutil's Linux backend: a fixed start counted from boot, plus the boot
+    time read again on every epoch call."""
 
-
-class _LinuxShapedProc:
-    """A psutil handle shaped like Linux's: a fixed start counted from boot,
-    plus the boot time read again on every public call."""
-
-    def __init__(self, since_boot, boot_time):
+    def __init__(self, since_boot=0.0, boot_time=None):
         self._since_boot = since_boot
         self._boot_time = boot_time
-        self._proc = self
 
     def create_time(self, monotonic=False):
         if monotonic:
             return self._since_boot
         return self._since_boot + self._boot_time()
+
+
+class _LinuxShapedProc:
+    """A psutil handle shaped like Linux's, its backend the platform process."""
+
+    def __init__(self, since_boot, boot_time):
+        self._proc = _LinuxBackendProcess(since_boot, boot_time)
+
+    def create_time(self):
+        return self._proc.create_time()
 
 
 def _stepping_boot_clock():
@@ -220,6 +225,32 @@ def test_raw_create_time_on_linux_does_not_move_with_the_boot_time(monkeypatch):
 
     assert first == second == 1005.0
     assert len(reads) == 1
+
+
+def test_raw_create_time_on_linux_reads_a_stand_in_through_the_public_call(monkeypatch):
+    """Only psutil's own Linux backend counts from boot.
+
+    A handle whose backend is anything else (a test double, an adapter) is read
+    through its public call, so a stand-in scripted with an epoch start time
+    answers that time rather than that time plus the boot time.
+    """
+    import psutil
+
+    from lionagi.ln import _proc
+
+    boot_time, _ = _stepping_boot_clock()
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(
+        psutil,
+        "_psplatform",
+        SimpleNamespace(Process=_LinuxBackendProcess, boot_time=boot_time),
+    )
+
+    reader = _proc._select_raw_create_time_reader()
+    proc = _RecordingProc()
+
+    assert reader(proc) == 1234.5
+    assert proc.calls == [{}]
 
 
 def test_raw_create_time_on_linux_keeps_the_plain_call_without_a_boot_time(monkeypatch):

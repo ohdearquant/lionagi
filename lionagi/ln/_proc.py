@@ -120,7 +120,9 @@ def _select_raw_create_time_reader():
     ONCE per interpreter to the fixed boot-relative start: the value stays in
     seconds since the epoch, and every read of one process in this interpreter
     is equal. Two interpreters can still disagree by the drift between their
-    first reads, as the plain call always could.
+    first reads, as the plain call always could. A handle whose backend is not
+    psutil's own Linux process keeps the public call, since nothing says its
+    ``monotonic`` answer counts from boot.
 
     The adjustment is the thing being avoided there, so its presence is what
     selects that reader: ``adjust_proc_create_time`` exists only on the backends
@@ -136,7 +138,16 @@ def _select_raw_create_time_reader():
             platform_process = psutil._psplatform.Process
             if "monotonic" in inspect.signature(platform_process.create_time).parameters:
                 boot = float(psutil._psplatform.boot_time())
-                return lambda proc: proc._proc.create_time(monotonic=True) + boot
+
+                def read_linux(proc):
+                    # Only psutil's own Linux backend counts from boot; any other
+                    # handle (a stand-in, an adapter) answers in epoch seconds.
+                    backend = getattr(proc, "_proc", None)
+                    if isinstance(backend, platform_process):
+                        return backend.create_time(monotonic=True) + boot
+                    return proc.create_time()
+
+                return read_linux
         except (TypeError, ValueError, AttributeError, OSError, RuntimeError):
             pass
         return lambda proc: proc.create_time()
