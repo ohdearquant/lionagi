@@ -259,9 +259,9 @@ holds its worker handles in memory. The shared spawn's observation of a child ca
 start time: `observe_spawned` returns `create_time=None` when a read fails, and the second look
 that refuses such a spawn runs only when admission slots are held, so a spawn observed without
 identity can reach its callbacks. Among the ids an engine run carries, the CLI engine-run id is
-deliberately the id of its signal-session row, while the in-memory `Session` and the `EngineRun`'s
-own short id are separate values; cleanup binds to the persisted row, never to one of the others
-by equality.
+deliberately the id of the signal-session row it creates, when it creates one, while the
+in-memory `Session` and the `EngineRun`'s own short id are separate values; cleanup binds to the
+persisted row, never to one of the others by equality.
 
 **Decision.**
 
@@ -272,8 +272,9 @@ by equality.
    and pgid (`pid == pgid`, greater than 1), the start time observed at spawn, the host, the boot
    identity and the process identity mode, the time it was recorded, and a nullable
    `confirmed_empty_at`. `session_id` is a logical reference with no foreign key to `sessions`, so
-   deleting a session neither cascades into these rows nor is blocked by them, and the association
-   stays as written. Identity and association columns never change. A row is accepted only while
+   the database neither cascades a session delete into these rows nor refuses one because of them,
+   and the association stays as written; whether lionagi deletes such a session is decided by
+   Decision 7. Identity and association columns never change. A row is accepted only while
    its session is `running` and its generation is the session's current one; a retry of the same
    `spawn_id` with identical contents is accepted once, with different contents refused. Rows that
    predate version 5 get no generation and no records, and nothing is backfilled from pids,
@@ -317,7 +318,9 @@ by equality.
    runner is dead is bound to the generation and runner identity it read, both are confirmed under
    the guard before the terminal write, and the worker selection is frozen for that execution, so a
    resume landing meanwhile is not cleaned up in its place. The worker results are reported before
-   the command's own result and decide its exit status with it.
+   the command's own result. With no unresolved record, the cancellation's own result decides the
+   exit status, as it does today; otherwise the command exits 0 only when the cancellation succeeded
+   and every selected group ended confirmed empty, and 1 otherwise.
 7. **Retention.** Pruning and direct deletion skip a session that still has an unresolved record,
    checked inside the same locked recheck that guards the session's other dependents. Settled
    records do not hold a session back.
@@ -331,6 +334,7 @@ Outcomes of the terminal arm, per record and then for the command:
 | Identity mismatch, malformed or foreign evidence, leader not live | 1 | the refusal plus an indented `session {id12}: recorded worker identity did not match — kill skipped`, or `... could not be verified — kill skipped` |
 | Some groups stopped, others refused, or a signal sent without a confirmed empty group | 1 | each group's line, and `worker group for session {id12} could not be confirmed stopped; terminal status remains {status!r}` where it applies |
 | The session was resumed, changed status or was deleted during cleanup | 1 | the groups already stopped, then that the session changed during cleanup |
+| A running row whose runner is dead, cancelled in the same command (Decision 6) | 0 or 1, as Decision 6 states | each group's line, then the existing cancellation output |
 
 **Why a record in the state database.** A session id stamped into each worker's environment
 gives a label without the independently recorded birth time and generation a candidate must be
