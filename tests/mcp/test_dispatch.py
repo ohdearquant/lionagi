@@ -20,6 +20,20 @@ import pytest
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.mcp import dispatch, jobs, verbs
 
+# The flat names of the earlier one-tool-per-operation surface, now removed.
+PREVIOUS_SURFACE_NAMES = (
+    "submit_agent",
+    "submit_flow",
+    "submit_fanout",
+    "submit_play",
+    "job_status",
+    "job_output",
+    "job_kill",
+    "job_wait",
+    "jobs_list",
+    "server_info",
+)
+
 
 def call(**kwargs):
     return asyncio.run(dispatch.request(**kwargs))
@@ -100,7 +114,7 @@ def test_catalog_omits_available_and_required_at_their_defaults():
 
 def test_catalog_never_advertises_a_previous_surface_name():
     listed = {e["verb"] for e in call(help=True)["verbs"]}
-    assert listed.isdisjoint(verbs.SYNONYMS), sorted(listed & set(verbs.SYNONYMS))
+    assert listed.isdisjoint(PREVIOUS_SURFACE_NAMES), sorted(listed & set(PREVIOUS_SURFACE_NAMES))
 
 
 def test_help_for_a_verb_returns_the_projected_schema():
@@ -129,6 +143,12 @@ def test_help_for_an_unavailable_verb_says_why_instead_of_failing():
 def test_help_for_a_name_nobody_registered_is_an_error():
     with pytest.raises(ValueError, match="no such verb"):
         call(help="agent.summon")
+
+
+@pytest.mark.parametrize("target", [5, ["server.info"]])
+def test_help_for_something_that_is_not_a_name_is_refused(target):
+    with pytest.raises(ValueError, match="help takes true, a verb name"):
+        call(help=target)
 
 
 # ── per-op envelope ──────────────────────────────────────────────────────────
@@ -372,21 +392,21 @@ def test_the_queue_sweep_is_refused_by_name_rather_than_left_undeclared():
 # ── previous-surface names ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(("old", "new"), sorted(verbs.SYNONYMS.items()))
-def test_a_previous_surface_name_resolves_to_its_namespaced_verb(old, new):
-    assert verbs.resolve(old) == new
-    assert new in verbs.VERBS
+@pytest.mark.parametrize("old", PREVIOUS_SURFACE_NAMES)
+def test_a_previous_surface_name_is_refused_as_an_unknown_verb(old):
+    answer = call(ops=[{"op": old}])
+    assert answer["ops"][0]["ok"] is False
+    assert answer["ops"][0]["op"] == old
+    assert answer["ops"][0]["error"]["kind"] == "not_found"
+    with pytest.raises(ValueError, match="no such verb"):
+        call(help=old)
 
 
-def test_a_synonym_dispatches_and_reports_the_namespaced_name():
-    answer = call(ops=[{"op": "server_info"}])
-    assert answer["ops"][0]["ok"] is True
-    assert answer["ops"][0]["op"] == "server.info"
-
-
-def test_the_synonym_sunset_lives_in_one_named_constant():
-    assert verbs.SYNONYM_REMOVAL_DATE == "2026-09-30"
-    assert call(help=True)["synonyms_removed_after"] == verbs.SYNONYM_REMOVAL_DATE
+def test_neither_the_catalog_nor_server_info_reports_a_synonym_sunset():
+    assert "synonyms_removed_after" not in call(help=True)
+    info = call(ops=[{"op": "server.info"}])["ops"][0]
+    assert info["ok"] is True
+    assert "synonyms_removed_after" not in info["result"]
 
 
 # ── argv rendering ───────────────────────────────────────────────────────────

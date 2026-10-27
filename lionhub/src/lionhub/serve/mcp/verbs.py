@@ -24,31 +24,10 @@ __all__ = (
     "AbsentVerb",
     "VERBS",
     "ABSENT",
-    "SYNONYMS",
-    "SYNONYM_REMOVAL_DATE",
     "FENCED_PATHS",
     "MAX_OPS",
-    "resolve",
     "catalog_names",
 )
-
-# Old spellings are removed outright after this date.
-SYNONYM_REMOVAL_DATE = "2026-09-30"
-
-# Previous tool-per-operation names, resolved before dispatch and deliberately
-# absent from the catalog — for callers already scripted against them, not new ones.
-SYNONYMS: Mapping[str, str] = {
-    "submit_agent": "agent.submit",
-    "submit_flow": "flow.submit",
-    "submit_fanout": "fanout.submit",
-    "submit_play": "play.submit",
-    "job_status": "job.status",
-    "job_output": "job.output",
-    "job_kill": "job.kill",
-    "job_wait": "job.wait",
-    "jobs_list": "job.list",
-    "server_info": "server.info",
-}
 
 # Operations that grant privilege to the caller (every caller is an agent, so
 # trusting a plugin/hook bundle would let the grantee also be the granter). No
@@ -1016,17 +995,6 @@ ABSENT: tuple[AbsentVerb, ...] = (
 
 
 VERBS: Mapping[str, Verb] = {verb.name: verb for verb in _REGISTERED}
-
-
-def resolve(name: Any) -> str:
-    """The namespaced verb *name* refers to, following a previous-surface synonym.
-
-    Resolves silently rather than warning — a machine-result reader has no use
-    for a deprecation warning.
-    """
-    if not isinstance(name, str):
-        raise TypeError("op must be a string")
-    return SYNONYMS.get(name, name)
 
 
 def catalog_names() -> tuple[str, ...]:

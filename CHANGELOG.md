@@ -113,6 +113,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - An Anthropic API-model `li agent` leg whose model names no output limit sends
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
+### Removed
+
+- The MCP server no longer accepts the flat operation names of its earlier
+  one-tool-per-operation surface (`submit_agent`, `submit_flow`, `submit_fanout`,
+  `submit_play`, `job_status`, `job_output`, `job_kill`, `job_wait`, `jobs_list`,
+  `server_info`) inside `ops`; their removal date has passed. An op that uses one is
+  refused as `not_found`. Use the namespaced verb instead, for example `agent.submit`
+  for `submit_agent` and `job.list` for `jobs_list`. The catalog and `server.info`
+  drop their `synonyms_removed_after` field.
+
 ### Fixed
 
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
