@@ -773,11 +773,11 @@ def _mask_spans(text: str, *, whole: bool) -> str:
     a key ending in ``password`` outside a query, then each URL password and
     ``user:secret@``, read on *text* and, when it has query values to mask,
     again on a view with them blanked, which takes out a delimiter such a
-    value may hold that would stop a reading short. *whole* reads *text* as one URL given alone.
-    The query and URL readings take one scan of the string plus a binary
-    search per match, and the keyword readings read each position a bounded
-    number of times however many values overlap (``_ValueEnds``), so the cost
-    grows with the length of *text*."""
+    value may hold that would stop a reading short. *whole* reads *text* as
+    one URL given alone. The query and URL readings take one scan of the
+    string plus a binary search per match, and the keyword readings read each
+    position a bounded number of times however many values overlap
+    (``_ValueEnds``), so the cost grows with the length of *text*."""
     ends = [m.start() for m in (_WHOLE_VALUE_END if whole else _VALUE_END).finditer(text)]
     values = []
     for m in _QUERY_KEY.finditer(text):

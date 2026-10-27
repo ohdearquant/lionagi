@@ -148,3 +148,24 @@ async def test_a_bounded_row_is_the_unbounded_row_behind_its_own_source(
     assert cut["id"] == full["id"]
     assert cut["content"] == preview
     assert cut["node_metadata"] == {**full["node_metadata"], "mirror_source": pointer}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("adapter", "build"), [("claude", _claude_input), ("codex", _codex_input)])
+async def test_a_message_without_a_source_line_is_stored_whole_under_a_bound(
+    tmp_path: Path, adapter, build
+) -> None:
+    lines = build()
+    path = tmp_path / "transcript.jsonl"
+    _write(path, lines)
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'unbounded.db'}") as db:
+        sid = await _mirror(adapter, db, lines, path, None, None)
+        unbounded = await _rows(db, sid)
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'bounded.db'}") as db:
+        await _mirror(adapter, db, lines, path, None, PREVIEW_CHARS)
+        bounded = await _rows(db, sid)
+
+    assert len(unbounded) == len(bounded) == 1
+    assert bounded[0]["content"] == unbounded[0]["content"]
+    assert "mirror_source" not in bounded[0]["node_metadata"]
