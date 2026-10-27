@@ -95,6 +95,7 @@ async def test_idle_timeout_ends_the_worker_group_when_the_boot_time_steps(
     from psutil import _pslinux
 
     from lionagi.ln import _proc
+    from lionagi.providers import _cli_subprocess
 
     # Select the reader before the clock moves, as a long-running process has.
     monkeypatch.setattr(_proc, "_read_raw_create_time", None)
@@ -108,9 +109,24 @@ async def test_idle_timeout_ends_the_worker_group_when_the_boot_time_steps(
 
     monkeypatch.setattr(_pslinux, "boot_time", stepped_boot_time)
 
+    # The step must land between the spawn record and teardown. If the
+    # stand-in wrote its pid file before the spawn record was read, both reads
+    # would be shifted alike and the test would pass without a moved clock.
+    real_observe = _cli_subprocess.observe_spawned
+    recorded_before_the_step = []
+
+    def observe_spawned(pid, **kwargs):
+        observed = real_observe(pid, **kwargs)
+        recorded_before_the_step.append(not pidfile.exists())
+        return observed
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", observe_spawned)
+
     await _run_until_idle_and_require_the_group_gone(
         tmp_path, monkeypatch, pidfile, ignore_term=False
     )
+    assert recorded_before_the_step, "the run recorded no spawn identity"
+    assert all(recorded_before_the_step), "the spawn record was read after the clock step"
 
 
 async def _run_until_idle_and_require_the_group_gone(

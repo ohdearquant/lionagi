@@ -122,10 +122,10 @@ def _select_raw_create_time_reader():
     is equal. Two interpreters can still disagree by the drift between their
     first reads, as the plain call always could.
 
-    The adjustment is the thing being avoided on macOS, so its presence is what
-    selects that reader: ``adjust_proc_create_time`` exists on the macOS backend
-    and nowhere else that reaches this branch. Any other platform keeps the
-    plain public call.
+    The adjustment is the thing being avoided there, so its presence is what
+    selects that reader: ``adjust_proc_create_time`` exists only on the backends
+    that apply it (macOS, and NetBSD inside psutil's BSD backend). Any other
+    platform keeps the plain public call.
     """
     import inspect
 
