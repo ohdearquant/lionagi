@@ -1204,47 +1204,49 @@ async def ndjson_from_cli(
         )
 
         try:
-            await end_child_group(proc, spawned=spawned)
-        except BaseException:
-            # Not known to have ended: the slots stay held while the child runs.
-            lease.keep_for_child()
-            raise
-        lease.release()
-
-        if abandoned_silently:
-            # Drain first, or the warning reports "said nothing" about a child
-            # that spoke; shielded so a timeout cannot cancel it mid-buffer.
-            abandon_drain_incomplete = False
-            if stderr_task is not None:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
-                    )
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    # Whatever it captured stays in the buffer, but the drain
-                    # did not finish, so an empty buffer is unknown rather than
-                    # evidence the child was quiet.
-                    abandon_drain_incomplete = True
-            log.warning(
-                "CLI subprocess produced no output before it was abandoned; %s",
-                _abandoned_without_output_note(
-                    captured_stderr(),
-                    stderr_unavailable,
-                    stderr_drain_error,
-                    abandon_drain_incomplete,
-                ),
-            )
-
-        # Reap the helper tasks — contextlib.suppress(Exception) does NOT
-        # catch CancelledError (BaseException), so we suppress it explicitly.
-        for task in (stderr_task, stdin_task, exit_task, read_task):
-            if task is None:
-                continue
-            task.cancel()
             try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-                pass
+                await end_child_group(proc, spawned=spawned)
+            except BaseException:
+                # Not known to have ended: the slots stay held while the child runs.
+                lease.keep_for_child()
+                raise
+            lease.release()
+
+            if abandoned_silently:
+                # Drain first, or the warning reports "said nothing" about a child
+                # that spoke; shielded so a timeout cannot cancel it mid-buffer.
+                abandon_drain_incomplete = False
+                if stderr_task is not None:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
+                        )
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        # Whatever it captured stays in the buffer, but the drain
+                        # did not finish, so an empty buffer is unknown rather than
+                        # evidence the child was quiet.
+                        abandon_drain_incomplete = True
+                log.warning(
+                    "CLI subprocess produced no output before it was abandoned; %s",
+                    _abandoned_without_output_note(
+                        captured_stderr(),
+                        stderr_unavailable,
+                        stderr_drain_error,
+                        abandon_drain_incomplete,
+                    ),
+                )
+
+        finally:
+            # Reap the helper tasks — contextlib.suppress(Exception) does NOT
+            # catch CancelledError (BaseException), so we suppress it explicitly.
+            for task in (stderr_task, stdin_task, exit_task, read_task):
+                if task is None:
+                    continue
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+                    pass
 
 
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
