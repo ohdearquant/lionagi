@@ -12,8 +12,10 @@ from pydantic import SecretStr
 
 from lionagi._errors import ConfigurationError
 from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.registry import EndpointMeta, EndpointType
 from lionagi.service.imodel import iModel
+from lionagi.testing._endpoint import ScriptedEndpoint
 
 ENV_NAME = "ANTHROPIC_API_KEY"
 REQUEST = {"model": "credential-test", "messages": [{"role": "user", "content": "hello"}]}
@@ -24,8 +26,14 @@ class _Secrets:
     ANTHROPIC_API_KEY = None
 
     def get_secret(self, name):
-        value = getattr(self, name, None)
+        if not hasattr(self, name):
+            if "ollama" in name.lower():
+                return "ollama"
+            raise AttributeError(f"Secret key '{name}' not found in settings")
+        value = getattr(self, name)
         if value is None:
+            if "ollama" in name.lower():
+                return "ollama"
             raise ValueError(f"Secret key '{name}' is not set")
         return value.get_secret_value() if isinstance(value, SecretStr) else str(value)
 
@@ -69,6 +77,7 @@ def _endpoint(key, *, provider="anthropic", auth_type="x-api-key"):
 @pytest.mark.asyncio
 async def test_unset_credential_reference_refuses_before_dispatch(secrets):
     endpoint = _endpoint(ENV_NAME)
+    preview_payload, preview_headers = endpoint.create_payload(REQUEST)
     error = None
     try:
         await endpoint.call(REQUEST)
@@ -79,12 +88,15 @@ async def test_unset_credential_reference_refuses_before_dispatch(secrets):
     assert isinstance(error, ConfigurationError)
     assert getattr(error, "reason", None) == "credential_missing"
     assert ENV_NAME in str(error)
-    assert ENV_NAME not in repr(endpoint.requests)
+    assert preview_payload["messages"] == REQUEST["messages"]
+    assert preview_headers["x-api-key"]
+    assert ENV_NAME not in repr({"payload": preview_payload, "headers": preview_headers})
 
 
 @pytest.mark.asyncio
 async def test_model_invoke_preserves_the_missing_credential_refusal(secrets):
     endpoint = _endpoint(ENV_NAME)
+    preview_payload, preview_headers = endpoint.create_payload(REQUEST)
     model = iModel(endpoint=endpoint)
     error = None
     try:
@@ -99,7 +111,9 @@ async def test_model_invoke_preserves_the_missing_credential_refusal(secrets):
     assert isinstance(error, ConfigurationError)
     assert getattr(error, "reason", None) == "credential_missing"
     assert ENV_NAME in str(error)
-    assert ENV_NAME not in repr(endpoint.requests)
+    assert preview_payload["messages"] == REQUEST["messages"]
+    assert preview_headers["x-api-key"]
+    assert ENV_NAME not in repr({"payload": preview_payload, "headers": preview_headers})
     assert model.calls_sent == 0
 
 
@@ -178,3 +192,147 @@ async def test_credential_sentinels_preserve_dispatch(secrets, provider, key, au
         assert "x-api-key" not in endpoint.requests[0]["headers"]
     else:
         assert endpoint.requests[0]["headers"]["x-api-key"] == key
+
+
+def _direct_endpoint(key):
+    return _CapturedEndpoint(
+        EndpointConfig(
+            name="direct_messages",
+            provider="anthropic",
+            endpoint="messages",
+            base_url="https://credential-test.invalid",
+            auth_type="x-api-key",
+            api_key=key,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_direct_declared_credential_name_refuses_before_dispatch(secrets):
+    endpoint = _direct_endpoint(ENV_NAME)
+    preview_payload, preview_headers = endpoint.create_payload(REQUEST)
+    error = None
+    try:
+        await endpoint.call(REQUEST)
+    except Exception as caught:
+        error = caught
+
+    assert endpoint.requests == [], "a direct declared credential must refuse before dispatch"
+    assert isinstance(error, ConfigurationError)
+    assert getattr(error, "reason", None) == "credential_missing"
+    assert ENV_NAME in str(error)
+    assert preview_payload["messages"] == REQUEST["messages"]
+    assert preview_headers["x-api-key"]
+    assert ENV_NAME not in repr({"payload": preview_payload, "headers": preview_headers})
+
+
+@pytest.mark.asyncio
+async def test_direct_declared_credential_name_uses_environment_value(secrets, monkeypatch):
+    resolved = "synthetic-direct-key"
+    monkeypatch.setenv(ENV_NAME, resolved)
+    endpoint = _direct_endpoint(ENV_NAME)
+
+    assert await endpoint.call(REQUEST) == {"ok": True}
+    assert len(endpoint.requests) == 1
+    assert endpoint.requests[0]["headers"]["x-api-key"] == resolved
+    assert ENV_NAME not in repr(endpoint.requests[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolved", [None, "synthetic-literal-env"], ids=["literal", "env"])
+async def test_direct_undeclared_literal_keeps_existing_environment_fallback(
+    secrets, monkeypatch, resolved
+):
+    literal = "UPPERCASE_LITERAL"
+    if resolved is None:
+        monkeypatch.delenv(literal, raising=False)
+    else:
+        monkeypatch.setenv(literal, resolved)
+    endpoint = _direct_endpoint(literal)
+
+    assert await endpoint.call(REQUEST) == {"ok": True}
+    assert len(endpoint.requests) == 1
+    assert endpoint.requests[0]["headers"]["x-api-key"] == (
+        literal if resolved is None else resolved
+    )
+
+
+def _scripted_endpoint():
+    return ScriptedEndpoint(
+        config=_endpoint(ENV_NAME).config,
+        api_key=ENV_NAME,
+        script=[{"type": "text", "content": "scripted response"}],
+    )
+
+
+async def _read_scripted_stream(endpoint, **kwargs):
+    stream = endpoint.stream(REQUEST, **kwargs)
+    try:
+        return [chunk async for chunk in stream]
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_scripted_stream_refuses_an_unset_credential_reference(secrets):
+    endpoint = _scripted_endpoint()
+    preview_payload, preview_headers = endpoint.create_payload(REQUEST)
+    error = None
+    try:
+        await asyncio.wait_for(_read_scripted_stream(endpoint), timeout=10)
+    except Exception as caught:
+        error = caught
+
+    assert endpoint.calls == [], "a scripted stream must refuse an unset credential before dispatch"
+    assert isinstance(error, ConfigurationError)
+    assert getattr(error, "reason", None) == "credential_missing"
+    assert ENV_NAME in str(error)
+    assert preview_payload["messages"] == REQUEST["messages"]
+    assert preview_headers["x-api-key"]
+    assert ENV_NAME not in repr({"payload": preview_payload, "headers": preview_headers})
+
+
+@pytest.mark.asyncio
+async def test_scripted_stream_refreshes_prepared_headers_after_credential_resolution(
+    secrets, monkeypatch
+):
+    endpoint = _scripted_endpoint()
+    preview_payload, preview_headers = endpoint.create_payload(REQUEST)
+    resolved = "synthetic-late-stream-key"
+    monkeypatch.setenv(ENV_NAME, resolved)
+
+    chunks = await asyncio.wait_for(
+        _read_scripted_stream(endpoint, extra_headers=preview_headers), timeout=10
+    )
+
+    assert any(chunk.content == "scripted response" for chunk in chunks)
+    assert len(endpoint.calls) == 1 and endpoint.calls[0].was_streamed
+    assert endpoint.calls[0].headers["x-api-key"] == resolved, (
+        "a prepared stream must dispatch with the resolved credential"
+    )
+    assert endpoint.calls[0].payload == preview_payload
+    assert ENV_NAME not in repr(endpoint.calls[0].headers)
+    assert resolved not in repr(endpoint.calls[0].payload)
+
+
+@pytest.mark.parametrize("available", [False, True], ids=["unset", "set"])
+def test_registered_model_restore_preserves_reference(secrets, monkeypatch, available):
+    original = iModel(
+        provider="anthropic",
+        endpoint="messages",
+        api_key="synthetic-snapshot-key",
+    )
+    stored = original.to_dict()
+    resolved = "synthetic-restored-key" if available else None
+    if resolved is None:
+        monkeypatch.delenv(ENV_NAME, raising=False)
+    else:
+        monkeypatch.setenv(ENV_NAME, resolved)
+
+    restored = iModel.from_dict(stored)
+
+    assert "synthetic-snapshot-key" not in repr(stored)
+    assert restored.endpoint.config.api_key_env == ENV_NAME
+    assert restored.endpoint.config.api_key == ENV_NAME
+    assert restored.endpoint.config._api_key == resolved
+    assert restored.calls_sent == 0

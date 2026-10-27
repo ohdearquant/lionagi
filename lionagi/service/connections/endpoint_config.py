@@ -131,7 +131,10 @@ class EndpointConfig(BaseModel):
 
                     try:
                         self._api_key = settings.get_secret(self.api_key)
-                    except (AttributeError, ValueError):
+                    except ValueError:
+                        self.api_key_env = self.api_key
+                        self._api_key = os.getenv(self.api_key)
+                    except AttributeError:
                         self._api_key = os.getenv(self.api_key, self.api_key)
 
         return self
