@@ -33,13 +33,14 @@ async def wait_for_proposal(
     by the store and followed normally; errors and cancellation propagate.
     The caller owns the clock, sleeper and any polling policy.
     """
+    finished = _TERMINAL_PROPOSAL_STATUSES.__contains__ if is_terminal is None else is_terminal
     while True:
         proposal = await store.get_proposal(proposal["id"])
         status = proposal["status"]
         if status == "pending" and proposal["expiresAt"] <= clock():
             proposal = await store.expire_proposal(proposal["id"])
             status = proposal["status"]
-        if status in _TERMINAL_PROPOSAL_STATUSES if is_terminal is None else is_terminal(status):
+        if finished(status):
             return proposal
         await sleep(poll_interval)
         if advance_interval is not None:
