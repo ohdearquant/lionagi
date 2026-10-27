@@ -38,7 +38,9 @@ The environment policy has two deny checks:
 The scrubbed environment is the default for bash and search, the Seatbelt writer and its cache
 location discovery, automatic formatting, static tools, coding-tool Git helpers, and configured worktree test
 gates and auto-repair commands. An explicitly supplied exec-cell environment remains an explicit
-grant; prompt cells continue to refuse a nonempty supplied environment.
+grant; prompt cells continue to refuse a nonempty supplied environment. An exec-cell environment
+is supplied only by the Python caller that constructs the `Cell`; no tool call or agent-visible
+argument can set it.
 
 The operator-owned opt-in is `AgentSpec.command_env_allowlist: tuple[str, ...] = ()`, with the
 matching `CodingToolkit(command_env_allowlist=...)` option and the same named opt-in on
@@ -68,8 +70,8 @@ Limits:
 This closes automatic credential-variable inheritance by coding tools. It does not confine reads:
 a command can still read files the user can read, including `.env`, credential stores, and startup
 scripts. A child can load those files or obtain credentials through other configured services.
-Names in no declaration that match no pattern and explicit operator grants are outside this
-protection. It is not a credential confidentiality boundary for arbitrary code.
+Names in no declaration that match no pattern, and variables an operator explicitly grants, are
+outside this protection. It is not a credential confidentiality boundary for arbitrary code.
 
 ## Amendment 2 (2026-10-25) — the write set runs its editor and bash under the macOS sandbox
 
