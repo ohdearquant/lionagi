@@ -753,9 +753,20 @@ def _tail(path: str | None, limit: int = 4000) -> str | None:
     if not path:
         return None
     try:
-        data = Path(path).read_text(errors="replace")
+        with open(path, "rb") as fh:
+            if limit > 0:
+                # Read only the end. The last *limit* characters take at most four
+                # bytes each, and UTF-8 resynchronizes at the first byte that is not
+                # a continuation byte, so a decode started anywhere earlier agrees
+                # with a whole-file decode on all of them.
+                span = 4 * limit
+                end = fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, end - span))
+            raw = fh.read()
     except OSError:
         return None
+    # Universal newlines, as a text-mode read would apply them.
+    data = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     return data[-limit:] if len(data) > limit else data
 
 
