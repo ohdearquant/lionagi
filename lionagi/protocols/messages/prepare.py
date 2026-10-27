@@ -159,6 +159,23 @@ def prepare_messages_for_chat(
     round_num = 1
     msg_count = len(to_use)
 
+    def take_action_context() -> list[str]:
+        """The pending action outputs as context parts, removed from the pending lists."""
+        nonlocal pending_actions
+        parts: list[str] = []
+        if aggregate_actions and pending_responses:
+            if round_notifications:
+                parts.append(
+                    _build_round_notification(progression, round_num, msg_count, scratchpad)
+                )
+            parts.append(_aggregate_round_actions(pending_requests, pending_responses, round_num))
+            pending_requests.clear()
+            pending_responses.clear()
+        elif pending_actions:
+            parts = pending_actions
+            pending_actions = []
+        return parts
+
     for i, msg in enumerate(to_use):
         if i < start_idx:
             continue
@@ -186,22 +203,9 @@ def prepare_messages_for_chat(
             # Clear tool_schemas and response_format from history messages
             updates: dict[str, Any] = {"tool_schemas": None, "response_format": None}
 
-            if aggregate_actions and pending_responses:
-                context_parts: list[str] = []
-                if round_notifications:
-                    context_parts.append(
-                        _build_round_notification(progression, round_num, msg_count, scratchpad)
-                    )
-                context_parts.append(
-                    _aggregate_round_actions(pending_requests, pending_responses, round_num)
-                )
+            context_parts = take_action_context()
+            if context_parts:
                 updates["prompt_context"] = _build_context(content, context_parts)
-                pending_requests.clear()
-                pending_responses.clear()
-                round_num += 1
-            elif pending_actions:
-                updates["prompt_context"] = _build_context(content, pending_actions)
-                pending_actions = []
                 round_num += 1
 
             _use_msgs.append(content.with_updates(**updates))
@@ -237,20 +241,7 @@ def prepare_messages_for_chat(
             if isinstance(new_content_inner, InstructionContent):
                 curr = _get_text(new_content_inner, "instruction")
                 system_updates: dict[str, Any] = {"instruction": f"{system_text}\n\n{curr}"}
-                ctx_parts: list[str] = []
-                if aggregate_actions and pending_responses:
-                    if round_notifications:
-                        ctx_parts.append(
-                            _build_round_notification(progression, round_num, msg_count, scratchpad)
-                        )
-                    ctx_parts.append(
-                        _aggregate_round_actions(pending_requests, pending_responses, round_num)
-                    )
-                    pending_requests.clear()
-                    pending_responses.clear()
-                elif pending_actions:
-                    ctx_parts.extend(pending_actions)
-                    pending_actions = []
+                ctx_parts = take_action_context()
                 if ctx_parts:
                     system_updates["prompt_context"] = _build_context(new_content_inner, ctx_parts)
                 _use_msgs.append(new_content_inner.with_updates(**system_updates))
@@ -270,20 +261,7 @@ def prepare_messages_for_chat(
             else new_instruction
         )
         if isinstance(new_content_final, InstructionContent):
-            context_parts_final: list[str] = []
-            if aggregate_actions and pending_responses:
-                if round_notifications:
-                    context_parts_final.append(
-                        _build_round_notification(progression, round_num, msg_count, scratchpad)
-                    )
-                context_parts_final.append(
-                    _aggregate_round_actions(pending_requests, pending_responses, round_num)
-                )
-                pending_requests.clear()
-                pending_responses.clear()
-            elif pending_actions:
-                context_parts_final.extend(pending_actions)
-                pending_actions = []
+            context_parts_final = take_action_context()
             if context_parts_final:
                 final_updates["prompt_context"] = _build_context(
                     new_content_final, context_parts_final

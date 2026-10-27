@@ -27,9 +27,8 @@ from lionhub.serve.mcp import dispatch, jobs, projection, verbs
 # spelling: a rename that keeps the capability must still fail this.
 FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
 
-# The previous surface's names for the same capabilities. A synonym is resolved
-# before dispatch, so a fenced capability must not be reachable by an old name
-# either.
+# The previous surface's names for the same capabilities: a fenced capability
+# must not be reachable by an old name either.
 FENCED_LEGACY_NAMES = ("plugin_trust", "hooks_trust", "state_migrate")
 
 # Every command path this surface can execute, written out here rather than read
@@ -137,7 +136,6 @@ def test_no_catalog_entry_names_a_fenced_operation():
 
 @pytest.mark.parametrize("name", FENCED_LEGACY_NAMES)
 def test_a_previous_surface_name_for_a_fenced_operation_resolves_to_nothing(name):
-    assert name not in verbs.SYNONYMS
     answer = call(ops=[{"op": name}])
     assert answer["ops"][0]["ok"] is False
 

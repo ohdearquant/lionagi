@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import shlex
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -88,8 +90,17 @@ def _subprocess_sync(
     timeout_sec: float,
     timeout_ms: int,
     cwd: str | None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> BashResponse:
-    raw = _subprocess_sync_inner(cmd, shell, timeout_sec, cwd, timeout_ms=timeout_ms)
+    raw = _subprocess_sync_inner(
+        cmd,
+        shell,
+        timeout_sec,
+        cwd,
+        timeout_ms=timeout_ms,
+        env=command_environment() if _command_env is None else _command_env,
+    )
     return BashResponse(
         stdout=raw["stdout"],
         stderr=raw["stderr"],
@@ -104,11 +115,14 @@ async def _run_bash(
     cwd: str | None,
     *,
     wrap: Callable[[Sequence[str]], list[str]] | None = None,
+    _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
 ) -> BashResponse:
     """Run one command for BashTool and CodingToolkit's bash: the timeout in ms
     defaults to 30000 and is clamped to 1..300000, shell control and malformed
     quoting are refused before anything starts. *wrap*, when given, rewrites the
-    parsed argv (the toolkit's sandbox policy) before it runs."""
+    parsed argv (the toolkit's sandbox policy) before it runs. The child's
+    environment comes from *_command_env_supplier*, read once the command is
+    accepted; without one, the default command environment is used."""
     timeout_ms = timeout if timeout is not None else 30_000
     timeout_ms = min(max(timeout_ms, 1), 300_000)
     timeout_sec = timeout_ms / 1000.0
@@ -127,6 +141,7 @@ async def _run_bash(
         timeout_sec,
         timeout_ms,
         cwd or None,
+        _command_env=None if _command_env_supplier is None else _command_env_supplier(),
     )
 
 
@@ -134,13 +149,30 @@ class BashTool(LionTool):
     is_lion_system_tool = True
     system_tool_name = "bash_tool"
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        command_env_allowlist: Sequence[str] = (),
+        _command_env_names: frozenset[str] | None = None,
+    ):
         self._tool = None
+        self._command_env_names = (
+            None if _command_env_names is None else frozenset(_command_env_names)
+        )
+        self._command_env_allowlist = normalize_command_env_allowlist(command_env_allowlist)
 
     async def handle_request(self, request: BashRequest) -> BashResponse:
         if isinstance(request, dict):
             request = BashRequest(**request)
-        return await _run_bash(request.command, request.timeout, request.cwd)
+        return await _run_bash(
+            request.command,
+            request.timeout,
+            request.cwd,
+            _command_env_supplier=lambda: command_environment(
+                declared_names=self._command_env_names,
+                command_env_allowlist=self._command_env_allowlist,
+            ),
+        )
 
     def to_tool(self) -> Tool:
         if self._tool is None:

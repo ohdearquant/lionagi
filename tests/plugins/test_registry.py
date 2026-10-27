@@ -573,6 +573,7 @@ class TestTrustExecutionAtomicity:
         a window for the file to be swapped in between."""
         from pathlib import Path as _Path
 
+        from lionagi.ln import compute_hash
         from lionagi.plugins.registry import _read_and_verify_target_bytes
 
         bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
@@ -593,11 +594,12 @@ class TestTrustExecutionAtomicity:
 
         monkeypatch.setattr(_Path, "read_bytes", counting_read_bytes)
 
-        result = _read_and_verify_target_bytes(
+        result, digest = _read_and_verify_target_bytes(
             bundle_dir=bundle, module_path="tools/t.py", plugin_name="p1"
         )
 
         assert result == expected
+        assert digest == compute_hash(expected, max_bytes=None)
         assert call_count == 1
 
     def test_target_swapped_after_broad_trust_check_is_refused_not_executed(

@@ -237,45 +237,32 @@ class Executor(Observer):
         await self.pile.ainclude(event)
         self.pending.include(event)
 
-    @property
-    def completed_events(self) -> Pile[Event]:
+    def _events_with_status(self, status: EventStatus) -> Pile[Event]:
         return Pile(
-            collections=[e for e in self.pile if e.status == EventStatus.COMPLETED],
+            collections=[e for e in self.pile if e.status == status],
             item_type=self.processor_type.event_type,
             strict_type=self.strict_event_type,
         )
+
+    @property
+    def completed_events(self) -> Pile[Event]:
+        return self._events_with_status(EventStatus.COMPLETED)
 
     @property
     def pending_events(self) -> Pile[Event]:
-        return Pile(
-            collections=[e for e in self.pile if e.status == EventStatus.PENDING],
-            item_type=self.processor_type.event_type,
-            strict_type=self.strict_event_type,
-        )
+        return self._events_with_status(EventStatus.PENDING)
 
     @property
     def failed_events(self) -> Pile[Event]:
-        return Pile(
-            collections=[e for e in self.pile if e.status == EventStatus.FAILED],
-            item_type=self.processor_type.event_type,
-            strict_type=self.strict_event_type,
-        )
+        return self._events_with_status(EventStatus.FAILED)
 
     @property
     def cancelled_events(self) -> Pile[Event]:
-        return Pile(
-            collections=[e for e in self.pile if e.status == EventStatus.CANCELLED],
-            item_type=self.processor_type.event_type,
-            strict_type=self.strict_event_type,
-        )
+        return self._events_with_status(EventStatus.CANCELLED)
 
     @property
     def skipped_events(self) -> Pile[Event]:
-        return Pile(
-            collections=[e for e in self.pile if e.status == EventStatus.SKIPPED],
-            item_type=self.processor_type.event_type,
-            strict_type=self.strict_event_type,
-        )
+        return self._events_with_status(EventStatus.SKIPPED)
 
     def status_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}

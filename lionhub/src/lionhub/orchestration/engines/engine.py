@@ -10,7 +10,7 @@ import contextlib
 import logging
 import os
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -728,6 +728,8 @@ class EngineRun:
         extra_prompt: str | None = None,
         env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
+        command_env_allowlist: Sequence[str] = (),
+        _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
@@ -790,6 +792,7 @@ class EngineRun:
             yolo=self.engine.yolo,
             contain_account_integrations=built_under[1],
             prompt_caching=bool(self.engine.prompt_caching),
+            command_env_allowlist=command_env_allowlist,
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -802,7 +805,12 @@ class EngineRun:
         # create_agent is the single grant site; capabilities are granted once here.
         # AgentSpec has no env field, so the overlay goes to create_agent, which
         # hands it to the CLI endpoint it builds: the carrier that reaches the child.
-        branch = await create_agent(spec, load_settings=False, agent_env=env)
+        branch = await create_agent(
+            spec,
+            load_settings=False,
+            agent_env=env,
+            _command_env_names_out=_command_env_names_out,
+        )
         if built_under[0] is not None or built_under[1]:
             self._agent_branches[str(branch.id)] = (
                 built_under,

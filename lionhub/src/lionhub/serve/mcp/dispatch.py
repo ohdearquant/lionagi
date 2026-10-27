@@ -28,10 +28,8 @@ from . import config, jobs, projection, roster
 from .verbs import (
     ABSENT,
     MAX_OPS,
-    SYNONYM_REMOVAL_DATE,
     VERBS,
     Verb,
-    resolve,
 )
 
 __all__ = (
@@ -191,7 +189,6 @@ def catalog() -> dict[str, Any]:
             "spelling. required_unenforced names parameters the parser will not refuse a "
             "call for omitting but the command cannot do its work without."
         ),
-        "synonyms_removed_after": SYNONYM_REMOVAL_DATE,
     }
 
 
@@ -874,7 +871,6 @@ def _server_info() -> dict[str, Any]:
         "verbs": sorted(VERBS),
         "verb_count": len(VERBS),
         "absent_verb_count": len(ABSENT),
-        "synonyms_removed_after": SYNONYM_REMOVAL_DATE,
         "pid": os.getpid(),
     }
 
@@ -1005,27 +1001,28 @@ def _help(target: Any) -> dict[str, Any]:
             raise ValueError("help object needs a 'verb' string")
     else:
         name = target
-    resolved = resolve(name)
-    verb = VERBS.get(resolved)
+        if not isinstance(name, str):
+            raise ValueError("help takes true, a verb name, or a {'verb': ...} object")
+    verb = VERBS.get(name)
     if verb is None:
-        return _unknown_verb(name, resolved)
+        return _unknown_verb(name)
     if playbook is not None and not verb.playbook_aware:
-        raise ValueError(f"{resolved!r} takes no playbook")
+        raise ValueError(f"{name!r} takes no playbook")
     try:
         schema = verb_schema(verb, playbook=playbook)
     except projection.SchemaProjectionError as exc:
-        raise ValueError(f"{resolved!r} has no describable schema: {exc}") from exc
-    answer: dict[str, Any] = {"verb": resolved, "schema": schema}
+        raise ValueError(f"{name!r} has no describable schema: {exc}") from exc
+    answer: dict[str, Any] = {"verb": name, "schema": schema}
     if verb.executor == "spawn":
         _describe_fingerprint(answer, verb, schema, playbook=playbook)
     return answer
 
 
-def _unknown_verb(name: Any, resolved: str) -> dict[str, Any]:
+def _unknown_verb(name: str) -> dict[str, Any]:
     for absent in ABSENT:
-        if absent.name == resolved:
+        if absent.name == name:
             return {
-                "verb": resolved,
+                "verb": name,
                 "available": False,
                 "summary": absent.summary,
                 "reason": absent.reason,
@@ -1093,13 +1090,9 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             "?", OpError("invalid_input", f"each op is an object, got {type(entry).__name__}"), None
         )
     unknown_keys = sorted(set(entry) - {"op", "args", "schema_fingerprint"})
-    raw_op = entry.get("op")
-    try:
-        name = resolve(raw_op)
-    except TypeError:
-        return _op_error(
-            "?", OpError("invalid_input", f"op must be a string, got {raw_op!r}"), None
-        )
+    name = entry.get("op")
+    if not isinstance(name, str):
+        return _op_error("?", OpError("invalid_input", f"op must be a string, got {name!r}"), None)
     if unknown_keys:
         return _op_error(
             name,
@@ -1113,7 +1106,7 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     verb = VERBS.get(name)
     if verb is None:
         try:
-            absent = _unknown_verb(raw_op, name)
+            absent = _unknown_verb(name)
         except ValueError as exc:
             return _op_error(name, OpError("not_found", str(exc)), None)
         return _op_error(

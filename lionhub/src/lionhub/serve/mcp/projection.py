@@ -400,10 +400,6 @@ def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
     return out
 
 
-# A run of flag spellings offered as alternatives, e.g. ``-r / --resume``.
-_FLAG_ALTERNATIVES = re.compile(r"--?[A-Za-z][\w-]*(?:\s*/\s*--?[A-Za-z][\w-]*)*")
-
-
 def _name_parameters(text: str, flags: dict[str, str]) -> str:
     """Rewrite flag spellings in help text as the parameters they project to.
 

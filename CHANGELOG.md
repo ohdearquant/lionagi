@@ -40,6 +40,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
+  repairs and auto-repair commands, and the formatter hook) remove declared
+  credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
+  their child environments, including `GITHUB_TOKEN`. Patterns match anywhere
+  in a name, so `DATABASE_URL` and `TEST_DATABASE_URL` are removed too. Restore
+  a variable with `command_env_allowlist` using its exact spelling. A name in no
+  declaration that matches no pattern (for example `GH_TOKEN`, `HF_TOKEN` or
+  `NPM_TOKEN`) still passes. Reads are not confined.
+- When `~/.lionagi/settings.yaml` cannot be read, or its `secrets.lookup`
+  section is invalid, building a coding agent or toolkit raises
+  `ConfigurationError` instead of running with an incomplete list of
+  credential names, and so does a standalone coding tool such as `BashTool`.
+  Fix or remove the file or the section.
+
 - Application and provider module loaders use the shared `ln.import_module`
   contract, retaining relative package anchors, lazy registration and cache behavior.
   An ordinary import error from these loaders is now a plain `ImportError` whose message
@@ -118,12 +132,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   30-second default. A timed-out command now reports its limit in milliseconds, and refusals of
   shell control operators and malformed quoting use `BashTool`'s wording.
 
+- `load_mcp_tools(config_path=...)` without `server_names` registers the servers declared in
+  that file, as `ActionManager.load_mcp_config()` already did. It used to register every server
+  the process had loaded from any config file, so an earlier, unrelated config's servers were
+  registered again. Pass `server_names` to choose servers explicitly.
+
 ### Deprecated
 
 - `CodingToolkit(notify_threshold=..., notify_max_tokens=...)` now emits a
   `DeprecationWarning` when either is passed. Neither value was ever read: the toolkit's nudge
   engine does not take them. The attributes keep 0.7 and 200,000 when the arguments are
   omitted. Both will be removed in a future minor release.
+
+### Removed
+
+- The MCP server no longer accepts the flat operation names of its earlier
+  one-tool-per-operation surface (`submit_agent`, `submit_flow`, `submit_fanout`,
+  `submit_play`, `job_status`, `job_output`, `job_kill`, `job_wait`, `jobs_list`,
+  `server_info`) inside `ops`; their removal date has passed. An op that uses one is
+  refused as `not_found`. Use the namespaced verb instead, for example `agent.submit`
+  for `submit_agent` and `job.list` for `jobs_list`. The catalog and `server.info`
+  drop their `synonyms_removed_after` field.
 
 ### Fixed
 
