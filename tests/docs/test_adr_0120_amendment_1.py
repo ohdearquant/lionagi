@@ -86,7 +86,7 @@ def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
         "lionhub/src/lionhub/orchestration/engines/review.py", 281
     )
     assert "await run.emit(final)" in _line(
-        "lionhub/src/lionhub/orchestration/engines/review.py", 842
+        "lionhub/src/lionhub/orchestration/engines/review.py", 861
     )
 
 
@@ -189,7 +189,7 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionhub/src/lionhub/orchestration/engines/review.py:281`, `:842" in flat
+    assert "lionhub/src/lionhub/orchestration/engines/review.py:281`, `:861" in flat
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven
