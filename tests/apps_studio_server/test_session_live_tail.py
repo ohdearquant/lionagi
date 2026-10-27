@@ -605,6 +605,27 @@ async def test_signal_prefix_http_uses_the_existing_bearer_boundary(
     ).status_code == 200
 
 
+@pytest.mark.parametrize(
+    ("path", "admitted"),
+    [
+        ("/api/sessions/session?live_snapshot=true", 200),
+        ("/api/sessions/session/stream?mode=live", 409),
+        ("/api/sessions/session/signals?mode=live", 409),
+    ],
+)
+async def test_live_modes_use_the_existing_bearer_boundary(
+    live_backend, live_http, monkeypatch, path, admitted
+):
+    # The bearer gate reads the path, never the query, so a live read is refused as
+    # its plain form is; the admitted status is the handler's own answer.
+    await seed(live_backend)
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-only-token")
+    assert (await live_http.get(path)).status_code == 401
+    assert (await live_http.get(path, headers={"Authorization": "Bearer wrong"})).status_code == 401
+    response = await live_http.get(path, headers={"Authorization": "Bearer test-only-token"})
+    assert response.status_code == admitted
+
+
 async def test_signal_prefix_http_refuses_non_file_store(live_backend, live_http, monkeypatch):
     import lionagi.state.db as db_mod
 
