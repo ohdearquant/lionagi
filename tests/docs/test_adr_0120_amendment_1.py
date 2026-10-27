@@ -17,6 +17,7 @@ class this file exists to catch.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,15 +48,24 @@ def _tree(relpath: str) -> ast.Module:
 
 
 def _class(tree: ast.AST, name: str) -> ast.ClassDef:
-    return next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name)
+    found = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name), None
+    )
+    assert found is not None, f"class {name} is not in the module the amendment cites"
+    return found
 
 
 def _method(cls: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
-    return next(
-        n
-        for n in cls.body
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+    found = next(
+        (
+            n
+            for n in cls.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+        ),
+        None,
     )
+    assert found is not None, f"{cls.name}.{name} is not in the class the amendment cites"
+    return found
 
 
 def _amendment() -> str:
@@ -260,7 +270,12 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
         in flat
     )
     # A line number in either citation goes stale on the next edit above it and nothing checks it.
-    assert "engines/review.py:281" not in flat and "engines/engine.py:628" not in flat
+    first = flat.index("the `ReviewVerdict` class and the `await run.emit(final)`")
+    second = (
+        "`EngineRun._notify_budget_once` in `lionhub/src/lionhub/orchestration/engines/engine.py`"
+    )
+    cited = flat[first : flat.index(second) + len(second)]
+    assert re.search(r"engines/(?:review|engine)\.py:\d", cited) is None
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven

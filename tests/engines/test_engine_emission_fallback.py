@@ -503,11 +503,41 @@ async def test_repair_and_recovery_events_name_what_their_numbers_count() -> Non
 
 
 class _SlowLeg(_Leg):
+    """Stalls in operate() and records the cancellation that ends the stall.
+
+    ``silent_calls`` operate calls return at once without emitting; ``arrive_in_stall``
+    flips the shared flag just before the stall begins, as a leg whose reply was
+    parsed before its turn returned would.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        steps: list,
+        state: dict,
+        *,
+        silent_calls: int = 0,
+        arrive_in_stall: bool = False,
+    ) -> None:
+        super().__init__(name, steps, state)
+        self.cancelled = 0
+        self._silent = silent_calls
+        self._arrive = arrive_in_stall
+
     async def operate(self, *, instruction: str) -> str:
         import asyncio
 
         self.calls.append(instruction)
-        await asyncio.sleep(30)
+        if self._silent > 0:
+            self._silent -= 1
+            return ""
+        if self._arrive:
+            self._state["arrived"] = True
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
         return ""
 
 
@@ -535,6 +565,7 @@ async def test_a_fallback_leg_past_its_deadline_is_abandoned_and_the_emission_st
 
     assert result == "first leg words"
     assert slow.calls == ["go"]
+    assert slow.cancelled == 1
     timeout = next(e for e in events if e["type"] == "emission_fallback_timeout")
     assert (timeout["agent"], timeout["model"], timeout["limit_s"]) == ("p", "m2", 0.05)
     missing = next(e for e in events if e["type"] == "emission_missing")
@@ -542,6 +573,62 @@ async def test_a_fallback_leg_past_its_deadline_is_abandoned_and_the_emission_st
     assert missing["raw_response"]["stop_reason"] == "end_turn"
     assert run.emission_failures == ["p x3"]
     assert run.emission_fallbacks == [] and "emission_recovered" not in _types(events)
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_abandoned_during_its_repair_counts_both_operate_calls() -> None:
+    events: list[dict] = []
+    run = _StubEngine(fallback_deadline_s=0.05).new_run(on_event=events.append)
+    state = {"arrived": False}
+    primary = _Leg("p", [(_reply("a"), False), (_reply("first leg words"), False)], state)
+    slow = _SlowLeg("p-fb", [], state, silent_calls=1)
+
+    async def factory() -> _SlowLeg:
+        return slow
+
+    await run.operate_with_repair(
+        primary,
+        "go",
+        arrived=lambda: state["arrived"],
+        retries=1,
+        fallback=factory,
+        fallback_model="m2",
+    )
+
+    assert len(slow.calls) == 2 and slow.cancelled == 1
+    missing = next(e for e in events if e["type"] == "emission_missing")
+    assert missing["attempts"] == 4
+    assert run.emission_failures == ["p x4"]
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_whose_emission_arrived_before_the_deadline_is_recovered() -> None:
+    events: list[dict] = []
+    run = _StubEngine(fallback_deadline_s=0.05).new_run(on_event=events.append)
+    state = {"arrived": False}
+    primary = _Leg("p", [(_reply("a"), False), (_reply("first leg words"), False)], state)
+    slow = _SlowLeg("p-fb", [], state, arrive_in_stall=True)
+
+    async def factory() -> _SlowLeg:
+        return slow
+
+    result = await run.operate_with_repair(
+        primary,
+        "go",
+        arrived=lambda: state["arrived"],
+        retries=1,
+        fallback=factory,
+        fallback_model="m2",
+    )
+
+    assert result == "first leg words" and slow.cancelled == 1
+    assert _types(events).count("emission_fallback_timeout") == 1
+    recovered = [e for e in events if e["type"] == "emission_recovered"]
+    assert [(e["via"], e["operate_call"], e["attempt"]) for e in recovered] == [("fallback", 1, 1)]
+    assert run.emission_fallbacks == [
+        {"agent": "p", "model": "m2", "attempt": 1, "after_attempts": 2}
+    ]
+    assert "emission_missing" not in _types(events) and run.emission_failures == []
 
 
 @pytest.mark.asyncio

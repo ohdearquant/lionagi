@@ -863,8 +863,13 @@ class EngineRun:
         emits: tuple[type, ...],
         retries: int,
         actions: bool,
+        calls: list[int] | None = None,
     ) -> tuple[Any, int]:
-        """One leg's turn: operate, then re-prompt up to *retries* times while *arrived*() is false. Returns (last reply, repair attempts made)."""
+        """One leg's turn: operate, then re-prompt up to *retries* times while *arrived*() is false. Returns (last reply, repair attempts made).
+
+        ``calls`` is a one-slot counter bumped before every operate call, so a caller
+        that cancels this turn still knows how many calls were started.
+        """
         # CLI workers emit prose, not fenced JSON — front-load the full example
         # form; waiting for the repair pass costs a whole extra CLI process.
         is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
@@ -873,6 +878,8 @@ class EngineRun:
             instruction = f"{instruction}{_cli_emission_primer(hint, emits)}"
         # Omit actions entirely when False so a minimal test double still works.
         operate_kwargs: dict[str, Any] = {"actions": True} if actions else {}
+        if calls is not None:
+            calls[0] += 1
         res = await branch.operate(instruction=instruction, **operate_kwargs)
         attempt = 0
         while not arrived() and attempt < retries:
@@ -902,6 +909,8 @@ class EngineRun:
                 repair_msg = _cli_repair_instruction(hint, emits)
             else:
                 repair_msg = _repair_instruction(hint)
+            if calls is not None:
+                calls[0] += 1
             res = await branch.operate(instruction=repair_msg, **operate_kwargs)
         return res, attempt
 
@@ -924,9 +933,12 @@ class EngineRun:
 
         When the leg emits, the recovery is recorded here (``emission_fallbacks`` and
         an ``emission_recovered`` event). With ``Engine.fallback_deadline_s`` set, a
-        leg still running at that limit is abandoned (``emission_fallback_timeout``);
-        it counts as one operate call, the reply and leg stay the first leg's, and
-        the emission is not recovered.
+        leg still running at that limit is abandoned (``emission_fallback_timeout``)
+        and its operate calls are counted as started, a call cut short included.
+        If the emission had already arrived by then it is recovered all the same (the
+        leg is returned, the reply stays the first leg's, since the abandoned call
+        returned none); otherwise the reply and leg stay the first leg's and the
+        emission is not recovered.
         """
         try:
             leg = await fallback()
@@ -942,9 +954,17 @@ class EngineRun:
             "emission_fallback", agent=agent, model=fallback_model, after_attempts=after_attempts
         )
         limit = self.engine.fallback_deadline_s
+        made = [0]
+        reply = first_reply
         with move_on_after(limit) as scope:
-            reply, repairs = await self._attempt_emission(
-                leg, instruction, arrived=arrived, emits=emits, retries=retries, actions=actions
+            reply, _ = await self._attempt_emission(
+                leg,
+                instruction,
+                arrived=arrived,
+                emits=emits,
+                retries=retries,
+                actions=actions,
+                calls=made,
             )
         if scope.cancelled_caught:
             self._notify_emission(
@@ -954,10 +974,11 @@ class EngineRun:
                 after_attempts=after_attempts,
                 limit_s=limit,
             )
-            return first_reply, first_leg, 1, False
         recovered = arrived()
+        if scope.cancelled_caught and not recovered:
+            return first_reply, first_leg, made[0], False
         if recovered:
-            operate_call = repairs + 1
+            operate_call = made[0]
             self.emission_fallbacks.append(
                 {
                     "agent": agent,
@@ -975,7 +996,7 @@ class EngineRun:
                 operate_call=operate_call,
                 after_attempts=after_attempts,
             )
-        return reply, leg, repairs + 1, recovered
+        return reply, leg, made[0], recovered
 
     async def operate_with_repair(
         self,
