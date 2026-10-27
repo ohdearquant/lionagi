@@ -540,9 +540,11 @@ async def test_toolkit_and_standalone_bash_clamp_the_timeout_the_same_way(
     import lionagi.tools.code.bash as bash_mod
 
     seen = []
+    envs = []
 
-    def run(cmd, shell, timeout_sec, timeout_ms, cwd):
+    def run(cmd, shell, timeout_sec, timeout_ms, cwd, *, _command_env=None):
         seen.append((cmd, shell, timeout_sec, timeout_ms, cwd))
+        envs.append(_command_env)
         return BashResponse(stdout="ok", return_code=0)
 
     monkeypatch.setattr(bash_mod, "_subprocess_sync", run)
@@ -552,7 +554,13 @@ async def test_toolkit_and_standalone_bash_clamp_the_timeout_the_same_way(
     from_toolkit = await toolkit_bash(command="echo hi", timeout=timeout)
 
     assert from_toolkit == standalone.model_dump()
-    assert seen == [(["echo", "hi"], False, expected_ms / 1000.0, expected_ms, None)] * 2
+    # The toolkit runs in its workspace root; the standalone tool keeps the process directory.
+    assert seen == [
+        (["echo", "hi"], False, expected_ms / 1000.0, expected_ms, None),
+        (["echo", "hi"], False, expected_ms / 1000.0, expected_ms, str(tmp_path.resolve())),
+    ]
+    # Both callers hand the runner a prepared command environment.
+    assert len(envs) == 2 and all(isinstance(env, dict) for env in envs)
 
 
 @pytest.mark.parametrize("command", ["echo hi && echo there", "echo 'unterminated"])
