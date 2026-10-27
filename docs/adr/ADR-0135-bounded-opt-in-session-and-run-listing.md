@@ -51,7 +51,7 @@ Load more, but its pager increments page numbers and consumes has_next
 updated_at descending; cost orders reported values before NULL, including reported zero,
 then updated_at. Neither includes an id tie-break
 (`lionagi/studio/services/sessions.py:423`). Fresh schemas require updated_at, but legacy
-additive migration permits NULL (`lionagi/state/schema.sql:123`,
+additive migration permits NULL (`lionagi/state/schema.sql:124`,
 `lionagi/state/schema_migrations.py:10`). Cursor keys must come from stored values,
 before the listing DTO's NULL-to-zero timestamp fallback
 (`lionagi/studio/services/sessions.py:562`).
@@ -474,8 +474,8 @@ CREATE INDEX idx_sessions_listing_cost_unknown
 
 They are absent at the source baseline. Current time/status indexes omit the id tie-break,
 and current session index declarations contain no equivalent cost path
-(`lionagi/state/schema.sql:202`, `lionagi/state/schema_meta.py:237`,
-`lionagi/state/schema_migrations.py:280`). An index's presence alone does not prove that
+(`lionagi/state/schema.sql:203`, `lionagi/state/schema_meta.py:238`,
+`lionagi/state/schema_migrations.py:281`). An index's presence alone does not prove that
 the chosen seek query avoids a prefix scan, tie-group sort or full-store sort. Test every
 NULL/equality/cost-partition boundary with the actual route SQL and supported SQLite runtime.
 
@@ -488,7 +488,7 @@ Readiness also verifies the access paths used after candidate selection: Session
 progression id point lookups, an index with leading branches.session_id, and the
 `(session_id, tag)` primary key whenever run_tags exists. The baseline supplies those
 through `lionagi/state/schema.sql:110`, `lionagi/state/schema.sql:72`,
-`lionagi/state/schema.sql:278` and `lionagi/state/schema.sql:97`. An equivalent branch
+`lionagi/state/schema.sql:301` and `lionagi/state/schema.sql:97`. An equivalent branch
 index is sufficient; a full scan over unrelated branches/tags is not selected-row fanout.
 Missing required hydration access paths receive the same readiness refusal.
 
@@ -496,7 +496,7 @@ Add indexes and the singleton identity through the canonical schema/version/migr
 lifecycle, including fresh schema, upgrade and repeated-open parity. Runtime MetaData is
 the authority, and compatibility DDL must agree. Existing-table index additions need the
 explicit migration path because create_all does not repair them
-(`lionagi/state/schema_migrations.py:269`, `lionagi/state/db.py:1863`). Listing reads must
+(`lionagi/state/schema_migrations.py:270`, `lionagi/state/db.py:2031`). Listing reads must
 not run a migration or fabricate an incarnation on an old read-only store.
 
 Missing required index, identity or keyring capability returns HTTP 503:

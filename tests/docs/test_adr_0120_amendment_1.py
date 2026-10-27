@@ -208,9 +208,9 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:801-805" in flat
-    assert "lionagi/state/db.py:7225-7235" in flat
-    assert "lionagi/state/db.py:7250-7267" in flat
+    assert "lionagi/state/schema.sql:824-828" in flat
+    assert "lionagi/state/db.py:7582-7592" in flat
+    assert "lionagi/state/db.py:7607-7624" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -345,8 +345,8 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
-    assert "lionagi/state/schema.sql:464" in flat
-    assert "lionagi/state/db.py:5386-5388" in flat
+    assert "lionagi/state/schema.sql:487" in flat
+    assert "lionagi/state/db.py:5743-5745" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )

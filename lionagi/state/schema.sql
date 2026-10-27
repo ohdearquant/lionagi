@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
 -- so a migrated database reports the shape it now has.
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '4');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '5');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- The CLI run this session belongs to. NULL for a session no run started,
   -- and for rows written before this column existed.
   run_id          TEXT,
+  cli_worker_generation TEXT,
   created_at      REAL    NOT NULL,
   node_metadata   JSON,
   name            TEXT,
@@ -247,6 +248,28 @@ CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id
 -- Same shape one level up: progressions(id) is this column's parent.
 CREATE INDEX IF NOT EXISTS idx_sessions_progression_id
   ON sessions(progression_id);
+
+-- CLI worker identities remain as evidence after their session is removed.
+CREATE TABLE IF NOT EXISTS cli_worker_spawns (
+  spawn_id              TEXT NOT NULL PRIMARY KEY,
+  session_id            TEXT NOT NULL,
+  generation_id         TEXT NOT NULL,
+  run_id                TEXT,
+  engine_run_id         TEXT,
+  branch_id             TEXT,
+  pid                   INTEGER NOT NULL,
+  pgid                  INTEGER NOT NULL,
+  pid_create_time       REAL NOT NULL,
+  pid_host              TEXT NOT NULL,
+  pid_boot_time         REAL NOT NULL,
+  process_identity_mode TEXT NOT NULL,
+  recorded_at           REAL NOT NULL,
+  confirmed_empty_at    REAL,
+  CONSTRAINT ck_cli_worker_spawns_process_group CHECK(pid > 1 AND pgid = pid),
+  CONSTRAINT ck_cli_worker_spawns_identity_mode CHECK(process_identity_mode = 'local')
+);
+CREATE INDEX IF NOT EXISTS idx_cli_worker_spawns_session
+  ON cli_worker_spawns(session_id, confirmed_empty_at, generation_id);
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
