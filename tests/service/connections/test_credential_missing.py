@@ -21,29 +21,14 @@ ENV_NAME = "ANTHROPIC_API_KEY"
 REQUEST = {"model": "credential-test", "messages": [{"role": "user", "content": "hello"}]}
 
 
-class _Secrets:
-    ANTHROPIC_ACCOUNTS = ()
-    ANTHROPIC_API_KEY = None
-
-    def get_secret(self, name):
-        if not hasattr(self, name):
-            if "ollama" in name.lower():
-                return "ollama"
-            raise AttributeError(f"Secret key '{name}' not found in settings")
-        value = getattr(self, name)
-        if value is None:
-            if "ollama" in name.lower():
-                return "ollama"
-            raise ValueError(f"Secret key '{name}' is not set")
-        return value.get_secret_value() if isinstance(value, SecretStr) else str(value)
-
-
 @pytest.fixture
 def secrets(monkeypatch):
-    # Every value is synthetic; no user settings file or provider is queried.
     import lionagi.config
 
-    values = _Secrets()
+    # Construct trusted synthetic fields without environment or dotenv settings sources.
+    values = lionagi.config.AppSettings.model_construct(
+        ANTHROPIC_API_KEY=None, ANTHROPIC_ACCOUNTS=()
+    )
     monkeypatch.setattr(lionagi.config, "settings", values)
     for name in (ENV_NAME, "UPPERCASE_LITERAL", "sk-synthetic-literal"):
         monkeypatch.delenv(name, raising=False)
@@ -132,9 +117,10 @@ async def test_credential_reference_uses_the_environment_value(secrets, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_credential_reference_uses_the_settings_secret(secrets):
+async def test_credential_reference_uses_the_settings_secret(secrets, monkeypatch):
     resolved = "synthetic-settings-key"
-    secrets.ANTHROPIC_API_KEY = SecretStr(resolved)
+    values = secrets.model_copy(update={ENV_NAME: SecretStr(resolved)})
+    monkeypatch.setattr("lionagi.config.settings", values)
     endpoint = _endpoint(ENV_NAME)
 
     assert await endpoint.call(REQUEST) == {"ok": True}
