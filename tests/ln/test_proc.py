@@ -105,25 +105,27 @@ class _RecordingProc:
 
 
 def test_raw_create_time_reader_skips_monotonic_without_the_boot_adjustment(monkeypatch):
-    """Backends that adjust nothing must keep the plain epoch reading.
+    """A backend that adjusts nothing and is not Linux keeps the plain epoch reading.
 
     ``monotonic=True`` does not mean the same thing on every psutil backend.
-    On Linux nothing is adjusted, and the keyword only omits the ``boot_time()``
-    addition, so it yields seconds since boot: taking it there would redefine
-    every recorded ``pid_create_time``, make live processes stop matching their
-    own records, and let a post-reboot pid reuse at a similar uptime match a
-    stranger. Exercised through the selector's seam because the branch belongs
-    to a platform this suite cannot run on.
+    Where nothing is adjusted the keyword can change what the value counts
+    from (on Linux it omits the ``boot_time()`` addition and yields seconds
+    since boot), so taking it bare would redefine every recorded
+    ``pid_create_time``, make live processes stop matching their own records,
+    and let a post-reboot pid reuse at a similar uptime match a stranger.
+    Exercised through the selector's seam because the branch belongs to a
+    platform this suite may not run on.
     """
     import psutil
 
     from lionagi.ln import _proc
 
     class _UnadjustedProcess:
-        # Linux's backend accepts the keyword and applies no adjustment, so
-        # offering it is exactly what makes the wrong reader available.
+        # The keyword is accepted and nothing is adjusted, so offering it is
+        # exactly what makes the wrong reader available.
         def create_time(self, monotonic=False): ...
 
+    monkeypatch.setattr(psutil, "LINUX", False)
     monkeypatch.setattr(psutil, "_psplatform", SimpleNamespace(Process=_UnadjustedProcess))
 
     reader = _proc._select_raw_create_time_reader()
@@ -142,6 +144,7 @@ def test_raw_create_time_reader_takes_monotonic_where_the_adjustment_exists(monk
     class _AdjustingProcess:
         def create_time(self, monotonic=False): ...
 
+    monkeypatch.setattr(psutil, "LINUX", False)
     monkeypatch.setattr(
         psutil,
         "_psplatform",
@@ -156,6 +159,121 @@ def test_raw_create_time_reader_takes_monotonic_where_the_adjustment_exists(monk
 
     assert reader(proc) == 1234.5
     assert proc.calls == [{"monotonic": True}]
+
+
+class _LinuxBackendProcess:
+    """psutil's Linux backend: a fixed start counted from boot, plus the boot
+    time read again on every epoch call."""
+
+    def __init__(self, since_boot=0.0, boot_time=None):
+        self._since_boot = since_boot
+        self._boot_time = boot_time
+
+    def create_time(self, monotonic=False):
+        if monotonic:
+            return self._since_boot
+        return self._since_boot + self._boot_time()
+
+
+class _LinuxShapedProc:
+    """A psutil handle shaped like Linux's, its backend the platform process."""
+
+    def __init__(self, since_boot, boot_time):
+        self._proc = _LinuxBackendProcess(since_boot, boot_time)
+
+    def create_time(self):
+        return self._proc.create_time()
+
+
+def _stepping_boot_clock():
+    """The kernel's whole-second boot time: 1000 on the first read, 1001 after."""
+    reads = []
+
+    def boot_time():
+        reads.append(True)
+        return 1000.0 if len(reads) == 1 else 1001.0
+
+    return boot_time, reads
+
+
+def test_raw_create_time_on_linux_does_not_move_with_the_boot_time(monkeypatch):
+    """Two reads of one process are equal on Linux even when ``btime`` steps.
+
+    psutil's Linux backend adds ``boot_time()`` to a fixed start counted from
+    boot, and reads ``btime`` from ``/proc/stat`` again on every call. A clock
+    step or slew moves that whole-second value, so the plain call for one live
+    process can read a second later than its spawn record, which is outside the
+    tolerance and makes a teardown refuse to signal the group.
+    """
+    import psutil
+
+    from lionagi.ln import _proc
+
+    boot_time, reads = _stepping_boot_clock()
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(
+        psutil,
+        "_psplatform",
+        SimpleNamespace(Process=_LinuxBackendProcess, boot_time=boot_time),
+    )
+
+    reader = _proc._select_raw_create_time_reader()
+    proc = _LinuxShapedProc(5.0, boot_time)
+
+    first = reader(proc)
+    second = reader(proc)
+
+    assert first == second == 1005.0
+    assert len(reads) == 1
+
+
+def test_raw_create_time_on_linux_reads_a_stand_in_through_the_public_call(monkeypatch):
+    """Only psutil's own Linux backend counts from boot.
+
+    A handle whose backend is anything else (a test double, an adapter) is read
+    through its public call, so a stand-in scripted with an epoch start time
+    answers that time rather than that time plus the boot time.
+    """
+    import psutil
+
+    from lionagi.ln import _proc
+
+    boot_time, _ = _stepping_boot_clock()
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(
+        psutil,
+        "_psplatform",
+        SimpleNamespace(Process=_LinuxBackendProcess, boot_time=boot_time),
+    )
+
+    reader = _proc._select_raw_create_time_reader()
+    proc = _RecordingProc()
+
+    assert reader(proc) == 1234.5
+    assert proc.calls == [{}]
+
+
+def test_raw_create_time_on_linux_keeps_the_plain_call_without_a_boot_time(monkeypatch):
+    """A Linux backend whose boot time cannot be read keeps the public call."""
+    import psutil
+
+    from lionagi.ln import _proc
+
+    def boot_time():
+        raise OSError("procfs unreadable")
+
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(
+        psutil,
+        "_psplatform",
+        SimpleNamespace(Process=_LinuxBackendProcess, boot_time=boot_time),
+    )
+
+    reader = _proc._select_raw_create_time_reader()
+    proc = _RecordingProc()
+
+    assert reader(proc) == 1234.5
+    assert proc.calls == [{}]
 
 
 def test_raw_create_time_selects_its_reader_once_on_first_read(monkeypatch):
