@@ -14,7 +14,8 @@ Adoption keeps the row: same id, same run history, and every column the
 declaration does not write -- project, action_extra_args, on_success, on_fail,
 threshold_config, last_fired_at, next_fire_at, github_cursor,
 effective_timezone, effective_timezone_source, last_alert_at, last_evaluated_at,
-last_healthy_poll_at, poller_consecutive_401, predispatch_refusal_event,
+last_healthy_poll_at, poller_consecutive_401, poller_consecutive_cap_no_dispatch,
+predispatch_refusal_event,
 predispatch_refusal_count, created_at and updated_at. An overdue next_fire_at
 the adopted row already holds therefore still queues the recovery fire it would
 have queued without the adoption, where a fresh create of the same member
@@ -1866,7 +1867,8 @@ async def apply_schedule_set(
                         # last_fired_at, next_fire_at, github_cursor,
                         # effective_timezone, effective_timezone_source,
                         # last_alert_at, last_evaluated_at, last_healthy_poll_at,
-                        # poller_consecutive_401, predispatch_refusal_event,
+                        # poller_consecutive_401, poller_consecutive_cap_no_dispatch,
+                        # predispatch_refusal_event,
                         # predispatch_refusal_count, created_at, and updated_at. An
                         # overdue next_fire_at the row already holds still queues the
                         # recovery fire it would have queued without the adoption; a

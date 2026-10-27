@@ -95,7 +95,7 @@ Feature-specific APIs intentionally live in their subpackages:
 
 ```python
 from lionagi.agent import AgentSpec, PermissionPolicy, create_agent
-from lionagi.engines import ResearchEngine, ReviewEngine, CodingEngine
+from lionhub.orchestration.engines import ResearchEngine, ReviewEngine, CodingEngine
 from lionagi.hooks import HookBus, HookPoint, hook
 from lionagi.testing import ScriptModel, ScriptedEndpoint, TestBranch
 ```

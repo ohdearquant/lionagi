@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 import lionagi.cli._providers as providers_mod
-import lionagi.engines.engine as engine_mod
-from lionagi.engines.engine import Engine
+import lionhub.orchestration.engines.engine as engine_mod
 from lionagi.tools.khive_injection import KhiveInjectionProvider
+from lionhub.orchestration.engines.engine import Engine
 
 # Role-profile cache: keyed by (role, cwd), never caches an exception fallback
 

@@ -1,11 +1,11 @@
 # MCP server internals reference
 
 Terse, per-module reference for invariants, protocol contracts, and non-obvious design
-rationale that used to live as long-form comments/docstrings in `lionagi/mcp/`,
+rationale that used to live as long-form comments/docstrings in `lionhub/src/lionhub/serve/mcp/`,
 `lionagi/hooks/`, and `lionagi/plugins/`. The source now carries a 1-2 line pointer;
 this file carries the substance. Organized by module path.
 
-## lionagi/mcp/
+## lionhub/src/lionhub/serve/mcp/
 
 ### `mcp/jobs.py`
 
@@ -54,7 +54,7 @@ terminal fact being announced that no reader can find.
 #### reap-reason-code-split
 
 Six ways a run can end with nobody around to say what happened, as classified
-by `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`). Only the first two
+by `_derive()` and `reap_orphan()` (`lionhub/src/lionhub/serve/mcp/jobs.py`). Only the first two
 assign a distinct `reason_code`; the next three keep the pre-existing
 `process_gone_without_outcome` and add a finer `reason_detail` beside it:
 
@@ -134,7 +134,7 @@ resulting reason code (`LOST_REASON`, the pre-existing default) is the
 correct one for both, so this never mislabels anything as more or less
 informative than it actually is. `ok: true` similarly falls through, but is
 moot in practice for an MCP-spawned run: a delivered `--notify` means
-`lionagi.mcp._notify_hook` ran and called `mark_terminal`, which sets
+`lionhub.serve.mcp._notify_hook` ran and called `mark_terminal`, which sets
 `finished_at` and disqualifies the run from reaping before this check is
 ever reached.
 
@@ -182,7 +182,7 @@ anyone paying for a window.
 
 #### kill-reason-codes
 
-`kill()` reason-code taxonomy (`lionagi/mcp/jobs.py`), grouped by what a caller
+`kill()` reason-code taxonomy (`lionhub/src/lionhub/serve/mcp/jobs.py`), grouped by what a caller
 should do next rather than by surface similarity:
 
 - `KILL_RECORD_UNREADABLE` vs `KILL_RECORD_WRONG_SHAPE` — the first is bytes
@@ -206,7 +206,7 @@ should do next rather than by surface similarity:
 
 #### locked-job-contract
 
-`_locked_job()` (`lionagi/mcp/jobs.py`) is a read-modify-write critical section
+`_locked_job()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) is a read-modify-write critical section
 over one run's job record, shared across processes.
 
 `os.replace` publishes a record without ever tearing it, but two writers that
@@ -233,7 +233,7 @@ a caller treating it as "no record" would publish a fact it never wrote.
 
 #### group-identity-rules
 
-`_group_identity()` (`lionagi/mcp/jobs.py`) decides whether a live process
+`_group_identity()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) decides whether a live process
 group can be the one this run spawned, trying two rules in order:
 
 1. **Marker** (decides positively either way). Every process a run spawns
@@ -257,7 +257,7 @@ read) — neither is a finding about the group, and both may resolve on retry.
 
 #### derive-contract
 
-`_derive()` (`lionagi/mcp/jobs.py`) classifies a job record into the fields a
+`_derive()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) classifies a job record into the fields a
 caller may branch on:
 
 - `status` is an open vocabulary — whatever the CLI recorded passes through
@@ -281,7 +281,7 @@ caller may branch on:
 
 #### liveness-findings
 
-`_run_process_liveness()` (`lionagi/mcp/jobs.py`) settles two questions in
+`_run_process_liveness()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) settles two questions in
 evidence order: (1) does the pid hold a live process at all — needs only the
 pid, asked first on every path; (2) is that live process *this run's* — needs
 the recorded start time, asked second only where one was recorded. Question 1
@@ -381,7 +381,7 @@ is surfaced rather than left for a reader to notice two fields disagree.
 
 #### status-response-contract
 
-`status()` (`lionagi/mcp/jobs.py`) response fields:
+`status()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) response fields:
 
 - `status` is the recorded status, verbatim, open vocabulary — display it,
   never match it against a list. Branch on `terminal` ("stop waiting") and
@@ -495,7 +495,7 @@ success or a clean non-delivery.
 
 #### signal-leader-group-safety
 
-`_signal_leader_group()` (`lionagi/mcp/jobs.py`) signals a process group only
+`_signal_leader_group()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) signals a process group only
 after the confirmed run leader is shown to belong to it. The caller has
 already established *pid* is this run's process (via *observed_at*, the start
 time that identified it); what's still open is whether the record's *pgid* is
@@ -523,7 +523,7 @@ tells a recycled number from the process that held it.
 
 #### kill-safety-contract
 
-`kill()` (`lionagi/mcp/jobs.py`) signals the process group `run_id` was spawned
+`kill()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) signals the process group `run_id` was spawned
 into. The record carries what a bare pid can't: when the leader started, and
 the group it was given at spawn — turning "group still running after its
 leader exited" (worth reaping) and "pid handed to an unrelated process" (must
@@ -559,7 +559,7 @@ group."
 
 #### wait-result-buckets
 
-`wait()` (`lionagi/mcp/jobs.py`) returns one entry per requested id plus
+`wait()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) returns one entry per requested id plus
 `all_terminal`, `timed_out`, `pending`, `stopped_without_end`, and
 `unresolved_spawn` — never a bare boolean, since mixed outcomes are the norm.
 
@@ -603,7 +603,7 @@ group."
 
 #### reservation-giveback
 
-`_discard_reservation()` (`lionagi/mcp/jobs.py`) gives a reserved run
+`_discard_reservation()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) gives a reserved run
 directory back after a submission fails before its job record is published.
 
 A submission that fails partway through writing has already left files
@@ -632,7 +632,7 @@ just because the directory survived.
 
 #### write-job-publish
 
-`_write_job()` (`lionagi/mcp/jobs.py`) publishes a job record by writing a
+`_write_job()` (`lionhub/src/lionhub/serve/mcp/jobs.py`) publishes a job record by writing a
 per-write-unique temp file in the same directory and calling `os.replace()`.
 `os.replace` is atomic on the same filesystem, so a concurrent reader
 (`status()` / `list_jobs()`) never observes a torn file, and a failed write

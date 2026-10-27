@@ -17,7 +17,91 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   oversized tool results under a per-request input ceiling, while retaining full
   tool content outside the request view.
 
+- An agent profile for an API model can declare `api_tools: write`: the read set plus
+  `editor` and `bash`, on macOS only. Every bash command and every editor write runs in
+  a child process under a Seatbelt policy (`/usr/bin/sandbox-exec`) that allows writes
+  only under the working directory, the uv cache and the temporary directory, keeps the
+  working directory's `.git` read-only, and keeps the network off unless the profile
+  sets `api_network: true`. On a host without `sandbox-exec` the profile is refused
+  before a run starts. `AgentSpec.seatbelt` and `CodingToolkit(seatbelt=...)` carry the
+  policy for other callers.
+
+- Settings also read a user-wide `.env` under `LIONAGI_HOME` (`~/.lionagi/.env` by
+  default), below the working directory's `.env`, `.env.local` and `.secrets.env` and
+  below the environment. A value set there, such as `LIONAGI_STATE_DB_URL` or a provider
+  key, reaches every lionagi process of that user whatever its working directory; any
+  other source still replaces it.
+
+- `AgentSpec.prompt_caching` and `Engine(prompt_caching=True)` turn the endpoint's
+  `prompt_caching` option (ADR-0127) on for the model `create_agent` builds, so every
+  agent an engine's `make_agent` builds on a prefix-caching provider places the prompt
+  cache. A CLI model is built unchanged. The spec field is refused with a caller-supplied
+  `chat_model` (set the option on that model's endpoint instead) and without a model.
+
 ### Changed
+
+- Application and provider module loaders use the shared `ln.import_module`
+  contract, retaining relative package anchors, lazy registration and cache behavior.
+  An ordinary import error from these loaders is now a plain `ImportError` whose message
+  names the module path; the original error, including a custom subclass and its `.name`
+  and `.path`, is kept only as `__cause__`, and the outer `.name` and `.path` are `None`.
+  A missing-module error is re-raised unchanged, with its class and metadata.
+
+- An `api_loop: lndl-calls` leg's guidance asks the model to declare in each calling round every
+  read it already knows it needs, up to the round's 16 calls, and to answer only after reading what
+  the answer depends on (ADR-0132 Amendment 3). An `lndl` leg's guidance is unchanged.
+
+- Strict fenced-block extraction lives in `lionagi.libs.schema.extract_code_block`; LNDL parsing
+  shares its existing fence and newline rules.
+
+- `maybe_await` accepts a keyword-only classifier, retaining its broad awaitable
+  default. Broadcaster passes the coroutine-only classifier, so its dispatch is
+  unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
+  the subscriber.
+
+- Security-control contracts and settings reading live in core modules; existing agent imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
+  Patching names in `lionagi.agent.gate` or `lionagi.agent.settings` no longer changes core
+  call sites; patch `lionagi.protocols.action.gate` or `lionagi._settings` instead.
+- `LionTool` lives in `lionagi.protocols.action.lion_tool`; its old import remains an alias.
+- Flow request contracts live in `lionagi.protocols.flow_requests`; existing casts imports
+  remain aliases, old pickle names still load, and new pickles name the core definitions.
+
+- Packages built on top of the core move to `lionhub`, a second top-level package
+  shipped in the same `lionagi` distribution, so `pip install lionagi` installs both.
+  Each old import path keeps working until lionagi 2.0: it returns the same module
+  object as the new path and emits one `DeprecationWarning` naming the new path.
+  Update imports to the new path; `lionagi._moved.MOVED` lists every move.
+  Three things change without a warning: the moved modules and their objects report
+  the new path in `__name__`, `__module__`, `__file__` and tracebacks; listing
+  `lionagi.__path__` with `pkgutil` does not show a moved package, so list the new
+  package instead; and a static type checker finds no module at an old path.
+
+  | Old import path | New import path | Removed in |
+  | --- | --- | --- |
+  | `lionagi.orchestration` | `lionhub.orchestration` | 2.0.0 |
+  | `lionagi.engines` | `lionhub.orchestration.engines` | 2.0.0 |
+  | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
+  | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
+  | `lionagi.mcp` | `lionhub.serve.mcp` | 2.0.0 |
+
+- The core no longer imports `lionagi.cli`: no import statement or literal
+  `import_module` call outside `lionagi.cli`, `lionagi.mcp` and `lionagi.studio`
+  names those packages. Modules loaded by a name read from data or settings are not
+  covered by this. The agent-profile path resolver and
+  `AmbiguousProfileNameError` move to `lionagi._paths`, and the progress, hint,
+  warning and error output channels to `lionagi._log_channels`; both stay importable
+  from their `lionagi.cli` modules, and the exception now reports
+  `lionagi._paths` as its `__module__`. The core callers import them from the new
+  modules, so a patch on the old name (for example `lionagi.cli._logging.warn`)
+  no longer reaches them.
+
+- Reuse shared module-loading, worker, delay and process start-time helpers at
+  equivalent call sites, with scoped lint rules and documented native boundaries.
+
+- `lionagi.ln.concurrency.run_sync` reserves `abandon_on_cancel` and `limiter`
+  as offload controls. For a callable that takes either keyword, prebind its
+  arguments with `functools.partial` and pass that callable to `run_sync`.
 
 - `parse()` sends no reformat request for a reply with no text, or only whitespace, and
   returns its `handle_validation` outcome at once, through `operate()` and `ReAct()` too.
@@ -31,14 +115,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- A stdio MCP server that closes its pipe on a first request other than `initialize`
-  connects again under FastMCP 4: the pool opens stdio connections with
-  `mode="legacy"` when the installed client takes a `mode` argument, and logs that at
-  connect. The client's default `server/discover` probe made such servers exit before
-  the handshake fell back. URL connections keep the client's default.
-
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
+
+- `run_sync` rejects non-boolean `abandon_on_cancel` values before starting a worker.
+
+- A stdio MCP server that closes its pipe on a first request other than `initialize`
+  connects again under FastMCP 4. Stdio connections open with the client's default
+  handshake (`server/discover`, which falls back to `initialize` on an error reply);
+  when that handshake ends because the server closed the connection, the pool retries
+  once with `mode="legacy"` (`initialize` only) and logs a warning naming the server.
+  A server config can set `"handshake": "legacy"` to skip the first attempt; a value
+  other than `"auto"` or `"legacy"` is refused at connect. A timeout or a cancellation
+  is not retried, nor is an error reply, except one carrying code -32000: the SDK raises
+  that same error for a closed pipe, so such a reply is retried once. The retry gets its
+  own handshake timeout, so a retried connect can take about twice the configured
+  `timeout`. URL connections keep the client's default.
 
 - An API-model `li agent` run whose ReAct pass ends on a response cut off at its output
   limit with no text and no tool call, on a reply that does not parse, or on an answer with
@@ -50,6 +142,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   stop at the first fence inside a JSON string. A block written on one line beside such
   blocks is read in its place among them, and a span beside them that is not JSON no longer
   turns the one block's object into a list holding it.
+
+- Routed Anthropic responses whose usage reports `speed: "standard"` are priced again;
+  every response carrying `speed` had been settled as unknown with its spending ceiling
+  held. A response that still cannot be priced records why in its settlement reason:
+  `unpriced_model`, `unknown_usage_key_<field>`, `unpriced_tier`, `unpriced_speed`,
+  `unpriced_region` or `unpriced_server_tool`, and `usage_incomplete` for a usage report
+  that cannot be read.
+
+- Pilot summaries select reading citations from the recorded source commit and name
+  task or loop subset refusals; pilot documentation records the checked historical
+  source mappings.
+
+- Engine judges accept an untyped reply only when it is the whole token `PASS`,
+  ignoring letter case and surrounding whitespace. Empty, malformed and non-string
+  replies stop the item and emit the existing gate notification.
+
+- A tool call denied by an agent's security control now reaches the tool post hooks
+  registered with `ActionManager.add_tool_post_hook`, including an agent's `PostToolUse`
+  hooks. `GateDeniedError` could not be copied or pickled, so those hooks were skipped for
+  every denied call; it now copies and pickles with its GateResult intact.
+
+- Fenced Markdown examples in profile prompts no longer trigger a misplaced
+  frontmatter warning.
+
+- Mark GitHub schedules overdue after three settled capped polls with no dispatch or retained batch, while preserving successful-read and authentication health tracking.
+
+- Defer every merged pull request from an incomplete GitHub poll until a complete
+  scan establishes merge order, preventing the cursor from skipping older merges. (#3741)
 
 ## [0.36.0] - 2026-10-24
 

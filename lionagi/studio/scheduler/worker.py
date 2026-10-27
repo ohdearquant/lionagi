@@ -30,7 +30,6 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
-from lionagi.dispatch.outbox import enqueue_dispatch
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
@@ -47,6 +46,7 @@ from lionagi.studio.scheduler.admit import (
     normalize_action_args,
     notify_request,
 )
+from lionhub.orchestration.dispatch.outbox import enqueue_dispatch
 
 _log = logging.getLogger(__name__)
 

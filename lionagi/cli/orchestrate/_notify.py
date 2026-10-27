@@ -14,10 +14,9 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import anyio.to_thread
-
 from lionagi.cli.status import _classify
 from lionagi.ln.concurrency import is_coro_func, maybe_await
+from lionagi.ln.concurrency import run_sync as _run_sync
 from lionagi.state.lifecycle.callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
     EntityRef,
@@ -272,9 +271,7 @@ async def deliver_flow_notify_now(
         else:
             # offloaded so a sync handler body never blocks the loop; see
             # TerminalCallbackRegistry.emit, which this mirrors.
-            await maybe_await(
-                await anyio.to_thread.run_sync(handler, envelope, abandon_on_cancel=True)
-            )
+            await maybe_await(await _run_sync(handler, envelope, abandon_on_cancel=True))
     except Exception:  # noqa: BLE001 -- a notifier failure must never affect the run
         logger.warning(
             "direct-path notify.on_terminal delivery failed for run %s", run.run_id, exc_info=True

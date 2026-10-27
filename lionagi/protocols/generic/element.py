@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from lionagi._class_registry import _cut, _quoted, get_class
+from lionagi._moved import resolve as _resolve_moved
 from lionagi.ln._json_dump import get_orjson_default, json_dumps
 from lionagi.ln._json_load import json_loads
 from lionagi.ln._utils import now_utc
@@ -65,8 +66,14 @@ class Element(BaseModel):
             return {}
         if not isinstance(val, dict):
             val = to_dict(val, recursive=True, suppress=True)
-        if "lion_class" in val and val["lion_class"] != cls.class_name(full=True):
-            raise ValueError("Metadata class mismatch.")
+        if "lion_class" in val:
+            current = _current_path(val["lion_class"])
+            if current != cls.class_name(full=True):
+                raise ValueError("Metadata class mismatch.")
+            if current != val["lion_class"]:
+                # Metadata written before a move names the old path. An element nested in
+                # another is saved with this metadata, so it is saved under the current path.
+                val = {**val, "lion_class": current}
         if not isinstance(val, dict):
             raise ValueError("Invalid metadata.")
         return val
@@ -211,6 +218,14 @@ class Element(BaseModel):
     def from_json(cls, json_str: str) -> Element:
         """Deserialize JSON string into Element or subclass."""
         return cls.from_dict(json_loads(json_str))
+
+
+def _current_path(lion_class: Any) -> Any:
+    """The dotted path a ``lion_class`` names today: one written under a module that has
+    since moved (``lionagi._moved.MOVED``) reads as the class's path at its new module."""
+    if isinstance(lion_class, str):
+        return _resolve_moved(lion_class) or lion_class
+    return lion_class
 
 
 def _lion_class_type(lion_class: Any) -> type[Element]:

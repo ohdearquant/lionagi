@@ -628,3 +628,182 @@ async def test_bound_read_result_reports_applied_limit_without_changing_original
         assert list(branch.progression) == progression
     finally:
         await branch.mdls.shutdown()
+
+
+async def test_restore_range_uses_one_record_map_without_index_scans(monkeypatch):
+    import sys
+
+    from lionagi.protocols.generic.pile import Pile
+    from lionagi.protocols.generic.progression import Progression
+
+    branch = _build_branch()
+    assert (await _call(branch, action="evict", start=2, end=18))["success"]
+    full = branch.msgs.progression
+    expected = list(full)
+    calls = []
+    original = Progression.index
+    original_iter = Progression.__iter__
+    iterations = []
+
+    def iterate(self):
+        if self is full:
+            iterations.append(sys._getframe(1).f_code)
+        return original_iter(self)
+
+    def index(self, item, start=0, end=None):
+        if self is full:
+            calls.append(item)
+        return original(self, item, start, end)
+
+    monkeypatch.setattr(Progression, "index", index)
+    monkeypatch.setattr(Progression, "__iter__", iterate)
+    result = await _call(branch, action="restore", start=2, end=18)
+    assert result["success"] is True and result["restored"] == 16
+    assert list(branch.progression) == expected
+    assert calls == []
+    # The clipped-result inventory takes one existing Pile snapshot. The
+    # chronology lookup adds one shared record map for the whole restore.
+    assert iterations.count(Pile.__iter__.__code__) == 1
+    assert sum(code is not Pile.__iter__.__code__ for code in iterations) == 1
+
+
+async def test_compact_uses_one_record_position_map_without_index_scans(monkeypatch):
+    from lionagi.protocols.generic.progression import Progression
+
+    branch = _build_branch()
+    full = branch.msgs.progression
+    before = list(full)
+    calls = []
+    original = Progression.index
+
+    def index(self, item, start=0, end=None):
+        if self is full:
+            calls.append(item)
+        return original(self, item, start, end)
+
+    monkeypatch.setattr(Progression, "index", index)
+    result = await _call(branch, action="compact", start=1, mode="tool_io", summary="kept")
+    assert result["success"] is True and result["compacted"] == 12
+    note = branch.msgs.messages[list(full)[-1]]
+    assert note.metadata["context_first_index"] == 3
+    assert list(full)[:-1] == before
+    assert calls == []
+
+
+async def test_restore_preserves_first_greater_placement_in_an_unsorted_view():
+    from lionagi.protocols.generic.progression import Progression
+
+    branch = _build_branch()
+    full = list(branch.msgs.progression)
+    branch.metadata["current_progression"] = Progression(
+        order=[full[0], full[1], full[9], full[2], full[3], full[4]]
+    )
+    result = await _call(branch, action="restore", start=5, end=6)
+    assert result["success"] is True and result["restored"] == 1
+    assert list(branch.progression) == [
+        full[0],
+        full[1],
+        full[5],
+        full[9],
+        full[2],
+        full[3],
+        full[4],
+    ]
+
+
+async def test_restore_record_position_map_keeps_first_duplicate_occurrence():
+    from lionagi.protocols.generic.progression import Progression
+
+    branch = _build_branch()
+    full = branch.msgs.progression
+    first, middle, later = full[2], full[3], full[4]
+    full.append(first)
+    branch.metadata["current_progression"] = Progression(order=[full[0], full[1], first, later])
+    result = await _call(branch, action="restore", start=3, end=4)
+    assert result["success"] is True and result["restored"] == 1
+    assert list(branch.progression) == [full[0], full[1], first, middle, later]
+
+
+async def test_noop_restore_keeps_a_curated_unavailable_tail_untouched():
+    from lionagi.protocols.generic.progression import Progression
+
+    branch = _build_branch()
+    full = list(branch.msgs.progression)
+    stray = branch.msgs.create_message(instruction="not in the stored record")
+    view = [full[0], full[1], full[9], stray.id]
+    branch.metadata["current_progression"] = Progression(order=view)
+    result = await _call(branch, action="restore", start=1, end=2)
+    assert result["success"] is True and result["restored"] == 0
+    assert list(branch.progression) == view
+
+
+async def test_restore_copy_lookup_reads_each_visible_metadata_only_linearly():
+    from lionagi.protocols.generic.progression import Progression
+    from lionagi.protocols.messages import ActionResponse
+
+    branch = _make_branch_with_messages()
+    prefix = list(branch.progression)
+    originals = []
+    for number in range(12):
+        original = ActionResponse(
+            content={"function": "reader", "output": f"original result {number}"}
+        )
+        await branch.msgs._a_add_built_response(original)
+        originals.append(original)
+
+    first_copies, second_copies = [], []
+    for number, original in enumerate(originals):
+        pair = []
+        for suffix in ("first", "second"):
+            copy = ActionResponse(
+                content={"function": "reader", "output": f"copy {number} {suffix}"},
+                metadata={"clipped_from": str(original.id)},
+            )
+            await branch.msgs._a_add_built_response(copy)
+            pair.append(copy)
+        first_copies.append(pair[0])
+        second_copies.append(pair[1])
+
+    full = branch.msgs.progression
+    record_before = list(full)
+    start = full.index(originals[0].id)
+    end = full.index(originals[-1].id) + 1
+    assert record_before[start:end] == [message.id for message in originals]
+    outputs_before = [message.content.output for message in originals]
+    copies = [*reversed(first_copies), *second_copies]
+    view = [*prefix, *(message.id for message in copies)]
+    branch.metadata["current_progression"] = Progression(order=view)
+    metadata_reads = []
+    observed_metadata = set()
+
+    class CountedMetadata(dict):
+        def get(self, key, default=None):
+            if key == "clipped_from":
+                metadata_reads.append(id(self))
+            return dict.get(self, key, default)
+
+    for uid in view:
+        message = branch.msgs.messages[uid]
+        wrapped = CountedMetadata(message.metadata)
+        message.metadata = wrapped
+        assert message.metadata is wrapped
+        observed_metadata.add(id(wrapped))
+
+    result = await _call(branch, action="restore", start=start, end=end)
+    reads_during_restore = list(metadata_reads)
+    assert result == {
+        "success": True,
+        "restored": len(originals),
+        "active": len(prefix) + len(originals),
+        "total": len(record_before),
+    }
+    assert list(branch.progression) == [
+        *prefix,
+        *(message.id for message in reversed(originals)),
+    ]
+    assert list(full) == record_before
+    assert [message.content.output for message in originals] == outputs_before
+    assert all(message.id in branch.msgs.messages for message in copies)
+    assert all(message.id not in branch.progression for message in copies)
+    assert set(reads_during_restore) == observed_metadata
+    assert len(reads_during_restore) <= 3 * len(view)

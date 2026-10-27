@@ -335,7 +335,9 @@ Two limits remain. A command that runs in the daemon's working directory (one
 given no `cwd` of its own) reads the `.env`, `.env.local` and `.secrets.env`
 files there as its own settings, so a store URL in those files still reaches
 it: keep the store URL out of the dotenv files in the daemon's working
-directory, or give the command a `cwd`. And a child without the variable falls
+directory, or give the command a `cwd`. Every command, whatever its `cwd`, also
+reads `$LIONAGI_HOME/.env` below those files, so a store URL there is a
+user-wide default that reaches every lionagi that reads that file. And a child without the variable falls
 back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
 that path, by default or through the variable, shares it with any lionagi its
 commands run under the same home directory, and a lionagi of the same line on
@@ -1341,7 +1343,7 @@ submitter is no longer on the wire by then: `worker.py`'s claim loop, on a
 terminal `AdmissionDecision`, transitions the row `queued -> skipped`
 carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
-`lionagi.dispatch.outbox.enqueue_dispatch`.
+`lionhub.orchestration.dispatch.outbox.enqueue_dispatch`.
 
 ## lionagi/studio/scheduler/engine.py — admission and dispatch details
 

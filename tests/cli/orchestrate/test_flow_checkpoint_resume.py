@@ -1444,7 +1444,7 @@ async def test_checkpoint_captures_nonempty_executor_flow_context_on_completion(
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -1520,7 +1520,7 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -1625,7 +1625,7 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -1726,7 +1726,7 @@ async def test_a_failed_escalation_retry_records_the_class_it_ran_at(
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -1872,7 +1872,7 @@ async def test_checkpoint_record_captures_context_from_live_graph_node_parameter
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -1937,7 +1937,7 @@ async def test_execute_dag_seeds_fresh_checkpoint_with_already_reconstructed_spa
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -2006,7 +2006,7 @@ async def test_execute_dag_max_spawn_budget_accounts_for_restored_spawns(tmp_pat
         return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(
@@ -2065,7 +2065,7 @@ async def test_execute_dag_n_spawned_counts_restored_spawns_alongside_new_ones(t
         return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         exec_result = await _execute_dag(
@@ -2134,7 +2134,7 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
 
     synthesize_mock = AsyncMock(return_value="synthesized")
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with (
         patch(
@@ -2167,7 +2167,7 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
 def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
     """role_node_builder(..., start=2) must issue spawn-2 for the first live spawn, not spawn-1 -- the exact id/artifact-directory collision a resumed run's fresh closure would otherwise reissue against an already-restored spawn-1."""
     from lionagi.casts.emission import SpawnRequest
-    from lionagi.orchestration.patterns import role_node_builder
+    from lionhub.orchestration.patterns import role_node_builder
 
     build = role_node_builder({}, start=2)
     node = build(SpawnRequest(instruction="follow-up"), None)
@@ -2217,7 +2217,7 @@ async def test_execute_dag_seeds_spawn_sequence_past_restored_ordinal(tmp_path: 
         return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with (
         patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
@@ -2279,7 +2279,7 @@ async def test_execute_dag_seeds_spawn_sequence_past_gap_in_restored_ordinals(tm
         return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with (
         patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
@@ -2337,7 +2337,7 @@ async def test_resume_skips_planner_and_still_calls_finalize_with_zero_pending_o
         )
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with (
         patch(
@@ -2401,7 +2401,7 @@ async def test_resume_seeds_executor_with_checkpointed_flow_context(tmp_path: Pa
         )
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with (
         patch(
@@ -2465,7 +2465,7 @@ async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_comp
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with (
         patch(
@@ -2580,7 +2580,7 @@ async def test_resume_missing_artifact_still_flips_status_to_failed(
         env, plan_result, dag_state, checkpoint_ops, allow_degraded_context=False
     )
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     async def _run_dag_result():
         return {
@@ -3078,7 +3078,7 @@ async def test_checkpoint_observer_skips_a_declared_node_and_still_records_a_rea
     fake_engine_run = MagicMock()
     fake_engine_run.run_dag = _run_dag_result
 
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(

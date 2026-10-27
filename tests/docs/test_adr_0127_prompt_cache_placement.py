@@ -270,12 +270,50 @@ def test_history_rewrite_is_a_counted_turn_segment_change() -> None:
     assert "counts segment changes, including a history rewrite" in _decision(6)
 
 
+def _amendment(number: int) -> str:
+    """The text of ``## Amendment <number>`` up to the next level-two heading, normalized."""
+    text = ADR_PATH.read_text(encoding="utf-8")
+    start = text.index(f"## Amendment {number} ")
+    heading = re.search(r"\n## ", text[start + 1 :])
+    end = start + 1 + heading.start() if heading else len(text)
+    return re.sub(r"\s+", " ", text[start:end])
+
+
 def test_guidance_is_turn_segment_not_stable() -> None:
-    flat = _flat()
-    assert "stable guidance" not in flat
-    assert "guidance fixed for the agent" not in flat
+    outside_amendment = _flat().replace(_amendment(1), "")
+    assert "stable guidance" not in outside_amendment
+    assert "guidance fixed for the agent" not in _flat()
     assert "Per-call `guidance` stays in the instruction, in the turn segment" in _decision(3)
     assert "it is not part of the stable block" in _decision(3)
+
+
+def test_amendment_1_moves_only_middle_owned_guidance_and_only_with_the_option_on() -> None:
+    am1 = _amendment(1)
+    assert "Status: Proposed. Extends D1, D2, D3, D5 and D7" in am1
+    assert (
+        "compiled requests keep their previous bytes, wording and guidance placement, and no loop "
+        "default changes" in am1
+    )
+    assert "Request compilation reads both only from there, never from ambient context" in am1
+    assert (
+        "Guidance the caller supplies keeps its place in the first round's instruction and is never "
+        "copied into the stable guidance" in am1
+    )
+    assert "a repair never rebuilds it" in am1
+    assert "D6 counts it before the request is sent" in am1
+    assert "which does not establish a quality difference in either direction" in am1
+    assert (
+        "Amendment 1 qualifies ADR-0132 Amendment 2's placement of the first round's guidance"
+        in (_flat())
+    )
+    adr_0132 = re.sub(
+        r"\s+",
+        " ",
+        (ADR_PATH.parent / "ADR-0132-batched-lndl-rounds-for-api-model-legs.md").read_text(
+            encoding="utf-8"
+        ),
+    )
+    assert "ADR-0127 Amendment 1 (Proposed) qualifies this placement" in adr_0132
 
 
 def test_the_adapter_builds_the_native_system_block() -> None:

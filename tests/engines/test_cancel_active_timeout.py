@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from lionagi.engines.engine import Engine, EngineRun
+from lionhub.orchestration.engines.engine import Engine, EngineRun
 
 
 class _StubEngine(Engine):
@@ -67,7 +67,7 @@ async def test_cancel_active_returns_within_deadline_for_non_cooperative_task():
 @pytest.mark.asyncio
 async def test_cancel_active_logs_abandonment_for_non_cooperative_task():
     """A loud warning must be logged when tasks are abandoned at timeout."""
-    import lionagi.engines.engine as _eng_mod
+    import lionhub.orchestration.engines.engine as _eng_mod
 
     done = asyncio.Event()
     logged: list[str] = []

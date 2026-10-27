@@ -228,6 +228,37 @@ budget-exhausted with open un-reviewed heads. A blind poller that silently stops
 reviewing is the failure mode this exists to surface; Studio-only surfacing was
 rejected because no one watches a UI overnight.
 
+**Settled capped-poll health.** Each `github_poll` schedule stores a separate
+`poller_consecutive_cap_no_dispatch` count. `compute_schedule_health` derives
+`overdue` on read when the count reaches three, after checking whether the
+schedule is disabled; no explicit counter field is added to list/detail
+payloads. The D7(c) report covers the review schedules among these schedules.
+This change adds no sweep code, and the HTTP/authentication columns retain
+their existing meaning.
+
+A settled pass is one execution of a due schedule's poll-and-fire work that
+returns normally. A capped poll has `scan_complete=False`: merged-mode paging
+stopped at the page cap or a page fetch failed before reaching the cursor. A
+held batch contains events saved for a later pass because the fire cap
+prevented dispatch. A confirmed launch means that the operating-system process
+was confirmed to exist by its launch callback or by a returned exit code.
+
+A capped merged-mode poll releases no events and leaves the cursor unchanged:
+an unfetched merge can precede a merge that was already fetched.
+
+1. Increment the count when a settled fresh poll returns OK with an incomplete
+   scan, no confirmed launch and no held batch.
+2. Reset the count when a complete OK poll settles without a held batch.
+   Reset it also for a confirmed launch from a fresh OK poll or a still-matching
+   held batch, best-effort if interrupted and without replacing the original
+   exception or cancellation.
+3. Leave the count unchanged for a fresh error or authentication error before
+   applying the other rules, a held batch without a launch, a pass that does
+   not poll or launch, or an interrupted pass without a confirmed launch.
+
+Updates increment or reset atomically in database commit order, so concurrent
+schedulers record each pass separately.
+
 ## D8 — Same-repo diffs are still untrusted data
 
 Fork exclusion does not make same-repo content trustworthy: a leaked token or

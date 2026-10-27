@@ -571,14 +571,14 @@ lines:
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
-  (`lionagi/tools/context/context.py:373-387`, `:389-406`) by excluding them from
+  (`lionagi/tools/context/context.py:390-404`, `:406-423`) by excluding them from
   `metadata["current_progression"]` (`:164-171`), which `Branch.progression` returns in place of
   the manager's progression when it is present (`lionagi/session/branch.py:251-257`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py:458-545`, the summary at `:527-538`).
+  from the active view (`lionagi/tools/context/context.py:484-571`, the summary at `:553-564`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
@@ -593,10 +593,10 @@ lines:
   first retained message under a system message is not an Instruction
   (`lionagi/operations/chat/_prepare.py:351`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:416-429`). That guard tests the current turn, the last entry appended to the
+  or images (`:420-433`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
-  `_last_index` (`:374-375`, `:405-406`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:470-483`). No section boundary refuses
+  `_last_index` (`:374-375`, `:409-410`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`:474-487`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action

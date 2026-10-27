@@ -40,7 +40,7 @@ def test_string_digest_families_keep_serialization_and_chain_format():
 
 
 def test_digest_refs_keep_prefix_and_truncation():
-    from lionagi.engines.review import _clean_ref
+    from lionhub.orchestration.engines.review import _clean_ref
 
     dimensions = ("security", "correctness")
     key = "verify-clean:" + ",".join(sorted(dimensions))

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.engines import Engine, EngineEvent
+from lionhub.orchestration.engines import Engine, EngineEvent
 
 
 class Finding(EngineEvent):
@@ -385,7 +385,7 @@ async def test_successful_tasks_do_not_raise():
 
 def _capture_specs(monkeypatch):
     """Record every AgentSpec create_agent receives, without changing what it does."""
-    from lionagi.engines import engine as engine_mod
+    from lionhub.orchestration.engines import engine as engine_mod
 
     specs = []
     real = engine_mod.create_agent
@@ -415,8 +415,8 @@ async def _planning_workers(
 ):
     """Construct real worker templates and DAG clones without executing a provider."""
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.engines import engine as engine_mod
-    from lionagi.orchestration import patterns
+    from lionhub.orchestration import patterns
+    from lionhub.orchestration.engines import engine as engine_mod
 
     specs = []
     workers = []
@@ -503,7 +503,7 @@ async def _planning_workers(
 async def test_planning_worker_settings_reach_real_agents(
     monkeypatch, tmp_path, setting, value, spec_field
 ):
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     if setting == "agent_cwd":
@@ -612,7 +612,7 @@ async def test_planning_workers_preserve_engine_mcp_resolution(monkeypatch, tmp_
     The worker path carried ``agent_mcp_config_path`` before the shared agent
     builder, so this guards existing behaviour rather than a new one.
     """
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     path = _mcp_file(tmp_path, "declared.mcp.json") if declared else None
     engine = PlanningEngine(model="codex/gpt-5.5", agent_mcp_config_path=path)
@@ -623,7 +623,7 @@ async def test_planning_workers_preserve_engine_mcp_resolution(monkeypatch, tmp_
 
 @pytest.mark.asyncio
 async def test_planning_worker_templates_use_agent_accounting(monkeypatch, tmp_path):
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     created = []
     engine = PlanningEngine(
@@ -650,7 +650,7 @@ async def test_planning_role_templates_stay_within_a_tight_agent_budget(
     first is what consumes this budget.
     """
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.engines import PlanningEngine
+    from lionhub.orchestration.engines import PlanningEngine
 
     engine = PlanningEngine(
         model="codex/gpt-5.5",
@@ -672,7 +672,7 @@ async def test_planning_role_templates_stay_within_a_tight_agent_budget(
     async def synthesize(*args):
         return "done"
 
-    monkeypatch.setattr("lionagi.engines.planning.plan", plan)
+    monkeypatch.setattr("lionhub.orchestration.engines.planning.plan", plan)
     monkeypatch.setattr(engine, "_synthesize", synthesize)
     monkeypatch.setattr(run, "run_dag", execute)
 
@@ -696,10 +696,10 @@ async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_b
     only after the emitter has answered, as it is in a live run.
     """
     from lionagi.casts.emission import SpawnRequest
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.flow import ReactiveExecutor
     from lionagi.testing import scripted_imodel
     from lionagi.tools.khive_injection import KhiveInjectionProvider
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     namespaces = []
@@ -809,9 +809,9 @@ async def _reactive_planning_run(monkeypatch, tmp_path, replies_by_clone):
     emission extraction all run; only the transport is scripted.
     """
     from lionagi.casts.emission import TaskAssignment
-    from lionagi.engines import PlanningEngine
-    from lionagi.engines import planning as planning_mod
     from lionagi.testing import scripted_imodel
+    from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.engines import planning as planning_mod
 
     engine = PlanningEngine(
         model="codex/gpt-5.5",
@@ -891,10 +891,10 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
     """
     from unittest.mock import AsyncMock
 
-    from lionagi.engines import PlanningEngine
     from lionagi.operations.fields import ActionResponseModel
     from lionagi.testing import scripted_imodel
     from lionagi.tools.khive_injection import KhiveInjectionProvider
+    from lionhub.orchestration.engines import PlanningEngine
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     queries: list[str] = []
@@ -963,10 +963,13 @@ async def test_planning_independent_unassigned_spawn_keeps_the_engine_settings(
     template.
     """
     from lionagi.casts.emission import SpawnRequest, TaskAssignment
-    from lionagi.engines import PlanningEngine
-    from lionagi.engines.planning import _inherit_worker_providers, _role_template_node_builder
     from lionagi.operations.flow import ReactiveExecutor
-    from lionagi.orchestration.patterns import build_dag_graph
+    from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.engines.planning import (
+        _inherit_worker_providers,
+        _role_template_node_builder,
+    )
+    from lionhub.orchestration.patterns import build_dag_graph
 
     monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
     engine = PlanningEngine(
@@ -1018,9 +1021,9 @@ async def test_planning_provider_inheritance_is_idempotent_and_skips_an_empty_so
     and a source with a registry but no providers would allocate an empty
     registry on the clone and claim it had injection.
     """
-    from lionagi.engines import PlanningEngine
-    from lionagi.engines.planning import _inherit_worker_providers
     from lionagi.protocols.context_providers import ContextProviderRegistry
+    from lionhub.orchestration.engines import PlanningEngine
+    from lionhub.orchestration.engines.planning import _inherit_worker_providers
 
     engine = PlanningEngine(
         model="codex/gpt-5.5",

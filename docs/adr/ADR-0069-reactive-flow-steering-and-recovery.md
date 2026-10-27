@@ -1,6 +1,6 @@
 # ADR-0069: Reactive flow steering and recovery
 
-- **Status**: Accepted, amended 2026-10-16 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-16 (see Amendment 1); Amendment 2 (2026-10-26) is Proposed
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
@@ -11,7 +11,9 @@
   below, which is no longer a closed list of three; amended by Amendment 1, which
   records that today's resume pre-marks a recorded `completed` node from its stored
   `status` alone, and files the settle check that would narrow that as delta rows 2,
-  6, 7, 8, and 9
+  6, 7, 8, and 9; Amendment 2 (Proposed) specifies a version 3 checkpoint, a base
+  snapshot plus an ordered journal, in place of D4's full snapshot per outcome, and
+  states which version 2 durability guarantees version 3 keeps
 
 ## Context
 
@@ -596,7 +598,7 @@ build on decisions this ADR already carries: D4 keys planned nodes by stable `ag
 separate list keyed by node id (`record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:92`), and
 a leg's declared entries are namespaced under that leg's own id — the planned `agent_id`
 (`lionagi/cli/orchestrate/flow.py:1083`), and for a reactively spawned leg its `spawn_id`, which
-`role_node_builder` stamps (`lionagi/orchestration/patterns.py:164`), which the checkpoint stores
+`role_node_builder` stamps (`lionhub/src/lionhub/orchestration/patterns.py:166`), which the checkpoint stores
 beside `node_id` (`CheckpointWriter.record_spawned`, `lionagi/cli/orchestrate/_checkpoint.py:127`),
 and which is the key a spawned leg's artifact directory is built from
 (`env.run.agent_artifact_dir(spawn_id)`, `lionagi/cli/orchestrate/flow.py:2337-2339`; the contract
@@ -652,6 +654,297 @@ decision was supposed to check.
 replaced file rather than a log, so there is no gap across which to infer; an entry that cannot be
 checked is named rather than completed by presumption, which is what delta rows 2 and 6 exist to
 provide.
+
+## Amendment 2 (2026-10-26) — Journaled flow checkpoints
+
+**Status:** Proposed. This amendment specifies version 3; it does not assert that version 3 is implemented in the current release.
+
+**Scope:** Flow checkpoint storage, acknowledgement, loading, compaction, diagnostics and format migration. It supersedes D4's full-snapshot-per-outcome rule for version 3. Version 2 remains a supported single-file input and an explicitly selectable output. The separate rules for failed-operation retry, topology reconstruction, inherited conversation and output/artifact settlement remain unchanged.
+
+**Source:** `path:line` references in this amendment, including line numbers in this record, refer to development-line commit `c325f4ef`.
+
+### Context
+
+Replacing the entire checkpoint on every outcome repeatedly writes the plan, configuration, previous responses and accumulated shared context. For a 200-operation workload that adds 8,192 response bytes and 8,192 context bytes per operation, supplied measurements record 341.02 MB of cumulative full-snapshot writes and 5.52 MB for a base plus journal, including one compaction. These figures motivate the format change; they do not establish crash correctness or event-loop latency.
+
+Atomic replacement of a JSON file protects the file's visibility. Introducing a journal also requires an ordered fold, an explicit acknowledgement boundary, exact context transitions, file identity preserved from creation, coherent reading of multiple files and a recovery report. Small journal writes do not imply cheap context change detection; CPU cost and callback latency need separate treatment.
+
+### Decision
+
+#### 1. Versioned base and ordered journal
+
+Version 3 consists of `checkpoint.json`, a complete base snapshot, and `checkpoint.json.journal`, an append-only UTF-8 JSON-lines journal. Both are owned by one writer for the run. Concurrent writers to the same checkpoint are unsupported and must be prevented by the owning run lifecycle.
+
+The base retains the snapshot fields: `session_id`, `prompt`, `plan`, `config`, `max_spawn` when present, `flow_context`, `ops` and `spawned`. It adds `version: 3`, a nonempty unique `generation`, and `journal_seq: 0`. Each new base publication uses a fresh generation and incorporates all transitions compacted into it. Its journal starts at sequence 1.
+
+Each journal record contains:
+
+| Field | Contract |
+|---|---|
+| `version` | Integer 3. |
+| `generation` | The base generation to which the record applies. |
+| `seq` | Positive integer, contiguous in writer order within the generation; booleans and floating-point values are invalid. |
+| `kind` | `op` or `spawned`. |
+| `entry` | Complete terminal outcome for the corresponding stable identity. |
+| `flow_context` | Optional object with `set`, a string-keyed object, and `delete`, a list of string keys. Omission means no context change. |
+
+A planned entry retains its stable `agent_id`, terminal `status` and `response`. A spawned entry retains its `node_id`, terminal `status`, `response`, reconstruction data and all currently supported extension fields. In particular, `operation`, `assignee`, `instruction`, `parent_id`, `spawn_id`, `context`, `emitter_workload` and `emitter_contains_user_settings` retain their existing meaning and optionality. Changing storage must not erase a field used to reject an unfaithful resume.
+
+Records use compact JSON with escaped embedded newlines and one trailing LF. The loader validates the entire record before applying any of it. Supported terminal statuses are `completed` and `failed`; required identity, outcome and container fields must have their declared types. Unknown versions or record kinds are incompatibility errors, not no-ops.
+
+Planned outcomes are upserted by stable id; spawned outcomes are upserted by node id in their separate collection. A repeated identity explicitly replaces its previous state and does not add a duplicate logical entry. This is a recoverable state checkpoint, not an immutable history of every revision of an outcome.
+
+#### 2. Ordered admission and acknowledgement
+
+`record()` and `record_spawned()` share one total order assigned when the checkpoint writer admits their completion data, before asynchronous preparation can reorder them. That order need not be provider wall-clock finish order. No later admitted transition may overtake an earlier one in persistence. A rejected input that writes no bytes need not consume a journal sequence.
+
+Successful return from either method is a **checkpoint acknowledgement**: its outcome and context transition, together with all earlier acknowledged transitions, can be reconstructed after immediate process termination using the base and valid journal prefix. Later explicitly recorded updates may supersede the same identity. A transition that reached disk before its acknowledgement was delivered may also be recovered; acknowledgement loss does not justify discarding a complete record.
+
+Queuing a checkpoint task, receiving an executor completion signal, or printing execution progress is not a checkpoint acknowledgement. User-visible progress must distinguish execution completion from checkpoint persistence when these differ. Final run persistence status must inspect pending checkpoint results and report any error; it must not discard exceptions returned by task gathering or imply that failed persistence succeeded.
+
+Once a filesystem operation starts, cancellation must not release writer ownership while an I/O worker can still mutate the checkpoint. The writer waits for the operation's outcome, reconciles its state, and only then releases ownership. This requirement does not introduce deadline or graceful-stop semantics.
+
+An exception after a write or replacement may mean that bytes were committed. The writer must distinguish a known failure before publication from an uncertain outcome. On an uncertain append, flush, fsync, close, replacement or post-replacement error, it must stop accepting further writes or reload and reconcile the durable prefix under exclusive ownership. It must not blindly reuse a sequence, append behind an unrepaired torn suffix, restore an old generation after a possibly successful replacement, or acknowledge later transitions while its state disagrees with disk.
+
+#### 3. Persistence boundary, file identity and platform claims
+
+**Version 2 baseline.** Successful return from `record()` or `record_spawned()` means the writer has validated and serialized the entire state, written and closed its temporary file, and completed `os.replace` of the checkpoint (`lionagi/cli/orchestrate/_checkpoint.py:90`, `:150`, `:157`, `:166`, `:167`). No explicit file fsync, directory fsync or hardware flush is issued: `git show c325f4ef:lionagi/cli/orchestrate/_checkpoint.py | grep -c fsync` prints `0`. On the supported filesystem's atomic-replace boundary, a reader sees the previous or next complete JSON file, never the unfinished temporary file. After successful return, a new process can recover the acknowledged snapshot even if the writing process terminates immediately, provided the operating system and filesystem remain running and the checkpoint is not externally changed. During a subsequent incomplete temporary write or failed replacement, the preceding published snapshot remains readable. This does not promise recovery after host crash or power loss.
+
+**Version 3 preserves that process-termination guarantee.** Recovery at each acknowledged prefix must yield the same logical outcome/context state that a successful v2 full-snapshot write of that prefix would have made recoverable. Later recorded outcome and context updates may supersede earlier values under the existing rules; immutable history is not required. Switching formats must not introduce an interval in which a later append, compaction or failed persistence attempt loses an acknowledged outcome or context update except through those explicit supersessions. The physical representation and visibility boundary change as follows:
+
+| Property | Version 2 | Required version 3 behaviour |
+|---|---|---|
+| Ordinary successful commit | Complete full-file replacement. | Complete validated journal transition, including LF, buffer flush and file fsync before acknowledgement; an oversized transition uses base publication. |
+| Atomic visibility | The single target contains the old or new complete JSON snapshot. | The journal-aware loader returns the logical state before or after a whole outcome/context transition. It never applies half a transition or combines an old base with a reset journal. A raw base-only read no longer means current checkpoint state. |
+| Process termination after acknowledgement | The replaced snapshot is recoverable while the operating system/filesystem remains running. | The coherent base plus valid journal prefix recovers the same logical state, including across every later compaction step. A partially appended later record cannot damage the acknowledged prefix. |
+| Compaction/publication | Every completion replaces the full file. | A synchronized complete new base atomically replaces the old base before the old journal is retired. Either side of that swap retains all previously acknowledged transitions. |
+| Explicit synchronization | No file or directory fsync. | Mandatory file fsync and directory synchronization where supported; known unsupported directory sync is documented separately from an unexpected failure. |
+| Non-finite values and serialization failure | Non-finite rejection before publication; failed serialization leaves the prior target. | Retain rejection before transition publication and preserve the last acknowledged state; validate finite values during replay as well. |
+| Host crash or power loss | Not guaranteed. | Not guaranteed by this amendment. More synchronization calls alone do not establish such a guarantee. |
+
+The required guarantee is recovery after **process termination**, on each qualified local filesystem/platform combination. Host crash, power loss, remote filesystems, media failure and external deletion/rollback of checkpoint files are outside this recovery guarantee. Additional guarantees must be documented and tested independently. This exclusion does not permit future payload writes to a substituted file: the identity requirements below apply even when external replacement has already made an older checkpoint unreachable.
+
+For a journal acknowledgement, the implementation writes the entire encoded record including LF through the owned journal handle, handles short writes, flushes application buffers and completes file fsync before reporting success. Closing a retained journal handle after each append is not required. Any close performed as part of a transition must complete without an unreported error; a later close failure must be surfaced without silently changing the already acknowledged state. The journal's directory entry must have been established by initialization or the preceding compaction. Re-creating an unexpectedly missing journal is not an ordinary append: it requires recovery/reconciliation first.
+
+**Identity originates at creation.** File creation must return the open handle and its handle-derived identity as one owned result. Capture identity from that handle, never by reopening or statting the newly published path to establish what was created. Temporary files must be created exclusively without following an existing link. Retain the active journal handle for appends; if the platform requires reopening, compare the safely reopened handle's identity with the original creation identity before writing any response or context bytes. A pathname check followed by an unchecked open is insufficient. Missing, substituted or unexpected file identities cause an explicit persistence error, not silent adoption or truncation of the new occupant.
+
+Apply the same ownership rule to the base, each temporary file, each new journal generation, and the containing directory. Publication must install the object validated and synchronized through its creation handle. Use a verified directory handle and a protected staging namespace or equivalent platform mechanism that prevents temporary-source substitution during publication; directory-relative rename alone does not prevent replacement of the source leaf. Directory synchronization must refer to the directory whose entries changed. Cleanup must not unlink a different object merely because it now occupies the temporary name. Path-based metadata may verify a name-to-object binding, but must never reset the expected identity to the current occupant or create a check/use gap before payload writes.
+
+Retaining a handle prevents redirection of its writes, but does not by itself preserve a pathname for recovery after unlink or replacement. Before acknowledgement, the owned checkpoint must remain reachable through its published names, or an identity-safe recovery protocol must have restored that reachability. Otherwise fail persistence without sending payload to the substitute. Arbitrary external destruction after acknowledgement cannot be repaired by a handle pin; recovery from such destruction remains outside the guarantee.
+
+For a base publication:
+
+1. Construct the complete normalized snapshot under writer ownership.
+2. Create an owned temporary file in the destination directory using the identity rules above; complete all writes, flush and fsync. Retain its identity and the ownership needed for publication, whether or not the platform requires closing its write handle before replacement.
+3. Atomically replace the base with that same synchronized object, without allowing temporary-source substitution during the handover. Any required close must complete or be handled as an uncertain publication error.
+4. Complete parent-directory synchronization where the platform supports it.
+5. Only then retire the old journal by atomically replacing it with an empty file whose creation identity, flush, fsync, required closes, replacement and directory synchronization follow the same rules. Adopt the new journal's original creation handle/identity for later appends; do not derive its identity from a post-publication reopen.
+6. Establish the new generation and sequence baseline consistently before accepting the next transition.
+
+Known lack of directory-sync support must be a documented platform capability; it must not be conflated with an unexpected I/O failure. Unexpected synchronization or cleanup failures propagate with their actual publication state. The implementation must never claim host-crash durability from a best-effort directory-sync attempt. If directory creation is required, the supported path-creation behaviour must be included in platform qualification; syncing a child directory does not establish synchronization of all its ancestors.
+
+Before base replacement, recovery uses the previous base and journal. After base replacement, the new base already contains all compacted outcomes, so a surviving old-generation journal is redundant. The old journal must never be reset before publication of the complete new base. Temporary files are not selected as recovery bases merely because they exist.
+
+#### 4. Immutable normalized context and exact deltas
+
+The writer must use an immutable captured representation for each outcome, its associated context transition, and the next comparison baseline. The same captured value must drive serialization and baseline advancement. It must not serialize one version and later copy a newer live object as though that version had been persisted. Context ownership, immutable versions or equivalent synchronization must also make the capture itself safe against concurrent nested mutation.
+
+The representation is JSON data. Preserve the existing string fallback for supported non-JSON objects, applied once during normalization; the persisted contract is that normalized string, not restoration of Python object identity. Reject non-finite numeric values and non-finite numeric keys before conversion can hide them, and reject serialization failures without publishing a partial transition. Normalize JSON-compatible object keys to strings consistently with snapshot encoding and reject collisions between distinct input keys.
+
+Delta comparison must respect the normalized stored representation, including scalar type differences such as integer `1`, floating-point `1.0` and boolean `true`. Custom Python equality is not a serialization contract. A nested mutation replaces the affected top-level value; removed top-level keys are listed explicitly in `delete`. The sets of keys in `set` and `delete` must be disjoint. A full replacement may be represented by setting every current key and deleting every prior key absent from it.
+
+Passing no context means no context update. Passing an empty context means remove every previous key. An explicit JSON null value is a stored value, not a deletion marker. Non-copyable values use the same normalization rule as other values; there is no silent shallow-copy fallback.
+
+Redundant identical context snapshots may be coalesced or omitted. Every distinct completed operation or spawn must retain its outcome, and every acknowledged prefix must recover its associated context state. Coalescing must not remove a transition needed to meet that rule. A physical batch may share an fsync only if all its records remain ordered and each acknowledgement waits for the durability boundary covering its record.
+
+Validation, normalization, comparison, serialization, compaction and filesystem work must run off the event-loop thread. The complete admission-to-acknowledgement path, including snapshot capture and completion hooks, must meet the latency bound below. Passing live mutable references to a thread is not sufficient isolation.
+
+**Detection cost.** The normal delta path must retain the baseline's per-key canonical normalized representation rather than serializing the baseline again at every completion. Normalize each current value once per admitted snapshot and reuse that immutable representation for comparison, delta encoding and the next baseline. Build the next baseline by reusing unchanged immutable values, materializing changed keys and removing deleted keys; do not deep-copy or re-encode all unchanged baseline values. Copying a top-level key index may still cost O(number of keys). Cached digests may accelerate comparison only with an exact equality safeguard, so collisions cannot suppress a real change.
+
+This bounds redundant work, not the discovery cost of arbitrary mutable input. Without complete nested-mutation tracking or immutable context versions, current values must still be examined and change detection can remain O(total context) per completion. Do not claim O(changed bytes) CPU cost merely because the journal contains only a delta. Any optimization must preserve nested mutation, deletion, normalized scalar types, non-finite rejection and the immutable capture rule above. Initialization, compaction and explicitly requested full replacement may process the full state.
+
+Offloading whole-context work can improve callback responsiveness without reducing its CPU or queueing cost. The p99 lag requirement is satisfied only by the measured complete workload, not by the use of a thread. Record detection/normalization CPU time, acknowledgement latency, queue growth and allocations separately as total context increases with fixed changes. A separate fixture may disable append/fsync to isolate detection; acceptance measurements must use real persistence. No per-record service-time threshold is implied by a callback-lag threshold.
+
+#### 5. Bounded compaction
+
+Default compaction limits are 128 appended records and 8,388,608 encoded journal bytes. They bound different costs: record count bounds replay steps, and bytes bound the journal's storage footprint. Both limits are configurable positive values.
+
+Compact when the record count reaches its limit. If a prospective append would exceed the byte limit, compact the preceding state before that append and encode the append against the resulting generation. If one transition alone exceeds the byte limit, commit it through a new base containing that transition, using the same publication and acknowledgement rules, without first growing the journal beyond the limit. Explicit flush may also compact.
+
+Replace, rather than accumulate, obsolete journals after the new base's publication boundary. An interrupted journal reset must be completed or reconciled before any append to the new generation. Base contents, generation changes, journal reset and in-memory state must remain consistent even when an operation reports an error after replacement.
+
+These limits do not bound the complete base size or the size of an admitted context value. Large state can still require large snapshots and temporary memory. Full snapshots at fixed intervals, and replacement of a growing top-level value, also mean that total bytes over arbitrary run lengths are not promised to be asymptotically linear. The measurable contract is the workload bound below.
+
+#### 6. Coherent replay and recovery reporting
+
+Every v3 reader must reconstruct state through the journal-aware loader. Parsing the base alone is not a complete checkpoint read. The loader must capture a coherent base/journal pair while compaction may be active: for example, verify the base generation before and after journal capture and retry if it changes. Missing/replaced-file races require the same treatment. Bounded retries must end with a typed error if a coherent view cannot be obtained; they must not return an apparently clean older base with a newer reset journal. A missing v3 journal is a recovery error after bounded race handling, not permission to assume that no deltas existed.
+
+Within a coherent view, apply only complete, validated records matching the base generation, beginning at sequence 1 and continuing contiguously. Validate finite values on reads as well as writes. Validate an entire transition before mutating either outcome or context. Ignore and count complete stale-generation records; never apply them to a newer base. Do not sort, guess missing records, or continue after a current-generation discontinuity.
+
+An unterminated final append is omitted and reported. A truncation exactly after a record's LF leaves a complete record and is recoverable even if the original caller never received an acknowledgement. A complete malformed record, unsupported version/kind, invalid sequence or invalid transition produces a typed recovery refusal before graph execution, with the valid prefix available for diagnosis. A malformed record does not become safe merely because it contains a newline. Sequence gaps and duplicate sequence numbers must not be silently skipped.
+
+The loader returns recovered state plus a versioned report under the stable field name `checkpoint_recovery`, separate from checkpoint application state. Its shape is:
+
+| Field | Meaning |
+|---|---|
+| `report_version` | Integer 1. |
+| `source_version` | Input checkpoint format version. |
+| `generation` | V3 base generation, or null for a legacy snapshot. |
+| `base_sequence`, `last_applied_sequence` | Sequence watermark in the base and last journal transition applied; zero for a fresh v3 base. |
+| `applied_records`, `valid_prefix_bytes` | Applied transition count and byte offset through which the journal was validated. |
+| `ignored` | Counts for `torn_final_record` and `stale_generation_record`. |
+| `problem` | Null, or a reason code with line/byte offset and expected/actual sequence where relevant. Reason codes include `torn_final_record`, `invalid_record`, `invalid_sequence`, `unsupported_version`, `unsupported_kind`, `missing_journal`, `identity_mismatch`, and `incoherent_view`. |
+| `disposition` | `clean`, `recovered_prefix`, or `refused`. |
+
+Unavailable values are null rather than fabricated. A discarded tail or stale-generation records yield `recovered_prefix`; a fatal validation/coherence problem yields `refused`. The report is not written back as part of the logical flow context or copied as if it were a current outcome.
+
+Resume surfaces any non-clean report before graph execution: a concise CLI diagnostic through the standard logging surface, the same structured report in machine-readable results and resumed-run metadata, and a typed error for refusal. Studio preflight and the detached execution path use the same loader and preserve the report in their result/error or invocation metadata. Diagnostics identify positions and reasons without copying prompts, responses or context values. Keeping an unread diagnostic dictionary is insufficient.
+
+#### 7. Compatibility and rollout
+
+Version dispatch is explicit. Continue reading v2 single-file snapshots, and preserve already supported older snapshot inputs subject to their existing reconstruction limitations. Unknown versions fail with a typed compatibility error before graph construction. They must not be treated as legacy merely because their version is not 3.
+
+The initial library compatibility transition retains constructor output default 2 and requires explicit `version=3` for journal output. Once all common readers, diagnostics and acceptance checks support v3, the normal CLI flow constructor explicitly selects version 3. This makes v3 the normal format for new CLI flows without silently changing an existing library caller's output format. An explicitly selected v2 writer remains available during this transition.
+
+Resume of a v2 checkpoint requires no manual editing. Load its complete state, preserve outcome identities and all reconstruction/configuration fields, and write a v3 initial base and journal into the resumed run. Leave the source checkpoint untouched. A second resume must retain the same state. Loading or upgrading v3 must not silently downgrade it to a base-only v2 file.
+
+All readers must be updated before v3 output is enabled for them. Existing base-only binaries cannot correctly consume v3; version stamping does not make them compatible. Documentation must identify the base and journal as one checkpoint unit for movement or backup, captured coherently. These rules change checkpoint storage, not the topology or settlement decisions of D5 and Amendment 1.
+
+### Verification requirements
+
+The implementation is complete only when these observable contracts hold:
+
+1. **Bytes and fidelity.** For 200 operations, each adding 8,192 response bytes and 8,192 context bytes, cumulative encoded checkpoint bytes are below 10,000,000 and the entire recovered normalized state matches the expected state. Run once without a compaction before operation 200 and once with the default limits, counting initialization, all journal bytes, every temporary snapshot and every compaction. Do not substitute final file size or a counter that excludes retries for cumulative writes. Pin identical plan/configuration/payload fixtures for comparison.
+2. **Event-loop latency.** With 100 concurrent completions, each carrying a 65,536-byte response and adding 65,536 context bytes, callback lag p99 during active checkpoint work is below 25 ms. Include the actual completion hooks, context capture, normalization, acknowledgements and drain. Record sampling cadence, sample count, repetitions, filesystem/platform and workload shape; a single callback that runs while I/O is paused is not this measurement.
+3. **Termination and error recovery.** Inject process termination immediately before and after each append write/short write, LF completion, flush, fsync, close, in-memory advance, temporary-base write/flush/fsync/close, base replacement, directory sync, journal replacement, cleanup and acknowledgement boundary. Repeat for initialization, append and compaction. Load in a new process and recover every previously acknowledged transition. Separately inject recoverable I/O errors at those seams and attempt a subsequent write: it must either be recoverable or be refused until reconciliation.
+4. **Order and exactness.** Mix concurrent planned/spawned outcomes, repeated stable identities, cancellation, compaction and concurrent loading. Verify admission order, no missing distinct outcomes, no duplicate logical entries and exact context at every acknowledged prefix. Exercise nested mutation during persistence, scalar type changes, key deletion, null/empty context, normalized non-JSON values, numeric-key collisions and non-finite values on both reads and writes.
+5. **Recovery and migration surfaces.** Exercise torn JSON before LF, exact LF completion, malformed complete records, sequence gaps/duplicates, stale generations, interrupted reset, oversized records, missing journals and unknown versions. Verify CLI and Studio diagnostics/refusals. Round-trip v2 through v3 and a second resume, preserving failed/planned/spawned outcomes and every supported reconstruction field.
+6. **Identity substitution.** Pause immediately after file creation returns and before the writer adopts its identity; substitute a different regular file and, where supported, a symlink. Repeat between publication and first append, between later appends, after compaction/reset, and at temporary-source publication, directory resolution and cleanup. Assert that substituted targets receive zero response/context bytes, unrelated sentinels are neither truncated nor unlinked, publication installs the synchronized created object, and every successful acknowledgement remains recoverable through the published checkpoint. Assert typed failure when identity or reachability cannot be maintained; a mismatch must not reset the pin to the substituted file.
+7. **Detection scaling and durability equivalence.** With increasing total context and fixed changed data, record detection CPU, allocations, acknowledgement latency and queue growth, using both unchanged values and nested mutations. Confirm unchanged baseline values are not repeatedly deep-copied or reserialized. Keep the full p99 workload with real I/O as a separate acceptance requirement. For equivalent v2/v3 state fixtures, terminate the writer after acknowledgement and before/after the next write and every compaction boundary; the v3 loader must preserve every acknowledged logical state recoverable under the stated v2 process-termination assumptions. Neither fixture establishes power-loss durability.
+
+### Alternatives considered
+
+**Full snapshots in a background thread.** This simplifies recovery and removes direct filesystem blocking from the event loop, but still rewrites every previous response/context on every completion. It does not meet the cumulative-byte requirement.
+
+**An unbounded append-only journal.** This minimizes compaction work but allows storage and replay cost to grow indefinitely and retains superseded values. Count and byte limits are required.
+
+**Count-only compaction with permissive recovery.** This is compact to implement, but a few large records defeat its storage bound, and skipping arbitrary broken records can fabricate a state that never existed. Bounded compaction and contiguous validated replay are selected instead.
+
+**A transactional embedded database.** This can provide mature transaction and recovery machinery, but changes checkpoint portability, dependency and inspection properties beyond this format amendment. A small versioned snapshot/journal protocol is sufficient only with the explicit publication, ownership and recovery contracts above.
+
+### Consequences and implementation fences
+
+The writer may batch ordered records, omit identical normalized context, and use any off-loop implementation that satisfies the acknowledgement, ownership, detection-cost and latency contracts. It may not drop a completed outcome, compare mutable live state against a later baseline, continue after uncertain publication without reconciliation, derive creation identity from a reopened path, write payload to a substituted file, silently lose extension fields, or treat base-only parsing as v3 recovery.
+
+The format reduces bytes for the measured workload and bounds journal replay between compactions. It preserves the v2 process-termination recovery boundary while changing atomic visibility from one file to the loader's coherent logical state and adding explicit file synchronization. It introduces handle-based file ownership, cached immutable context representations, stricter format validation, explicit error propagation and a visible recovery report. It does not promise power-loss durability, O(delta) detection for untracked mutable context, arbitrary Python-object restoration, immutable outcome history, artifact verification, or exactly-once external effects.
+
+When integrating this amendment, mark the earlier D4 as the v2 description and update its summary row and related statements consistently. In `docs/adr/ADR-0069-reactive-flow-steering-and-recovery.md`, the full-snapshot decision at line 47, absence-of-fsync statement at line 59, D4 at line 289, single-file argument at line 651, consequences at line 663, version-dispatch delta at line 688, and rejected journal alternative at line 723 must point to this amendment for v3. The version-dispatch delta remains open until implemented; the new proposal must not mark it complete. The journal alternative becomes the selected v3 design, while Amendment 1's independent output/artifact settlement questions remain unchanged.
+
+## Amendment 3 (2026-10-26) — resumable graceful flow deadlines
+
+**Status:** Proposed.
+
+This amendment addresses #2833 by making explicit flow and playbook deadlines graceful and distinct from task failure, preserving completed work for checkpoint resume, and retaining the already shipped unset `--timeout` default provided by `add_common_cli_args`.
+
+**Relation to the existing decisions.** D4 describes version-2 full snapshots; D5 specifies
+faithful graph reconstruction, explicit failed-operation retry and inherited-context refusal.
+Amendment 1's independent output/artifact settlement requirements remain unchanged.
+Amendment 2, *Journaled flow checkpoints*, is Proposed and specifies version 3; its presence
+does not establish that journal storage has shipped. This amendment changes logical checkpoint
+state and execution admission. The state fields below belong in v2 snapshots and in v3 bases
+and journal entries when Amendment 2 is implemented; they do not introduce another storage
+version or implement the journal.
+
+### Decision
+
+1. **Admission, drain and required phases.** An explicit flow or playbook deadline closes
+   admission to every new assignment, including planner retries, reactive/team/escalation
+   followups and requested synthesis. Assignments already invoked finish; then checkpoint
+   persistence settles and the run exits. Capacity waiters recheck admission after acquiring
+   capacity. No later phase may reopen expired admission or rerun still-pending worker nodes.
+   Requested synthesis counts as required work: if withheld, the run is interrupted even when
+   every worker finished. Resume recomputes withheld synthesis from checkpointed worker results;
+   it does not record a false completed synthesis result. With no required work withheld, a
+   naturally finished run remains completed. Interruption keeps `timed_out`,
+   `run.timed_out.deadline`, `LionTimeoutError` and exit 124. Task failure, external cancellation
+   and checkpoint-write failure retain their own outcomes. Report a resumable checkpoint only
+   after the final persistence boundary succeeds.
+
+2. **Deferred spawned intent.** A spawned entry may additionally have `status="pending"` and
+   `response=null`, meaning recorded but never invoked. A withheld planned assignment remains
+   absent from `ops`. Retain late followup intent rather than dropping it. Pending entries run
+   without `--retry-failed`; failed entries run only with that explicit flag. Execution-sensitive
+   routing, workload and settings-containment checks apply to every entry that will run:
+   pending entries unconditionally, failed entries when retried. A pending entry must not fall
+   back to an orchestrator branch with greater authority. Retain the recorded provenance through
+   further deferral and whole-entry replacement. Refuse missing or incompatible provenance,
+   response-bearing pending entries and unfaithful reconstruction before admitting graph work.
+
+3. **Planned identity and promotion.** Optional `plan[].node_id` associates a plan entry with
+   its operation UUID. Strip this metadata before constructing `TaskAssignment`; remap recorded
+   planned references to the rebuilt graph and refresh the association on every later checkpoint.
+   Do not infer a missing association from a display name. Explicit-deadline checkpoints record
+   these witnesses from their initial snapshot. In **any** run, including fresh untimed runs and
+   legacy resumes, promote the plan before the first snapshot or journal state carrying a splice
+   witness. Promotion and refreshed references must be coherent at the publication boundary;
+   no intermediate unguarded splice state may be published. An ordinary untimed run without
+   splice/deferred recovery requirements may retain the legacy v2 shape.
+
+4. **Every retry state preserves the splice.** Optional `spawned[].escalated_from` identifies
+   the logical emitting operation; `parent_id` identifies its placement anchor. Preserve these
+   remapped fields for **pending, completed and failed** retries, including pending→failed→retry
+   across multiple resumes. Replacing a whole spawned entry must never erase them. Ordinary
+   spawned nodes do not receive a splice witness. Reconstruct successor edges, conditions and
+   labels with `Graph.splice_after`, and restore the executor's replacement chain **before any
+   operation is admitted**. Further escalation must choose the same final anchor as uninterrupted
+   execution. Runtime metadata read by later checkpoint callbacks must retain the remapped
+   emitting/anchor references. Ordinary spawned-parent terminal checks remain; a recorded retry
+   may have a pending earlier retry as its placement anchor, but its logical emitter must have a
+   sound checkpointed emission and the entire replacement chain must be reconstructible.
+
+5. **V2 refusal guards.** The old v2 spawned reader refuses pending. Its plan loader strips only
+   `agent_id` and `dep_indices`; `TaskAssignment` inherits `extra="forbid"` from
+   `lionagi/protocols/flow_requests.py:23–26`, so `plan[].node_id` also causes refusal. Preserve
+   this extra-field policy as a v2 compatibility guard: the guarded reader strips
+   `plan[].node_id` before construction (item 3), and no reader relaxes the model policy for
+   checkpoint-loaded assignments, which would be a contract change. Never emit a splice witness
+   in v2 without a planned UUID
+   witness or pending spawned entry in the same snapshot. Promote planned UUIDs before the first
+   splice publication in any run, and before the final pending entry can stop being pending.
+   Writer refusal is for invalid input/state, not a substitute for promoting valid untimed work.
+   A guarded-v2 reader refuses an unguarded splice rather than interpreting it as an ordinary edge.
+
+6. **V3 interoperability follows Amendment 2.** A reader supporting only guarded v2 must reject
+   v3 before graph construction; it must not parse its base as a complete checkpoint. A
+   v3-capable reader uses Amendment 2's coherent base-plus-journal loader, preserving these fields
+   through complete-entry upserts, compaction and v2→v3→second-resume migration. Its `spawned`
+   entry validation admits deferred pending state in addition to completed/failed outcomes;
+   pending is recorded intent, not a terminal outcome. Planned UUID promotion belongs in the
+   complete base state and must be published coherently before a journal transition needing it;
+   no new journal record kind is introduced here. The explicit version dispatch, supported-reader
+   rollout, acknowledgement, identity and recovery-report requirements remain Amendment 2's.
+
+The shipped old v2 `json.loads` loader does not enforce `version`. Therefore a numeric v3 stamp
+does not protect that old binary, and a pending record found only in a journal cannot guard a
+base-only read. V2 refusal guards do **not** make old v2 readers compatible with v3. All common
+readers must be updated before enabling v3 output as Amendment 2 requires; an incidental extra
+field rejection is not a supported v3 reader. Until that implementation exists, guarded-v2
+readers fail closed on v3 rather than inventing journal replay.
+
+### Verification requirements
+
+Use event-gated A/B/C admission and actual CLI/Session/Invocation results. Cover late spawn/team
+intent; failed retry R still gating B under `--retry-failed`; pending→failed→retry across
+generations; multiple restored retries followed by another escalation with the same final anchor
+as uninterrupted execution; and callback metadata retained through a second resume. Verify
+restricted pending routing/workload/settings without a retry flag and across two deferrals.
+Inspect every intermediate checkpoint from fresh untimed and legacy-resumed retry execution,
+not just the final file. None may contain an unguarded or lost splice witness. Exercise synthesis
+after all workers finish and with workers still pending; neither may reopen expired admission.
+Test old-v2 refusal, guarded-v2 rejection of v3, and, when available, journal-aware v3 roundtrips
+preserving pending/completed/failed retry metadata through replacement and compaction. Retain
+whole-resume refusal and failure reporting; neither storage format settles Amendment 1's separate
+artifact/output questions by recorded status alone.
 
 ## Consequences
 

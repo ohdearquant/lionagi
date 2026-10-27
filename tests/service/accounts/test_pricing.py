@@ -8,14 +8,16 @@ from fractions import Fraction
 
 import pytest
 
+from lionagi.service.accounts._ledger import _validate_reason
 from lionagi.service.accounts._pricing import (
     CURRENT_REVISION,
     freeze_request,
     price_usage,
     quote_ceiling,
     revision_by_id,
+    usage_outcome,
 )
-from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode, UnknownOutcome
 
 REV = CURRENT_REVISION
 
@@ -379,24 +381,65 @@ def test_omitted_cache_counts_are_zero_only_when_the_request_could_not_cache():
     assert price_usage(REV, _FIVE, "claude-opus-5-5", no_reads) is None
 
 
+_NAMED_46 = "f" * 46
+
+
 @pytest.mark.parametrize(
-    "change",
+    ("change", "reason"),
     [
-        pytest.param({"input_tokens": None}, id="missing-input"),
-        pytest.param({"output_tokens": -1}, id="negative-output"),
-        pytest.param({"output_tokens": True}, id="bool-count"),
-        pytest.param({"output_tokens": 1.0}, id="float-count"),
-        pytest.param({"cache_creation_input_tokens": 3}, id="split-does-not-add-up"),
-        pytest.param({"service_tier": "priority"}, id="priority-tier"),
-        pytest.param({"service_tier": "batch"}, id="batch-tier"),
-        pytest.param({"speed": "fast"}, id="fast-speed"),
-        pytest.param({"inference_geo": "eu"}, id="unpriced-region"),
-        pytest.param({"server_tool_use": {"web_search_requests": 1}}, id="server-tool-charge"),
-        pytest.param({"cache_creation": {"ephemeral_24h_input_tokens": 0}}, id="unknown-split-key"),
-        pytest.param({"cache_storage_hours": 1}, id="unknown-billing-field"),
+        pytest.param({"input_tokens": None}, "usage_incomplete", id="missing-input"),
+        pytest.param({"output_tokens": -1}, "usage_incomplete", id="negative-output"),
+        pytest.param({"output_tokens": True}, "usage_incomplete", id="bool-count"),
+        pytest.param({"output_tokens": 1.0}, "usage_incomplete", id="float-count"),
+        pytest.param(
+            {"cache_creation_input_tokens": 3}, "usage_incomplete", id="split-does-not-add-up"
+        ),
+        pytest.param({"service_tier": "priority"}, "unpriced_tier", id="priority-tier"),
+        pytest.param({"service_tier": "batch"}, "unpriced_tier", id="batch-tier"),
+        pytest.param({"speed": "fast"}, "unpriced_speed", id="fast-speed"),
+        pytest.param({"inference_geo": "eu"}, "unpriced_region", id="unpriced-region"),
+        pytest.param({"inference_geo": 1}, "usage_incomplete", id="region-not-a-string"),
+        pytest.param(
+            {"server_tool_use": {"web_search_requests": 1}},
+            "unpriced_server_tool",
+            id="server-tool-charge",
+        ),
+        pytest.param(
+            {"server_tool_use": {"web_search_requests": -1}},
+            "usage_incomplete",
+            id="server-tool-count-negative",
+        ),
+        pytest.param({"server_tool_use": [1]}, "usage_incomplete", id="server-tool-not-a-map"),
+        pytest.param(
+            {"cache_creation": {"ephemeral_24h_input_tokens": 0}},
+            "usage_incomplete",
+            id="unknown-split-key",
+        ),
+        pytest.param(
+            {"cache_storage_hours": 1},
+            "unknown_usage_key_cache_storage_hours",
+            id="unknown-billing-field",
+        ),
+        pytest.param(
+            {"zeta_units": 1, "beta_units": 1},
+            "unknown_usage_key_beta_units",
+            id="two-unknown-fields-name-the-first",
+        ),
+        pytest.param(
+            {_NAMED_46: 1}, f"unknown_usage_key_{_NAMED_46}", id="longest-field-a-reason-names"
+        ),
+        pytest.param({_NAMED_46 + "f": 1}, "unknown_usage_key", id="field-too-long-to-name"),
+        pytest.param({"Cache_Hours" + "X" * 69: 1}, "unknown_usage_key", id="field-not-nameable"),
+        pytest.param({"cache-hours": 1}, "unknown_usage_key", id="field-with-a-hyphen"),
+        pytest.param({5: 1}, "unknown_usage_key", id="field-not-a-string"),
+        pytest.param(
+            {"Cache_Hours": 1, "cache_hours": 1},
+            "unknown_usage_key_cache_hours",
+            id="nameable-field-beside-one-that-is-not",
+        ),
     ],
 )
-def test_incomplete_or_unpriced_usage_leaves_the_cost_unknown(change):
+def test_incomplete_or_unpriced_usage_leaves_the_cost_unknown_and_says_why(change, reason):
     usage = {
         "input_tokens": 1,
         "output_tokens": 1,
@@ -405,10 +448,33 @@ def test_incomplete_or_unpriced_usage_leaves_the_cost_unknown(change):
         "cache_creation": {"ephemeral_5m_input_tokens": 2, "ephemeral_1h_input_tokens": 0},
     }
     assert price_usage(REV, _FIVE, "claude-opus-5-5", usage) is not None
+    assert usage_outcome(REV, _FIVE, "claude-opus-5-5", usage) == price_usage(
+        REV, _FIVE, "claude-opus-5-5", usage
+    )
     usage.update(change)
     assert price_usage(REV, _FIVE, "claude-opus-5-5", usage) is None
+    assert usage_outcome(REV, _FIVE, "claude-opus-5-5", usage) == UnknownOutcome(reason)
+    # The ledger refuses a reason outside its grammar, so every reason has to fit it.
+    assert _validate_reason(reason) == reason
 
 
-@pytest.mark.parametrize("model", ["claude-opus-5", "claude-opus-5-5-20261001", None, 5])
-def test_an_unpriced_served_model_leaves_the_cost_unknown(model):
-    assert price_usage(REV, _NONE, model, {"input_tokens": 1, "output_tokens": 1}) is None
+@pytest.mark.parametrize(
+    ("model", "reason"),
+    [
+        ("claude-opus-5", "unpriced_model"),
+        ("claude-opus-5-5-20261001", "unpriced_model"),
+        (None, "usage_incomplete"),
+        (5, "usage_incomplete"),
+    ],
+)
+def test_an_unpriced_served_model_leaves_the_cost_unknown(model, reason):
+    usage = {"input_tokens": 1, "output_tokens": 1}
+    assert price_usage(REV, _NONE, model, usage) is None
+    assert usage_outcome(REV, _NONE, model, usage) == UnknownOutcome(reason)
+    # An unpriced model is named before any usage field it does not know.
+    if reason == "unpriced_model":
+        assert usage_outcome(REV, _NONE, model, {**usage, "x": 1}) == UnknownOutcome(reason)
+
+
+def test_usage_that_is_not_a_mapping_is_incomplete():
+    assert usage_outcome(REV, _NONE, "claude-opus-5-5", None) == UnknownOutcome("usage_incomplete")

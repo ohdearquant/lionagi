@@ -69,9 +69,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import anyio
-
 from lionagi.ln._proc import process_create_time, start_time_matches
+from lionagi.ln.concurrency import sleep as _sleep
 
 from ._provider_errors import NestedAgentRefusedError, SubagentAdmissionRefusedError
 
@@ -523,7 +522,7 @@ async def _lock_admission(pool_dir: Path) -> int:
         while not _lock_now(fd):
             if time.monotonic() >= deadline:
                 raise _admission_lock_held_too_long(pool_dir.name)
-            await anyio.sleep(random.uniform(0.005, 0.05))  # noqa: S311 (retry spacing)
+            await _sleep(random.uniform(0.005, 0.05))  # noqa: S311 (retry spacing)
     except BaseException:
         os.close(fd)
         raise
@@ -751,7 +750,7 @@ async def admit_subagent(
             and (not slept or time.monotonic() < deadline)
         ):
             quick_rereads += 1
-            await anyio.sleep(random.uniform(0.001, 0.005))  # noqa: S311 (retry spacing)
+            await _sleep(random.uniform(0.001, 0.005))  # noqa: S311 (retry spacing)
             continue
         pool, variable, cap, effective, holders = full
         remaining = deadline - time.monotonic()
@@ -767,7 +766,7 @@ async def admit_subagent(
             )
         # Jittered, so two processes that collide on the last slot do not retry in step.
         jitter = random.uniform(0.75, 1.25)  # noqa: S311 (retry spacing, not a secret)
-        await anyio.sleep(min(remaining, _POLL_SECONDS * jitter))
+        await _sleep(min(remaining, _POLL_SECONDS * jitter))
         slept = True
         # A holder met after this sleep is a new one, with its own quick re-reads.
         quick_rereads = 0

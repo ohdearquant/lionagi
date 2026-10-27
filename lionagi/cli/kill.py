@@ -18,6 +18,7 @@ import psutil
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import raw_create_time
+from lionagi.ln._proc import start_time_matches as _start_time_matches
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
@@ -61,9 +62,6 @@ def current_pid_markers() -> dict[str, Any]:
         "process_identity_mode": "local",
     }
 
-
-# Clock-tick rounding tolerance for process start time comparison (CWE-362).
-_CREATE_TIME_TOLERANCE = 0.1
 
 #: Outcomes where nothing was stopped and no cancellation was written. A caller
 #: that reports these as a kill is claiming a stop that did not happen.
@@ -224,9 +222,7 @@ def _check_pid_identity(
 
     if expected_create_time is not None:
         try:
-            create_time_ok = (
-                abs(raw_create_time(proc) - expected_create_time) <= _CREATE_TIME_TOLERANCE
-            )
+            create_time_ok = _start_time_matches(raw_create_time(proc), expected_create_time)
         except psutil.ZombieProcess:
             return "zombie"
         except psutil.NoSuchProcess:

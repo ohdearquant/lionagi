@@ -173,7 +173,7 @@ async def run_workflow_def(
     status = "completed"
     exc: BaseException | None = None
     try:
-        from lionagi.engines.flow_signals import flow_progress_signals
+        from lionhub.orchestration.engines.flow_signals import flow_progress_signals
 
         # Emit per-node lifecycle signals; run_workflow_def drives session.flow
         # directly (bypassing the engine, the usual signal source), so without

@@ -6,7 +6,7 @@ spawns runs without the signed-in account's apps and plugins."""
 
 import pytest
 
-from lionagi.engines import Engine
+from lionhub.orchestration.engines import Engine
 
 pytestmark = pytest.mark.asyncio
 

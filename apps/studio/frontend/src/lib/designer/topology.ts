@@ -1,6 +1,6 @@
 /**
  * Engine topology catalog — the canonical description of what each engine
- * kind in `lionagi/engines/` actually executes (DESIGN-SYSTEM §12: the canvas
+ * kind in `lionhub/src/lionhub/orchestration/engines/` actually executes (DESIGN-SYSTEM §12: the canvas
  * renders this, nothing else).
  *
  * Every stage, emission name, condition, and bound below is transcribed from
@@ -184,7 +184,7 @@ export const ENGINE_TOPOLOGIES: Record<EngineKind, EngineTopology> = {
     },
     maxDepth: { applies: true, meaning: "recursion depth of the exploration tree" },
     testCmd: { applies: false },
-    sourceRef: "lionagi/engines/research.py",
+    sourceRef: "lionhub/src/lionhub/orchestration/engines/research.py",
   },
 
   // ── review — dimensional fan-out ─────────────────────────────────────────
@@ -248,7 +248,7 @@ export const ENGINE_TOPOLOGIES: Record<EngineKind, EngineTopology> = {
     },
     maxDepth: { applies: false },
     testCmd: { applies: false },
-    sourceRef: "lionagi/engines/review.py",
+    sourceRef: "lionhub/src/lionhub/orchestration/engines/review.py",
   },
 
   // ── coding — gated chain with fix loop ───────────────────────────────────
@@ -330,7 +330,7 @@ export const ENGINE_TOPOLOGIES: Record<EngineKind, EngineTopology> = {
     },
     maxDepth: { applies: false },
     testCmd: { applies: true, required: true },
-    sourceRef: "lionagi/engines/coding.py",
+    sourceRef: "lionhub/src/lionhub/orchestration/engines/coding.py",
   },
 
   // ── hypothesis — evidence cascade ────────────────────────────────────────
@@ -475,7 +475,7 @@ export const ENGINE_TOPOLOGIES: Record<EngineKind, EngineTopology> = {
     },
     maxDepth: { applies: true, meaning: "cycle generations before follow-ups are capped" },
     testCmd: { applies: false },
-    sourceRef: "lionagi/engines/hypothesis.py",
+    sourceRef: "lionhub/src/lionhub/orchestration/engines/hypothesis.py",
   },
 
   // ── planning — plan → reactive DAG → synthesize ──────────────────────────
@@ -544,7 +544,7 @@ export const ENGINE_TOPOLOGIES: Record<EngineKind, EngineTopology> = {
     },
     maxDepth: { applies: false },
     testCmd: { applies: false },
-    sourceRef: "lionagi/engines/planning.py",
+    sourceRef: "lionhub/src/lionhub/orchestration/engines/planning.py",
   },
 };
 

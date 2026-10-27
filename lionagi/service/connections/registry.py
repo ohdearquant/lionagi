@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from lionagi.ln import HashAlgorithm, compute_hash, hash_file, is_import_installed
+from lionagi.ln import HashAlgorithm, compute_hash, hash_file, import_module, is_import_installed
 from lionagi.ln.types import Enum
 
 __all__ = (
@@ -609,8 +609,6 @@ def _import_provider_module(mod: str) -> None:
     A missing dependency skips the import entirely (debug log, module body
     never runs); once dependencies resolve, any ``ImportError`` is
     unconditionally a provider-load failure (warning)."""
-    import importlib
-
     missing = [
         dep for dep in _PROVIDER_OPTIONAL_DEPENDENCIES.get(mod, ()) if not is_import_installed(dep)
     ]
@@ -622,7 +620,7 @@ def _import_provider_module(mod: str) -> None:
         )
         return
     try:
-        importlib.import_module(mod)
+        import_module(mod)
     except ImportError as e:
         logger.warning(
             "provider module %r failed to import and was not registered: %s",

@@ -1,6 +1,6 @@
 # ADR-0034: Domain-engine coordination and autonomy safeguards
 
-- **Status**: Accepted, amended 2026-10-15 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-24 (see Amendments 1-2)
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
@@ -56,10 +56,44 @@ check. Run-local, post-gate emission receipts distinguish concurrent agents and
 replayed payload occurrences; text fields and role labels do not establish
 origin. Reports and filing use each verdict occurrence's accepted state. Only
 an explicit caller emission can introduce a parentless seed; a parentless
-agent emission cannot skip the judge by claiming generation 0. One policy gap
-remains in issue #3569: a judge reply that carries no verdict passes unless its
-text contains "reject". An engine that needs the judge to be optional leaves
-`judge_model` unset.
+agent emission cannot skip the judge by claiming generation 0. The policy gap
+tracked in issue #3569 let a judge reply with no verdict pass unless its text
+contained "reject". Amendment 2 closes that gap. An engine that needs the judge
+to be optional leaves `judge_model` unset.
+
+## Amendment 2 (2026-10-24) — explicit untyped judge decisions
+
+- **Status**: Accepted 2026-10-24; replaces D3's untyped text fallback.
+- **Scope**: Partial amendment of D3's untyped judge-response rule and the
+  text-policy gap recorded in Amendment 1. The accepted base and the
+  other Amendment 1 decisions remain standing.
+
+When the item's actual judge emits no authoritative matching typed verdict, the
+accepted fallback returns `True` only when `isinstance(res, str)` and
+`res.strip().lower() == "pass"`. Whole-reply `PASS`, `pass` and `Pass` tokens
+allow, including surrounding whitespace. A bare `REJECT`, punctuated or Markdown
+tokens such as `PASS.` or `**PASS**`, empty or missing replies, explanatory prose,
+mixed tokens, and non-string values return `False`. Non-string replies are not
+converted to text to obtain a verdict.
+
+An untyped refusal uses the existing `gated` notification with the requested
+`eid` and `reason="text-reject"`; the notification does not copy the raw reply.
+An authoritative typed verdict is checked first, so its allow/deny value and
+reason continue to decide even when the reply text disagrees.
+
+A successfully returned off-contract reply is a negative gate result, not an
+exception: it must not enter the infrastructure-error fail-open path. This
+amendment leaves disabled judging, budget exhaustion, provider/build failures,
+containment refusals, emitter authority and caller-seed admission unchanged.
+Ordinary infrastructure failures still follow D3 and Amendment 1. If an event
+callback raises on the gated notice, a typed or untyped refusal enters that
+fail-open path and the item expands unless `contain_account_integrations` is
+set; this existing behavior is tracked in #3744.
+
+The compatibility cost is intentional: weak judges that returned prose or no
+verdict previously allowed expansion; they now stop that item. Callers can
+use a matching typed verdict, return the explicit text token, or leave
+`judge_model` unset when judging is optional.
 
 ## Context
 
@@ -347,8 +381,10 @@ async def Engine.judge(
   only when dispatched after the governance gate by that item's actual judge
   branch in this run. Session emissions and another branch's verdict are evidence,
   but do not decide the gate.
-  In its absence, response text containing `reject` fails the gate; other text
-  passes.
+  Amendment 2 replaced the original text fallback: "In its absence, response
+  text containing `reject` fails the gate; other text passes." The accepted
+  fallback requires an untyped string reply whose stripped, lowercased value is
+  exactly `pass`.
 - Judge `EngineBudgetError` returns `False`: no budget means no expansion.
 - Other judge exceptions emit `judge_error` and return `True`: infrastructure
   failure is fail-open while D2 remains authoritative. Amendment 1 raises three

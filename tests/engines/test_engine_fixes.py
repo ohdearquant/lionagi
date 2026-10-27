@@ -11,12 +11,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.engines.coding import (
+from lionhub.orchestration.engines.coding import (
     CodingEngine,
     WorkPlanned,
 )
-from lionagi.engines.engine import Engine, EngineEvent, _cli_repair_instruction, emission_keys
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.engine import (
+    Engine,
+    EngineEvent,
+    _cli_repair_instruction,
+    emission_keys,
+)
+from lionhub.orchestration.engines.hypothesis import (
     FindingPosted,
     HypothesisEngine,
     QuestionRaised,
@@ -206,7 +211,7 @@ async def test_coding_engine_valid_spec_proceeds_to_run(tmp_path, monkeypatch):
     run_obj = eng.new_run()
 
     plan_ev = WorkPlanned(approach="trivial")
-    from lionagi.engines.coding import (
+    from lionhub.orchestration.engines.coding import (
         ChangeProposed,
         VerifyResult,
     )
@@ -266,7 +271,7 @@ def _coro(value):
 def test_cli_repair_instruction_contains_fenced_example():
     """The CLI repair instruction must include a fenced JSON example block —
     the full-structure example that CLI workers need, not just key name hints."""
-    from lionagi.engines.research import FindingEmitted
+    from lionhub.orchestration.engines.research import FindingEmitted
 
     hint = emission_keys((FindingEmitted,))
     msg = _cli_repair_instruction(hint, (FindingEmitted,))
@@ -279,8 +284,8 @@ def test_cli_repair_instruction_contains_fenced_example():
 def test_cli_repair_instruction_differs_from_api_repair():
     """The CLI repair template must be distinct from the API repair template —
     they address different failure modes."""
-    from lionagi.engines.engine import _repair_instruction
-    from lionagi.engines.research import FindingEmitted
+    from lionhub.orchestration.engines.engine import _repair_instruction
+    from lionhub.orchestration.engines.research import FindingEmitted
 
     hint = emission_keys((FindingEmitted,))
     api_msg = _repair_instruction(hint)
@@ -297,7 +302,7 @@ async def test_operate_with_repair_uses_cli_template_for_cli_branch():
     events: list[dict] = []
     run.on_event = events.append
 
-    from lionagi.engines.research import FindingEmitted
+    from lionhub.orchestration.engines.research import FindingEmitted
 
     repair_instructions: list[str] = []
     call_count = 0
@@ -344,7 +349,7 @@ async def test_operate_with_repair_uses_api_template_for_api_branch():
     events: list[dict] = []
     run.on_event = events.append
 
-    from lionagi.engines.research import FindingEmitted
+    from lionhub.orchestration.engines.research import FindingEmitted
 
     repair_instructions: list[str] = []
     call_count = 0
@@ -389,7 +394,7 @@ async def test_operate_with_repair_no_chat_model_falls_back_to_api_template():
     eng = _StubEngine()
     run = eng.new_run()
 
-    from lionagi.engines.research import FindingEmitted
+    from lionhub.orchestration.engines.research import FindingEmitted
 
     repair_instructions: list[str] = []
     call_count = 0
@@ -429,7 +434,7 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
     """branch.operate() blocked past deadline_s must be cancelled by the watchdog."""
     import time
 
-    from lionagi.engines.engine import EngineRun
+    from lionhub.orchestration.engines.engine import EngineRun
 
     operate_completed = asyncio.Event()
     operate_started = asyncio.Event()
@@ -484,7 +489,7 @@ def test_cli_repair_instruction_example_is_valid_json():
     import json
     import re
 
-    from lionagi.engines.coding import WorkPlanned
+    from lionhub.orchestration.engines.coding import WorkPlanned
 
     hint = emission_keys((WorkPlanned,))
     msg = _cli_repair_instruction(hint, (WorkPlanned,))
@@ -511,8 +516,8 @@ def test_cli_repair_instruction_fenced_block_validates_against_emission():
     import re
 
     from lionagi.casts.emission import build_emission_operable
-    from lionagi.engines.coding import WorkPlanned
     from lionagi.operations._observe import attempt_extract
+    from lionhub.orchestration.engines.coding import WorkPlanned
 
     hint = emission_keys((WorkPlanned,))
     msg = _cli_repair_instruction(hint, (WorkPlanned,))
@@ -616,7 +621,7 @@ async def test_external_cancel_during_drain_propagates():
 
 def test_coding_engine_normalizes_spec_exactly_once(monkeypatch):
     """_normalize_spec must be called exactly once when CodingEngine.run() is invoked."""
-    import lionagi.engines.coding as _coding_mod
+    import lionhub.orchestration.engines.coding as _coding_mod
 
     call_count = 0
     _original = _coding_mod._normalize_spec

@@ -108,7 +108,7 @@ async def test_ctl_task_applies_a_queued_control_during_a_live_run(tmp_path, mon
         fake_engine_run = MagicMock()
         fake_engine_run.run_dag = _fake_run_dag
 
-        from lionagi.engines import PlanningEngine
+        from lionhub.orchestration.engines import PlanningEngine
 
         with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
             await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
@@ -156,7 +156,7 @@ async def test_ctl_task_polls_repeatedly_not_once(tmp_path, monkeypatch):
         fake_engine_run = MagicMock()
         fake_engine_run.run_dag = _fake_run_dag
 
-        from lionagi.engines import PlanningEngine
+        from lionhub.orchestration.engines import PlanningEngine
 
         with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
             await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
@@ -188,7 +188,7 @@ async def test_ctl_task_and_hb_task_are_cancelled_cleanly_at_run_end(tmp_path, m
         fake_engine_run = MagicMock()
         fake_engine_run.run_dag = _fake_run_dag
 
-        from lionagi.engines import PlanningEngine
+        from lionhub.orchestration.engines import PlanningEngine
 
         tasks_before = asyncio.all_tasks()
         with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
@@ -236,7 +236,7 @@ async def test_ctl_task_crash_does_not_kill_the_run(tmp_path, monkeypatch):
         fake_engine_run = MagicMock()
         fake_engine_run.run_dag = _fake_run_dag
 
-        from lionagi.engines import PlanningEngine
+        from lionhub.orchestration.engines import PlanningEngine
 
         with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
             exec_result = await _execute_dag(
@@ -287,7 +287,7 @@ async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, 
         fake_engine_run = MagicMock()
         fake_engine_run.run_dag = _fake_run_dag
 
-        from lionagi.engines import PlanningEngine
+        from lionhub.orchestration.engines import PlanningEngine
 
         with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
             exec_result = await _execute_dag(

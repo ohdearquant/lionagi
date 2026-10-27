@@ -18,7 +18,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-import anyio
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, bindparam, text
@@ -33,6 +32,7 @@ from lionagi.cli._util import (
     pid_alive as _pid_is_live,
 )
 from lionagi.ln import now_utc
+from lionagi.ln.concurrency import run_sync as _run_sync
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
@@ -330,7 +330,7 @@ async def _capture_ps_snapshot() -> str:
         global _PS_SNAPSHOT_SEQUENCE
         _PS_SNAPSHOT_SEQUENCE += 1
         sequence = _PS_SNAPSHOT_SEQUENCE
-    value = await anyio.to_thread.run_sync(_ps_snapshot)
+    value = await _run_sync(_ps_snapshot)
     duration_ms = (time.perf_counter() - started) * 1000
 
     # Compare and publish under the lock as one step. Reading the cache,
@@ -615,7 +615,7 @@ def _locks_beside_artifacts(root: Path) -> list[Path]:
     if root.name == "artifacts":
         run_dir = root.parent
         candidates.append(run_dir / "finalize.lock")
-        from lionagi.mcp import config as mcp_config
+        from lionhub.serve.mcp import config as mcp_config
 
         candidates.append(mcp_config.JOBS_DIR / run_dir.name / "job.lock")
     return candidates
@@ -869,7 +869,7 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
         # Classification stats an artifact tree and may walk it. Both are
         # synchronous filesystem work, and this coroutine is the one serving
         # every other request while it runs.
-        reason = await anyio.to_thread.run_sync(
+        reason = await _run_sync(
             partial(
                 _classify_phantom,
                 row,
@@ -920,7 +920,7 @@ async def _code_identity_report() -> dict[str, Any]:
     try:
         from lionagi.cli._code_identity import code_identity
 
-        return await anyio.to_thread.run_sync(code_identity)
+        return await _run_sync(code_identity)
     except Exception as exc:  # noqa: BLE001 — an unanswerable check is unknown, never absent
         # Reported rather than omitted: a missing key reads as "not checked",
         # which is the same shape as "checked and current" to anything scanning
@@ -1024,7 +1024,7 @@ async def health_report() -> dict[str, Any]:
                 # the one serving every other request. Left inline it blocks the
                 # loop for as long as the traversal takes, which is how a static
                 # /health probe that touches nothing ended up timing out.
-                scan = await anyio.to_thread.run_sync(
+                scan = await _run_sync(
                     partial(
                         _find_stale_lock,
                         artifacts,
@@ -1207,7 +1207,7 @@ async def transition_sessions(
                 # only thread of service. The list of sessions is the caller's
                 # rather than the whole table, which bounds how many walks run
                 # but not how long any one of them holds the loop.
-                scan = await anyio.to_thread.run_sync(
+                scan = await _run_sync(
                     partial(
                         _find_stale_lock,
                         artifacts,
@@ -1238,7 +1238,7 @@ async def transition_sessions(
             # just done above at the same cutoff, and without the budget it was
             # not bounded at all. Passing both makes it a cache hit in the
             # ordinary case; offloading covers the case where it is not.
-            phantom_reason = await anyio.to_thread.run_sync(
+            phantom_reason = await _run_sync(
                 partial(
                     _classify_phantom,
                     current,

@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.cli._providers import load_agent_profile, profile_config
-from lionagi.mcp import dispatch
+from lionhub.serve.mcp import dispatch
 
 
 def call(**kwargs):
@@ -373,7 +373,7 @@ def test_placement_names_no_source_where_the_loader_refuses_to_choose(roots):
     answer is only wrong relative to what a run would actually get.
     """
     from lionagi.cli._providers import AmbiguousProfileNameError, load_agent_profile
-    from lionagi.mcp.roster import _placement
+    from lionhub.serve.mcp.roster import _placement
 
     write_profile(roots.proj, "post_mortem_lead", "---\nmodel: under\n---\nbody\n")
     write_profile(roots.proj, "post-mortem-lead", "---\nmodel: hyphen\n---\nbody\n")

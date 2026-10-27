@@ -127,7 +127,7 @@ def test_team_inbox_refuses_non_finite(tmp_path):
 
 
 def test_coding_measurements_refuse_non_finite():
-    from lionagi.engines.coding import CodeResultRecorded, CodingRun
+    from lionhub.orchestration.engines.coding import CodeResultRecorded, CodingRun
 
     class _Run(CodingRun):
         def __init__(self, measurements):  # bypass the Engine wiring
@@ -175,7 +175,7 @@ def test_job_record_refuses_non_finite(tmp_path, monkeypatch):
     never as a non-finite float. So nothing here encodes a sentinel the refusal
     would destroy, and a NaN reaching this file is damage rather than meaning.
     """
-    from lionagi.mcp import config, jobs
+    from lionhub.serve.mcp import config, jobs
 
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     run_id = jobs.new_run_id()
@@ -225,7 +225,7 @@ def test_mcp_config_read_refuses_non_standard_json_constants(tmp_path, token):
 
 def test_mcp_server_snapshot_refuses_non_finite(tmp_path):
     """And the write refuses too, for a server map that reached it some other way."""
-    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+    from lionhub.serve.mcp.jobs import _write_mcp_server_snapshot
 
     target = tmp_path / "mcp-servers.json"
 
@@ -277,7 +277,7 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
 
 def test_hypothesis_chains_export_refuses_non_finite(tmp_path):
     """The chains artifact reaches the guard before ``chains.json`` is created."""
-    from lionagi.engines.hypothesis import HypothesisEngine, HypothesisRun
+    from lionhub.orchestration.engines.hypothesis import HypothesisEngine, HypothesisRun
 
     run = HypothesisRun(HypothesisEngine())
     run.root = "r"

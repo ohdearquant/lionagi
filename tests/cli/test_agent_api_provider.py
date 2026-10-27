@@ -1,12 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""`li agent` on an API model: lionagi's own tool loop, with the read set only.
+"""`li agent` on an API model: lionagi's own tool loop over the read set.
 
 An API model has no tool loop of its own, so a leg on one runs ``Branch.ReAct``
-over the tools the profile names. The only tool set offered is the read set
-(reader, search, context); tools that write files or run commands would run
-with this process's own permissions, and this path has no sandbox for them.
+over the tools the profile names. The read set (reader, search, context) runs
+with this process's own permissions; the write set, whose editor and bash run
+under the macOS sandbox, is covered in test_agent_api_write_set.py.
 The endpoint's call is scripted here, so no request leaves the process.
 """
 
@@ -234,6 +234,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
     record = leg.branch.metadata["api_launch"]
     assert set(record) == {
         "tools",
+        "network",
         "max_extensions",
         "loop",
         "max_input_tokens",
@@ -254,6 +255,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
     )
     assert (record["tools"], record["max_extensions"], record["loop"]) == ("read", 10, "react")
     assert record["max_input_tokens"] == "auto"
+    assert record["network"] is False
 
 
 @pytest.mark.asyncio
@@ -371,9 +373,11 @@ async def test_a_turn_past_the_timeout_ends_timed_out(leg):
     assert status == "timed_out"
 
 
-@pytest.mark.parametrize("value", ["coding", "write", True, None, ["read"]])
+@pytest.mark.parametrize("value", ["coding", "Write", True, None, ["read"]])
 @pytest.mark.asyncio
-async def test_a_tool_set_other_than_read_is_refused_before_a_run_exists(leg, monkeypatch, value):
+async def test_a_tool_set_other_than_read_or_write_is_refused_before_a_run_exists(
+    leg, monkeypatch, value
+):
     import lionagi.cli.agent as agent_mod
 
     monkeypatch.setattr(
@@ -407,7 +411,7 @@ async def test_a_profile_without_the_read_set_is_refused_as_before(leg, monkeypa
 
 @pytest.mark.asyncio
 async def test_preset_coding_is_refused_for_an_api_model(leg):
-    with pytest.raises(ConfigurationError, match="read set"):
+    with pytest.raises(ConfigurationError, match="--preset coding binds tools"):
         await leg.run(_profile(api_tools="read"), preset="coding")
 
 
@@ -457,6 +461,8 @@ async def test_a_resumed_branch_without_the_launch_record_runs_as_before(leg, mo
         {"tools": "read", "max_extensions": 5, "loop": "batch"},
         {"tools": "read", "max_extensions": 5, "loop": None},
         {"tools": "read", "max_extensions": 5, "loop": "LNDL"},
+        {"tools": "read", "max_extensions": 5, "network": True},
+        {"tools": "write", "max_extensions": 5, "network": "yes"},
         "read",
         None,
     ],
@@ -779,6 +785,50 @@ async def test_an_lndl_leg_reads_then_answers_in_two_requests(leg):
         sent = _last_user_text(payload)
         assert any(line.startswith("Tools:") for line in sent.splitlines())
         assert "reader" in sent
+
+
+@pytest.mark.parametrize("caching", [False, True])
+@pytest.mark.asyncio
+async def test_an_lndl_calls_leg_shows_its_tools_as_calls_and_no_round_names_them(leg, caching):
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    profile = _profile(api_tools="read", api_loop="lndl-calls", prompt_caching=caching)
+    result, _, _, status, _ = await leg.run(profile)
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.branch.metadata["api_launch"]["loop"] == "lndl-calls"
+    assert len(leg.payloads) == 2
+    for payload in leg.payloads:
+        sent = _last_user_text(payload)
+        assert not any(line.startswith("Tools:") for line in sent.splitlines())
+        assert "name: reader" not in sent
+    first = [line.strip() for line in _last_user_text(leg.payloads[0]).splitlines()]
+    assert "CALLING TOOLS" in first
+    assert any(line.startswith("reader(") for line in first)
+    # Nor does a cached system block carry the tool section, while an lndl leg's does.
+    system = json.dumps([payload.get("system") for payload in leg.payloads])
+    assert "Tools:" not in system
+    if caching:
+        leg.payloads.clear()
+        leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+        await leg.run(_profile(api_tools="read", api_loop="lndl", prompt_caching=True))
+        assert "Tools:" in json.dumps([payload.get("system") for payload in leg.payloads])
+
+
+@pytest.mark.parametrize("loop", ["lndl", "lndl-calls"])
+@pytest.mark.asyncio
+async def test_only_an_lndl_calls_leg_is_asked_to_declare_every_known_read_in_one_round(leg, loop):
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    await leg.run(_profile(api_tools="read", api_loop=loop))
+
+    first = " ".join(_last_user_text(leg.payloads[0]).split())
+    assert "a tool result is never the answer." in first
+    asked = (
+        "In each calling round, declare every read you already know you need, up to 16 calls, "
+        "and answer only after reading what the answer depends on."
+    )
+    assert (asked in first) is (loop == "lndl-calls")
 
 
 @pytest.mark.asyncio

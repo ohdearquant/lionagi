@@ -299,3 +299,112 @@ def test_live_app_sessions_signals_route_present():
 def test_legacy_bypass_permission_leo_routes_are_not_mounted():
     paths = {getattr(r, "path", None) for r in _live_app.routes}
     assert not any(path and path.startswith("/api/leo") for path in paths)
+
+
+@pytest.fixture
+def route_import_package(tmp_path, monkeypatch):
+    import sys
+
+    name = "_studio_route_import_case"
+    root = tmp_path / name
+    root.mkdir()
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield name, root
+    for module_name in tuple(sys.modules):
+        if module_name == name or module_name.startswith(name + "."):
+            sys.modules.pop(module_name, None)
+
+
+def test_route_loading_uses_the_shared_importer_in_registration_order(
+    route_import_package, monkeypatch
+):
+    from lionagi.ln import import_module
+    from lionagi.studio import registry
+
+    name, root = route_import_package
+    for leaf in ("first", "second"):
+        (root / f"{leaf}.py").write_text(
+            "from lionagi.studio.registry import studio_route\n"
+            f"@studio_route('/{leaf}', method='GET', area='import-case')\n"
+            "async def handler():\n"
+            "    return {}\n",
+            encoding="utf-8",
+        )
+    targets = (name + ".first", name + ".second")
+    monkeypatch.setattr(registry, "_STUDIO_ROUTE_MODULES", targets)
+    bound_importer = registry.import_module
+    calls = []
+
+    def observed_import(module_name, *args, **kwargs):
+        calls.append((module_name, args, kwargs))
+        return import_module(module_name, *args, **kwargs)
+
+    monkeypatch.setattr(registry, "import_module", observed_import)
+    registry.load_studio_route_modules()
+    registry.load_studio_route_modules()
+
+    routes = registry.iter_studio_routes()
+    assert [route.path for route in routes] == ["/first", "/second"]
+    assert [route.order for route in routes] == [0, 1]
+    assert [route.handler.__module__ for route in routes] == list(targets)
+    assert bound_importer is import_module
+    assert [call[0] for call in calls] == [*targets, *targets]
+    assert all(not args and kwargs.get("import_name") is None for _, args, kwargs in calls)
+
+
+@pytest.mark.parametrize("error_kind", ["ordinary", "subclass", "missing"])
+def test_route_import_failure_preserves_diagnostics_and_stops_later_registration(
+    route_import_package, monkeypatch, error_kind
+):
+    import sys
+    import types
+
+    from lionagi.studio import registry
+
+    name, root = route_import_package
+
+    class RouteImportError(ImportError):
+        pass
+
+    error_type = {
+        "ordinary": ImportError,
+        "subclass": RouteImportError,
+        "missing": ModuleNotFoundError,
+    }[error_kind]
+    original = error_type("route initialization failed", name="route_dependency", path="routes.py")
+    state = types.ModuleType(name + ".state")
+    state.error = original
+    monkeypatch.setitem(sys.modules, state.__name__, state)
+    for leaf in ("before", "after"):
+        (root / f"{leaf}.py").write_text(
+            "from lionagi.studio.registry import studio_route\n"
+            f"@studio_route('/{leaf}', method='GET', area='import-case')\n"
+            "async def handler():\n"
+            "    return {}\n",
+            encoding="utf-8",
+        )
+    target = name + ".broken"
+    (root / "broken.py").write_text("from .state import error\nraise error\n", encoding="utf-8")
+    monkeypatch.setattr(
+        registry, "_STUDIO_ROUTE_MODULES", (name + ".before", target, name + ".after")
+    )
+
+    with pytest.raises(ImportError) as caught:
+        registry.load_studio_route_modules()
+
+    assert [route.path for route in registry.iter_studio_routes()] == ["/before"]
+    assert target not in sys.modules
+    assert name + ".after" not in sys.modules
+    if error_kind == "missing":
+        assert caught.value is original
+        assert caught.value.name == "route_dependency"
+        assert caught.value.path == "routes.py"
+        assert caught.value.msg == "route initialization failed"
+    else:
+        assert type(caught.value) is ImportError
+        assert str(caught.value) == f"Failed to import module {target}: {original}"
+        assert caught.value.msg == str(caught.value)
+        assert caught.value.name is None
+        assert caught.value.path is None
+        assert caught.value.__cause__ is original

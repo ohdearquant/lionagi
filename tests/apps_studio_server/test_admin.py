@@ -1392,8 +1392,8 @@ def test_a_job_lock_under_the_job_directory_reaches_the_classifier(tmp_path, mon
     not under any run's artifact root either, so it needs the same explicit
     look-up.
     """
-    import lionagi.mcp.config as mcp_config
     import lionagi.studio.services.admin as admin_svc
+    import lionhub.serve.mcp.config as mcp_config
 
     jobs_dir = tmp_path / "jobs"
     monkeypatch.setattr(mcp_config, "JOBS_DIR", jobs_dir)

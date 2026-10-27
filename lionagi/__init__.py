@@ -5,9 +5,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import ln as ln
+from ._moved import install as _install_moved
 from .ln._lazy_init import lazy_import
 from .ln.types import DataClass, Operable, Params, Spec, Undefined, Unset
 from .version import __version__
+
+_install_moved()
 
 if TYPE_CHECKING:
     from pydantic import BaseModel, Field

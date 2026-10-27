@@ -26,7 +26,9 @@ dependencies = [
     "tomli>=2.0.1; python_version < '3.11'",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
-    "aiosqlite>=0.22.0",
+    # lionagi/state/engine.py reads the private Connection._thread; widen the
+    # bound once a new release is checked (tests/state/test_failed_open_worker.py).
+    "aiosqlite>=0.22.0,<0.23",
     "sqlalchemy[asyncio]>=2.0.0",
     "orjson>=3.11.8",
     "psutil>=5.9.0",
@@ -121,7 +123,7 @@ postgres = [
 sqlite = [
     # aiosqlite is now a core dependency; this extra is kept for backwards
     # compatibility with existing `pip install lionagi[sqlite]` invocations.
-    "aiosqlite>=0.22.0",
+    "aiosqlite>=0.22.0,<0.23",
 ]
 
 graph = [
@@ -159,8 +161,11 @@ all = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+# Both import roots, so `lionhub` sorts as first-party like `lionagi`.
+src = [".", "lionhub/src"]
 
 [tool.ruff.lint]
+extend-select = ["TID251"]
 select = ["E", "F", "W", "B", "I", "UP", "N", "S", "A", "RUF013"]
 ignore = [
     "N805",   # pydantic validator first-arg naming
@@ -177,9 +182,11 @@ ignore = [
 # pydantic.Field in a default is the documented way to attach a description to a
 # parameter; the FieldInfo it returns is inert, so B008's mutable-default hazard
 # does not apply.
-extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
+extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
+# Enforce shared helpers only in the migrated import and concurrency modules.
+"!lionagi/{_auto,agent/settings,_class_registry,cli/engine,cli/machine,cli/main,cli/monitor,cli/orchestrate/_notify,providers/_subagent_admission,service/connections/provider_config,service/connections/registry,state/lifecycle/callbacks,state/lifecycle/notify_settings,studio/registry,studio/scheduler/engine,studio/services/admin}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)
@@ -201,6 +208,12 @@ extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
     "S108",   # /tmp in dev server
     "B007",   # unused loop vars
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.import_module" = {msg = "Use lionagi.ln.import_module in this migrated module."}
+"asyncio.sleep" = {msg = "Use lionagi.ln.concurrency.sleep in this migrated module."}
+"anyio.sleep" = {msg = "Use lionagi.ln.concurrency.sleep in this migrated module."}
+"anyio.to_thread.run_sync" = {msg = "Use lionagi.ln.concurrency.run_sync in this migrated module."}
 
 [tool.pytest.ini_options]
 # --max-worker-restart belongs here rather than only in scripts/ci.sh, so that it
@@ -261,9 +274,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["lionagi"]
+packages = ["lionagi", "lionhub/src/lionhub"]
 artifacts = [
     "lionagi/py.typed",
+    "lionhub/src/lionhub/py.typed",
     "lionagi/casts/packs/*.yaml",
     "lionagi/studio/builtin_playbooks/*.playbook.yaml",
 ]
@@ -282,7 +296,8 @@ exclude = [
 ]
 
 [tool.pyright]
-include = ["lionagi", "tests/typing/branch_chat.py"]
+include = ["lionagi", "lionhub/src/lionhub", "tests/typing/branch_chat.py"]
+extraPaths = ["lionhub/src"]
 exclude = [
     "apps/studio/frontend",
     "**/__pycache__",

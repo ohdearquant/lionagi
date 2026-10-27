@@ -9,8 +9,9 @@ import pytest
 
 from lionagi import Branch
 from lionagi.casts.emission import build_emission_operable
-from lionagi.engines.engine import Engine, EngineBudgetError, JudgeVerdict
-from lionagi.engines.hypothesis import (
+from lionagi.session.signal import StructuredOutput
+from lionhub.orchestration.engines.engine import Engine, EngineBudgetError, JudgeVerdict
+from lionhub.orchestration.engines.hypothesis import (
     ApplicationMapped,
     ChainEvent,
     ConclusionDrawn,
@@ -18,8 +19,7 @@ from lionagi.engines.hypothesis import (
     HypothesisEngine,
     QuestionRaised,
 )
-from lionagi.engines.research import FindingEmitted
-from lionagi.session.signal import StructuredOutput
+from lionhub.orchestration.engines.research import FindingEmitted
 
 
 class _StubEngine(Engine):
@@ -139,7 +139,7 @@ async def test_foreign_session_deny_does_not_gate_expansion(monkeypatch):
 
     async def foreign(_judge, *, instruction):
         await run.emit(JudgeVerdict(subject="Q-1", allow=False, reason="foreign deny"))
-        return ""
+        return "PASS"
 
     monkeypatch.setattr(_FakeJudge, "operate", foreign)
 

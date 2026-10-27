@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from lionagi._errors import ValidationError
 from lionagi.ln import is_coro_func
 from lionagi.ln.concurrency import run_sync
@@ -25,7 +27,7 @@ def get_handler(d_: dict, k: str | type, get: bool = False, /):
         if not is_coro_func(handler):
 
             async def _func(*args, **kwargs):
-                return await run_sync(handler, *args, **kwargs)
+                return await run_sync(partial(handler, *args, **kwargs))
 
             return _func
         return handler

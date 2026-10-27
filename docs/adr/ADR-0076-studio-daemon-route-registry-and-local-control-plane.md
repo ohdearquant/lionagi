@@ -321,23 +321,110 @@ the endpoint contracts remain distinct:
 
 | Endpoint | Cursor/source | Poll/heartbeat | Terminal and miss semantics |
 |---|---|---|---|
-| `/api/sessions/{id}/stream` | optional opaque query cursor encoding `(created_at,id)`; data frames return the next cursor in `id:` | rows limited to 500 per read and drained immediately; poll 0.5s only when caught up; heartbeat after 5s idle | preflight 404; invalid/foreign cursor 400; `done` only after the bounded backlog is drained and terminal status is stable more than 60s |
-| `/api/sessions/{id}/signals` | persisted per-session `seq`, starting at 0 | rows limited to 500 per poll; poll 0.5s; heartbeat after 5s | preflight 404; same 60s stable terminal test |
+| `/api/sessions/{id}/stream` | Live mode uses the same-detail opaque message ticket, then retained delivery cursors in `id:`; cursorless and v1 requests retain timestamp-based replay | Live mode shares one per-session tail: bounded drains, poll 0.5s only when caught up, heartbeat after 5s idle; legacy retains per-subscriber polling and existing hydration budgets | Preflight 404; live ticket loss or mismatch returns 409 `stream_resync_required` with a typed reason, or resync control plus close after admission; v1 invalid/foreign cursor stays 400; done requires both backlogs drained, the existing greater-than-60s terminal stability test and the final same-connection change fence |
+| `/api/sessions/{id}/signals` | Live mode retains both the same-detail snapshot ticket and last-applied `signal_seq`; explicit bounded history pages fold through the detail cut; legacy starts from its supplied sequence or 0 | Live mode shares the message tail resource, bounded drains, poll 0.5s only when caught up and heartbeat after 5s idle; legacy retains per-subscriber 500-row polling | Preflight 404; missing/foreign/expired live ticket or unavailable frontier returns 409 `stream_resync_required` with a typed reason, or resync control plus close after admission; done uses the shared drained-backlog, terminal-stability and change-fence decision |
 | `/api/shows/{topic}/stream` | in-memory `(mtime,size)` map over sorted files | scan every 0.5s; no heartbeat | route preflight 404; generator emits `done` on invalid/missing directory or terminal DB status after 60s without file change |
 | `/api/leo/sessions/{id}/messages` | one in-memory turn, no replay cursor | no heartbeat/reconnect state | missing/expired session 404; concurrent turn 409; model error emits `error` then `done`; success emits effects, `text`, then `done` |
 
 The 0.5-second polls, 5-second heartbeats, and 60-second stability windows are shipped
 compatibility values. Their qualitative reasons are fast local feedback, keeping idle
 connections visibly alive, and avoiding closure on a transient terminal write. The source
-contains no measurement selecting the exact numbers. The session-message and signal batch
-caps of 500 bound each database read while allowing replay to advance over repeated reads;
-no recorded measurement selects exactly 500.
+contains no measurement selecting the exact numbers.
+
+The legacy message path uses `MAX_HYDRATED_ROWS` (currently 50,000) plus one lookahead row and separate hydration/content/scan budgets; signals default to 500 rows. New live drains use their smaller named batch limit within those existing ceilings. None of these exact limits was selected by a recorded benchmark.
 
 Fetch-based consumers are required when bearer auth is enabled because native
 `EventSource` cannot attach the authorization header. The session-message stream alone
 uses an SSE `id:` field and an explicit `cursor` query parameter; there is no
 `Last-Event-ID` header handling, universal cursor, common error envelope, or central replay
 log.
+
+## Amendment 1 (2026-10-26): session live streams after a detail snapshot
+
+Proposed. Related issue: #3107.
+
+### Context
+
+Opening a session first reads its detail and then opens message and signal streams. Replaying the same history through those streams duplicates work. Independent polling resources also make query and connection work grow with the number of viewers. Message timestamps are not commit order, so a maximum timestamp cursor cannot safely identify membership appended after the detail snapshot.
+
+This amendment changes only session-message and session-signal delivery. Authenticated fetch SSE, existing cursorless clients, opaque v1 composite cursors, backward message pagination, heartbeat intervals, terminal stability and hydration budgets remain compatible. Other stream endpoints, WebSockets, database schema changes and client-retention policy are outside scope.
+
+The rejected alternative "General Studio event bus and replay log" remains rejected: this tailer is per-session, daemon-local and non-durable, so the amendment does not reopen a general event bus or durable replay log. Multi-daemon ownership and PostgreSQL ownership are outside this amendment's scope.
+
+### Decisions
+
+#### Same-snapshot bootstrap and explicit live mode
+
+A detail request opts in with `live_snapshot=true`. In one short read transaction it reads the detail and returns:
+
+```text
+stream_snapshot: {version: 1, message_cursor: <opaque ticket>, signal_seq: <cut>}
+```
+
+The ticket binds session, daemon boot epoch and, for each branch, its ID, existing progression ID, captured progression length and anchor ID. An empty branch uses length zero and no anchor. A previously captured branch disappearing, or its progression pointer changing even with the same length and anchor, invalidates the frontier and requires resnapshot. A bootstrap read does not itself start a tail resource. The response contains no signal projection or reducer checkpoint.
+
+New live subscriptions use `/sessions/{id}/stream?mode=live&cursor=...` and `/sessions/{id}/signals?mode=live&snapshot=...&after_seq=...`. Signals retain the snapshot ticket on every reconnect; sequence alone does not establish the bootstrap generation. Existing v1 and cursorless requests keep their behavior. Legacy subscriptions keep per-subscriber polling; the shared tail serves live mode only. Backward `message_next_cursor` is separate from live continuation.
+
+New message membership follows progression append positions, including equal-timestamp/lower-ID and backdated appends. The retained live delivery order is deterministic across partial-batch reconnects. Anchor mismatch, shrink, replaced progression, foreign epoch, expiry or lost retained frontier explicitly require a new snapshot. This detects the specified frontier changes; it does not claim to detect arbitrary same-length interior rewrites. No store-incarnation record or prefix digest is introduced.
+
+#### Explicit paginated signal history and one reducer
+
+Add `GET /sessions/{id}/signals/page?after_seq=A&through_seq=C&limit=L`. Both positions are nonnegative and `C >= A`; limit defaults to 500 and is capped at 500. Its response is:
+
+```text
+{signals: [...], next_after_seq: <last returned seq or A>,
+ through_seq: C, has_more: <boolean>}
+```
+
+Rows are ordered by sequence and restricted to `A < seq <= C`, using existing signal parsing. Existing unbounded-above signal reads retain their semantics. Authentication and file-store 404/503 behavior remain consistent with the session endpoints.
+
+The client obtains paired detail, reads the prefix through its cut in bounded pages, folds those rows with the existing `SignalProjection`, and only then opens both live subscriptions. Empty cut zero completes without historical live replay. Normalize signal timestamps from seconds to milliseconds once. Keep the existing 2,000-event raw ring, graph-sized indexes and counters. There is no duplicate server reducer, projection schema or persisted projection. Initial prefix work transfers O(signals) rows and makes O(signals) reducer appends per detail open; this is not a bound on total client CPU. Do not publish a projection after every prefix page: publish once after the full fold, then coalesce live publications through the existing queued microtask. Index copying, activity sorting and graph reduction have separate costs; neither their CPU cost, projection memory nor whole-detail work is bounded by the raw-ring size.
+
+#### Shared bounded tail lifetime
+
+One tailer per session per daemon/application instance shares one reusable read resource across both channels. Scope its registry to the configured application/store lifetime; restarting the application to reconfigure its store starts a new daemon epoch. This introduces no identity record or arbitrary hot-swap detection. Cache signal-table capability and its existing table definition at activation. A changed SQLite schema cookie triggers capability revalidation: appearance, disappearance or a changed definition of `session_signals` invalidates the tail and requires resnapshot before more delivery or done; an unrelated schema change refreshes the cookie after the signal definition is confirmed unchanged. Check this in admission, drain and terminal confirmation snapshots. Drain messages, signals and terminal state in short combined transactions; finish cursors and transactions before waiting. Tail query and connection creation work must not grow with viewer count.
+
+Named operational limits cover broker count, subscribers, queue rows/bytes, per-broker/global retained bytes and ticket/idle expiry. Initial limits are 64 brokers, 128 subscribers per broker, 128 queued entries and 8 MiB queued serialized bytes per subscriber, 16 MiB retained per broker, 64 MiB retained globally, and 300-second ticket/cache idle expiry. Retained metadata counts toward limits. These limits are not RSS guarantees or benchmark-selected values. Oversized payloads and resource admission failures have explicit outcomes rather than endless retries. A slow consumer cannot block others. Last departure, cancellation and shutdown cancel and await the tailer and close its resource; dormant metadata remains bounded and expirable.
+
+#### Overflow, reconnect and resnapshot
+
+Reserve a control path independent of payload-queue capacity. Overflow or invalid retained state sends `resync_required`, a typed reason and a conservative starting marker, then closes the subscription. Message controls carry `resume_cursor`; signal controls carry `resume_after_seq`. Before streaming starts, return HTTP 409 with `detail.code="stream_resync_required"` and a reason. Reasons include overflow, expired, foreign_epoch, frontier_unavailable, anchor_mismatch, frontier_shrunk and resource_limit. V1 invalid cursors retain their existing 400 behavior.
+
+Server markers are advisory; enqueueing or yielding does not acknowledge browser application. The client keeps its last successfully applied cursor/sequence and advances only after its consumer returns normally. Heartbeat, done and resync controls never advance it. A rejected live request never silently becomes legacy replay.
+
+Either channel's resync stops both streams, coalesces one new paired detail request, folds its bounded signal pages and resubscribes. Visit and stream-generation guards discard stale responses, callbacks and older-page requests, including A-to-B-to-A navigation. Install the fresh authoritative message window, totals and backward cursor together. Compatibility is unproven for an old-only row: this opaque response does not expose a cross-snapshot progression-identity witness, and equal counts, anchor IDs or overlapping message IDs do not prove that progression P was not replaced by Q. Therefore this client retains no old-only rows across a paired resnapshot, including overflow, expiry and epoch recovery. Every prior row remains reachable by paging from the fresh backward cursor. Overlap consists only of rows actually returned in the fresh authoritative page, in that page's progression order; it cannot validate an unseen old prefix. A P-to-Q swap with the same length and anchor cannot preserve a stale old prefix through this rule. No server compatibility witness is added.
+
+The fresh backward cursor starts immediately before that installed window. Older pages prepend their authoritative progression-ordered rows, deduplicate overlap by message ID, and preserve the already accepted newer live suffix and current totals; they never sort by timestamps. Thus a gap larger than the detail window remains reachable in order instead of being stitched ahead of a disjoint stale prefix. Backward history and ordinary terminal refreshes cannot rebase live cursors. An older server lacking the optional snapshot field may use temporary legacy compatibility after detail installation; malformed or unsupported explicit snapshots fail visibly. Automatic resnapshot is limited to one attempt without successfully accepted current-generation data; repeated failure surfaces an error instead of looping on resource limits or an expired bootstrap.
+
+#### Terminal fence
+
+Database ingestion is drained only when both message memberships and persisted signals have been consumed through the tail's frontiers. Done also requires the existing terminal status stable for more than 60 seconds. On the same read-only tailer connection, read `PRAGMA data_version` before the combined drain/state snapshot, end the transaction and read a fresh final marker. If unchanged, that final read is the terminal decision's linearization point.
+
+A changed marker requires positive session-specific confirmation, rather than database-wide quiet. Open a fresh short read transaction on that same connection; its first contributing read pins a new SQLite snapshot. Confirm that the session still exists with the same terminal status and `updated_at`, every branch ID/progression ID/length/anchor equals the ingested frontiers, with the confirmation enumerating the session's complete current branch set in its snapshot and a branch absent from the ingested frontiers meaning drain again, and no persisted signal has sequence above the ingested signal frontier. Revalidate schema capability as above. If these predicates hold, the confirmation snapshot is the terminal decision's linearization point, even while unrelated sessions keep committing. If this session's facts differ, drain again; disappearance or invalid frontiers require resnapshot. An unequal marker is never accepted without this positive confirmation, and no retry count substitutes for it.
+
+Database ingestion and subscriber delivery are separate. Marking ingestion complete lets each subscriber drain its own retained payload suffix on that channel before yielding normal `done`. A slow subscriber does not delay another subscriber's suffix or done; a joining subscriber receives its admitted retained suffix before done too. Only resync may preempt queued payloads. Neither terminal linearization rule promises anything about later writes. Never compare markers across connections or expose them as tickets. The tailer does not write through this connection. No read transaction persists across idle waits. SQLite documents the [connection-local marker](https://www.sqlite.org/pragma.html#pragma_data_version) and [retained transaction snapshots](https://www.sqlite.org/lang_transaction.html).
+
+### Failure modes and acceptance tests
+
+- A 100,000-message opening does not replay historical messages through the default live subscription. Report admission, explicit signal-prefix and steady-state work separately.
+- A second writer commits between detail and subscription: ordinary, tied, backdated and new-branch appends arrive once with correct totals. Cover empty history and deterministic reconnects.
+- Paginated prefix folding equals the existing full reducer, including evicted unnamed activity, later name correlation, spawn/escalation, gates, lane resets and duplicates. Verify one timestamp normalization and no new retention policy.
+- Overflow and epoch recovery after a gap larger than the detail window install a fresh backward cursor; multiple older pages restore progression order, including backdated and tied rows, while new live rows remain present. Count-only or anchor-only compatibility never retains an old-only prefix after a progression replacement.
+- Twenty viewers share one tail resource, with zero per-tick connection creation after activation and O(1) tail reads per session interval. Disclose remaining progression-JSON scan costs.
+- Force row/byte overflow, resource limits, stale/foreign tickets, daemon or reconfigured-store restart and failed resnapshot. Distinguish applied positions from enqueued markers, prove coalesced recovery and preserve legacy behavior.
+- Exercise commit-between-empty-read-and-terminal, both backlogs, final-fence changes, continuous unrelated-session commits during every fence attempt, own-session commits during confirmation, queued suffix delivery before done, a terminal-time join, cancellation and last-subscriber cleanup. Negative controls must detect removed guards.
+- Activate without a signal table, create it and append a signal without restarting, and require resnapshot. An unrelated schema change must not invalidate an unchanged signal capability indefinitely.
+
+### D5 table edit
+
+Replace the two session rows with these rows; other endpoint rows remain unchanged.
+
+| Endpoint | Cursor/source | Poll/heartbeat | Terminal and miss semantics |
+|---|---|---|---|
+| `/api/sessions/{id}/stream` | Live mode uses the same-detail opaque message ticket, then retained delivery cursors in `id:`; cursorless and v1 requests retain timestamp-based replay | Live mode shares one per-session tail: bounded drains, poll 0.5s only when caught up, heartbeat after 5s idle; legacy retains per-subscriber polling and existing hydration budgets | Preflight 404; live ticket loss or mismatch returns 409 `stream_resync_required` with a typed reason, or resync control plus close after admission; v1 invalid/foreign cursor stays 400; done requires both backlogs drained, the existing greater-than-60s terminal stability test and the final same-connection change fence |
+| `/api/sessions/{id}/signals` | Live mode retains both the same-detail snapshot ticket and last-applied `signal_seq`; explicit bounded history pages fold through the detail cut; legacy starts from its supplied sequence or 0 | Live mode shares the message tail resource, bounded drains, poll 0.5s only when caught up and heartbeat after 5s idle; legacy retains per-subscriber 500-row polling | Preflight 404; missing/foreign/expired live ticket or unavailable frontier returns 409 `stream_resync_required` with a typed reason, or resync control plus close after admission; done uses the shared drained-backlog, terminal-stability and change-fence decision |
+
+Replace the base paragraph claiming a 500-row message cap: the legacy message path uses `MAX_HYDRATED_ROWS` (currently 50,000) plus one lookahead row and separate hydration/content/scan budgets; signals default to 500 rows. New live drains use their smaller named batch limit within those existing ceilings. None of these exact limits was selected by a recorded benchmark.
 
 ## Consequences
 

@@ -11,15 +11,15 @@ from typing import Any
 
 import pytest
 
-from lionagi.engines.coding import CodingChainEvent, CodingRun, WorkPlanned
-from lionagi.engines.engine import ChainRun, Engine, EngineEvent, EngineRun
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.coding import CodingChainEvent, CodingRun, WorkPlanned
+from lionhub.orchestration.engines.engine import ChainRun, Engine, EngineEvent, EngineRun
+from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     EvidenceCollected,
     HypothesisRun,
     QuestionRaised,
 )
-from lionagi.engines.research import (
+from lionhub.orchestration.engines.research import (
     DepthRequested,
     FindingEmitted,
     ResearchEngine,
@@ -123,7 +123,7 @@ async def test_coding_run_collect_increments_eid_counter():
     """Consecutive collects of the same type must yield sequential eids."""
     eng = _stub_engine()
     run = CodingRun(eng)
-    from lionagi.engines.coding import ChangeProposed
+    from lionhub.orchestration.engines.coding import ChangeProposed
 
     p1 = WorkPlanned(approach="step 1")
     p2 = WorkPlanned(approach="step 2")
@@ -176,7 +176,7 @@ async def test_coding_run_emit_does_notify_for_non_chain_event():
 @pytest.mark.asyncio
 async def test_hypothesis_run_collect_stamps_eid_and_stores():
     """collect() on a HypothesisRun must stamp an eid and store the event."""
-    from lionagi.engines.hypothesis import FindingPosted
+    from lionhub.orchestration.engines.hypothesis import FindingPosted
 
     eng = _stub_engine()
     run = HypothesisRun(eng)
@@ -190,7 +190,7 @@ async def test_hypothesis_run_collect_stamps_eid_and_stores():
 @pytest.mark.asyncio
 async def test_hypothesis_run_emit_no_duplicate_notify_for_chain_event():
     """emit() on a HypothesisRun must NOT duplicate notify for ChainEvents."""
-    from lionagi.engines.hypothesis import FindingPosted
+    from lionhub.orchestration.engines.hypothesis import FindingPosted
 
     eng = _stub_engine()
     events_seen: list[dict] = []
@@ -236,7 +236,7 @@ def test_hypothesis_run_chain_event_cls_is_chain_event():
 
 def test_coding_run_store_initialised_with_event_prefix_keys():
     """store must be pre-populated from _event_prefix_map on CodingRun init."""
-    from lionagi.engines.coding import _EVENT_PREFIX
+    from lionhub.orchestration.engines.coding import _EVENT_PREFIX
 
     eng = _stub_engine()
     run = CodingRun(eng)
@@ -244,7 +244,7 @@ def test_coding_run_store_initialised_with_event_prefix_keys():
 
 
 def test_hypothesis_run_store_initialised_with_event_prefix_keys():
-    from lionagi.engines.hypothesis import _EVENT_PREFIX
+    from lionhub.orchestration.engines.hypothesis import _EVENT_PREFIX
 
     eng = _stub_engine()
     run = HypothesisRun(eng)
@@ -387,6 +387,6 @@ async def test_research_node_level_backstop_fires_when_all_stages_fail():
 
 def _node_instruction(topic: str, depth: int, max_depth: int) -> str:
     """Reproduce the research engine's node instruction for test harness."""
-    from lionagi.engines.research import _node_instruction as _ni
+    from lionhub.orchestration.engines.research import _node_instruction as _ni
 
     return _ni(topic, depth, max_depth)

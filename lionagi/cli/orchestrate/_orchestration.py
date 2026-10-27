@@ -603,9 +603,20 @@ class OrchestrationEnv:
         return list(self._all_names)
 
 
-_JOB_CONTROL_MODULES = frozenset({"lionagi.mcp", "lionagi.mcp.__main__", "lionagi.mcp.server"})
+# The server under its path today and under the one it had before it moved to lionhub
+# (lionagi._moved), which client configs written earlier still name.
+_JOB_CONTROL_MODULES = frozenset(
+    f"{package}{suffix}"
+    for package in ("lionhub.serve.mcp", "lionagi.mcp")
+    for suffix in ("", ".__main__", ".server")
+)
 _JOB_CONTROL_SCRIPTS = frozenset(
-    {("lionagi", "mcp", "__main__.py"), ("lionagi", "mcp", "server.py")}
+    {
+        ("lionhub", "serve", "mcp", "__main__.py"),
+        ("lionhub", "serve", "mcp", "server.py"),
+        ("lionagi", "mcp", "__main__.py"),
+        ("lionagi", "mcp", "server.py"),
+    }
 )
 _CLI_MODULES = frozenset({"lionagi.cli", "lionagi.cli.__main__", "lionagi.cli.main"})
 _CLI_SCRIPTS = frozenset({("lionagi", "cli", "__main__.py"), ("lionagi", "cli", "main.py")})
@@ -615,7 +626,8 @@ def _is_job_control_server(config: object) -> bool:
     """Recognise lionagi's own job-control MCP server by its command shape.
 
     Server names are aliases the user chooses, so the policy cannot key on them.
-    docs/guides/mcp-setup.md documents ``li mcp`` and ``python -m lionagi.mcp``;
+    docs/guides/mcp-setup.md documents ``li mcp`` and ``python -m lionhub.serve.mcp``
+    (``python -m lionagi.mcp`` before the move, which still runs it);
     ``python -m lionagi.cli mcp`` runs the same subcommand, and so do the
     modules and script files behind them. Each is found anywhere on the command
     line, so a launcher in front of it (``uv run``, ``uvx --from lionagi``,
@@ -648,8 +660,11 @@ def _is_job_control_server(config: object) -> bool:
                     break
                 if letter in "cWX":
                     break
-        script = Path(word).parts[-3:]
-        if module in _JOB_CONTROL_MODULES or script in _JOB_CONTROL_SCRIPTS:
+        parts = Path(word).parts
+        script = parts[-3:]
+        if module in _JOB_CONTROL_MODULES or any(
+            parts[-len(known) :] == known for known in _JOB_CONTROL_SCRIPTS
+        ):
             return True
         if (
             module in _CLI_MODULES
@@ -1457,7 +1472,7 @@ async def build_worker_branch(
     env.session.include_branches(wb)
 
     if grant_spawn:
-        from lionagi.orchestration import grant_spawn as _grant_spawn
+        from lionhub.orchestration import grant_spawn as _grant_spawn
 
         _grant_spawn(wb, assignees=spawn_assignees or [role])
 

@@ -1,6 +1,8 @@
 # Copyright (c) 2025-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import inspect
 import logging
 import signal
@@ -10,12 +12,13 @@ from concurrent.futures import Future as _ThreadFuture
 from contextlib import contextmanager
 from functools import cache, partial
 from types import FrameType
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, TypeVar
 
 import anyio
 import anyio.to_thread
 
-P = ParamSpec("P")
+from .primitives import CapacityLimiter
+
 R = TypeVar("R")
 T = TypeVar("T")
 
@@ -44,12 +47,38 @@ def is_coro_func(func: Callable[..., Any]) -> bool:
     return _is_coro_func_cached(func)
 
 
-async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
-    """Run synchronous function in a thread pool."""
+async def run_sync(
+    func: Callable[..., R],
+    *args: Any,
+    abandon_on_cancel: bool = False,
+    limiter: CapacityLimiter | None = None,
+    **kwargs: Any,
+) -> R:
+    """Run a synchronous callable in an AnyIO worker thread.
+
+    Other keyword arguments belong to the callable. Prebind them with
+    ``functools.partial`` when the callable itself needs a keyword named
+    ``abandon_on_cancel`` or ``limiter``.
+
+    The default shields the active worker wait from AnyIO scope cancellation;
+    waiting for admission can still be cancelled. With ``abandon_on_cancel=True``,
+    cancellation stops waiting but leaves the thread running, discarding its
+    eventual result or error. ``limiter`` selects an ln capacity limiter instead
+    of AnyIO's default. On asyncio, abandoning the wait releases its token; on
+    Trio, the token stays borrowed until the worker finishes.
+    """
+    if limiter is not None and not isinstance(limiter, CapacityLimiter):
+        raise TypeError("limiter must be a lionagi.ln.concurrency.CapacityLimiter or None")
+    if type(abandon_on_cancel) is not bool:
+        raise TypeError("abandon_on_cancel must be a bool")
     if kwargs:
-        func_with_kwargs = partial(func, **kwargs)
-        return await anyio.to_thread.run_sync(func_with_kwargs, *args)
-    return await anyio.to_thread.run_sync(func, *args)
+        func = partial(func, **kwargs)
+    return await anyio.to_thread.run_sync(
+        func,
+        *args,
+        abandon_on_cancel=abandon_on_cancel,
+        limiter=limiter._lim if limiter is not None else None,
+    )
 
 
 # Process-wide latch set by run_async's SIGTERM handler; lets persist paths
@@ -210,8 +239,10 @@ def run_async(coro: Awaitable[T]) -> T:
     return result_container[0]
 
 
-async def maybe_await(result: Any) -> Any:
-    if inspect.isawaitable(result):
+async def maybe_await(result: Any, *, classifier: Callable[[Any], bool] | None = None) -> Any:
+    """Await one result if the selected classifier accepts it; otherwise return it unchanged."""
+    predicate = inspect.isawaitable if classifier is None else classifier
+    if predicate(result):
         return await result
     return result
 

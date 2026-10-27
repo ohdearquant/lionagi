@@ -62,7 +62,7 @@ lint/quality commands.
 
 ## Relevant Source Files
 
-- `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` — `fanout.submit` / `agent.submit`, the
+- `lionhub/src/lionhub/serve/mcp/server.py`, `lionhub/src/lionhub/serve/mcp/verbs.py` — `fanout.submit` / `agent.submit`, the
   MCP path for parallel and single-agent TDD sessions
 - `lionagi/cli/orchestrate/fanout.py` — `li o fanout`, the checkout-local equivalent for
   parallel workers

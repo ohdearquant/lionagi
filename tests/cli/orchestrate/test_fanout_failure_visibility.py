@@ -26,10 +26,10 @@ from lionagi.cli.orchestrate.fanout import (
     FAILED_SYNTHESIS_MARKER,
     FAILED_WORKER_MARKER,
 )
-from lionagi.engines import PlanningEngine
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
+from lionhub.orchestration.engines import PlanningEngine
 
 
 def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:

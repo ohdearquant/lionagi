@@ -19,10 +19,10 @@ import logging
 
 from lionagi.agent import AgentSpec
 from lionagi.casts.emission import TaskAssignment
-from lionagi.orchestration import fanout, spawn_roles
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.orchestration import fanout, spawn_roles
 
 logging.basicConfig(level=logging.WARNING)
 

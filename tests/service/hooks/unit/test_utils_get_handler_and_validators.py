@@ -97,6 +97,45 @@ class TestValidateStreamHandlers:
 
 class TestGetHandler:
     @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    @pytest.mark.parametrize("keyword", ["limiter", "abandon_on_cancel", "cancellable"])
+    async def test_preserves_offload_named_callable_keywords(self, is_coro, keyword):
+        business_value = object()
+        ordinary_value = object()
+
+        def sync_handler(event, extra, *, ordinary, **kwargs):
+            return event, extra, ordinary, kwargs[keyword]
+
+        async def async_handler(event, extra, *, ordinary, **kwargs):
+            return event, extra, ordinary, kwargs[keyword]
+
+        handler = async_handler if is_coro else sync_handler
+        wrapped = get_handler({"test_key": handler}, "test_key", True)
+        if is_coro:
+            assert wrapped is handler
+        result = await wrapped("event", 17, ordinary=ordinary_value, **{keyword: business_value})
+        assert result == ("event", 17, ordinary_value, business_value)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    async def test_preserves_target_error_with_offload_named_keywords(self, is_coro):
+        error = ValueError("handler failed")
+
+        def sync_handler(event, **kwargs):
+            raise error
+
+        async def async_handler(event, **kwargs):
+            raise error
+
+        handler = async_handler if is_coro else sync_handler
+        wrapped = get_handler({"test_key": handler}, "test_key", True)
+        with pytest.raises(ValueError) as raised:
+            await wrapped(
+                "event", limiter=object(), abandon_on_cancel=object(), cancellable=object()
+            )
+        assert raised.value is error
+
+    @pytest.mark.anyio
     async def test_get_handler_wraps_sync_to_async(self):
         def sync_handler(ev, **kw):
             return ("sync_result", kw.get("x"))

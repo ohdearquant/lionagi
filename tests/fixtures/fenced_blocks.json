@@ -1,0 +1,331 @@
+{
+  "cases": [
+    {
+      "blocks": [
+        "<lvar x>hello</lvar>\nOUT{x: [x]}\n"
+      ],
+      "id": "existing-extract-single-lndl-block",
+      "text": "```lndl\n<lvar x>hello</lvar>\nOUT{x: [x]}\n```"
+    },
+    {
+      "blocks": [],
+      "id": "existing-extract-no-blocks",
+      "text": "No code blocks here."
+    },
+    {
+      "blocks": [],
+      "id": "existing-extract-ignores-non-lndl-blocks",
+      "text": "```python\nprint('hello')\n```\n```bash\necho hi\n```"
+    },
+    {
+      "blocks": [
+        "block1\n",
+        "block2\n"
+      ],
+      "id": "existing-extract-multiple-lndl-blocks",
+      "text": "First:\n```lndl\nblock1\n```\nSome text\n```lndl\nblock2\n```"
+    },
+    {
+      "blocks": [
+        "lndl_code\n",
+        "more_lndl\n"
+      ],
+      "id": "existing-extract-mixed-languages",
+      "text": "```python\ncode\n```\n```lndl\nlndl_code\n```\n```json\n{}\n```\n```lndl\nmore_lndl\n```"
+    },
+    {
+      "blocks": [
+        "<lvar x>val</lvar>\n"
+      ],
+      "id": "existing-extract-tilde-fence",
+      "text": "~~~lndl\n<lvar x>val</lvar>\n~~~"
+    },
+    {
+      "blocks": [
+        ""
+      ],
+      "id": "existing-extract-empty-block",
+      "text": "```lndl\n```"
+    },
+    {
+      "blocks": [
+        "<lvar x>v</lvar>\n"
+      ],
+      "id": "existing-extract-reads-crlf-indented-and-longer-fences-crlf",
+      "text": "```lndl\r\n<lvar x>v</lvar>\r\n```"
+    },
+    {
+      "blocks": [
+        "<lvar x>v</lvar>\n"
+      ],
+      "id": "existing-extract-reads-crlf-indented-and-longer-fences-crlf-trailing-newline",
+      "text": "```lndl\r\n<lvar x>v</lvar>\r\n```\r\n"
+    },
+    {
+      "blocks": [
+        "<lvar x>line 1\nline 2</lvar>\n"
+      ],
+      "id": "existing-extract-reads-crlf-indented-and-longer-fences-crlf-multiline-value",
+      "text": "```lndl\r\n<lvar x>line 1\r\nline 2</lvar>\r\n```"
+    },
+    {
+      "blocks": [
+        "  <lvar x>v</lvar>\n"
+      ],
+      "id": "existing-extract-reads-crlf-indented-and-longer-fences-indented",
+      "text": "  ```lndl\n  <lvar x>v</lvar>\n  ```"
+    },
+    {
+      "blocks": [
+        "<lvar x>v</lvar>\n"
+      ],
+      "id": "existing-extract-reads-crlf-indented-and-longer-fences-indented-tildes",
+      "text": "\t~~~lndl\n<lvar x>v</lvar>\n\t~~~"
+    },
+    {
+      "blocks": [
+        "<lvar x>v</lvar>\n"
+      ],
+      "id": "existing-extract-reads-crlf-indented-and-longer-fences-four-backticks",
+      "text": "````lndl\n<lvar x>v</lvar>\n````"
+    },
+    {
+      "blocks": [
+        "<lvar x>```\nquoted\n```</lvar>\n"
+      ],
+      "id": "existing-a-longer-fence-holds-a-shorter-one-as-content",
+      "text": "````lndl\n<lvar x>```\nquoted\n```</lvar>\n````"
+    },
+    {
+      "blocks": [],
+      "id": "existing-a-block-closes-only-on-its-own-fence-call-1",
+      "text": "````lndl\n<lvar x>v</lvar>\n```"
+    },
+    {
+      "blocks": [],
+      "id": "existing-a-block-closes-only-on-its-own-fence-call-2",
+      "text": "```lndl\n<lvar x>v</lvar>\n~~~"
+    },
+    {
+      "blocks": [
+        "<lvar code>\n  ```python\n  print(1)\n  ```\n</lvar>\n"
+      ],
+      "id": "existing-a-block-closes-only-at-its-own-indentation-call-1",
+      "text": "```lndl\n<lvar code>\n  ```python\n  print(1)\n  ```\n</lvar>\n```"
+    },
+    {
+      "blocks": [],
+      "id": "existing-a-block-closes-only-at-its-own-indentation-call-2",
+      "text": "  ```lndl\n  <lvar x>v</lvar>\n```"
+    },
+    {
+      "blocks": [],
+      "id": "existing-a-block-quoted-inside-another-fence-is-not-extracted",
+      "text": "```markdown\n```lndl\n<lvar x>v</lvar>\n```\n```"
+    },
+    {
+      "blocks": [
+        "<lvar Report.title t>My Title</lvar>\nOUT{report: [t]}\n"
+      ],
+      "id": "existing-extract-preserves-content",
+      "text": "```lndl\n<lvar Report.title t>My Title</lvar>\nOUT{report: [t]}\n```"
+    },
+    {
+      "blocks": [
+        "some code\n"
+      ],
+      "id": "existing-extract-lndl-case-insensitive",
+      "text": "```LNDL\nsome code\n```"
+    },
+    {
+      "blocks": [
+        "<lvar a>hello</lvar>\nOUT{a}\n"
+      ],
+      "id": "existing-prompt-instructs-fenced-output-and-extractor-matches-it",
+      "text": "Some reasoning here.\n\n```lndl\n<lvar a>hello</lvar>\nOUT{a}\n```\n"
+    },
+    {
+      "blocks": [
+        "outer\n```\ninner\n"
+      ],
+      "id": "fence-four-open-shorter-interior-exact-close",
+      "text": "````lndl\nouter\n```\ninner\n````"
+    },
+    {
+      "blocks": [
+        "outer\n````\ninner\n"
+      ],
+      "id": "fence-three-open-longer-interior-exact-close",
+      "text": "```lndl\nouter\n````\ninner\n```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-same-character-longer-only-no-close",
+      "text": "```lndl\nouter\n````"
+    },
+    {
+      "blocks": [],
+      "id": "fence-different-character-no-own-close",
+      "text": "```lndl\nouter\n~~~"
+    },
+    {
+      "blocks": [
+        "outer\n  ```\ninner\n"
+      ],
+      "id": "fence-margin-open-indented-interior-exact-close",
+      "text": "```lndl\nouter\n  ```\ninner\n```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-indented-open-margin-close-only",
+      "text": "  ```lndl\nbody\n```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-byte-distinct-indentation",
+      "text": " \t```lndl\nbody\n\t ```"
+    },
+    {
+      "blocks": [
+        "body\n"
+      ],
+      "id": "fence-closer-trailing-spaces",
+      "text": "```lndl\nbody\n```   "
+    },
+    {
+      "blocks": [
+        "body\n"
+      ],
+      "id": "fence-closer-trailing-tabs",
+      "text": "~~~lndl\nbody\n~~~\t\t"
+    },
+    {
+      "blocks": [
+        "body\n"
+      ],
+      "id": "fence-closer-crlf",
+      "text": "```lndl\r\nbody\r\n```\r\n"
+    },
+    {
+      "blocks": [
+        "outer\n``` trailing\ninner\n"
+      ],
+      "id": "fence-closer-text-interior-then-exact",
+      "text": "```lndl\nouter\n``` trailing\ninner\n```"
+    },
+    {
+      "blocks": [
+        "upper\n"
+      ],
+      "id": "fence-uppercase-fence-language",
+      "text": "```LNDL\nupper\n```"
+    },
+    {
+      "blocks": [
+        "mixed\n"
+      ],
+      "id": "fence-mixedcase-fence-language",
+      "text": "~~~Lndl\nmixed\n~~~"
+    },
+    {
+      "blocks": [],
+      "id": "fence-json-not-lndl",
+      "text": "```json\n{\"value\": 1}\n```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-lndl-inside-json-is-content",
+      "text": "```json\n```lndl\nquoted\n```\n```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-info-string-after-language",
+      "text": "```lndl title\nbody\n```"
+    },
+    {
+      "blocks": [
+        "body\n"
+      ],
+      "id": "fence-opening-spaces-and-tab",
+      "text": "``` \tlndl\t\nbody\n```"
+    },
+    {
+      "blocks": [
+        "argument\n"
+      ],
+      "id": "fence-argument-language-case-control",
+      "text": "```lndl\nargument\n```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-generic-python-language-control",
+      "text": "```PyThOn\nprint(\"hello\")\n```"
+    },
+    {
+      "blocks": [
+        ""
+      ],
+      "id": "fence-empty-block",
+      "text": "```lndl\n```"
+    },
+    {
+      "blocks": [
+        ""
+      ],
+      "id": "fence-empty-crlf-block",
+      "text": "~~~lndl\r\n~~~\r\n"
+    },
+    {
+      "blocks": [],
+      "id": "fence-empty-input",
+      "text": ""
+    },
+    {
+      "blocks": [],
+      "id": "fence-whitespace-input",
+      "text": " \t\r\n"
+    },
+    {
+      "blocks": [],
+      "id": "fence-plain-reply-no-block",
+      "text": "A reply without a fenced block."
+    },
+    {
+      "blocks": [],
+      "id": "fence-unclosed-opening",
+      "text": "```lndl\nunfinished\n"
+    },
+    {
+      "blocks": [],
+      "id": "fence-inline-closer-not-a-line",
+      "text": "```lndl\nbody ```"
+    },
+    {
+      "blocks": [],
+      "id": "fence-blank-fence-language",
+      "text": "```\nbody\n```"
+    },
+    {
+      "blocks": [
+        "first\n",
+        "second\n"
+      ],
+      "id": "fence-multiple-block-source-order",
+      "text": "before\n```lndl\nfirst\n```\nbetween\n~~~LNDL\nsecond\n~~~\nafter"
+    },
+    {
+      "blocks": [
+        "first\nsecond\n"
+      ],
+      "id": "fence-crlf-multiple-lines",
+      "text": "```lndl\r\nfirst\r\nsecond\r\n```"
+    },
+    {
+      "blocks": [
+        "left\rright\n"
+      ],
+      "id": "fence-lone-carriage-return-content",
+      "text": "```lndl\nleft\rright\n```"
+    }
+  ]
+}

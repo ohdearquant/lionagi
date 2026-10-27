@@ -347,7 +347,7 @@ class SessionObserver(Observer):
         """Pre-invoke gate. Returns True when no gate set; denials recorded as GateDenied."""
         if self._gate is None:
             return True
-        from lionagi.agent.gate import adapt_session_gate
+        from lionagi.protocols.action.gate import adapt_session_gate
 
         result = await adapt_session_gate(self._gate)(action)
         if not result.allowed:

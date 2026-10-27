@@ -136,12 +136,15 @@ what was measured and not a proof that there is no fourth:
   `load_mcp_tools` — `register_tool` skips its duplicate guard entirely and replaces the
   entry, so a **later-declared** server silently displaces an already-registered tool of
   the same name. Calls a caller believes are going to the first server go to the last one.
-- **With a one-entry MCP dict, regardless of the flag.** `ActionManager.__contains__`
-  (`manager.py:67-74`) has arms for `Tool`, `str` and callable and returns `False`
-  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` is `False` for
-  a dict even when that name is registered, the `update=False` guard passes, and `:106`
-  overwrites. The displacement is the same as the `update=True` case and it needs no
-  flag. ADR-0011 lines 330-332 record this behavior; it is re-verified at this head.
+- **With a one-entry MCP dict, regardless of the flag.** When this ADR was written
+  (this item's line numbers are at `0b6cabda`), `ActionManager.__contains__`
+  (`manager.py:67-74`) had arms for `Tool`, `str` and callable and returned `False`
+  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` was `False` for
+  a dict even when that name was registered, the `update=False` guard passed, and `:106`
+  overwrote. The displacement was the same as the `update=True` case and it needed no
+  flag. ADR-0011 lines 330-332 record this behavior. #2950 later added the `dict` arm
+  that delta #8 asks for, so a one-entry dict whose name is already registered now
+  raises under `update=False` and still replaces under `update=True`.
 
 The second and third are the shadowing shape. Both are reachable without any private API:
 `update=True` is documented on two public functions, and the dict form is reachable
@@ -215,8 +218,8 @@ def qualified_mcp_name(server_name: str, tool_name: str) -> str:
 
 The name matters and is not `mcp_tool_name`. That identifier is already bound to a `str`
 on this exact path — a local in `_validate_prebuilt_mcp_tool_admission`
-(`manager.py:114`, read at `:117` and `:132`) and a parameter of
-`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1458`). A module-level function of that
+(`manager.py:153`, read at `:156` and `:171`) and a parameter of
+`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1473`). A module-level function of that
 name would be shadowed inside the one function that most needs it, and a later call from
 there would raise `TypeError: 'str' object is not callable` at runtime and only at
 runtime, on the admission path. Rename the helper rather than the locals: the locals are
@@ -312,11 +315,11 @@ actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 **Exact semantics.**
 
 - `_original_tool_name` is set on both construction paths today, unconditionally
-  (`manager.py:361`, `:399`). It is currently a no-op because it is always equal to the
+  (`manager.py:433`, `:491`). It is currently a no-op because it is always equal to the
   registry key.
-- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:1978`) is the
+- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:2042`) is the
   routing reader. The second is `_validate_prebuilt_mcp_tool_admission`
-  (`manager.py:115`), on the security path, with its own fallback to the config key.
+  (`manager.py:154`), on the security path, with its own fallback to the config key.
   Its behavior under D1 is already correct — it prefers the wire name, which is what
   admission should be checking — but a reader auditing that path should not have to
   discover the field's second site for themselves.
@@ -551,8 +554,8 @@ ADR is **narrowed, not discharged**:
 - The request-options clause is discharged by D5, at the registry layer.
 - The **dependency-direction clause is untouched and remains open in full**, and it is
   larger than a single site. `manager.py` imports from
-  `lionagi.service.connections.mcp_wrapper` at **eight** places (`:10`, `:93`, `:109`,
-  `:325`, `:343`, `:377`, `:445`, `:489`) — one under `TYPE_CHECKING` and seven lazily
+  `lionagi.service.connections.mcp_wrapper` at **eight** places (`:12`, `:132`, `:148`,
+  `:372`, `:399`, `:446`, `:546`, `:582`) — one under `TYPE_CHECKING` and seven lazily
   inside function bodies. The lazy form defers the import; it does not remove the
   dependency, which is what 0011's clause is about. The service-factory design remains
   the standing answer for that clause, and its cost is eight call sites rather than the

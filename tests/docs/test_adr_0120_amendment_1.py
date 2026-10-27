@@ -56,10 +56,10 @@ def _amendment_flat() -> str:
 
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
-    assert "run.spawn" in _span("lionagi/engines/hypothesis.py", 890, 961)
-    assert "run.spawn" in _line("lionagi/engines/review.py", 616)
-    assert "run.spawn" in _line("lionagi/engines/research.py", 187)
-    assert "run.spawn" in _line("lionagi/engines/research.py", 191)
+    assert "run.spawn" in _span("lionhub/src/lionhub/orchestration/engines/hypothesis.py", 890, 961)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 616)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
 
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
@@ -82,8 +82,12 @@ def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
 
 
 def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
-    assert "class ReviewVerdict(Verdict)" in _line("lionagi/engines/review.py", 281)
-    assert "await run.emit(final)" in _line("lionagi/engines/review.py", 842)
+    assert "class ReviewVerdict(Verdict)" in _line(
+        "lionhub/src/lionhub/orchestration/engines/review.py", 281
+    )
+    assert "await run.emit(final)" in _line(
+        "lionhub/src/lionhub/orchestration/engines/review.py", 842
+    )
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
@@ -91,23 +95,29 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 48)
-    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 166)
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 167)
+    assert "DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 48
+    )
+    assert "ack_required: bool = False" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 166
+    )
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line(
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 167
+    )
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1582)
+        _line("lionagi/cli/orchestrate/_orchestration.py", 1597)
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1618)
+    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1633)
     assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2083)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5368)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7207)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7232)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5386)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7225)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7250)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -126,9 +136,9 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:798-802" in flat
-    assert "lionagi/state/db.py:7207-7217" in flat
-    assert "lionagi/state/db.py:7232-7249" in flat
+    assert "lionagi/state/schema.sql:801-805" in flat
+    assert "lionagi/state/db.py:7225-7235" in flat
+    assert "lionagi/state/db.py:7250-7267" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -158,8 +168,8 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "No flow- or" in flat
     assert "invocation-terminal session Signal exists today" in flat
     assert "the bus carries `RunEnd` per operation" in flat
-    assert "lionagi/state/lifecycle/callbacks.py:84" in flat
-    assert "lionagi/engines/flow_signals.py:148-154" in flat
+    assert "lionagi/state/lifecycle/callbacks.py:85" in flat
+    assert "lionhub/src/lionhub/orchestration/engines/flow_signals.py:148-154" in flat
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
@@ -179,7 +189,7 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionagi/engines/review.py:281`, `:842" in flat
+    assert "lionhub/src/lionhub/orchestration/engines/review.py:281`, `:842" in flat
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven
@@ -248,9 +258,9 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1582" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
     assert "lionagi/state/schema.sql:464" in flat
-    assert "lionagi/state/db.py:5368-5370" in flat
+    assert "lionagi/state/db.py:5386-5388" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
@@ -355,7 +365,7 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
+    assert "lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four

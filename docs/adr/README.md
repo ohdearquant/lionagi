@@ -298,6 +298,11 @@ its area block.
   Numbering)
 - [ADR-0135](ADR-0135-bounded-opt-in-session-and-run-listing.md) — Bounded opt-in session and
   run listing; standalone Proposed v2 contract, preserving v1 (sequential number; see Numbering)
+- [ADR-0138](ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md) —
+  Studio backend attachment, daemon ownership, and extraction from the wheels (sequential number; see
+  Numbering)
+- [ADR-0139](ADR-0139-cli-package-location-and-console-script-ownership.md) — CLI package
+  location and console-script ownership (sequential number; see Numbering)
 
 ### governance (0086-0089)
 
@@ -309,6 +314,8 @@ its area block.
   optional runtime profiles (sequential number; see Numbering)
 - [ADR-0125](ADR-0125-bringing-the-lion1-runtime-into-lionagi.md) — Bringing the lion1 runtime into
   lionagi: order, the internal actor, and consolidation (sequential number; see Numbering)
+- [ADR-0136](ADR-0136-moving-non-core-packages-into-lionhub.md) — Moving the packages built on the
+  core into lionhub, and removing their old import paths in 2.0 (sequential number; see Numbering)
 
 ### substrates (0090-0095)
 

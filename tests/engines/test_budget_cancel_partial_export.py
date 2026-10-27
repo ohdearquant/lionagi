@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from lionagi.engines.engine import Engine, EngineRun
-from lionagi.engines.hypothesis import (
+from lionhub.orchestration.engines.engine import Engine, EngineRun
+from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     ConclusionDrawn,
     FindingPosted,
@@ -27,7 +27,7 @@ from lionagi.engines.hypothesis import (
 
 def _wire_minimal(eng: HypothesisEngine, run: HypothesisRun) -> None:
     """Register collector + reactions on the run, mirroring what _run() does."""
-    from lionagi.engines.hypothesis import (
+    from lionhub.orchestration.engines.hypothesis import (
         ExperimentDesigned,
         HypothesisFormed,
         ResultRecorded,

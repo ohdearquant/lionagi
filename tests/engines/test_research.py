@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.engines.research import (
+from lionhub.orchestration.engines.research import (
     DepthRequested,
     FindingEmitted,
     ResearchEngine,

@@ -242,7 +242,7 @@ user in the canvas or a creation flow, not on documentation.
 
 **Engine truth** (binding, 2026-06-11 — supersedes the freeform-workflow
 grammar of DESIGN-CANVAS.md §2/§5): the canvas renders what
-`lionagi/engines/` actually executes, nothing else. An engine is a *kind*
+`lionhub/src/lionhub/orchestration/engines/` actually executes, nothing else. An engine is a *kind*
 (research · review · coding · hypothesis · planning) whose pipeline —
 stages, roles, reactions, judge gate, budget — is fixed in that kind's
 `_run()`; users configure the knobs the backend persists

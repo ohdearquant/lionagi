@@ -36,16 +36,16 @@ rejected by the provider.
 
 **P1 — price tiers change at a prompt size, and nothing in the request path knows it.** The pricing
 table prices some models by prompt length: `claude-haiku-5-5` carries a first tier bounded at
-100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:125-146`, `PriceTier.max_prompt_tokens`
-at `:54`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
-`ModelPrice.max_input_tokens` (`:64`) is the model's capacity, one million, and is used to reserve
+100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:128-149`, `PriceTier.max_prompt_tokens`
+at `:57`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
+`ModelPrice.max_input_tokens` (`:67`) is the model's capacity, one million, and is used to reserve
 spend; it is not the size a caller wants to stay under. No code before a send compares the request
 against either number.
 
 **P2 — the model's own context tools exist, and nothing calls them for it.** `ContextTool`
-(`lionagi/tools/context/context.py:177`) gives a model `status` (`:359`, an estimate from
-`TokenCalculator` over message content, `:239`), `evict` (`:404`), `evict_action_results` (`:420`),
-`restore` (`:439`) and `compact` (`:489`). Eviction removes messages from the branch's active view
+(`lionagi/tools/context/context.py:136`) gives a model `status` (`:345-361`, an estimate from
+`TokenCalculator` over message content, `:198-201`), `evict` (`:390`), `evict_action_results` (`:406`),
+`restore` (`:425`) and `compact` (`:484`). Eviction removes messages from the branch's active view
 and keeps them in the full record, so `restore` brings them back. A model that never calls the tool
 keeps growing its request until the provider refuses it or bills it at the next tier.
 
@@ -129,9 +129,9 @@ text; a Gemini CLI summary for more than one turn, or one with no turn count, co
    or under 60% of the ceiling. A fold replaces a result's body in the request with a stub that keeps
    the tool name, the call id, the original size and how to read it back; the original stays in the
    branch's full record and the model reads it back, in ranges, with its `context` tool (whose output
-   is measured like any other result). Today that tool previews a message in 120 characters or
-   restores it whole (`lionagi/tools/context/context.py:248`, `:439`); landing step 4 adds the range
-   read. A run whose model has no `context` tool (a profile with `context_management` off) is not
+   is measured like any other result). The context tool previews a message in 120 characters and
+   restores the original to the active view (`lionagi/tools/context/context.py:203-208`, `:425-482`);
+   Amendment 2 below specifies ranged reading. A run whose model has no `context` tool (a profile with `context_management` off) is not
    folded, because it could not read the original back; it is refused as in 3. A fold never leaves a
    tool call without its result in the request, never touches the system text, the instruction, or
    the assistant's own messages, and never changes another branch.

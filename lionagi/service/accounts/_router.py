@@ -21,9 +21,9 @@ from ._pricing import (
     CURRENT_REVISION,
     PriceRevision,
     freeze_request,
-    price_usage,
     quote_ceiling,
     request_ttls,
+    usage_outcome,
 )
 from ._types import (
     AccountRoutingError,
@@ -150,16 +150,15 @@ class AccountRouter:
         return attempt
 
     async def settle_response(self, attempt: RouterAttempt, body: Any) -> None:
-        usage = None
+        evidence: CompleteUsage | UnknownOutcome = UnknownOutcome("usage_incomplete")
         if isinstance(body, Mapping):
-            usage = price_usage(
+            evidence = usage_outcome(
                 self.revision,
                 attempt.ttls,
                 body.get("model"),
                 body.get("usage"),
                 provider_request_id(body.get("id"), attempt.key),
             )
-        evidence = usage or UnknownOutcome("usage_incomplete")
         await self.ledger.settle(attempt.attempt_id, evidence)
 
     async def settle_unknown(self, attempt: RouterAttempt, reason: str) -> None:
@@ -178,7 +177,7 @@ class AccountRouter:
     async def settle_stream_end(
         self,
         attempt: RouterAttempt,
-        usage: CompleteUsage | None,
+        usage: CompleteUsage | UnknownOutcome | None,
         *,
         reason: str = "usage_incomplete",
     ) -> None:

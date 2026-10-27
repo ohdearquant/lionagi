@@ -16,9 +16,9 @@ import logging
 import pytest
 
 from lionagi.casts.emission import SPAWN_ALLOWED_OPERATIONS, SpawnRequest
-from lionagi.orchestration.patterns import role_node_builder
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.orchestration.patterns import role_node_builder
 
 
 def _make_roles(*names: str) -> dict[str, Branch]:

@@ -198,7 +198,7 @@ class TestBuildWorkForm:
 
 class TestFormToContextBlock:
     def test_renders_title_and_values(self):
-        from lionagi.work import FieldSpec, WorkForm, fill_form
+        from lionhub.orchestration.work import FieldSpec, WorkForm, fill_form
 
         form = WorkForm(
             title="scan params",

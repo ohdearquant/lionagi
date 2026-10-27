@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14 and 2026-10-26 (see Amendments 1 and 2)
+- **Status**: Accepted, amended 2026-10-14 and 2026-10-26 (see Amendments 1 to 3)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -66,6 +66,36 @@ key is read only by D2's resolution, for the attempt it signs. The name stays am
 names the spawn path redacts, and a value a child already inherits under it is left as it was:
 the rule withholds the fill, it does not scrub the environment the caller hands the child.
 
+## Amendment 3 (2026-10-26) — accounts declared in the user-wide file, and months that follow the credit refresh
+
+**Where accounts are declared.** Amendment 2's rule keys on the configured accounts, so it holds only
+in a process that sees the declaration. D1 named the process environment and the working directory's
+dotenv files. A process started anywhere else, such as an MCP server or a scheduled run whose working
+directory holds none of those files, would see no accounts, and its CLI fill would look up every
+declared name, each account's key included. AppSettings also reads the user-wide file
+`$LIONAGI_HOME/.env` (`~/.lionagi/.env` by default) as its lowest file source (Context P1). Decision:
+`ANTHROPIC_ACCOUNTS` is declared there. Every lionagi process under the same `LIONAGI_HOME` then sees
+the same accounts, and a working-directory file or the environment still replaces the declaration, as
+D1 allows. A process under another `LIONAGI_HOME`, such as the test suite's, sees no declaration and
+takes the legacy path: its CLI fill looks up every declared name, as before this ADR.
+
+**When a month starts.** This ADR takes the provider's monthly credit to refresh at 00:00 UTC on
+the last day of each calendar month, and credit left unspent at the refresh lapses. D5 keyed an
+attempt by the calendar month in UTC, which starts a day later. On each month's last day the ledger therefore
+charged spend to a month whose credit had already lapsed: an account that had spent that month's
+budget was refused for the day although its new credit was available, on the one day spend is
+pushed before a refresh. In the other direction, each calendar month also held the next credit
+period's first day, so within one credit period the ledger could admit up to a day's spend past the
+budget, which only the provider's own refusal (D6) ends.
+
+Decision: a ledger month is a credit period. The period keyed `YYYY-MM` runs from 00:00 UTC on the
+previous calendar month's last day to 00:00 UTC on that month's own last day, so an admission at
+instant `t` takes the key of `t` plus one day in UTC: `2026-10-30T23:59Z` is in `2026-10` and
+`2026-10-31T00:00Z` in `2026-11`. The rule applies to new admissions; a recorded attempt keeps its
+key. At any instant the new key is never earlier than the calendar key, so D5's clock-regression
+check does not refuse a ledger that holds rows keyed both ways. D5's other month rules are
+unchanged, with its midnight read as the start of the credit period.
+
 ## Requirements
 
 The request this record answers, and where each part is carried:
@@ -83,17 +113,17 @@ The request this record answers, and where each part is carried:
 ## Context
 
 **P1 — One provider credential cannot distribute a workload over named budgets.**
-`AppSettings` declares one `ANTHROPIC_API_KEY` and reads `.env`, `.env.local`, then
-`.secrets.env` (`lionagi/config.py:167`, `lionagi/config.py:187`). Provider metadata
+`AppSettings` declares one `ANTHROPIC_API_KEY` and reads `$LIONAGI_HOME/.env`, `.env`,
+`.env.local`, then `.secrets.env` (`lionagi/config.py:169`, `lionagi/config.py:191`). Provider metadata
 supplies that name to endpoint configuration
 (`lionagi/providers/anthropic/_config.py:23`,
-`lionagi/service/connections/provider_config.py:98`). A missing settings name
+`lionagi/service/connections/provider_config.py:99`). A missing settings name
 falls through to `os.getenv(name, name)`, allowing the unresolved name to become
 the credential (`lionagi/service/connections/endpoint_config.py:132`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:697`,
+(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:706`,
 `lionagi/service/connections/api_calling.py:268-275`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
 `lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
@@ -221,9 +251,9 @@ Factor a one-name helper from `lionagi/providers/_secret_resolution.py`; retain
 the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
 (`lionagi/providers/_secret_resolution.py:88`,
-`lionagi/providers/_secret_resolution.py:214`,
-`lionagi/providers/_secret_resolution.py:373`,
-`lionagi/providers/_secret_resolution.py:431`). Reusing the
+`lionagi/providers/_secret_resolution.py:213`,
+`lionagi/providers/_secret_resolution.py:380`,
+`lionagi/providers/_secret_resolution.py:454`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes
@@ -239,7 +269,7 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
-the current eager header path (`lionagi/service/imodel.py:375`,
+the current eager header path (`lionagi/service/imodel.py:384`,
 `lionagi/service/connections/endpoint.py:483`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
@@ -269,8 +299,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:841`) and
-`from_dict` reads it back (`lionagi/service/imodel.py:924`). Direct endpoints have
+preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:851`) and
+`from_dict` reads it back (`lionagi/service/imodel.py:936`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 

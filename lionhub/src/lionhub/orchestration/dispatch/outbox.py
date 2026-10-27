@@ -1,0 +1,731 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Durable dispatch outbox core (ADR-0059).
+
+Durability and delivery are separate guarantees (row persists; scheduler
+retries with backoff); transport is argv-safe, never shell-interpolated. A
+``delivered`` row means the configured transport command exited zero, not that
+the destination's consumer committed or acknowledged the payload. Consumer
+acknowledgement exists only for ``ack_required`` rows that reach ``acked``.
+See docs/adr/ADR-0059-durable-dispatch-outbox.md.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import bindparam, text
+from sqlalchemy.types import JSON
+
+from lionagi.ln._proc import communicate_in_process_group
+from lionagi.session.signal import DispatchSignal
+from lionagi.state.reasons import DispatchReasons
+from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+
+__all__ = (
+    "DEFAULT_MAX_ATTEMPTS",
+    "NOTIFY_TIMEOUT_SECONDS",
+    "ack_dispatch",
+    "backoff_seconds",
+    "deliver_due_dispatches",
+    "enqueue_dispatch",
+    "get_dispatch",
+    "list_dispatches",
+    "purge_dispatch",
+    "purge_dispatches",
+    "resolve_notify_template",
+    "retry_dispatch",
+)
+
+_log = logging.getLogger("lionagi.dispatch.outbox")  # its name before the move
+
+DEFAULT_MAX_ATTEMPTS = 8
+NOTIFY_TIMEOUT_SECONDS = 10.0
+
+# Terminal dispatch_outbox statuses (ADR-0059 D1's six minus the two
+# in-flight ones) — default status filter for purge_dispatches.
+_TERMINAL_DISPATCH_STATUSES = ("delivered", "acked", "dead_letter", "expired")
+
+_BASE_BACKOFF_SECONDS = 30
+_MAX_BACKOFF_SECONDS = 1800
+
+# Claiming a row advances next_attempt_at by this lease so overlapping scans
+# can't re-claim it; a lapsed lease allows crash-recovery re-scan.
+_CLAIM_LEASE_SECONDS = NOTIFY_TIMEOUT_SECONDS + 5.0
+
+_PAYLOAD_TOKEN = "{payload}"  # noqa: S105 -- template placeholder, not a credential
+_DELIVER_TO_TOKEN = "{deliver_to}"  # noqa: S105 -- template placeholder, not a credential
+
+
+def _validate_destination(deliver_to: Any) -> None:
+    """Reject a destination that cannot be passed as one safe argv value."""
+    if not isinstance(deliver_to, str) or not deliver_to.strip():
+        raise ValueError("deliver_to must be a non-empty string")
+    if "\x00" in deliver_to:
+        raise ValueError("deliver_to must not contain a NUL byte")
+
+
+def _validate_notify_template(template: Any) -> None:
+    """Validate the configured argv transport and its destination binding."""
+    if (
+        not isinstance(template, list)
+        or not template
+        or not all(isinstance(part, str) for part in template)
+    ):
+        raise ValueError("dispatch.notify_template must be a non-empty list of strings")
+    if not template[0].strip() or any("\x00" in part for part in template):
+        raise ValueError("dispatch.notify_template contains an invalid argv value")
+    if _DELIVER_TO_TOKEN not in template:
+        raise ValueError("dispatch.notify_template must include an exact {deliver_to} argv token")
+
+
+def backoff_seconds(attempt: int) -> float:
+    """``min(30 * 2**attempt, 1800)`` seconds (ADR-0059; no jitter)."""
+    return min(_BASE_BACKOFF_SECONDS * (2**attempt), _MAX_BACKOFF_SECONDS)
+
+
+def resolve_notify_template(project_dir: str | Path | None = None) -> list[str] | None:
+    """Read the ``dispatch.notify_template`` argv list from .lionagi/settings.yaml, or None."""
+    from lionagi.agent.settings import load_settings
+
+    settings = load_settings(project_dir)
+    dispatch_cfg = settings.get("dispatch") if isinstance(settings, dict) else None
+    template = dispatch_cfg.get("notify_template") if isinstance(dispatch_cfg, dict) else None
+    if (
+        not isinstance(template, list)
+        or not template
+        or not all(isinstance(x, str) for x in template)
+    ):
+        return None
+    return template
+
+
+def _render_notify_argv(template: list[str], *, payload_json: str, deliver_to: str) -> list[str]:
+    """Substitute exact-match placeholder tokens as whole argv elements (never partial-string)."""
+    rendered: list[str] = []
+    for part in template:
+        if part == _PAYLOAD_TOKEN:
+            rendered.append(payload_json)
+        elif part == _DELIVER_TO_TOKEN:
+            rendered.append(deliver_to)
+        else:
+            rendered.append(part)
+    return rendered
+
+
+async def _exec_notify_template(
+    template: list[str],
+    *,
+    payload_json: str,
+    deliver_to: str,
+    timeout: float = NOTIFY_TIMEOUT_SECONDS,
+) -> tuple[bool, str]:
+    """Run the notify template argv-exec (never through a shell); returns (success, error).
+
+    Success means only that the transport command exited zero. It is not a
+    consumer acknowledgement. A timeout, a failed exchange or a cancelled caller
+    kills the command's whole process group, so nothing it started keeps running.
+    """
+    try:
+        _validate_notify_template(template)
+        _validate_destination(deliver_to)
+    except ValueError as exc:
+        return False, f"invalid dispatch destination config: {exc}"
+    argv = _render_notify_argv(template, payload_json=payload_json, deliver_to=deliver_to)
+    # If the template does not place the payload inline, feed it on stdin so
+    # templates that read the body from stdin still receive it.
+    needs_stdin = _PAYLOAD_TOKEN not in template
+    try:
+        returncode, _, stderr_bytes = await communicate_in_process_group(
+            argv, payload_json.encode() if needs_stdin else b"", timeout=timeout
+        )
+    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+        return False, f"notify template timed out after {timeout}s: {argv[0]!r}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"notify template execution error: {exc}"
+
+    if returncode != 0:
+        err = stderr_bytes.decode(errors="replace").strip() or f"exit {returncode}"
+        return False, err[:2000]
+    return True, ""
+
+
+async def enqueue_dispatch(
+    db: Any,
+    *,
+    kind: str,
+    deliver_to: str,
+    body: dict | None = None,
+    dedup_key: str | None = None,
+    ack_required: bool = False,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    expires_at: float | None = None,
+    session_id: str | None = None,
+    schedule_run_id: str | None = None,
+) -> str:
+    """Insert a pending dispatch_outbox row; returns the dispatch id.
+
+    Idempotent on ``dedup_key``. ``max_attempts`` bounds delivery even for
+    ack_required rows (dead_letter on exhaustion). See docs/internals/runtime.md.
+    """
+    _validate_destination(deliver_to)
+    now = time.time()
+    dispatch_id = uuid.uuid4().hex
+    ack_token = uuid.uuid4().hex if ack_required else None
+
+    signal = DispatchSignal(
+        dispatch_id=dispatch_id,
+        kind=kind,
+        deliver_to=deliver_to,
+        attempt=0,
+        ack_token=ack_token,
+        body=body or {},
+    )
+    payload_dict = signal.to_dict(mode="json")
+
+    async with db._tx() as conn:
+        if dedup_key is not None:
+            existing = (
+                (
+                    await conn.execute(
+                        text("SELECT id FROM dispatch_outbox WHERE dedup_key = :dk"),
+                        {"dk": dedup_key},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                return existing["id"]
+
+        await conn.execute(
+            text(
+                "INSERT INTO dispatch_outbox "
+                "(id, kind, deliver_to, payload, dedup_key, status, attempt, "
+                " max_attempts, next_attempt_at, ack_required, ack_token, "
+                " session_id, schedule_run_id, last_error, created_at, expires_at, updated_at) "
+                "VALUES (:id, :kind, :deliver_to, :payload, :dedup_key, 'pending', 0, "
+                " :max_attempts, :next_attempt_at, :ack_required, :ack_token, "
+                " :session_id, :schedule_run_id, NULL, :created_at, :expires_at, :updated_at)"
+            ).bindparams(bindparam("payload", type_=JSON)),
+            {
+                "id": dispatch_id,
+                "kind": kind,
+                "deliver_to": deliver_to,
+                "payload": payload_dict,
+                "dedup_key": dedup_key,
+                "max_attempts": max_attempts,
+                "next_attempt_at": now,
+                "ack_required": int(ack_required),
+                "ack_token": ack_token,
+                "session_id": session_id,
+                "schedule_run_id": schedule_run_id,
+                "created_at": now,
+                "expires_at": expires_at,
+                "updated_at": now,
+            },
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO status_transitions "
+                "(id, entity_type, entity_id, previous_status, status, "
+                " reason_code, reason_summary, evidence_refs, source, actor, created_at, metadata) "
+                "VALUES (:id, 'dispatch', :entity_id, NULL, 'pending', "
+                " :reason_code, :reason_summary, :evidence_refs, 'system', :actor, :created_at, :metadata)"
+            ).bindparams(
+                bindparam("evidence_refs", type_=JSON),
+                bindparam("metadata", type_=JSON),
+            ),
+            {
+                "id": uuid.uuid4().hex,
+                "entity_id": dispatch_id,
+                "reason_code": DispatchReasons.PENDING_ENQUEUED,
+                "reason_summary": f"enqueued kind={kind}",
+                "evidence_refs": [],
+                "actor": "enqueue_dispatch",
+                "created_at": now,
+                "metadata": {},
+            },
+        )
+
+    return dispatch_id
+
+
+async def get_dispatch(db: Any, dispatch_id: str) -> dict[str, Any] | None:
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT * FROM dispatch_outbox WHERE id = :id"), {"id": dispatch_id}
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return None
+    out = dict(row)
+    if isinstance(out.get("payload"), str):
+        out["payload"] = json.loads(out["payload"])
+    return out
+
+
+async def list_dispatches(
+    db: Any,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    async with db._read() as conn:
+        if status:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM dispatch_outbox WHERE status = :status "
+                            "ORDER BY created_at DESC LIMIT :lim"
+                        ),
+                        {"status": status, "lim": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        else:
+            rows = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM dispatch_outbox ORDER BY created_at DESC LIMIT :lim"),
+                        {"lim": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    out = []
+    for row in rows:
+        d = dict(row)
+        if isinstance(d.get("payload"), str):
+            d["payload"] = json.loads(d["payload"])
+        out.append(d)
+    return out
+
+
+async def deliver_due_dispatches(
+    db: Any,
+    *,
+    now: float | None = None,
+    notify_template: list[str] | None = None,
+    actor: Actor | None = None,
+) -> dict[str, int]:
+    """Scan due pending/delivering rows and attempt delivery. Called from the scheduler tick.
+
+    Ack-required rows loop back to pending until acked/expired/exhausted;
+    claims use a time-boxed lease plus a guarded attempt-counter CAS so
+    overlapping scans can't double-deliver. See docs/internals/runtime.md.
+
+    ``actor`` is recorded on every transition this scan writes and defaults to
+    the scheduler tick's own identity. A caller driving delivery from anywhere
+    else must pass its own, or the history will attribute its writes to the
+    scheduler.
+    """
+    if now is None:
+        now = time.time()
+    if notify_template is None:
+        notify_template = resolve_notify_template()
+    if actor is None:
+        actor = Actor(type="scheduler", id="dispatch_delivery_loop")
+
+    counts = {"attempted": 0, "delivered": 0, "dead_letter": 0, "expired": 0, "retried": 0}
+
+    async with db._read() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT id, kind, deliver_to, payload, attempt, max_attempts, "
+                        "ack_required, expires_at, status FROM dispatch_outbox "
+                        "WHERE status IN ('pending', 'delivering') AND next_attempt_at <= :now"
+                    ),
+                    {"now": now},
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    for row in rows:
+        counts["attempted"] += 1
+        dispatch_id = row["id"]
+        try:
+            await _deliver_one_due_row(
+                db, row, now=now, notify_template=notify_template, counts=counts, actor=actor
+            )
+        except LookupError:
+            _log.debug(
+                "deliver_due_dispatches: dispatch %s vanished mid-scan (likely an "
+                "operator purge racing this tick); skipping, continuing the batch.",
+                dispatch_id,
+            )
+
+    return counts
+
+
+async def _deliver_one_due_row(
+    db: Any,
+    row: Any,
+    *,
+    now: float,
+    notify_template: list[str] | None,
+    counts: dict[str, int],
+    actor: Actor,
+) -> None:
+    """Claim-and-deliver one due row; per-row so a mid-scan ``LookupError``
+    (row purged concurrently) can be caught without aborting the batch.
+    Early returns are normal outcomes; see docs/internals/runtime.md.
+    """
+    dispatch_id = row["id"]
+
+    if row["expires_at"] is not None and row["expires_at"] <= now:
+        result = await transition(
+            db,
+            TransitionRequest(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                from_state=row["status"],
+                to_state="expired",
+                reason=StateReason(
+                    code=DispatchReasons.EXPIRED_DEADLINE,
+                    summary="expires_at reached before delivery",
+                ),
+                actor=actor,
+                idempotency_key=f"expire:{dispatch_id}:{row['attempt']}",
+            ),
+        )
+        if result.applied:
+            counts["expired"] += 1
+        return
+
+    next_attempt = row["attempt"] + 1
+    delivering = await transition(
+        db,
+        TransitionRequest(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            from_state=row["status"],
+            to_state="delivering",
+            reason=StateReason(
+                code=DispatchReasons.DELIVERING_ATTEMPT,
+                summary=f"attempt {next_attempt}",
+            ),
+            actor=actor,
+            idempotency_key=f"deliver:{dispatch_id}:{row['attempt']}",
+        ),
+        # Guard on pre-claim attempt (not just status) so a second
+        # overlapping claimant's guard misses and it loses the race.
+        guard={"attempt": row["attempt"]},
+        patch={"attempt": next_attempt, "next_attempt_at": now + _CLAIM_LEASE_SECONDS},
+    )
+    if not delivering.applied:
+        # Already claimed this tick (or state moved) — skip.
+        return
+
+    raw_payload = row["payload"]
+    payload_json = raw_payload if isinstance(raw_payload, str) else json.dumps(raw_payload)
+
+    if notify_template is None:
+        success, err = False, "no dispatch.notify_template configured"
+    else:
+        success, err = await _exec_notify_template(
+            notify_template,
+            payload_json=payload_json,
+            deliver_to=row["deliver_to"],
+        )
+
+    if success:
+        # ack_required rows loop back to pending but must still respect
+        # max_attempts, or a non-acking consumer re-delivers forever.
+        if row["ack_required"] and next_attempt >= row["max_attempts"]:
+            result = await transition(
+                db,
+                TransitionRequest(
+                    entity_type="dispatch",
+                    entity_id=dispatch_id,
+                    from_state="delivering",
+                    to_state="dead_letter",
+                    reason=StateReason(
+                        code=DispatchReasons.DEAD_LETTER_ACK_TIMEOUT,
+                        summary=f"{next_attempt} sends without ack (max_attempts exhausted)",
+                    ),
+                    actor=actor,
+                    idempotency_key=f"ack_timeout:{dispatch_id}:{next_attempt}",
+                ),
+            )
+            if result.applied:
+                counts["dead_letter"] += 1
+            return
+
+        to_state = "pending" if row["ack_required"] else "delivered"
+        patch = (
+            {"next_attempt_at": now + backoff_seconds(next_attempt)}
+            if to_state == "pending"
+            else None
+        )
+        result = await transition(
+            db,
+            TransitionRequest(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                from_state="delivering",
+                to_state=to_state,
+                reason=StateReason(
+                    code=DispatchReasons.DELIVERED_TRANSPORT_OK,
+                    summary=("transport command exited 0; consumer acknowledgement not implied"),
+                ),
+                actor=actor,
+                idempotency_key=f"delivered:{dispatch_id}:{next_attempt}",
+            ),
+            patch=patch,
+        )
+        if result.applied:
+            counts["delivered"] += 1
+        return
+
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE dispatch_outbox SET last_error = :err, updated_at = :now WHERE id = :id"),
+            {"err": err, "now": now, "id": dispatch_id},
+        )
+
+    if next_attempt >= row["max_attempts"]:
+        result = await transition(
+            db,
+            TransitionRequest(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                from_state="delivering",
+                to_state="dead_letter",
+                reason=StateReason(
+                    code=DispatchReasons.DEAD_LETTER_MAX_ATTEMPTS,
+                    summary=f"{next_attempt} attempts exhausted: {err}",
+                ),
+                actor=actor,
+                idempotency_key=f"dead_letter:{dispatch_id}:{next_attempt}",
+            ),
+        )
+        if result.applied:
+            counts["dead_letter"] += 1
+        return
+
+    backoff = backoff_seconds(next_attempt)
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            from_state="delivering",
+            to_state="pending",
+            reason=StateReason(
+                code=DispatchReasons.PENDING_RETRY_BACKOFF,
+                summary=f"retry in {backoff:.0f}s: {err}",
+            ),
+            actor=actor,
+            idempotency_key=f"retry:{dispatch_id}:{next_attempt}",
+        ),
+    )
+    if result.applied:
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE dispatch_outbox SET next_attempt_at = :nat WHERE id = :id"),
+                {"nat": now + backoff, "id": dispatch_id},
+            )
+        counts["retried"] += 1
+
+
+async def ack_dispatch(db: Any, dispatch_id: str, ack_token: str) -> bool:
+    """Present ack_token for an ack_required row; transitions to 'acked'."""
+    row = await get_dispatch(db, dispatch_id)
+    if row is None:
+        raise LookupError(f"dispatch {dispatch_id!r} not found")
+    if not row["ack_required"]:
+        raise ValueError(f"dispatch {dispatch_id!r} does not require ack (ack_required=0)")
+    if row["ack_token"] != ack_token:
+        raise ValueError("ack_token mismatch")
+
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            from_state=row["status"],
+            to_state="acked",
+            reason=StateReason(
+                code=DispatchReasons.ACKED_CONSUMER,
+                summary="consumer presented ack_token",
+            ),
+            actor=Actor(type="operator", id="li_dispatch_ack"),
+            idempotency_key=f"ack:{dispatch_id}",
+        ),
+    )
+    return result.applied
+
+
+async def retry_dispatch(db: Any, dispatch_id: str) -> bool:
+    """Operator override: force an immediate retry of a dead_letter/expired row."""
+    row = await get_dispatch(db, dispatch_id)
+    if row is None:
+        raise LookupError(f"dispatch {dispatch_id!r} not found")
+    if row["status"] not in ("dead_letter", "expired"):
+        raise ValueError(
+            f"dispatch {dispatch_id!r} is status={row['status']!r}; "
+            "retry only applies to dead_letter or expired rows"
+        )
+
+    now = time.time()
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            from_state=row["status"],
+            to_state="pending",
+            reason=StateReason(
+                code=DispatchReasons.PENDING_RETRY_BACKOFF,
+                summary="operator-forced retry",
+            ),
+            actor=Actor(type="operator", id="li_dispatch_retry"),
+            idempotency_key=f"operator_retry:{dispatch_id}:{now}",
+        ),
+        # One guarded write, not two transactions — a crash between separate
+        # writes would leave stale exhausted accounting on a 'pending' row.
+        patch={"attempt": 0, "next_attempt_at": now, "last_error": None},
+    )
+    return result.applied
+
+
+async def purge_dispatch(db: Any, dispatch_id: str, *, actor: str = "li_dispatch_purge") -> bool:
+    """Single-row guarded delete; accepts any status (naming an id is already
+    deliberate). Writes an admin_events audit row on success — see
+    docs/internals/runtime.md.
+    """
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT status FROM dispatch_outbox WHERE id = :id"),
+                    {"id": dispatch_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return False
+
+    async with db._tx() as conn:
+        result = await conn.execute(
+            text("DELETE FROM dispatch_outbox WHERE id = :id"),
+            {"id": dispatch_id},
+        )
+    deleted = (result.rowcount or 0) > 0
+    if deleted:
+        await db.insert_admin_event(
+            action="dispatch_purge",
+            target_id=dispatch_id,
+            details={"dispatch_id": dispatch_id, "status": row["status"], "total": 1},
+            actor=actor,
+        )
+    return deleted
+
+
+async def purge_dispatches(
+    db: Any,
+    *,
+    status: str | None = None,
+    before: float | None = None,
+    dry_run: bool = False,
+    actor: str = "li_dispatch_purge",
+) -> dict[str, Any]:
+    """Bulk-delete ``dispatch_outbox`` rows matching explicit criteria.
+
+    Requires ``status`` and/or ``before``. An explicit status is honored as
+    given (even in-flight); a status-less call defaults to terminal-only.
+    See docs/internals/runtime.md.
+    """
+    if status is None and before is None:
+        raise ValueError("purge_dispatches requires status and/or before criteria")
+
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if status is not None:
+        where_clauses.append("status = :status")
+        params["status"] = status
+    else:
+        # No explicit status: default to terminal-only so a --before-only
+        # purge can never implicitly delete pending/delivering rows.
+        term_placeholders = ", ".join(f":term{i}" for i in range(len(_TERMINAL_DISPATCH_STATUSES)))
+        where_clauses.append(f"status IN ({term_placeholders})")
+        for i, term_status in enumerate(_TERMINAL_DISPATCH_STATUSES):
+            params[f"term{i}"] = term_status
+    if before is not None:
+        where_clauses.append("updated_at <= :before")
+        params["before"] = before
+    where_sql = " AND ".join(where_clauses)
+
+    count_sql = text(
+        f"SELECT status, COUNT(*) AS n FROM dispatch_outbox "  # noqa: S608
+        f"WHERE {where_sql} GROUP BY status"
+    )
+
+    if dry_run:
+        async with db._read() as conn:
+            rows = (await conn.execute(count_sql, params)).mappings().all()
+        counts_by_status = {r["status"]: r["n"] for r in rows}
+        total = sum(counts_by_status.values())
+    else:
+        # Select the exact match set first and delete by those ids only — a
+        # criteria-based second DELETE could see a different set on PostgreSQL.
+        async with db._tx() as conn:
+            matched = (
+                (
+                    await conn.execute(
+                        text(
+                            f"SELECT id, status FROM dispatch_outbox WHERE {where_sql}"  # noqa: S608
+                        ),
+                        params,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            counts_by_status = {}
+            for r in matched:
+                counts_by_status[r["status"]] = counts_by_status.get(r["status"], 0) + 1
+            total = len(matched)
+            matched_ids = [r["id"] for r in matched]
+            for i in range(0, len(matched_ids), 500):
+                chunk = matched_ids[i : i + 500]
+                placeholders = ", ".join(f":id{j}" for j in range(len(chunk)))
+                await conn.execute(
+                    text(f"DELETE FROM dispatch_outbox WHERE id IN ({placeholders})"),  # noqa: S608
+                    {f"id{j}": v for j, v in enumerate(chunk)},
+                )
+
+    await db.insert_admin_event(
+        action="dispatch_purge",
+        details={
+            "status": status,
+            "before": before,
+            "dry_run": dry_run,
+            "total": total,
+            "counts_by_status": counts_by_status,
+        },
+        actor=actor,
+    )
+    return {"total": total, "dry_run": dry_run, **counts_by_status}

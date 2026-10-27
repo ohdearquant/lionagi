@@ -31,6 +31,8 @@ from uuid import UUID
 
 from anyio import Path as AsyncPath
 
+from lionagi._moved import MOVED as _MOVED
+
 P = ParamSpec("P")
 R = TypeVar("R")
 T = TypeVar("T")
@@ -344,7 +346,15 @@ def is_import_installed(package_name: str) -> bool:
 
 _TYPE_CACHE: dict[str, type] = {}
 
-_DEFAULT_ALLOWED_PREFIXES: frozenset[str] = frozenset({"lionagi."})
+# A class whose module moved out of lionagi (lionagi._moved) is serialized under its new
+# path, so each moved package's new prefix loads like lionagi's own. Every module under
+# such a prefix also imports by its old lionagi name, so the prefix reaches no other code.
+# A package moved inside another moved package adds no prefix of its own.
+_MOVED_PREFIXES = {f"{row.new}." for row in _MOVED}
+_DEFAULT_ALLOWED_PREFIXES: frozenset[str] = frozenset(
+    {"lionagi."}
+    | {p for p in _MOVED_PREFIXES if not any(p.startswith(q) for q in _MOVED_PREFIXES - {p})}
+)
 _ALLOWED_MODULE_PREFIXES: set[str] = set(_DEFAULT_ALLOWED_PREFIXES)
 
 

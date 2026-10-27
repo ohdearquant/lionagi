@@ -3497,6 +3497,58 @@ async def test_adopt_accepts_a_github_poll_row_polling_at_the_default(
     assert adopted["poll_interval_sec"] is None
 
 
+@pytest.mark.asyncio
+async def test_adopt_and_reapply_preserve_github_poll_runtime_stagnation(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = _github_agent_manifest(cwd=agent_profile)
+    runtime = {
+        "last_healthy_poll_at": 1_700_000_000.0,
+        "poller_consecutive_401": 2,
+        "github_cursor": "retained-cursor",
+    }
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                effective_timezone=None,
+                github_repo="acme/widgets",
+                poll_interval_sec=300,
+            )
+        )
+        await db.update_schedule("legacy00001", **runtime)
+        for _ in range(3):
+            assert await db.record_github_poll_stagnation("legacy00001", reset=False)
+
+        adopted = await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        assert adopted.adopted == 1
+        row = await db.get_schedule_by_name("demo/nightly")
+        assert row["id"] == "legacy00001"
+        assert row["poller_consecutive_cap_no_dispatch"] == 3
+        assert {name: row[name] for name in runtime} == runtime
+
+        unchanged = await apply_schedule_set(db, doc, agent_profile)
+        assert unchanged.unchanged == 1
+        row = await db.get_schedule_by_name("demo/nightly")
+        assert row["poller_consecutive_cap_no_dispatch"] == 3
+
+        edited = parse_schedule_set(
+            _agent_manifest("nightly", cwd=agent_profile)
+            .replace(_CRON_TRIGGER_BLOCK, _GITHUB_TRIGGER_BLOCK)
+            .replace('prompt: "check things"', 'prompt: "check things again"')
+        )
+        changed = await apply_schedule_set(db, edited, agent_profile)
+        assert changed.updated == 1
+        row = await db.get_schedule_by_name("demo/nightly")
+        assert row["id"] == "legacy00001"
+        assert row["action_prompt"] == "check things again"
+        assert row["poller_consecutive_cap_no_dispatch"] == 3
+        assert {name: row[name] for name in runtime} == runtime
+
+
 # ---------------------------------------------------------------------------
 # Adoption compares a column only under the launch that reads it
 # ---------------------------------------------------------------------------

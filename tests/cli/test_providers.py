@@ -571,3 +571,85 @@ def test_parse_model_spec_still_splits_a_plain_model_name():
 
     assert ms.model == "codex/gpt-5.4"
     assert ms.effort == "max"
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_profile_frontmatter_examples_in_fences_are_silent(monkeypatch, fence):
+    from lionagi.cli._providers import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    text = f"Example profile:\n{fence}yaml\n---\ncontain_user_settings: true\n---\n{fence}\nEnd."
+
+    profile = _parse_profile("example", text)
+
+    assert profile.contain_user_settings is False
+    assert profile.raw_body == text
+    assert warnings == []
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_profile_real_block_after_a_longer_matching_fence_warns_once(monkeypatch, fence):
+    from lionagi.cli._providers import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    text = (
+        f"Example profile:\n{fence}yaml\n---\ncontain_user_settings: true\n---\n"
+        f"{fence}{fence[0]}\n---\ncontain_user_settings: true\n---\nBody."
+    )
+
+    profile = _parse_profile("example", text)
+
+    assert profile.contain_user_settings is False
+    assert len(warnings) == 1
+    assert "its worker is not contained" in warnings[0]
+
+
+@pytest.mark.parametrize("opening,closing", [("```", ""), ("````", "```"), ("~~~", "```")])
+def test_profile_unclosed_or_mismatched_fence_keeps_examples_silent(monkeypatch, opening, closing):
+    from lionagi.cli._providers import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    text = (
+        f"Example profile:\n{opening}yaml\n---\ncontain_user_settings: true\n---\n"
+        f"{closing}\n---\ncontain_user_settings: true\n---"
+    )
+
+    profile = _parse_profile("example", text)
+
+    assert profile.contain_user_settings is False
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    "prose", ["Use ```yaml inline.", "Use ~~~yaml inline.", "```yaml``` is inline."]
+)
+def test_profile_inline_fence_text_does_not_hide_a_real_block(monkeypatch, prose):
+    from lionagi.cli._providers import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+
+    profile = _parse_profile("example", prose + "\n---\ncontain_user_settings: true\n---\nBody.")
+
+    assert profile.contain_user_settings is False
+    assert len(warnings) == 1
+    assert "its worker is not contained" in warnings[0]
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_profile_actual_frontmatter_keeps_its_containment_flag(monkeypatch, value):
+    from lionagi.cli._providers import _parse_profile
+
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+
+    profile = _parse_profile(
+        "actual", f"---\ncontain_user_settings: {str(value).lower()}\n---\nBody."
+    )
+
+    assert profile.contain_user_settings is value
+    assert profile.raw_body == "Body."
+    assert warnings == []

@@ -21,13 +21,13 @@ import pytest
 from anyio import to_thread
 
 from lionagi.ln._proc import process_create_time
-from lionagi.mcp._terminal_cause import allowed_cause_classes
 from lionagi.providers import _subagent_admission as admission
 from lionagi.providers._subagent_admission import (
     SubagentAdmissionRefusedError,
     admit_subagent,
     subagent_admission_status,
 )
+from lionhub.serve.mcp._terminal_cause import allowed_cause_classes
 
 
 @pytest.fixture()
@@ -854,7 +854,7 @@ async def test_each_wait_gives_a_clearing_holder_met_after_it_its_own_quick_rere
         await anyio.sleep(0)
 
     monkeypatch.setattr(admission, "_read_pool", _counted)
-    monkeypatch.setattr(admission, "anyio", SimpleNamespace(sleep=_sleep))
+    monkeypatch.setattr(admission, "_sleep", _sleep)
     try:
         lease = await _admit(env)
     finally:
@@ -896,7 +896,7 @@ async def test_a_wait_spent_on_a_clearing_holder_ends_without_quick_rereads_past
         await anyio.sleep(0)
 
     monkeypatch.setattr(admission, "_read_pool", _counted)
-    monkeypatch.setattr(admission, "anyio", SimpleNamespace(sleep=_sleep))
+    monkeypatch.setattr(admission, "_sleep", _sleep)
     monkeypatch.setattr(admission, "random", SimpleNamespace(uniform=lambda low, high: low))
     monkeypatch.setattr(
         admission,

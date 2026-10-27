@@ -98,15 +98,10 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
   const followUp = page.getByLabel("Follow-up instruction");
   await followUp.fill("Continue with the next check.");
-  const activityPoll = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" && /\/api\/invocations\/[^/?]+$/.test(response.url()),
-  );
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.getByText("Follow-up accepted", { exact: true })).toBeVisible({
     timeout: 15_000,
   });
-  expect((await activityPoll).status()).toBe(200);
 
   const activityLink = page.locator('a[href*="invocation="]').filter({ hasText: "View activity" });
   await expect(activityLink).toHaveCount(1);

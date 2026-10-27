@@ -14,7 +14,7 @@ CLI progress projector, a persisted signal replay, ``flow_signals.py``'s
 These tests pin the current, empirically-observed shape of every exported
 signal class, ``EventStatus``, ``NodeLifecycleState``, and ``FlowEvent``,
 and construct each signal from its documented fields so a construction-site
-break (e.g. inside ``lionagi/engines/flow_signals.py``) is caught here too.
+break (e.g. inside ``lionhub/src/lionhub/orchestration/engines/flow_signals.py``) is caught here too.
 
 A breaking schema change -- removing or renaming a field -- bumps
 ``SIGNAL_SCHEMA_VERSION`` in ``lionagi/session/signal.py``; adding a field
@@ -373,7 +373,7 @@ def _construct_from_documented_fields(name: str) -> Signal:
 @pytest.mark.parametrize("name", sorted(EXPECTED_SIGNAL_FIELDS))
 def test_signal_constructible_from_documented_fields(name):
     """Instantiate each signal using only its own documented fields -- pins
-    that real construction call sites (lionagi/engines/flow_signals.py's
+    that real construction call sites (lionhub/src/lionhub/orchestration/engines/flow_signals.py's
     NodeQueued/NodeStarted/NodeCompleted/NodeFailed(...) calls, DispatchSignal
     producers under ADR-0059) stay valid against the current schema."""
     instance = _construct_from_documented_fields(name)

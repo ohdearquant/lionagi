@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
+from lionagi.ln.concurrency import sleep as _sleep
 from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
@@ -225,6 +226,26 @@ class _ThresholdCooldownClaim:
             return
         self._released = True
         self._engine._threshold_pending.discard(self._schedule_id)
+
+
+@dataclass
+class _GithubPollObservation:
+    """One pass's confirmed progress, persisted only when its accounting settles."""
+
+    from_batch: bool = False
+    poll_status: str | None = None
+    scan_complete: bool = False
+    held: bool = False
+    launched: bool = False
+
+    def reset_after(self, *, settled: bool) -> bool | None:
+        if self.poll_status in {"error", "auth_error"}:
+            return None
+        if self.launched and (self.from_batch or self.poll_status == "ok"):
+            return True
+        if not settled or self.poll_status != "ok" or self.held:
+            return None
+        return self.scan_complete
 
 
 @dataclass
@@ -546,7 +567,7 @@ class SchedulerEngine:
 
     async def _restart_tick_loop(self, delay: float) -> None:
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(delay)
+            await _sleep(delay)
         if self._stopping:
             return
         self._task = self._spawn_tick_loop()
@@ -975,7 +996,7 @@ class SchedulerEngine:
             if remaining <= 0:
                 return
             try:
-                await asyncio.sleep(remaining)
+                await _sleep(remaining)
                 return
             except asyncio.CancelledError:
                 if self._stopping:
@@ -1699,8 +1720,8 @@ class SchedulerEngine:
 
     async def _deliver_due_dispatches(self, now: float) -> None:
         """Scan due dispatch_outbox rows and attempt delivery; not interval-gated."""
-        from lionagi.dispatch import deliver_due_dispatches
         from lionagi.state.db import StateDB
+        from lionhub.orchestration.dispatch import deliver_due_dispatches
 
         async with StateDB() as db:
             await deliver_due_dispatches(db, now=now)
@@ -1762,6 +1783,32 @@ class SchedulerEngine:
     async def _github_due_pass(
         self, schedule: dict, now: float, batch: _GithubBatch | None = None
     ) -> bool:
+        """Account for one settled poll pass without changing its dispatch result."""
+        observation = _GithubPollObservation()
+        try:
+            deferred = await self._github_due_pass_observed(schedule, now, batch, observation)
+        except BaseException:
+            if observation.reset_after(settled=False) is True:
+                try:
+                    await self._svc.record_github_poll_stagnation(schedule["id"], reset=True)
+                except BaseException:
+                    # Progress accounting cannot replace the error or cancellation being unwound.
+                    _log.exception(
+                        "Failed to record github progress for schedule %s", schedule["id"]
+                    )
+            raise
+        reset = observation.reset_after(settled=True)
+        if reset is not None:
+            await self._svc.record_github_poll_stagnation(schedule["id"], reset=reset)
+        return deferred
+
+    async def _github_due_pass_observed(
+        self,
+        schedule: dict,
+        now: float,
+        batch: _GithubBatch | None,
+        observation: _GithubPollObservation,
+    ) -> bool:
         """Run one due poll-and-fire pass; True only when the fire cap deferred it.
 
         *batch* holds events an earlier pass found while the cap was full. This pass dispatches
@@ -1774,6 +1821,7 @@ class SchedulerEngine:
                 batch.slot_claim.release()
                 batch.slot_claim = None
             batch = None
+        observation.from_batch = batch is not None
         due_at = batch.due_at if batch is not None else self._github_due_at(schedule)
         if await self._check_budget(schedule):
             await self._disable_for_budget_exhausted(schedule, now)
@@ -1802,13 +1850,15 @@ class SchedulerEngine:
             else:
                 self._github_polled_at[sid] = now
                 poll_result = await github_poll(schedule)
+                observation.poll_status = poll_result.poll_status
+                observation.scan_complete = poll_result.scan_complete
                 polled = poll_result.items
                 if not poll_result.scan_complete:
                     _log.info(
                         "Schedule %s (%s): merged-PR scan truncated this poll "
                         "(page cap reached or a pagination fetch error) -- "
-                        "event(s) too close to the unproven boundary are held "
-                        "back for a later poll",
+                        "no events released; the cursor stays unchanged "
+                        "until a complete scan establishes merge order",
                         schedule.get("name"),
                         sid,
                     )
@@ -1928,6 +1978,7 @@ class SchedulerEngine:
                             else NO_CURSOR_CLAIM
                         ),
                         expect_github_cursor=claimed_cursor,
+                        github_poll_observation=observation,
                     )
                     if fired:
                         unclaimed_poll_cycle = False
@@ -2017,6 +2068,7 @@ class SchedulerEngine:
                     github_filter=schedule.get("github_filter"),
                     cycle_claimed=not unclaimed_poll_cycle,
                 )
+                observation.held = True
             if cap_deferred:
                 await self._maybe_record_deferred(schedule, now)
                 return True
@@ -2609,6 +2661,7 @@ class SchedulerEngine:
         supersedes_run_id: str | None = None,
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        github_poll_observation: _GithubPollObservation | None = None,
     ) -> bool:
         """Thin wrapper that releases every admission claim on all exit paths.
 
@@ -2630,6 +2683,7 @@ class SchedulerEngine:
                 supersedes_run_id=supersedes_run_id,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                github_poll_observation=github_poll_observation,
             )
         finally:
             if rate_limit_claim is not None:
@@ -2753,6 +2807,7 @@ class SchedulerEngine:
         supersedes_run_id: str | None = None,
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        github_poll_observation: _GithubPollObservation | None = None,
     ) -> bool:
         """Fire one occurrence of *schedule*; False only if it refused before anything committed."""
         sid = schedule["id"]
@@ -3016,6 +3071,7 @@ class SchedulerEngine:
             # while the process runs; the store writes before and after it, the dispatched_at
             # stamp among them, stay timed.
             pass_sid = self._current_github_pass()
+            pass_observation = github_poll_observation
 
             async def _on_launched() -> None:
                 # Stamps dispatched_at the instant the OS process is confirmed to exist, the signal
@@ -3024,6 +3080,8 @@ class SchedulerEngine:
                 # paths running before a restart could read the column.
                 nonlocal dispatched
                 dispatched = True
+                if pass_observation is not None:
+                    pass_observation.launched = True
                 self._github_pass_clock(pass_sid, running=True)
                 try:
                     await self._mark_dispatched(run_id)
@@ -3045,6 +3103,8 @@ class SchedulerEngine:
             # spawn_and_wait returns only once it has an exit code, so a process existed;
             # on_launched flips the flag earlier so a mid-run cancellation classifies the same.
             dispatched = True
+            if pass_observation is not None:
+                pass_observation.launched = True
             end_time = time.time()
 
             # Resolved BEFORE the schedule_run write, so that write and the signal, telemetry and

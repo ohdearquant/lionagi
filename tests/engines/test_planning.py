@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
-from lionagi.engines.planning import PlanError, PlanningEngine
+from lionhub.orchestration.engines.planning import PlanError, PlanningEngine
 
 
 async def _fake_make(role, **kw):
@@ -31,7 +31,7 @@ async def test_plan_retries_once_then_succeeds(monkeypatch):
             return []
         return [TaskAssignment(task="dig", assignee="researcher")]
 
-    monkeypatch.setattr("lionagi.engines.planning.plan", fake_plan)
+    monkeypatch.setattr("lionhub.orchestration.engines.planning.plan", fake_plan)
     assignments = await eng._plan(run, "task", 0)
     assert calls["n"] == 2
     assert assignments[0].assignee == "researcher"
@@ -47,7 +47,7 @@ async def test_plan_empty_after_retry_raises(monkeypatch):
     async def fake_plan(*a, **kw):
         return []
 
-    monkeypatch.setattr("lionagi.engines.planning.plan", fake_plan)
+    monkeypatch.setattr("lionhub.orchestration.engines.planning.plan", fake_plan)
     with pytest.raises(PlanError, match="no usable plan"):
         await eng._plan(run, "task", 0)
 
@@ -149,10 +149,13 @@ async def test_run_wires_plan_build_execute_synth(monkeypatch):
     eng._synthesize = fake_synth
     run.run_dag = fake_run_dag
     run.make_agent = fake_make
-    monkeypatch.setattr("lionagi.engines.planning.grant_spawn", fake_grant_spawn)
-    monkeypatch.setattr("lionagi.engines.planning.build_dag_graph", fake_build_dag_graph)
+    monkeypatch.setattr("lionhub.orchestration.engines.planning.grant_spawn", fake_grant_spawn)
     monkeypatch.setattr(
-        "lionagi.engines.planning._role_template_node_builder", fake_role_template_node_builder
+        "lionhub.orchestration.engines.planning.build_dag_graph", fake_build_dag_graph
+    )
+    monkeypatch.setattr(
+        "lionhub.orchestration.engines.planning._role_template_node_builder",
+        fake_role_template_node_builder,
     )
 
     out = await eng._run(run, "do the work")
@@ -192,9 +195,9 @@ async def test_run_non_reactive_disables_spawn(monkeypatch):
     eng._synthesize = fake_synth
     run.run_dag = fake_run_dag
     run.make_agent = _fake_make
-    monkeypatch.setattr("lionagi.engines.planning.grant_spawn", fail_grant_spawn)
+    monkeypatch.setattr("lionhub.orchestration.engines.planning.grant_spawn", fail_grant_spawn)
     monkeypatch.setattr(
-        "lionagi.engines.planning.build_dag_graph",
+        "lionhub.orchestration.engines.planning.build_dag_graph",
         lambda *a: (SimpleNamespace(internal_nodes=[]), ["n1"]),
     )
 

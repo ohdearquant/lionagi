@@ -275,9 +275,9 @@ the leg's `--timeout` bounds the whole turn when it is given, while `li agent` s
 Before this record the same pass spent 8,192 on each, plus up to four reformat requests after each,
 which D4 removes.
 
-This record stays Proposed until the cost is measured rather than argued. On the agent tasks of
-a benchmark, run with the limit at 8,192 and at 32,768, it records output tokens and dollars per
-run and the task pass rate for each. A third arm bounds thinking through the request instead
+This record was accepted after the cost was measured rather than argued. On the agent tasks of
+a benchmark, run with the limit at 8,192 and at 32,768, it recorded output tokens and dollars per
+run and the task pass rate for each. A third arm bounded thinking through the request instead
 (Anthropic's `output_config` effort, or `thinking` disabled at an effort that allows it) at the
 old limit. If the bounded request keeps Claude Haiku 5.5 under 8,192 at the same pass rate, a
 further decision bounds thinking and D1's limit is revisited.

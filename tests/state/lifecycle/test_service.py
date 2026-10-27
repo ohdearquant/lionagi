@@ -179,7 +179,7 @@ async def test_public_transition_rejects_unregistered_reason_code(db: StateDB) -
 async def test_public_transition_applies_for_dispatch_without_reason_columns(db: StateDB) -> None:
     """dispatch_outbox has no status_reason_* columns; the public path must
     skip that SET clause instead of failing at the database."""
-    from lionagi.dispatch import enqueue_dispatch, get_dispatch
+    from lionhub.orchestration.dispatch import enqueue_dispatch, get_dispatch
 
     dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
     service = SQLAlchemyLifecycleService(db)
@@ -207,7 +207,7 @@ async def test_public_transition_rejects_unguarded_delivering_self_edge(db: Stat
     non-public parameter reserved for the legacy adapters), so an unguarded
     call must be refused outright rather than silently letting the
     same-status crash-recovery claim through without any race guard."""
-    from lionagi.dispatch import enqueue_dispatch
+    from lionhub.orchestration.dispatch import enqueue_dispatch
 
     dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
     service = SQLAlchemyLifecycleService(db)
@@ -238,7 +238,7 @@ async def test_two_claimants_racing_delivering_self_edge_exactly_one_wins(db: St
     attempt the delivering -> delivering recovery claim. Exactly one must
     apply (non-null transition id); the other must lose as a conflict, and
     the history table must carry only the one winning row."""
-    from lionagi.dispatch import enqueue_dispatch, get_dispatch
+    from lionhub.orchestration.dispatch import enqueue_dispatch, get_dispatch
 
     dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
     service = SQLAlchemyLifecycleService(db)

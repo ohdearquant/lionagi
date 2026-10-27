@@ -568,3 +568,63 @@ def test_a_poll_stamp_on_another_trigger_type_is_not_liveness():
     assert (
         compute_schedule_health(row, _evidence(now - 50_000), now=now)["health_state"] == "overdue"
     )
+
+
+@pytest.mark.parametrize("streak,expected", [(2, "healthy"), (3, "overdue"), (4, "overdue")])
+def test_github_capped_no_dispatch_streak_has_a_separate_threshold(streak, expected):
+    now = 1_700_000_000.0
+    row = _github_poll_row(now, last_fired_at=now - 30, last_healthy_poll_at=now - 1)
+    row["poller_consecutive_cap_no_dispatch"] = streak
+
+    assert compute_schedule_health(row, _evidence(now - 30), now=now)["health_state"] == expected
+
+
+@pytest.mark.parametrize("prior", ["never-fired", "no-evidence", "failing", "healthy"])
+def test_github_stagnation_outranks_existing_verdicts_without_rewriting_outcomes(prior):
+    now = 1_700_000_000.0
+    executed = now - 30 if prior in {"failing", "healthy"} else None
+    row = _github_poll_row(now, last_fired_at=executed, last_healthy_poll_at=None)
+    evidence = _evidence(executed)
+    if prior == "no-evidence":
+        evidence["last_recorded_run_at"] = now - 20
+    elif prior == "failing":
+        evidence["last_executed_status"] = "failed"
+    assert compute_schedule_health(row, evidence, now=now)["health_state"] == prior
+    row["poller_consecutive_cap_no_dispatch"] = 3
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result == {
+        "health_state": "overdue",
+        "health_last_outcome": evidence["last_executed_status"],
+        "health_last_outcome_at": executed,
+        "health_since": row["created_at"],
+    }
+
+
+@pytest.mark.parametrize(
+    "trigger,enabled,expected",
+    [
+        ("github_poll", 0, "disabled"),
+        ("interval", 1, "healthy"),
+    ],
+)
+def test_github_stagnation_respects_disabled_and_trigger_boundaries(trigger, enabled, expected):
+    now = 1_700_000_000.0
+    row = _github_poll_row(
+        now, last_fired_at=now - 30, last_healthy_poll_at=now - 1, trigger_type=trigger
+    )
+    row.update(enabled=enabled, poller_consecutive_cap_no_dispatch=99)
+
+    assert compute_schedule_health(row, _evidence(now - 30), now=now)["health_state"] == expected
+
+
+@pytest.mark.parametrize("value", [None, 0])
+def test_missing_or_empty_github_stagnation_defaults_to_zero(value):
+    now = 1_700_000_000.0
+    row = _github_poll_row(now, last_fired_at=None, last_healthy_poll_at=now - 1)
+    assert "poller_consecutive_cap_no_dispatch" not in row
+    assert compute_schedule_health(row, _evidence(None), now=now)["health_state"] == "healthy"
+    row["poller_consecutive_cap_no_dispatch"] = value
+
+    assert compute_schedule_health(row, _evidence(None), now=now)["health_state"] == "healthy"

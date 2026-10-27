@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.mcp.projection import (
+from lionhub.serve.mcp.projection import (
     PlaybookResolutionError,
     SchemaProjectionError,
     available_paths,

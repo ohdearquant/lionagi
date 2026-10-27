@@ -171,7 +171,7 @@ def _make_minimal_engine_run() -> Any:
     """Build a minimal EngineRun with a no-op on_event."""
     from unittest.mock import MagicMock
 
-    from lionagi.engines.engine import EngineRun
+    from lionhub.orchestration.engines.engine import EngineRun
 
     engine = MagicMock()
     engine.max_concurrent = 1
@@ -189,7 +189,7 @@ def test_engine_run_emission_failures_starts_empty():
 
 async def test_operate_with_repair_records_emission_failure(monkeypatch):
     """Exhausted retries with arrived() always False must add a descriptive entry to _emission_failures."""
-    from lionagi.engines.engine import EngineRun
+    from lionhub.orchestration.engines.engine import EngineRun
 
     engine = MagicMock()
     engine.max_concurrent = 1
@@ -233,7 +233,7 @@ async def test_operate_with_repair_records_emission_failure(monkeypatch):
 
 async def test_operate_with_repair_no_failure_when_arrived(monkeypatch):
     """When arrived() returns True on the first try, no failure is recorded."""
-    from lionagi.engines.engine import EngineRun
+    from lionhub.orchestration.engines.engine import EngineRun
 
     engine = MagicMock()
     engine.max_concurrent = 1
@@ -330,7 +330,9 @@ class _ZeroEmissionEngine:
     once with a branch that never emits, then returns a plain string result.
     Inherits from Engine so Engine.run() orchestrates the lifecycle."""
 
-    from lionagi.engines.engine import Engine as _EngineBase  # imported at class body level
+    from lionhub.orchestration.engines.engine import (
+        Engine as _EngineBase,  # imported at class body level
+    )
 
     # We construct it as a proper subclass below to avoid a forward-reference
     # issue in the class body itself.
@@ -338,7 +340,7 @@ class _ZeroEmissionEngine:
 
 async def _build_zero_emission_engine():
     """Construct a real Engine subclass that always fires emission_missing."""
-    from lionagi.engines.engine import Engine, EngineRun
+    from lionhub.orchestration.engines.engine import Engine, EngineRun
 
     class ZeroEmissionEngine(Engine):
         async def _run(self, run: EngineRun, spec: str, **kwargs) -> str:  # type: ignore[override]
@@ -396,7 +398,7 @@ async def test_real_engine_clean_run_leaves_error_null(monkeypatch):
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
-    from lionagi.engines.engine import Engine, EngineRun
+    from lionhub.orchestration.engines.engine import Engine, EngineRun
 
     class _AlwaysArriveBranch:
         name = "worker"
@@ -448,7 +450,7 @@ async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
-    from lionagi.engines.engine import Engine, EngineRun
+    from lionhub.orchestration.engines.engine import Engine, EngineRun
 
     call_count = [0]
 

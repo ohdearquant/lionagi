@@ -21,7 +21,7 @@ For the three orchestration rows, keep the objects separate: a **Playbook** is
 the saved declaration, a **FlowPlan** is the run-specific dependency plan the
 orchestrator produces, and a **FlowOp** is one branch invocation in that plan.
 A playbook is reusable input to planning; it is not a saved DAG. Source:
-`lionagi/orchestration/patterns.py`, `lionagi/cli/orchestrate/flow.py`, and
+`lionhub/src/lionhub/orchestration/patterns.py`, `lionagi/cli/orchestrate/flow.py`, and
 `lionagi/cli/main.py`.
 
 ## A quick decision path

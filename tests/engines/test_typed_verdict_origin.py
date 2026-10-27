@@ -11,11 +11,15 @@ import json
 import pytest
 from pydantic import BaseModel
 
-import lionagi.engines.engine as engine_mod
-import lionagi.engines.hypothesis as hyp_mod
+import lionhub.orchestration.engines.engine as engine_mod
+import lionhub.orchestration.engines.hypothesis as hyp_mod
 from lionagi import Branch
-from lionagi.engines.engine import Engine, JudgeVerdict
-from lionagi.engines.hypothesis import (
+from lionagi.ln.types import Operable, Spec
+from lionagi.operations._observe import emit_message
+from lionagi.protocols.messages import AssistantResponse
+from lionagi.session.signal import StructuredOutput
+from lionhub.orchestration.engines.engine import Engine, JudgeVerdict
+from lionhub.orchestration.engines.hypothesis import (
     ChainEvent,
     DedupChecked,
     FindingPosted,
@@ -23,10 +27,6 @@ from lionagi.engines.hypothesis import (
     filing_queue,
     render_evidence,
 )
-from lionagi.ln.types import Operable, Spec
-from lionagi.operations._observe import emit_message
-from lionagi.protocols.messages import AssistantResponse
-from lionagi.session.signal import StructuredOutput
 
 pytestmark = pytest.mark.asyncio
 
@@ -327,18 +327,47 @@ async def test_explicit_historical_collection_still_certifies_a_seed():
     assert [item["finding_ref"] for item in filing_queue(run)] == [seed.eid]
 
 
+class _PassLookingReply:
+    def __str__(self):
+        return "PASS"
+
+
 @pytest.mark.parametrize(
-    "reply, allowed", [("PASS", True), ("NO - duplicative", True), ("reject", False)]
+    "reply, allowed",
+    [
+        pytest.param("PASS", True, id="pass"),
+        pytest.param(" \tPASS\r\n", True, id="padded-pass"),
+        pytest.param("pass", True, id="lowercase-pass"),
+        pytest.param("Pass", True, id="mixed-case-pass"),
+        pytest.param("PASS.", False, id="punctuated-pass"),
+        pytest.param("**PASS**", False, id="markdown-pass"),
+        pytest.param("REJECT", False, id="reject"),
+        pytest.param("reject", False, id="lowercase-reject"),
+        pytest.param("NO - duplicative", False, id="no"),
+        pytest.param("I refuse: off-topic", False, id="refusal-prose"),
+        pytest.param("", False, id="empty"),
+        pytest.param(" \t\r\n", False, id="whitespace"),
+        pytest.param(None, False, id="none"),
+        pytest.param("PASS — useful", False, id="pass-with-prose"),
+        pytest.param("PASS\nREJECT", False, id="mixed-tokens"),
+        pytest.param(b"PASS", False, id="bytes"),
+        pytest.param({"decision": "PASS"}, False, id="mapping"),
+        pytest.param(_PassLookingReply(), False, id="non-string-pass-like"),
+    ],
 )
-async def test_no_verdict_text_policy_is_unchanged(agents, reply, allowed):
+async def test_no_verdict_text_requires_explicit_pass(agents, reply, allowed):
     scripts, _ = agents
 
     async def no_verdict(_branch, _instruction):
         return reply
 
     scripts["judge-B"] = no_verdict
+    notices = []
     engine = Engine(judge_model="openai/scripted")
-    assert await engine.judge(engine.new_run(), "B", "item") is allowed
+    run = engine.new_run(on_event=notices.append)
+    assert await engine.judge(run, "B", "item") is allowed
+    gated = [(notice["eid"], notice["reason"]) for notice in notices if notice["type"] == "gated"]
+    assert gated == ([] if allowed else [("B", "text-reject")])
 
 
 async def test_cross_run_replay_with_repeated_finding_ids_keeps_origin_separate(

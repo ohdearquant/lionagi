@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import iModel
+from lionagi._paths import (
+    AmbiguousProfileNameError,
+    _name_spellings,
+    _resolve_profile_path,
+    _unreadable_symlink_target,
+)
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
@@ -565,20 +571,6 @@ class AgentProfile:
     operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
 
 
-def _unreadable_symlink_target(path: Path) -> str | None:
-    """Return a broken/non-file symlink's declared target, if applicable."""
-    if not path.is_symlink() or path.is_file():
-        return None
-    try:
-        return str(path.readlink())
-    except OSError:
-        return "<unreadable>"
-
-
-class AmbiguousProfileNameError(ValueError):
-    """One agents dir declares a name under both '-' and '_' spellings."""
-
-
 class AgentProfileNotFoundError(FileNotFoundError):
     """No profile of that name exists on the search path.
 
@@ -587,15 +579,6 @@ class AgentProfileNotFoundError(FileNotFoundError):
     The two are the same exception type otherwise, and a caller acting on the
     first would silently swallow the second.
     """
-
-
-def _name_spellings(name: str) -> tuple[str, ...]:
-    """NAME plus its separator spellings, requested spelling first.
-
-    '-' and '_' are interchangeable in a profile name, so a role written
-    ``postmortem-lead`` everywhere else still finds ``postmortem_lead.md``.
-    """
-    return tuple(dict.fromkeys((name, name.replace("-", "_"), name.replace("_", "-"))))
 
 
 def _profile_path_candidates(agents_dir: Path, name: str) -> tuple[Path, ...]:
@@ -612,47 +595,6 @@ def _profile_path_candidates(agents_dir: Path, name: str) -> tuple[Path, ...]:
         for spelling in _name_spellings(name)
         for path in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md")
     )
-
-
-def _resolve_profile_path(
-    agents_dir: Path,
-    name: str,
-    *,
-    unreadable_symlinks: list[tuple[Path, str]] | None = None,
-) -> Path | None:
-    """Return profile path for NAME, recording unreadable candidate symlinks.
-
-    The spelling actually asked for wins outright when it exists. Only a
-    request that does *not* name an existing file falls back to the other
-    separator spelling, so a directory deliberately holding two profiles that
-    differ only in separator keeps resolving both, exactly as it did before
-    the spellings became interchangeable.
-
-    Failing that, two spellings matching one request in a single directory are
-    an error rather than a ranking: whichever one lost would be invisible to
-    the caller. Two spellings in *different* roots are ordinary shadowing,
-    decided by root order, and are resolved by the caller walking the roots.
-    """
-    resolved: dict[str, Path] = {}
-    for spelling in _name_spellings(name):
-        for candidate in (agents_dir / spelling / f"{spelling}.md", agents_dir / f"{spelling}.md"):
-            if candidate.is_file():
-                resolved.setdefault(spelling, candidate)
-                continue
-            target = _unreadable_symlink_target(candidate)
-            if target is not None and unreadable_symlinks is not None:
-                unreadable_symlinks.append((candidate, target))
-
-    if name in resolved:
-        return resolved[name]
-    if len(resolved) > 1:
-        matched = ", ".join(str(p) for p in resolved.values())
-        raise AmbiguousProfileNameError(
-            f"Agent profile name '{name}' is ambiguous in {agents_dir}: "
-            f"'-' and '_' are interchangeable, and both spellings exist ({matched}). "
-            "Rename or remove one of them."
-        )
-    return next(iter(resolved.values()), None)
 
 
 def _plugin_agent_profiles() -> dict[str, tuple[str, Path]]:
@@ -1059,7 +1001,25 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
             # line setting it as a key, one that reads as settings and sets it, or one that does
             # not read and names it anywhere. A block runs from a line of three or more dashes
             # to the next such line or, unclosed, to the end.
-            delimiters = [i for i, line in enumerate(lines) if _DASHES.fullmatch(line.rstrip())]
+            delimiters = []
+            # Fenced examples are prompt text, not misplaced frontmatter.
+            fence: str | None = None
+            for i, line in enumerate(lines):
+                marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
+                if fence is not None:
+                    if (
+                        marker
+                        and marker[1][0] == fence[0]
+                        and len(marker[1]) >= len(fence)
+                        and not marker[2].strip()
+                    ):
+                        fence = None
+                    continue
+                if marker and (marker[1][0] == "~" or "`" not in marker[2]):
+                    fence = marker[1]
+                    continue
+                if _DASHES.fullmatch(line.rstrip()):
+                    delimiters.append(i)
             for opening, end in pairwise([*delimiters, len(lines)]):
                 block = "\n".join(lines[opening + 1 : end])
                 reads, document = read(block)

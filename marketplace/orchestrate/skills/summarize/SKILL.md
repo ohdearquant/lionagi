@@ -74,7 +74,7 @@ example through the plugin's MCP server, and the quality guide.
 
 - `lionagi/cli/_runs.py` — run persistence at `~/.lionagi/runs/{run_id}/`
 - `lionagi/cli/_logging.py` — structured logging conventions used in CLI sessions
-- `lionagi/mcp/server.py`, `lionagi/mcp/verbs.py` — `agent.submit` / `job.output`, the MCP
+- `lionhub/src/lionhub/serve/mcp/server.py`, `lionhub/src/lionhub/serve/mcp/verbs.py` — `agent.submit` / `job.output`, the MCP
   path for delegating a capture to a sub-agent and reading back its saved artifacts
 - `lionagi/cli/agent.py` — `li agent`, the checkout-local equivalent; it persists runs without
   a flag

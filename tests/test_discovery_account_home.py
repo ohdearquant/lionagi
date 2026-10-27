@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi import _paths
-from lionagi.agent import settings as settings_mod
+from lionagi import _settings as settings_mod
 from lionagi.agent.factory import _resolve_mcp_path
 from lionagi.agent.settings import load_settings
 

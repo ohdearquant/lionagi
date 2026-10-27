@@ -14,7 +14,7 @@
  * inside the card, ports live on the group boundary (matching the runtime —
  * reactions observe at the unit boundary, not a member stage).
  *
- * Semantic ground truth (lionagi/engines/engine.py): `run.observe(Type, …)`
+ * Semantic ground truth (lionhub/src/lionhub/orchestration/engines/engine.py): `run.observe(Type, …)`
  * subscribes to an emission TYPE — source-agnostic. The flow edge therefore
  * pairs each actual emitter of a type with each observer of that type; the
  * signal index keeps the type-level view ("who else is on this signal").

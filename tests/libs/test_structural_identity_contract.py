@@ -32,6 +32,13 @@ _EXPECTED = frozenset(
         "lionagi.operations.types.InterpretParam",
         "lionagi.operations.types.ParseParam",
         "lionagi.operations.types.ActionParam",
+        "lionagi.ln.types.registry.RegistryEntry",
+        "lionagi.ln.types.registry.RegistryFragment",
+        "lionagi.ln.types.registry.RegistryOverrideRule",
+        "lionagi.ln.types.registry.RegistrySource",
+        "lionagi.ln.types.registry.RegistryRecord",
+        "lionagi.ln.types.registry.RegistryOverride",
+        "lionagi.ln.types.registry.Registry",
     }
 )
 
@@ -97,6 +104,8 @@ def _module_bindings(
             bindings[node.name] = f"{module_name}.{node.name}"
 
     def resolve_assignment(value: ast.AST) -> str | None:
+        if isinstance(value, ast.Subscript):
+            return resolve_assignment(value.value)
         if isinstance(value, ast.Name):
             return bindings.get(value.id, f"{module_name}.{value.id}")
         if isinstance(value, ast.Attribute):
@@ -122,6 +131,8 @@ def _module_bindings(
 
 
 def _symbol(node: ast.AST, module: _Module) -> str | None:
+    if isinstance(node, ast.Subscript):
+        return _symbol(node.value, module)
     if isinstance(node, ast.Name):
         return module.bindings.get(node.id, f"{module.name}.{node.id}")
     if isinstance(node, ast.Attribute):
@@ -373,3 +384,18 @@ def test_contract_rejects_a_nested_substrate_subclass():
     violations = _violations({module: source})
     assert any("NestedRogueParam" in item and "unexpected=" in item for item in violations)
     assert any("NestedRogueParam: dataclass must declare eq=False" in item for item in violations)
+
+
+def test_contract_follows_parameterized_registry_bases_and_aliases():
+    module = "lionagi.operations.types"
+    for declaration in (
+        "from lionagi.ln.types import Registry\nclass RogueRegistry(Registry[int]): pass\n",
+        "from lionagi.ln import Registry as R\nAlias = R[int]\nclass RogueRegistry(Alias): pass\n",
+        "from lionagi.ln.types.registry import Registry as R\n"
+        "Alias: object = R[int]\nclass RogueRegistry(Alias): pass\n",
+        "import lionagi.ln as ln\nAlias = ln.Registry[int]\n"
+        "class ParentRegistry(Alias): pass\nclass RogueRegistry(ParentRegistry): pass\n",
+    ):
+        violations = _violations({module: _source(module) + "\n" + declaration})
+        assert any("RogueRegistry" in item and "unexpected=" in item for item in violations)
+        assert any("RogueRegistry: dataclass must declare eq=False" in item for item in violations)

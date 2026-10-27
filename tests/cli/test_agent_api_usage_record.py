@@ -99,6 +99,7 @@ async def test_real_manifest_retains_all_usage_fields_and_actual_selected_accoun
         launch = leg.branch.metadata["api_launch"]
         assert set(launch) == {
             "tools",
+            "network",
             "max_extensions",
             "loop",
             "max_input_tokens",

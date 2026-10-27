@@ -15,6 +15,7 @@ import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 from lionagi.agent.factory import _chain_pre_hooks
+from lionagi.agent.gate import GateDeniedError
 from lionagi.protocols.action.function_calling import FunctionCalling
 from lionagi.protocols.action.manager import ActionManager
 from lionagi.protocols.action.tool import Tool
@@ -524,6 +525,42 @@ async def test_post_hook_fires_on_tool_failure_with_error_and_no_result():
     assert result is None
     assert isinstance(error, RuntimeError)
     assert "kaboom" in str(error)
+
+
+async def test_post_hook_fires_on_a_security_control_denial_with_its_result():
+    calls: list[tuple[int, int]] = []
+
+    async def add(a: int, b: int) -> int:
+        calls.append((a, b))
+        return a + b
+
+    async def deny_all(tool_name: str, action: str, args: dict) -> dict | None:
+        raise PermissionError("no adds today")
+
+    tool = Tool(
+        func_callable=add,
+        request_options=AddArgs,
+        preprocessor=_chain_pre_hooks("add", [deny_all]),
+    )
+    manager = ActionManager(tool)
+
+    seen: list = []
+
+    async def post(name: str, arguments: dict, result, error) -> None:
+        seen.append(error)
+
+    manager.add_tool_post_hook(post)
+
+    fc = await manager.invoke({"function": "add", "arguments": {"a": 1, "b": 2}})
+
+    assert calls == []
+    assert fc.status == EventStatus.FAILED
+    assert len(seen) == 1, "a denied call reaches the post hooks"
+    assert isinstance(seen[0], GateDeniedError)
+    assert seen[0].result.control == "deny_all"
+    assert seen[0].result.reason == "no adds today"
+    # The hook is handed its own copy of the error, never the call's recorded one.
+    assert seen[0] is not fc.execution.error
 
 
 async def test_post_hook_advisory_reason_collected_but_does_not_change_outcome():

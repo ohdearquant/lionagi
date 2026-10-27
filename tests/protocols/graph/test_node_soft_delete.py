@@ -184,19 +184,6 @@ class TestNodeRehash:
         nh = cls(content="hi")
         assert nh.rehash() is None
 
-    def test_rehash_returns_hex_string(self):
-        cls = create_node("Hash", content_hashing=True)
-        h = cls(content="payload")
-        result = h.rehash()
-        assert isinstance(result, str)
-        assert len(result) == 64
-
-    def test_rehash_stores_in_field(self):
-        cls = create_node("Hash", content_hashing=True)
-        h = cls(content="payload")
-        h.rehash()
-        assert h.content_hash is not None
-
     def test_rehash_matches__content_hash(self):
         cls = create_node("Hash", content_hashing=True)
         content = {"key": "value"}
@@ -204,14 +191,16 @@ class TestNodeRehash:
         result = h.rehash()
         assert result == _content_hash(content)
 
-    def test_rehash_updates_on_content_change(self):
-        cls = create_node("Hash", content_hashing=True)
+    @pytest.mark.parametrize("class_name", ["Hash", "H"])
+    def test_rehash_updates_on_content_change(self, class_name):
+        cls = create_node(class_name, content_hashing=True)
         h = cls(content="before")
         hash1 = h.rehash()
         h.content = "after"
         hash2 = h.rehash()
         assert hash1 != hash2
         assert hash2 == _content_hash("after")
+        assert h.content_hash == hash2
 
     def test_rehash_none_content(self):
         cls = create_node("Hash", content_hashing=True)
@@ -230,9 +219,10 @@ class TestNodeRehash:
 class TestDeleteRestoreCycle:
     """End-to-end soft_delete -> restore cycle with full audit trail."""
 
-    def test_full_cycle(self):
+    @pytest.mark.parametrize("class_name", ["Audited", "FullCycle"])
+    def test_full_cycle(self, class_name):
         cls = create_node(
-            "Audited",
+            class_name,
             soft_delete=True,
             versioning=True,
             track_updated_at=True,

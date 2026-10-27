@@ -537,22 +537,22 @@ def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
         351,
         'raise ValueError("First message in progression must be an Instruction or System")',
     )
-    _in_span(_PREPARE, 416, 429, "raise EmptyOutgoingContentError(")
+    _in_span(_PREPARE, 420, 433, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
     _in_span(_PREPARE, 374, 375, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 405, 406, "if i == _last_index:", "_current_turn_rendered = rendered")
+    _in_span(_PREPARE, 409, 410, "if i == _last_index:", "_current_turn_rendered = rendered")
     _in_span(
         _PREPARE,
-        416,
-        429,
+        420,
+        433,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
         _PREPARE,
-        470,
-        483,
+        474,
+        487,
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
@@ -566,11 +566,11 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
         'if "current_progression" not in branch.metadata:',
         'branch.metadata["current_progression"] = cp',
     )
-    _in_span(_CONTEXT, 373, 387, 'if action == "evict":', "cp.exclude(uids)")
+    _in_span(_CONTEXT, 390, 404, 'if action == "evict":', "cp.exclude(uids)")
     _in_span(
         _CONTEXT,
-        389,
         406,
+        423,
         'if action == "evict_action_results":',
         "cp.exclude(to_evict)",
     )
@@ -584,11 +584,11 @@ def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
 
 
 def test_compaction_path_replaces_a_span_with_one_summary() -> None:
-    _in_span(_CONTEXT, 458, 545, 'if action == "compact":')
+    _in_span(_CONTEXT, 484, 571, 'if action == "compact":')
     _in_span(
         _CONTEXT,
-        527,
-        538,
+        553,
+        564,
         "[CONTEXT COMPACTION]",
         "cp.insert(summary_at, note.id)",
         "cp.exclude(collapse)",

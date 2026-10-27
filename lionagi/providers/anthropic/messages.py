@@ -755,7 +755,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         import json
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
-        from lionagi.service.accounts._pricing import price_usage
+        from lionagi.service.accounts._pricing import usage_outcome
         from lionagi.service.accounts._router import (
             StreamingSecretRedactor,
             StreamTextRedactor,
@@ -984,8 +984,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                     # message_start's output count is a placeholder; only a
                     # message_delta's output count completes it. The attempt settles once,
                     # so a later message_stop settles nothing.
-                    priced = (
-                        price_usage(
+                    outcome = (
+                        usage_outcome(
                             router.revision,
                             attempt.ttls,
                             served_model,
@@ -995,7 +995,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         if saw_final_usage
                         else None
                     )
-                    await router.settle_stream_end(attempt, priced)
+                    await router.settle_stream_end(attempt, outcome)
                     settled = True
                 chunk = self._line_to_stream_chunk(data, sse_event=sse_event)
                 if chunk is not None:

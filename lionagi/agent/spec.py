@@ -13,6 +13,7 @@ from lionagi.casts.profile import Profile
 
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
+    from lionagi.tools._seatbelt import SeatbeltPolicy
 
     from .permissions import PermissionPolicy
 
@@ -79,11 +80,17 @@ class AgentSpec(HooksMixin):
     context_management: bool = True
     # The coding tools to bind when `tools` names "coding"; None binds the default set.
     coding_tools: tuple[str, ...] | None = None
+    # When set, the coding editor and bash run under this macOS Seatbelt policy.
+    seatbelt: SeatbeltPolicy | None = None
     khive_injection: Any = None
     # Codex only: turn the signed-in account's apps and plugins off for this
     # agent's endpoint by default (a call can still lift it; see create_agent).
     # An agent of another provider is built unchanged.
     contain_account_integrations: bool = False
+    # Turn the endpoint's prompt_caching option on (ADR-0127) for the model
+    # create_agent builds. A provider that does not declare prefix caching sends
+    # its requests unchanged, as the option does everywhere.
+    prompt_caching: bool = False
 
     @classmethod
     def compose(
@@ -103,6 +110,7 @@ class AgentSpec(HooksMixin):
         yolo: bool = False,
         khive_injection: Any = None,
         contain_account_integrations: bool = False,
+        prompt_caching: bool = False,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
         prof = Profile.compose(role, modes=modes)
@@ -121,6 +129,7 @@ class AgentSpec(HooksMixin):
             yolo=yolo,
             khive_injection=khive_injection,
             contain_account_integrations=contain_account_integrations,
+            prompt_caching=prompt_caching,
         )
 
     @classmethod
@@ -161,12 +170,15 @@ class AgentSpec(HooksMixin):
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        contain = data.get("contain_account_integrations", False)
-        if not isinstance(contain, bool):
-            # bool("false") is True, and a key with no value reads as None; either is a
-            # mistake to report, not to read.
-            got = "no value" if contain is None else type(contain).__name__
-            raise ValueError(f"contain_account_integrations must be true or false, got {got}")
+        flags = {}
+        for key in ("contain_account_integrations", "prompt_caching"):
+            value = data.get(key, False)
+            if not isinstance(value, bool):
+                # bool("false") is True, and a key with no value reads as None; either is a
+                # mistake to report, not to read.
+                got = "no value" if value is None else type(value).__name__
+                raise ValueError(f"{key} must be true or false, got {got}")
+            flags[key] = value
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
@@ -178,7 +190,7 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
-            contain_account_integrations=contain,
+            **flags,
         )
         # compose() defaults lion_system to True, so a saved False must be
         # restored explicitly or it would be silently dropped.
@@ -227,6 +239,8 @@ class AgentSpec(HooksMixin):
             data["cwd"] = self.cwd
         if self.contain_account_integrations:
             data["contain_account_integrations"] = True
+        if self.prompt_caching:
+            data["prompt_caching"] = True
         if isinstance(self.khive_injection, (bool, dict)):
             data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:

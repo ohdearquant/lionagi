@@ -11,15 +11,6 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
-from lionagi.engines.engine import Engine, EngineBudgetError
-from lionagi.engines.review import (
-    DimensionClean,
-    IssueFound,
-    ReviewEngine,
-    ReviewVerdict,
-    _is_all_isolated_failure,
-    _is_all_isolated_failure_after_probe,
-)
 from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.protocols.action.manager import ActionManager
 from lionagi.providers._provider_errors import (
@@ -29,6 +20,15 @@ from lionagi.providers._provider_errors import (
     ProviderSafetyError,
     ProviderUnsupportedModelError,
     WorkerLivenessError,
+)
+from lionhub.orchestration.engines.engine import Engine, EngineBudgetError
+from lionhub.orchestration.engines.review import (
+    DimensionClean,
+    IssueFound,
+    ReviewEngine,
+    ReviewVerdict,
+    _is_all_isolated_failure,
+    _is_all_isolated_failure_after_probe,
 )
 
 
@@ -148,7 +148,7 @@ def _mcp_error(message: str) -> BaseException:
 @pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
 @pytest.mark.asyncio
 async def test_a_live_mcp_transport_can_answer_a_ping_taking_over_one_second(monkeypatch) -> None:
-    from lionagi.engines import review as review_mod
+    from lionhub.orchestration.engines import review as review_mod
 
     error = _mcp_error("Connection closed")
     simulated_ping_seconds = 1.1
@@ -288,7 +288,7 @@ def test_a_broken_mcp_install_is_not_silently_treated_as_absent(monkeypatch) -> 
     """
     import builtins
 
-    from lionagi.engines import review as review_mod
+    from lionhub.orchestration.engines import review as review_mod
 
     review_mod._mcp_error_type.cache_clear()
     real_import = builtins.__import__
@@ -324,7 +324,7 @@ def test_a_missing_mcp_extra_is_a_normal_configuration(monkeypatch) -> None:
     """The other arm: mcp genuinely absent yields None rather than raising."""
     import builtins
 
-    from lionagi.engines import review as review_mod
+    from lionhub.orchestration.engines import review as review_mod
 
     review_mod._mcp_error_type.cache_clear()
     real_import = builtins.__import__

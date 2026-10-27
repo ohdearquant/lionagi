@@ -55,6 +55,7 @@ WORKDIR /app
 # Install lionagi
 COPY pyproject.toml README.md LICENSE ./
 COPY lionagi/ ./lionagi/
+COPY lionhub/src/lionhub/ ./lionhub/src/lionhub/
 RUN pip install --no-cache-dir ".[studio]"
 
 # Copy marketplace + plugin manifest so Studio's Library/Skills/Agents

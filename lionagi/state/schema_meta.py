@@ -589,6 +589,8 @@ schedules = Table(
     # Observer self-health (github_poll poller); see schema.sql.
     Column("last_healthy_poll_at", Float),
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
+    # Settled capped reads without dispatch or an engine-held batch; see schema.sql.
+    Column("poller_consecutive_cap_no_dispatch", Integer, nullable=False, server_default="0"),
     # Bounded retry for a pre-dispatch refusal; see schema.sql.
     Column("predispatch_refusal_event", Text),
     Column("predispatch_refusal_count", Integer, nullable=False, server_default="0"),

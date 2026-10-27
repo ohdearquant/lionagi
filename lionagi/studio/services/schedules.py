@@ -395,13 +395,14 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
 
 # Health severity is computed from cadence + observed schedule_runs rows and,
 # for threshold alerts, the completed-evaluation watermark, and for GitHub poll
-# schedules the last healthy poll. It is never based
+# schedules the last healthy poll and separate capped/no-dispatch streak. It is never based
 # on next_fire_at -- next_fire_at is a promise the scheduler made, not evidence
 # that anything happened. A missed-fire/overlap/capacity skip advances the
 # cursor while recording no execution, so silence hidden behind a pile of skips
 # must still read as overdue, not healthy.
 _HEALTH_OVERDUE_MULTIPLIER = 3
 _HEALTH_OVERDUE_GRACE_FLOOR_SEC = 300  # 5 minutes
+_HEALTH_GITHUB_CAP_NO_DISPATCH_THRESHOLD = 3
 
 # Failing contract: the single latest executed run's outcome is enough to
 # call a schedule failing -- N=1, deliberately. This is a demo-facing badge;
@@ -470,7 +471,10 @@ def compute_schedule_health(
     schedule, ``last_healthy_poll_at`` is liveness evidence the same way: a
     poll that found no new event creates no run, so a quiet repository would
     otherwise read overdue off its last fire. Neither replaces the latest
-    executed outcome used for the failing verdict.
+    executed outcome used for the failing verdict. Independently, three settled
+    capped GitHub polls without a launch or held batch make an enabled schedule
+    overdue, before the absence-of-evidence or latest-outcome verdicts. This
+    progress counter does not change the HTTP/authentication gauges.
 
     ``schedules.last_fired_at`` is a retained per-schedule column written by
     the normal occurrence paths -- it survives schedule_runs retention
@@ -498,6 +502,12 @@ def compute_schedule_health(
 
     if not row.get("enabled"):
         state = "disabled"
+    elif (
+        row.get("trigger_type") == "github_poll"
+        and (row.get("poller_consecutive_cap_no_dispatch") or 0)
+        >= _HEALTH_GITHUB_CAP_NO_DISPATCH_THRESHOLD
+    ):
+        state = "overdue"
     elif not liveness:
         state = (
             "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
