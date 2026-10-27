@@ -322,3 +322,38 @@ def test_registered_model_restore_preserves_reference(secrets, monkeypatch, avai
     assert restored.endpoint.config.api_key == ENV_NAME
     assert restored.endpoint.config._api_key == resolved
     assert restored.calls_sent == 0
+
+
+@pytest.mark.parametrize("available", [False, True], ids=["unset", "set"])
+def test_a_nonsecret_setting_cannot_be_used_as_a_credential(secrets, monkeypatch, available):
+    name = "ANTHROPIC_ACCOUNTS"
+    if available:
+        monkeypatch.setenv(name, "synthetic-nonsecret-environment-value")
+    else:
+        monkeypatch.delenv(name, raising=False)
+
+    for create_endpoint in (_endpoint, _direct_endpoint):
+        with pytest.raises(TypeError, match="Setting 'ANTHROPIC_ACCOUNTS' is not a secret"):
+            create_endpoint(name)
+
+
+@pytest.mark.parametrize("name", ["LOG_CONFIG", "get_secret"], ids=["property", "method"])
+def test_secret_lookup_refuses_nonsecret_attributes_without_reading_them(
+    secrets, monkeypatch, name
+):
+    if name == "LOG_CONFIG":
+
+        def unread(_):
+            pytest.fail("a nonsecret property must not be read as a credential")
+
+        monkeypatch.setattr(type(secrets), name, property(unread))
+
+    with pytest.raises(TypeError, match=f"Setting '{name}' is not a secret"):
+        secrets.get_secret(name)
+
+
+def test_a_declared_secret_field_retains_an_unvalidated_string_value(secrets):
+    value = "synthetic-unvalidated-settings-key"
+    values = secrets.model_copy(update={ENV_NAME: value})
+
+    assert values.get_secret(ENV_NAME) == value
