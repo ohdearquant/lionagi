@@ -1,10 +1,11 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
-- **Status**: Accepted (2026-07-15), amended 2026-07-27, 2026-10-11 and 2026-10-20 — see Amendments 1 to 3
+- **Status**: Accepted (2026-07-15), amended 2026-07-27, 2026-10-11, 2026-10-20 and 2026-10-27 — see Amendments 1 to 4
 - **Kind**: Aspirational (records the target state)
 - **Implementation-status**: partial — D3/D5 (terminal-notify on kill) are on main;
   D1/D2 (play-worker reaping) shipped code that cannot reach a worker; that code is
-  removed and the guidance corrected (see Amendment 1)
+  removed and the guidance corrected (see Amendment 1); Amendment 4 (terminal-session worker
+  cleanup) is decided and not yet implemented
 - **Area**: cli-surface
 - **Date**: 2026-07-13
 - **Relations**: extends ADR-0058 (unified lifecycle transition service, whose terminal-callback emit this ADR relies on); none superseded
@@ -241,6 +242,122 @@ ends. The new run.json fields are
 additive and use names no reader keys on today; `li kill`'s run-id resolution (Amendment 2)
 still keys on `persistence_degraded_reason` alone.
 
+## Amendment 4 (2026-10-27) — `li kill` stops the recorded CLI worker of a terminal session
+
+The question this amendment answers: "A session can end `failed` while the CLI worker it launched
+(a codex or claude child, own process group, PPID 1) keeps running with a live network socket.
+Today the operator cannot stop that worker through lionagi." It is an operational fix for a gap
+found while running the CLI; no product requirement or user request originated it.
+
+`li kill <session>` refuses a session whose status is terminal before it reads any pid (`_do_kill`
+prints `already in terminal state ... nothing to kill`), and `li kill --all-stale` selects only
+`running` rows. Both are right about the session: the row records the `li` runner, and that runner
+is gone. What survives is a provider CLI the runner started in a process group of its own, and
+nothing durable joins that worker's identity to the session. Subagent admission slots record a
+child only when caps are configured, and carry no session, host, boot or group. An engine run
+holds its worker handles in memory. The shared spawn's observation of a child can also lack a
+start time: `observe_spawned` returns `create_time=None` when a read fails, and the second look
+that refuses such a spawn runs only when admission slots are held, so a spawn observed without
+identity can reach its callbacks. Among the ids an engine run carries, the CLI engine-run id is
+deliberately the id of its signal-session row, while the in-memory `Session` and the `EngineRun`'s
+own short id are separate values; cleanup binds to the persisted row, never to one of the others
+by equality.
+
+**Decision.**
+
+1. **A record per spawn, in the state database.** Native schema version 5 adds a
+   `cli_worker_spawns` table and a nullable `sessions.cli_worker_generation`. A row is written for
+   each OS spawn attempt a persisted run makes: a `spawn_id` allocated once per attempt, the
+   session id, the generation, optional run, engine-run and branch ids kept as diagnostics, the pid
+   and pgid (`pid == pgid`, greater than 1), the start time observed at spawn, the host, the boot
+   identity and the process identity mode, the time it was recorded, and a nullable
+   `confirmed_empty_at`. `session_id` is a logical reference with no foreign key to `sessions`, so
+   deleting a session neither cascades into these rows nor is blocked by them, and the association
+   stays as written. Identity and association columns never change. A row is accepted only while
+   its session is `running` and its generation is the session's current one; a retry of the same
+   `spawn_id` with identical contents is accepted once, with different contents refused. Rows that
+   predate version 5 get no generation and no records, and nothing is backfilled from pids,
+   admission slots or environments.
+2. **Generations.** A fresh or resumed execution installs a new generation in the same status
+   write that creates or reopens its session. A launch that would adopt a still-running row does
+   not take that row's generation unless it joins the same execution.
+3. **Producers.** `li agent` (including a resume, which records against the session it adopted),
+   flow and fanout (the orchestration session, for planning, workers and synthesis alike), the CLI
+   engine (its signal-session row) and background flow (the detached process, never its launcher)
+   bind a recorder for their persisted session and generation before any worker starts. The
+   provider layer receives the recorder and does not import the state database. The record is
+   written inside the shielded spawn path, after the identity retry, which now applies to every
+   recorded launch whether or not admission slots are held, and before any output is read. When
+   identity cannot be read or the record cannot be written, the spawn is ended through its
+   witnessed group teardown and fails; the admission slot stays held until that teardown is known
+   to have ended the group. Teardown orders its terminal status write after the registrations it
+   admitted. A run with no persisted session (`--no-persist`, a degraded setup, an unbound embedded
+   caller) records nothing and claims no worker recovery.
+4. **The terminal arm.** For a session in a terminal status, `li kill <session>` reads, in one
+   snapshot, every unresolved record of exactly that session across its generations, with the
+   session's status and current generation, and never adds to that set. For each record it checks
+   that host, boot and identity mode are this runtime's, then requires the original leader live
+   under its recorded start time and leading its recorded group. It captures the group's members
+   between two identical observations of that leader, freezes those identities, sends SIGTERM to the
+   group, and after the grace period sends SIGKILL only while a frozen member still matches. A
+   leader that exits on SIGTERM leaves the frozen members to carry the authority to escalate.
+   Before each signal, under a short guard shared with registration and resume, it confirms the
+   session's status, generation and the record itself are as snapshotted; a resume, a status change
+   or a deletion stops further signals and the command exits 1 saying the session changed during
+   cleanup. No lock is held through the grace wait. The arm writes no session field, records no
+   transition and sends no notification; `--reason` and `--recursive` do not widen it.
+5. **Settlement.** A record is marked `confirmed_empty_at` only when the kernel reports its group
+   empty (`killpg(pgid, 0)` raising "no such process group"), observed after the recorded leader is
+   no longer live under its recorded start time. A start time that does not match means identity
+   is not established: nothing is signalled and nothing is settled. A group holding only zombies
+   stays unsettled. A process-table scan, complete or not, never settles a record and never
+   authorizes a signal. Settled records are kept as evidence.
+6. **A running row whose runner is dead.** `li kill` keeps its existing cancellation for it and
+   then runs the terminal arm in the same command for that same execution: the evidence that the
+   runner is dead is bound to the generation and runner identity it read, both are confirmed under
+   the guard before the terminal write, and the worker selection is frozen for that execution, so a
+   resume landing meanwhile is not cleaned up in its place. The worker results are reported before
+   the command's own result and decide its exit status with it.
+7. **Retention.** Pruning and direct deletion skip a session that still has an unresolved record,
+   checked inside the same locked recheck that guards the session's other dependents. Settled
+   records do not hold a session back.
+
+Outcomes of the terminal arm, per record and then for the command:
+
+| Condition | Exit | Output |
+|---|---:|---|
+| Every selected group stopped and confirmed empty, at least one signalled | 0 | `stopped worker for session {id12} (pid={pid}, pgid={pgid}, signal={signal}); terminal status remains {status!r}` per group |
+| No records, or every record already settled or confirmed empty | 1 | the existing `already in terminal state` refusal; with no records, no process is inspected |
+| Identity mismatch, malformed or foreign evidence, leader not live | 1 | the refusal plus an indented `session {id12}: recorded worker identity did not match — kill skipped`, or `... could not be verified — kill skipped` |
+| Some groups stopped, others refused, or a signal sent without a confirmed empty group | 1 | each group's line, and `worker group for session {id12} could not be confirmed stopped; terminal status remains {status!r}` where it applies |
+| The session was resumed, changed status or was deleted during cleanup | 1 | the groups already stopped, then that the session changed during cleanup |
+
+**Why a record in the state database.** A session id stamped into each worker's environment
+gives a label without the independently recorded birth time and generation a candidate must be
+compared against, and psutil does not promise that another process's environment is readable at
+all (`Process.environ()`), so absence of the label proves nothing. Requiring both the label and a
+record adds refusals without adding proof. Per-run files survive a store that refuses writes, but
+a resumed `li agent` and the CLI engine have no file locator a later kill can resolve, and the
+kill already opens the state database to resolve the session. Stopping workers only at launch
+cannot help once the runner has been killed outright.
+
+**Limits.** The capability is prospective: a worker started before version 5, or by a run with
+no persisted session, has no record and is not stopped by this arm. A runner that dies between
+the OS spawn and the record's commit leaves a worker with no record. A worker whose leader has
+already exited when `li kill` runs is refused even if a descendant still runs, since no recorded
+fact proves that descendant belongs to the group's original owner; a descendant that ignores
+SIGTERM is left running in the same way when a resume, status change or deletion stops the
+cleanup during the grace period. Each signal follows an identity read, and the gap between the
+two is the one `ln/_proc.py` already accepts for group signals. On Linux each interpreter adds its
+own once-read boot time to a process's boot-relative start, so `li kill` can read a live worker's
+start time outside the 0.1 s tolerance and refuse it; the check is not loosened to avoid that. A
+version-5 store refuses every version-4 build (`SchemaTooNewError`). Workers of unpersisted SDK
+or engine use stay outside it.
+
+**Rollout.** Three changes, in order: the schema and its readers contract; producer registration
+with generation admission; the terminal arm with the running-row handoff. The arm does not ship
+before its producers and its refusal tests.
+
 ## Depth contract
 
 This ADR fixes a materially wrong operator expectation: that `li kill <play_id>`
@@ -333,7 +450,8 @@ resolves notify from settings only, and never sees a run's per-run override.
 
 - The identity-guard `_check_pid_identity` behavior (create_time,
   `LIONAGI_SESSION_ID`, cmdline) — unchanged; owned by the existing kill safety
-  design.
+  design. It still governs a session's own runner; the recorded CLI workers of a
+  terminal session are checked by the separate rules of Amendment 4.
 - `--all-stale` sweep semantics — unchanged (it already excludes plays/shows by
   design as orchestrators without direct PIDs).
 - Show-level reaping — shows are not in `EXECUTION_ENTITY_KINDS` and are out of the
