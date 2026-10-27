@@ -162,6 +162,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `li team receive` reads a stored message whose recipient is a single name written as a
+  string, not a list, as that whole name, as the other team commands already did. It used
+  to deliver it to any member whose name was part of the string, so `bob` received a
+  message for `bobby`, and it printed that recipient one letter at a time.
+
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
 

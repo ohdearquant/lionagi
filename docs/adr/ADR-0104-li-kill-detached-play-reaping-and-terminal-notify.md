@@ -355,8 +355,8 @@ cleanup during the grace period. Each signal follows an identity read, and the g
 two is the one `ln/_proc.py` already accepts for group signals. On Linux each interpreter adds its
 own once-read boot time to a process's boot-relative start, so `li kill` can read a live worker's
 start time outside the 0.1 s tolerance and refuse it; the check is not loosened to avoid that. A
-version-5 store refuses every version-4 build (`SchemaTooNewError`). Workers of unpersisted SDK
-or engine use stay outside it.
+version-4 build refuses a native writable open of a version-5 store (`SchemaTooNewError`); read-only
+inspection retains its no-migration behavior. Workers of unpersisted SDK or engine use stay outside it.
 
 **Rollout.** Three changes, in order: the schema and its readers contract; producer registration
 with generation admission; the terminal arm with the running-row handoff. The arm does not ship

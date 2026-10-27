@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import yaml
 
 import lionagi.cli.orchestrate as orch_mod
@@ -229,3 +230,32 @@ class TestPlayFlagsAnywhere:
         assert code == 0, capsys.readouterr().err
         assert run_flow.call_args.kwargs["prompt"] == "Do task"
         assert run_flow.call_args.kwargs["team_name"] == "foo"
+
+
+class TestUnknownFlagOnEveryPromptCommand:
+    """`li agent`, `li o flow` and `li o fanout` share one prompt parser, so each
+    refuses an unknown flag by name before anything runs."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["agent", "sonnet", "--not-a-flag", "some prompt"],
+            ["o", "flow", "--not-a-flag", "some prompt", "--agent", "researcher"],
+            ["o", "fanout", "--agent", "researcher", "--not-a-flag", "some prompt"],
+        ],
+    )
+    def test_unknown_flag_is_refused_by_name(self, argv, capsys):
+        import lionagi.cli.agent as agent_mod
+
+        with (
+            patch.object(agent_mod, "_run_agent", AsyncMock()) as run_agent,
+            patch.object(orch_mod, "_run_flow", AsyncMock()) as run_flow,
+            patch.object(orch_mod, "_run_fanout", AsyncMock()) as run_fanout,
+            pytest.raises(SystemExit) as exc,
+        ):
+            main(argv)
+        assert exc.value.code == 2
+        assert "unrecognized arguments: --not-a-flag" in capsys.readouterr().err
+        run_agent.assert_not_called()
+        run_flow.assert_not_called()
+        run_fanout.assert_not_called()
