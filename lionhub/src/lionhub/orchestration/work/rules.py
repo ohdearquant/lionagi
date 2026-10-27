@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .form import WorkForm
+from .form import _PYTHON_TYPE_MAP, WorkForm
 
 __all__ = (
     "Rule",
@@ -75,15 +75,7 @@ class Rule(BaseModel):
         if value is None:
             return None  # type check does not apply to absent values
         expected = self.params.get("type", "str")
-        type_map: dict[str, type] = {
-            "str": str,
-            "int": int,
-            "float": float,
-            "bool": bool,
-            "list": list,
-            "dict": dict,
-        }
-        target = type_map.get(expected)
+        target = _PYTHON_TYPE_MAP.get(expected)
         if target is None:
             return f"Rule {self.rule_id!r}: unknown type {expected!r}."
         # Allow int where float is expected (numeric widening).

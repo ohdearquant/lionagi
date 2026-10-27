@@ -386,10 +386,13 @@ def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str
     return resolved
 
 
-def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_name: str) -> bytes:
+def _read_and_verify_target_bytes(
+    *, bundle_dir: Path, module_path: str, plugin_name: str
+) -> tuple[bytes, str]:
     """Read the activation target's bytes exactly once, verify against the
-    trust hash, and return those same bytes to compile/exec — the single
-    read closes a TOCTOU window a hash-then-reopen sequence would leave open.
+    trust hash, and return those same bytes to compile/exec with their hash —
+    the single read closes a TOCTOU window a hash-then-reopen sequence would
+    leave open.
     """
     file_path = bundle_dir / module_path
     try:
@@ -406,7 +409,7 @@ def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_
             f"{module_path!r} content does not match the trusted hash recorded for "
             f"plugin {plugin_name!r} — re-run `li plugin trust {plugin_name}`"
         )
-    return source_bytes
+    return source_bytes, current_hash
 
 
 def _exec_bundle_module(source: bytes, *, file_path: Path, module_key: str) -> Any:
@@ -632,14 +635,14 @@ class PluginRegistry:
 
         module_path, attr = resolution[target]
         try:
-            source_bytes = _read_and_verify_target_bytes(
+            source_bytes, source_hash = _read_and_verify_target_bytes(
                 bundle_dir=fresh.bundle_dir, module_path=module_path, plugin_name=plugin_name
             )
         except (FileNotFoundError, PermissionError) as exc:
             msg = f"failed to activate {target!r} from plugin {plugin_name!r} ({fresh.manifest_path}): {exc}"
             raise PluginActivationError(plugin_name, target, msg) from exc
 
-        cache_key = (plugin_name, target, compute_hash(source_bytes, max_bytes=None))
+        cache_key = (plugin_name, target, source_hash)
         if cache_key in cls._activation_errors:
             raise PluginActivationError(plugin_name, target, cls._activation_errors[cache_key])
         if cache_key in cls._activation_cache:

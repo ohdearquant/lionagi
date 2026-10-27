@@ -75,7 +75,6 @@ branch = session.get_branch("optional-worker", None)  # returns None if absent
 ```python
 session.include_branches([b1, b2])          # add existing branches
 session.remove_branch(branch_id)            # remove (keeps object)
-session.remove_branch(branch_id, delete=True)  # remove + delete
 session.change_default_branch(branch_id)    # swap default
 b2 = session.split(branch_id)              # sync clone with same history
 b2 = await session.asplit(branch_id)       # async clone

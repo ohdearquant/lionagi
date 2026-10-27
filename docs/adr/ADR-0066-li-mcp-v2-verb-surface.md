@@ -177,6 +177,9 @@ advertised or taught. They exist for callers already scripted against the old na
 are accepted for exactly one release and removed in the first minor release after the one
 that introduces this surface, and no later than 2026-09-30.
 
+They have since been removed: an old name is refused as an unknown verb (`not_found`), and
+the catalog and `server.info` no longer carry `synonyms_removed_after`.
+
 **Ops are JSON, never a DSL string.** `ops` is a list of objects:
 
 ```json
