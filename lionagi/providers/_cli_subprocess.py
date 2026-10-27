@@ -454,6 +454,18 @@ async def end_child_group(
     swept = False
     try:
         if getattr(proc, "returncode", None) is None:
+            if not witnesses:
+                # The leader alone gets signalled below. Signalling the group
+                # without a matching member identity could reach a recycled
+                # PGID, so that stays refused; saying so is what keeps a
+                # surviving descendant from passing as a clean teardown.
+                log.warning(
+                    "no member of process group %s could be confirmed as this run's, so "
+                    "only the CLI child %s is signalled; other members of the group may "
+                    "still be running",
+                    spawned.pgid if spawned is not None else getattr(proc, "pid", None),
+                    getattr(proc, "pid", None),
+                )
             if expected_marker is None:
                 await aterminate_process_group(
                     proc,

@@ -1820,6 +1820,58 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
         await cs.end_child_group(proc, grace=0.25)
 
+    @pytest.mark.asyncio
+    async def test_a_live_child_with_no_group_witness_is_reported(self, monkeypatch, caplog):
+        """Signalling only the child of a live group is not a clean teardown.
+
+        The group is left unsignalled on purpose when no member's identity can
+        be confirmed, since the number alone could name a recycled group; any
+        descendant then outlives the run, so the skip must be visible.
+        """
+        import logging
+
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None)
+        spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
+        monkeypatch.setattr(cs, "capture_group_witnesses", lambda *args, **kwargs: ())
+
+        async def graceful(child, *, grace, group_witnesses):
+            assert group_witnesses == ()
+            child.returncode = 0
+
+        monkeypatch.setattr(cs, "aterminate_process_group", graceful)
+
+        with caplog.at_level(logging.WARNING, logger=cs.__name__):
+            await cs.end_child_group(proc, grace=0.25, spawned=spawned)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "process group 4242" in message
+        assert "may still be running" in message
+
+    @pytest.mark.asyncio
+    async def test_a_live_child_with_a_group_witness_is_not_reported(self, monkeypatch, caplog):
+        import logging
+
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None)
+        spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
+        monkeypatch.setattr(cs, "capture_group_witnesses", lambda *args, **kwargs: ((4242, 10.0),))
+
+        async def graceful(child, *, grace, group_witnesses):
+            assert group_witnesses == ((4242, 10.0),)
+            child.returncode = 0
+
+        monkeypatch.setattr(cs, "aterminate_process_group", graceful)
+
+        with caplog.at_level(logging.WARNING, logger=cs.__name__):
+            await cs.end_child_group(proc, grace=0.25, spawned=spawned)
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
     def test_a_completed_but_reaped_spawn_is_not_signalled(self, monkeypatch):
         """A spawn task can complete AND its child be reaped before the
         done-callback runs. The pid is then just a number, and this path has no

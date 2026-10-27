@@ -103,21 +103,43 @@ def _select_raw_create_time_reader():
 
     That skip is taken ONLY on a platform that actually applies the adjustment,
     because ``monotonic=True`` does not mean the same thing everywhere. On Linux
-    (``psutil._pslinux``) nothing is adjusted at all: ``create_time()`` is the
-    process's ``starttime`` in jiffies plus ``boot_time()``, and ``monotonic``
-    merely omits that addition, yielding SECONDS SINCE BOOT rather than seconds
-    since the epoch. Taking it there would silently change what every recorded
-    ``pid_create_time`` means: live processes would stop matching their own
-    stored records, a reused pid at a similar uptime after a reboot would start
-    matching a stranger, and ``datetime.fromtimestamp`` would date a daemon to
-    1970. The adjustment is the thing being avoided, so its presence is what
-    selects the reader — ``adjust_proc_create_time`` exists on the macOS backend
-    and nowhere else. Everywhere else the plain epoch call is already the
-    stable, comparable value.
+    (``psutil._pslinux``) ``create_time()`` is the process's ``starttime`` in
+    jiffies plus ``boot_time()``, and ``monotonic`` merely omits that addition,
+    yielding SECONDS SINCE BOOT rather than seconds since the epoch. Recording
+    that would silently change what every stored ``pid_create_time`` means: live
+    processes would stop matching their own stored records, a reused pid at a
+    similar uptime after a reboot would start matching a stranger, and
+    ``datetime.fromtimestamp`` would date a daemon to 1970.
+
+    The plain epoch call is not stable on Linux either. ``boot_time()`` re-reads
+    ``btime`` from ``/proc/stat`` on every call, and the kernel derives that
+    whole-second value from the wall clock minus uptime, so a clock step or a
+    slew across a second boundary moves it. The same live process then reads a
+    second apart between its spawn record and a later check, far outside
+    :data:`CREATE_TIME_TOLERANCE`. So on Linux the reader adds a boot time read
+    ONCE per interpreter to the fixed boot-relative start: the value stays in
+    seconds since the epoch, and every read of one process in this interpreter
+    is equal. Two interpreters can still disagree by the drift between their
+    first reads, as the plain call always could.
+
+    The adjustment is the thing being avoided on macOS, so its presence is what
+    selects that reader: ``adjust_proc_create_time`` exists on the macOS backend
+    and nowhere else that reaches this branch. Any other platform keeps the
+    plain public call.
     """
     import inspect
 
     import psutil
+
+    if getattr(psutil, "LINUX", False):
+        try:
+            platform_process = psutil._psplatform.Process
+            if "monotonic" in inspect.signature(platform_process.create_time).parameters:
+                boot = float(psutil._psplatform.boot_time())
+                return lambda proc: proc._proc.create_time(monotonic=True) + boot
+        except (TypeError, ValueError, AttributeError, OSError, RuntimeError):
+            pass
+        return lambda proc: proc.create_time()
 
     if not hasattr(psutil._psplatform, "adjust_proc_create_time"):
         return lambda proc: proc.create_time()

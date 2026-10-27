@@ -71,9 +71,53 @@ def _stand_in(pidfile, *, ignore_term: bool) -> str:
 async def test_idle_timeout_after_partial_output_ends_the_worker_group(
     tmp_path, monkeypatch, ignore_term
 ) -> None:
-    from lionagi.providers.openai import codex as codex_mod
+    await _run_until_idle_and_require_the_group_gone(
+        tmp_path, monkeypatch, tmp_path / "pids.json", ignore_term=ignore_term
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="psutil reads the boot time on every call only on Linux"
+)
+@pytest.mark.slow_timing
+async def test_idle_timeout_ends_the_worker_group_when_the_boot_time_steps(
+    tmp_path, monkeypatch
+) -> None:
+    """A boot time that moves after spawn must not cost the group kill.
+
+    psutil's Linux backend adds ``boot_time()``, re-read from ``/proc/stat``
+    on every call, to a start time counted from boot. A clock step after spawn
+    moves that whole-second value, so the leader's start time read at teardown
+    no longer matches its spawn record and, without a stable reader, no group
+    member can be confirmed: the leader is signalled alone and its child lives.
+    """
+    from psutil import _pslinux
+
+    from lionagi.ln import _proc
+
+    # Select the reader before the clock moves, as a long-running process has.
+    monkeypatch.setattr(_proc, "_read_raw_create_time", None)
+    _proc.raw_create_time(psutil.Process(os.getpid()))
 
     pidfile = tmp_path / "pids.json"
+    real_boot_time = _pslinux.boot_time
+
+    def stepped_boot_time():
+        return real_boot_time() + (1.0 if pidfile.exists() else 0.0)
+
+    monkeypatch.setattr(_pslinux, "boot_time", stepped_boot_time)
+
+    await _run_until_idle_and_require_the_group_gone(
+        tmp_path, monkeypatch, pidfile, ignore_term=False
+    )
+
+
+async def _run_until_idle_and_require_the_group_gone(
+    tmp_path, monkeypatch, pidfile, *, ignore_term: bool
+) -> None:
+    from lionagi.providers.openai import codex as codex_mod
+
     fake_cli = tmp_path / "fake-codex"
     fake_cli.write_text(_stand_in(pidfile, ignore_term=ignore_term))
     fake_cli.chmod(0o755)
