@@ -920,8 +920,8 @@ but never bind to a row this run did not create.
 **`_do_engine_run` BaseException handling** — `asyncio.CancelledError` and
 `KeyboardInterrupt` are `BaseException` paths that bypass the `except Exception` handler.
 Mark the row cancelled before re-raising so Studio doesn't show it as permanently "running".
-`run_async()` (`lionagi/ln/concurrency/utils.py:124`) cancels the task on SIGINT (`:175`) and then raises
-`KeyboardInterrupt` at `:202`; re-raising here preserves that exit-code behavior (interpreter
+`run_async()` in `lionagi/ln/concurrency/utils.py` cancels the task on SIGINT and then raises
+`KeyboardInterrupt`; re-raising here preserves that exit-code behavior (interpreter
 default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
