@@ -122,7 +122,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
   `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when
-  passed. None of them was ever read: `remove_branch()` leaves the branch object with the caller
+  passed. None of them changed the result: `remove_branch()` leaves the branch object with the caller
   either way, and the two message views never filtered on either flag. They will be removed in a
   future minor release; dropping the argument leaves the result unchanged.
 
