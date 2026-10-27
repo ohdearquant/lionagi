@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -27,7 +28,6 @@ async def held_helpers(monkeypatch):
         runner=None,
         stdout_error=None,
         end_error=None,
-        keep_error=None,
         cancel_at_end=False,
         after_end=False,
         pending_at_end=set(),
@@ -90,8 +90,6 @@ async def held_helpers(monkeypatch):
 
         def keep_for_child(self):
             state.kept += 1
-            if state.keep_error is not None:
-                raise state.keep_error
             return True
 
         def release(self):
@@ -115,6 +113,7 @@ async def held_helpers(monkeypatch):
             raise state.end_error
         if state.cancel_at_end:
             asyncio.get_running_loop().call_soon(state.runner.cancel)
+        return cs._ChildGroupCleanup.CONFIRMED_EMPTY
 
     real_create_task = asyncio.create_task
     real_wait = asyncio.wait
@@ -174,7 +173,7 @@ async def held_helpers(monkeypatch):
     monkeypatch.setattr(cs.asyncio, "wait_for", wait_for)
 
     async def consume():
-        async for _item in cs.ndjson_from_cli(["synthetic-cli"], env={}, stdin_data=b"input"):
+        async for _item in cs.ndjson_from_cli([sys.executable], env={}, stdin_data=b"input"):
             pytest.fail("the stand-in stdout must not produce a value")
         return "returned normally"
 
@@ -260,20 +259,21 @@ async def test_cancel_during_abandoned_drain_is_warned_then_propagated(held_help
 
 @pytest.mark.asyncio(loop_scope="function")
 @pytest.mark.parametrize("cancelled", [False, True], ids=["error", "cancelled"])
-async def test_lease_retention_failure_keeps_the_teardown_exception(held_helpers, cancelled):
+async def test_unconfirmed_group_end_keeps_the_slots_and_the_teardown_exception(
+    held_helpers, cancelled
+):
     state = held_helpers
     primary = asyncio.CancelledError() if cancelled else RuntimeError("group teardown failed")
     state.end_error = primary
-    state.keep_error = OSError("slot close failed")
     state.gates["stdout"].set()
     state.gates["wait"].set()
     await _finished(state)
     if cancelled:
-        assert state.runner.cancelled(), "a lease error must not replace teardown cancellation"
+        assert state.runner.cancelled(), "slot retention must not replace teardown cancellation"
         with pytest.raises(asyncio.CancelledError) as raised:
             await state.runner
         assert raised.value is primary or raised.value.__context__ is primary
     else:
         assert state.runner.exception() is primary, "the original teardown error must stay primary"
-    assert state.kept == 1 and state.released == 0
+    assert state.kept == 0 and state.released == 0, "an unconfirmed group keeps its holder locks"
     _all_reaped(state)
