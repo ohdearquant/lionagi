@@ -157,13 +157,13 @@ Middle's own rule, such a round would run only the calls its `OUT{}` binds and d
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
-return mappings (`lionagi/tools/coding.py:462-672`, `lionagi/tools/context/context.py:257-573`),
+return mappings (`lionagi/tools/coding.py:485-700`, `lionagi/tools/context/context.py:257-573`),
 so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
 provider's prompt-cache placement. Before this decision the Middle stripped the tool schemas from its
 rounds, and only an endpoint that places the prompt cache rendered the branch's tool set into the
-request (`lionagi/operations/chat/_prepare.py:209-227`), so on any other endpoint the model would
+request (`lionagi/operations/chat/_prepare.py:210-229`), so on any other endpoint the model would
 have been asked to call tools it was never shown. The Middle now passes the branch's tool schemas
 to every round (`lndl_middle.py:472-484`).
 

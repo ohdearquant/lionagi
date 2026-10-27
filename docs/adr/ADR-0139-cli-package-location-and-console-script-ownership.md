@@ -45,8 +45,8 @@ The full 46-file partition is specified in D2.
 **P3. Command declarations are not command discovery.**
 The populated catalog currently contains 21 canonical commands and a token map;
 a decorator only attaches metadata, and loading imports the module of an already
-selected seed (`lionagi/_auto.py:144`, `lionagi/_auto.py:274`,
-`lionagi/_auto.py:291`, `lionagi/_auto.py:388`).
+selected seed (`lionagi/_auto.py:143`, `lionagi/_auto.py:273`,
+`lionagi/_auto.py:290`, `lionagi/_auto.py:389`).
 Moving only handlers or decorators would leave fresh startup dependent on a core
 catalog or accidental import order. A4 already requires the populated catalog and
 selection/loading entry points to leave core before the first command target moves
@@ -199,7 +199,7 @@ same implementation. Mutable state has one service owner. CLI registration
 decorators remain on the adapter functions defined in the catalog's selected
 module: a reexported decorated handler is not a replacement for a correctly
 defined adapter, because the existing loader checks the defining module and
-exactly one matching marker (`lionagi/_auto.py:395`).
+exactly one matching marker (`lionagi/_auto.py:398`).
 
 The shared dependency closure is part of step 3:
 
@@ -332,10 +332,10 @@ def build_cli_parser(selected: CliSeed | None) -> CliBuild: ...
 ```
 
 These signatures and their current lazy behavior are at
-`lionagi/_auto.py:373`, `lionagi/_auto.py:388`, and `lionagi/_auto.py:430`.
+`lionagi/_auto.py:374`, `lionagi/_auto.py:389`, and `lionagi/_auto.py:433`.
 The composition root imports this catalog directly before selection.
 MCP projection and machine-command classification use the same catalog, not copies
-(`lionagi/cli/main.py:13`, `lionagi/cli/main.py:353`,
+(`lionagi/cli/main.py:12`, `lionagi/cli/main.py:353`,
 `lionagi/cli/machine.py:824`,
 `lionhub/src/lionhub/serve/mcp/projection.py:32`).
 
@@ -344,15 +344,15 @@ unchanged. Root discovery does not import every command implementation. Selectio
 loads the explicitly cataloged implementation and enforces the existing marker
 contract. Unknown tokens remain unknown; duplicate tokens and missing or duplicate
 markers remain errors
-(`lionagi/_auto.py:257`, `lionagi/_auto.py:378`,
-`lionagi/_auto.py:400`, `lionagi/_auto.py:453`).
+(`lionagi/_auto.py:256`, `lionagi/_auto.py:379`,
+`lionagi/_auto.py:403`, `lionagi/_auto.py:456`).
 
 Built-in commands implemented outside core, including scheduling and plugin
 management, are discoverable because their declarations are in the hub-owned
 catalog. They need neither an earlier hub import nor caller registration.
 `casts`, `studio` and `schedule` are included; update targets as their owners
-move, including later waves (`lionagi/_auto.py:158`,
-`lionagi/_auto.py:173`, `lionagi/_auto.py:224`).
+move, including later waves (`lionagi/_auto.py:157`,
+`lionagi/_auto.py:172`, `lionagi/_auto.py:223`).
 Do not invent third-party command discovery: the current plugin capability schema
 has no CLI-command field (`lionagi/plugins/manifest.py:131`).
 The step-3 implementation chooses internal compiler factoring and fixtures;
@@ -545,7 +545,7 @@ handling and command-specific errors
 `li --version` continues reporting the core version. Its current source is
 `lionagi.version.__version__`; independent hub version reporting requires a
 separate behavior decision (`lionagi/cli/main.py:272`,
-`lionagi/_auto.py:424`).
+`lionagi/_auto.py:427`).
 
 **Failure tests:** `test_cli_move_preserves_behavior` and
 `test_cli_version_source_is_unchanged`.
@@ -648,7 +648,7 @@ catalog suites.
    version, unknown arguments, sentinel cases and deterministic machine commands.
    Check stdout, stderr, exit status, package-relative imports and environment paths.
    The existing alias test uses `run_name="not_main"`, so it is not this proof
-   (`tests/test_moved_modules.py:315`).
+   (`tests/test_moved_modules.py:320`).
 
 2. **Shared closure, identity and rows (D2):**
    `test_step3_shared_dependency_closure`,

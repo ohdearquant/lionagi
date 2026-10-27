@@ -117,13 +117,13 @@ The request this record answers, and where each part is carried:
 `.env.local`, then `.secrets.env` (`lionagi/config.py:169`, `lionagi/config.py:191`). Provider metadata
 supplies that name to endpoint configuration
 (`lionagi/providers/anthropic/_config.py:23`,
-`lionagi/service/connections/provider_config.py:98`). A missing settings name
+`lionagi/service/connections/provider_config.py:99`). A missing settings name
 falls through to `os.getenv(name, name)`, allowing the unresolved name to become
 the credential (`lionagi/service/connections/endpoint_config.py:132`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:697`,
+(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:706`,
 `lionagi/service/connections/api_calling.py:268-275`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
 `lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
@@ -251,9 +251,9 @@ Factor a one-name helper from `lionagi/providers/_secret_resolution.py`; retain
 the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
 (`lionagi/providers/_secret_resolution.py:88`,
-`lionagi/providers/_secret_resolution.py:214`,
-`lionagi/providers/_secret_resolution.py:373`,
-`lionagi/providers/_secret_resolution.py:431`). Reusing the
+`lionagi/providers/_secret_resolution.py:213`,
+`lionagi/providers/_secret_resolution.py:380`,
+`lionagi/providers/_secret_resolution.py:454`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes
@@ -269,7 +269,7 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
-the current eager header path (`lionagi/service/imodel.py:375`,
+the current eager header path (`lionagi/service/imodel.py:384`,
 `lionagi/service/connections/endpoint.py:483`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
@@ -299,8 +299,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:841`) and
-`from_dict` reads it back (`lionagi/service/imodel.py:924`). Direct endpoints have
+preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:851`) and
+`from_dict` reads it back (`lionagi/service/imodel.py:936`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 

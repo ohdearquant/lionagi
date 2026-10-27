@@ -353,7 +353,7 @@ lengths (`lionagi/studio/services/sessions.py:532`), including duplicate and pru
 membership tested at `tests/apps_studio_server/test_session_listing_projection.py:80`.
 Selected-row fanout and membership payload can be large and must be measured separately.
 ADR-0117's proposed progression ordinal index does not supply a sessions seek index
-(`docs/adr/ADR-0117-normalized-progression-membership-and-online-cutover.md:80`).
+(`docs/adr/ADR-0117-normalized-progression-membership-and-online-cutover.md:138`).
 
 ### D4 — Explicit unknown totals and one persisted response snapshot
 
