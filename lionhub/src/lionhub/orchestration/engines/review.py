@@ -644,9 +644,7 @@ class ReviewEngine(Engine):
                 dimension=dimension,
                 error_type=error_type,
             )
-            marker = f"review-{dimension} ({error_type})"
-            if marker not in run._emission_failures:
-                run._emission_failures.append(marker)
+            run.record_emission_failure(f"review-{dimension} ({error_type})")
 
     async def _isolate_verification_failure(
         self, run: EngineRun, exc: BaseException, *, stage: str
@@ -656,9 +654,7 @@ class ReviewEngine(Engine):
             return False
         error_type = _failure_label(exc)
         run.notify("verification_failed", stage=stage, error_type=error_type)
-        marker = f"{stage} ({error_type})"
-        if marker not in run._emission_failures:
-            run._emission_failures.append(marker)
+        run.record_emission_failure(f"{stage} ({error_type})")
         return True
 
     async def _verify_isolated(self, run: EngineRun, issue: IssueFound) -> None:
@@ -695,9 +691,9 @@ class ReviewEngine(Engine):
             )
             # `models["review_fallback"]` names ONE more attempt on a different model
             # for a dimension whose reviewer stayed silent through its repairs. Read
-            # from `models` directly, not model_for(): that falls back to the engine's
-            # base model, which would turn "unset" into a retry on the same model.
-            fallback_model = self.models.get("review_fallback")
+            # with optional_model_for(), not model_for(): that falls back to the
+            # engine's base model, which would turn "unset" into a retry on the same model.
+            fallback_model = self.optional_model_for("review_fallback")
 
             async def _fallback_agent() -> Any:
                 # A fresh leg: repair replays the whole conversation onto the same

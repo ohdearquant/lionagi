@@ -441,7 +441,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     # Collect emission-missing diagnostics for the structured outcome. They
     # are degradation, not a terminal failure, so completed rows keep error NULL.
     emission_error: str | None = None
-    _emission_failures: list[str] = getattr(engine, "_emission_failures", [])
+    _emission_failures: list[str] = getattr(engine, "emission_failures", [])
     if _emission_failures:
         emission_error = "emission_missing: " + "; ".join(_emission_failures)
 
