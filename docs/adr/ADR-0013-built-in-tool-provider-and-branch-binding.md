@@ -539,8 +539,8 @@ class CodingToolkit(LionTool):
     def __init__(
         self,
         notify: bool = True,
-        notify_threshold: float = 0.7,
-        notify_max_tokens: int = 200_000,
+        notify_threshold: float | None = None,   # deprecated, unread
+        notify_max_tokens: int | None = None,    # deprecated, unread
         workspace_root: str | Path | None = None,
         tools: Sequence[str] | None = None,
         nudge_engine: NudgeEngine | None = None,
@@ -612,10 +612,10 @@ returned list (`lionagi/agent/factory.py`).
   `_post_hooks` map inside every `bind()` call. Reusing one `CodingToolkit` instance for
   another branch therefore attaches both the new hook and prior bind hooks to the new
   descriptors; those older closures retain their earlier engine and file-state maps.
-- **Declared nudge numbers:** `notify_threshold=0.7` and
-  `notify_max_tokens=200_000` are stored on the toolkit but not read by `bind()` or
-  passed to the constructed nudge engine in this module. They are inherited inactive
-  settings here; no runtime budget or rationale can be claimed from them.
+- **Declared nudge numbers:** `notify_threshold` and `notify_max_tokens` are stored on the
+  toolkit (0.7 and 200,000 when not passed) but not read by `bind()` or passed to the
+  constructed nudge engine in this module. Passing either emits a `DeprecationWarning`; no
+  runtime budget or rationale can be claimed from them.
 - **Sandbox state:** one mutable session slot is captured per bind. A second create is
   rejected until merge or discard. A successful merge clears the slot. A discard that
   returns clears it regardless of the returned success flag; an exception from
@@ -647,11 +647,10 @@ returned list (`lionagi/agent/factory.py`).
 - Toolkit code check calls the shared Ruff helper but does not pass the standalone
   workspace cwd. Toolkit navigation and AST search call the same low-level helpers and
   assemble their own dictionaries.
-- Toolkit bash implements the same operator rejection and output cap through shared
-  subprocess code, then renames `returncode` to `return_code`. It computes the timeout as
-  `timeout or 30000` before clamping, so an explicit zero means 30 seconds rather than the
-  standalone adapter's 1 ms; negative values still clamp to 1 ms and values above five
-  minutes clamp to 300,000 ms.
+- Toolkit bash and the standalone adapter run through one function in `code/bash.py`: the
+  same operator and quoting refusals and output cap, a timeout of 30,000 ms when omitted
+  that is otherwise clamped into 1 to 300,000 ms (an explicit zero is 1 ms), and the
+  standalone response fields as a dictionary.
 - Expected failures remain dictionaries, but not every dictionary has the corresponding
   standalone response model's complete fields or wording.
 

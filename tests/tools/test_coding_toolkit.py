@@ -5,6 +5,7 @@
 
 import asyncio
 import inspect
+import warnings
 
 import pytest
 from pydantic import ValidationError
@@ -580,3 +581,36 @@ async def test_reader_passes_file_extent_through_the_bound_tool(
         )
     else:
         assert result["content"] == expected_content
+
+
+def _toolkit_deprecations(caught):
+    return [
+        w
+        for w in caught
+        if issubclass(w.category, DeprecationWarning) and "CodingToolkit(" in str(w.message)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("notify_threshold", 0.5), ("notify_max_tokens", 1000)],
+)
+def test_unread_nudge_settings_warn_at_the_caller_when_passed(tmp_path, name, value):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), **{name: value})
+
+    found = _toolkit_deprecations(caught)
+    assert len(found) == 1
+    assert f"CodingToolkit({name}=...)" in str(found[0].message)
+    assert found[0].filename == __file__
+    assert getattr(tk, name) == value
+
+
+def test_unread_nudge_settings_keep_their_values_when_omitted(tmp_path):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+
+    assert _toolkit_deprecations(caught) == []
+    assert (tk.notify_threshold, tk.notify_max_tokens) == (0.7, 200_000)
