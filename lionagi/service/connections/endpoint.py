@@ -30,7 +30,13 @@ _CONFIGURED_TIMEOUT = object()
 # local-network opt-in and the kwargs a config never writes down. A setting named as a
 # credential or a proxy is dropped too, by ``_names_credential_setting``.
 _NOT_RESTORED = frozenset(
-    ("api_key", "allow_local_network", *AUTHORIZATION_KWARG_NAMES, *RUNTIME_STATE_NAMES)
+    (
+        "api_key",
+        "api_key_env",
+        "allow_local_network",
+        *AUTHORIZATION_KWARG_NAMES,
+        *RUNTIME_STATE_NAMES,
+    )
 )
 
 # Kwargs whose value is a set of headers; a restored one is filtered as default_headers is.
@@ -455,6 +461,45 @@ class Endpoint:
     def request_options(self, value):
         self.config.request_options = EndpointConfig._validate_request_options(value)
 
+    def _require_api_key(self) -> None:
+        if not self._account_routing_enabled():
+            self.config._require_api_key()
+
+    def _dispatch_headers(self, headers: dict) -> dict:
+        if (
+            self._account_routing_enabled()
+            or self.config.auth_type == "none"
+            or not self.config._api_key_reference()
+        ):
+            return headers
+        credential_headers = HeaderFactory.get_header(
+            auth_type=self.config.auth_type, content_type=None, api_key=self.config._api_key
+        )
+        preview_headers = HeaderFactory.get_header(
+            auth_type=self.config.auth_type, content_type=None, api_key="dummy-key-for-testing"
+        )
+        reference_headers = HeaderFactory.get_header(
+            auth_type=self.config.auth_type,
+            content_type=None,
+            api_key=self.config._api_key_reference(),
+        )
+        headers = dict(headers)
+        for credential_name, value in credential_headers.items():
+            names = [
+                name
+                for name in headers
+                if isinstance(name, str) and name.lower() == credential_name.lower()
+            ]
+            if not names:
+                headers[credential_name] = value
+            for name in names:
+                if headers[name] in (
+                    preview_headers[credential_name],
+                    reference_headers[credential_name],
+                ):
+                    headers[name] = value
+        return headers
+
     def create_payload(
         self,
         request: dict | BaseModel,
@@ -480,10 +525,13 @@ class Endpoint:
                     del headers[same]
                 headers[name] = value
         else:
+            api_key = self.config._api_key
+            if not api_key and self.config._api_key_reference():
+                api_key = "dummy-key-for-testing"
             headers = HeaderFactory.get_header(
                 auth_type=self.config.auth_type,
                 content_type=self.config.content_type,
-                api_key=self.config._api_key,
+                api_key=api_key,
                 default_headers=self.config.default_headers,
             )
             if extra_headers:
@@ -650,6 +698,7 @@ class Endpoint:
         **kwargs,
     ):
         routed = self._account_routing_enabled()
+        self._require_api_key()
         # Only a routed call hands the scope down: an unrouted endpoint's _call never
         # receives a keyword its signature may not take.
         scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
@@ -670,6 +719,7 @@ class Endpoint:
         else:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
+        headers = self._dispatch_headers(headers)
         headers = self._with_idempotency_key(headers, routed=routed)
 
         call_func = self._call
@@ -952,8 +1002,10 @@ class Endpoint:
         **kwargs,
     ):
         routed = self._account_routing_enabled()
+        self._require_api_key()
         scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
         payload, headers = self.create_payload(request, extra_headers, **kwargs)
+        headers = self._dispatch_headers(headers)
         if routed:
             # A routed stream retries before its first chunk, so its attempts share one key
             # as a routed call's do.
