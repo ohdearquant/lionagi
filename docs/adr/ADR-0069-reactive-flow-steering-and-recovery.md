@@ -580,7 +580,7 @@ against the artifact set a node declared, it does not make.
   the new root, and with a `--save` naming a directory other than the original run's they are absent
   there too. Delta row 9 covers threading the original root.
 - **What the live verifier proves.** Presence and a non-zero size, not content: it reads
-  `os.path.getsize(full) > 0` (`lionagi/state/artifact_verifier.py:249`), and the currency check
+  `(size := os.path.getsize(full)) > 0` (`lionagi/state/artifact_verifier.py:249`), and the currency check
   beside it compares mtime and size and says itself that this "narrows, but doesn't close" the
   window a rewrite preserving both leaves (`stale_artifact_markers`,
   `lionagi/state/artifact_verifier.py:299-309`). A byte-level check is delta row 7.
