@@ -914,3 +914,29 @@ async def test_run_cancelled_before_any_operation_task_exists_still_settles_ever
             f"node {str(op.id)[:8]} was left at "
             f"{log.statuses_for(str(op.id))} with nothing further coming"
         )
+
+
+def test_node_edge_meta_lists_one_dependency_per_incoming_edge_in_edge_order():
+    from lionagi.operations.node import create_operation
+    from lionagi.protocols.graph.edge import Edge
+    from lionhub.orchestration.engines.flow_signals import _build_node_edge_meta
+
+    graph = Graph()
+    first = create_operation("operate", parameters={"instruction": "first"})
+    second = create_operation("operate", parameters={"instruction": "second"})
+    joined = create_operation("operate", parameters={"instruction": "joined"})
+    single = create_operation("operate", parameters={"instruction": "single"})
+    for op in (first, second, joined, single):
+        graph.add_node(op)
+    graph.add_edge(Edge(head=second.id, tail=joined.id))
+    graph.add_edge(Edge(head=first.id, tail=joined.id))
+    graph.add_edge(Edge(head=second.id, tail=joined.id))
+    graph.add_edge(Edge(head=first.id, tail=single.id))
+
+    meta = _build_node_edge_meta(graph)
+
+    assert meta[str(joined.id)]["depends_on"] == [str(second.id), str(first.id), str(second.id)]
+    assert meta[str(joined.id)]["parent_id"] is None
+    assert meta[str(single.id)]["depends_on"] == [str(first.id)]
+    assert meta[str(single.id)]["parent_id"] == str(first.id)
+    assert meta[str(first.id)]["depends_on"] == []

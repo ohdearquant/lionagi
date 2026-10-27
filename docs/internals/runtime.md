@@ -538,7 +538,8 @@ and every declared file from disk — an already-activated target stops being
 handed out the moment the plugin is disabled or a declared file/manifest
 changes, not just refusing brand-new activations. The specific target file
 is read exactly once: that read's hash (checked against the currently
-recorded trust entry) and the bytes that get compiled/exec'd are the same
+recorded trust entry, then used as the activation-cache key) and the bytes
+that get compiled/exec'd are the same
 `read_bytes()` call (`_read_and_verify_target_bytes`), never a hash-then-
 reopen sequence that would leave a TOCTOU window for the file to be swapped.
 `_exec_bundle_module` compiles the pre-read bytes directly rather than going
