@@ -139,6 +139,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Deprecated
 
+- `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
+  `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when
+  passed. None of them changed the result: `remove_branch()` leaves the branch object with the caller
+  either way, and the two message views never filtered on either flag. They will be removed in a
+  future minor release; dropping the argument leaves the result unchanged.
+
 - `CodingToolkit(notify_threshold=..., notify_max_tokens=...)` now emits a
   `DeprecationWarning` when either is passed. Neither value was ever read: the toolkit's nudge
   engine does not take them. The attributes keep 0.7 and 200,000 when the arguments are
@@ -211,6 +217,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Defer every merged pull request from an incomplete GitHub poll until a complete
   scan establishes merge order, preventing the cursor from skipping older merges. (#3741)
+
+- `parse_batch_function_calls()` decodes each call in the list once, so a string argument whose
+  escapes decode to a reserved word followed by `=` (for example `"\x66rom=1"`) keeps its text,
+  as `parse_function_call()` already did. The batch parser used to rewrite it to `from_=1`.
 
 ## [0.36.0] - 2026-10-24
 

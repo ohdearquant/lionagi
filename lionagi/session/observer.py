@@ -60,7 +60,7 @@ _BASE_SIGNAL_FIELDS: frozenset[str] = frozenset(
 def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     """Build a JSON-safe, size-bounded payload dict from a Signal; oversized payloads are truncated."""
     from lionagi.ln import json_dumpb as _jdb  # noqa: PLC0415
-    from lionagi.ln import json_dumps as _jd  # noqa: PLC0415
+    from lionagi.ln import json_loads as _jl  # noqa: PLC0415
     from lionagi.session.signal import MessageAdded  # noqa: PLC0415
 
     raw: dict[str, Any] = {}
@@ -98,7 +98,7 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     original_bytes: bytes | None = None
     try:
         original_bytes = _jdb(raw, safe_fallback=True)
-        payload: dict[str, Any] = _jd(raw, safe_fallback=True, as_loaded=True)
+        payload: dict[str, Any] = _jl(original_bytes)
     except Exception:  # noqa: BLE001
         payload = {"sanitize_error": repr(sig)[:256]}
 
