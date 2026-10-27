@@ -65,7 +65,7 @@ ADR-0062 records composition, routing, execution locus, parsing and output
 contracts. The current implementation additionally has explicit machine-mode
 routing and lazy selected-command construction
 (`docs/adr/ADR-0062-cli-command-surface-ownership.md:66`,
-`lionagi/cli/main.py:291`, `lionagi/cli/main.py:353`).
+`lionagi/cli/main.py:305`, `lionagi/cli/main.py:367`).
 Relocation preserves the behavior at this HEAD and subsequent separately adopted
 behavior changes.
 
@@ -187,10 +187,10 @@ Copying these bindings into a facade is not equivalent.
 | `lionagi/cli/orchestrate/__init__.py:394`, `lionagi/cli/orchestrate/__init__.py:425` | `lionhub.orchestration.flow.parsing` | Orchestration parser construction and its MCP-argument helper; retain command dispatch and execution wrappers. The common argument declarations come from `orchestration.spawn`. |
 | `lionagi/cli/orchestrate/_orchestration.py:2137` | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
 | `lionagi/cli/status.py:37`, `lionagi/cli/status.py:55` | `lionhub.orchestration.inspection` | Status constants and the resolution functions from `_fetch_by_id` through `_resolve_primary_session` (`lionagi/cli/status.py:262`); retain the subsequent progress, presentation and dispatch helpers. |
-| `lionagi/cli/kill.py:32`, `lionagi/cli/kill.py:509`, `lionagi/cli/kill.py:752` | `lionhub.orchestration.kill` | Process identity, child lookup, termination, cancellation persistence and degraded-run handling through the helper group preceding `_do_kill`; retain command selection, parser and presentation. |
+| `lionagi/cli/kill.py:32`, `lionagi/cli/kill.py:497`, `lionagi/cli/kill.py:740` | `lionhub.orchestration.kill` | Process identity, child lookup, termination, cancellation persistence and degraded-run handling through the helper group preceding `_do_kill`; retain command selection, parser and presentation. |
 | `lionagi/cli/team.py:42` | `lionhub.orchestration.team` | `read_team_json`, the concrete shared reader; retain other team command functions. |
 | `lionagi/cli/engine.py:23`, `lionagi/cli/engine.py:56` | `lionhub.orchestration.engine_definitions` | The shared kind metadata and class lookup; retain parser and execution adapter. |
-| `lionagi/cli/mirror.py:25`, `lionagi/cli/mirror.py:111`, `lionagi/cli/mirror.py:856` | `lionhub.serve.mirror` | Mirror constants, state and implementation through `mirror_forever`; retain argument parsing, `_run` and `run_mirror`. Extract its wheel-owned configuration dependency before or with it. |
+| `lionagi/cli/mirror.py:25`, `lionagi/cli/mirror.py:111`, `lionagi/cli/mirror.py:854` | `lionhub.serve.mirror` | Mirror constants, state and implementation through `mirror_forever`; retain argument parsing, `_run` and `run_mirror`. Extract its wheel-owned configuration dependency before or with it. |
 
 The table fixes ownership and the source groups, not new command semantics.
 Extraction introduces public service names for private helpers used across the
@@ -335,7 +335,7 @@ These signatures and their current lazy behavior are at
 `lionagi/_auto.py:374`, `lionagi/_auto.py:389`, and `lionagi/_auto.py:433`.
 The composition root imports this catalog directly before selection.
 MCP projection and machine-command classification use the same catalog, not copies
-(`lionagi/cli/main.py:12`, `lionagi/cli/main.py:353`,
+(`lionagi/cli/main.py:12`, `lionagi/cli/main.py:367`,
 `lionagi/cli/machine.py:824`,
 `lionhub/src/lionhub/serve/mcp/projection.py:32`).
 
@@ -540,12 +540,11 @@ None is superseded behaviorally by this record.
 The source HEAD, not the older illustrative command tree, is the characterization
 baseline. Preserve early machine routing, invocation accounting, missing-module
 handling and command-specific errors
-(`lionagi/cli/main.py:291`, `lionagi/cli/main.py:356`,
-`lionagi/cli/main.py:496`).
+(`lionagi/cli/main.py:305`, `lionagi/cli/main.py:370`,
+`lionagi/cli/main.py:488`).
 `li --version` continues reporting the core version. Its current source is
 `lionagi.version.__version__`; independent hub version reporting requires a
-separate behavior decision (`lionagi/cli/main.py:272`,
-`lionagi/_auto.py:427`).
+separate behavior decision (`lionagi/_auto.py:427`).
 
 **Failure tests:** `test_cli_move_preserves_behavior` and
 `test_cli_version_source_is_unchanged`.

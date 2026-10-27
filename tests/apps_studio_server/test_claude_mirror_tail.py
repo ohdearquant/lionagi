@@ -194,11 +194,11 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
     visited: list[str] = []
     claude_passes = 0
 
-    async def _spy_codex_pass(db, root, states, offsets, **kw):
+    async def _spy_codex_pass(db, root, states, **kw):
         visited.append(str(root))
         return 0
 
-    async def _spy_claude_pass(db, root, states, offsets, **kw):
+    async def _spy_claude_pass(db, root, states, **kw):
         nonlocal claude_passes
         claude_passes += 1
         return 0

@@ -58,7 +58,7 @@ settled. What is actually true: both processes that host a mirror install a
 process-wide terminal callback if, and only if, `notify.on_terminal` resolves
 to a handler. The CLI entry point calls `register_settings_terminal_callback`
 before dispatching any subcommand, `li mirror` included
-(`lionagi/cli/main.py:317-319`, inside `_run` and ahead of argparse dispatch),
+(`lionagi/cli/main.py:331-333`, inside `_run` and ahead of argparse dispatch),
 and Studio service startup calls it as well (`lionagi/studio/app.py:372-374`,
 the same module that starts the in-process mirror); the
 function registers when the setting resolves and unregisters when it does not

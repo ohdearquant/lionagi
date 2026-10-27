@@ -63,26 +63,6 @@ def current_pid_markers() -> dict[str, Any]:
     }
 
 
-#: Outcomes where nothing was stopped and no cancellation was written. A caller
-#: that reports these as a kill is claiming a stop that did not happen.
-_NOT_STOPPED_SIGNALS = frozenset(
-    {
-        "identity_mismatch",
-        "in_process",
-        "host_mismatch",
-        "boot_mismatch",
-        "foreign_mode",
-        # The kernel refused the signal, so the process is still running. It reaches this set
-        # from a different direction than its neighbours -- they are refusals this CLI decides
-        # before signalling, this one is a refusal it is handed after asking -- but the caller's
-        # question is the same either way: was it stopped. It was not.
-        "permission_denied",
-        "no_recorded_process",
-        "no_recorded_identity",
-        "imported_no_process",
-    }
-)
-
 #: Refusals to signal. A pid only names a process together with its host and boot; when the
 #: record cannot show that, nothing is signalled or written, so the row's claim stays true.
 _REFUSED_SIGNAL_REASONS: dict[str, str] = {
@@ -95,7 +75,11 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
     ),
     "foreign_mode": "records a process identity this CLI does not manage",
     # Membership here routes this signal through the early return in `_kill_one`, so no
-    # cancellation is written for a process that is demonstrably still running.
+    # cancellation is written for a process that is demonstrably still running. The kernel
+    # refused the signal, so it arrives from a different direction than its neighbours --
+    # they are refusals this CLI decides before signalling, this one is a refusal it is
+    # handed after asking -- but the caller's question is the same either way: was it
+    # stopped. It was not.
     "permission_denied": "could not be signalled: permission denied",
     "no_recorded_process": "names a run whose persistence setup failed and recorded no process",
     "no_recorded_identity": (
@@ -106,6 +90,10 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
         "stop the run by its own session id (`li monitor` lists them)"
     ),
 }
+
+#: Outcomes where nothing was stopped and no cancellation was written: every refusal above.
+#: A caller that reports these as a kill is claiming a stop that did not happen.
+_NOT_STOPPED_SIGNALS = frozenset(_REFUSED_SIGNAL_REASONS)
 
 #: Re-exported so readers find it beside the check that uses it; defined once in ``_util``
 #: because the Studio liveness probe compares the same recorded value.
