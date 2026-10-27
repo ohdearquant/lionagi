@@ -692,7 +692,7 @@ batch are minted; closure wakes only for remaining admitted facts. Closure drain
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py:597-614`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1697`,
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1719`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -814,7 +814,7 @@ everything since; facts past the range belong to the next wake.
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
   not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1597`, `:1633-1638`;
-  `lionagi/cli/orchestrate/flow.py:2083-2128`). A schedule holds `github_cursor`, a reader
+  `lionagi/cli/orchestrate/flow.py:2089-2134`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:487`, `:554-562`; `lionagi/state/db.py:5743-5745`, `:5875`;

@@ -5,16 +5,22 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi.ln import compute_hash, import_module
+from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
 from ._logging import log_error, progress, warn
+
+if TYPE_CHECKING:
+    from lionagi.state.cli_workers import _WorkerSpawnOwner
 
 # ── Engine kind registry ───────────────────────────────────────────────────
 # Maps the CLI kind name to the class import path and the main positional
@@ -231,6 +237,13 @@ def run_engine(args: argparse.Namespace) -> int:
 
 async def _do_engine_run(args: argparse.Namespace) -> int:
     """Resolve args, instantiate engine, run it, persist result."""
+    with _bind_cli_worker_recorder(None):
+        return await _do_engine_run_bound(args)
+
+
+async def _do_engine_run_bound(args: argparse.Namespace) -> int:
+    from lionagi.state.compat import StateCompatibilityRefused
+
     kind = args.kind
     spec = args.spec
     meta = _KIND_META[kind]
@@ -276,6 +289,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     # engine_runs.session_id carries the user's --session-id; signal_session_id
     # is a separate sessions row (run_id) the engine creates for Studio streaming.
     signal_session_id: str | None = None
+    worker_spawn_owner: _WorkerSpawnOwner | None = None
     if not args.no_persist:
         try:
             from lionagi.state.db import StateDB
@@ -289,6 +303,17 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                 started_at=started_at,
                 session_id=args.session_id,
             )
+        except (StateCompatibilityRefused, _WorkerSpawnAdmissionError) as exc:
+            if db is not None:
+                try:
+                    await db.close()
+                except Exception as close_exc:  # noqa: BLE001
+                    warn(f"could not close refused engine state store: {type(close_exc).__name__}")
+            if isinstance(exc, _WorkerSpawnAdmissionError):
+                raise
+            raise _WorkerSpawnAdmissionError(
+                "worker persistence requires a native state store"
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             warn(f"could not open StateDB for persistence: {exc}")
             db = None
@@ -302,11 +327,13 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             else:
                 from lionagi.cli.kill import current_pid_markers
 
+                generation_id = str(uuid.uuid4())
                 prog_id = f"{run_id}-prog"
                 await db.create_progression(prog_id)
                 await db.create_session(
                     {
                         "id": run_id,
+                        "cli_worker_generation": generation_id,
                         "created_at": started_at,
                         "started_at": started_at,
                         "progression_id": prog_id,
@@ -317,7 +344,32 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                         "invocation_id": invocation_id,
                     }
                 )
+                stored = await db.get_session(run_id)
+                if (
+                    stored is None
+                    or stored.get("status") != "running"
+                    or stored.get("cli_worker_generation") != generation_id
+                ):
+                    raise _WorkerSpawnAdmissionError("engine worker session admission was refused")
+                from lionagi.state.cli_workers import _WorkerSpawnOwner
+
+                worker_spawn_owner = _WorkerSpawnOwner(
+                    db,
+                    session_id=run_id,
+                    generation_id=generation_id,
+                    engine_run_id=run_id,
+                )
                 signal_session_id = run_id
+        except (StateCompatibilityRefused, _WorkerSpawnAdmissionError) as exc:
+            try:
+                await db.close()
+            except Exception as close_exc:  # noqa: BLE001
+                warn(f"could not close refused engine state store: {type(close_exc).__name__}")
+            if isinstance(exc, _WorkerSpawnAdmissionError):
+                raise
+            raise _WorkerSpawnAdmissionError(
+                "worker persistence requires a native state store"
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             warn(f"could not create signal session for engine run: {exc}")
             signal_session_id = None
@@ -340,7 +392,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         engine_class = _import_engine_class(module, cls_name)
     except Exception as exc:
         log_error(f"failed to import engine class for kind {kind!r}: {exc}")
-        await _maybe_update_db(
+        await _finish_engine_run(
             db,
             run_id,
             "failed",
@@ -353,9 +405,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                 reason_code="import_failure",
             ),
             signal_session_id=signal_session_id,
+            _worker_spawn_owner=worker_spawn_owner,
         )
-        if db is not None:
-            await db.close()
         return 1
 
     def on_event(event: dict[str, Any]) -> None:
@@ -387,14 +438,20 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     result = None
     ended_at: float | None = None
     try:
-        engine = engine_class(**engine_kwargs)
-        # CodingEngine's .run() signature diverges from the other engines'.
-        # See docs/internals/cli.md.
-        result = await engine.run(spec, on_event=on_event, session=_session, **run_kwargs)
+        binding = (
+            worker_spawn_owner.bind()
+            if worker_spawn_owner is not None
+            else _bind_cli_worker_recorder(None)
+        )
+        with binding:
+            engine = engine_class(**engine_kwargs)
+            # CodingEngine's .run() signature diverges from the other engines'.
+            # See docs/internals/cli.md.
+            result = await engine.run(spec, on_event=on_event, session=_session, **run_kwargs)
     except Exception as exc:
         log_error(f"engine[{kind}] failed: {exc}")
         ended_at = time.time()
-        await _maybe_update_db(
+        await _finish_engine_run(
             db,
             run_id,
             "failed",
@@ -408,15 +465,14 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                 reason_code="exception",
             ),
             signal_session_id=signal_session_id,
+            _worker_spawn_owner=worker_spawn_owner,
         )
-        if db is not None:
-            await db.close()
         return 1
     except BaseException as exc:
         # CancelledError/KeyboardInterrupt bypass `except Exception` above; mark
         # cancelled before re-raising. See docs/internals/cli.md.
         ended_at = time.time()
-        await _maybe_update_db(
+        await _finish_engine_run(
             db,
             run_id,
             "cancelled",
@@ -430,9 +486,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                 reason_code="cancelled",
             ),
             signal_session_id=signal_session_id,
+            _worker_spawn_owner=worker_spawn_owner,
         )
-        if db is not None:
-            await db.close()
         raise
 
     ended_at = time.time()
@@ -494,7 +549,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         warn(f"could not serialise result to JSON: {exc}")
         print(repr(result))
 
-    await _maybe_update_db(
+    await _finish_engine_run(
         db,
         run_id,
         "failed" if _total_agent_failure else "completed",
@@ -513,12 +568,60 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             agent_failure=_total_agent_failure,
         ),
         signal_session_id=signal_session_id,
+        _worker_spawn_owner=worker_spawn_owner,
     )
-    if db is not None:
-        await db.close()
     # A run where every agent terminally errored is a failure: exit non-zero so
     # shell/CI callers see it, matching the persisted "failed" status above.
     return 1 if _total_agent_failure else 0
+
+
+async def _finish_engine_run(
+    db: Any,
+    run_id: str,
+    status: str,
+    *,
+    ended_at: float | None = None,
+    export_dir: str | None = None,
+    error: str | None = None,
+    outcome: dict[str, Any] | None = None,
+    signal_session_id: str | None = None,
+    _worker_spawn_owner: _WorkerSpawnOwner | None = None,
+) -> None:
+    """Drain ownership before final writes, preserving cancellation after close."""
+    cancelled: asyncio.CancelledError | None = None
+    if _worker_spawn_owner is not None:
+        while True:
+            try:
+                await _worker_spawn_owner.aclose()
+                break
+            except asyncio.CancelledError as exc:
+                if cancelled is None:
+                    cancelled = exc
+                # A close can finish draining and then re-raise cancellation.
+                # Only a successful idempotent re-await confirms completion.
+    if cancelled is not None:
+        status = "cancelled"
+        ended_at = time.time()
+        error = f"{type(cancelled).__name__}: {cancelled}"
+        if outcome is not None:
+            timing = dict(outcome["timing"])
+            timing["ended_at"] = ended_at
+            timing["duration_ms"] = max(0.0, (ended_at - timing["started_at"]) * 1000)
+            outcome = {**outcome, "status": status, "reason_code": "cancelled", "timing": timing}
+    await _maybe_update_db(
+        db,
+        run_id,
+        status,
+        ended_at=ended_at,
+        export_dir=export_dir,
+        error=error,
+        outcome=outcome,
+        signal_session_id=signal_session_id,
+    )
+    if db is not None:
+        await db.close()
+    if cancelled is not None:
+        raise cancelled
 
 
 async def _maybe_update_db(

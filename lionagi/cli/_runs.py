@@ -23,7 +23,8 @@ from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
-from lionagi.providers._provider_errors import ProviderError
+from lionagi.ln.concurrency import cancelled_exc_classes
+from lionagi.providers._provider_errors import ProviderError, _WorkerSpawnAdmissionError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
@@ -1505,6 +1506,23 @@ async def teardown_persist(
     if ctx is None:
         return status
 
+    ctx["worker_spawn_db_closed"] = None
+    ctx["worker_spawn_teardown_status"] = None
+    pending_worker_cancel = None
+    owner = ctx.get("worker_spawn_owner")
+    if owner is not None:
+        while True:
+            try:
+                await owner.aclose()
+                break
+            except cancelled_exc_classes() as exc:
+                if pending_worker_cancel is None:
+                    pending_worker_cancel = exc
+        if pending_worker_cancel is not None:
+            status = "cancelled"
+            exception = pending_worker_cancel
+            defer_terminal = False
+
     db = ctx["db"]
     committed: list[str] = []
     try:
@@ -1621,6 +1639,7 @@ async def teardown_persist(
                 db, ctx["session_id"], decision[0], observed, committed=committed
             )
 
+        ctx["worker_spawn_teardown_status"] = final_status
         return final_status
     except Exception as exc:
         from lionagi.state.compat import refusal_in
@@ -1644,6 +1663,7 @@ async def teardown_persist(
                 reason += f"; already committed in this teardown: {', '.join(committed)}"
             ctx["terminal_reason"] = ("failed", reason)
             ctx["store_refusal"] = refusal
+            ctx["worker_spawn_teardown_status"] = "failed"
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # Only a store error (a database error, or no row for the write) says the store failed
@@ -1664,12 +1684,14 @@ async def teardown_persist(
         except Exception:  # noqa: BLE001 -- best-effort; the DB itself may be unreachable
             persisted = None
         if persisted is not None and persisted.get("status"):
+            ctx["worker_spawn_teardown_status"] = persisted["status"]
             return persisted["status"]
         # The readback itself failed (or found nothing) -- there is no
         # evidence the requested terminal status ever reached the database.
         # Reporting `status` here would be the same false-terminal-status
         # class this teardown path exists to prevent, so surface an
         # explicit unknown outcome instead of a guess.
+        ctx["worker_spawn_teardown_status"] = "unknown"
         return "unknown"
     finally:
         _session_obj = ctx.get("session")
@@ -1695,6 +1717,7 @@ async def teardown_persist(
                     _log.debug("branch ownership release failed: %s", _exc)
         try:
             await db.close()
+            ctx["worker_spawn_db_closed"] = db
         except Exception as exc:
             _log.warning("live persist db.close failed: %s", exc, exc_info=True)
         if ctx.get("shared_db_registered", True):
@@ -1709,6 +1732,9 @@ async def teardown_persist(
                 await close_shared_db()
             except Exception as exc:  # noqa: BLE001
                 _log.warning("live persist shared db sweep failed: %s", exc, exc_info=True)
+
+        if pending_worker_cancel is not None:
+            raise pending_worker_cancel
 
 
 def _signal_persist_refusal(ctx: dict) -> BaseException | None:
@@ -1863,7 +1889,12 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
 
 
 async def _reopen_session_for_resume(
-    db, session_id: str, existing_session: dict | None, *, drains_controls: bool = False
+    db,
+    session_id: str,
+    existing_session: dict | None,
+    *,
+    drains_controls: bool = False,
+    generation_id: str | None = None,
 ) -> bool:
     """Return a resumed session to ``running`` so its next close is a real change.
 
@@ -1914,6 +1945,7 @@ async def _reopen_session_for_resume(
             expected_statuses=SESSION_TERMINAL_STATUSES,
             extra_fields={
                 "ended_at": None,
+                **({"cli_worker_generation": generation_id} if generation_id is not None else {}),
                 # The control-drain declaration rides this same write. It has to:
                 # it describes the leg that is executing now, and so do the
                 # process markers beside it. Written separately afterwards, it
@@ -1981,47 +2013,82 @@ async def setup_agent_persist(
     share_db: bool = True,
     drains_controls: bool = False,
     parent_marker: Callable[[], None] | None = None,
+    _worker_spawn_continuation: object | None = None,
 ) -> dict | None:
     from lionagi.session.session import Session
     from lionagi.state import provenance as _provenance
+    from lionagi.state.cli_workers import (
+        _consume_worker_spawn_continuation,
+        _WorkerSpawnOwner,
+    )
 
     db = None
     session = None
+    owner = None
+    shared_db_registered = False
+    fresh_session = False
+    generation_id = str(uuid4())
     try:
         # Claim the branch before touching the shared DB registry: registering a
         # shared DB closes the previous handle, which would break its owner's teardown.
+        if branch._owning_session_id is not None:
+            raise _WorkerSpawnAdmissionError("the branch already belongs to an execution")
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
         branch_id = str(branch.id)
 
-        db = await _open_shared_db(register=share_db)
+        db = await _open_shared_db(register=False)
+        if _worker_spawn_continuation is not None:
+            owner = await _consume_worker_spawn_continuation(
+                _worker_spawn_continuation,
+                db,
+                run_id=run_id if run_id is not None else active_run_id(),
+                branch_id=branch_id,
+            )
+            generation_id = owner.generation_id
 
         existing_branch = await db.get_branch(branch_id)
         existing_session = None
         if existing_branch:
             existing_session = await db.get_session(existing_branch["session_id"])
-            if existing_session is not None and not await _reopen_session_for_resume(
-                db,
-                existing_branch["session_id"],
-                existing_session,
-                drains_controls=drains_controls,
-            ):
-                # The reopen declines for three reasons and one of them is that
-                # the session is no longer there — maintenance removes old
-                # terminal sessions, and a resume can arrive as one commits.
-                # Confirm the row before reading anything else out of a copy of
-                # it that may describe a row that no longer exists.
+            if owner is not None:
+                if existing_branch["session_id"] != owner.session_id:
+                    raise _WorkerSpawnAdmissionError("the continuation does not own this branch")
+            elif existing_session is not None:
+                if existing_session.get("status") == "running":
+                    raise _WorkerSpawnAdmissionError(
+                        "a running session requires an execution continuation"
+                    )
+                await _reopen_session_for_resume(
+                    db,
+                    existing_branch["session_id"],
+                    existing_session,
+                    drains_controls=drains_controls,
+                    generation_id=generation_id,
+                )
                 existing_session = await db.get_session(existing_branch["session_id"])
-
             if existing_session is None:
-                # Nothing to resume into. Branches are removed with their
-                # session, so this leg records itself the way a branch nobody
-                # has seen before does, rather than persisting against ids that
-                # no longer resolve.
+                if owner is not None:
+                    raise _WorkerSpawnAdmissionError("the continuation session is unavailable")
                 existing_branch = None
+        elif owner is not None:
+            raise _WorkerSpawnAdmissionError("the continuation branch is unavailable")
 
         if existing_branch:
             session_id = existing_branch["session_id"]
+            if (
+                existing_session.get("status") != "running"
+                or existing_session.get("cli_worker_generation") != generation_id
+            ):
+                raise _WorkerSpawnAdmissionError("the session generation was not admitted")
+            if owner is None:
+                owner = _WorkerSpawnOwner(
+                    db,
+                    session_id=session_id,
+                    generation_id=generation_id,
+                    run_id=run_id if run_id is not None else active_run_id(),
+                    branch_id=branch_id,
+                )
             session_prog_id = existing_session["progression_id"]
             branch_prog_id = existing_branch["progression_id"]
 
@@ -2046,29 +2113,10 @@ async def setup_agent_persist(
                 # gets at insert time.
                 await db.attach_session_invocation(session_id, invocation_id)
 
-            # The adopted row's drain declaration is rewritten by the reopen
-            # above, in the same statement that installs this leg's process
-            # markers. Nothing to do here for a row that was terminal.
-            #
-            # A resume that did NOT reopen adopts a row still reading running,
-            # keeping whatever the earlier leg declared. Three states reach
-            # here: explicit True, explicit False, and no declaration (a row
-            # written before this field existed) -- the last refuses like
-            # False at the admission gate but means "nobody answered", not "no".
-            #
-            # Only True is risky: if that leg is genuinely alive it's the right
-            # answer, but if it died without terminalizing, a stale True admits
-            # a control for a drain that's gone -- and a row reading running is
-            # the only evidence available either way. The stale-session doctor
-            # resolves it after the fact.
-            #
-            # This path is left alone deliberately, not because it's correct:
-            # writing the declaration here would be a read-modify-write against
-            # a row a live leg may be updating, the same race that once
-            # restored an exited leg's process markers over a live leg's.
-            # The narrower cost -- a row reading False or undeclared keeps
-            # refusing controls it could actually drain -- is the safer one.
         else:
+            fresh_session = True
+            if await db.get_session(session_id) is not None:
+                raise _WorkerSpawnAdmissionError("the fresh session key is already in use")
             session_prog_id = str(uuid4())
             branch_prog_id = str(uuid4())
             existing_msg_ids = set()
@@ -2097,6 +2145,7 @@ async def setup_agent_persist(
             await db.create_session(
                 {
                     "id": session_id,
+                    "cli_worker_generation": generation_id,
                     # Embedded callers may own a RunDir without mutating the
                     # CLI process-global allocation pointer. Ordinary CLI
                     # callers omit this and retain the established behavior.
@@ -2124,6 +2173,20 @@ async def setup_agent_persist(
                 }
             )
 
+            admitted = await db.get_session(session_id)
+            if (
+                admitted is None
+                or admitted.get("status") != "running"
+                or admitted.get("cli_worker_generation") != generation_id
+            ):
+                raise _WorkerSpawnAdmissionError("the session generation was not admitted")
+            owner = _WorkerSpawnOwner(
+                db,
+                session_id=session_id,
+                generation_id=generation_id,
+                run_id=run_id if run_id is not None else active_run_id(),
+                branch_id=branch_id,
+            )
             system_msg_id = None
             if branch.system:
                 sys_dict = branch.system.to_dict(mode="db")
@@ -2153,31 +2216,38 @@ async def setup_agent_persist(
                 }
             )
 
-            from lionagi.hooks.bus import HookPoint
+        if share_db:
+            from lionagi.state.db import register_shared_db
 
-            # The run's own handle goes with both emits, as with the teardown's. The session
-            # and branch rows above already carry every field the default handlers write, so
-            # handed a handle they write nothing: no process-wide store is reached, and no
-            # repeated write needs a grant this setup does not.
-            await session.hooks.emit(
-                HookPoint.SESSION_START,
-                session_id=session_id,
-                model=model,
-                provider=provider,
-                effort=effort,
-                agent_name=agent_name,
-                agent_hash=_provenance.agent_definition_hash(agent_name),
-                invocation_id=invocation_id,
-                db=db,
-            )
-            await session.hooks.emit(
-                HookPoint.BRANCH_CREATE,
-                branch_id=branch_id,
-                model=model,
-                provider=provider,
-                agent_name=agent_name,
-                db=db,
-            )
+            await register_shared_db(db)
+            shared_db_registered = True
+        if fresh_session:
+            with owner.bind():
+                from lionagi.hooks.bus import HookPoint
+
+                # The run's own handle goes with both emits, as with the teardown's. The session
+                # and branch rows above already carry every field the default handlers write, so
+                # handed a handle they write nothing: no process-wide store is reached, and no
+                # repeated write needs a grant this setup does not.
+                await session.hooks.emit(
+                    HookPoint.SESSION_START,
+                    session_id=session_id,
+                    model=model,
+                    provider=provider,
+                    effort=effort,
+                    agent_name=agent_name,
+                    agent_hash=_provenance.agent_definition_hash(agent_name),
+                    invocation_id=invocation_id,
+                    db=db,
+                )
+                await session.hooks.emit(
+                    HookPoint.BRANCH_CREATE,
+                    branch_id=branch_id,
+                    model=model,
+                    provider=provider,
+                    agent_name=agent_name,
+                    db=db,
+                )
 
         new_msg_ids: list = []
         message_retry_queues: list = []
@@ -2193,7 +2263,10 @@ async def setup_agent_persist(
             "message_retry_queues": message_retry_queues,
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
-            "shared_db_registered": share_db,
+            "shared_db_registered": shared_db_registered,
+            "worker_spawn_owner": owner,
+            "worker_spawn_db_closed": None,
+            "worker_spawn_teardown_status": None,
         }
 
         _on_message = _make_message_handler(
@@ -2237,14 +2310,23 @@ async def setup_agent_persist(
 
         ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
-    except Exception as exc:
+    except BaseException as exc:
         from lionagi.state.compat import refusal_in
 
         # A store that refuses a write in compatibility mode stops the run instead of
         # letting it go on without persistence (ADR-0128 D6); it is raised as itself, after
         # cleanup, so a caller's check finds it even when a task group wrapped it.
-        refusal = refusal_in(exc)
-        if refusal is None:
+        refusal = exc if isinstance(exc, _WorkerSpawnAdmissionError) else refusal_in(exc)
+        drain_cancel = None
+        if owner is not None:
+            while True:
+                try:
+                    await owner.aclose()
+                    break
+                except cancelled_exc_classes() as close_cancel:
+                    if drain_cancel is None:
+                        drain_cancel = close_cancel
+        if refusal is None and isinstance(exc, Exception):
             _log.warning(
                 "live persist setup failed (%r) — disabling persistence for this run",
                 exc,
@@ -2263,11 +2345,15 @@ async def setup_agent_persist(
                 await db.close()
             except Exception as close_exc:
                 _log.warning("fallback db.close after setup failure also failed: %s", close_exc)
-            if share_db:
+            if shared_db_registered:
                 # Drop the now-closed handle so get_shared_db() can't hand it out.
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
+        if drain_cancel is not None:
+            raise drain_cancel  # noqa: B904 -- preserve the drain cancellation's own cause
+        if not isinstance(exc, Exception):
+            raise
         if refusal is not None:
             raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         return None

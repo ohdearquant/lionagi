@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -11,7 +12,12 @@ import time
 
 from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.ln.concurrency import CancelScope, create_task_group, move_on_after
+from lionagi.ln.concurrency import (
+    CancelScope,
+    cancelled_exc_classes,
+    create_task_group,
+    move_on_after,
+)
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import plan
@@ -182,155 +188,182 @@ async def _run_fanout(
     teardown path settles on) reaches the caller's exit code instead of being
     silently dropped in favour of a hardcoded success.
     """
-    if invocation_id is not None:
-        # The same check `li o flow` makes, and for the same reason: an
-        # unregistered id here would silently disable persistence while the
-        # caller believes the run is grouped under a real invocation. Refused
-        # before setup so nothing has been spawned when it fails.
-        from .flow import FlowPlanError, _validate_flow_invocation
+    from lionagi._cli_worker_context import _bind_cli_worker_recorder
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
-        try:
-            await _validate_flow_invocation(invocation_id)
-        except FlowPlanError as exc:
-            raise FanoutPlanError(str(exc)) from exc
+    with contextlib.ExitStack() as _worker_spawn_bindings:
+        _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))
+        if invocation_id is not None:
+            # The same check `li o flow` makes, and for the same reason: an
+            # unregistered id here would silently disable persistence while the
+            # caller believes the run is grouped under a real invocation. Refused
+            # before setup so nothing has been spawned when it fails.
+            from .flow import FlowPlanError, _validate_flow_invocation
 
-    stamp_worker_depth()
-    _started_at = time.time()
-    env = await setup_orchestration(
-        pattern_name="Fanout",
-        model_spec=model_spec,
-        agent_name=agent_name,
-        save_dir=save_dir,
-        cwd=cwd,
-        yolo=yolo,
-        bypass=bypass,
-        verbose=verbose,
-        effort=effort,
-        theme=theme,
-        bare=False,
-        fast=fast,
-        pack=pack,
-        mcp_config=mcp_config,
-        no_mcp_config=no_mcp_config,
-    )
-    _shared: dict = {}
+            try:
+                await _validate_flow_invocation(invocation_id)
+            except FlowPlanError as exc:
+                raise FanoutPlanError(str(exc)) from exc
 
-    # Persist the orchestrator default model + effort on the session row.
-    # Per-worker model is written branch-side when build_worker_branch runs.
-    _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
-    await start_live_persist(
-        env,
-        invocation_kind="fanout",
-        playbook_name=playbook_name,
-        # The profile the run resolved, not the one this call named: a call that
-        # named neither an agent nor a model named none, and recording that
-        # `agent_name` would leave the record unable to say what it ran under.
-        agent_name=env.orc_profile_name,
-        artifacts_path=str(env.run.artifact_root),
-        invocation_id=invocation_id,
-        model=_orc_model,
-        provider=_orc_provider,
-        effort=getattr(env, "orc_effort", None),
-        project=project,
-    )
-
-    # Session-scoped: stop_live_persist terminalizes only the session; invocation
-    # records are finalized externally and would never fire.
-    _notify_scope_name: str | None = None
-    if notify:
-        from lionagi.state.lifecycle.notify_settings import (
-            record_notify_rejection_to_run,
-        )
-
-        def _notify_override_refused(reason: str) -> None:
-            # This run explicitly asked for a notifier and will not get one.
-            # Recording it here is what keeps a refusal distinguishable from
-            # never having configured one; both otherwise register nothing.
-            record_notify_rejection_to_run(env.run, reason)
-
-        _notify_scope_name = register_flow_notify_scope(
-            override=notify,
-            entity_kind="session",
-            entity_id=str(env.session.id),
-            invocation_id=invocation_id,
-            flow_kind="fanout",
-            playbook=playbook_name,
+        stamp_worker_depth()
+        _started_at = time.time()
+        env = await setup_orchestration(
+            pattern_name="Fanout",
+            model_spec=model_spec,
+            agent_name=agent_name,
             save_dir=save_dir,
-            cwd=cwd or os.getcwd(),
-            started_at=_started_at,
-            on_rejection=_notify_override_refused,
+            cwd=cwd,
+            yolo=yolo,
+            bypass=bypass,
+            verbose=verbose,
+            effort=effort,
+            theme=theme,
+            bare=False,
+            fast=fast,
+            pack=pack,
+            mcp_config=mcp_config,
+            no_mcp_config=no_mcp_config,
+        )
+        _shared: dict = {}
+
+        # Persist the orchestrator default model + effort on the session row.
+        # Per-worker model is written branch-side when build_worker_branch runs.
+        _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
+        from lionagi.state.lifecycle.notify_settings import (
+            register_run_notify_outcome_scope,
+            unregister_run_notify_outcome_scope,
         )
 
-    # Bind this run into the notify.on_terminal handler at registration time so
-    # a late outcome lands here or nowhere, never on a later run. Skipped when
-    # --notify already owns this entity (a second override would double-fire).
-    from lionagi.state.lifecycle.notify_settings import (
-        register_run_notify_outcome_scope,
-        unregister_run_notify_outcome_scope,
-    )
+        _terminal_status = "completed"
+        result: str = ""
+        _pending_worker_cancel = None
+        _notify_scope_name = None
+        _notify_outcome_scope_name = None
+        try:
+            await start_live_persist(
+                env,
+                invocation_kind="fanout",
+                playbook_name=playbook_name,
+                # The profile the run resolved, not the one this call named: a call that
+                # named neither an agent nor a model named none, and recording that
+                # `agent_name` would leave the record unable to say what it ran under.
+                agent_name=env.orc_profile_name,
+                artifacts_path=str(env.run.artifact_root),
+                invocation_id=invocation_id,
+                model=_orc_model,
+                provider=_orc_provider,
+                effort=getattr(env, "orc_effort", None),
+                project=project,
+            )
 
-    _notify_outcome_scope_name = (
-        None
-        if notify
-        else register_run_notify_outcome_scope(
-            env.run,
-            entity_kind="session",
-            entity_id=str(env.session.id),
-            project_dir=cwd,
-        )
-    )
+            _worker_owner = (env._live_persist or {}).get("worker_spawn_owner")
+            if env._live_persist is not None and _worker_owner is None:
+                raise _WorkerSpawnAdmissionError("persisted orchestration has no worker owner")
+            _worker_spawn_bindings.enter_context(
+                _worker_owner.bind()
+                if _worker_owner is not None
+                else _bind_cli_worker_recorder(None)
+            )
+            # Session-scoped: stop_live_persist terminalizes only the session; invocation
+            # records are finalized externally and would never fire.
+            if notify:
+                from lionagi.state.lifecycle.notify_settings import (
+                    record_notify_rejection_to_run,
+                )
 
-    inner_kw = dict(
-        env=env,
-        num_workers=num_workers,
-        workers_str=workers_str,
-        with_synthesis=with_synthesis,
-        synthesis_model=synthesis_model,
-        synthesis_prompt=synthesis_prompt,
-        max_concurrent=max_concurrent,
-        output_format=output_format,
-        team_name=team_name,
-        _shared=_shared,
-    )
+                def _notify_override_refused(reason: str) -> None:
+                    # This run explicitly asked for a notifier and will not get one.
+                    # Recording it here is what keeps a refusal distinguishable from
+                    # never having configured one; both otherwise register nothing.
+                    record_notify_rejection_to_run(env.run, reason)
 
-    # ADR-0057: distinguish timed_out / aborted / cancelled / failed.
-    _terminal_status = "completed"
-    result: str = ""
-    try:
-        if timeout:
-            with move_on_after(timeout) as cancel_scope:
+                _notify_scope_name = register_flow_notify_scope(
+                    override=notify,
+                    entity_kind="session",
+                    entity_id=str(env.session.id),
+                    invocation_id=invocation_id,
+                    flow_kind="fanout",
+                    playbook=playbook_name,
+                    save_dir=save_dir,
+                    cwd=cwd or os.getcwd(),
+                    started_at=_started_at,
+                    on_rejection=_notify_override_refused,
+                )
+
+            # Bind this run into the notify.on_terminal handler at registration time so
+            # a late outcome lands here or nowhere, never on a later run. Skipped when
+            # --notify already owns this entity (a second override would double-fire).
+
+            _notify_outcome_scope_name = (
+                None
+                if notify
+                else register_run_notify_outcome_scope(
+                    env.run,
+                    entity_kind="session",
+                    entity_id=str(env.session.id),
+                    project_dir=cwd,
+                )
+            )
+
+            inner_kw = dict(
+                env=env,
+                num_workers=num_workers,
+                workers_str=workers_str,
+                with_synthesis=with_synthesis,
+                synthesis_model=synthesis_model,
+                synthesis_prompt=synthesis_prompt,
+                max_concurrent=max_concurrent,
+                output_format=output_format,
+                team_name=team_name,
+                _shared=_shared,
+            )
+
+            # ADR-0057: distinguish timed_out / aborted / cancelled / failed.
+            if timeout:
+                with move_on_after(timeout) as cancel_scope:
+                    result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
+                if cancel_scope.cancelled_caught:
+                    _terminal_status = "timed_out"
+                    n_saved = len(_shared.get("saved_workers", []))
+                    msg = f"Fanout timed out after {timeout}s"
+                    if n_saved:
+                        msg += (
+                            f" ({n_saved} worker results already saved to {env.run.artifact_root})"
+                        )
+                    log_error(msg)
+                    raise LionTimeoutError(msg)
+            else:
                 result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
-            if cancel_scope.cancelled_caught:
-                _terminal_status = "timed_out"
-                n_saved = len(_shared.get("saved_workers", []))
-                msg = f"Fanout timed out after {timeout}s"
-                if n_saved:
-                    msg += f" ({n_saved} worker results already saved to {env.run.artifact_root})"
-                log_error(msg)
-                raise LionTimeoutError(msg)
-        else:
-            result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
-        # Two distinct failure signals feed this decision: an operation that
-        # raised (op_failures) and a worker artifact that could not be written
-        # (artifact_failures). Either alone means the run did not deliver what
-        # it reported, so neither may resolve to "completed".
-        if _shared.get("artifact_failures") or _shared.get("op_failures"):
-            _terminal_status = "failed"
-    except BaseException as exc:
-        _terminal_status = classify_exception(exc)
-        raise
-    finally:
-        with CancelScope(shield=True):
-            effective_status = await stop_live_persist(env, status=_terminal_status)
-            if effective_status != _terminal_status:
-                _terminal_status = effective_status
-            # Unregister after stop_live_persist fires the terminal transition.
-            unregister_flow_notify_scope(_notify_scope_name)
-            unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
-            for _br in env.session.branches:
-                await _br.mdls.shutdown()
+            # Two distinct failure signals feed this decision: an operation that
+            # raised (op_failures) and a worker artifact that could not be written
+            # (artifact_failures). Either alone means the run did not deliver what
+            # it reported, so neither may resolve to "completed".
+            if _shared.get("artifact_failures") or _shared.get("op_failures"):
+                _terminal_status = "failed"
+        except BaseException as exc:
+            _terminal_status = classify_exception(exc)
+            raise
+        finally:
+            with CancelScope(shield=True):
+                _worker_stop_ctx = env._live_persist
+                try:
+                    effective_status = await stop_live_persist(env, status=_terminal_status)
+                except cancelled_exc_classes() as exc:
+                    _pending_worker_cancel = exc
+                    effective_status = (_worker_stop_ctx or {}).get("worker_spawn_teardown_status")
+                    if effective_status is None:
+                        effective_status = "unknown"
+                if effective_status != _terminal_status:
+                    _terminal_status = effective_status
+                # Unregister after stop_live_persist fires the terminal transition.
+                unregister_flow_notify_scope(_notify_scope_name)
+                unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
+                for _br in env.session.branches:
+                    await _br.mdls.shutdown()
+                if _pending_worker_cancel is not None:
+                    raise _pending_worker_cancel
 
-    return result, _terminal_status
+        return result, _terminal_status
 
 
 async def _run_fanout_inner(
