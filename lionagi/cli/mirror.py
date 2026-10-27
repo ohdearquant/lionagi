@@ -556,7 +556,7 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
     return written
 
 
-async def _one_pass(db, root: Path, states, offsets, *, since, live_window, lineage=None) -> int:
+async def _one_pass(db, root: Path, states, *, since, live_window, lineage=None) -> int:
     now = time.time()
     total = 0
     reconcile: dict[str, list[_FileState]] = {}
@@ -575,11 +575,10 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
             key = str(path)
             state = states.get(key)
             if state is None:
-                state = _FileState(session_uid="", offset=offsets.get(key, 0))
+                state = _FileState(session_uid="", offset=0)
                 states[key] = state
             previous_offset = state.offset
             total += await _mirror_one(db, path, state, lineage)
-            offsets[key] = state.offset
             # Idle/already-read files have no streamed events to derive from: peek
             # the head once to recover the session id and attribute the project.
             if not state.session_uid or (state.project is None and not state.attr_peeked):
@@ -791,7 +790,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     return written
 
 
-async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, threads) -> int:
+async def _codex_pass(db, root: Path, states, *, since, live_window, threads) -> int:
     """One sweep over the codex rollout tree; mirrors new records and reconciles status."""
     from lionagi.state.codex_mirror import reconcile_session_status
 
@@ -807,11 +806,10 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
             key = str(path)
             state = states.get(key)
             if state is None:
-                state = _FileState(session_uid="", offset=offsets.get(key, 0))
+                state = _FileState(session_uid="", offset=0)
                 states[key] = state
             previous_offset = state.offset
             total += await _mirror_one_codex(db, path, state, threads)
-            offsets[key] = state.offset
             if not state.orchestrated and _needs_status_reconciliation(
                 state,
                 advanced=state.offset != previous_offset,
@@ -884,7 +882,6 @@ async def mirror_forever(
         return
     since_secs = _parse_window(since) if since else None
     states = _load_states()
-    offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     threads: dict[str, str] = {}
     _seed_lineage(lineage, states)
@@ -903,7 +900,6 @@ async def mirror_forever(
                                 db,
                                 root,
                                 states,
-                                offsets,
                                 since=since_secs,
                                 live_window=live_window,
                                 lineage=lineage,
@@ -913,7 +909,6 @@ async def mirror_forever(
                                 db,
                                 codex_root,
                                 states,
-                                offsets,
                                 since=since_secs,
                                 live_window=live_window,
                                 threads=threads,
@@ -960,7 +955,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     since = args.since  # argparse already parsed --since to seconds (or None)
     states = _load_states()
-    offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     threads: dict[str, str] = {}
     _seed_lineage(lineage, states)
@@ -982,7 +976,6 @@ async def _run(args: argparse.Namespace) -> int:
                     db,
                     root,
                     states,
-                    offsets,
                     since=since,
                     live_window=args.live_window,
                     lineage=lineage,
@@ -992,7 +985,6 @@ async def _run(args: argparse.Namespace) -> int:
                     db,
                     codex_root,
                     states,
-                    offsets,
                     since=since,
                     live_window=args.live_window,
                     threads=threads,

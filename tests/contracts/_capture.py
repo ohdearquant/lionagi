@@ -396,13 +396,13 @@ SPECIALIZED_CASES: tuple[tuple[str, ...], ...] = (
     ("play", "nonexistent"),  # unresolvable playbook; volatile (lists available names)
     ("play", "--help"),  # no NAME before the flag: "NAME is required", exit 1
     # ── orchestrate flow / fanout: standalone intermixed-arg parse
-    #    (main.py:396-425) ────────────────────────────────────────────────
+    #    (main.py:402-417) ────────────────────────────────────────────────
     ("o", "flow", "--help"),
     ("o", "fanout", "--help"),
     ("o", "flow"),  # no prompt/file/playbook: exit 1
     ("o", "fanout"),  # no prompt: exit 1
     # ── schedule: standalone parse + quick-create + did-you-mean
-    #    (main.py:427-457) ───────────────────────────────────────────────
+    #    (main.py:419-449) ───────────────────────────────────────────────
     ("schedule", "--help"),
     ("schedule",),  # no subcommand: argparse required-subparser error, exit 2
     ("schedule", "list", "--bogus"),  # unrecognized flag, no synonym match, exit 2

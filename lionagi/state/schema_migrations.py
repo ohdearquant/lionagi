@@ -12,6 +12,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # The CLI run this session belongs to; NULL on rows created before
         # this migration and on sessions that were not started by a run.
         ("run_id", "TEXT"),
+        ("cli_worker_generation", "TEXT"),
         ("user_label", "TEXT"),
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
@@ -287,6 +288,8 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_cli_worker_spawns_session "
+        "ON cli_worker_spawns(session_id, confirmed_empty_at, generation_id)",
         "CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end ON sessions(id) "
         "WHERE ended_at IS NULL AND status IN "
         "('completed','completed_empty','failed','timed_out','aborted','cancelled')",
@@ -314,6 +317,8 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_cli_worker_spawns_session "
+        "ON cli_worker_spawns(session_id, confirmed_empty_at, generation_id)",
         "CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end ON sessions(id) "
         "WHERE ended_at IS NULL AND status IN "
         "('completed','completed_empty','failed','timed_out','aborted','cancelled')",

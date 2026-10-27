@@ -36,11 +36,13 @@ async def test_guard_paths_blocks_prefix_sibling_escape(tmp_path):
 async def test_auto_format_python_uses_argv_without_shell(monkeypatch):
     calls = []
 
-    async def fake_run_sync(fn, cmd, shell, timeout, cwd):
+    from lionagi.tools import coding
+
+    def fake_subprocess_sync(cmd, shell, timeout, cwd, *, env=None):
         calls.append((cmd, shell, timeout, cwd))
         return {"returncode": 0}
 
-    monkeypatch.setattr("lionagi.ln.concurrency.run_sync", fake_run_sync)
+    monkeypatch.setattr(coding, "_subprocess_sync", fake_subprocess_sync)
 
     result = await auto_format_python(
         "editor",

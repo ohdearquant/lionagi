@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 
 from lionagi.libs.path_safety import is_protected_name, resolve_workspace_path
@@ -154,7 +155,14 @@ async def log_tool_use(tool_name: str, action: str, args: dict, result: dict) ->
     return await log_tool_call(tool_name, action, args, result)
 
 
-async def auto_format_python(tool_name: str, action: str, args: dict, result: dict) -> dict | None:
+async def auto_format_python(
+    tool_name: str,
+    action: str,
+    args: dict,
+    result: dict,
+    *,
+    _command_env: Mapping[str, str] | None = None,
+) -> dict | None:
     """Post-hook: run ruff format on edited Python files."""
     if not result.get("success"):
         return None
@@ -163,8 +171,12 @@ async def auto_format_python(tool_name: str, action: str, args: dict, result: di
     if not file_path.endswith(".py"):
         return None
 
+    from lionagi._command_env_metadata import command_environment
     from lionagi.ln.concurrency import run_sync
     from lionagi.tools.coding import _subprocess_sync
 
-    await run_sync(_subprocess_sync, ["ruff", "format", file_path], False, 10.0, None)
+    environment = command_environment() if _command_env is None else dict(_command_env)
+    await run_sync(
+        _subprocess_sync, ["ruff", "format", file_path], False, 10.0, None, env=environment
+    )
     return None

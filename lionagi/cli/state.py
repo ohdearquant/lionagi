@@ -689,6 +689,8 @@ _PRUNE_VICTIMS = (
     "WHERE id NOT IN ("
     "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
     ") AND (updated_at < :cutoff OR updated_at IS NULL)"
+    " AND NOT EXISTS (SELECT 1 FROM cli_worker_spawns w"
+    " WHERE w.session_id = sessions.id AND w.confirmed_empty_at IS NULL)"
 )
 
 
@@ -761,7 +763,7 @@ async def _prune(
     """
     import time as _time
 
-    from lionagi.state.db import StateDB
+    from lionagi.state.db import StateDB, _locked_cli_worker_prune_candidates
 
     cutoff = _time.time() - (keep_days * 86400)
 
@@ -782,8 +784,28 @@ async def _prune(
                     .mappings()
                     .all()
                 )
-                victim_ids = [r["id"] for r in rows]
+                victim_ids = await _locked_cli_worker_prune_candidates(
+                    conn, [r["id"] for r in rows], dialect=db.dialect
+                )
+                if not victim_ids:
+                    raise _PreviewOnlyError(counts)
 
+                placeholders = ",".join(f":v{i}" for i in range(len(victim_ids)))
+                id_params = {f"v{i}": vid for i, vid in enumerate(victim_ids)}
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                f"SELECT id {_PRUNE_VICTIMS} "  # noqa: S608
+                                f"AND id IN ({placeholders}) ORDER BY id"
+                            ),
+                            {"keep_n": keep_n, "cutoff": cutoff, **id_params},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                victim_ids = [r["id"] for r in rows]
                 if not victim_ids:
                     raise _PreviewOnlyError(counts)
 
