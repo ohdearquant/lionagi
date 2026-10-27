@@ -34,13 +34,17 @@ def _version_four_store(path: Path, *, legacy: bool, generation: str | None = No
     assert "VALUES ('version', '4');" in schema
     assert "cli_worker_generation" not in schema and "cli_worker_spawns" not in schema
     if legacy:
+        start = schema.index("CREATE TABLE IF NOT EXISTS sessions (")
+        end = schema.index("CREATE TABLE", start + 1)
+        sessions = schema[start:end]
         current = "  status          TEXT,\n"
-        assert schema.count(current) == 1
-        schema = schema.replace(
+        assert sessions.count(current) == 1
+        sessions = sessions.replace(
             current,
             "  status          TEXT CHECK(status IS NULL OR status IN "
             "('running', 'completed', 'failed', 'aborted')),\n",
         )
+        schema = schema[:start] + sessions + schema[end:]
     with closing(sqlite3.connect(path)) as connection:
         connection.executescript(schema)
         connection.execute("INSERT INTO progressions VALUES ('old-pool', 1.0, '[]')")

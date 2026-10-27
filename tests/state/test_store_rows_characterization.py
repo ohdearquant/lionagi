@@ -792,6 +792,7 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
             "artifact_verification_json": "null",
             "artifacts_path": None,
             "cc_session_id": None,
+            "cli_worker_generation": None,
             "created_at": "<t:number>",
             "current_phase": None,
             "duration_ms": None,

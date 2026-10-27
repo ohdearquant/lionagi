@@ -33,6 +33,7 @@ async def _seed(
     older_generation: bool = False,
     source_kind: str = "live",
     age_days: int = 40,
+    with_artifact: bool = True,
 ) -> dict[str, Any]:
     sid, generation, mid, prog, bprog, branch, artifact, spawn = (
         str(uuid.uuid4()) for _ in range(8)
@@ -57,11 +58,12 @@ async def _seed(
     await db.create_branch(
         {"id": branch, "session_id": sid, "progression_id": bprog, "created_at": old}
     )
-    await db.execute(
-        "INSERT INTO artifacts (id, session_id, created_at, updated_at, kind, name, content)"
-        " VALUES (?, ?, ?, ?, 'file', 'retained.txt', '{}')",
-        (artifact, sid, old, old),
-    )
+    if with_artifact:
+        await db.execute(
+            "INSERT INTO artifacts (id, session_id, created_at, updated_at, kind, name, content)"
+            " VALUES (?, ?, ?, ?, 'file', 'retained.txt', '{}')",
+            (artifact, sid, old, old),
+        )
     worker = {
         "spawn_id": spawn,
         "session_id": sid,
@@ -206,8 +208,8 @@ async def test_cli_preview_and_recount_exclude_unresolved_workers(db_path: Path)
     from lionagi.cli import state
 
     async with StateDB(db_path) as db:
-        blocked = await _seed(db, settled=False, older_generation=True)
-        removable = await _seed(db, settled=True)
+        blocked = await _seed(db, settled=False, older_generation=True, with_artifact=False)
+        removable = await _seed(db, settled=True, with_artifact=False)
         graph_before = await _graph(db, blocked)
         settled_worker = await _worker(db, removable)
     assert (await state._prune_candidates(keep_days=30, keep_n=0))["candidates"] == 1
@@ -231,8 +233,8 @@ async def test_cli_keep_n_still_ranks_protected_sessions(db_path: Path) -> None:
     from lionagi.cli import state
 
     async with StateDB(db_path) as db:
-        blocked = await _seed(db, settled=False, age_days=40)
-        removable = await _seed(db, settled=True, age_days=50)
+        blocked = await _seed(db, settled=False, age_days=40, with_artifact=False)
+        removable = await _seed(db, settled=True, age_days=50, with_artifact=False)
         settled_worker = await _worker(db, removable)
     assert (await state._prune_candidates(keep_days=30, keep_n=1))["candidates"] == 1
     assert (await state._prune(keep_days=30, keep_n=1, dry_run=False))["sessions"] == 1

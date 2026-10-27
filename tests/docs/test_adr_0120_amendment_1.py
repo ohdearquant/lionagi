@@ -163,7 +163,7 @@ def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> N
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _line("lionagi/state/schema.sql", 464)
+    assert "github_cursor" in _line("lionagi/state/schema.sql", 487)
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
@@ -187,9 +187,9 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5386)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7225)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7250)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5743)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7582)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7607)
 
 
 # -- what the amendment now says ---------------------------------------------

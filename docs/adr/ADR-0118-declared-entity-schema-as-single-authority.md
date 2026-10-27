@@ -67,7 +67,7 @@ outside what it pins. Two divergences are live in the tree right now and green:
   declares none that `schema.sql` does not: the metadata is a strict subset. The four are
   `idx_def_unique_version`, `idx_plays_show_name`, `idx_session_signals_seq` and
   `idx_sessions_run_id`. Absolute counts on 2026-08-15: 87 and 83.
-- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,203,209,303,331,398,…`);
+- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,204,210,326,354,421,…`);
   `schema_meta.py` declares zero. Production databases, built by `create_all`, therefore have
   none of those descending indexes. (SQLite and PostgreSQL can both scan an ascending index
   backwards, so the query-plan consequence is unmeasured; the definitional drift is proven.)

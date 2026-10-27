@@ -45,7 +45,7 @@ async def _owner(db, *, session_id="Opaque/Owner", generation=None, source_kind=
     return session_id, generation
 
 
-def _record(session_id, generation, **changes):
+def _record(session_id, generation, /, **changes):
     record = {
         "spawn_id": str(uuid.uuid4()),
         "session_id": session_id,
