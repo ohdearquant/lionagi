@@ -1,6 +1,6 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17 and 2026-10-25 (see Amendments 1 and 2)
+- **Status**: Accepted, amended 2026-10-17, 2026-10-25 and 2026-10-27 (see Amendments 1, 2 and 3)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
@@ -8,7 +8,7 @@
 
 ## Amendment 3 (2026-10-27) — child environments for coding tools
 
-**Status: Proposed.**
+**Status: Accepted.**
 
 Coding-tool subprocesses do not automatically inherit declared credential environment variables.
 Names come from secret settings fields, provider and account references, configured secret lookup
@@ -28,7 +28,10 @@ The environment policy has two deny checks:
   `AppSettings`, provider `api_key_env` names, account `key_env` names, configured secret lookup
   names, and explicit authentication-variable declarations, including MCP authentication references.
   It reads names only, not credentials, and does not execute a secret lookup to discover them.
-  Unset declarations remain in the set.
+  Unset declarations remain in the set. When the global settings file cannot be read or its
+  secret lookup section is invalid, the set is unknown: building a coding agent or toolkit raises
+  `ConfigurationError`, and so does a command that computes the set itself (a standalone coding
+  tool). The policy never falls back to a partial set.
 - A variable is also removed when its upper-cased name contains any member of the existing
   `_SENSITIVE_ENV_PATTERNS` frozenset in `service/connections/mcp_wrapper.py`. The policy reuses that
   one pattern set; it does not copy it into a second catalog. This covers names such as

@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from lionagi._command_env_metadata import command_environment
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import run_sync
 
@@ -32,24 +34,37 @@ def _is_protected_branch(name: str) -> bool:
     return name in _PROTECTED_BRANCH_NAMES or name.startswith("release")
 
 
-def _run_git(args: list[str], cwd: str | None = None) -> tuple[str, str, int]:
-    result = _subprocess_sync(["git"] + args, False, 30.0, cwd)  # noqa: S603  # argv is always ["git"] + validated git sub-commands; no shell interpolation
+def _run_git(
+    args: list[str], cwd: str | None = None, *, _command_env: Mapping[str, str] | None = None
+) -> tuple[str, str, int]:
+    _command_env = command_environment() if _command_env is None else _command_env
+    result = _subprocess_sync(["git"] + args, False, 30.0, cwd, env=_command_env)  # noqa: S603  # argv is always ["git"] + validated git sub-commands; no shell interpolation
     return result["stdout"].strip(), result["stderr"].strip(), result["returncode"]
 
 
-def _create_worktree_sync(repo_root: str, branch_name: str, base_branch: str) -> SandboxSession:
+def _create_worktree_sync(
+    repo_root: str,
+    branch_name: str,
+    base_branch: str,
+    *,
+    _command_env: Mapping[str, str] | None = None,
+) -> SandboxSession:
     """Create a git worktree for isolated work."""
+    _command_env = command_environment() if _command_env is None else _command_env
     root = Path(repo_root)
     worktree_dir = root / ".worktrees" / branch_name
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    base_sha, sha_err, sha_rc = _run_git(["rev-parse", base_branch], cwd=repo_root)
+    base_sha, sha_err, sha_rc = _run_git(
+        ["rev-parse", base_branch], cwd=repo_root, _command_env=_command_env
+    )
     if sha_rc != 0:
         raise RuntimeError(f"Failed to resolve base branch {base_branch!r}: {sha_err}")
 
     _, err, rc = _run_git(
         ["worktree", "add", "-b", branch_name, str(worktree_dir), base_branch],
         cwd=repo_root,
+        _command_env=_command_env,
     )
     if rc != 0:
         raise RuntimeError(f"Failed to create worktree: {err}")
@@ -63,25 +78,42 @@ def _create_worktree_sync(repo_root: str, branch_name: str, base_branch: str) ->
     )
 
 
-def _diff_untracked_file(wt: str, rel_path: str) -> tuple[str, str]:
+def _diff_untracked_file(
+    wt: str, rel_path: str, *, _command_env: Mapping[str, str] | None = None
+) -> tuple[str, str]:
     """Diff a single untracked file against /dev/null without touching the index."""
-    patch, _, _ = _run_git(["diff", "--no-index", "--", "/dev/null", rel_path], cwd=wt)
-    stat, _, _ = _run_git(["diff", "--no-index", "--stat", "--", "/dev/null", rel_path], cwd=wt)
+    _command_env = command_environment() if _command_env is None else _command_env
+    patch, _, _ = _run_git(
+        ["diff", "--no-index", "--", "/dev/null", rel_path], cwd=wt, _command_env=_command_env
+    )
+    stat, _, _ = _run_git(
+        ["diff", "--no-index", "--stat", "--", "/dev/null", rel_path],
+        cwd=wt,
+        _command_env=_command_env,
+    )
     return patch, stat
 
 
-def _list_untracked_files(wt: str) -> list[str]:
+def _list_untracked_files(wt: str, *, _command_env: Mapping[str, str] | None = None) -> list[str]:
     """List untracked (non-ignored) files, recursing into untracked directories.
     Uses NUL-delimited `git ls-files`, not `git status --porcelain` (see docs/internals/runtime.md)."""
+    _command_env = command_environment() if _command_env is None else _command_env
     result = _subprocess_sync(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"], False, 30.0, wt
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        False,
+        30.0,
+        wt,
+        env=_command_env,
     )
     raw = result["stdout"]
     return [p for p in raw.split("\0") if p]
 
 
-def _get_diff_sync(session: SandboxSession) -> dict:
+def _get_diff_sync(
+    session: SandboxSession, *, _command_env: Mapping[str, str] | None = None
+) -> dict:
     """Get diff of all changes in the worktree vs base branch, without staging anything (index untouched)."""
+    _command_env = command_environment() if _command_env is None else _command_env
     wt = session.worktree_path
     if not Path(wt).is_dir():
         # Without this guard the git calls below fail silently and the
@@ -91,17 +123,19 @@ def _get_diff_sync(session: SandboxSession) -> dict:
             "completed. Retry discard to finish cleanup."
         )
 
-    tracked_patch, _, _ = _run_git(["diff", "HEAD"], cwd=wt)
-    tracked_stat, _, _ = _run_git(["diff", "HEAD", "--stat"], cwd=wt)
-    tracked_changed, _, _ = _run_git(["diff", "HEAD", "--name-only"], cwd=wt)
+    tracked_patch, _, _ = _run_git(["diff", "HEAD"], cwd=wt, _command_env=_command_env)
+    tracked_stat, _, _ = _run_git(["diff", "HEAD", "--stat"], cwd=wt, _command_env=_command_env)
+    tracked_changed, _, _ = _run_git(
+        ["diff", "HEAD", "--name-only"], cwd=wt, _command_env=_command_env
+    )
     files = [f for f in tracked_changed.split("\n") if f] if tracked_changed else []
 
-    untracked = _list_untracked_files(wt)
+    untracked = _list_untracked_files(wt, _command_env=_command_env)
 
     untracked_patches = []
     untracked_stats = []
     for rel in untracked:
-        patch, stat = _diff_untracked_file(wt, rel)
+        patch, stat = _diff_untracked_file(wt, rel, _command_env=_command_env)
         if patch:
             untracked_patches.append(patch)
         if stat:
@@ -125,8 +159,11 @@ def _get_diff_sync(session: SandboxSession) -> dict:
     }
 
 
-def _commit_sync(session: SandboxSession, message: str) -> dict:
+def _commit_sync(
+    session: SandboxSession, message: str, *, _command_env: Mapping[str, str] | None = None
+) -> dict:
     """Commit staged changes in the worktree."""
+    _command_env = command_environment() if _command_env is None else _command_env
     wt = session.worktree_path
     if not Path(wt).is_dir():
         return {
@@ -136,21 +173,26 @@ def _commit_sync(session: SandboxSession, message: str) -> dict:
                 "partially completed. Retry discard to finish cleanup."
             ),
         }
-    _run_git(["add", "-A"], cwd=wt)
+    _run_git(["add", "-A"], cwd=wt, _command_env=_command_env)
 
-    stdout, stderr, rc = _run_git(["commit", "-m", message], cwd=wt)
+    stdout, stderr, rc = _run_git(["commit", "-m", message], cwd=wt, _command_env=_command_env)
     if rc != 0:
         if "nothing to commit" in stdout + stderr:
             return {"success": True, "message": "Nothing to commit"}
         return {"success": False, "error": stderr}
 
-    sha, _, _ = _run_git(["rev-parse", "HEAD"], cwd=wt)
+    sha, _, _ = _run_git(["rev-parse", "HEAD"], cwd=wt, _command_env=_command_env)
     return {"success": True, "commit": sha, "message": message}
 
 
-def _worktree_registered(repo_root: str, worktree_path: str) -> bool:
+def _worktree_registered(
+    repo_root: str, worktree_path: str, *, _command_env: Mapping[str, str] | None = None
+) -> bool:
     """Whether the path is still registered as a worktree of this repo."""
-    out, _, rc = _run_git(["worktree", "list", "--porcelain"], cwd=repo_root)
+    _command_env = command_environment() if _command_env is None else _command_env
+    out, _, rc = _run_git(
+        ["worktree", "list", "--porcelain"], cwd=repo_root, _command_env=_command_env
+    )
     if rc != 0:
         # Cannot verify — assume it is still present so a caller never
         # treats an unverified worktree as cleaned up.
@@ -162,29 +204,38 @@ def _worktree_registered(repo_root: str, worktree_path: str) -> bool:
     return False
 
 
-def _branch_exists(repo_root: str, branch_name: str) -> bool:
+def _branch_exists(
+    repo_root: str, branch_name: str, *, _command_env: Mapping[str, str] | None = None
+) -> bool:
+    _command_env = command_environment() if _command_env is None else _command_env
     _, _, rc = _run_git(
         ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch_name}"],
         cwd=repo_root,
+        _command_env=_command_env,
     )
     return rc == 0
 
 
-def _cleanup_worktree_sync(session: SandboxSession) -> dict:
+def _cleanup_worktree_sync(
+    session: SandboxSession, *, _command_env: Mapping[str, str] | None = None
+) -> dict:
     """Remove worktree and delete branch; retry-safe (already-absent counts as cleaned up).
     See docs/internals/runtime.md for the is_active / partial-failure contract."""
+    _command_env = command_environment() if _command_env is None else _command_env
     _, err1, rc1 = _run_git(
         ["worktree", "remove", session.worktree_path, "--force"],
         cwd=session.repo_root,
+        _command_env=_command_env,
     )
     _, err2, rc2 = _run_git(
-        ["branch", "-D", session.branch_name],
-        cwd=session.repo_root,
+        ["branch", "-D", session.branch_name], cwd=session.repo_root, _command_env=_command_env
     )
     worktree_removed = rc1 == 0 or not _worktree_registered(
-        session.repo_root, session.worktree_path
+        session.repo_root, session.worktree_path, _command_env=_command_env
     )
-    branch_deleted = rc2 == 0 or not _branch_exists(session.repo_root, session.branch_name)
+    branch_deleted = rc2 == 0 or not _branch_exists(
+        session.repo_root, session.branch_name, _command_env=_command_env
+    )
     if worktree_removed and branch_deleted:
         session.is_active = False
     return {
@@ -194,10 +245,18 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
     }
 
 
-def _merge_sync(session: SandboxSession, allow_protected: bool = False) -> dict:
+def _merge_sync(
+    session: SandboxSession,
+    allow_protected: bool = False,
+    *,
+    _command_env: Mapping[str, str] | None = None,
+) -> dict:
     """Merge worktree branch back into base branch; refuses on detached HEAD, a
     base-branch mismatch, or an unopted-in protected branch (see docs/internals/runtime.md)."""
-    current_branch, err, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=session.repo_root)
+    _command_env = command_environment() if _command_env is None else _command_env
+    current_branch, err, rc = _run_git(
+        ["rev-parse", "--abbrev-ref", "HEAD"], cwd=session.repo_root, _command_env=_command_env
+    )
     if rc != 0:
         return {
             "success": False,
@@ -228,8 +287,12 @@ def _merge_sync(session: SandboxSession, allow_protected: bool = False) -> dict:
             ),
         }
 
-    _run_git(["add", "-A"], cwd=session.worktree_path)
-    _run_git(["commit", "-m", f"sandbox: {session.branch_name}"], cwd=session.worktree_path)
+    _run_git(["add", "-A"], cwd=session.worktree_path, _command_env=_command_env)
+    _run_git(
+        ["commit", "-m", f"sandbox: {session.branch_name}"],
+        cwd=session.worktree_path,
+        _command_env=_command_env,
+    )
 
     stdout, stderr, rc = _run_git(
         [
@@ -240,11 +303,12 @@ def _merge_sync(session: SandboxSession, allow_protected: bool = False) -> dict:
             f"Merge sandbox {session.branch_name}",
         ],
         cwd=session.repo_root,
+        _command_env=_command_env,
     )
     if rc != 0:
         return {"success": False, "error": stderr}
 
-    cleanup = _cleanup_worktree_sync(session)
+    cleanup = _cleanup_worktree_sync(session, _command_env=_command_env)
     return {"success": True, "merged": True, **cleanup}
 
 
@@ -252,10 +316,15 @@ async def create_sandbox(
     repo_root: str,
     base_branch: str | None = None,
     name: str | None = None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> SandboxSession:
     """Create an isolated sandbox (git worktree) for safe code changes."""
+    _command_env = command_environment() if _command_env is None else _command_env
     if base_branch is None:
-        stdout, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+        stdout, _, _ = _run_git(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, _command_env=_command_env
+        )
         if stdout == "HEAD":
             # `--abbrev-ref HEAD` returns literal "HEAD" when detached — there is no
             # branch to record as the sandbox's merge target.
@@ -265,25 +334,42 @@ async def create_sandbox(
         base_branch = stdout or "main"
 
     branch_name = name or f"sandbox-{short_id(8)}"
-    return await run_sync(_create_worktree_sync, repo_root, branch_name, base_branch)
+    return await run_sync(
+        _create_worktree_sync, repo_root, branch_name, base_branch, _command_env=_command_env
+    )
 
 
-async def sandbox_diff(session: SandboxSession) -> dict:
+async def sandbox_diff(
+    session: SandboxSession, *, _command_env: Mapping[str, str] | None = None
+) -> dict:
     """Get diff of changes made in the sandbox."""
-    return await run_sync(_get_diff_sync, session)
+    _command_env = command_environment() if _command_env is None else _command_env
+    return await run_sync(_get_diff_sync, session, _command_env=_command_env)
 
 
-async def sandbox_commit(session: SandboxSession, message: str) -> dict:
+async def sandbox_commit(
+    session: SandboxSession, message: str, *, _command_env: Mapping[str, str] | None = None
+) -> dict:
     """Commit changes in the sandbox."""
-    return await run_sync(_commit_sync, session, message)
+    _command_env = command_environment() if _command_env is None else _command_env
+    return await run_sync(_commit_sync, session, message, _command_env=_command_env)
 
 
-async def sandbox_merge(session: SandboxSession, *, allow_protected: bool = False) -> dict:
+async def sandbox_merge(
+    session: SandboxSession,
+    *,
+    allow_protected: bool = False,
+    _command_env: Mapping[str, str] | None = None,
+) -> dict:
     """Merge sandbox changes back into the base branch and clean up
     (see _merge_sync's safety-refusal contract in docs/internals/runtime.md)."""
-    return await run_sync(_merge_sync, session, allow_protected)
+    _command_env = command_environment() if _command_env is None else _command_env
+    return await run_sync(_merge_sync, session, allow_protected, _command_env=_command_env)
 
 
-async def sandbox_discard(session: SandboxSession) -> dict:
+async def sandbox_discard(
+    session: SandboxSession, *, _command_env: Mapping[str, str] | None = None
+) -> dict:
     """Discard sandbox and all changes."""
-    return await run_sync(_cleanup_worktree_sync, session)
+    _command_env = command_environment() if _command_env is None else _command_env
+    return await run_sync(_cleanup_worktree_sync, session, _command_env=_command_env)
