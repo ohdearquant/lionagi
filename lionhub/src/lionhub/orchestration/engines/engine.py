@@ -10,7 +10,7 @@ import contextlib
 import logging
 import os
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -120,6 +120,60 @@ def _is_all_budget_error(exc: BaseException) -> bool:
     if is_exception_group(exc):
         return all(_is_all_budget_error(e) for e in get_exception_group_exceptions(exc))
     return False
+
+
+# Cap on the reply text an emission event carries. A reply that did not emit is
+# usually short prose or a malformed fence; the cap bounds the rare runaway one and
+# the event says it truncated (``text_truncated`` + ``text_chars``).
+_RAW_RESPONSE_TEXT_CAP = 16_000
+
+
+def _raw_leg_response(branch: Any) -> dict[str, Any] | None:
+    """What a leg's last reply held, for an emission event: text, stop reason, usage, model, block types.
+
+    Without it an ``emission_missing`` records only that nothing parsed, never why
+    (truncated at ``max_tokens``, thinking blocks and no text, a fence that is not
+    JSON). Best effort by contract: the diagnostics must never kill the run they
+    describe, and a branch with no recorded reply (a test double, a leg that died
+    before replying) yields None, so the event simply carries no ``raw_response``.
+
+    ``http_status`` is 200 for an API leg and None for a CLI worker. A call the
+    provider answered with anything but 200 raises before a message exists
+    (service/connections/endpoint.py, both the plain and the streaming path), so a
+    recorded API reply was by construction a 200.
+    """
+    try:
+        last = branch.msgs.last_response
+        if last is None:
+            return None
+        text = last.response or ""
+        raw = last.model_response
+    except Exception:
+        return None
+    first = raw[0] if isinstance(raw, list) and raw else raw
+    if not isinstance(first, dict):
+        first = {}
+    blocks = first.get("content")
+    block_types = (
+        [b.get("type") for b in blocks if isinstance(b, dict)] if isinstance(blocks, list) else None
+    )
+    stop_reason = first.get("stop_reason")
+    if stop_reason is None:
+        choices = first.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            stop_reason = choices[0].get("finish_reason")
+    is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
+    return {
+        "text": text[:_RAW_RESPONSE_TEXT_CAP],
+        "text_chars": len(text),
+        "text_truncated": len(text) > _RAW_RESPONSE_TEXT_CAP,
+        "stop_reason": stop_reason,
+        "usage": first.get("usage"),
+        "model": first.get("model"),
+        "response_id": first.get("id"),
+        "block_types": block_types,
+        "http_status": None if is_cli else 200,
+    }
 
 
 _ROLE_PROFILE_CACHE: dict[tuple[str, str], tuple[str | None, str | None]] = {}
@@ -495,6 +549,11 @@ class EngineRun:
         # Emission-missing diagnostics for the CLI's engine_runs.error column,
         # e.g. "<agent> x<attempts>", even when overall status is "completed".
         self._emission_failures: list[str] = []
+        # One row per emission that only arrived on the fallback leg:
+        # {"agent", "model", "attempt", "after_attempts"}. These dimensions are NOT in
+        # _emission_failures (the fallback produced their output), so a reader that
+        # wants to say which leg produced an emission reads this list.
+        self.emission_fallbacks: list[dict[str, Any]] = []
         # Terminal sub-agent failures (e.g. missing API key), so a run where
         # every agent errored can be surfaced as failed instead of green.
         self._agent_errors: list[str] = []
@@ -706,24 +765,17 @@ class EngineRun:
         self._bind_agent_emitter(branch)
         return branch
 
-    async def operate_with_repair(
+    async def _attempt_emission(
         self,
         branch: Branch,
         instruction: str,
         *,
         arrived: Callable[[], bool],
-        emits: tuple[type, ...] = (),
-        retries: int = 1,
-        actions: bool = False,
-    ) -> Any:
-        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints.
-
-        ``actions`` must be True when the branch was given tools (e.g. bash)
-        that the stage instruction requires it to actually call — CLI
-        providers execute their own tools regardless, but a non-CLI (API)
-        model only gets lionagi's registered tool schemas, and therefore only
-        invokes them, when ``branch.operate(actions=True)``.
-        """
+        emits: tuple[type, ...],
+        retries: int,
+        actions: bool,
+    ) -> tuple[Any, int]:
+        """One leg's turn: operate, then re-prompt up to *retries* times while *arrived*() is false. Returns (last reply, repair attempts made)."""
         # CLI workers emit prose, not fenced JSON — front-load the full example
         # form; waiting for the repair pass costs a whole extra CLI process.
         is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
@@ -746,25 +798,114 @@ class EngineRun:
                 )
                 break
             attempt += 1
-            self.notify(
-                "emission_repair",
-                agent=getattr(branch, "name", "") or "",
-                attempt=attempt,
-                cli_worker=is_cli,
-            )
+            # The reply that just failed to emit, recorded before the repair prompt
+            # replaces it as the newest message.
+            event_data: dict[str, Any] = {
+                "agent": getattr(branch, "name", "") or "",
+                "attempt": attempt,
+                "cli_worker": is_cli,
+            }
+            raw = _raw_leg_response(branch)
+            if raw is not None:
+                event_data["raw_response"] = raw
+            self.notify("emission_repair", **event_data)
             if is_cli:
                 repair_msg = _cli_repair_instruction(hint, emits)
             else:
                 repair_msg = _repair_instruction(hint)
             res = await branch.operate(instruction=repair_msg, **operate_kwargs)
+        return res, attempt
+
+    async def operate_with_repair(
+        self,
+        branch: Branch,
+        instruction: str,
+        *,
+        arrived: Callable[[], bool],
+        emits: tuple[type, ...] = (),
+        retries: int = 1,
+        actions: bool = False,
+        fallback: Callable[[], Awaitable[Branch]] | None = None,
+        fallback_model: str | None = None,
+    ) -> Any:
+        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints.
+
+        ``actions`` must be True when the branch was given tools (e.g. bash)
+        that the stage instruction requires it to actually call — CLI
+        providers execute their own tools regardless, but a non-CLI (API)
+        model only gets lionagi's registered tool schemas, and therefore only
+        invokes them, when ``branch.operate(actions=True)``.
+
+        ``fallback`` is a factory for ONE fresh leg (``fallback_model`` names its
+        model, for the events and the record). When the first leg is still silent
+        after its repairs, that leg gets the same instruction and the same
+        operate-then-repair turn BEFORE the emission is recorded as missing. A fresh
+        leg, not a re-prompt of the first: repair replays the whole conversation, so
+        asking the same branch again only grows its context. If the fallback leg
+        emits, nothing is recorded as missing: ``emission_fallbacks`` and an
+        ``emission_recovered`` event name which leg produced it. If it does not,
+        ``emission_missing`` counts every attempt across both legs. A factory that
+        raises ``EngineBudgetError`` is skipped (``emission_fallback_skipped``) and
+        the emission is recorded missing as before.
+        """
+        res, attempt = await self._attempt_emission(
+            branch, instruction, arrived=arrived, emits=emits, retries=retries, actions=actions
+        )
+        _agent_name = getattr(branch, "name", "") or ""
+        _attempts = attempt + 1
+        last_leg = branch
+        if retries and not arrived() and fallback is not None:
+            try:
+                fallback_branch = await fallback()
+            except EngineBudgetError:
+                self.notify(
+                    "emission_fallback_skipped",
+                    agent=_agent_name,
+                    reason="agent_budget",
+                    model=fallback_model,
+                )
+            else:
+                self.notify(
+                    "emission_fallback",
+                    agent=_agent_name,
+                    model=fallback_model,
+                    after_attempts=_attempts,
+                )
+                res, fallback_attempt = await self._attempt_emission(
+                    fallback_branch,
+                    instruction,
+                    arrived=arrived,
+                    emits=emits,
+                    retries=retries,
+                    actions=actions,
+                )
+                if arrived():
+                    produced_on = fallback_attempt + 1
+                    self.emission_fallbacks.append(
+                        {
+                            "agent": _agent_name,
+                            "model": fallback_model,
+                            "attempt": produced_on,
+                            "after_attempts": _attempts,
+                        }
+                    )
+                    self.notify(
+                        "emission_recovered",
+                        agent=_agent_name,
+                        via="fallback",
+                        model=fallback_model,
+                        attempt=produced_on,
+                        after_attempts=_attempts,
+                    )
+                    return res
+                _attempts += fallback_attempt + 1
+                last_leg = fallback_branch
         if retries and not arrived():
-            _agent_name = getattr(branch, "name", "") or ""
-            _attempts = attempt + 1
-            self.notify(
-                "emission_missing",
-                agent=_agent_name,
-                attempts=_attempts,
-            )
+            event_data: dict[str, Any] = {"agent": _agent_name, "attempts": _attempts}
+            raw = _raw_leg_response(last_leg)
+            if raw is not None:
+                event_data["raw_response"] = raw
+            self.notify("emission_missing", **event_data)
             self._emission_failures.append(
                 f"{_agent_name} x{_attempts}" if _agent_name else f"x{_attempts}"
             )
