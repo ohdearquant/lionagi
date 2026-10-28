@@ -195,6 +195,54 @@ async def test_the_lookup_child_sees_no_configured_account_key(monkeypatch):
     assert key.get_secret_value() == "hidden-kept-ok"
 
 
+def _library_frame_locals(error: BaseException) -> list[object]:
+    found: list[object] = []
+    linked = [error]
+    while linked:
+        current = linked.pop()
+        if current is None:
+            continue
+        tb = current.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_globals.get("__name__", "").startswith("lionagi."):
+                found += list(tb.tb_frame.f_locals.values())
+            tb = tb.tb_next
+        linked += [current.__cause__, current.__context__]
+    return found
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "where", ["environment", "dotenv", "lookup-text", "lookup-bytes"], ids=lambda where: where
+)
+async def test_a_refused_value_is_held_by_no_frame_its_refusal_keeps(monkeypatch, tmp_path, where):
+    sources = _sources()
+    # The lookup programs build the value from its reversal, so the sources a frame keeps
+    # (the program text) never spell it; only the value the lookup printed does.
+    reversed_value = VALUE[::-1]
+    if where == "environment":
+        monkeypatch.setenv(KEY, " " + VALUE)
+    elif where == "dotenv":
+        env_file = tmp_path / ".env"
+        env_file.write_text(f'{KEY}="{VALUE} {VALUE}"\n')
+        sources = _sources(env_file)
+    elif where == "lookup-text":
+        sources = _sources(lookup=_lookup(f"print(' ' + {reversed_value!r}[::-1])"))
+    else:
+        sources = _sources(
+            lookup=_lookup(
+                "import sys",
+                f"sys.stdout.buffer.write(b'\\xff' + {reversed_value!r}[::-1].encode())",
+            )
+        )
+    with pytest.raises(AccountRoutingError) as caught:
+        await resolve_account_key(KEY, sources)
+    assert caught.value.code is RouterErrorCode.CREDENTIAL_INVALID
+    held = [repr(local) for local in _library_frame_locals(caught.value)]
+    assert held
+    assert not any(VALUE in each for each in held)
+
+
 @pytest.mark.asyncio
 async def test_nothing_about_the_value_is_logged(caplog):
     caplog.set_level(logging.DEBUG)
