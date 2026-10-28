@@ -108,6 +108,9 @@ from ._util import (
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
+# The handoff an automatic resume carries when the timed-out leg's setup returned no session:
+# no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
+_NO_PERSISTED_EXECUTION = object()
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
 # An API model has no tool loop of its own, so lionagi runs one in-process, and
@@ -2097,7 +2100,11 @@ async def _run_agent(
                 # consumer.
                 drains_controls=True,
                 parent_marker=_parent_marker,
-                _worker_spawn_continuation=_worker_spawn_continuation,
+                _worker_spawn_continuation=(
+                    None
+                    if _worker_spawn_continuation is _NO_PERSISTED_EXECUTION
+                    else _worker_spawn_continuation
+                ),
             )
         except (StateCompatibilityRefused, _WorkerSpawnAdmissionError) as exc:
             # The run stops before it starts (ADR-0128 D6), and its run.json says so rather than
@@ -2115,7 +2122,11 @@ async def _run_agent(
                 _write_run_manifest(run_manifest)
             raise
         _worker_spawn_owner = live.get("worker_spawn_owner") if live is not None else None
-        if live is not None and _worker_spawn_owner is None:
+        if (
+            live is not None
+            and _worker_spawn_owner is None
+            and live.get("worker_spawns_unrecorded") is not True
+        ):
             raise _WorkerSpawnAdmissionError("the persisted execution has no admitted worker owner")
         if _worker_spawn_owner is not None:
             _worker_spawn_bindings.enter_context(_worker_spawn_owner.bind())
@@ -2615,13 +2626,12 @@ async def _run_agent(
             # store refused is copied here when it ends.
             _resumed_lost: dict[str, Any] = {}
             if _worker_spawn_owner is None:
-                raise _WorkerSpawnAdmissionError(
-                    "automatic continuation requires an admitted owner"
+                _resumed_continuation = _NO_PERSISTED_EXECUTION
+            else:
+                _resumed_continuation = _prepare_worker_spawn_continuation(
+                    _worker_spawn_owner,
+                    db_close_witness=live.get("worker_spawn_db_closed"),
                 )
-            _resumed_continuation = _prepare_worker_spawn_continuation(
-                _worker_spawn_owner,
-                db_close_witness=live.get("worker_spawn_db_closed"),
-            )
             try:
                 return await _run_agent(
                     _effective_model_str,

@@ -2142,10 +2142,16 @@ async def setup_agent_persist(
                 **current_pid_markers(),
                 "drains_controls": bool(drains_controls),
             }
+            # Another lineage lays out a store in compatibility mode, and its schema carries no
+            # worker generation and no spawn records, so the run starts with no worker owner and
+            # its workers stay outside the terminal kill arm, as an unpersisted run's do.
+            from lionagi.state.compat import is_compatibility_store
+
+            unrecorded = is_compatibility_store(db)
             await db.create_session(
                 {
                     "id": session_id,
-                    "cli_worker_generation": generation_id,
+                    "cli_worker_generation": None if unrecorded else generation_id,
                     # Embedded callers may own a RunDir without mutating the
                     # CLI process-global allocation pointer. Ordinary CLI
                     # callers omit this and retain the established behavior.
@@ -2177,16 +2183,17 @@ async def setup_agent_persist(
             if (
                 admitted is None
                 or admitted.get("status") != "running"
-                or admitted.get("cli_worker_generation") != generation_id
+                or (not unrecorded and admitted.get("cli_worker_generation") != generation_id)
             ):
                 raise _WorkerSpawnAdmissionError("the session generation was not admitted")
-            owner = _WorkerSpawnOwner(
-                db,
-                session_id=session_id,
-                generation_id=generation_id,
-                run_id=run_id if run_id is not None else active_run_id(),
-                branch_id=branch_id,
-            )
+            if not unrecorded:
+                owner = _WorkerSpawnOwner(
+                    db,
+                    session_id=session_id,
+                    generation_id=generation_id,
+                    run_id=run_id if run_id is not None else active_run_id(),
+                    branch_id=branch_id,
+                )
             system_msg_id = None
             if branch.system:
                 sys_dict = branch.system.to_dict(mode="db")
@@ -2222,7 +2229,7 @@ async def setup_agent_persist(
             await register_shared_db(db)
             shared_db_registered = True
         if fresh_session:
-            with owner.bind():
+            with owner.bind() if owner is not None else contextlib.nullcontext():
                 from lionagi.hooks.bus import HookPoint
 
                 # The run's own handle goes with both emits, as with the teardown's. The session
@@ -2265,6 +2272,9 @@ async def setup_agent_persist(
             "artifact_contract": artifact_contract,
             "shared_db_registered": shared_db_registered,
             "worker_spawn_owner": owner,
+            # Set only where the store cannot hold worker records, so a setup result without an
+            # owner is refused unless it says why it has none.
+            "worker_spawns_unrecorded": owner is None,
             "worker_spawn_db_closed": None,
             "worker_spawn_teardown_status": None,
         }

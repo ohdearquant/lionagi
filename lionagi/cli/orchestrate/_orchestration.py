@@ -1982,7 +1982,7 @@ async def setup_orchestration_persist(
     generation_id = str(uuid.uuid4())
     from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.cli_workers import _WorkerSpawnOwner
-    from lionagi.state.compat import refusal_in
+    from lionagi.state.compat import is_compatibility_store, refusal_in
 
     try:
         session_id = str(session.id)
@@ -2035,6 +2035,11 @@ async def setup_orchestration_persist(
             try:
                 if db is None:
                     db = await _open_shared_db(register=False)
+                    # Another lineage lays out a store in compatibility mode, and its schema
+                    # carries no worker generation and no spawn records, so the run starts with
+                    # no worker owner and its workers stay outside the terminal kill arm.
+                    if is_compatibility_store(db):
+                        session_record["cli_worker_generation"] = None
                 if not admission_checked:
                     if await db.get_session(session_id) is not None:
                         raise _WorkerSpawnAdmissionError("orchestration session is already owned")
@@ -2050,7 +2055,8 @@ async def setup_orchestration_persist(
                     not isinstance(admitted, dict)
                     or admitted.get("id") != session_id
                     or admitted.get("status") != "running"
-                    or admitted.get("cli_worker_generation") != generation_id
+                    or admitted.get("cli_worker_generation")
+                    != session_record["cli_worker_generation"]
                 ):
                     raise _WorkerSpawnAdmissionError("orchestration generation admission refused")
                 break
@@ -2072,12 +2078,13 @@ async def setup_orchestration_persist(
                 )
                 await _sleep_before_sqlite_admission_retry(delay)
 
-        owner = _WorkerSpawnOwner(
-            db,
-            session_id=session_id,
-            generation_id=generation_id,
-            run_id=run.run_id if run is not None else session_record["run_id"],
-        )
+        if session_record["cli_worker_generation"] is not None:
+            owner = _WorkerSpawnOwner(
+                db,
+                session_id=session_id,
+                generation_id=generation_id,
+                run_id=run.run_id if run is not None else session_record["run_id"],
+            )
         ctx = {
             "db": db,
             "session": session,
@@ -2091,6 +2098,9 @@ async def setup_orchestration_persist(
             "identity_markers": _identity_markers,
             "shared_db_registered": False,
             "worker_spawn_owner": owner,
+            # Set only where the store cannot hold worker records, so a setup result without an
+            # owner is refused unless it says why it has none.
+            "worker_spawns_unrecorded": owner is None,
             "worker_spawn_db_closed": None,
             "worker_spawn_teardown_status": None,
             # The RESOLVED project (explicit arg, or detect_project() fallback) —
@@ -2103,7 +2113,7 @@ async def setup_orchestration_persist(
         }
 
         # Every route uses this execution's handle rather than a global replacement.
-        with owner.bind():
+        with owner.bind() if owner is not None else contextlib.nullcontext():
             session.observer.bind_db_persistence(session_id, db=db)
             for branch in branches or []:
                 register_branch_hook(ctx, branch)
@@ -2169,7 +2179,8 @@ async def setup_orchestration_persist(
         if not isinstance(exc, Exception):
             raise
         if refusal is not None:
-            raise refusal  # noqa: B904 -- preserve the original typed refusal and cause
+            # Re-raised as it arrived: a refusal inside an exception group keeps its siblings.
+            raise
         return None
 
 

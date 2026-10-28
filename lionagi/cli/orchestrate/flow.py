@@ -3297,7 +3297,11 @@ async def _run_flow(
             )
 
             _worker_owner = (env._live_persist or {}).get("worker_spawn_owner")
-            if env._live_persist is not None and _worker_owner is None:
+            if (
+                env._live_persist is not None
+                and _worker_owner is None
+                and env._live_persist.get("worker_spawns_unrecorded") is not True
+            ):
                 raise _WorkerSpawnAdmissionError("persisted orchestration has no worker owner")
             _worker_spawn_bindings.enter_context(
                 _worker_owner.bind()

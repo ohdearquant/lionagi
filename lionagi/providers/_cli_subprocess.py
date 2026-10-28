@@ -600,6 +600,9 @@ def _end_group_with_evidence(
     return "killed-witnessed" if signalled else "unproven"
 
 
+_GROUP_EXIT_POLL_SECONDS = 0.02
+
+
 async def end_child_group(
     proc: Any,
     *,
@@ -661,13 +664,20 @@ async def end_child_group(
             # descendant kept stdout open. The leader is already reaped here,
             # so the marker-backed witness is the only safe group authority.
             if expected_marker is None:
-                _end_group_with_evidence(proc, witnesses)
+                ended = _end_group_with_evidence(proc, witnesses)
             else:
-                _end_group_with_evidence(
+                ended = _end_group_with_evidence(
                     proc,
                     witnesses,
                     expected_marker=expected_marker,
                 )
+            if ended == "killed-witnessed":
+                # A member SIGKILL reached still answers the group probe until
+                # it is reaped, so absence is read after a bounded wait rather
+                # than at the instant of the signal.
+                with move_on_after(grace):
+                    while _group_has_members(proc.pid):
+                        await asyncio.sleep(_GROUP_EXIT_POLL_SECONDS)
         swept = True
     finally:
         # Synchronous, so a second cancellation cannot interpose, and keyed on
