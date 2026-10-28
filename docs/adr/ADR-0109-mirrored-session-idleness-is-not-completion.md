@@ -27,7 +27,7 @@ meanings, which is the same failure ADR-0105 fixed one column over.
 ### Three consequences
 
 **1. Consumers read a live agent as finished.** Verified at
-`lionagi/studio/services/sessions.py:1705-1713`: `is_session_stream_done` closes a
+`lionagi/studio/services/sessions.py:1775-1783`: `is_session_stream_done` closes a
 session's live stream once the status is terminal and has been stable for
 `SESSION_DONE_STABLE_SECS`. A mirrored session that goes quiet for five minutes
 is marked `completed`, and sixty seconds later the Studio stops following it.
@@ -346,7 +346,7 @@ second name from it at `lionagi/state/db.py:459`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
-| `studio/services/sessions.py:1705` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
+| `studio/services/sessions.py:1775` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `studio/services/run_resume.py:245` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
 | `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:74` | Unverified | not driven |

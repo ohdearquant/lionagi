@@ -121,7 +121,7 @@ The following table allocates all 29 registered modules. Each source is under `l
 | `lionagi/studio/services/pairing.py:43`, :63, :117 | Daemon | Redeem codes, revoke capabilities, and preserve the retired issuance endpoint. |
 | `lionagi/studio/services/engine_defs.py:232` | Backend | Application definition editing. Launch-time definition lookup is F5. |
 | `lionagi/studio/services/workflow_defs.py:219`, :301 | Backend | Application workflow editing and its execution adapter. |
-| `lionagi/studio/services/sessions.py:1722`, :1725, :1821 | Daemon | Session records and execution streams. Preserve labeling behavior. |
+| `lionagi/studio/services/sessions.py:1792`, :1795, :1891 | Daemon | Session records and execution streams. Preserve labeling behavior. |
 | `lionagi/studio/services/run_tags.py:133` | Backend | Application tagging actions. Shared read and storage helpers are F5. |
 | `lionagi/studio/services/operator.py:94` | Backend | Conversations, proposals, decisions, and application effects. |
 | `lionagi/studio/services/hooks_library.py:190` | Backend | Application hook-library editing. |

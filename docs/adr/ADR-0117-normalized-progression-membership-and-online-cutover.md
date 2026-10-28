@@ -79,8 +79,8 @@ unbounded orders (`lionagi/cli/state.py:247`, `lionagi/cli/state.py:284`). The s
 staged rollout, not a permanent assumption that these histories remain small.
 
 Read amplification persists for idle histories. A detail page loads entire arrays before taking
-a tail window (`lionagi/studio/services/sessions.py:1341`, `lionagi/studio/services/sessions.py:1367`), counts expand JSON (`lionagi/studio/services/sessions.py:577`),
-and streaming expands membership (`lionagi/studio/services/sessions.py:1621`). The measured 8.127 ms read is only a warmed full-list
+a tail window (`lionagi/studio/services/sessions.py:1394`, `lionagi/studio/services/sessions.py:1433`), counts expand JSON (`lionagi/studio/services/sessions.py:615`),
+and streaming expands membership (`lionagi/studio/services/sessions.py:1691`). The measured 8.127 ms read is only a warmed full-list
 read near 100k, not endpoint latency at the observed maximum. These are reachable read costs;
 the supplied evidence does not measure how often the idle large histories are read.
 
@@ -398,15 +398,15 @@ Keeping that column current would retain the performance defect.
 #### Required consumer changes
 
 1. **Detail and ordinal windows.** Replace the full-array read at
-   `lionagi/studio/services/sessions.py:1341` with bounded membership reads. Preserve current
-   first-occurrence message anchors (`lionagi/studio/services/sessions.py:783`) with indexed lowest-ordinal lookup, generation
+   `lionagi/studio/services/sessions.py:1394` with bounded membership reads. Preserve current
+   first-occurrence message anchors (`lionagi/studio/services/sessions.py:834`) with indexed lowest-ordinal lookup, generation
    checks for new cursor formats, missing-message handling and existing hydration budgets.
-2. **Counts.** Replace JSON length queries at `lionagi/studio/services/sessions.py:577`,
+2. **Counts.** Replace JSON length queries at `lionagi/studio/services/sessions.py:615`,
    `lionagi/studio/services/admin.py:987`, and full-list counts at `lionagi/cli/state.py:381`
    with cached membership counts. Preserve branch aggregation versus session-order semantics.
    Role counts and surviving-message counts remain distinct and must not be replaced by the
-   membership count (`lionagi/studio/services/sessions.py:1402`).
-3. **Timestamp streaming.** `lionagi/studio/services/sessions.py:1621` orders by message time,
+   membership count (`lionagi/studio/services/sessions.py:1468`).
+3. **Timestamp streaming.** `lionagi/studio/services/sessions.py:1691` orders by message time,
    message ID and branch ID, not ordinal. Preserve that cursor contract. Replace JSON expansion
    with relational membership and a timestamp-seeking query. A messages-driven seek on a
    composite `(created_at, id)` index with progression/message membership probes is permitted;
