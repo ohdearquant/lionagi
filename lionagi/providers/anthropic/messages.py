@@ -368,7 +368,8 @@ def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
     """Write the stable blocks as the native system field and place the cache marks.
 
     The marks follow ADR-0127 Amendment 3: a read of the deepest entry earlier requests of the
-    conversation wrote, the end of the turn when more of the conversation follows, one hour on
+    conversation wrote, the end of the turn when more of the conversation follows and no fold
+    is expected before it (Amendment 4), one hour on
     the end of the stable segment, then probes and the compiler's anchors, at most four in all
     with the caller's own marks counted. Lists and blocks are copied before a mark is written,
     so the caller's request is left as it was handed in. The placement is kept on the current

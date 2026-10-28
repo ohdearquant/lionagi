@@ -9,7 +9,9 @@
   never placed; the segment-change count (D6) and the multi-round acceptance test (D7) are open;
   Amendment 1 is Proposed and not started; Amendment 2 is Proposed and implemented, and replaces D4's
   placement; Amendment 3 is Proposed and implemented, and replaces D5's list of Anthropic marks with
-  marks chosen from the entries a conversation has written, which includes the lookback reach
+  marks chosen from the entries a conversation has written, which includes the lookback reach;
+  Amendment 4 is Proposed and implemented, and drops the end-of-turn mark on a request a host fold
+  is expected to follow
 - **Area**: messages-context
 - **Date**: 2026-10-16
 - **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
@@ -23,7 +25,9 @@
   record, whose reference is Claude Code's placement (lion1 ADR-0028 S10 and A1), a claim external
   to this repository's ADR corpus and held here at `lion1/docs/adr/028-anthropic/`; read with
   ADR-0125 step 2, whose request compiler inherits these rules; Amendment 1 qualifies ADR-0132
-  Amendment 2's placement of the first round's guidance on endpoints that place the prompt cache
+  Amendment 2's placement of the first round's guidance on endpoints that place the prompt cache;
+  Amendment 4 reads the estimate of ADR-0130 Amendment 1's host fold and adds that fold's
+  `tail_margin` setting
 
 **Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16
 (13:46 to 13:55 ET): "the problem with our own harness for too much stuff is the caching
@@ -277,6 +281,87 @@ a request completes, including a retry on a second route, eviction at the ceilin
 conversation requests end to end: the second request's read target is the first request's turn mark,
 and it records `g1: met` and `read: at_or_above`. A paid measurement of reads across rounds is a
 separate characterization and not one of these tests.
+
+## Amendment 4 (2026-10-28): no end-of-turn entry on a request a fold follows
+
+Status: Proposed and implemented. Changes step 2 of Amendment 3's placement only: the read (step 1),
+the one-hour mark (step 3), the probes (step 4) and the anchors (step 5) stand, with their lifetimes.
+Adds one field to the D6 record. Applies only while both gates of the Decision are on and a host fold
+(ADR-0130 Amendment 1) is installed on the branch; every other request places as Amendment 3 says.
+
+**Instruction.** Amendment 3 quotes the maintainer on a loop's last step: "the last step doesn't need
+caching, because we will fold, then after fold, we do cache control again". Amendment 3 serves the
+last step with `final`. This amendment serves the fold: the request before a fold is the last one to
+read the conversation as it stands.
+
+**Why.** A fold rewrites the active view from its oldest folded message on, so the request after it
+shares the earlier requests' prefix only up to that message, and the entry the request before the
+fold writes at the end of its turn goes unread. On the API-model agent runs of 2026-10-27 and the
+morning of 2026-10-28 (105 runs on `claude-haiku-5-5`, cap 100,000, fold line at 0.9 of the cap),
+the 119 requests a fold followed wrote 2,600,072 cache-write tokens that no later request read, of
+15,116,173 written in all.
+
+**Predicate.** The host fold estimates each request before it is compiled (ADR-0130 Amendment 1, D3
+and D4 as amended) and folds when the estimate reaches the fold line, `context_fold_at` times the cap
+(ADR-0130 Amendment 3). Let e be the fold's estimate of request N as it will be sent: the value it
+compared with the line, or, when a fold landed, its estimate after the fold. Request N+1 folds when
+it reaches the line, so a fold follows N when the round grows by at least the gap,
+`fold_at × cap − e`. Request N places no end-of-turn mark when the gap is at most `m × cap`.
+
+**Margin.** The price sets m. Without the end-of-turn mark, request N's new tokens are billed at the
+base input price instead of the five-minute write price, a saving of 0.25 of the base price per
+token. If no fold follows, request N+1 writes those tokens at 1.25 where it would have read them at
+0.1, a cost of 1.15 per token, 0.9 net of the saving. Skipping therefore pays when a fold follows
+with probability at least 0.9 / 1.15 ≈ 0.78, that is, when a round grows by less than the gap with
+probability at most p\* = 0.25 / 1.15 ≈ 0.217. The margin m is the p\* quantile of a round's growth
+as a share of the cap. It measured 0.0434 over the 893 requests of the population above, 0.0464 over
+the 2,538 requests of 2026-10-20 to 2026-10-26 (whose runs include a fold line of 0.8 and a target of
+0.4), and 0.0453 over both. The default is m = 0.045, the fold's `tail_margin` setting; 0 turns the
+rule off, and a value outside `0 <= m < context_fold_at` is refused.
+
+**Placement, changed.** Step 2 places no five-minute mark on a request the rule selects. Step 1 then
+reads through an anchor that reaches the entry, else marks the entry's own block, as Amendment 3
+provides. `final` and `side` requests, and conversations without a host fold, are unchanged.
+
+**Record (D6).** A selected request records `tail_skip` under `prompt_cache`, with `estimate` (e),
+`fold_line` and `margin`, in the fold's scaled tokens. Other requests record no `tail_skip`.
+
+**Measured on replay.** At m = 0.045, priced at 0.25 saved per unread write token and 0.9 per token a
+wrong selection costs the next request, in base-price tokens:
+
+- 2026-10-27: 721 requests, 99 followed by a fold. 45 selected: 38 followed by a fold and 7 not, of
+  which 2 lost reads of 20,356 tokens in all. Net +157,619.
+- 2026-10-28, morning: 172 requests, 20 followed by a fold. 11 selected: 9 followed by a fold and 2
+  not, no read lost. Net +30,541.
+- 2026-10-20 to 2026-10-26: 2,538 requests, 160 followed by a fold. 73 selected: 58 followed by a fold
+  and 15 not, no read lost. Net +144,492.
+
+A wrong selection lost nothing when the next request did not read the entry either, as after a
+conversation the agent shortened itself or with caching off. On 2026-10-27 and 2026-10-28 the
+selected requests wrote 825,923 tokens no later request read. Skipping exactly the requests a fold
+followed would save 650,018 on 2026-10-27 and 2026-10-28 and 495,378 on 2026-10-20 to 2026-10-26; the
+rule takes 29% of that on both. Every margin from 0.005 to 0.075 is net positive on all three
+populations; at 0 the rule selects almost nothing, and 0.08 is net negative on 2026-10-28 and on
+2026-10-20 to 2026-10-26. On one run with three folds, the gaps before them were 45,312, 564 and
+177 tokens: the rule selects the last two, and of the requests no fold followed, the nearest to the
+line had a gap of 8,965 and is not selected.
+
+**Limits.**
+
+- A round that grows past the margin is not foreseen, so the requests before a large step keep their
+  unread writes; they hold most of the 2,600,072.
+- The rule rests on the estimate. Rebuilt from the recorded runs, it matched the 119 recorded
+  post-fold estimates with a median error of 0.0% and a tenth percentile of −1.0%, against a margin
+  of 4.5% of the cap.
+- These numbers replay recorded runs; they do not measure the rule. It is measured on new runs once
+  it lands, and the default returns to 0 if a week of runs is net negative.
+
+**Acceptance.** D7 adds tests on captured payloads and a scripted fold: a request within the margin
+of the line places no end-of-turn mark, reads through its anchor or the entry's own block, keeps the
+one-hour mark and the probes, and records `tail_skip`; a request outside the margin keeps its turn
+mark; a folded request is judged by its estimate after the fold; a zero margin selects nothing, past
+the line included; the fold's own summary request clears the decision; `final` and `side` requests
+ignore it; and a margin outside its range is refused.
 
 ## Context
 

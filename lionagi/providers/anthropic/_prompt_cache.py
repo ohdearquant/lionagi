@@ -257,6 +257,10 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
     stable = next((p for p in reversed(blocks) if p.tier != "messages" and p.markable), None)
     conversation = intent != "side"
     continuing = intent == "continuing"
+    # A fold is expected before the next request, which then reads nothing written at the end
+    # of this turn: no end-of-turn mark (ADR-0127 Amendment 4).
+    tail_skip = call.tail_skip if call is not None and continuing else None
+    turn_mark = continuing and tail is not None and tail_skip is None
     # Anchors the compiler names, as (message, block) places in the sent messages.
     anchor_points = [
         point
@@ -280,7 +284,7 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
     order_refused = False
     if target is not None and not reached(target):
         # A mark this request places anyway serves as the read when it reaches the entry.
-        serving = [(tail, "tail")] if continuing and tail is not None else []
+        serving = [(tail, "tail")] if turn_mark else []
         serving += [(point, "anchor") for point in anchor_points]
         server = next(
             ((point, role) for point, role in serving if _reaches(point, blocks[target])), None
@@ -294,8 +298,8 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
         elif not add(target, live[target].get("ttl") or "5m", "read"):
             order_refused = free()
 
-    # 2. The end of the turn, when more of the conversation follows.
-    if continuing and tail is not None:
+    # 2. The end of the turn, when more of the conversation follows and no fold comes first.
+    if turn_mark:
         add(tail.index, "5m", "tail")
     # 3. One hour on the end of the tools and system blocks.
     if stable is not None:
@@ -372,6 +376,8 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
         "degraded": degraded,
         "server_tools": _server_tools(payload),
     }
+    if tail_skip is not None:
+        record["tail_skip"] = dict(tail_skip)
     if target is not None:
         record["target"] = {
             "index": target,

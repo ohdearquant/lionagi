@@ -94,7 +94,8 @@ class PromptCacheCall:
 
     ``ledger`` is None for a side request, which reads and writes no conversation rows.
     ``anchors`` are (message, block) places in the sent messages that a later request should
-    still reach.
+    still reach. ``tail_skip`` is set when a context fold expects to fold before the next
+    request, which then reads nothing written at the end of this one's turn.
     """
 
     ledger: dict | None
@@ -105,6 +106,7 @@ class PromptCacheCall:
     # The protected first round as this request compiled it: ``kept`` when its messages hash as
     # they did at the decision, ``changed`` when they do not (a cache miss, never a re-decision).
     frontier: str | None = None
+    tail_skip: dict[str, int] | None = None
 
 
 _call: ContextVar[PromptCacheCall | None] = ContextVar("lionagi_prompt_cache_call", default=None)
@@ -121,9 +123,14 @@ def prompt_cache_call(
     *,
     anchors: tuple[tuple[int, int], ...] = (),
     frontier: str | None = None,
+    tail_skip: dict[str, int] | None = None,
 ) -> Iterator[PromptCacheCall]:
     call = PromptCacheCall(
-        ledger=ledger, intent=intent or current_intent(), anchors=anchors, frontier=frontier
+        ledger=ledger,
+        intent=intent or current_intent(),
+        anchors=anchors,
+        frontier=frontier,
+        tail_skip=tail_skip,
     )
     token = _call.set(call)
     try:
@@ -138,12 +145,15 @@ def conversation_call(
     *,
     anchors: tuple[tuple[int, int], ...] = (),
     frontier: str | None = None,
+    tail_skip: dict[str, int] | None = None,
 ):
     """The call context for one request of a conversation: its branch's rows when the
     endpoint places marks, else none."""
     if not getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False):
         return nullcontext()
-    return prompt_cache_call(ledger_for(metadata), anchors=anchors, frontier=frontier)
+    return prompt_cache_call(
+        ledger_for(metadata), anchors=anchors, frontier=frontier, tail_skip=tail_skip
+    )
 
 
 @contextmanager
