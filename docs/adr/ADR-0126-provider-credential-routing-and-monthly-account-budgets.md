@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26 and 2026-10-28 (see Amendments 1 to 4); Amendment 4 is Proposed
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26 and 2026-10-28 (see Amendments 1 to 4)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
