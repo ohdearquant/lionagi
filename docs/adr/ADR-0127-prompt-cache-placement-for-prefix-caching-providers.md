@@ -27,7 +27,7 @@
   ADR-0125 step 2, whose request compiler inherits these rules; Amendment 1 qualifies ADR-0132
   Amendment 2's placement of the first round's guidance on endpoints that place the prompt cache;
   Amendment 4 reads the estimate of ADR-0130 Amendment 1's host fold and adds that fold's
-  `tail_margin` setting
+  `tail_margin` setting, as a fifth profile key beside ADR-0130 Amendment 3's four
 
 **Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16
 (13:46 to 13:55 ET): "the problem with our own harness for too much stuff is the caching
@@ -320,6 +320,16 @@ as a share of the cap. It measured 0.0434 over the 893 requests of the populatio
 the 2,538 requests of 2026-10-20 to 2026-10-26 (whose runs include a fold line of 0.8 and a target of
 0.4), and 0.0453 over both. The default is m = 0.045, the fold's `tail_margin` setting; 0 turns the
 rule off, and a value outside `0 <= m < context_fold_at` is refused.
+
+**The profile key.** A profile declaring `api_tools` sets m with the top-level key
+`context_fold_tail_margin`, a fifth key beside the four of ADR-0130 Amendment 3 and under its rules:
+it is read from the profile's `extra` mapping; an explicitly present null, a boolean, a numeric
+string, a non-finite value and a value outside `0 <= m < 1` are refused before a run is allocated,
+as is an effective margin not below the effective `context_fold_at`; presence without `api_tools` is
+refused. Absent means 0.045. The branch's `api_launch` record stores the requested value, null when
+absent, and a resume reads and persists it as it does the other four. Installing a second fold on
+the same live branch returns the existing one only when cap, line, target and margin agree. The run
+manifest's `context_fold` entry records the margin beside the line and the target.
 
 **Placement, changed.** Step 2 places no five-minute mark on a request the rule selects. Step 1 then
 reads through an anchor that reaches the entry, else marks the entry's own block, as Amendment 3

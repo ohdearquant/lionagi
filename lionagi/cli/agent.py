@@ -162,6 +162,7 @@ _API_POLICY_KEYS = (
     "tool_result_max_chars",
     "context_fold_at",
     "context_fold_target",
+    "context_fold_tail_margin",
     "prompt_caching",
 )
 # How many times one turn (the task, or one queued message) folds and continues after the
@@ -388,7 +389,7 @@ def _profile_api_launch(profile) -> dict | None:
 
 def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -> dict:
     """Validate requested settings, preserving unset values separately from defaults."""
-    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET
+    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET, _TAIL_MARGIN
 
     settings = {key: values.get(key) for key in _API_POLICY_KEYS}
     for key, value in settings.items():
@@ -398,6 +399,14 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
             valid = isinstance(value, int) and not isinstance(value, bool) and value >= 1024
         elif key == "prompt_caching":
             valid = isinstance(value, bool)
+        elif key == "context_fold_tail_margin":
+            # 0 is a value here: it turns the end-of-turn skip before a fold off.
+            valid = (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and 0 <= value < 1
+                and math.isfinite(value)
+            )
         else:
             valid = (
                 isinstance(value, (int, float))
@@ -415,6 +424,13 @@ def _api_requested_settings(values: dict, *, label: str, stored: bool = False) -
         raise ConfigurationError(
             f"{label} needs 0 < context_fold_target < context_fold_at <= 1; "
             f"the effective pair is {target!r}, {fold_at!r}."
+        )
+    margin = settings["context_fold_tail_margin"]
+    margin = _TAIL_MARGIN if margin is None else margin
+    if not margin < fold_at:
+        raise ConfigurationError(
+            f"{label} needs 0 <= context_fold_tail_margin < context_fold_at; "
+            f"the effective pair is {margin!r}, {fold_at!r}."
         )
     return settings
 
@@ -574,6 +590,7 @@ def _install_api_input_cap(
     tool_result_max_chars: int | None = None,
     context_fold_at: float | None = None,
     context_fold_target: float | None = None,
+    context_fold_tail_margin: float | None = None,
     prompt_caching: bool | None = None,
 ):
     """Put the leg's input cap on its models and fold its context under it.
@@ -581,7 +598,12 @@ def _install_api_input_cap(
     An Anthropic model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``.
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
-    from lionagi.agent.context_fold import _FOLD_AT, _FOLD_TARGET, install_context_fold
+    from lionagi.agent.context_fold import (
+        _FOLD_AT,
+        _FOLD_TARGET,
+        _TAIL_MARGIN,
+        install_context_fold,
+    )
     from lionagi.ln import copy
 
     # Profile nulls have already been refused. Here None is an unset requested value.
@@ -590,6 +612,7 @@ def _install_api_input_cap(
             "tool_result_max_chars": tool_result_max_chars,
             "context_fold_at": context_fold_at,
             "context_fold_target": context_fold_target,
+            "context_fold_tail_margin": context_fold_tail_margin,
             "prompt_caching": prompt_caching,
         },
         label="API launch policy",
@@ -597,11 +620,14 @@ def _install_api_input_cap(
     )
     fold_at = _FOLD_AT if context_fold_at is None else context_fold_at
     target = _FOLD_TARGET if context_fold_target is None else context_fold_target
+    tail_margin = _TAIL_MARGIN if context_fold_tail_margin is None else context_fold_tail_margin
     cap, source = _resolve_api_input_cap(policy, branch.chat_model)
     # Check an existing fold before changing models. A rejected pair must leave its
     # model policy and pending pre/post-call state intact.
     fold = (
-        install_context_fold(branch, cap=cap, fold_at=fold_at, target=target, log=hint)
+        install_context_fold(
+            branch, cap=cap, fold_at=fold_at, target=target, tail_margin=tail_margin, log=hint
+        )
         if cap is not None
         else None
     )
@@ -2403,7 +2429,11 @@ async def _run_agent(
                         "prompt_caching": branch.chat_model.endpoint.places_prompt_cache,
                         "tool_result_max_chars": branch.chat_model.tool_result_max_chars,
                         "context_fold": (
-                            {"fold_at": _api_fold.fold_at, "target": _api_fold.target}
+                            {
+                                "fold_at": _api_fold.fold_at,
+                                "target": _api_fold.target,
+                                "tail_margin": _api_fold.tail_margin,
+                            }
                             if _api_fold is not None
                             else None
                         ),

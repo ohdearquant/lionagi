@@ -18,7 +18,8 @@
   the one place a request is assembled, and on ADR-0033's signal bus for the decision event (D7);
   leaves ADR-0126's routing and the pricing table's capacities unchanged; Amendment 3
   coordinates per-leg cache settings with ADR-0127 D3 and D5 without changing provider capability
-  or cache layout
+  or cache layout; ADR-0127 Amendment 4 adds a fifth profile key, `context_fold_tail_margin`, to
+  Amendment 3's four, and the margin to the fold-agreement check
 
 **Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16: a
 model whose price rises past a per-request input size is kept under that size; the bound is a flag;
