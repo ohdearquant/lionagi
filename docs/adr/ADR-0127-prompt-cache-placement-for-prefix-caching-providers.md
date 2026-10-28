@@ -147,7 +147,9 @@ change (an ordered list of conversation blocks in the system field) is not neede
 
 **Persistence.** The kept blocks are part of the instruction's metadata and are serialized with the
 Branch, so a resumed conversation sends the same bytes; a clone keeps them with its copy of the
-instruction.
+instruction. What a provider returns is therefore stored with the Branch and sent again, as
+user-role content, on every later request of the conversation. A provider whose output must not be
+stored or sent again returns nothing for that turn; with the option off nothing is kept.
 
 **Why.** A provider that answers only before the conversation has a response, as a first-turn
 recall does, returned its block on the first request only, so the second request rewrote the first
