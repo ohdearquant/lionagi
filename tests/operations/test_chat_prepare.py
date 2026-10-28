@@ -436,6 +436,86 @@ def test_without_the_placement_history_drops_the_tools_and_the_format_as_before(
     assert "approved" not in str(second["messages"][0]["content"])
 
 
+# The prompt-caching option (ADR-0127 Amendment 2): a turn's context blocks stay with that turn
+
+
+def _turn(branch, prompt, *, blocks=None, imodel=None):
+    ins, kw = _prepare_run_kwargs(
+        branch, prompt, ChatParam(), imodel=imodel or _Model(True), context_blocks=blocks
+    )
+    branch.msgs.add_message(instruction=ins)
+    branch.msgs.add_message(assistant_response=f"answer to {prompt}")
+    return ins, kw
+
+
+def test_a_caching_endpoint_sends_first_turn_context_after_the_task_on_every_request():
+    branch = Branch(system="you are a careful editor")
+
+    ins, first = _turn(branch, "the task", blocks=["RECALLED"])
+    _ins, second = _prepare_run_kwargs(branch, "next", ChatParam(), imodel=_Model(True))
+
+    task, context = first["messages"][0]["content"]
+    assert "the task" in task["text"] and "RECALLED" not in task["text"]
+    assert context == {"type": "text", "text": "RECALLED"}
+    assert second["messages"][0] == first["messages"][0]
+    assert ins.metadata["context_blocks"] == ["RECALLED"]
+
+
+def test_a_later_turns_context_stays_at_its_turn_and_leaves_the_task_unchanged():
+    branch = Branch(system="you are a careful editor")
+
+    _turn(branch, "the task", blocks=["FIRST"])
+    _ins, second = _turn(branch, "a later prompt", blocks=["LATER"])
+    _ins, third = _prepare_run_kwargs(branch, "next", ChatParam(), imodel=_Model(True))
+
+    assert second["messages"][-1]["content"][-1] == {"type": "text", "text": "LATER"}
+    assert third["messages"][: len(second["messages"])] == second["messages"]
+    assert "LATER" not in str(third["messages"][0]["content"])
+
+
+def test_a_repeated_gather_for_one_instruction_keeps_the_first_blocks():
+    branch = Branch(system="you are a careful editor")
+    ins, _kw = _prepare_run_kwargs(
+        branch, "the task", ChatParam(), imodel=_Model(True), context_blocks=["FIRST"]
+    )
+
+    _ins, again = _prepare_run_kwargs(
+        branch, None, ChatParam(), ins=ins, imodel=_Model(True), context_blocks=["SECOND"]
+    )
+
+    assert ins.metadata["context_blocks"] == ["FIRST"]
+    assert "SECOND" not in str(again["messages"])
+
+
+def test_kept_context_survives_a_serialized_round_trip():
+    branch = Branch(system="you are a careful editor")
+    ins, _kw = _turn(branch, "the task", blocks=["RECALLED"])
+
+    restored = type(ins).from_dict(ins.to_dict())
+
+    assert restored.metadata["context_blocks"] == ["RECALLED"]
+
+
+def test_a_cloned_branch_sends_the_kept_context_at_its_turn():
+    branch = Branch(system="you are a careful editor")
+    _ins, first = _turn(branch, "the task", blocks=["RECALLED"])
+
+    _ins, cloned = _prepare_run_kwargs(branch.clone(), "next", ChatParam(), imodel=_Model(True))
+
+    assert cloned["messages"][0] == first["messages"][0]
+
+
+def test_without_the_placement_context_blocks_are_shown_once_and_not_kept():
+    branch = Branch(system="you are a careful editor")
+
+    ins, first = _turn(branch, "the task", blocks=["RECALLED"], imodel=_Model(False))
+    _ins, second = _prepare_run_kwargs(branch, "next", ChatParam(), imodel=_Model(False))
+
+    assert "RECALLED" in first["messages"][0]["content"]
+    assert "RECALLED" not in str(second["messages"])
+    assert "context_blocks" not in ins.metadata
+
+
 def test_a_history_instruction_names_a_tool_registered_after_it_was_sent():
     branch = Branch(system="you are a careful editor")
     late = {
