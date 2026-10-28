@@ -1,6 +1,6 @@
 # ADR-0034: Domain-engine coordination and autonomy safeguards
 
-- **Status**: Accepted, amended 2026-10-24 (see Amendments 1-2); Amendment 3 proposed
+- **Status**: Accepted, amended 2026-10-24 and 2026-10-28 (see Amendments 1-3)
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
@@ -85,9 +85,10 @@ A successfully returned off-contract reply is a negative gate result, not an
 exception: it must not enter the infrastructure-error fail-open path. This
 amendment leaves disabled judging, budget exhaustion, provider/build failures,
 containment refusals, emitter authority and caller-seed admission unchanged.
-Ordinary infrastructure failures still follow D3 and Amendment 1. At this
-amendment's acceptance, a callback failure on the gated notice entered the
-fail-open path; Amendment 3 proposes correcting that behavior.
+Ordinary infrastructure failures still follow D3 and Amendment 1. If an event
+callback raises on the gated notice, a typed or untyped refusal enters that
+fail-open path and the item expands unless `contain_account_integrations` is
+set; this existing behavior is tracked in #3744.
 
 The compatibility cost is intentional: weak judges that returned prose or no
 verdict previously allowed expansion; they now stop that item. Callers can
@@ -96,8 +97,11 @@ use a matching typed verdict, return the explicit text token, or leave
 
 ## Amendment 3 (2026-10-28) — preserve a reported gate decision
 
-- **Status**: Proposed; review and acceptance are separate from the code change.
+- **Status**: Accepted 2026-10-28; replaces Amendment 2's statement that a
+  callback failure on the gated notice enters the fail-open path (#3744).
 - **Scope**: A callback failure while reporting a completed `gated` decision.
+  Amendment 2's text is kept as it was accepted; where it describes that
+  failure, this amendment decides.
 
 An ordinary `gated` callback exception cannot turn a typed or untyped denial
 into an expansion. The engine logs its exception type with a redacted message,
