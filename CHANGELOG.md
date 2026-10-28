@@ -63,6 +63,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Built-in CLI command discovery now lives in `lionhub.cli.catalog`; command names,
+  aliases and lazy loading are unchanged.
+
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
