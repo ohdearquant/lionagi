@@ -5234,3 +5234,32 @@ async def test_a_scheduled_fire_of_a_play_playbook_named_for_a_subcommand_spawns
     assert [s.error_detail for s in failed] == [
         "ValueError: action_playbook 'list' names a `li play` subcommand, not a playbook"
     ]
+
+
+def test_merge_chain_action_overlays_the_named_action_fields():
+    from lionagi.studio.scheduler.engine import _merge_chain_action
+
+    shared = {"k": "v"}
+    schedule = {
+        "id": "s1",
+        "action_kind": "agent",
+        "action_model": "base-model",
+        "action_prompt": "base prompt",
+        "action_agent": "base-agent",
+        "action_playbook": "base-playbook",
+        "extra": shared,
+    }
+
+    merged = _merge_chain_action(schedule, {"kind": "play", "prompt": None, "agent": "next"})
+    assert merged["action_kind"] == "play"
+    assert merged["action_prompt"] is None, "an explicit None replaces the field"
+    assert merged["action_agent"] == "next"
+    assert merged["action_model"] == "base-model"
+    assert merged["action_playbook"] == "base-playbook"
+    assert merged["extra"] is shared, "the overlay is shallow"
+    assert schedule["action_kind"] == "agent", "the parent schedule is not modified"
+
+    assert _merge_chain_action(schedule, {"action_kind": "flow"})["action_kind"] == "flow"
+    both = _merge_chain_action(schedule, {"kind": "play", "action_kind": "flow"})
+    assert both["action_kind"] == "play"
+    assert _merge_chain_action(schedule, {"model": "m2"})["action_kind"] == "agent"

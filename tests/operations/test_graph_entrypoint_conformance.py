@@ -3837,7 +3837,7 @@ async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monk
     """cli-o-fanout persistence: drives the REAL `_run_fanout` wrapper (only
     `setup_orchestration` and the heavy `_run_fanout_inner` execution are
     stubbed — the wrapper's own `start_live_persist` call at
-    lionagi/cli/orchestrate/fanout.py:221 is NOT) and asserts a real StateDB
+    lionagi/cli/orchestrate/fanout.py:243 is NOT) and asserts a real StateDB
     session row exists afterward. This is the seam the generic
     tests/cli/orchestrate/test_live_persist.py::
     test_start_creates_session_and_registers_hook_on_orc_branch test cannot
@@ -3878,7 +3878,7 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
     """cli-o-flow-exec/cli-o-flow-synth persistence: drives the REAL
     `_run_flow` wrapper (only `setup_orchestration` and the heavy
     `_run_flow_inner` execution are stubbed — the wrapper's own
-    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3263 is NOT)
+    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3281 is NOT)
     and asserts a real StateDB session row exists afterward, closing the
     same gap as test_run_fanout_persists_session_via_start_live_persist for
     the flow CLI. HOME is isolated so the finally block's

@@ -346,7 +346,12 @@ kill already opens the state database to resolve the session. Stopping workers o
 cannot help once the runner has been killed outright.
 
 **Limits.** The capability is prospective: a worker started before version 5, or by a run with
-no persisted session, has no record and is not stopped by this arm. A runner that dies between
+no persisted session, has no record and is not stopped by this arm. A run writing into a store
+in compatibility mode (ADR-0128) installs no generation and writes no records, since the managing
+lineage's schema holds neither, so its workers are outside this arm in the same way; its setup
+result says so in `worker_spawns_unrecorded`, and a persisted setup result that carries no owner
+and does not say so is refused. An automatic resume of a run whose setup returned no session carries no continuation and
+starts as a fresh launch, since no running row exists for it to adopt. A runner that dies between
 the OS spawn and the record's commit leaves a worker with no record. A worker whose leader has
 already exited when `li kill` runs is refused even if a descendant still runs, since no recorded
 fact proves that descendant belongs to the group's original owner; a descendant that ignores
@@ -355,8 +360,8 @@ cleanup during the grace period. Each signal follows an identity read, and the g
 two is the one `ln/_proc.py` already accepts for group signals. On Linux each interpreter adds its
 own once-read boot time to a process's boot-relative start, so `li kill` can read a live worker's
 start time outside the 0.1 s tolerance and refuse it; the check is not loosened to avoid that. A
-version-5 store refuses every version-4 build (`SchemaTooNewError`). Workers of unpersisted SDK
-or engine use stay outside it.
+version-4 build refuses a native writable open of a version-5 store (`SchemaTooNewError`); read-only
+inspection retains its no-migration behavior. Workers of unpersisted SDK or engine use stay outside it.
 
 **Rollout.** Three changes, in order: the schema and its readers contract; producer registration
 with generation admission; the terminal arm with the running-row handoff. The arm does not ship

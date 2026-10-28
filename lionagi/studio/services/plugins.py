@@ -102,9 +102,29 @@ def _plugin_summary(
     route and the detail route) must agree on it rather than each deciding
     independently.
     """
+    return _summary_of(
+        plugin_dir,
+        name,
+        description,
+        source,
+        skills=_scan_skills(plugin_dir),
+        agents=_scan_agents(plugin_dir),
+        redact=redact,
+    )
+
+
+def _summary_of(
+    plugin_dir: Path,
+    name: str,
+    description: str,
+    source: str,
+    *,
+    skills: list[dict[str, Any]],
+    agents: list[dict[str, Any]],
+    redact: bool,
+) -> dict[str, Any]:
+    """The summary dict, counted from an inventory the caller already scanned."""
     plugin_json = _read_json(plugin_dir / ".claude-plugin" / "plugin.json") or {}
-    skills = _scan_skills(plugin_dir)
-    agents = _scan_agents(plugin_dir)
     has_hooks = (plugin_dir / "hooks" / "hooks.json").exists()
     has_mcp = (plugin_dir / ".mcp.json").exists()
     if not has_mcp and plugin_json.get("mcpServers"):
@@ -143,9 +163,11 @@ def _plugin_detail(
     otherwise returns those agents' descriptions and the on-disk path
     unfiltered, mirroring content a sibling route already redacts.
     """
-    summary = _plugin_summary(plugin_dir, name, description, source, redact=redact)
     skills = _scan_skills(plugin_dir)
     agents = _scan_agents(plugin_dir)
+    summary = _summary_of(
+        plugin_dir, name, description, source, skills=skills, agents=agents, redact=redact
+    )
 
     hooks_path = plugin_dir / "hooks" / "hooks.json"
     hooks = _read_json(hooks_path) if hooks_path.exists() else None

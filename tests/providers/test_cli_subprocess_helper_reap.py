@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +19,16 @@ from lionagi.providers import _cli_subprocess as cs
 async def suspended_cli(monkeypatch):
     started = {name: asyncio.Event() for name in ("stdout", "stderr", "stdin", "wait")}
     gates = {name: asyncio.Event() for name in started}
-    state = SimpleNamespace(tasks={}, order=[], error=None, kept=0, released=0, stderr=[])
+    state = SimpleNamespace(
+        tasks={},
+        order=[],
+        error=None,
+        primary_error=None,
+        kept=0,
+        released=0,
+        stderr=[],
+        warnings=[],
+    )
 
     class Pipe:
         def __init__(self, name):
@@ -68,7 +78,7 @@ async def suspended_cli(monkeypatch):
     proc = Process()
 
     class Lease:
-        slots = [object()]
+        slots = [SimpleNamespace(pool="synthetic-pool")]
 
         def record_child(self, pid, create_time):
             assert (pid, create_time) == (proc.pid, 1.0)
@@ -80,8 +90,11 @@ async def suspended_cli(monkeypatch):
         def release(self):
             state.released += 1
 
+    state.lease = Lease()
+    state.slot_refs = tuple(state.lease.slots)
+
     async def admit(**_kwargs):
-        return Lease()
+        return state.lease
 
     async def fill(env):
         return env, frozenset()
@@ -91,10 +104,12 @@ async def suspended_cli(monkeypatch):
 
     async def end(child, *, spawned):
         assert child is proc and spawned.pid == proc.pid
+        state.primary_error = sys.exc_info()[1]
         state.order.append("end group")
         if state.error is not None:
             raise state.error
         gates["stderr"].set()
+        return cs._ChildGroupCleanup.CONFIRMED_EMPTY
 
     real_create_task = asyncio.create_task
     names = {
@@ -113,6 +128,13 @@ async def suspended_cli(monkeypatch):
             state.tasks[name] = task
         return task
 
+    original_warning = cs.log.warning
+
+    def warning(message, *args, **kwargs):
+        state.warnings.append(message % args if args else message)
+        return original_warning(message, *args, **kwargs)
+
+    monkeypatch.setattr(cs.log, "warning", warning)
     monkeypatch.setattr(cs, "admit_subagent", admit)
     monkeypatch.setattr(cs, "fill_declared_secrets_and_names", fill)
     monkeypatch.setattr(cs, "refuse_nested_agent", lambda _engine: None)
@@ -125,7 +147,7 @@ async def suspended_cli(monkeypatch):
     monkeypatch.setattr(cs.asyncio, "create_task", create_task)
 
     async def consume():
-        async for _item in cs.ndjson_from_cli(["synthetic-cli"], env={}, stdin_data=b"input"):
+        async for _item in cs.ndjson_from_cli([sys.executable], env={}, stdin_data=b"input"):
             pytest.fail("the blocked stdout must not produce a value")
 
     state.runner = real_create_task(consume())
@@ -149,12 +171,21 @@ async def test_helper_tasks_are_reaped_when_group_teardown_is_cancelled(suspende
     state.runner.cancel()
     with pytest.raises(asyncio.CancelledError) as raised:
         await asyncio.wait_for(state.runner, 5.0)
-    # Python 3.10 raises a fresh CancelledError for a cancelled task and keeps the
-    # one the coroutine raised as its context; 3.11+ raises that one itself.
-    assert raised.value is state.error or raised.value.__context__ is state.error
+    # Python 3.10 may wrap the cancellation observed by the coroutine once.
+    primary = state.primary_error
+    assert isinstance(primary, asyncio.CancelledError) and primary is not state.error
+    assert raised.value is primary or raised.value.__context__ is primary
+    assert state.runner.cancelled()
 
-    assert state.kept == 1
+    assert state.kept == 0, "unconfirmed cleanup must not unlock into a child-only record"
     assert state.released == 0
+    assert tuple(state.lease.slots) == state.slot_refs
+    assert any(
+        "CLI child group cleanup remains unconfirmed" in message
+        and "until this process exits" in message
+        and "synthetic-pool" in message
+        for message in state.warnings
+    )
     assert all(task.done() for task in state.tasks.values()), (
         "all four stream helpers must be reaped"
     )

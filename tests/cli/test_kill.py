@@ -24,6 +24,7 @@ import yaml
 from lionagi.cli.kill import (
     _BOOT_TIME_TOLERANCE,
     _NOT_STOPPED_SIGNALS,
+    _REFUSED_SIGNAL_REASONS,
     _check_pid_identity,
     _do_kill,
     _do_kill_all_stale,
@@ -2966,3 +2967,19 @@ async def test_unverifiable_invocation_preserves_first_observation_across_sweeps
         assert isinstance(metadata["unverifiable_since"], float)
         observations.append(metadata["unverifiable_since"])
     assert observations[0] == observations[1]
+
+
+def test_every_refusal_reason_is_a_not_stopped_signal():
+    """A refusal writes no cancellation, so callers must never read it as a stop."""
+    assert _NOT_STOPPED_SIGNALS == frozenset(_REFUSED_SIGNAL_REASONS)
+    assert _NOT_STOPPED_SIGNALS == {
+        "identity_mismatch",
+        "in_process",
+        "host_mismatch",
+        "boot_mismatch",
+        "foreign_mode",
+        "permission_denied",
+        "no_recorded_process",
+        "no_recorded_identity",
+        "imported_no_process",
+    }

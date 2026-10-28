@@ -29,8 +29,7 @@ from lionagi.protocols.messages.instruction import Instruction
 from ._mirror_common import (
     MIRROR_PROVIDER_ERROR_KEY,
     SourceLine,
-    bound_mirror_content,
-    name_answered_results,
+    prepare_mirrored_rows,
     write_mirrored_messages,
 )
 
@@ -588,30 +587,14 @@ async def mirror_session(
         }
     )
 
-    entries: list[tuple[dict[str, Any], SourceLine | None]] = []
-    for m, src in zip(messages, message_sources, strict=False):
-        md = m.to_dict(mode="db")
-        entries.append((md, src))
-    # Name each repeated output before its content is bounded: the source pointer's
-    # content hash must cover the row as stored, name included, or a reader reconstructing
-    # the unnamed ActionResponse would mismatch and fall back to the stored preview.
-    await name_answered_results(db, [md for md, _ in entries])
-    written: list[dict[str, Any]] = []
-    for md, src in entries:
-        if max_preview_chars is not None and src is not None:
-            preview, pointer = bound_mirror_content(
-                md["content"],
-                md["id"],
-                src,
-                source_kind="codex_jsonl",
-                source_session_uid=rollout_uid,
-                max_preview_chars=max_preview_chars,
-            )
-            md["content"] = preview
-            nm = dict(md.get("node_metadata") or {})
-            nm["mirror_source"] = pointer
-            md["node_metadata"] = nm
-        written.append(md)
+    written = await prepare_mirrored_rows(
+        db,
+        messages,
+        message_sources,
+        source_kind="codex_jsonl",
+        source_session_uid=rollout_uid,
+        max_preview_chars=max_preview_chars,
+    )
 
     if written:
         await write_mirrored_messages(

@@ -163,14 +163,10 @@ async def _run_status(run_id: str) -> str:
     return str(session.get("status") or "")
 
 
-async def _active_resume_for_branch(branch_id: str) -> dict[str, Any] | None:
+async def _active_resume(skill: str, key: str, value: str) -> dict[str, Any] | None:
+    """The running *skill* invocation whose metadata names *value* under *key*, else None."""
     async with StateDB(readonly=read_only_open_supported()) as db:
-        rows = await db.list_invocations(
-            skill="resume:agent",
-            status="running",
-            limit=200,
-            offset=0,
-        )
+        rows = await db.list_invocations(skill=skill, status="running", limit=200, offset=0)
     for row in rows:
         metadata = row.get("node_metadata")
         if isinstance(metadata, str):
@@ -178,9 +174,13 @@ async def _active_resume_for_branch(branch_id: str) -> dict[str, Any] | None:
                 metadata = json.loads(metadata)
             except json.JSONDecodeError:
                 metadata = None
-        if isinstance(metadata, dict) and metadata.get("branch_id") == branch_id:
+        if isinstance(metadata, dict) and metadata.get(key) == value:
             return {**row, "node_metadata": metadata}
     return None
+
+
+async def _active_resume_for_branch(branch_id: str) -> dict[str, Any] | None:
+    return await _active_resume("resume:agent", "branch_id", branch_id)
 
 
 async def _ensure_branch_snapshot_available(branch_id: str) -> None:
@@ -466,23 +466,7 @@ async def _active_flow_resume(run_id: str) -> dict[str, Any] | None:
     """Same admission-guard shape as _active_resume_for_branch, keyed on the
     distinct resume:flow skill so agent and flow resumes for the same source
     never mask each other's in-progress state."""
-    async with StateDB(readonly=read_only_open_supported()) as db:
-        rows = await db.list_invocations(
-            skill="resume:flow",
-            status="running",
-            limit=200,
-            offset=0,
-        )
-    for row in rows:
-        metadata = row.get("node_metadata")
-        if isinstance(metadata, str):
-            try:
-                metadata = json.loads(metadata)
-            except json.JSONDecodeError:
-                metadata = None
-        if isinstance(metadata, dict) and metadata.get("run_id") == run_id:
-            return {**row, "node_metadata": metadata}
-    return None
+    return await _active_resume("resume:flow", "run_id", run_id)
 
 
 async def _resume_flow_run(

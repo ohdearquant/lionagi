@@ -243,8 +243,11 @@ class Session(Node, Relational):
     def remove_branch(
         self,
         branch: ID.Ref,
-        delete: bool = False,
+        delete: bool | None = None,
     ):
+        if delete is not None:
+            _warn_inert_param("remove_branch", "delete")
+
         branch = ID.get_id(branch)
 
         if branch not in self.branches:
@@ -271,9 +274,6 @@ class Session(Node, Relational):
                 self.default_branch = None
             else:
                 self.default_branch = self.branches[0]
-
-        if delete:
-            del resolved_branch
 
     async def asplit(self, branch: ID.Ref) -> Branch:
         async with self.branches:
@@ -324,22 +324,26 @@ class Session(Node, Relational):
     def to_df(
         self,
         branches: ID.RefSeq = None,
-        exclude_clone: bool = False,
-        exclude_load: bool = False,
+        exclude_clone: bool | None = None,
+        exclude_load: bool | None = None,
     ):
-        out = self.concat_messages(
-            branches=branches,
-            exclude_clone=exclude_clone,
-            exclude_load=exclude_load,
-        )
+        if exclude_clone is not None:
+            _warn_inert_param("to_df", "exclude_clone")
+        if exclude_load is not None:
+            _warn_inert_param("to_df", "exclude_load")
+        out = self.concat_messages(branches=branches)
         return out.to_df(columns=MESSAGE_FIELDS)
 
     def concat_messages(
         self,
         branches: ID.RefSeq = None,
-        exclude_clone: bool = False,
-        exclude_load: bool = False,
+        exclude_clone: bool | None = None,
+        exclude_load: bool | None = None,
     ) -> Pile[RoledMessage]:
+        if exclude_clone is not None:
+            _warn_inert_param("concat_messages", "exclude_clone")
+        if exclude_load is not None:
+            _warn_inert_param("concat_messages", "exclude_load")
         if not branches:
             branches = self.branches
 
@@ -437,6 +441,17 @@ class Session(Node, Relational):
             max_spawn=max_spawn,
         ):
             yield event
+
+
+def _warn_inert_param(method: str, name: str) -> None:
+    import warnings
+
+    warnings.warn(
+        f"Session.{method}({name}=...) has no effect and is deprecated; "
+        "it will be removed in a future minor release.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 __all__ = ("Session",)

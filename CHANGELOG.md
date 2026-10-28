@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Persisted CLI runs record worker spawn identities before output and drain owned work before terminal status or database close; agent resumes retain the adopted session with an execution generation.
+
 - API-model agent runs record per-request provider, requested model, prompt character
   count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed
@@ -127,10 +129,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - An Anthropic API-model `li agent` leg whose model names no output limit sends
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
+- `CodingToolkit`'s bash tool runs through the same code as `BashTool`. An explicit
+  `timeout=0` is clamped to 1 ms, as `BashTool` already did; the toolkit used to read it as the
+  30-second default. A timed-out command now reports its limit in milliseconds, and refusals of
+  shell control operators and malformed quoting use `BashTool`'s wording.
+
 - `load_mcp_tools(config_path=...)` without `server_names` registers the servers declared in
   that file, as `ActionManager.load_mcp_config()` already did. It used to register every server
   the process had loaded from any config file, so an earlier, unrelated config's servers were
   registered again. Pass `server_names` to choose servers explicitly.
+
+### Deprecated
+
+- `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
+  `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when
+  passed. None of them changed the result: `remove_branch()` leaves the branch object with the caller
+  either way, and the two message views never filtered on either flag. They will be removed in a
+  future minor release; dropping the argument leaves the result unchanged.
+
+- `CodingToolkit(notify_threshold=..., notify_max_tokens=...)` now emits a
+  `DeprecationWarning` when either is passed. Neither value was ever read: the toolkit's nudge
+  engine does not take them. The attributes keep 0.7 and 200,000 when the arguments are
+  omitted. Both will be removed in a future minor release.
 
 ### Removed
 
@@ -143,6 +163,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   drop their `synonyms_removed_after` field.
 
 ### Fixed
+
+- `li team receive` reads a stored message whose recipient is a single name written as a
+  string, not a list, as that whole name, as the other team commands already did. It used
+  to deliver it to any member whose name was part of the string, so `bob` received a
+  message for `bobby`, and it printed that recipient one letter at a time.
+
+- CLI stream teardown preserves cancellation while reaping helpers and draining abandoned stderr.
 
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
   `key_env`) into CLI children; only the account router reads it, for the request it signs.
@@ -199,6 +226,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Defer every merged pull request from an incomplete GitHub poll until a complete
   scan establishes merge order, preventing the cursor from skipping older merges. (#3741)
+
+- `parse_batch_function_calls()` decodes each call in the list once, so a string argument whose
+  escapes decode to a reserved word followed by `=` (for example `"\x66rom=1"`) keeps its text,
+  as `parse_function_call()` already did. The batch parser used to rewrite it to `from_=1`.
 
 ## [0.36.0] - 2026-10-24
 

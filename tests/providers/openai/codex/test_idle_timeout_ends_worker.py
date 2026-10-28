@@ -49,11 +49,12 @@ def _stand_in(pidfile, *, ignore_term: bool) -> str:
             f"#!{sys.executable}",
             "import json, os, signal, subprocess, sys, time",
             ignore,
+            # stdin is closed only after the parent has recorded the spawn identity.
+            "sys.stdin.read()",
             "desc = subprocess.Popen([sys.executable, '-c', "
             f"'import signal, time; {ignore}time.sleep(120)'])",
             f"with open({str(pidfile)!r}, 'w') as f:",
             "    json.dump({'leader': os.getpid(), 'descendant': desc.pid}, f)",
-            "sys.stdin.read()",
             "print(json.dumps({'type': 'thread.started', 'thread_id': 't-idle'}), flush=True)",
             "print(json.dumps({'type': 'item.completed', "
             "'item': {'type': 'agent_message', 'text': 'partial'}}), flush=True)",

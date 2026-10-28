@@ -644,3 +644,23 @@ def test_definitions_save_route_ignores_validation_for_non_agent_kind(tmp_path, 
         json={"content": "role: not-a-real-role\nsteps: []\n"},
     )
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        ({}, "---\nlion_system: false\n---\n"),
+        ({"model": "", "system_prompt": "  "}, "---\nlion_system: false\n---\n"),
+        ({"system_prompt": "Be brief."}, "---\nlion_system: false\n---\n\nBe brief.\n"),
+    ],
+)
+def test_create_agent_file_always_opens_with_frontmatter(tmp_path, monkeypatch, data, expected):
+    """With every posted field empty, the file still carries the stamped
+    lion_system flag, so no created agent is written as a bare prompt."""
+    from lionagi.studio.services.agents import create_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+
+    create_agent("bare", data)
+
+    assert (root / "bare.md").read_text() == expected

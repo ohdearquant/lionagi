@@ -910,6 +910,29 @@ async def spawn_and_wait(
         _drain_tail(proc.stdout, _TAIL_BYTES),
         _drain_tail(proc.stderr, _TAIL_BYTES),
     )
+
+    async def _stop_child() -> None:
+        # SIGTERM then SIGKILL the whole group. The readers are cancelled first: they
+        # are blocked on pipes belonging to the process being killed, and an
+        # un-cancelled reader outlives it.
+        drain.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain
+        group_witnesses = (
+            capture_group_witnesses(
+                proc,
+                expected_leader_created=leader_created,
+                expected_marker=group_marker,
+            )
+            if leader_created is not None
+            else ()
+        )
+        await aterminate_process_group(
+            proc,
+            grace=_PROCESS_TERMINATION_GRACE_SECONDS,
+            group_witnesses=group_witnesses,
+        )
+
     try:
 
         async def _wait_for_exit() -> tuple[bytes, bytes]:
@@ -933,50 +956,16 @@ async def spawn_and_wait(
             invocation_id,
             deadline_seconds,
         )
-        drain.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await drain
-        group_witnesses = (
-            capture_group_witnesses(
-                proc,
-                expected_leader_created=leader_created,
-                expected_marker=group_marker,
-            )
-            if leader_created is not None
-            else ()
-        )
-        await aterminate_process_group(
-            proc,
-            grace=_PROCESS_TERMINATION_GRACE_SECONDS,
-            group_witnesses=group_witnesses,
-        )
+        await _stop_child()
         raise SubprocessDeadlineExceededError(
             invocation_id=invocation_id,
             deadline_seconds=deadline_seconds,
         ) from exc
     except asyncio.CancelledError:
-        # SIGTERM then SIGKILL the whole group before re-raising, so a
-        # cancelled poll doesn't leave the spawned tree detached. The readers
-        # are cancelled first: they are blocked on pipes belonging to the
-        # process being killed, and an un-cancelled reader outlives it.
+        # Stop the group before re-raising, so a cancelled poll doesn't leave the
+        # spawned tree detached.
         _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
-        drain.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await drain
-        group_witnesses = (
-            capture_group_witnesses(
-                proc,
-                expected_leader_created=leader_created,
-                expected_marker=group_marker,
-            )
-            if leader_created is not None
-            else ()
-        )
-        await aterminate_process_group(
-            proc,
-            grace=_PROCESS_TERMINATION_GRACE_SECONDS,
-            group_witnesses=group_witnesses,
-        )
+        await _stop_child()
         raise
     finally:
         if tmp_path is not None:

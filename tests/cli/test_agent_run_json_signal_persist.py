@@ -618,7 +618,8 @@ async def test_a_resumed_legs_first_skip_window_marks_the_run_json_the_job_reads
     from lionagi.cli.agent import _run_agent
     from lionagi.session.signal import NodeStarted
 
-    _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
     job, resumed = _two_runs(monkeypatch, tmp_path)
     legs: list = []
     during: dict = {}
@@ -658,7 +659,8 @@ async def test_a_resumed_run_whose_legs_were_never_refused_writes_no_time(monkey
     when its leg ends, and neither run.json gets the field, not even as null."""
     from lionagi.cli.agent import _run_agent
 
-    _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
     job, resumed = _two_runs(monkeypatch, tmp_path)
     legs: list = []
 
@@ -688,7 +690,8 @@ async def test_a_resumed_run_writes_the_time_again_when_its_leg_ends(monkeypatch
     from lionagi.cli.agent import _run_agent
     from lionagi.session.signal import NodeStarted
 
-    _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
     job, resumed = _two_runs(monkeypatch, tmp_path)
     legs: list = []
     handed: list = []

@@ -692,7 +692,7 @@ batch are minted; closure wakes only for remaining admitted facts. Closure drain
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py:597-614`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1697`,
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1719`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -710,10 +710,10 @@ reads from. Durable delivery covers committed `session_signals` rows, not every 
 the record says what is lost and when. For a durable subscriber the source fact is a
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
-(`lionagi/state/schema.sql:801-805`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:7225-7235`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:7250-7267`), whose forward read defaults to 500 rows
-(`:7255`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionagi/state/schema.sql:824-828`), the sink writes it with the sequence the store assigns
+(`lionagi/state/db.py:7582-7592`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:7607-7624`), whose forward read defaults to 500 rows
+(`:7612`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -814,17 +814,17 @@ everything since; facts past the range belong to the next wake.
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
   not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1597`, `:1633-1638`;
-  `lionagi/cli/orchestrate/flow.py:2083-2128`). A schedule holds `github_cursor`, a reader
+  `lionagi/cli/orchestrate/flow.py:2089-2134`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
-  (`lionagi/state/schema.sql:464`, `:531-539`; `lionagi/state/db.py:5386-5388`, `:5518`;
-  `lionagi/studio/scheduler/engine.py:2057-2058`; ADR-0070, Accepted); a direct `update_schedule` or
+  (`lionagi/state/schema.sql:487`, `:554-562`; `lionagi/state/db.py:5743-5745`, `:5875`;
+  `lionagi/studio/scheduler/engine.py:2059-2060`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:801-805`; writer `lionagi/state/db.py:7225-7235`; forward reader
-  `lionagi/state/db.py:7250-7267`).
+  (`lionagi/state/schema.sql:824-828`; writer `lionagi/state/db.py:7582-7592`; forward reader
+  `lionagi/state/db.py:7607-7624`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast

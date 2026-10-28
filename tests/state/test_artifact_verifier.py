@@ -123,6 +123,21 @@ class TestVerifyArtifactContract:
         assert len(result["missing_required"]) == 1
         assert len(result["missing_optional"]) == 1
 
+    def test_recorded_size_is_the_one_the_presence_check_read(self, tmp_path, monkeypatch):
+        (tmp_path / "report.md").write_text("content")
+        real_getsize = os.path.getsize
+        calls: list[str] = []
+
+        def growing_getsize(path):
+            calls.append(path)
+            return real_getsize(path) + 100 * (len(calls) - 1)
+
+        monkeypatch.setattr(os.path, "getsize", growing_getsize)
+        contract = {"expected": [{"id": "report", "path": "report.md"}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+        assert result["produced"][0]["size"] == len("content")
+        assert len(calls) == 1
+
 
 # missing_artifact_summary / evidence
 

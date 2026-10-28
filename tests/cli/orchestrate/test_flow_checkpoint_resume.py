@@ -57,7 +57,7 @@ def _minimal_real_env() -> OrchestrationEnv:
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
     return OrchestrationEnv(
-        run=MagicMock(),
+        run=MagicMock(run_id="persist-test"),
         session=session,
         orc_branch=orc_branch,
         builder=MagicMock(),
