@@ -163,7 +163,7 @@ class derives from `Element` (both are Pydantic models), so D5's class-path cond
 pickles that name the old module still load, and the seam change shows it with a test. This paragraph's line numbers are at `c4abb363`.
 
 `lionagi/_auto.py:157-161` declares a CLI command whose module is `lionagi.casts.surfaces`. That declaration
-belongs to the CLI's catalog and leaves the core with it (A4, step 3).
+belongs to the CLI's catalog and leaves the core with it (A4, step 3). This paragraph's line numbers are at `5f3672b2`.
 
 ### A3. The LNDL seams
 
@@ -224,7 +224,7 @@ submodules. The CLI imports Studio code at 11 statements in 4 files (`cli/machin
    commands with no prior hub import and no caller registration. The generic declaration types may stay in the
    core if they name no hub module. Wrapper commands may stay at their old paths until their own move. The step
    is done when `lionagi.studio` imports no private `lionagi.cli` module, the remaining edges run one way, and
-   no seed in the core names a moved target.
+   no seed in the core names a moved target. This item's line numbers are at `5f3672b2`.
 4. **The scheduler** to `lionhub.orchestration.scheduler`, with its rows, together with the wheel-owned helpers
    the backend record assigns, or after they are extracted. The change records the import graph in both
    directions and the Studio modules that remain.
