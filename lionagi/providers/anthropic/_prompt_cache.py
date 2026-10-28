@@ -32,6 +32,8 @@ from typing import Any
 
 from lionagi.service import _prompt_cache as ledger_mod
 
+from .messages import _is_blank_text
+
 __all__ = ("CERT_VERSION", "LOOKBACK", "MAX_MARKS", "Point", "place")
 
 CERT_VERSION = "cert-v1"
@@ -72,12 +74,6 @@ def _step(state: bytes, part: bytes) -> bytes:
 
 def _ttl(cache_control: Any) -> str:
     return "1h" if isinstance(cache_control, dict) and cache_control.get("ttl") == "1h" else "5m"
-
-
-def _is_blank_text(block: dict) -> bool:
-    return block.get("type") == "text" and not (
-        isinstance(block.get("text"), str) and block["text"].strip()
-    )
 
 
 def _content_blocks(content: Any) -> list:
