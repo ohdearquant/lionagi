@@ -767,15 +767,6 @@ def _kill_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: f
     return 0
 
 
-_RUNNER_IDENTITY_KEYS = (
-    "pid",
-    "pid_create_time",
-    "pid_host",
-    "pid_boot_time",
-    "process_identity_mode",
-)
-
-
 @dataclass
 class _WorkerCleanup:
     record: dict[str, Any]
@@ -789,6 +780,8 @@ class _WorkerCleanup:
 
 def _same_cleanup_session(row: dict[str, Any], session: dict[str, Any]) -> bool:
     """Compare resolved session identity to the worker snapshot, including absence."""
+    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
+
     absent = object()
     for field in ("id", "status", "cli_worker_generation"):
         if field not in row or field not in session or row[field] != session[field]:
@@ -799,7 +792,7 @@ def _same_cleanup_session(row: dict[str, Any], session: dict[str, Any]) -> bool:
     left = row.get("node_metadata", absent)
     right = session.get("node_metadata", absent)
     if isinstance(left, dict) and isinstance(right, dict):
-        for field in _RUNNER_IDENTITY_KEYS:
+        for field in _RUNNER_IDENTITY_FIELDS:
             if left.get(field, absent) != right.get(field, absent):
                 return False
     elif left != right:
@@ -824,6 +817,7 @@ async def _try_recorded_worker_cleanup(
 ) -> int | None:
     """Handle recorded workers, or leave existing running-session handling intact."""
     from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
     from lionagi.state.reasons import RunReasons
 
     sid = row["id"]
@@ -852,7 +846,15 @@ async def _try_recorded_worker_cleanup(
     if running:
         meta = session.get("node_metadata")
         meta = meta if isinstance(meta, dict) else {}
-        if _unaddressable_pid_reason(meta) in _NOT_JUDGEABLE_HERE | {"boot_mismatch"}:
+        unjudgeable = _unaddressable_pid_reason(meta)
+        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch"}:
+            # A boot mismatch proves the runner and its workers are gone; the
+            # other reasons leave this host unable to stop the recorded workers.
+            if records and unjudgeable in _NOT_JUDGEABLE_HERE:
+                warn(
+                    f"  session {sid[:12]}: {len(records)} recorded worker group(s) not "
+                    f"handled: the runner {_REFUSED_SIGNAL_REASONS[unjudgeable]}"
+                )
             return None
         try:
             raw_pid = meta["pid"]
@@ -891,7 +893,7 @@ async def _try_recorded_worker_cleanup(
                 reason_summary=f"Manually cancelled via `li kill`. {user_reason}".strip(),
                 evidence=evidence,
                 expected_runner_identity={
-                    key: meta[key] for key in _RUNNER_IDENTITY_KEYS if key in meta
+                    key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta
                 },
             )
         except Exception as exc:
@@ -1099,6 +1101,7 @@ async def _do_kill(
             if recorded_result is not None:
                 return recorded_result
         frozen_snapshot = None
+        worker_records_unread = False
         if (
             entity_type == "session"
             and current_status == "running"
@@ -1112,7 +1115,7 @@ async def _do_kill(
                 pass
             except Exception as exc:
                 warn(f"  session {row['id'][:12]}: worker records could not be read ({exc})")
-                return 1
+                worker_records_unread = True
             else:
                 if frozen_snapshot is None or not _same_cleanup_session(
                     row, frozen_snapshot["session"]
@@ -1177,7 +1180,7 @@ async def _do_kill(
                         f"  killed child {child_type} {child_row['id'][:12]} (signal={r['signal']})"
                     )
 
-        if entity_type == "session":
+        if entity_type == "session" and not worker_records_unread:
             recorded_result = await _try_recorded_worker_cleanup(
                 db,
                 row,
@@ -1210,6 +1213,13 @@ async def _do_kill(
                 "any workers it started cannot be resolved from the play id. "
                 "Find the running sessions with `li monitor` and kill those "
                 "ids directly."
+            )
+            return 1
+
+        if worker_records_unread:
+            log_error(
+                f"session {row['id'][:12]}: its recorded worker groups were not handled, "
+                "because the worker records could not be read"
             )
             return 1
 

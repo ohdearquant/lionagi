@@ -781,6 +781,91 @@ async def test_running_dead_runner_boot_mismatch_preserves_original_refusal(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["host_mismatch", "in_process", "foreign_mode"])
+async def test_recorded_workers_of_a_runner_this_host_cannot_judge_are_reported(
+    monkeypatch, reason
+):
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+    warnings = []
+    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: reason)
+    monkeypatch.setattr(module, "warn", warnings.append)
+    result = await module._try_recorded_worker_cleanup(
+        db, db.session, user_reason="", grace_seconds=0
+    )
+    assert result is None
+    assert db.cancelled == []
+    assert db.settled == []
+    [message] = [m for m in warnings if "recorded worker group(s) not handled" in m]
+    assert "2 recorded worker group(s)" in message
+    assert module._REFUSED_SIGNAL_REASONS[reason] in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reason", "records"), [("boot_mismatch", True), ("host_mismatch", False)])
+async def test_no_unhandled_worker_report_without_live_recorded_workers(
+    monkeypatch, reason, records
+):
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+    if not records:
+        db.records = []
+    warnings = []
+    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: reason)
+    monkeypatch.setattr(module, "warn", warnings.append)
+    result = await module._try_recorded_worker_cleanup(
+        db, db.session, user_reason="", grace_seconds=0
+    )
+    assert result is None
+    assert not [m for m in warnings if "not handled" in m]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_worker_records_still_kill_the_running_session(monkeypatch):
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+    calls = []
+    warnings = []
+    errors = []
+
+    class Context:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *args):
+            return False
+
+    async def resolve(_db, _identifier):
+        return "sessions", "session", db.session
+
+    async def unreadable(session_id):
+        raise RuntimeError("store unavailable")
+
+    async def recorded(*args, **kwargs):
+        calls.append("recorded")
+        return 0
+
+    async def kill_one(*args, **kwargs):
+        calls.append("signal")
+        return {"signal": "sigterm", "pid": 76543}
+
+    db.snapshot_cli_worker_spawns = unreadable
+    monkeypatch.setattr(db_mod, "StateDB", Context)
+    monkeypatch.setattr(module, "_resolve_entity", resolve)
+    monkeypatch.setattr(module, "_try_recorded_worker_cleanup", recorded)
+    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(module, "log_error", errors.append)
+    assert await module._do_kill("session-test") == 1
+    assert calls == ["signal"]
+    assert any("worker records could not be read (store unavailable)" in m for m in warnings)
+    assert any("recorded worker groups were not handled" in m for m in errors)
+
+
+@pytest.mark.asyncio
 async def test_running_dead_runner_resumed_during_grace_settles_old_group(monkeypatch, capsys):
     import lionagi.cli.kill as module
 
