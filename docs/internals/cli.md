@@ -1642,6 +1642,10 @@ number can never drift from what the real operation would have measured.
 
 ## `monitor.py` — `li monitor` (dashboard + `li monitor run` wait primitive)
 
+When the dashboard cannot open or read the state store, one-shot and watch modes report a
+credential-masked error on stderr and exit nonzero. A state database that has never been created
+continues to produce the normal empty-store message.
+
 ### Table rendering
 
 **`_query_active_shows`** / **`_query_running_plays`** — project scoping is Python-side, not

@@ -830,23 +830,24 @@ def test_the_lifecycle_absent_answer_masks_the_path_it_names(monkeypatch, tmp_pa
 
 @pytest.mark.anyio
 async def test_the_monitor_table_masks_a_message_that_quotes_the_store(monkeypatch):
-    from lionagi.cli.monitor import _run_table
+    from lionagi.cli.monitor import _MonitorReadError, _run_table
 
     _set_url(monkeypatch, SERVER_URL)
     _raise_quoting_the_store(monkeypatch)
-    _assert_masked(
-        await _run_table(since=None, entity_type=None, project=None),
-        "the monitor table's error line",
-    )
+    with pytest.raises(_MonitorReadError) as caught:
+        await _run_table(since=None, entity_type=None, project=None)
+    _assert_masked(str(caught.value), "the monitor table's error line")
 
 
 @pytest.mark.anyio
 async def test_the_monitor_detail_masks_a_message_that_quotes_the_store(monkeypatch):
-    from lionagi.cli.monitor import _run_detail
+    from lionagi.cli.monitor import _MonitorReadError, _run_detail
 
     _set_url(monkeypatch, SERVER_URL)
     _raise_quoting_the_store(monkeypatch)
-    _assert_masked(await _run_detail("some-entity"), "the monitor detail's error line")
+    with pytest.raises(_MonitorReadError) as caught:
+        await _run_detail("some-entity")
+    _assert_masked(str(caught.value), "the monitor detail's error line")
 
 
 # end to end, both channels named

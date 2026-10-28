@@ -1020,6 +1020,10 @@ async def _gather_table_rows(
 # ── Async main routines ───────────────────────────────────────────────────────
 
 
+class _MonitorReadError(RuntimeError):
+    """A masked store-read failure that must not be rendered as a successful view."""
+
+
 async def _subagent_status() -> dict[str, Any]:
     from lionagi.ln.concurrency import run_sync as _run_sync
     from lionagi.providers._subagent_admission import subagent_admission_status
@@ -1076,7 +1080,7 @@ async def _run_table(
     except Exception as exc:  # noqa: BLE001
         # A catch-all around a store open, so the message can be one that names
         # the store. Masked here for the same reason the envelope sinks are.
-        return _red(f"error reading state.db: {mask_credentials(str(exc))}")
+        raise _MonitorReadError(f"error reading state.db: {mask_credentials(str(exc))}") from None
     line = _format_subagent_line(await _subagent_status())
     return f"{table}\n{line}" if line else table
 
@@ -1106,7 +1110,7 @@ async def _run_detail(entity_id: str) -> str:
         # turn into a non-success exit code, not a rendered detail body.
         raise
     except Exception as exc:  # noqa: BLE001
-        return _red(f"error: {mask_credentials(str(exc))}")
+        raise _MonitorReadError(f"error reading monitor data: {mask_credentials(str(exc))}") from None
 
 
 # ── Watch loop ────────────────────────────────────────────────────────────────
@@ -1161,8 +1165,8 @@ def _watch_loop(
                 # above. Both derive from BaseException, so they must be named.
                 interrupted = True
                 break
-            except AmbiguousIdError as exc:
-                # A longer prefix is the only fix; refreshing cannot resolve it.
+            except (AmbiguousIdError, _MonitorReadError) as exc:
+                # Refreshing cannot resolve an ambiguous ID or a failed store read.
                 log_error(str(exc))
                 exit_code = EXIT_UNKNOWN
                 break
@@ -1932,17 +1936,17 @@ def run_monitor(args: argparse.Namespace) -> int:
             project=project,
         )
 
-    if entity_id:
-        try:
+    try:
+        if entity_id:
             output = run_async(_run_detail(entity_id))
-        except AmbiguousIdError as exc:
-            from ._logging import log_error
-            from .status import EXIT_UNKNOWN
+        else:
+            output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
+    except (AmbiguousIdError, _MonitorReadError) as exc:
+        from ._logging import log_error
+        from .status import EXIT_UNKNOWN
 
-            log_error(str(exc))
-            return EXIT_UNKNOWN
-    else:
-        output = run_async(_run_table(since=since, entity_type=entity_type, project=project))
+        log_error(str(exc))
+        return EXIT_UNKNOWN
 
     print(output)
     return 0
