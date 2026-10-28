@@ -50,7 +50,9 @@ def _real_runs_root(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["team_b-1", "a" * 32], ids=["name", "32 characters"])
+@pytest.mark.parametrize(
+    "value", ["team_b-1", "a" * 32, "ask-an1"], ids=["name", "32 characters", "near the key marker"]
+)
 async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path, value):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
     _settings(monkeypatch, tmp_path)
@@ -71,6 +73,8 @@ async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path,
     [
         "sk-ant-api03-" + "x" * 90,
         "sk-short",
+        "ask-ant1",
+        "team-sk-ant",
         "Xy7q" * 10,
         "Team-B",
         "team.b",
@@ -85,6 +89,8 @@ async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path,
     ids=[
         "key",
         "key prefix",
+        "key marker inside",
+        "key marker at the end",
         "mixed case",
         "capital",
         "dot",
