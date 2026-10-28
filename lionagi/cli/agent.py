@@ -110,8 +110,8 @@ from ._util import (
 _PRESET_CHOICES = ("coding",)
 # The name of the account whose API key the launcher handed this process, never the key
 # itself. It follows the routed-account name rule (``_ACCOUNT_NAME_RE`` and ``_looks_like_a_key``
-# in lionagi/config.py), so a mixed-case value or one containing "sk-ant" is refused, and so is
-# one starting "sk-".
+# in lionagi/config.py), so a mixed-case value or one containing "sk-ant" is refused. This field
+# also refuses one starting "sk-", which that rule admits.
 _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
