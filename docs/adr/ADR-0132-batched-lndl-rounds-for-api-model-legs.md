@@ -163,9 +163,9 @@ so an answer is never a raw tool result.
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
 provider's prompt-cache placement. Before this decision the Middle stripped the tool schemas from its
 rounds, and only an endpoint that places the prompt cache rendered the branch's tool set into the
-request (`lionagi/operations/chat/_prepare.py:210-229`), so on any other endpoint the model would
-have been asked to call tools it was never shown. The Middle now passes the branch's tool schemas
-to every round (`lndl_middle.py:472-484`).
+request (`lionagi/operations/chat/_prepare.py:212`, `:222-238`), so on any other endpoint the
+model would have been asked to call tools it was never shown. The Middle now passes the branch's
+tool schemas to every round (`lndl_middle.py:472-484`).
 
 The branch records `api_loop` beside the tool set and bound under `metadata["api_launch"]`, and a
 resume runs the recorded loop. A record with no `api_loop` was written before this key existed and
