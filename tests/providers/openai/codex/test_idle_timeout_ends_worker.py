@@ -170,3 +170,58 @@ async def _run_until_idle_and_require_the_group_gone(
 
 async def _drain(gen) -> list:
     return [item async for item in gen]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+@pytest.mark.slow_timing
+async def test_a_group_signal_that_raises_still_ends_the_stand_in_and_is_logged(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    """The stand-in ignores SIGTERM, so only its own SIGKILL ends it once the group signal fails.
+
+    Its child is left running: without a group signal nothing reaches it, and the run says so.
+    """
+    from lionagi.ln import _proc
+    from lionagi.providers import _cli_subprocess
+    from lionagi.providers.openai import codex as codex_mod
+
+    def raising(pgid, witnesses, sig):
+        raise ValueError("identity read failed")
+
+    monkeypatch.setattr(_proc, "signal_group_if_witnessed", raising)
+    monkeypatch.setattr(_cli_subprocess, "signal_group_if_witnessed", raising)
+    pidfile = tmp_path / "pids.json"
+    fake_cli = tmp_path / "fake-codex"
+    fake_cli.write_text(_stand_in(pidfile, ignore_term=True))
+    fake_cli.chmod(0o755)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", str(fake_cli))
+    branch = Branch(chat_model=iModel(provider="codex", model="gpt-5.5"))
+    pids: dict[str, int] = {}
+    try:
+        with caplog.at_level("WARNING"), pytest.raises(WorkerLivenessError):
+            await asyncio.wait_for(
+                _drain(
+                    run(
+                        branch,
+                        "go",
+                        RunParam(imodel_kw={"liveness_timeout": 30, "idle_timeout": 1.0}),
+                    )
+                ),
+                timeout=60,
+            )
+        pids = json.loads(pidfile.read_text())
+        assert await _wait_until_gone(pids["leader"]), "the codex stand-in outlived the run"
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("teardown raised ValueError('identity read failed')" in m for m in messages), (
+            messages
+        )
+        assert any("cleanup remains unconfirmed" in m for m in messages), messages
+    finally:
+        if not pids and pidfile.exists():
+            with contextlib.suppress(ValueError):
+                pids = json.loads(pidfile.read_text())
+        for pid in pids.values():
+            if _process_is_live(pid):
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)

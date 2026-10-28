@@ -1288,3 +1288,177 @@ def test_an_anchor_still_authorizes_a_kill_while_its_leader_is_live():
 
     assert signalled is True
     assert killpg.call_args_list == [call(7777, 0), call(7777, signal.SIGKILL)]
+
+
+# The direct child's own signal never depends on the group signal succeeding.
+
+
+class _GroupSignalBroke(Exception):
+    pass
+
+
+def _group_signal_that_raises_on(*raising: signal.Signals):
+    sent = []
+
+    def signal_group(pgid, witnesses, sig):
+        sent.append(sig)
+        if sig in raising:
+            raise _GroupSignalBroke(sig)
+        return True
+
+    return signal_group, sent
+
+
+def test_sync_kill_reaches_the_child_when_the_group_signal_raises(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGKILL)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_proc(pid=4242)
+
+    with pytest.raises(_GroupSignalBroke):
+        terminate_process_group(proc, grace=None, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGKILL]
+    proc.kill.assert_called_once()
+
+
+def test_sync_terminate_reaches_the_child_when_the_group_signal_raises(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGTERM)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_proc(pid=4242)
+
+    with pytest.raises(_GroupSignalBroke):
+        terminate_process_group(proc, grace=5.0, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM]
+    proc.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_kill_reaches_the_child_when_the_group_signal_raises(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGKILL)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_async_proc(pid=4242)
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=None, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGKILL]
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_terminate_reaches_the_child_when_the_group_signal_raises(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGTERM)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=0.05, group_witnesses=((4242, 10.0),))
+
+    # A child that ignores the first signal is killed when the grace runs out; the
+    # group is not signalled again.
+    assert sent == [signal.SIGTERM]
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_terminate_after_a_raised_group_signal_waits_on_the_child_alone(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGTERM)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    group_reads = []
+    monkeypatch.setattr(
+        proc_mod, "_group_has_members", lambda pgid: group_reads.append(pgid) or True
+    )
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+
+    def exits(*_args):
+        proc.returncode = -signal.SIGTERM
+
+    proc.terminate.side_effect = exits
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=5.0, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM]
+    assert group_reads == []
+    proc.kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_escalation_kills_the_child_when_the_group_kill_raises(monkeypatch):
+    """The first signal is ignored, the grace runs out, and the group SIGKILL raises."""
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGKILL)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=0.05, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_terminate_keeps_the_group_error_when_the_child_terminate_fails(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGTERM)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+    proc.terminate.side_effect = PermissionError("not permitted")
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=0.05, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM]
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_escalation_waits_on_the_killed_child_when_the_group_kill_raises(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGKILL)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    child_waits = []
+    real_await_child_exit = proc_mod._await_child_exit
+
+    async def recording_await_child_exit(p):
+        child_waits.append(p.returncode)
+        await real_await_child_exit(p)
+
+    monkeypatch.setattr(proc_mod, "_await_child_exit", recording_await_child_exit)
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+
+    def dies(*_args):
+        proc.returncode = -signal.SIGKILL
+
+    proc.kill.side_effect = dies
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=0.05, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    # Once for the grace, once after the forced kill.
+    assert child_waits == [None, -signal.SIGKILL]
+    proc.kill.assert_called_once()

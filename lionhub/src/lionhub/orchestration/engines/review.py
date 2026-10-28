@@ -858,9 +858,14 @@ class ReviewEngine(Engine):
             emits=(ProposedVerdict,),
             exempt=True,
         )
-        res = await synth.operate(
-            instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
-        )
+        from lionagi.service import cache_intent
+
+        # The synthesis branch is made for this one request, so nothing would read an entry
+        # written at the end of its turn; the shared system and tool prefix keeps its mark.
+        with cache_intent("final"):
+            res = await synth.operate(
+                instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
+            )
         text = str(res) if res is not None else ""
         # The provider's own report on the synthesis model. The model-level value is the
         # last call's, not call-correlated; it is this call's because this branch and its

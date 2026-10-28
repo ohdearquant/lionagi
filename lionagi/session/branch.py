@@ -106,6 +106,8 @@ class Branch(Element, Relational):
     _context_restore_check: Any = PrivateAttr(None)
     # Set by a context fold: decides, at a request's compile, whether the first round is protected.
     _prompt_cache_protect: Any = PrivateAttr(None)
+    # Set by a context fold: whether the request being compiled skips its end-of-turn cache mark.
+    _prompt_cache_tail_skip: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
     _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
     _hook_bus_synced_to: Any = PrivateAttr(None)

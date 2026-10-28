@@ -1747,6 +1747,18 @@ class TestReapedAndUnreapedTeardownBoundaries:
         signal_group.assert_not_called()
         proc.kill.assert_called_once()
 
+    def test_a_group_signal_that_raises_still_kills_the_direct_child(self, monkeypatch):
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None, kill=MagicMock())
+        signal_group = MagicMock(side_effect=ValueError("identity read failed"))
+        monkeypatch.setattr(cs, "signal_group_if_witnessed", signal_group)
+
+        with pytest.raises(ValueError, match="identity read failed"):
+            cs._end_group_with_evidence(proc, ((4242, 10.0),))
+
+        proc.kill.assert_called_once()
+
     def test_a_frozen_witness_authorizes_the_synchronous_backstop(self, monkeypatch):
         import lionagi.providers._cli_subprocess as cs
 

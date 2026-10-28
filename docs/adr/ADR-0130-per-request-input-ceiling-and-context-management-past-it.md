@@ -55,14 +55,14 @@ keeps growing its request until the provider refuses it or bills it at the next 
 child with no branch of its own is built from its emitter's branch
 (`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:653-664`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
+(`lionagi/session/branch.py:655-666`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
 
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
-(`lionagi/providers/_cli_subprocess.py:1544-1567`), and Codex carries the system text as a separate
+(`lionagi/providers/_cli_subprocess.py:1549-1572`), and Codex carries the system text as a separate
 argument (`lionagi/providers/openai/codex.py:1879-1885`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 

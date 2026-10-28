@@ -83,17 +83,21 @@ async def chat(
 
         anchors: tuple[tuple[int, int], ...] = ()
         frontier = None
+        tail_skip = None
         if cache_view is not None:
             # This is the request's own compile, so the first round is decided here, once
             # (ADR-0130 Amendment 4); the fold's sizing compiles only read the decision.
             anchors, frontier = cache_anchors(
                 branch.metadata, cache_view, kw["messages"], branch._prompt_cache_protect
             )
+            # Decided by the fold at this request's API_PRE_CALL (ADR-0127 Amendment 4).
+            if branch._prompt_cache_tail_skip is not None:
+                tail_skip = branch._prompt_cache_tail_skip()
 
         with (
             _branch_routing_context(branch.id, imodel),
             conversation_call(
-                branch.metadata, imodel, anchors=anchors, frontier=frontier
+                branch.metadata, imodel, anchors=anchors, frontier=frontier, tail_skip=tail_skip
             ) as cache_call,
         ):
             api_call = await imodel.invoke(**kw)

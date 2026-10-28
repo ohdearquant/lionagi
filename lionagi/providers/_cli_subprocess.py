@@ -591,12 +591,14 @@ def _end_group_with_evidence(
     """
     pgid = getattr(proc, "pid", None)
     sigkill = getattr(signal, "SIGKILL", None)
-    if sigkill is None:
-        signalled = False
-    else:
-        signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
-    with contextlib.suppress(ProcessLookupError, OSError):
-        proc.kill()
+    signalled = False
+    try:
+        if sigkill is not None:
+            signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
+    finally:
+        # The child's own kill does not depend on the group signal succeeding.
+        with contextlib.suppress(ProcessLookupError, OSError):
+            proc.kill()
     return "killed-witnessed" if signalled else "unproven"
 
 
@@ -1454,7 +1456,10 @@ async def ndjson_from_cli(
         try:
             try:
                 outcome = await end_child_group(proc, spawned=spawned)
-            except BaseException:
+            except BaseException as teardown_error:
+                # The consumer's own error is the one raised below, so the teardown
+                # error is logged here or nowhere.
+                log.warning("CLI child group teardown raised %r", teardown_error)
                 _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED)
                 if primary_error is not None and not isinstance(primary_error, GeneratorExit):
                     raise primary_error  # noqa: B904 -- preserve the consumer error's own cause
