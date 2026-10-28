@@ -63,6 +63,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `ReviewEngine` with `prompt_caching=True` sends the artifact once, in a turn of
+  its own, before the dimension reviewers start; each dimension's request
+  begins with a copy of that turn and adds its own task after it, so the
+  dimensions read one cached copy of the artifact instead of each writing it.
+  A dimension's cognitive mode now follows its task in that request rather than
+  sitting in the system prompt, so every dimension shares one system prompt.
+  Without the cache, each dimension still sends one message, now with the
+  artifact before the task. If the artifact turn fails or its reply is not the
+  requested word, each dimension sends the artifact with its own task, and the
+  run reports `artifact_turn_failed` or `artifact_turn_unused`.
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
