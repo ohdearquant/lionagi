@@ -7,7 +7,7 @@
   mark on the stable segment and the five-minute mark on the turn (D5), and cache writes recorded per
   lifetime (D6) are shipped; the conversation segment and its mark (D1, D4), the lookback mark, the
   segment-change count and the multi-round acceptance test (D7) are open; Amendment 1 is Proposed
-  and not started
+  and not started; Amendment 2 is Proposed and implemented, and replaces D4's placement
 - **Area**: messages-context
 - **Date**: 2026-10-16
 - **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
@@ -119,6 +119,48 @@ layout resolved 4.0 points fewer, with a standard error of 2.45 across the 50 ta
 establish a quality difference in either direction.
 A claim about placement alone needs runs with the wording held constant and the arms interleaved.
 `prompt_caching` stays off unless set, so the amendment changes no default.
+
+## Amendment 2 (2026-10-27): a turn's context blocks stay at that turn
+
+Status: Proposed. Replaces D4's placement of context blocks and empties D1's conversation segment;
+D4's other rules stand: a block is gathered once, it persists for the conversation, it is not a
+conversation record, and the selection and budget rules are unchanged. Every rule here applies only
+while both gates of the Decision are on. With the option off, or on an endpoint without the
+declaration, compiled requests keep their previous bytes: each request shows only its own blocks, in
+the first instruction, and nothing is kept.
+
+**Instruction.** The maintainer, 2026-10-27 (16:49 and 16:50 ET): "a react loop, every following
+round can benefit from previous round being cached", and, of recall, "...cannot inject info all the
+way at beginning... we shouldn't change the initial parts that often".
+
+**Placement.** The blocks a context provider returns for a turn are kept on that turn's instruction,
+under its `metadata["context_blocks"]`, and sent after the instruction's own content as one more text
+block of the same user message, on that request and on every later request of the conversation. The
+first blocks kept stay: a gather repeated for the same instruction does not replace them. A block a
+provider returns on a later turn is kept on that later turn's instruction and is sent at that turn,
+so it never rewrites an earlier message. Nothing is placed in the system field, so the stable segment
+is the same bytes for every conversation of one configuration.
+
+**Segments.** Context blocks are turn-segment content from the turn that gathered them. D1's
+conversation segment therefore holds nothing, D5's mark at its end is never placed, and D4's adapter
+change (an ordered list of conversation blocks in the system field) is not needed.
+
+**Persistence.** The kept blocks are part of the instruction's metadata and are serialized with the
+Branch, so a resumed conversation sends the same bytes; a clone keeps them with its copy of the
+instruction.
+
+**Why.** A provider that answers only before the conversation has a response, as a first-turn
+recall does, returned its block on the first request only, so the second request rewrote the first
+user message and read nothing past the system text; every later request was a prefix of the one
+before it only from the third on. Putting the block in the system field would instead place
+conversation-specific text ahead of every message and in front of the turn segment, the part of the
+request the instruction asks to keep unchanged.
+
+**Acceptance.** D7 adds checks on captured payloads: with a first-turn-only provider every request's
+messages are a prefix of the next request's, and every request carries the block; a later turn's
+blocks stay at that turn and the task message is unchanged; a repeated gather keeps the first blocks;
+the kept blocks survive a serialized round trip; with the option off, the blocks are shown once, in
+the first instruction, and nothing is kept.
 
 ## Context
 

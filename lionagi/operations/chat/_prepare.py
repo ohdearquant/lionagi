@@ -212,10 +212,10 @@ def _prepare_run_kwargs(
     places_cache = bool(getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False))
     projection = _projection_session(branch, imodel)
 
-    # ADR-0127 D4: there the blocks a context provider gathers for a turn are kept on that turn's
-    # instruction and sent after it on this and every later request, so no later request rewrites
-    # an earlier one. The first blocks kept stay; a gather repeated for the same instruction does
-    # not replace them. Off, each request shows only its own blocks, in the first instruction.
+    # ADR-0127 Amendment 2: there the blocks a context provider gathers for a turn are kept on
+    # that turn's instruction and sent after it on this and every later request, so no later
+    # request rewrites an earlier one; a repeated gather for the same instruction keeps the first.
+    # Off, each request shows only its own blocks, in the first instruction, and none are kept.
     if places_cache and context_blocks and _TURN_CONTEXT not in ins.metadata:
         ins.metadata[_TURN_CONTEXT] = list(context_blocks)
 

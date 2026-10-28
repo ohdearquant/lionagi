@@ -436,7 +436,7 @@ def test_without_the_placement_history_drops_the_tools_and_the_format_as_before(
     assert "approved" not in str(second["messages"][0]["content"])
 
 
-# The prompt-caching option (ADR-0127 D4): a turn's context blocks stay with that turn
+# The prompt-caching option (ADR-0127 Amendment 2): a turn's context blocks stay with that turn
 
 
 def _turn(branch, prompt, *, blocks=None, imodel=None):
@@ -494,6 +494,15 @@ def test_kept_context_survives_a_serialized_round_trip():
     restored = type(ins).from_dict(ins.to_dict())
 
     assert restored.metadata["context_blocks"] == ["RECALLED"]
+
+
+def test_a_cloned_branch_sends_the_kept_context_at_its_turn():
+    branch = Branch(system="you are a careful editor")
+    _ins, first = _turn(branch, "the task", blocks=["RECALLED"])
+
+    _ins, cloned = _prepare_run_kwargs(branch.clone(), "next", ChatParam(), imodel=_Model(True))
+
+    assert cloned["messages"][0] == first["messages"][0]
 
 
 def test_without_the_placement_context_blocks_are_shown_once_and_not_kept():
