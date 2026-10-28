@@ -37,6 +37,27 @@ SECRET = "s3cr3t-value-abc123def456"
         "hmacKeyBase64",
         "SIGNINGKEY",
         "SIGNING_KEY_ID",
+        "signing_keys",
+        "hmac_keys",
+        "signing_key2",
+        "SigningKey2",
+        "mysigningkey",
+        "webhooksigningkey",
+        "MYSIGNINGKEY",
+        "signing_keyword",
+        "hmac_keyboard",
+        "signingkeyvalue",
+        "deSigningKey",
+        "designingkey",
+        "designing_key",
+        "redesigning_key",
+        "RedesigningKey",
+        "codesigningkey",
+        "codesigning_key",
+        "code_signing_key",
+        "nodesigningkey",
+        "nodesigning_key",
+        "node_signing_key",
     ],
 )
 def test_signing_key_names_are_withheld_across_redaction_paths(name, path, monkeypatch):
@@ -58,8 +79,10 @@ def test_signing_key_names_are_withheld_across_redaction_paths(name, path, monke
     elif path == "environment":
         monkeypatch.setenv(name, value)
         assert value in redact.known_secret_values()
-    else:
+    elif path == "mcp":
         assert _safe_content({name: {"value": value}}) == {name: "[redacted]"}
+    else:
+        pytest.fail(f"unknown redaction path: {path}")
 
 
 @pytest.mark.parametrize(
@@ -68,12 +91,7 @@ def test_signing_key_names_are_withheld_across_redaction_paths(name, path, monke
         "sort_key",
         "cache_key",
         "primary_key",
-        "signing_keyword",
-        "hmac_keyboard",
-        "designing_key",
-        "MYSIGNINGKEY",
-        "mysigningkey",
-        "signingkeyvalue",
+        "key",
     ],
 )
 def test_unrelated_key_names_remain_visible(name):
@@ -82,13 +100,27 @@ def test_unrelated_key_names_remain_visible(name):
     assert redact.scrub_text(f"{name}=visible", known_values=NO_KNOWN_VALUES) == f"{name}=visible"
     assert _safe_content({name: {"value": "visible"}}) == {name: {"value": "visible"}}
     url = f"https://example.com/?{name}=visible"
-    assert _redact_url(url) == url
+    # Adapter URLs independently reserve the bare query parameter "key".
+    assert _redact_url(url) == ("https://example.com/?key=***" if name == "key" else url)
 
 
 def test_known_signing_key_value_is_scrubbed_when_echoed(monkeypatch):
     value = "opaque/value=="
     monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", value)
     assert redact.scrub_text(f"echo {value}") == "echo [redacted]"
+
+
+@pytest.mark.parametrize(
+    ("name", "folded"),
+    [("accessKey", "accesskey"), ("X-API.Key", "x_api_key"), ("SigningKey2", "signingkey2")],
+)
+def test_fold_field_name_keeps_its_existing_case_and_separator_contract(name, folded):
+    assert redact.fold_field_name(name) == folded
+
+
+@pytest.mark.parametrize("name", ["privateMode", "authorName", "clientService", "apiaryKey"])
+def test_camel_splitting_does_not_expand_the_older_marker_rules(name):
+    assert not redact.is_secret_field_name(name)
 
 
 def _scrub(text: str) -> str:
