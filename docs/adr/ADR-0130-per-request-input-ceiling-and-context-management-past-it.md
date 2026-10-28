@@ -437,8 +437,8 @@ request.**
    `read_result` call is a call and counts.
 8. *Records.* Each `context_folds` entry gains `outcome` (`landed` or `rolled_back`), `target_reached`,
    and `summary_usage`, the provider-reported input and output tokens of the pass's summary request,
-   null when none was sent; the fold's summary call is not logged on the branch, so this field is where
-   its cost is recorded. A `clip` entry has `kept_tail` and `summary_source` null and `messages_folded`
+   with its cache-read and cache-write tokens when the provider reports them, null when none was sent;
+   the fold's summary call is not logged on the branch, so this field is where its cost is recorded. A `clip` entry has `kept_tail` and `summary_source` null and `messages_folded`
    0, and adds `clipped`, up to 50 objects `{"index", "chars", "kept"}` (the original's index in the
    full record, its body length and the length kept), and `clipped_total`. The existing fields keep
    their meaning.

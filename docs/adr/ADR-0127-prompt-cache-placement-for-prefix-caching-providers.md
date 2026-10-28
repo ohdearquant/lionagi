@@ -5,9 +5,11 @@
 - **Implementation-status**: partial — the `prompt_caching` option and the provider declaration,
   the tool section in the stable segment (D2), the system text as its own block (D3), the one-hour
   mark on the stable segment and the five-minute mark on the turn (D5), and cache writes recorded per
-  lifetime (D6) are shipped; the conversation segment and its mark (D1, D4), the lookback mark, the
-  segment-change count and the multi-round acceptance test (D7) are open; Amendment 1 is Proposed
-  and not started; Amendment 2 is Proposed and implemented, and replaces D4's placement
+  lifetime (D6) are shipped; Amendment 2 empties the conversation segment, so its mark (D1, D4) is
+  never placed; the segment-change count (D6) and the multi-round acceptance test (D7) are open;
+  Amendment 1 is Proposed and not started; Amendment 2 is Proposed and implemented, and replaces D4's
+  placement; Amendment 3 is Proposed and implemented, and replaces D5's list of Anthropic marks with
+  marks chosen from the entries a conversation has written, which includes the lookback reach
 - **Area**: messages-context
 - **Date**: 2026-10-16
 - **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
@@ -164,6 +166,116 @@ blocks stay at that turn and the task message is unchanged; a repeated gather ke
 the kept blocks survive a serialized round trip; with the option off, the blocks are shown once, in
 the first instruction, and nothing is kept.
 
+## Amendment 3 (2026-10-27): marks placed from the entries a conversation has written
+
+Status: Proposed and implemented. Replaces D5's list of Anthropic marks; D5's option, its two gates,
+the limit of four marks and the order of lifetimes stand. Adds a per-request cache record to D6 and
+its checks to D7. Every rule here applies only while both gates of the Decision are on. With the
+option off, or on an endpoint without the declaration, compiled requests keep their previous bytes.
+
+**Instruction.** The maintainer, 2026-10-27 (16:49 ET): "a react loop, every following round can
+benefit from previous round being cached. all processes can benefit from the shared system prompt
+and guidance cache", and of a loop's last step: "the last step doesn't need caching, because we will
+fold, then after fold, we do cache control again".
+
+**Why.** D5 marked fixed places: the end of the stable segment and the end of the turn. A round whose
+new content is longer than the provider's lookback then reads nothing of the previous round's
+entry, and a request that nothing follows writes an entry no request reads. The marks are chosen
+here from what the conversation's earlier requests are known to have written.
+
+**Certificates.** The adapter reads the request as the API reads it: tools, then system blocks, then
+each message's content blocks. Every block gets a prefix certificate, a running SHA-256 over the
+request through that block, in three tiers. The tools tier is seeded with the certificate format
+version, the model, the `thinking` setting and `output_config.effort`; the system tier continues
+the tools tier and adds `speed`; the messages tier continues the system tier and adds `tool_choice`.
+Each message adds a boundary token carrying every message field except its content, so a block moved
+across a message boundary, or a message inserted, changes every later certificate. The only edit
+before hashing is removing `cache_control` from the block itself, and string content certifies as
+the one text block the API reads it as. Equal certificates mean two requests are identical through
+that block; they say nothing about whether the provider still holds the entry. `thinking` and effort
+sit in the tools tier, the conservative choice, until a rule per model is documented.
+
+**Reach.** A mark reaches an entry when it sits at or after the entry's block and fewer than 20
+lookback positions past it. A run of consecutive `tool_use` blocks, or of `tool_result` blocks, in
+one message is one position. Thinking blocks and blank text blocks take no mark.
+
+**Rows.** A Branch keeps, in `metadata["prompt_cache"]`, one row per entry its completed requests
+wrote or read, keyed by certificate: the lifetime, the tier, the stored prefix length when it is
+known, the time it was last marked and last read, and, per route (an account name, or `direct`),
+the process that saw it written or read there. Rows are written only from a completed request's own
+placement and usage, never at compile time. An entry is established when this process saw it on
+every route the request can take: the configured accounts, or `direct`. A row restored with a
+resumed Branch, or copied into a clone, therefore starts with no evidence. Rows leave at expiry. Past
+512 rows the rows that matter least are evicted (five-minute rows first, then the shortest prefixes,
+then the soonest to expire), and the latest expiry evicted is kept as a watermark until which the
+guarantee below does not apply.
+
+**Intent.** An operation declares what follows its request. `continuing` is the default. `final`
+means nothing of the conversation follows: a `ReAct` answer request, an LNDL Middle's last round, a
+parse repair. `side` means the request shares nothing with the conversation: the context fold's
+summary request (ADR-0130).
+
+**Placement.** At most four marks, the caller's own counted, chosen in this order, each only while a
+slot is free and the order of lifetimes stays legal:
+
+1. A read of the deepest live entry established on every route. A mark this request places anyway,
+   the end of the turn or an anchor, serves as the read when it reaches the entry; otherwise the
+   entry's own block is marked, with the entry's lifetime.
+2. Five minutes on the last markable block of the last message, when the request is `continuing`.
+   When the turn carries kept context blocks (Amendment 2), that text block is the last one, so the
+   mark covers it.
+3. One hour on the end of the tools and system blocks. A caller's mark there is raised to one hour
+   when every earlier mark is one hour.
+4. A probe of each deeper live entry whose evidence is unknown, deepest first, skipped when a mark
+   already reaches it; `probe_slots` is recorded when the slots run out. A `side` request probes
+   nothing.
+5. Five minutes on each anchor the compiler names, a (message, block) place a later request should
+   still reach, when the request is `continuing`. Each anchor takes a mark of its own: a later mark
+   that reaches an entry reads it but never writes or refreshes it. No compiler names anchors yet.
+
+A mark whose lifetime would break the order in either direction is not placed, and `ttl_order` is
+recorded with its role; a read's lifetime is never changed to make it legal. A `final` request
+places no turn mark and no anchors. A `side` request reads no conversation rows and places only the
+one-hour mark.
+
+**Record (D6).** Each request records, under `prompt_cache` in its call metadata, the marks with
+their roles, the landing set (the live entries a mark reaches) and three fields:
+
+- `g1`: `excluded` with a reason, one of `no_established_candidate`, `route_unselected` (an entry is
+  established on some routes but not all), `ledger_evicted`, `caller_marks`, `ttl_order` and
+  `length_unknown`; else `met` when a mark as sent reaches the read target, and `defect` when none
+  does. Only `defect` is a defect.
+- `read`: `unevaluated` when the attempt returned no complete usage. For `g1: met`, `at_or_above`
+  the target's stored length, `below_expired` when the attempt started after the target's evidence
+  expired, and `below_live` otherwise. An excluded request records the read size with no verdict.
+- `hit`: `identified` with the entry's certificate only when exactly one landing entry established
+  on the attempt's route has a stored length equal to the read and no deeper landing entry has an
+  unknown length; else `unidentified`, or `none` when nothing was read. With a server tool (web
+  search, web fetch, code execution) in the request, a read is always `unidentified`.
+
+When the request completes, each marked entry is recorded as written on the attempt's route, the
+deepest mark's stored length becomes the read plus the cache write, and an identified entry's read
+time moves to the attempt's start. With a server tool in the request no stored length is recorded,
+because the usage then need not describe this request's prefix alone.
+
+**What is guaranteed.** Where `g1` applies, the payload carries a mark that reaches the deepest
+established entry, and that is checked on the payload as sent. A read at or above the entry's length
+is expected and measured, never guaranteed: the provider may no longer hold the entry. Whether the
+provider's usage counts are exact is unverified, so a rounded count equal to a landing entry's
+length would refresh that entry falsely; the landing-set rule narrows this and does not exclude it.
+
+**Limits.** The streaming `run()` path opens no call context: its requests get the turn and one-hour
+marks and write no rows.
+
+**Acceptance.** D7 adds tests on captured payloads and a scripted endpoint: each certificate seed
+and the message envelope, string and list content, runs; reach at 19, 20 and 21 positions; the order
+of placement for `continuing`, `final` and `side` requests, a resumed Branch, a clone and a fold;
+the order of lifetimes in both directions; one and two routes; each exclusion; and the record after
+a request completes, including a retry on a second route, eviction at the ceiling and expiry. Two
+conversation requests end to end: the second request's read target is the first request's turn mark,
+and it records `g1: met` and `read: at_or_above`. A paid measurement of reads across rounds is a
+separate characterization and not one of these tests.
+
 ## Context
 
 Several providers cache a request by its prefix: a later request that starts with the same bytes
@@ -213,7 +325,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:514-517`) before `messages.py:1200` looks for it. Building that
+  (`service/connections/endpoint.py:562-565`) before `messages.py:1200` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -223,7 +335,7 @@ that code on one of two paths, and the two paths differ:
 
 `iModel` then pops the same flag from the request (`service/imodel.py:403`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
-(`service/connections/endpoint.py:656`, `:726-744`), a different feature.
+(`service/connections/endpoint.py:705`, `:776-794`), a different feature.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
 `cache_write_tokens` (`session/signal.py:85-86`) without the lifetime of the write, and ADR-0126's
@@ -258,7 +370,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
 with `request_options` None, or a dict-configured model
-(`service/connections/endpoint.py:514-517`) — the flag reaches the mark code and one five-minute mark
+(`service/connections/endpoint.py:562-565`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
@@ -348,6 +460,9 @@ they accept it, and the characterization in D7 pins the sequence for the rest.
 
 ### D4: context gathered for a conversation stays for the conversation
 
+**Amended by Amendment 2:** context blocks stay at the turn that gathered them, not in the system
+field; the rest of this decision stands.
+
 Amends ADR-0008 D4 for these providers and only while caching is on. Context blocks returned for a
 conversation are placed in the system field as the conversation blocks, after the stable block,
 with one mark at the end of the conversation segment (D5). They are sent unchanged on every request
@@ -386,6 +501,10 @@ is a change in what the model reads, so it lands behind its own characterization
 injection budget is unchanged.
 
 ### D5: marks are placed by the provider adapter
+
+**Amended by Amendment 3:** the list of Anthropic marks below is replaced by marks chosen from the
+entries a conversation has written; the option, its gates, the limit of four and the order of
+lifetimes stand.
 
 The compiler hands the adapter the ordered lists — the stable blocks and the conversation blocks —
 and the position in this request where the previous request ended; the adapter builds the native
