@@ -74,8 +74,8 @@ async def test_a_request_within_the_margin_below_the_fold_line_skips_its_turn_ma
         ([91_000, 50_000], True, None),
         # A fold that leaves it near the line: the request as sent is the one judged.
         ([95_000, 88_000], True, 88_000),
-        # A fold that lands nothing: the request is still past the line.
-        ([92_000], False, 92_000),
+        # A fold that lands, but not enough: still past the line, so the mark stays.
+        ([95_000, 91_000], True, None),
     ],
 )
 @pytest.mark.asyncio
@@ -91,6 +91,20 @@ async def test_a_folded_request_is_judged_by_its_estimate_after_the_fold(
     assert fold_call.await_count == 1
     decision = fold.branch._prompt_cache_tail_skip()
     assert (decision or {}).get("estimate") == expected
+
+
+@pytest.mark.parametrize("estimate", [90_000, 92_000, 120_000])
+@pytest.mark.asyncio
+async def test_a_request_whose_fold_lands_nothing_keeps_its_turn_mark(monkeypatch, estimate):
+    # At or past the line with nothing folded, the next request is no more likely to fold.
+    fold = _fold(monkeypatch, [estimate])
+    fold_call = AsyncMock(return_value=False)
+    monkeypatch.setattr(fold, "fold", fold_call)
+
+    await fold.on_api_pre_call()
+
+    assert fold_call.await_count == 1
+    assert fold.branch._prompt_cache_tail_skip() is None
 
 
 @pytest.mark.parametrize("estimate", [89_999, 92_000])

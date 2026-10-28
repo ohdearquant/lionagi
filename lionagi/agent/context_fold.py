@@ -294,9 +294,11 @@ class ContextFold:
                 estimate = self.estimate()
                 if estimate >= line and await self.fold(reason="threshold"):
                     estimate = self.estimate()
-                # Close enough to the line that the next request likely folds, so nothing would
-                # read an entry written at the end of this one's turn (ADR-0127 Amendment 4).
-                if self.tail_margin and line - estimate <= self.tail_margin * self.cap:
+                # Below the line and close enough to it that the next request likely folds, so
+                # nothing would read an entry written at the end of this one's turn. A request
+                # still at or past the line keeps its mark: its fold landed nothing or not enough,
+                # and nothing says the next one lands (ADR-0127 Amendment 4).
+                if 0 < line - estimate <= self.tail_margin * self.cap:
                     self._tail_skip.set(
                         {
                             "estimate": estimate,

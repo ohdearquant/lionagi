@@ -306,7 +306,9 @@ and D4 as amended) and folds when the estimate reaches the fold line, `context_f
 (ADR-0130 Amendment 3). Let e be the fold's estimate of request N as it will be sent: the value it
 compared with the line, or, when a fold landed, its estimate after the fold. Request N+1 folds when
 it reaches the line, so a fold follows N when the round grows by at least the gap,
-`fold_at × cap − e`. Request N places no end-of-turn mark when the gap is at most `m × cap`.
+`fold_at × cap − e`. Request N places no end-of-turn mark when `0 < gap ≤ m × cap`. A request
+sent at or past the line keeps its mark: its fold landed nothing, or not enough, and nothing says
+the next request's fold lands where this one's did not.
 
 **Margin.** The price sets m. Without the end-of-turn mark, request N's new tokens are billed at the
 base input price instead of the five-minute write price, a saving of 0.25 of the base price per
@@ -329,22 +331,26 @@ provides. `final` and `side` requests, and conversations without a host fold, ar
 **Measured on replay.** At m = 0.045, priced at 0.25 saved per unread write token and 0.9 per token a
 wrong selection costs the next request, in base-price tokens:
 
-- 2026-10-27: 721 requests, 99 followed by a fold. 45 selected: 38 followed by a fold and 7 not, of
-  which 2 lost reads of 20,356 tokens in all. Net +157,619.
+- 2026-10-27: 721 requests, 99 followed by a fold. 44 selected: 37 followed by a fold and 7 not, of
+  which 2 lost reads of 20,356 tokens in all. Net +139,199.
 - 2026-10-28, morning: 172 requests, 20 followed by a fold. 11 selected: 9 followed by a fold and 2
   not, no read lost. Net +30,541.
-- 2026-10-20 to 2026-10-26: 2,538 requests, 160 followed by a fold. 73 selected: 58 followed by a fold
-  and 15 not, no read lost. Net +144,492.
+- 2026-10-20 to 2026-10-26: 2,538 requests, 160 followed by a fold. 70 selected: 58 followed by a fold
+  and 12 not, no read lost. Net +139,968.
 
 A wrong selection lost nothing when the next request did not read the entry either, as after a
 conversation the agent shortened itself or with caching off. On 2026-10-27 and 2026-10-28 the
-selected requests wrote 825,923 tokens no later request read. Skipping exactly the requests a fold
+selected requests wrote 752,243 tokens no later request read. Skipping exactly the requests a fold
 followed would save 650,018 on 2026-10-27 and 2026-10-28 and 495,378 on 2026-10-20 to 2026-10-26; the
-rule takes 29% of that on both. Every margin from 0.005 to 0.075 is net positive on all three
-populations; at 0 the rule selects almost nothing, and 0.08 is net negative on 2026-10-28 and on
-2026-10-20 to 2026-10-26. On one run with three folds, the gaps before them were 45,312, 564 and
-177 tokens: the rule selects the last two, and of the requests no fold followed, the nearest to the
-line had a gap of 8,965 and is not selected.
+rule takes 26% and 28% of that. Every margin from 0.005 to 0.075 is net positive on all three
+populations; at 0 the rule selects nothing, and 0.08 is net negative on 2026-10-28 and on
+2026-10-20 to 2026-10-26. Four of the 3,431 requests were sent at or past the line, and the rule
+keeps their marks. The next request read none of those four entries, so keeping them gives up
+22,944 on replay. The case the guard is for, a conversation that stays above the line with nothing
+folded, appears once: two requests at the end of one run, where the second read nothing of the
+first. On one run with three folds, the gaps before them were 45,312, 564 and 177 tokens: the rule
+selects the last two, and of the requests no fold followed, the nearest to the line had a gap of
+8,965 and is not selected.
 
 **Limits.**
 
@@ -353,15 +359,18 @@ line had a gap of 8,965 and is not selected.
 - The rule rests on the estimate. Rebuilt from the recorded runs, it matched the 119 recorded
   post-fold estimates with a median error of 0.0% and a tenth percentile of −1.0%, against a margin
   of 4.5% of the cap.
+- A conversation that stays at or above the line with nothing left to fold keeps every turn's
+  mark, as it would without this amendment: no gap says when such a conversation folds next.
 - These numbers replay recorded runs; they do not measure the rule. It is measured on new runs once
   it lands, and the default returns to 0 if a week of runs is net negative.
 
 **Acceptance.** D7 adds tests on captured payloads and a scripted fold: a request within the margin
 of the line places no end-of-turn mark, reads through its anchor or the entry's own block, keeps the
 one-hour mark and the probes, and records `tail_skip`; a request outside the margin keeps its turn
-mark; a folded request is judged by its estimate after the fold; a zero margin selects nothing, past
-the line included; the fold's own summary request clears the decision; `final` and `side` requests
-ignore it; and a margin outside its range is refused.
+mark; a folded request is judged by its estimate after the fold; a request at or past the line
+keeps its mark, whether its fold landed nothing or left it above the line; a zero margin selects
+nothing; the fold's own summary request clears the decision; `final` and `side` requests ignore it;
+and a margin outside its range is refused.
 
 ## Context
 
