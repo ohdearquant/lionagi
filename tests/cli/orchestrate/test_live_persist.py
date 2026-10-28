@@ -48,7 +48,7 @@ def _minimal_env(orc_branch: Branch | None = None) -> OrchestrationEnv:
     from unittest.mock import MagicMock
 
     return OrchestrationEnv(
-        run=MagicMock(),
+        run=MagicMock(run_id="test-orchestration-run"),
         session=session,
         orc_branch=orc_branch,
         builder=MagicMock(),
@@ -255,6 +255,7 @@ class _ScriptedAdmissionDB:
         self.dialect = dialect
         self.url = f"{dialect}://admission-test"
         self._create_session_errors = list(create_session_errors)
+        self._session: dict | None = None
         self.calls: list[tuple[str, str]] = []
         self.close_calls = 0
 
@@ -265,6 +266,12 @@ class _ScriptedAdmissionDB:
         self.calls.append(("session", session["progression_id"]))
         if self._create_session_errors:
             raise self._create_session_errors.pop(0)
+        self._session = dict(session)
+
+    async def get_session(self, session_id: str) -> dict | None:
+        if self._session is None or self._session["id"] != session_id:
+            return None
+        return dict(self._session)
 
     async def close(self) -> None:
         self.close_calls += 1
@@ -285,7 +292,11 @@ async def test_sqlite_admission_retries_with_stable_progression_id(
         dialect="sqlite",
         create_session_errors=[sqlite3.OperationalError("database is locked")],
     )
-    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_open_shared_db",
+        lambda *, register: _unregistered_admission_db(db, register=register),
+    )
     monkeypatch.setattr(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
@@ -308,6 +319,13 @@ async def test_sqlite_admission_retries_with_stable_progression_id(
         ("session", ctx["session_prog_id"]),
     ]
     assert "persistence_degraded_reason" not in run_manifest
+
+
+async def _unregistered_admission_db(
+    db: _ScriptedAdmissionDB | StateDB, *, register: bool
+) -> _ScriptedAdmissionDB | StateDB:
+    assert register is False, "prospective orchestration handles must remain unregistered"
+    return db
 
 
 async def _async_value(value):
@@ -335,7 +353,11 @@ async def test_admission_does_not_retry_other_dialects_or_non_contention(
     db = _ScriptedAdmissionDB(dialect=dialect, create_session_errors=[error])
     degraded: list[BaseException] = []
     unregistered: list[object] = []
-    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_open_shared_db",
+        lambda *, register: _unregistered_admission_db(db, register=register),
+    )
     monkeypatch.setattr(
         _orchestration,
         "_record_persistence_degraded",
@@ -354,7 +376,7 @@ async def test_admission_does_not_retry_other_dialects_or_non_contention(
     assert [kind for kind, _id in db.calls].count("session") == 1
     assert degraded == [error]
     assert db.close_calls == 1
-    assert unregistered == [db]
+    assert unregistered == []
 
 
 async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
@@ -381,7 +403,11 @@ async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
         recorded.append(exc)
         return _record_persistence_degraded(exc, **kwargs)
 
-    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_open_shared_db",
+        lambda *, register: _unregistered_admission_db(db, register=register),
+    )
     monkeypatch.setattr(_orchestration, "_record_persistence_degraded", record_once)
     monkeypatch.setattr("lionagi.state.db.unregister_shared_db", unregistered.append)
     monkeypatch.setattr(
@@ -404,7 +430,7 @@ async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
     assert manifest["persistence_degraded_reason"] == repr(errors[-1])
     assert run.read_manifest()["persistence_degraded_reason"] == repr(errors[-1])
     assert db.close_calls == 1
-    assert unregistered == [db]
+    assert unregistered == []
 
 
 async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_events(
@@ -418,7 +444,11 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", 10)
     db = StateDB(temp_db_path)
     await db.open()
-    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_open_shared_db",
+        lambda *, register: _unregistered_admission_db(db, register=register),
+    )
     monkeypatch.setattr(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",

@@ -8,22 +8,30 @@ import codecs
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import signal
+import socket
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+from lionagi._cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
+    _await_child_exit as _wait_owned_child_exit,
+)
+from lionagi.ln._proc import (
+    _group_has_members,
     aterminate_process_group,
     capture_group_witnesses,
     observe_process_group_leader,
@@ -31,8 +39,10 @@ from lionagi.ln._proc import (
     raw_create_time,
     signal_group_if_witnessed,
 )
+from lionagi.ln.concurrency.cancel import move_on_after
 from lionagi.ln.concurrency.utils import maybe_await
 
+from ._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
 from ._secret_resolution import fill_declared_secrets_and_names
 from ._subagent_admission import (
     AGENT_DEPTH_ENV,
@@ -98,6 +108,137 @@ class SpawnedProcess:
     # Hidden from the callback's representation and equality so the public
     # identity remains pid/pgid/start-time.
     _group_marker: str | None = field(default=None, repr=False, compare=False)
+
+
+class _ChildGroupCleanup(Enum):
+    CONFIRMED_EMPTY = "confirmed-empty"
+    UNCONFIRMED = "unconfirmed"
+
+
+_RETAINED_CLI_TASKS: set[asyncio.Future] = set()
+
+
+def _forget_cli_task(task: asyncio.Future) -> None:
+    _RETAINED_CLI_TASKS.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+def _retain_cli_task(task: asyncio.Future, admission: _CliWorkerAdmission | None) -> None:
+    # The event loop alone holds weak task references. This also owns cleanup
+    # for an explicitly unpersisted launch, which has no durable owner token.
+    _RETAINED_CLI_TASKS.add(task)
+    task.add_done_callback(_forget_cli_task)
+    if admission is not None:
+        admission.retain(task)
+
+
+def _group_cleanup_outcome(proc: Any, spawned: SpawnedProcess | None = None) -> _ChildGroupCleanup:
+    """Read absence for an owned own-session child; never authorize a signal."""
+    pid = getattr(proc, "pid", None)
+    if type(pid) is not int or pid <= 1 or type(getattr(proc, "returncode", None)) is not int:
+        return _ChildGroupCleanup.UNCONFIRMED
+    if spawned is not None and (spawned.pid != pid or spawned.pgid != pid):
+        return _ChildGroupCleanup.UNCONFIRMED
+    try:
+        absent = not _group_has_members(pid)
+    except Exception:
+        return _ChildGroupCleanup.UNCONFIRMED
+    return _ChildGroupCleanup.CONFIRMED_EMPTY if absent else _ChildGroupCleanup.UNCONFIRMED
+
+
+def _finish_child_lease(
+    lease: Any, outcome: _ChildGroupCleanup, *, launch_outcome: bool = False
+) -> None:
+    if outcome is _ChildGroupCleanup.CONFIRMED_EMPTY:
+        lease.release()
+    elif lease.slots:
+        # Unlocking a child-only record is unsafe once that child exits: a
+        # descendant may remain, while the next admission considers it free.
+        # Keep the existing raw-fd holder locks; only holder exit drops them.
+        pools = ", ".join(sorted({getattr(slot, "pool", "unknown") for slot in lease.slots}))
+        label = (
+            "CLI launch outcome unconfirmed"
+            if launch_outcome
+            else "CLI child group cleanup remains unconfirmed"
+        )
+        log.warning(
+            "%s; its subagent slots stay held until this process exits (pools: %s)", label, pools
+        )
+    else:
+        label = (
+            "CLI launch outcome unconfirmed"
+            if launch_outcome
+            else "CLI child group cleanup remains unconfirmed"
+        )
+        log.warning("%s; no capped pools are held", label)
+
+
+def _require_cli_executable(cmd: list[str], *, cwd: Path | None, env: Mapping[str, str]) -> None:
+    """Refuse an unresolved executable before attempting an OS launch."""
+    try:
+        if not cmd or not isinstance(cmd[0], str) or not cmd[0]:
+            raise ValueError("a CLI executable is required")
+        program = cmd[0]
+        child_cwd = None
+
+        def child_path(value: str) -> str:
+            nonlocal child_cwd
+            if os.path.isabs(value):
+                return value
+            if child_cwd is None:
+                child_cwd = os.path.realpath(os.fspath(cwd) if cwd is not None else os.getcwd())
+            return os.path.join(child_cwd, value)
+
+        if os.path.dirname(program):
+            candidate = child_path(program)
+            available = (
+                os.path.exists(candidate)
+                and os.access(candidate, os.X_OK)
+                and not os.path.isdir(candidate)
+            )
+        else:
+            path = env.get("PATH", os.defpath)
+            # Empty PATH components name the child's cwd, including PATH=''.
+            # Passing absolute components to which also avoids the parent's cwd.
+            search = os.pathsep.join(child_path(part) for part in path.split(os.pathsep))
+            available = shutil.which(program, mode=os.X_OK, path=search) is not None
+        if not available:
+            raise ValueError("the CLI executable is unavailable")
+    except Exception as exc:
+        raise _WorkerSpawnAdmissionError("CLI executable is unavailable before launch") from exc
+
+
+def _worker_spawn_identity(spawned: SpawnedProcess) -> dict[str, object]:
+    try:
+        import psutil
+
+        host = socket.gethostname()
+        boot = psutil.boot_time()
+        created = spawned.create_time
+        if (
+            type(spawned.pid) is not int
+            or spawned.pid <= 1
+            or type(spawned.pgid) is not int
+            or spawned.pgid != spawned.pid
+            or type(created) not in (int, float)
+            or not math.isfinite(created)
+            or type(boot) not in (int, float)
+            or not math.isfinite(boot)
+            or not isinstance(host, str)
+            or not host.strip()
+        ):
+            raise ValueError("incomplete local worker identity")
+        return {
+            "pid": spawned.pid,
+            "pgid": spawned.pgid,
+            "pid_create_time": float(created),
+            "pid_host": host,
+            "pid_boot_time": float(boot),
+            "process_identity_mode": "local",
+        }
+    except Exception as exc:
+        raise _WorkerSpawnAdmissionError("local worker spawn identity could not be read") from exc
 
 
 # Engine runs bind this observer only while creating their run task. Context
@@ -341,10 +482,10 @@ def redact_runtime_fields_in_place(data) -> None:
         ) from None
 
 
-def _kill_abandoned_spawn(task: asyncio.Future) -> None:
+def _kill_abandoned_spawn(task: asyncio.Future) -> _ChildGroupCleanup:
     """End the group of a child nobody is left to receive.
 
-    Runs as a done-callback since the awaiting coroutine has already unwound
+    Used by retained late cleanup after the awaiting coroutine has unwound
     by the time this fires. The shield keeps the creation call running through
     a cancellation of its caller, so the handle still arrives here. A spawn
     task that is itself cancelled is a known, unclosed hole (logged, not
@@ -359,9 +500,9 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
             "was never returned to anyone. asyncio closes the transport on this path, "
             "which ends the direct child but not the group it leads"
         )
-        return
+        return _ChildGroupCleanup.UNCONFIRMED
     if task.exception() is not None:
-        return
+        return _ChildGroupCleanup.UNCONFIRMED
     # Identity was captured inside the spawn task, before its result became
     # visible to this potentially-late callback. Deriving it here would let a
     # reaped child's recycled pid describe a stranger.
@@ -375,6 +516,42 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
             witnesses,
             expected_marker=spawned._group_marker,
         )
+    return _group_cleanup_outcome(proc, spawned)
+
+
+async def _cleanup_abandoned_spawn(
+    task: asyncio.Future,
+    lease: Any,
+    admission: _CliWorkerAdmission | None,
+    *,
+    start_gate: asyncio.Event,
+    entered: asyncio.Event,
+) -> None:
+    try:
+        await start_gate.wait()
+        entered.set()
+        outcome = _kill_abandoned_spawn(task)
+        if not task.cancelled() and task.exception() is None:
+            proc, spawned = task.result()
+            if outcome is not _ChildGroupCleanup.CONFIRMED_EMPTY:
+                # The immediate witnessed kill above is the existing late-child
+                # backstop. Reuse the bounded child-exit poll, not a pipe wait.
+                with move_on_after(5.0):
+                    await _wait_owned_child_exit(proc)
+                outcome = _group_cleanup_outcome(proc, spawned)
+        if outcome is _ChildGroupCleanup.CONFIRMED_EMPTY:
+            _finish_child_lease(lease, outcome)
+        else:
+            raise ProviderTeardownError("abandoned CLI child group cleanup remains unconfirmed")
+    except BaseException:
+        # The original consumer already has its failure/cancellation. Keep its
+        # lease and surface the separate bounded cleanup failure safely.
+        _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED)
+        log.warning("could not end the group of a child whose spawn was abandoned")
+        raise
+    finally:
+        if admission is not None:
+            admission.finish()
 
 
 def _witnesses_for_spawn(proc: Any, spawned: SpawnedProcess) -> tuple[tuple[int, float], ...]:
@@ -423,12 +600,15 @@ def _end_group_with_evidence(
     return "killed-witnessed" if signalled else "unproven"
 
 
+_GROUP_EXIT_POLL_SECONDS = 0.02
+
+
 async def end_child_group(
     proc: Any,
     *,
     grace: float = 5.0,
     spawned: SpawnedProcess | None = None,
-) -> None:
+) -> _ChildGroupCleanup:
     """End every member of the child's group, and survive being cancelled.
 
     Drains the GROUP, not just the process — a descendant ignoring SIGTERM can
@@ -484,13 +664,20 @@ async def end_child_group(
             # descendant kept stdout open. The leader is already reaped here,
             # so the marker-backed witness is the only safe group authority.
             if expected_marker is None:
-                _end_group_with_evidence(proc, witnesses)
+                ended = _end_group_with_evidence(proc, witnesses)
             else:
-                _end_group_with_evidence(
+                ended = _end_group_with_evidence(
                     proc,
                     witnesses,
                     expected_marker=expected_marker,
                 )
+            if ended == "killed-witnessed":
+                # A member SIGKILL reached still answers the group probe until
+                # it is reaped, so absence is read after a bounded wait rather
+                # than at the instant of the signal.
+                with move_on_after(grace):
+                    while _group_has_members(proc.pid):
+                        await asyncio.sleep(_GROUP_EXIT_POLL_SECONDS)
         swept = True
     finally:
         # Synchronous, so a second cancellation cannot interpose, and keyed on
@@ -505,6 +692,7 @@ async def end_child_group(
                     witnesses,
                     expected_marker=expected_marker,
                 )
+    return _group_cleanup_outcome(proc, spawned)
 
 
 # How long the stream keeps draining after the CLI child itself has exited.
@@ -890,100 +1078,152 @@ async def ndjson_from_cli(
     elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
 
-    # Shielded, because the OS has already started the child by the time this
-    # await resumes and a cancellation landing in the window before it returns
-    # would abandon that child with no handle to sweep it by — unrecorded and
-    # in a group nobody knows the id of. The shield keeps the creation running
-    # so the handle still arrives, and the done-callback ends its group from
-    # outside this coroutine, which is the only place left that can.
-    async def _spawn_and_observe() -> tuple[asyncio.subprocess.Process, SpawnedProcess]:
-        child = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-        try:
-            observed = observe_spawned(
-                child.pid,
-                expected_marker=spawn_marker,
-            )
-        except BaseException:
-            # The task cannot publish a handle when identity observation itself
-            # fails. End and reap the direct child here; without a valid spawn
-            # observation there is intentionally no authority to signal its
-            # numeric process group.
-            _end_group_with_evidence(child)
-            with contextlib.suppress(BaseException):
-                await asyncio.wait_for(child.wait(), timeout=5.0)
-            raise
-        return child, observed
-
-    # Taken last before the spawn, so a refused agent has started nothing, and given
-    # back only once the child's group has ended (the finally at the bottom).
+    # Admission is synchronous after capacity is acquired, before a task can
+    # attempt an OS spawn. A waiter waking after owner close starts no child.
     lease = await admit_subagent(engine=engine, workload=workload)
-    spawn = asyncio.ensure_future(_spawn_and_observe())
     try:
-        proc, spawned = await asyncio.shield(spawn)
+        _require_cli_executable(cmd, cwd=cwd, env=spawn_env)
+        recorder = _get_cli_worker_recorder()
+        admission = recorder.admit() if recorder is not None else None
     except BaseException:
-        # A cancellation can land while the creation call still runs, so the child may
-        # arrive after this unwinds. The slots stay held until the callback has ended
-        # that child's group; a spawn that already finished is ended and released now.
-        def _end_then_release(task: asyncio.Future) -> None:
-            if not task.cancelled() and task.exception() is None:
-                late = task.result()[1]
-                try:
-                    # Named before its group is ended, so if that end fails the slots
-                    # can be kept for this child by a record with its start time.
-                    lease.record_child(late.pid, late.create_time)
-                except Exception:
-                    log.exception("could not record the child whose spawn was abandoned")
-            try:
-                _kill_abandoned_spawn(task)
-            except Exception:
-                # The group is not known to have ended. The caller already has its own
-                # error; this one is logged, and the slots stay held.
-                if not lease.slots:
-                    log.exception("could not end the group of a child whose spawn was abandoned")
-                elif lease.keep_for_child():
-                    log.exception(
-                        "could not end the group of a child whose spawn was abandoned; its "
-                        "subagent slots stay held while that child runs"
-                    )
-                else:
-                    log.exception(
-                        "could not end the group of a child whose spawn was abandoned; its "
-                        "subagent slots stay held until this process exits"
-                    )
-            else:
-                lease.release()
-
-        if spawn.done():
-            _end_then_release(spawn)
-        else:
-            spawn.add_done_callback(_end_then_release)
+        lease.release()
         raise
-    # From here the child runs and holds the lease. A failure in this try ends the
-    # child's group and gives the slots back here; the statements between it and the
-    # stream's own try only define closures and create tasks, and the stdin payload was
-    # encoded before the spawn, so nothing a caller passes can raise in that span.
-    try:
-        if lease.slots and spawned.create_time is None:
-            # A slot records the child's start time so it stays held after this process
-            # exits. Without one, the child's pid could later name an unrelated process,
-            # so the slot would read free while the child still runs. Look once more;
-            # if identity still cannot be read, refuse rather than outlive the cap.
-            spawned = observe_spawned(proc.pid, expected_marker=spawn_marker)
-            if spawned.create_time is None:
+    spawn_permitted = asyncio.Event()
+
+    async def _spawn_and_register() -> tuple[asyncio.subprocess.Process, SpawnedProcess]:
+        child = None
+        observed = None
+        attempted = False
+        try:
+            # Even an eager task factory cannot start the OS attempt before
+            # the task is strongly retained by its admission and local owner.
+            await spawn_permitted.wait()
+            attempted = True
+            child = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+            try:
+                observed = observe_spawned(child.pid, expected_marker=spawn_marker)
+                if (lease.slots or admission is not None) and observed.create_time is None:
+                    observed = observe_spawned(child.pid, expected_marker=spawn_marker)
+            except Exception as exc:
+                if admission is None:
+                    raise
+                raise _WorkerSpawnAdmissionError("worker identity observation failed") from exc
+            if (lease.slots or admission is not None) and observed.create_time is None:
+                if admission is not None:
+                    raise _WorkerSpawnAdmissionError("worker start time could not be observed")
                 from ._provider_errors import SubagentAdmissionRefusedError
 
                 raise SubagentAdmissionRefusedError(
-                    "subagent admission refused: the agent's start time could not be read, "
-                    "so its slot could not be kept past this process; the agent was killed, "
-                    "and any processes it had started were left running"
+                    "subagent admission refused: the agent's start time could not be read"
                 )
-        lease.record_child(spawned.pid, spawned.create_time)
+            lease.record_child(observed.pid, observed.create_time)
+            if admission is not None:
+                await admission.record(_worker_spawn_identity(observed))
+            return child, observed
+        except BaseException:
+            try:
+                if not attempted:
+                    lease.release()
+                elif child is None:
+                    # An exception with no handle can occur after OS launch.
+                    # Without positive provenance it proves no group absence.
+                    _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED, launch_outcome=True)
+                else:
+                    outcome = _ChildGroupCleanup.UNCONFIRMED
+                    try:
+                        outcome = await end_child_group(child, spawned=observed)
+                    except BaseException:
+                        log.warning("failed worker admission cleanup remains unconfirmed")
+                    _finish_child_lease(lease, outcome)
+            finally:
+                if admission is not None:
+                    admission.finish()
+            raise
 
-        # Read the identity here, not at teardown: once the child is reaped its pid
-        # and group id are both recyclable. The run observer receives the live
-        # handle privately; the caller callback keeps its existing identity-only
-        # contract. Both are awaited before output is consumed, and failed
-        # accounting tears down the child.
+    spawn_coro = _spawn_and_register()
+    try:
+        spawn = asyncio.ensure_future(spawn_coro)
+    except BaseException:
+        spawn_coro.close()
+        lease.release()
+        if admission is not None:
+            admission.finish()
+        raise
+    _retain_cli_task(spawn, admission)
+    spawn_permitted.set()
+    try:
+        proc, spawned = await asyncio.shield(spawn)
+    except BaseException:
+
+        def _end_late_spawn(task: asyncio.Future) -> None:
+            # A failed attempt owns its cleanup/lease/token in its own finally.
+            if task.cancelled() or task.exception() is not None:
+                return
+            start_gate = asyncio.Event()
+            entered = asyncio.Event()
+
+            def settle_without_body() -> None:
+                # Construction failure or cancellation before the first step
+                # still owns the returned child and its unreleased capacity.
+                outcome = _ChildGroupCleanup.UNCONFIRMED
+                try:
+                    outcome = _kill_abandoned_spawn(task)
+                except BaseException:
+                    log.warning("synchronous abandoned-child cleanup remains unconfirmed")
+                try:
+                    _finish_child_lease(lease, outcome)
+                finally:
+                    if admission is not None:
+                        admission.finish()
+
+            def cleanup_settled(done: asyncio.Future) -> None:
+                try:
+                    if not entered.is_set():
+                        try:
+                            cleanup_coro.close()
+                        finally:
+                            settle_without_body()
+                    elif admission is not None:
+                        admission.finish()
+                except BaseException:
+                    log.warning("could not finalize abandoned CLI cleanup ownership")
+
+            cleanup_coro = _cleanup_abandoned_spawn(
+                task, lease, admission, start_gate=start_gate, entered=entered
+            )
+            cleanup = None
+            try:
+                cleanup = asyncio.ensure_future(cleanup_coro)
+                # Finalization precedes callbacks that clear owner task counts.
+                cleanup.add_done_callback(cleanup_settled)
+                _retain_cli_task(cleanup, admission)
+            except BaseException:
+                log.warning("could not construct or retain abandoned CLI cleanup")
+                if cleanup is None:
+                    try:
+                        cleanup_coro.close()
+                    except BaseException:
+                        log.warning("could not close unstarted CLI cleanup")
+                    try:
+                        settle_without_body()
+                    except BaseException:
+                        log.warning("could not finalize abandoned CLI cleanup ownership")
+            finally:
+                # Even an eager task factory must suspend before cleanup work
+                # until both strong task retention and finalization are bound.
+                start_gate.set()
+
+        if spawn.done():
+            _end_late_spawn(spawn)
+        else:
+            spawn.add_done_callback(_end_late_spawn)
+        raise
+    if admission is not None:
+        admission.finish()
+    try:
+        # Durable registration has completed. The run observer receives the
+        # live handle privately; the public callback keeps its identity-only
+        # contract. Their existing order still precedes all transport I/O.
         observers = (
             (_RUN_CLI_SPAWN_OBSERVER.get(), (proc, spawned)),
             (on_spawn, (spawned,)),
@@ -995,13 +1235,12 @@ async def ndjson_from_cli(
         if proc.stdout is None:
             raise RuntimeError("Failed to capture stdout from subprocess")
     except BaseException:
+        outcome = _ChildGroupCleanup.UNCONFIRMED
         try:
-            await end_child_group(proc, spawned=spawned)
+            outcome = await end_child_group(proc, spawned=spawned)
         except BaseException:
-            # Not known to have ended: the slots stay held while the child runs.
-            lease.keep_for_child()
-            raise
-        lease.release()
+            log.warning("CLI callback failure cleanup remains unconfirmed")
+        _finish_child_lease(lease, outcome)
         raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -1199,24 +1438,29 @@ async def ndjson_from_cli(
     finally:
         # Neither stderr-quoting path covers this, and it is decided before any
         # await, since awaiting in a finally can change sys.exc_info().
+        primary_error = sys.exc_info()[1]
         abandoned_silently = (
-            sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
+            primary_error is not None and not produced_output and not stderr_already_surfaced
         )
 
         try:
             try:
-                await end_child_group(proc, spawned=spawned)
+                outcome = await end_child_group(proc, spawned=spawned)
             except BaseException:
-                # Not known to have ended: do not release the child's slots.
-                try:
-                    lease.keep_for_child()
-                except Exception as keep_error:  # noqa: BLE001
-                    log.warning(
-                        "Could not retain subagent slots after group teardown failed (%s)",
-                        type(keep_error).__name__,
-                    )
+                _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED)
+                if primary_error is not None and not isinstance(primary_error, GeneratorExit):
+                    raise primary_error  # noqa: B904 -- preserve the consumer error's own cause
                 raise
-            lease.release()
+            _finish_child_lease(lease, outcome)
+            # Only a recorded launch claims its group was ended; an unrecorded one
+            # keeps the warning and the held slots, so a platform without killpg
+            # still completes a run that succeeded.
+            if (
+                outcome is not _ChildGroupCleanup.CONFIRMED_EMPTY
+                and admission is not None
+                and (primary_error is None or isinstance(primary_error, GeneratorExit))
+            ):
+                raise ProviderTeardownError("CLI child group cleanup remains unconfirmed")
 
             if abandoned_silently:
                 # Drain first, or the warning reports "said nothing" about a child

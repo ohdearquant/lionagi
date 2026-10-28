@@ -1227,7 +1227,10 @@ class EngineRun:
         exited on its own.
         """
 
-        from lionagi.providers._cli_subprocess import end_child_group  # noqa: PLC0415
+        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+            _ChildGroupCleanup,
+            end_child_group,
+        )
 
         async def _reap_one(tracked: _TrackedCLIProcess) -> str:
             # An exited leader is not a finished group, so this deliberately
@@ -1238,7 +1241,7 @@ class EngineRun:
             # is what let a descendant outlive the reap.
             leader_exited = getattr(tracked.process, "returncode", None) is not None
             try:
-                await end_child_group(
+                cleanup = await end_child_group(
                     tracked.process,
                     grace=_RUN_PROCESS_TERM_GRACE_S,
                     spawned=tracked.spawned,
@@ -1249,9 +1252,11 @@ class EngineRun:
                     tracked.spawned.pid,
                 )
                 return "abandoned"
-            # end_child_group returned, so the group is finished and the entry
-            # retires. A reap that raised deliberately does not set this: the
-            # child may still be alive and a later pass has to see it again.
+            if cleanup is not _ChildGroupCleanup.CONFIRMED_EMPTY:
+                logger.warning("cancel_active: run-owned CLI group cleanup remains unconfirmed")
+                return "abandoned"
+            # Only confirmed group absence retires the tracked entry. A failed
+            # or unconfirmed cleanup remains available to the existing reap.
             tracked.reaped = True
             # A leader that had already exited is reported separately: the
             # sweep still ran, but counting it as a cancellation would overstate

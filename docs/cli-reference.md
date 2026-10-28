@@ -125,6 +125,13 @@ li agent [model] prompt [flags]
 
 `-r` and `-c` are mutually exclusive. `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
 
+With persistence enabled, a fresh execution records its own generation before
+starting workers. Resuming a terminal branch uses its adopted persisted session
+and a new generation. A separate invocation cannot resume a session that is still
+running. `--resume-on-timeout` continues that same execution once: it keeps the
+session and generation, waits for the parent's owned work and database close,
+and starts a new diagnostic run directory through a single-use in-process handoff.
+
 `--context-from` resolves the ref in order — session id, branch id, run id, then file path — erroring loudly on an unresolvable or ambiguous (2+ match) ref rather than spawning with silently-missing context. Distillation is mechanical (no LLM): a saved artifact/summary verbatim if it fits, else the initial instruction plus final assistant message, else a loudly-marked head/tail truncation.
 
 ```bash
@@ -1095,6 +1102,9 @@ question of whether a run is over, is in
 Run a domain-specific multi-agent engine pipeline without writing Python. Progress
 events stream to stderr; the final result is emitted as JSON on stdout for piping.
 Run records persist in the StateDB `engine_runs` table. Source: `cli/engine.py`.
+Provider workers belong to the engine's persisted signal-session row; a supplied
+`--session-id` remains a parent association. Owned worker work drains before the
+engine/session is terminalized and its database closes.
 
 ```bash
 li engine run research 'What are the latest advances in GQA?'

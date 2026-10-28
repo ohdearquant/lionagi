@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -70,6 +71,105 @@ def _make_branch_json(tmp_path: Path) -> tuple[str, Path]:
     return branch_id, p
 
 
+def _wire_run_directories(monkeypatch, agent_mod, tmp_path):
+    """Allocate one diagnostic directory per leg and resume its actual snapshot."""
+    runs = []
+
+    def allocate():
+        root = tmp_path / f"run-{len(runs)}"
+        for name in ("artifacts", "stream", "branches"):
+            (root / name).mkdir(parents=True, exist_ok=True)
+        run = SimpleNamespace(
+            run_id=f"r-{len(runs)}",
+            state_root=root,
+            artifact_root=root / "artifacts",
+            stream_dir=root / "stream",
+            branches_dir=root / "branches",
+        )
+        runs.append(run)
+        return run
+
+    def find_branch(branch_id):
+        for run in reversed(runs):
+            path = run.branches_dir / f"{branch_id}.json"
+            if path.is_file():
+                return run.run_id, path
+        raise LookupError("the test branch has no saved snapshot")
+
+    monkeypatch.setattr(agent_mod, "allocate_run", allocate)
+    monkeypatch.setattr(agent_mod, "find_branch", find_branch)
+    return runs
+
+
+def _wire_owned_persistence(monkeypatch, agent_mod, *, session_id):
+    """Keep unit wiring isolated while using the real owner and continuation API."""
+    from lionagi.state.cli_workers import (
+        _consume_worker_spawn_continuation,
+        _WorkerSpawnOwner,
+    )
+
+    generation = str(uuid4())
+    row = {"id": session_id, "status": "running", "cli_worker_generation": generation}
+    contexts = []
+
+    class UnitStore:
+        mode = "native"
+
+        def __init__(self):
+            self.closed = False
+
+        async def get_session(self, requested):
+            if self.closed:
+                raise RuntimeError("the unit store is closed")
+            return dict(row) if requested == session_id else None
+
+        async def list_pending_session_controls(self, requested):
+            assert requested == session_id
+            return []
+
+        async def close(self):
+            self.closed = True
+
+    async def setup(branch, *, run_id=None, _worker_spawn_continuation=None, **kwargs):
+        db = UnitStore()
+        if _worker_spawn_continuation is None:
+            owner = _WorkerSpawnOwner(
+                db,
+                session_id=session_id,
+                generation_id=generation,
+                run_id=run_id,
+                branch_id=str(branch.id),
+            )
+        else:
+            owner = await _consume_worker_spawn_continuation(
+                _worker_spawn_continuation, db, run_id=run_id, branch_id=str(branch.id)
+            )
+        ctx = {
+            "session_id": session_id,
+            "db": db,
+            "worker_spawn_owner": owner,
+            "worker_spawn_db_closed": None,
+            "worker_spawn_teardown_status": None,
+            "shared_db_registered": False,
+        }
+        contexts.append(ctx)
+        return ctx
+
+    async def teardown(ctx, *, status="completed", defer_terminal=False, **kwargs):
+        ctx["worker_spawn_db_closed"] = None
+        await ctx["worker_spawn_owner"].aclose()
+        if not defer_terminal:
+            row["status"] = status
+        await ctx["db"].close()
+        ctx["worker_spawn_db_closed"] = ctx["db"]
+        ctx["worker_spawn_teardown_status"] = status
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
+    return contexts
+
+
 def _wire_agent_stubs(
     monkeypatch,
     tmp_path: Path,
@@ -92,6 +192,10 @@ def _wire_agent_stubs(
         call_count["n"] += 1
         captured_instructions.append(instruction or "")
         captured_timeouts.append(kw.get("timeout"))
+        snapshot_dir = kw.get("snapshot_dir")
+        if snapshot_dir is not None:
+            Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
+            (Path(snapshot_dir) / f"{self.id}.json").write_text(json.dumps(self.to_dict()))
         return operate_side_effect(idx)
 
     monkeypatch.setattr(Branch, "operate", fake_operate)
@@ -99,25 +203,8 @@ def _wire_agent_stubs(
     monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
     monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "claude_code/sonnet")
 
-    _sids = session_ids or ["sess-0", "sess-1"]
-
-    async def fake_setup(*a, **kw):
-        n = min(call_count["n"], len(_sids) - 1)
-        return {"session_id": _sids[n]}
-
-    async def fake_teardown(
-        ctx,
-        *,
-        status="completed",
-        exception=None,
-        cwd=None,
-        engine_session_uid=None,
-        defer_terminal=False,
-    ):
-        return status
-
-    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    _sids = session_ids or ["sess-0"]
+    call_count["contexts"] = _wire_owned_persistence(monkeypatch, agent_mod, session_id=_sids[0])
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,
@@ -128,21 +215,7 @@ def _wire_agent_stubs(
         ),
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
-    monkeypatch.setattr(
-        agent_mod,
-        "allocate_run",
-        lambda: SimpleNamespace(
-            run_id="r",
-            artifact_root=tmp_path / "artifacts",
-            stream_dir=tmp_path / "stream",
-            branches_dir=tmp_path / "branches",
-        ),
-    )
-
-    # Any -r lookup (the auto-resume path) resolves to a valid serialized
-    # branch, regardless of the requested id.
-    _, resumable_path = _make_branch_json(tmp_path / "resumable")
-    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", resumable_path))
+    call_count["runs"] = _wire_run_directories(monkeypatch, agent_mod, tmp_path)
 
     if profile is not None:
         monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
@@ -191,7 +264,7 @@ async def test_auto_resume_fires_once_on_timeout(monkeypatch, tmp_path, caplog):
         monkeypatch,
         tmp_path,
         operate_side_effect=side_effect,
-        session_ids=["sess-timeout", "sess-resumed"],
+        session_ids=["sess-timeout"],
     )
 
     from lionagi.cli.agent import _run_agent
@@ -208,7 +281,15 @@ async def test_auto_resume_fires_once_on_timeout(monkeypatch, tmp_path, caplog):
     assert call_count["n"] == 2
     assert status == "completed"
     assert result == "concluded"
-    assert session_id == "sess-resumed"
+    assert session_id == "sess-timeout"
+    parent, child = call_count["contexts"]
+    assert child["session_id"] == parent["session_id"] == session_id
+    assert child["worker_spawn_owner"].generation_id == parent["worker_spawn_owner"].generation_id
+    assert parent["worker_spawn_db_closed"] is parent["db"]
+    assert child["worker_spawn_db_closed"] is child["db"]
+    assert parent["db"].closed and child["db"].closed
+    assert len({run.run_id for run in call_count["runs"]}) == 2
+    assert len({run.state_root for run in call_count["runs"]}) == 2
     assert insts[1].endswith("continue and conclude the task")
     assert timeouts == [30, 30]  # resumed leg gets the same timeout budget
     warn_text = " ".join(rec.message for rec in caplog.records)
@@ -327,25 +408,8 @@ def _wire_agent_stubs_real_chat_model(
         lambda provider, model, *a, **kw: iModel(provider=provider, model=model, api_key="dummy"),
     )
 
-    _sids = session_ids or ["sess-0", "sess-1"]
-
-    async def fake_setup(*a, **kw):
-        n = min(call_count["n"], len(_sids) - 1)
-        return {"session_id": _sids[n]}
-
-    async def fake_teardown(
-        ctx,
-        *,
-        status="completed",
-        exception=None,
-        cwd=None,
-        engine_session_uid=None,
-        defer_terminal=False,
-    ):
-        return status
-
-    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    _sids = session_ids or ["sess-0"]
+    call_count["contexts"] = _wire_owned_persistence(monkeypatch, agent_mod, session_id=_sids[0])
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,
@@ -356,26 +420,7 @@ def _wire_agent_stubs_real_chat_model(
         ),
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
-    monkeypatch.setattr(
-        agent_mod,
-        "allocate_run",
-        lambda: SimpleNamespace(
-            run_id="r",
-            artifact_root=tmp_path / "artifacts",
-            stream_dir=tmp_path / "stream",
-            branches_dir=tmp_path / "branches",
-        ),
-    )
-
-    # The auto-resume path snapshots the branch itself (real Branch.to_dict())
-    # into snapshot_dir; find_branch must resolve to that real snapshot so
-    # Branch.from_dict on resume carries the actual chat_model config forward,
-    # not a fixture stand-in.
-    def fake_find_branch(bid):
-        snapshot_path = tmp_path / "branches" / f"{bid}.json"
-        return "run-x", snapshot_path
-
-    monkeypatch.setattr(agent_mod, "find_branch", fake_find_branch)
+    call_count["runs"] = _wire_run_directories(monkeypatch, agent_mod, tmp_path)
 
     if profile is not None:
         monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
@@ -449,7 +494,7 @@ async def test_profile_resume_on_timeout_opts_in(monkeypatch, tmp_path):
 # the defer_terminal plumbing shows up as a real TransitionRejectedError.
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
@@ -502,22 +547,8 @@ def _wire_agent_stubs_real_persist(
         ),
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
-    monkeypatch.setattr(
-        agent_mod,
-        "allocate_run",
-        lambda: SimpleNamespace(
-            run_id="r",
-            artifact_root=tmp_path / "artifacts",
-            stream_dir=tmp_path / "stream",
-            branches_dir=tmp_path / "branches",
-        ),
-    )
+    call_count["runs"] = _wire_run_directories(monkeypatch, agent_mod, tmp_path)
 
-    def fake_find_branch(bid):
-        snapshot_path = tmp_path / "branches" / f"{bid}.json"
-        return "run-x", snapshot_path
-
-    monkeypatch.setattr(agent_mod, "find_branch", fake_find_branch)
     return call_count
 
 

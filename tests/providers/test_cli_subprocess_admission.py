@@ -102,12 +102,22 @@ async def test_a_child_that_finishes_gives_its_slot_to_the_next_spawn(capped):
 
 
 @pytest.mark.asyncio
-async def test_a_spawn_that_fails_gives_its_slot_back(capped):
+async def test_a_spawn_that_fails_gives_its_slot_back(capped, monkeypatch):
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+
+    spawns = []
+
+    async def unexpected_spawn(*args, **kwargs):
+        spawns.append((args, kwargs))
+        raise AssertionError("missing executables must be refused before Popen")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unexpected_spawn)
     missing = str(Path(capped) / "no-such-binary")
     stream = ndjson_from_cli([missing], engine="codex")
-    with pytest.raises(OSError):
+    with pytest.raises(_WorkerSpawnAdmissionError, match="unavailable before launch"):
         async with contextlib.aclosing(stream):
             await stream.__anext__()
+    assert spawns == []
     assert _held()["held"] == 0
 
 
@@ -161,7 +171,7 @@ async def test_a_cap_set_and_an_unreadable_start_time_refuses_and_frees_the_slot
 
     async def _record_end(proc, **kwargs):
         spawns.append(proc.pid)
-        await real_end_group(proc, **kwargs)
+        return await real_end_group(proc, **kwargs)
 
     monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
@@ -200,7 +210,7 @@ async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(ca
 
     async def _record_end(proc, **kwargs):
         ended.append((proc.pid, kwargs["spawned"].create_time, _held()["held"]))
-        await real_end_group(proc, **kwargs)
+        return await real_end_group(proc, **kwargs)
 
     monkeypatch.setattr(admission._Slot, "write", _second_write_fails)
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
@@ -241,7 +251,7 @@ async def test_a_slot_written_in_part_refuses_and_ends_the_child(capped, monkeyp
 
     async def _record_end(proc, **kwargs):
         ended.append(proc.pid)
-        await real_end_group(proc, **kwargs)
+        return await real_end_group(proc, **kwargs)
 
     monkeypatch.setattr(admission.os, "pwrite", _second_write_short)
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
@@ -257,7 +267,9 @@ async def test_a_slot_written_in_part_refuses_and_ends_the_child(capped, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_slot_written_in_part_keeps_its_lock_when_the_group_end_raises(capped, monkeypatch):
+async def test_a_slot_written_in_part_keeps_its_lock_when_the_group_end_raises(
+    capped, monkeypatch, caplog
+):
     """A record written only in part would not hold the slot once its holder exited, so
     when the child's group cannot be ended the lock is kept until this process exits."""
     from lionagi.providers import _cli_subprocess
@@ -287,10 +299,11 @@ async def test_a_slot_written_in_part_keeps_its_lock_when_the_group_end_raises(c
     monkeypatch.setattr(admission.os, "pwrite", _second_write_short)
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _end_raises)
     stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
-    with pytest.raises(RuntimeError, match="could not be ended") as raised:
+    with pytest.raises(SubagentAdmissionRefusedError, match="of the record's") as raised:
         async with contextlib.aclosing(stream):
             await stream.__anext__()
-    assert isinstance(raised.value.__context__, SubagentAdmissionRefusedError)
+    assert raised.value.pool == "all"
+    assert "failed worker admission cleanup remains unconfirmed" in caplog.text
     assert len(lengths) == 2
     [pid] = pids
     [lease] = leases
@@ -350,7 +363,7 @@ async def test_every_slot_stays_held_until_the_childs_group_is_ended(capped, mon
 
     async def _record_end(proc, **kwargs):
         held_while_ending.append(_pools())
-        await real_end_group(proc, **kwargs)
+        return await real_end_group(proc, **kwargs)
 
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
     quick = 'import sys; sys.stdout.write(\'{"type": "done"}\\n\')'
@@ -448,9 +461,10 @@ async def test_a_cancel_as_the_spawn_finishes_ends_the_child_before_the_slot_fre
     first.append(asyncio.ensure_future(stream.__anext__()))
     with pytest.raises(asyncio.CancelledError):
         await first[0]
+    await _join_owned_cli_tasks(_cli_subprocess)
     [pid] = pids
-    # Ended by the caller as it unwound, while the slot was still held, then given back.
-    assert ended == [(pid, 1, True)]
+    # Retained cleanup owns the late child while the capacity is still held.
+    assert ended == [(pid, 1, False)]
     assert _held()["held"] == 0
     assert _await_death(pid)
     await stream.aclose()
@@ -486,19 +500,28 @@ async def test_an_abandoned_child_whose_group_end_raises_keeps_its_slot(
     first.append(asyncio.ensure_future(stream.__anext__()))
     with pytest.raises(asyncio.CancelledError):
         await first[0]
+    await _join_owned_cli_tasks(_cli_subprocess)
     [pid] = pids
     [lease] = leases
     try:
-        assert ends == [True]
+        assert ends == [False]
         _exit_the_holder(lease)
         assert _is_alive(pid)
         assert _held()["held"] == 1
-        assert "slots stay held while that child runs" in caplog.text
+        assert "slots stay held until this process exits" in caplog.text
     finally:
         os.kill(pid, signal.SIGKILL)
     assert _await_death(pid)
     assert _held()["held"] == 0
     await stream.aclose()
+
+
+async def _join_owned_cli_tasks(module) -> None:
+    # Late cleanup is retained asynchronous work; give it the loop before any
+    # blocking death probe or simulated holder exit in these tests.
+    tasks = tuple(module._RETAINED_CLI_TASKS)
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
 
 
 def _exit_the_holder(lease) -> None:
@@ -559,10 +582,11 @@ async def test_a_cancel_during_the_spawn_keeps_the_slot_for_the_child_when_its_e
         deadline = time.monotonic() + 5.0
         while "could not end the group" not in caplog.text and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
+        await _join_owned_cli_tasks(_cli_subprocess)
         _exit_the_holder(lease)
         assert _is_alive(pid)
         assert _held()["held"] == 1
-        assert "slots stay held while that child runs" in caplog.text
+        assert "slots stay held until this process exits" in caplog.text
     finally:
         os.kill(pid, signal.SIGKILL)
     assert _await_death(pid)
@@ -576,11 +600,17 @@ async def test_a_group_end_that_raises_keeps_the_slot_while_the_child_runs(
     capped, monkeypatch, where
 ):
     """At the stream's end and when the spawn observer fails, a group end that raises
-    leaves the slot held while the child runs, and free once it has gone, with this
-    process still running."""
+    leaves the holder lock intact even after the direct child has gone."""
     from lionagi.providers import _cli_subprocess
 
     pids = []
+    leases = []
+    real_admit = _cli_subprocess.admit_subagent
+
+    async def _keep_lease(**kwargs):
+        lease = await real_admit(**kwargs)
+        leases.append(lease)
+        return lease
 
     async def _end_raises(proc, **kwargs):
         raise RuntimeError("the group could not be ended")
@@ -591,8 +621,11 @@ async def test_a_group_end_that_raises_keeps_the_slot_while_the_child_runs(
             raise ValueError("the observer failed")
 
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _end_raises)
+    monkeypatch.setattr(_cli_subprocess, "admit_subagent", _keep_lease)
     stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex", on_spawn=_observe)
-    with pytest.raises(RuntimeError, match="could not be ended"):
+    error_type = RuntimeError if where == "teardown" else ValueError
+    error_text = "could not be ended" if where == "teardown" else "observer failed"
+    with pytest.raises(error_type, match=error_text):
         if where == "teardown":
             assert (await stream.__anext__()) == {"type": "hello"}
             await stream.aclose()
@@ -602,9 +635,14 @@ async def test_a_group_end_that_raises_keeps_the_slot_while_the_child_runs(
     try:
         assert _is_alive(pid)
         assert _held()["held"] == 1
-    finally:
         os.kill(pid, signal.SIGKILL)
-    assert _await_death(pid)
+        assert _await_death(pid)
+        assert _held()["held"] == 1, "unconfirmed descendants still require the holder lock"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        for lease in leases:
+            lease.release()
     assert _held()["held"] == 0
 
 
@@ -633,17 +671,18 @@ async def test_an_abandoned_child_without_a_start_time_keeps_the_lock_when_its_e
             pid=observed.pid, pgid=observed.pgid, create_time=None
         )
 
-    def _end_raises(proc, *args, **kwargs):
+    async def _end_raises(proc, *args, **kwargs):
         raise RuntimeError("the group could not be signalled")
 
     _cancel_the_caller_as_the_spawn_finishes(monkeypatch, first, pids)
     monkeypatch.setattr(_cli_subprocess, "admit_subagent", _keep_lease)
     monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
-    monkeypatch.setattr(_cli_subprocess, "_end_group_with_evidence", _end_raises)
+    monkeypatch.setattr(_cli_subprocess, "end_child_group", _end_raises)
     stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
     first.append(asyncio.ensure_future(stream.__anext__()))
     with pytest.raises(asyncio.CancelledError):
         await first[0]
+    await _join_owned_cli_tasks(_cli_subprocess)
     [pid] = pids
     [lease] = leases
     try:
@@ -741,6 +780,7 @@ async def test_with_no_cap_an_abandoned_child_whose_group_end_raises_logs_no_slo
     first.append(asyncio.ensure_future(stream.__anext__()))
     with pytest.raises(asyncio.CancelledError):
         await first[0]
+    await _join_owned_cli_tasks(_cli_subprocess)
     [pid] = pids
     [lease] = leases
     try:

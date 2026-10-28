@@ -17,6 +17,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the provider's default. The `raw_response` on emission events carries `max_tokens_configured`, the
   limit the leg's model was built with.
 
+- Persisted CLI runs record worker spawn identities before output and drain owned work before terminal status or database close; agent resumes retain the adopted session with an execution generation.
+
 - API-model agent runs record per-request provider, requested model, prompt character
   count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy
   refusal counts and safe routed-account selections. Decisions, API dispatches and routed

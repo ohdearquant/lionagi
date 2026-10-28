@@ -8764,9 +8764,10 @@ async def register_shared_db(db: StateDB) -> None:
     The handle being displaced is closed before the entry is replaced. Any error that close raises
     reaches the caller, not just a refusal, and the registry keeps the handle that is still open
     rather than filing one with no entry to reach it by. A caller that registers for a run takes
-    that error as a setup failure: both ``setup_agent_persist`` and orchestration admission disable
-    persistence for the run, record it degraded and leave it running, and only a
-    ``StateCompatibilityRefused`` fails the run with the refusal as its reason.
+    that error as a setup failure: ``setup_agent_persist`` disables persistence for the run,
+    records it degraded and leaves it running, and only a ``StateCompatibilityRefused`` fails the
+    run with the refusal as its reason. Orchestration admission writes through its own handle and
+    registers none.
     """
     gen = _SHARED_CLOSE_GEN
     async with _holding_shared_lock():
