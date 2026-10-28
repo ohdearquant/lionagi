@@ -232,7 +232,8 @@ slot is free and the order of lifetimes stays legal:
    nothing.
 5. Five minutes on each anchor the compiler names, a (message, block) place a later request should
    still reach, when the request is `continuing`. Each anchor takes a mark of its own: a later mark
-   that reaches an entry reads it but never writes or refreshes it. No compiler names anchors yet.
+   that reaches an entry reads it but never writes or refreshes it. The chat compile names two: the
+   end of an included first round and the end of the newest compaction note (ADR-0130 Amendment 4).
 
 A mark whose lifetime would break the order in either direction is not placed, and `ttl_order` is
 recorded with its role; a read's lifetime is never changed to make it legal. A `final` request

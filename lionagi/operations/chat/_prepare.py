@@ -450,7 +450,8 @@ def _prepare_run_kwargs(
     _last_index = len(_contents) - 1
     _current_turn_rendered = None
 
-    round_ids = _round_ids(branch, progression, places_cache) if cache_view is not None else None
+    placed = cache_view is not None and places_cache
+    round_ids = _round_ids(branch, progression, places_cache) if placed else None
     if cache_view is not None and round_ids:
         cache_view["round"] = round_ids
     chat_msgs = []
@@ -685,20 +686,23 @@ def _round_ids(branch: "Branch", progression: Sequence, places_cache: bool) -> t
 
 def first_round(branch: "Branch", progression: Sequence) -> tuple[str, ...] | None:
     """The ids of the first round in the active view, in order: the first instruction, its
-    answer and that answer's tool calls and results, up to the next instruction or answer;
-    None until that round has an answer."""
+    answer and that answer's tool calls and results, up to the next instruction, answer or
+    compaction note; None until that round has an answer."""
     ids: list[str] = []
     answered = False
     for uid in progression:
         msg = branch.msgs.messages[uid]
         if isinstance(msg, System):
             continue
+        if is_note(msg):
+            # A note stands for the rounds it folded, never for this one.
+            break
         if isinstance(msg, Instruction):
             if ids:
                 break
         elif not ids:
             return None
-        if isinstance(msg, AssistantResponse) and not is_note(msg):
+        if isinstance(msg, AssistantResponse):
             if answered:
                 break
             answered = True

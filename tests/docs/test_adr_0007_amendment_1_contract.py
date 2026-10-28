@@ -537,22 +537,22 @@ def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
         408,
         'raise ValueError("First message in progression must be an Instruction or System")',
     )
-    _in_span(_PREPARE, 526, 539, "raise EmptyOutgoingContentError(")
+    _in_span(_PREPARE, 527, 540, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
     _in_span(_PREPARE, 450, 451, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 490, 491, "if i == _last_index:", "_current_turn_rendered = rendered")
+    _in_span(_PREPARE, 491, 492, "if i == _last_index:", "_current_turn_rendered = rendered")
     _in_span(
         _PREPARE,
-        526,
-        539,
+        527,
+        540,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
         _PREPARE,
-        580,
-        593,
+        581,
+        594,
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
@@ -682,7 +682,7 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
     _in_span(_PREPARE, 208, 208, "context_blocks: Sequence[str] | None = None")
     _in_span(_PREPARE, 391, 392, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
     _in_span(_PREPARE, 232, 233, "ins.metadata[_TURN_CONTEXT] = list(context_blocks)")
-    _in_span(_PREPARE, 494, 495, "rendered = _with_context(rendered, entry.context)")
+    _in_span(_PREPARE, 495, 496, "rendered = _with_context(rendered, entry.context)")
     _in_span(_PREPARE, 323, 328, "_collect_action_dicts(_act_res, projection)")
     _in_span(
         _PREPARE,

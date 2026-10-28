@@ -349,7 +349,7 @@ def test_amendment_3_chooses_marks_from_the_entries_written_only_with_the_option
     assert "Only `defect` is a defect" in am3
     assert "is expected and measured, never guaranteed" in am3
     assert "The streaming `run()` path opens no call context" in am3
-    assert "No compiler names anchors yet" in am3
+    assert "The chat compile names two: the end of an included first round" in am3
     assert "**Amended by Amendment 3:**" in _decision(5)
     assert "**Amended by Amendment 2:**" in _decision(4)
 

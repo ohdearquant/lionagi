@@ -1,12 +1,14 @@
 # ADR-0130: Per-request input ceiling and context management past it
 
 - **Status**: Accepted (2026-10-23) for D1 and D2 on `li agent` API-model legs and for D3 and D4
-  as amended; D1 and D2 elsewhere, D5, D6 and D7 remain Proposed (see Amendment 1)
+  as amended; D1 and D2 elsewhere, D5, D6 and D7 remain Proposed (see Amendment 1);
+  Amendment 4 is Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial: the ceiling on `li agent` API-model legs and as an `iModel`
   field, the calibrated count, the refusal before the send, the host fold and ranged read-back
   have landed, with the local result-body bound, per-leg fold/cache settings and startup manifest
-  fields in Amendment 3; the default for requests built outside `li agent`, the per-call value,
+  fields in Amendment 3, and the first round kept ahead of every fold while the prompt cache is
+  placed in Amendment 4; the default for requests built outside `li agent`, the per-call value,
   resumed-session and command-line measurement, the 80% notice, D5, D6 and D7 have not
 - **Area**: messages-context
 - **Date**: 2026-10-17
@@ -815,3 +817,100 @@ distinguish stored-output size. Originals, call/result links, copy provenance,
 usage counters and existing fold-history field meanings remain intact. Enabling
 the bound deliberately limits direct presentation of an original even after
 restore; complete source remains available by ranged reads.
+
+## Amendment 4 (2026-10-28): the first round kept ahead of every fold while the prompt cache is placed
+
+Status: Proposed and implemented. Adds a protected first round to D4 as amended and bounds every
+fold stage and both clip paths by it; adds a reset stage to the fold. Every rule here applies only
+while the chat model's endpoint places the prompt cache (ADR-0127's option on an endpoint that
+declares it). With the option off, or on an endpoint without the declaration, compiled requests
+keep their previous bytes and the fold behaves as Amendments 1 to 3 describe.
+
+**Instruction.** The maintainer, 2026-10-27 (16:49 and 16:50 ET): "a react loop, every following
+round can benefit from previous round being cached", and of a loop's last step: "the last step
+doesn't need caching, because we will fold, then after fold, we do cache control again"; and of
+recall, "we shouldn't change the initial parts that often".
+
+**Why.** A fold rewrote the conversation from just after the task, so the request after every
+fold shared only the stable segment with the request before it. On a scripted reading run under
+a 20,000-token ceiling, each fold kept 41 to 49 percent of the previous request's bytes: the first
+fold diverged inside the first answer, because the note merged into that answer's text, and every
+later fold diverged right after the task. Nothing the conversation had cached past the task
+survived a fold, and every note rewrote the material the previous note had left.
+
+**The result envelope.** A round's tool results are compiled as a text block of their own,
+`minimal_yaml({"ToolResults": [...]})`, at the head of the user message that follows the round's
+assistant material; the next instruction's text and its kept context block (ADR-0127 Amendment 2)
+follow in that message. When an answer follows the results, they take a user message of their
+own at that place. History and the current turn compile a round's results by this one rule, so
+they render the same before and after the round moves into history. Consecutive assistant
+material is one assistant message with one text block per response, so a note after an answer is
+a block of its own. A note is recognised by the `context_first_index` provenance the context tool
+writes on it, never by its text. The end of the round's material is then a block boundary.
+
+**The first round.** The conversation's first instruction, its answer, and that answer's tool
+calls and results. It ends at the next instruction, the next answer, or a compaction note; a note
+right after the task stands for rounds it folded, so a conversation whose task is followed by a
+note has no first round. Before its answer exists there is no first round.
+
+**Decision.** The first round is decided once, in the compile of the first request that carries
+it whole, the request's own compile in `chat()` after `API_PRE_CALL`; the fold's estimates and
+candidate views read the decision and never make it. The round is included when its compiled
+size, through the end of its material and counted as the input cap counts it (the fold's
+calibrated scale applied), is at most a tenth of the cap; equality fits. The decision is recorded
+on the Branch at `metadata["prompt_cache"]["protected"]`: the members' ids, the place where the
+round ends and a hash of the compiled messages through it, the cap, the budget, the size and
+scale, the projection's result bound and version, when, and by whom. Until it is decided the
+round is pending, and a pending round is protected. Once decided it stands across a failed send,
+a retry and a resume, and it is never re-decided after a change of cap, scale or projection: a
+later request that compiles the round differently records `frontier: changed` on its call record,
+a cache miss, and the members stay. A ledger reset keeps a valid decision; a malformed one is
+dropped. A clone keeps the decision with its members renamed to the clone's messages, and a clone
+missing any member starts with its round pending. Only a Branch with a fold installed decides;
+without one nothing folds, and the round stays pending.
+
+**Frozen projection.** An included round's results compile with the result bound recorded at
+the decision, so its bytes do not move when a later setting changes the bound. The projection
+version is recorded beside it and stays out of the prefix certificates (ADR-0127 Amendment 3):
+a rendering change already changes the certificates, and an unchanged one needs no miss.
+
+**Marks.** The compile names two anchors for ADR-0127 Amendment 3's step 5: the end of an
+included first round and the end of the newest compaction note. An excluded round anchors only
+the note.
+
+**Folds.** A protected first round is never folded or clipped: its members join every stage's
+keep set and the floor view, and both clip paths skip its results. The ordinary stages, tool calls
+and results, clips and the `all` fold, take only what follows the newest note, so every earlier
+request's prefix through that note is the next request's. A reset is the `all` fold over
+everything after the first round, earlier notes included, into one note: it runs first, and alone,
+when the notes in the view are above 15% of the cap, and otherwise after the ordinary stages when
+the view is still above the target. Its record carries the stage `reset`. Kept tail, delivery,
+pairing and rollback rules are unchanged, and no stage reaches before the first round. An excluded
+round protects nothing.
+
+**Not covered.** More than one protected round. The streaming `run()` path, which the fold does
+not support. A cap later lowered below what the protected round needs refuses as before; it never
+unprotects the round. Whether a read of a longer entry refreshes the shorter one it covers is
+measured by ADR-0127's probe, not here.
+
+**Measurement.** The share of each request's bytes that the next request repeats from its start,
+on the scripted reading runs the fold tests use, with the cache placed: 0.7415 against 0.741 with
+9 reads under a 20,000-token ceiling (11 requests), and 0.9035 against 0.8894 with 24 reads under
+40,000 (16 requests), where the first fold's request keeps 37 percent of the one before it against
+24 and the second 54 against 51. On these runs the first round is small beside the reads that follow it, so
+the bytes a fold keeps barely move; what changes is where a post-fold request diverges, now at the
+end of the first round or the newest note. These are byte measurements of compiled requests; no
+cache read or saving is claimed from them.
+
+**Verification.** Tests cover: the result envelope on history and the current turn, an answer
+after the results, and unchanged merging with the cache off; the first round's boundaries; the
+decision at a tenth of the cap with equality, once per conversation, and its anchors; a changed
+head; a pending round without a decider; an excluded round; the decision across a ledger reset, a
+clone and a clone missing a member; the frozen projection; the fold's protected set when pending,
+included and excluded; folds after the newest note; the reset at 15% of the cap and its control;
+both clip paths; and the decision across a failed call and a raised send. Each of fifteen
+mutations of these rules fails at least one of them.
+
+**Run-contract impact.** One additive key in Branch metadata, `prompt_cache.protected`, serialized
+with the Branch; an additive `frontier` field on the per-call cache record; and a new fold-record
+stage value, `reset`. No column or table changes.
