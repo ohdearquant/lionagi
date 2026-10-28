@@ -350,10 +350,10 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
 
 # model-dependent codex effort ceilings
 # Codex effort support varies by model: the gpt-5.6 family accepts max
-# (sol/terra also ultra), the GPT-6 line (Astra, 6.1 Sol, Sol, Luna) tops out
-# at max, and every earlier model tops out at xhigh. The clamp must key on the
-# target model, and unrecognized (future) models must pass through rather
-# than silently degrade.
+# (sol/terra also ultra), the GPT-6 line (Astra, 6.1 Sol, 6.1 Terra, Sol,
+# Luna) tops out at max, and every earlier model tops out at xhigh. The clamp
+# must key on the target model, and unrecognized (future) models must pass
+# through rather than silently degrade.
 
 
 @pytest.mark.parametrize(
@@ -365,6 +365,8 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
         ("gpt-5.6-terra", "ultra", "ultra"),
         ("gpt-6.1-sol", "max", "max"),
         ("gpt-6.1-sol", "ultra", "max"),
+        ("gpt-6.1-terra", "max", "max"),
+        ("gpt-6.1-terra", "ultra", "max"),
         ("gpt-6-astra", "max", "max"),
         ("gpt-6-astra", "ultra", "max"),
         ("gpt-6-sol", "max", "max"),
