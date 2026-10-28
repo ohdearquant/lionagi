@@ -503,7 +503,8 @@ def test_amendment_citations_match_the_head_line_ranges() -> None:
     assert "already-committed source fact (`:493-498`)" in flat
     assert "durable delivery state (`:493-498`)" in flat
     assert "ADR-0125:495-499" in flat
-    assert "lionagi/session/branch.py:475-503`, `:1197-1250" in flat
+    assert "lionagi/session/branch.py:475-503`, `:1204-1257" in flat
+    assert "`:1197-1250" not in flat
     assert ":487-494" not in flat
     assert "(`:559`)" not in flat
     assert "`:1102-1115" not in flat
