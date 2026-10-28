@@ -585,6 +585,7 @@ class TerminalReconciler:
                     break
                 if transition_id in pending_ids:
                     continue
+                previous_cursor = self._cursor
                 self._cursor = (float(row["occurred_at"]), transition_id)
                 worker = None
                 try:
@@ -610,7 +611,8 @@ class TerminalReconciler:
                 except _WorkerBusyError:
                     result["attempted"] -= 1
                     result["saturated"] = 1
-                    continue
+                    self._cursor = previous_cursor
+                    break
                 except Exception:
                     logger.exception("Terminal delivery failed for %s", transition_id)
                 finally:

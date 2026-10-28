@@ -83,6 +83,74 @@ async def test_timeout_reservation_is_shared_and_late_success_acks_retired(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_busy_smaller_worker_preserves_cursor_and_stops_larger_pass(tmp_path):
+    started, release = threading.Event(), threading.Event()
+    prepared_ids = []
+    called_ids = []
+
+    async def prepare_large(row, _db):
+        transition_id = row["transition_id"]
+        prepared_ids.append(transition_id)
+
+        def work():
+            called_ids.append(transition_id)
+            return DeliveryOutcome.SUCCESS
+
+        return PreparedDelivery(work)
+
+    def stalled_work():
+        started.set()
+        return DeliveryOutcome.SUCCESS if release.wait(10) else DeliveryOutcome.FAILURE
+
+    async def prepare_small(_row, _db):
+        return PreparedDelivery(stalled_work)
+
+    async with StateDB(tmp_path / "state.db") as db:
+        earlier = await _seed(db)
+        await db.execute("UPDATE status_transitions SET created_at = ? WHERE id = ?", (1, earlier))
+        large = TerminalReconciler("shared-capacity", prepare_large, batch_size=3, timeout=1)
+        small = TerminalReconciler("shared-capacity", prepare_small, batch_size=1, timeout=30)
+        assert (await large.run_pass(db))["acknowledged"] == 1
+        assert large._cursor == (1.0, earlier)
+
+        stalled, due, later = [await _seed(db) for _ in range(3)]
+        for timestamp, transition_id in enumerate((stalled, due, later), start=2):
+            await db.execute(
+                "UPDATE status_transitions SET created_at = ? WHERE id = ?",
+                (timestamp, transition_id),
+            )
+        task = asyncio.create_task(small.run_pass(db))
+        try:
+            await _wait_until(started.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            prepared_ids.clear()
+            called_ids.clear()
+
+            result = await large.run_pass(db)
+            assert result["saturated"] == 1
+            assert result["attempted"] == 0
+            assert result["failed"] == 0
+            assert prepared_ids == [due]
+            assert called_ids == []
+            assert large._cursor == (1.0, earlier)
+
+            release.set()
+            await _wait_for_ack(db, stalled, "shared-capacity")
+            await _wait_until(lambda: large._pending()[1] == 0)
+            prepared_ids.clear()
+            result = await large.run_pass(db)
+            assert result["acknowledged"] == 2
+            assert prepared_ids == [due, later]
+            assert called_ids == [due, later]
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_cancellation_keeps_running_worker_reserved(tmp_path):
     started, release = threading.Event(), threading.Event()
     calls = []
