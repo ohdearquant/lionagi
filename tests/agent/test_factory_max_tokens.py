@@ -74,6 +74,29 @@ async def test_a_cli_agent_refuses_it():
         await _branch("claude_code/haiku", max_tokens=16384)
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-5.5",
+        "openrouter/z-ai/glm-5.2",
+        "groq/llama-4-70b",
+        "gemini/gemini-4-argon",
+        "deepseek/deepseek-v4-flash",
+        "ollama/llama4",
+    ],
+)
+async def test_an_api_provider_without_a_tested_mapping_refuses_it(model):
+    """OpenAI chat names the field max_completion_tokens and Responses max_output_tokens: a
+    provider not in the tested set is refused, never handed a key it may drop or reject."""
+    with pytest.raises(ConfigurationError, match="no tested mapping"):
+        await _branch(model, max_tokens=16384)
+
+
+async def test_an_alias_of_a_provider_without_a_mapping_refuses_it_too():
+    with pytest.raises(ConfigurationError, match="no tested mapping"):
+        await _branch("OpenAI/gpt-5.5", max_tokens=16384)
+
+
 async def test_a_caller_supplied_chat_model_refuses_it():
     spec = AgentSpec.compose("reviewer", model=MODEL, max_tokens=16384)
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
@@ -126,3 +149,13 @@ def test_a_yaml_value_that_is_not_a_positive_integer_is_refused(tmp_path, raw):
     path.write_text(f"role: reviewer\nmax_tokens: {raw}\n")
     with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
         AgentSpec.from_yaml(path)
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5, "16384"])
+def test_a_spec_built_with_a_limit_that_is_not_a_positive_integer_is_refused(bad):
+    """compose and the constructor take the same refusal as the YAML reader."""
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        AgentSpec.compose("reviewer", model=MODEL, max_tokens=bad)
+    good = AgentSpec.compose("reviewer", model=MODEL)
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        AgentSpec(profile=good.profile, model=MODEL, max_tokens=bad)

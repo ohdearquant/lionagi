@@ -184,10 +184,10 @@ def _read_reply_shape(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _configured_max_tokens(chat_model: Any) -> int | None:
-    try:
-        value = chat_model.endpoint.config.kwargs.get("max_tokens")
-    except Exception:
-        return None
+    endpoint = getattr(chat_model, "endpoint", None)
+    config = getattr(endpoint, "config", None)
+    kwargs = getattr(config, "kwargs", None)
+    value = kwargs.get("max_tokens") if isinstance(kwargs, dict) else None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 

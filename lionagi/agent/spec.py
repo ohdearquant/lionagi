@@ -92,10 +92,19 @@ class AgentSpec(HooksMixin):
     # its requests unchanged, as the option does everywhere.
     prompt_caching: bool = False
     command_env_allowlist: tuple[str, ...] = ()
-    # The output-token limit set on the API model create_agent builds, in the
-    # request field the endpoint names ``max_tokens``. None sets nothing, so the
-    # provider's own default applies (Anthropic's endpoint sends 8192 then).
+    # The output-token limit set on the Anthropic model create_agent builds, in the
+    # request field its endpoint names ``max_tokens``; any other provider refuses it.
+    # None sets nothing, so the provider's own default applies (Anthropic sends 8192).
     max_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        # Every way of building a spec (constructor, compose, from_yaml) passes here, so a
+        # limit the provider would reject or a bool that reads as 1 stops at the spec.
+        value = self.max_tokens
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            raise ValueError(f"max_tokens must be a positive integer, got {value!r}")
 
     @classmethod
     def compose(
@@ -191,10 +200,6 @@ class AgentSpec(HooksMixin):
                 raise ValueError(f"{key} must be true or false, got {got}")
             flags[key] = value
         max_tokens = data.get("max_tokens")
-        if max_tokens is not None and (
-            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1
-        ):
-            raise ValueError(f"max_tokens must be a positive integer, got {max_tokens!r}")
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),

@@ -10,7 +10,7 @@ Stateless event-driven engine base.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `model` | `None` | Default model string for every stage. |
-| `max_tokens` | `None` | Output-token limit for every API agent model the engine builds; a call to `make_agent` can name its own. `None` leaves the provider's default (the Anthropic endpoint sends 8192). A CLI agent has no such limit and the build refuses it. |
+| `max_tokens` | `None` | Output-token limit for every Anthropic agent model the engine builds; a call to `make_agent` can name its own. `None` leaves the provider's default (the Anthropic endpoint sends 8192). A CLI agent has no such limit and any other API provider has no tested mapping for one; the build refuses both. |
 | `models` | `None` | Optional per-stage model overrides: `{"stage": "provider/model", ...}`. The constructor copies a provided mapping and normalizes `None` or an empty mapping to an internal `{}`. |
 | `max_depth` | `3` | Maximum recursion depth or cycle generation. |
 | `max_concurrent` | `5` | Concurrency semaphore width (simultaneous agent slots). |

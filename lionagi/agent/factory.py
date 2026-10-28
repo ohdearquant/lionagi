@@ -47,6 +47,10 @@ CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
 
 logger = logging.getLogger(__name__)
 
+# Providers whose endpoint takes ``spec.max_tokens`` as its output-token limit, each with a
+# test that reads the limit off the payload the endpoint would send.
+_MAX_TOKENS_PROVIDERS = frozenset({"anthropic"})
+
 
 class _AgentSettingError(ConfigurationError):
     """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``,
@@ -116,13 +120,13 @@ async def create_agent(
     with no ``spec.model``, because either way this factory builds no endpoint
     to set it on.
 
-    ``spec.max_tokens`` sets the output-token limit on the API model this
-    factory builds, so a provider with its own default (Anthropic sends 8192
-    when no layer names one) is given the limit the spec names. It raises with
-    a caller-supplied ``chat_model``, with no ``spec.model``, for a CLI
-    provider, which has no such limit, and when the endpoint built does not
-    keep the limit in its request settings: each of those would otherwise send
-    the provider's default while the spec read as set.
+    ``spec.max_tokens`` sets the output-token limit on the Anthropic model this
+    factory builds, which sends 8192 when no layer names one. It raises with a
+    caller-supplied ``chat_model``, with no ``spec.model``, for a CLI provider,
+    which has no such limit, for any other API provider (the field is named
+    differently there, and only Anthropic's mapping is tested), and when the
+    endpoint built does not keep the limit in its request settings: each of
+    those would otherwise send the provider's default while the spec read as set.
     """
     spec = config
 
@@ -280,6 +284,16 @@ async def create_agent(
                 raise _AgentSettingError(
                     f"spec.max_tokens is not carried by the {provider_key!r} CLI provider "
                     f"(model {model_name!r}): a CLI agent has no output-token limit to set."
+                )
+            # An API provider names its limit field differently (OpenAI chat
+            # max_completion_tokens, Responses max_output_tokens), so only a provider whose
+            # mapping is tested here takes the limit; any other is refused, not sent as a
+            # key the endpoint may drop or reject.
+            if provider_key not in _MAX_TOKENS_PROVIDERS:
+                raise _AgentSettingError(
+                    f"spec.max_tokens is mapped only for {sorted(_MAX_TOKENS_PROVIDERS)}: the "
+                    f"{provider_key!r} provider (model {model_name!r}) has no tested mapping "
+                    "for an output-token limit."
                 )
             extra["max_tokens"] = spec.max_tokens
 
