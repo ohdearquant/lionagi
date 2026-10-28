@@ -1,6 +1,6 @@
 # ADR-0034: Domain-engine coordination and autonomy safeguards
 
-- **Status**: Accepted, amended 2026-10-24 (see Amendments 1-2)
+- **Status**: Accepted, amended 2026-10-24 (see Amendments 1-2); Amendment 3 proposed
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
@@ -85,15 +85,30 @@ A successfully returned off-contract reply is a negative gate result, not an
 exception: it must not enter the infrastructure-error fail-open path. This
 amendment leaves disabled judging, budget exhaustion, provider/build failures,
 containment refusals, emitter authority and caller-seed admission unchanged.
-Ordinary infrastructure failures still follow D3 and Amendment 1. If an event
-callback raises on the gated notice, a typed or untyped refusal enters that
-fail-open path and the item expands unless `contain_account_integrations` is
-set; this existing behavior is tracked in #3744.
+Ordinary infrastructure failures still follow D3 and Amendment 1. At this
+amendment's acceptance, a callback failure on the gated notice entered the
+fail-open path; Amendment 3 proposes correcting that behavior.
 
 The compatibility cost is intentional: weak judges that returned prose or no
 verdict previously allowed expansion; they now stop that item. Callers can
 use a matching typed verdict, return the explicit text token, or leave
 `judge_model` unset when judging is optional.
+
+## Amendment 3 (2026-10-28) — preserve a reported gate decision
+
+- **Status**: Proposed; review and acceptance are separate from the code change.
+- **Scope**: A callback failure while reporting a completed `gated` decision.
+
+An ordinary `gated` callback exception cannot turn a typed or untyped denial
+into an expansion. The engine logs its exception type with a redacted message,
+without a traceback, and returns the denial. A `ContainmentRefusedError` or
+`_AgentSettingError`, whether direct or found through an exception's cause,
+context, or exception-group members, is raised instead. The search is bounded
+to 100 distinct nodes and 100 group-member entries; if it cannot finish or a
+link is unreadable, the original callback exception is raised rather than
+treating an unread chain as ordinary. Interrupts and cancellations continue
+to propagate. This rule does not change how failures in the judge itself are
+handled, or promise delivery of a failed notification.
 
 ## Context
 
