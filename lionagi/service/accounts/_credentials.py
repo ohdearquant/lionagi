@@ -84,14 +84,18 @@ def _dotenv(key_env: str, sources: CredentialSources) -> tuple[bool, str | None]
     from lionagi.config import AppSettings
 
     try:
-        found: Mapping[str, str | None] = DotEnvSettingsSource(
+        found: Mapping[str, str | None] | None = DotEnvSettingsSource(
             AppSettings,
             env_file=sources.dotenv_files,
             env_file_encoding=sources.dotenv_encoding,
             case_sensitive=True,
         ).env_vars
     except Exception:  # noqa: BLE001 -- a parser error can quote the file; report the outcome only
-        raise _refuse(RouterErrorCode.CREDENTIAL_LOOKUP_FAILED) from None
+        found = None
+    if found is None:
+        # Raised outside the handler, so the refusal carries no context: the parser's error
+        # can quote the file.
+        raise _refuse(RouterErrorCode.CREDENTIAL_LOOKUP_FAILED)
     if key_env not in found:
         return False, None
     return True, found[key_env]
@@ -129,7 +133,11 @@ async def resolve_account_key(key_env: str, sources: CredentialSources) -> Secre
         # The command worked and the store holds nothing under that name.
         raise _refuse(RouterErrorCode.CREDENTIAL_MISSING)
     try:
-        text = raw.decode("ascii")
+        text: str | None = raw.decode("ascii")
     except UnicodeDecodeError:
-        raise _refuse(RouterErrorCode.CREDENTIAL_INVALID) from None
+        text = None
+    if text is None:
+        # Raised outside the handler, so the refusal carries no context: the decode error
+        # holds the bytes the lookup printed.
+        raise _refuse(RouterErrorCode.CREDENTIAL_INVALID)
     return _accept(text, key_env)

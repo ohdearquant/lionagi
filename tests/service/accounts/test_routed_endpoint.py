@@ -952,6 +952,8 @@ async def test_a_key_refusal_names_the_bound_account_and_its_unsent_attempt(
     assert error.http_status is None
     assert str(error) == f"{code.value} account=primary attempt={error.attempt_id}"
     assert KEY_NAME not in str(error)
+    # Only the code-only refusal it replaced is linked to it.
+    assert all(isinstance(linked, AccountRoutingError) for linked in _every_linked_error(error))
     assert transport.calls == []
     rows = _attempts(path)
     assert [(row[0], row[1], row[4]) for row in rows] == [
