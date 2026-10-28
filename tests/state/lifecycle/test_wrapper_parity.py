@@ -134,6 +134,8 @@ async def test_legacy_transition_cas_conflict_is_a_clean_skip(db: StateDB) -> No
 
     assert result.applied is False
     assert result.conflict is True
+    # No history row is written on a conflict, so there is no transition id to return.
+    assert result.transition_id is None
     row = await db.get_schedule_run(run_id)
     assert row["status"] == "queued"
 
