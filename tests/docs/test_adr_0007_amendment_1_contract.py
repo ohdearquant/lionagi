@@ -533,26 +533,26 @@ _PREPARE_MSGS = "lionagi/protocols/messages/prepare.py"
 def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
     _in_span(
         _PREPARE,
-        351,
-        351,
+        364,
+        364,
         'raise ValueError("First message in progression must be an Instruction or System")',
     )
-    _in_span(_PREPARE, 420, 433, "raise EmptyOutgoingContentError(")
+    _in_span(_PREPARE, 444, 457, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
-    _in_span(_PREPARE, 374, 375, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 409, 410, "if i == _last_index:", "_current_turn_rendered = rendered")
+    _in_span(_PREPARE, 396, 397, "_current_turn_rendered = None")
+    _in_span(_PREPARE, 431, 432, "if i == _last_index:", "_current_turn_rendered = rendered")
     _in_span(
         _PREPARE,
-        420,
-        433,
+        444,
+        457,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
         _PREPARE,
-        474,
-        487,
+        498,
+        511,
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
@@ -644,13 +644,13 @@ def test_the_skipped_block_renders_the_same_marker() -> None:
 def test_react_context_removal_is_listed_in_the_starting_state() -> None:
     normalized = _normalized(_amendment_body())
     assert "a second, narrower removal exists inside one ReAct turn's later calls" in normalized
-    assert "(`lionagi/operations/chat/_prepare.py:236-282`)" in normalized
+    assert "(`lionagi/operations/chat/_prepare.py:245-291`)" in normalized
     # The removal the sentence cites is where the cited range shows it: the first
     # carrier keeps the context and the later carriers drop it.
     _in_span(
         _PREPARE,
-        236,
-        282,
+        245,
+        291,
         "_leave_out = set(carriers[1:])",
         "_without_context(ins, shown)",
         "if i in _leave_out:",
@@ -664,7 +664,7 @@ def test_the_file_change_echo_call_site_is_where_cited() -> None:
 def test_amendment_cites_the_value_error_guard_by_line() -> None:
     normalized = _normalized(_amendment_body())
     assert "raises a `ValueError` when the" in normalized
-    assert "(`lionagi/operations/chat/_prepare.py:351`, quoted by D2 §3 above)" in normalized
+    assert "(`lionagi/operations/chat/_prepare.py:364`, quoted by D2 §3 above)" in normalized
 
 
 def test_operations_types_module_holds_the_operation_shapes() -> None:
@@ -678,14 +678,16 @@ def test_operations_types_module_holds_the_operation_shapes() -> None:
 
 
 def test_the_active_prepare_path_is_still_the_one_cited() -> None:
-    _in_span(_PREPARE, 195, 195, "def _prepare_run_kwargs(")
-    _in_span(_PREPARE, 201, 201, "context_blocks: Sequence[str] | None = None")
-    _in_span(_PREPARE, 337, 340, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
-    _in_span(_PREPARE, 284, 289, "_collect_action_dicts(_act_res, projection)")
+    _in_span(_PREPARE, 197, 197, "def _prepare_run_kwargs(")
+    _in_span(_PREPARE, 203, 203, "context_blocks: Sequence[str] | None = None")
+    _in_span(_PREPARE, 349, 350, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
+    _in_span(_PREPARE, 219, 220, "ins.metadata[_TURN_CONTEXT] = list(context_blocks)")
+    _in_span(_PREPARE, 435, 436, "rendered = _with_context(rendered, entry.context)")
+    _in_span(_PREPARE, 293, 298, "_collect_action_dicts(_act_res, projection)")
     _in_span(
         _PREPARE,
-        301,
-        306,
+        311,
+        316,
         "current.with_updates(prompt_context=extended_ctx)",
     )
     _in_span("lionagi/operations/chat/chat.py", 66, 66, "_prepare_run_kwargs(")
@@ -742,13 +744,13 @@ def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
 
 
 def test_the_prompt_cache_mode_is_where_cited() -> None:
-    _in_span(_PREPARE, 210, 210, "places_cache = ")
-    _in_span(_PREPARE, 338, 339, "if places_cache:", "return injected + g")
-    _in_span(_PREPARE, 362, 369, 'kw["system_blocks"] = stable')
-    _in_span(_PREPARE, 218, 224, "if places_cache:", "tool_section = minimal_yaml(")
+    _in_span(_PREPARE, 212, 212, "places_cache = ")
+    _in_span(_PREPARE, 347, 348, "if places_cache:", "return g")
+    _in_span(_PREPARE, 384, 391, 'kw["system_blocks"] = stable')
+    _in_span(_PREPARE, 227, 233, "if places_cache:", "tool_section = minimal_yaml(")
     normalized = _normalized(_amendment_body())
     assert (
-        "With ADR-0127's prompt-cache option on (`lionagi/operations/chat/_prepare.py:210`)"
+        "With ADR-0127's prompt-cache option on (`lionagi/operations/chat/_prepare.py:212`)"
         in normalized
     )
     assert "which the compiler's section bounds supply" in normalized

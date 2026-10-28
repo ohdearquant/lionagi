@@ -316,6 +316,23 @@ def test_amendment_1_moves_only_middle_owned_guidance_and_only_with_the_option_o
     assert "ADR-0127 Amendment 1 (Proposed) qualifies this placement" in adr_0132
 
 
+def test_amendment_2_keeps_a_turns_context_at_that_turn_only_with_the_option_on() -> None:
+    am2 = _amendment(2)
+    assert (
+        "Status: Proposed. Replaces D4's placement of context blocks and empties D1's "
+        "conversation segment" in am2
+    )
+    assert (
+        "With the option off, or on an endpoint without the declaration, compiled requests keep "
+        "their previous bytes" in am2
+    )
+    assert "a gather repeated for the same instruction does not replace them" in am2
+    assert "so it never rewrites an earlier message" in am2
+    assert "Nothing is placed in the system field" in am2
+    assert "D5's mark at its end is never placed" in am2
+    assert "the kept blocks survive a serialized round trip" in am2
+
+
 def test_the_adapter_builds_the_native_system_block() -> None:
     d3 = _decision(3)
     assert (
