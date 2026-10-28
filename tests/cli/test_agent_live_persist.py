@@ -1119,13 +1119,16 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
 async def test_rejected_second_setup_leaves_first_context_intact(
     temp_db_path: Path,
 ):
-    """A second setup on a still-owned branch must fail WITHOUT closing the
-    first context's shared DB handle or blocking its teardown release."""
+    """A second setup on a still-owned branch must be refused WITHOUT closing
+    the first context's shared DB handle or blocking its teardown release."""
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
 
-    ctx2 = await _setup_live_persist(branch)
-    assert ctx2 is None  # rejected: branch still owned by ctx1's session
+    # Refused, not degraded: the branch still belongs to ctx1's execution.
+    with pytest.raises(_WorkerSpawnAdmissionError, match="already belongs"):
+        await _setup_live_persist(branch)
 
     # ctx1's DB handle survived the rejected setup...
     assert ctx1["db"]._engine is not None

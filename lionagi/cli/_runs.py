@@ -2031,6 +2031,8 @@ async def setup_agent_persist(
     try:
         # Claim the branch before touching the shared DB registry: registering a
         # shared DB closes the previous handle, which would break its owner's teardown.
+        if branch._owning_session_id is not None:
+            raise _WorkerSpawnAdmissionError("the branch already belongs to an execution")
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
         branch_id = str(branch.id)
