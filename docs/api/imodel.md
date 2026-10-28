@@ -308,6 +308,32 @@ CLI table above for accepted variants).
 | `"gemini_code"` | Gemini CLI | — |
 | `"pi"` | Pi CLI | — |
 
+## Prompt caching
+
+`prompt_caching=True` lets the endpoint place the provider's prompt-cache marks on each request. It
+changes a request only on an endpoint that caches a native system block, today the Anthropic
+messages endpoint (ADR-0127). Each request then reads the deepest entry earlier requests wrote,
+keeps the tools and system blocks cached for an hour, and writes a five-minute entry at the end of
+its turn for the next request to read.
+
+A caller that knows nothing of the conversation follows a request can say so, and that request
+writes no entry at the end of its turn:
+
+```python
+from lionagi import Branch, iModel
+from lionagi.service import cache_intent
+
+branch = Branch(
+    system="You review pull requests.",
+    chat_model=iModel(provider="anthropic", model="claude-opus-5-5", prompt_caching=True),
+)
+with cache_intent("final"):
+    review = await branch.chat("Review this diff.")
+```
+
+`ReAct`'s answer step, an LNDL Middle's last round and a parse repair already declare `final`.
+Requests outside the block are `continuing`, the default.
+
 ## HookRegistry
 
 Pre/post invocation hooks for logging, caching, or metrics:

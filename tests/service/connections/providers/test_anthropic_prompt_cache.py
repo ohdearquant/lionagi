@@ -6,12 +6,14 @@
 import copy
 import json
 import os
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
 
 from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
+from lionagi.service import cache_intent
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 
@@ -531,7 +533,7 @@ RESPONSE = {
 }
 
 
-async def _chat_payloads(**config):
+async def _chat_payloads(first_intent=None, **config):
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
         model = iModel(provider="anthropic", model=MODEL, max_tokens=100, **config)
     branch = Branch(system=SYSTEM, chat_model=model)
@@ -550,7 +552,8 @@ async def _chat_payloads(**config):
         patch.object(model.endpoint, "create_payload", side_effect=spy),
         patch.object(model.endpoint, "call", side_effect=call),
     ):
-        await branch.chat("first question")
+        with cache_intent(first_intent) if first_intent else nullcontext():
+            await branch.chat("first question")
         await branch.chat("second question")
     return sent
 
@@ -577,6 +580,17 @@ async def test_a_chat_without_the_option_folds_the_system_text_as_before():
         assert "system" not in payload
         assert SYSTEM in json.dumps(payload["messages"][0])
         assert _marks(payload) == []
+
+
+@pytest.mark.asyncio
+async def test_a_chat_its_caller_declares_final_writes_no_entry_at_the_end_of_its_turn():
+    sent = await _chat_payloads(first_intent="final", prompt_caching=True)
+
+    assert len(sent) == 2
+    assert _marks(sent[0]) == [ONE_HOUR]
+    assert sent[0]["system"][-1]["cache_control"] == ONE_HOUR
+    # The declaration ends with its block: the next chat marks the end of its turn again.
+    assert sent[1]["messages"][-1]["content"][-1]["cache_control"] == FIVE_MINUTES
 
 
 # --- ADR-0127 D2: the tool set renders once, in the system block ---
