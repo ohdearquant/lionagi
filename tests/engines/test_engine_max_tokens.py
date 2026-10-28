@@ -242,3 +242,35 @@ async def test_the_fallback_leg_is_built_with_the_review_fallback_limit():
         "review-correctness": ("haiku-model", 16384),
         "review-correctness-fallback": ("sonnet-model", 20000),
     }
+
+
+# -- the raw emission row names the limit the leg was built with --------------------------------
+
+
+def _leg_with_reply(chat_model):
+    reply = _reply("")
+    return SimpleNamespace(msgs=SimpleNamespace(last_response=reply), chat_model=chat_model)
+
+
+async def test_the_raw_row_of_a_leg_built_with_a_limit_names_it():
+    from lionhub.orchestration.engines.engine import _raw_leg_response
+
+    built = await _agent(Engine(max_tokens=16384))
+    raw = _raw_leg_response(_leg_with_reply(built.chat_model))
+    assert raw["max_tokens_configured"] == 16384
+    assert raw["stop_reason"] == "max_tokens"
+
+
+async def test_the_raw_row_of_a_leg_built_without_one_names_none():
+    """Control: the provider's default applied, which the row says by carrying None."""
+    from lionhub.orchestration.engines.engine import _raw_leg_response
+
+    built = await _agent(Engine())
+    assert _raw_leg_response(_leg_with_reply(built.chat_model))["max_tokens_configured"] is None
+
+
+@pytest.mark.parametrize("chat_model", [None, SimpleNamespace(is_cli=True)])
+async def test_a_leg_with_no_endpoint_config_names_none(chat_model):
+    from lionhub.orchestration.engines.engine import _raw_leg_response
+
+    assert _raw_leg_response(_leg_with_reply(chat_model))["max_tokens_configured"] is None

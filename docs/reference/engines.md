@@ -16,7 +16,7 @@ Stateless event-driven engine base.
 | `max_concurrent` | `5` | Concurrency semaphore width (simultaneous agent slots). |
 | `max_agents` | `50` | Hard cap on total agents the run may create. |
 | `deadline_s` | `None` | Wall-clock cap in seconds; `None` = unbounded. |
-| `emission_reply_text` | `False` | Put the failed reply's text (capped at `RAW_RESPONSE_TEXT_CAP` characters) on `emission_repair` and `emission_missing` events. Off, those events carry the scalar facts only: stop reason, usage, model, block types and `text_chars`. |
+| `emission_reply_text` | `False` | Put the failed reply's text (capped at `RAW_RESPONSE_TEXT_CAP` characters) on `emission_repair` and `emission_missing` events. Off, those events carry the scalar facts only: stop reason, usage, model, block types, `text_chars` and `max_tokens_configured` (the output-token limit the leg's model was built with, `None` when none was set). |
 | `fallback_deadline_s` | `None` | Seconds allowed for the one fallback leg that retries a silent stage on `models["review_fallback"]`. A leg still running at the limit is abandoned (`emission_fallback_timeout`) and the emission stays missing unless it had already arrived. `None` = unbounded. |
 | `judge_model` | `None` | If set, a cheap gate agent runs at expansion points. `None` = no gate (fail-open). |
 | `judge_role` | `"critic"` | Casts role for the judge agent. |

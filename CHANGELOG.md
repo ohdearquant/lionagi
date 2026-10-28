@@ -14,7 +14,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `verify`, `verdict`). Without one, the Anthropic endpoint sends its default of 8192, which a
   reviewer can spend entirely on thinking and return no text. A CLI agent, a caller-supplied
   `chat_model`, or an endpoint that does not keep the limit is refused at build rather than sent
-  the provider's default.
+  the provider's default. The `raw_response` on emission events carries `max_tokens_configured`, the
+  limit the leg's model was built with.
 
 - API-model agent runs record per-request provider, requested model, prompt character
   count and input-cap decisions in `run.json.api_usage`, together with scoped tool-policy

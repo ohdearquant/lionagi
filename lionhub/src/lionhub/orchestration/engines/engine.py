@@ -183,6 +183,14 @@ def _read_reply_shape(body: dict[str, Any]) -> dict[str, Any]:
     return _read_anthropic_messages(body)
 
 
+def _configured_max_tokens(chat_model: Any) -> int | None:
+    try:
+        value = chat_model.endpoint.config.kwargs.get("max_tokens")
+    except Exception:
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, Any] | None:
     """What a leg's last reply held, for an emission event: stop reason, usage, model, block types, and the reply text when asked.
 
@@ -191,6 +199,9 @@ def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, A
     JSON). Best effort by contract: the diagnostics must never kill the run they
     describe, and a branch with no recorded reply (a test double, a leg that died
     before replying) yields None, so the event simply carries no ``raw_response``.
+
+    ``max_tokens_configured`` is the output-token limit the leg's model was built with
+    (``AgentSpec.max_tokens``), None when none was set.
 
     The reply text can quote the diff or context the leg was given, and an event
     reaches every ``on_event`` sink, so ``text`` is present only when
@@ -213,7 +224,8 @@ def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, A
     first = raw[0] if isinstance(raw, list) and raw else raw
     if not isinstance(first, dict):
         first = {}
-    is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
+    chat_model = getattr(branch, "chat_model", None)
+    is_cli = bool(getattr(chat_model, "is_cli", False))
     out: dict[str, Any] = {"text_chars": len(text)}
     if include_text:
         out["text"] = text[:RAW_RESPONSE_TEXT_CAP]
@@ -225,6 +237,9 @@ def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, A
             "model": first.get("model"),
             "response_id": first.get("id"),
             "http_status": None if is_cli else 200,
+            # The limit the leg's model was built with; None names none, so the provider's
+            # default applied. A reply that stopped at max_tokens is read against this.
+            "max_tokens_configured": _configured_max_tokens(chat_model),
         }
     )
     return out
