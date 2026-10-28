@@ -42,13 +42,18 @@ _BUCKET_STATUS_MAP: dict[str, str] = {
 }
 
 
-async def get_activity_stats(window: str) -> dict[str, Any]:
+def _window_bounds(window: str) -> tuple[int, int, int]:
+    """Bucket width, bucket count and the oldest bucket's start for *window*, the
+    newest bucket holding the current time. An unknown window is a 422."""
     if window not in _ACTIVITY_WINDOWS:
         raise HTTPException(status_code=422, detail="window must be one of: 24h, 7d")
     bucket_seconds, bucket_count = _ACTIVITY_WINDOWS[window]
-    now = time.time()
-    now_bucket_start = int(now // bucket_seconds) * bucket_seconds
-    oldest_bucket_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
+    now_bucket_start = int(time.time() // bucket_seconds) * bucket_seconds
+    return bucket_seconds, bucket_count, now_bucket_start - (bucket_count - 1) * bucket_seconds
+
+
+async def get_activity_stats(window: str) -> dict[str, Any]:
+    bucket_seconds, bucket_count, oldest_bucket_start = _window_bounds(window)
 
     # A dashboard read must not create/migrate the DB on a fresh workspace.
     if state_db_known_absent():
@@ -116,12 +121,7 @@ async def get_spend_stats(window: str) -> dict[str, Any]:
     the activity panel bucket the same window boundary the same way — the
     two cards must describe the same population for a stated window.
     """
-    if window not in _ACTIVITY_WINDOWS:
-        raise HTTPException(status_code=422, detail="window must be one of: 24h, 7d")
-    bucket_seconds, bucket_count = _ACTIVITY_WINDOWS[window]
-    now = time.time()
-    now_bucket_start = int(now // bucket_seconds) * bucket_seconds
-    window_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
+    _, _, window_start = _window_bounds(window)
 
     if state_db_known_absent():
         reported_usd: float | None = None
@@ -167,12 +167,7 @@ async def get_spend_rollup(window: str) -> dict[str, Any]:
     only after a coverage check against branch-level total_cost_usd clears
     an agreed threshold — not built here.
     """
-    if window not in _ACTIVITY_WINDOWS:
-        raise HTTPException(status_code=422, detail="window must be one of: 24h, 7d")
-    bucket_seconds, bucket_count = _ACTIVITY_WINDOWS[window]
-    now = time.time()
-    now_bucket_start = int(now // bucket_seconds) * bucket_seconds
-    window_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
+    _, _, window_start = _window_bounds(window)
 
     rollups: dict[str, list[dict[str, Any]]] = {d: [] for d in _SPEND_ROLLUP_DIMENSIONS}
     if not state_db_known_absent():

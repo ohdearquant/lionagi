@@ -1306,3 +1306,89 @@ def test_sessionless_kind_still_bound_by_wall_clock_deadline(tmp_path, monkeypat
 
     inv = run_async(_get_invocation(db_path, iid))
     assert inv["status"] == "timed_out"
+
+
+@pytest.mark.parametrize(
+    ("entry", "phase"),
+    [("run_startup_reconciliation", "Startup"), ("run_periodic_reapers", "Periodic")],
+)
+def test_entry_points_run_every_reaper_in_order_past_a_failing_one(
+    monkeypatch, caplog, entry, phase
+):
+    from lionagi.studio.services import lifecycle
+
+    calls: list[str] = []
+
+    def _fake(name: str, value: int):
+        async def _reap() -> int:
+            calls.append(name)
+            return value
+
+        return _reap
+
+    async def _broken() -> int:
+        calls.append("reap_null_status_sessions")
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(lifecycle, "reap_phantom_sessions", _fake("reap_phantom_sessions", 1))
+    monkeypatch.setattr(lifecycle, "reap_null_status_sessions", _broken)
+    monkeypatch.setattr(lifecycle, "reap_stale_invocations", _fake("reap_stale_invocations", 2))
+    monkeypatch.setattr(lifecycle, "reap_stale_plays", _fake("reap_stale_plays", 3))
+    monkeypatch.setattr(lifecycle, "reap_stale_shows", _fake("reap_stale_shows", 4))
+    monkeypatch.setattr(lifecycle, "reap_stale_schedule_runs", _fake("reap_stale_schedule_runs", 5))
+
+    with caplog.at_level("ERROR", logger=lifecycle.__name__):
+        results = run_async(getattr(lifecycle, entry)())
+
+    assert calls == [
+        "reap_phantom_sessions",
+        "reap_null_status_sessions",
+        "reap_stale_invocations",
+        "reap_stale_plays",
+        "reap_stale_shows",
+        "reap_stale_schedule_runs",
+    ]
+    assert results == {
+        "phantom_sessions": 1,
+        "null_status_sessions": 0,
+        "stale_invocations": 2,
+        "stale_plays": 3,
+        "stale_shows": 4,
+        "stale_schedule_runs": 5,
+    }
+    failures = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert [r.getMessage() for r in failures] == [f"{phase} null-status reaper failed"]
+    assert failures[0].exc_info is not None
+
+
+@pytest.mark.parametrize(
+    ("phantom_reason", "expected_code"),
+    [
+        ("process_dead", "session.phantom.process_dead"),
+        ("missing_artifacts", "session.phantom.missing_artifacts"),
+        ("stale_lock", "session.zombie.stale_locks"),
+        ("unclassified", "session.orphaned.no_process"),
+    ],
+)
+def test_phantom_reaper_writes_the_health_reason_code(
+    tmp_path, monkeypatch, phantom_reason, expected_code
+):
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+    sid = run_async(_seed_session(db_path, status="running"))
+
+    from lionagi.studio.services import lifecycle
+
+    async def _phantoms(**_kw):
+        return [{"session_id": sid, "reason": phantom_reason}]
+
+    monkeypatch.setattr(lifecycle.admin_svc, "list_phantom_sessions", _phantoms)
+
+    assert run_async(lifecycle.reap_phantom_sessions(stale_hours=1.0)) == 1
+
+    async def _reason_code() -> str | None:
+        async with StateDB(db_path) as db:
+            row = await db.fetch_one("SELECT status_reason_code FROM sessions WHERE id = ?", (sid,))
+            return row["status_reason_code"] if row else None
+
+    assert run_async(_reason_code()) == expected_code
