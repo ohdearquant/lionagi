@@ -8,6 +8,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -108,6 +109,10 @@ from ._util import (
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
+# The name of the account whose API key the launcher handed this process, never the key
+# itself: a key is longer than 64 characters, and a value starting "sk-" is refused outright.
+_API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
+_API_ACCOUNT_RE = re.compile(r"^(?!sk-)[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$")
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -1354,6 +1359,21 @@ def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | No
     return None
 
 
+def _read_api_account() -> str | None:
+    """The account name in ``LIONAGI_API_ACCOUNT`` (ADR-0126 Amendment 4), None when it is unset.
+
+    A value that is not 1-64 characters of letters, digits, ``_``, ``.``, ``@`` and ``-``, or that
+    starts with ``sk-``, raises ``ConfigurationError`` without repeating it: it may be the key.
+    """
+    api_account = os.environ.get(_API_ACCOUNT_ENV)
+    if api_account is not None and _API_ACCOUNT_RE.fullmatch(api_account) is None:
+        raise ConfigurationError(
+            f"{_API_ACCOUNT_ENV} must be an account name of 1-64 characters "
+            "(letters, digits, '_', '.', '@', '-'), never a key; the value is not shown"
+        )
+    return api_account
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -1433,6 +1453,8 @@ async def _run_agent(
             raise ConfigurationError(
                 f"--idle-timeout must be at most {MAX_TIMEOUT_SECONDS} seconds, not {idle_timeout}."
             )
+        # Refused before anything is written, so a refused run leaves no run.json.
+        api_account = _read_api_account()
         if preset and (resume or continue_last):
             raise ConfigurationError(
                 "--preset only applies to new branches; cannot combine with --resume / --continue-last."
@@ -2071,6 +2093,8 @@ async def _run_agent(
             run_manifest["api_usage"] = _api_usage.snapshot()
         if context_from:
             run_manifest["context_from"] = list(context_from)
+        if api_account is not None:
+            run_manifest["api_account"] = api_account
         _write_run_manifest = getattr(run, "write_manifest", None)
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)

@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14 and 2026-10-26 (see Amendments 1 to 3)
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26 and 2026-10-28 (see Amendments 1 to 4); Amendment 4 is Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -95,6 +95,30 @@ instant `t` takes the key of `t` plus one day in UTC: `2026-10-30T23:59Z` is in 
 key. At any instant the new key is never earlier than the calendar key, so D5's clock-regression
 check does not refuse a ledger that holds rows keyed both ways. D5's other month rules are
 unchanged, with its midnight read as the start of the credit period.
+
+## Amendment 4 (2026-10-28) — the account a launcher chose is named in run.json
+
+D1 to D6 route a key inside the process: the router chooses a configured account for each
+attempt, and the run's API usage record names it (`account_labels`,
+`lionagi/cli/_api_usage.py:114`). A launcher can also choose the key outside the process and hand
+the child only the provider's own variable, such as `ANTHROPIC_API_KEY`. That child routes
+nothing, so its run records no account, and spend per account cannot be counted from the runs.
+
+Decision: a launcher that chose the key may name its account in `LIONAGI_API_ACCOUNT`, and
+`li agent` records the name in run.json as `api_account` (`lionagi/cli/agent.py:2097-2098`). The
+value must be an account name: 1 to 64 characters of letters, digits, `_`, `.`, `@` and `-`,
+starting with a letter or digit and not with `sk-` (`lionagi/cli/agent.py:115`). A long value or
+one with a provider key prefix is the likeliest sign that a key was passed by mistake, so any
+value outside the rule is refused with `ConfigurationError` before the run writes anything
+(`lionagi/cli/agent.py:1458`), and the error does not repeat the value, which keeps D2's rule that
+key material is never serialized. Unset, the run records no `api_account`, as before.
+
+Not covered: the name is not checked against the configured accounts (D1), selects no key, and
+is not budgeted by D4's ledger. For routed calls `account_labels` stays the record.
+
+Verification: `tests/cli/test_agent_api_account_record.py` pins the recorded name, its absence
+when the variable is unset, and the refusal before any run.json for a key, a key prefix, a value
+over 64 characters, a space and an empty value, with the value never shown in the error.
 
 ## Requirements
 
