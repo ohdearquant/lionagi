@@ -1413,3 +1413,52 @@ async def test_async_escalation_kills_the_child_when_the_group_kill_raises(monke
     assert sent == [signal.SIGTERM, signal.SIGKILL]
     proc.terminate.assert_called_once()
     proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_terminate_keeps_the_group_error_when_the_child_terminate_fails(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGTERM)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+    proc.terminate.side_effect = PermissionError("not permitted")
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=0.05, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM]
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_escalation_waits_on_the_killed_child_when_the_group_kill_raises(monkeypatch):
+    import lionagi.ln._proc as proc_mod
+
+    signal_group, sent = _group_signal_that_raises_on(signal.SIGKILL)
+    monkeypatch.setattr(proc_mod, "signal_group_if_witnessed", signal_group)
+    child_waits = []
+    real_await_child_exit = proc_mod._await_child_exit
+
+    async def recording_await_child_exit(p):
+        child_waits.append(p.returncode)
+        await real_await_child_exit(p)
+
+    monkeypatch.setattr(proc_mod, "_await_child_exit", recording_await_child_exit)
+    proc = _fake_async_proc(pid=4242)
+    proc.returncode = None
+
+    def dies(*_args):
+        proc.returncode = -signal.SIGKILL
+
+    proc.kill.side_effect = dies
+
+    with pytest.raises(_GroupSignalBroke):
+        await aterminate_process_group(proc, grace=0.05, group_witnesses=((4242, 10.0),))
+
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    # Once for the grace, once after the forced kill.
+    assert child_waits == [None, -signal.SIGKILL]
+    proc.kill.assert_called_once()

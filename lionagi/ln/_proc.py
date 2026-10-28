@@ -750,7 +750,8 @@ async def aterminate_process_group(
     except Exception as exc:
         group_error = exc
     finally:
-        with contextlib.suppress(ProcessLookupError):
+        # A terminate that fails leaves the forced kill below to end the child.
+        with contextlib.suppress(ProcessLookupError, OSError):
             proc.terminate()
     group = pgid if group_error is None and witnesses else None
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
@@ -775,6 +776,8 @@ async def aterminate_process_group(
                 # killpg gap cannot be closed with portable process-group APIs; see
                 # docs/internals/ln-primitives.md#signalling-a-group.
                 signal_group_if_witnessed(group, witnesses, signal.SIGKILL)
+        except Exception as exc:
+            group_error = exc
         finally:
             # The child's own kill does not depend on the group signal succeeding.
             with contextlib.suppress(ProcessLookupError, OSError):
