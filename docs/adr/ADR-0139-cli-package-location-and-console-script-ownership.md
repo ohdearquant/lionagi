@@ -207,7 +207,7 @@ The shared dependency closure is part of step 3:
   and shared process-identity helper
   (`lionagi/cli/_runs.py:21`, `lionagi/cli/_runs.py:34`,
   `lionagi/cli/_runs.py:1485`, `lionagi/cli/_runs.py:1913`,
-  `lionagi/cli/_runs.py:2129`).
+  `lionagi/cli/_runs.py:2131`).
 - Checkpoint resolution uses public inspection services instead of the retained
   status adapter (`lionagi/cli/orchestrate/_checkpoint.py:227`).
 - Shared code and Studio use the existing neutral log emitters. Their identity
