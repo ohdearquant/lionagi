@@ -50,6 +50,7 @@ _NEW_KEYS = (
     "tool_result_max_chars",
     "context_fold_at",
     "context_fold_target",
+    "context_fold_tail_margin",
     "prompt_caching",
 )
 _TIME = 1_700_000_000.0

@@ -107,12 +107,14 @@ async def test_real_manifest_retains_all_usage_fields_and_actual_selected_accoun
             "tool_result_max_chars",
             "context_fold_at",
             "context_fold_target",
+            "context_fold_tail_margin",
             "prompt_caching",
         }
         assert launch["max_input_tokens"] == 50000
         assert launch["tool_result_max_chars"] is None
         assert launch["context_fold_at"] is None
         assert launch["context_fold_target"] is None
+        assert launch["context_fold_tail_margin"] is None
         assert launch["prompt_caching"] is None
         assert set(launch["spend"]) == {"requests", "tool_calls", "wall_seconds"}
         assert launch["spend"]["requests"] == 3

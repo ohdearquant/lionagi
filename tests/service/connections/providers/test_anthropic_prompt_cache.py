@@ -716,6 +716,7 @@ def test_launch_settings_reach_endpoint_config_without_provider_policy_keys(
         "tool_result_max_chars",
         "context_fold_at",
         "context_fold_target",
+        "context_fold_tail_margin",
         "prompt_caching",
     }.intersection(payload)
     # The request's own max_tokens is sent over the output limit the leg puts on the config.

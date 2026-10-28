@@ -242,6 +242,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
         "tool_result_max_chars",
         "context_fold_at",
         "context_fold_target",
+        "context_fold_tail_margin",
         "prompt_caching",
     }
     assert all(
@@ -250,6 +251,7 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
             "tool_result_max_chars",
             "context_fold_at",
             "context_fold_target",
+            "context_fold_tail_margin",
             "prompt_caching",
         )
     )
