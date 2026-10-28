@@ -84,7 +84,7 @@ def _amendment_flat() -> str:
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
     assert "run.spawn" in _span("lionhub/src/lionhub/orchestration/engines/hypothesis.py", 890, 961)
-    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 616)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 636)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
 
