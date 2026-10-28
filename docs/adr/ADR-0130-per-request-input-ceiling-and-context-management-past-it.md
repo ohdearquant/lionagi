@@ -856,8 +856,9 @@ note has no first round. Before its answer exists there is no first round.
 **Decision.** The first round is decided once, in the compile of the first request that carries
 it whole, the request's own compile in `chat()` after `API_PRE_CALL`; the fold's estimates and
 candidate views read the decision and never make it. The round is included when its compiled
-size, through the end of its material and counted as the input cap counts it (the fold's
-calibrated scale applied), is at most a tenth of the cap; equality fits. The decision is recorded
+messages, from the first through the end of its material, counted with the input cap's own
+estimate and the fold's calibrated scale applied, come to at most a tenth of the cap; equality
+fits. The system block, which every request carries, is not counted. The decision is recorded
 on the Branch at `metadata["prompt_cache"]["protected"]`: the members' ids, the place where the
 round ends and a hash of the compiled messages through it, the cap, the budget, the size and
 scale, the projection's result bound and version, when, and by whom. Until it is decided the
@@ -891,7 +892,11 @@ round protects nothing.
 **Not covered.** More than one protected round. The streaming `run()` path, which the fold does
 not support. A cap later lowered below what the protected round needs refuses as before; it never
 unprotects the round. Whether a read of a longer entry refreshes the shorter one it covers is
-measured by ADR-0127's probe, not here.
+measured by ADR-0127's probe, not here. The model's own context tool acts on the view as before:
+an `evict` or `compact` it calls can take the protected round's messages, after which the round's
+mark sits at the last of them left, or is gone with the last, and the round is not decided again;
+a `restore` it calls can put a message back ahead of the round's end or a note, which moves the
+prefix, a cache miss.
 
 **Measurement.** The share of each request's bytes that the next request repeats from its start,
 on the scripted reading runs the fold tests use, with the cache placed: 0.7415 against 0.741 with

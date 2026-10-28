@@ -214,6 +214,49 @@ async def test_a_clip_never_takes_bytes_from_a_protected_result(bound, cap, late
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bound, cap, later",
+    [(None, 20_000, 3), (4_096, 6_000, 4)],
+    ids=["unbounded results", "bounded results"],
+)
+@pytest.mark.parametrize("places", [True, False], ids=["cache placed", "cache off"])
+async def test_a_clip_takes_only_what_follows_the_newest_note(bound, cap, later, places):
+    model = _haiku(cap, places=places)
+    model.tool_result_max_chars = bound
+    branch = Branch(chat_model=model)
+    members = await _first_round(branch)
+    await branch.msgs.a_add_message(assistant_response="reading the rest")
+    request = await branch.msgs.a_add_message(
+        action_function="tool_early", action_arguments={"item": 0}
+    )
+    early = await branch.msgs.a_add_message(action_request=request, action_output="early " * 6000)
+    note = _note(branch, len(members) + 1)
+    for number in range(later):
+        request = await branch.msgs.a_add_message(
+            action_function=f"tool_{number}", action_arguments={"item": number}
+        )
+        await branch.msgs.a_add_message(action_request=request, action_output="later " * 3000)
+    active = list(branch.progression)
+    assert active.index(early.id) < active.index(note.id)
+    fold = ContextFold(branch, cap=cap)
+
+    assert await fold._clip_once("threshold")
+
+    results = [
+        branch.msgs.messages[uid]
+        for uid in branch.progression
+        if isinstance(branch.msgs.messages[uid], ActionResponse)
+    ]
+    clipped = {r.metadata.get("clipped_from") for r in results} - {None}
+    if places:
+        assert early in results and str(early.id) not in clipped
+        assert clipped, "no result after the note was clipped"
+    else:
+        # Off, the largest result is clipped first wherever it sits, as before.
+        assert str(early.id) in clipped
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("raised", [False, True], ids=["failed call", "raised send"])
 async def test_a_request_decides_the_round_once_and_a_failed_send_keeps_the_decision(
     monkeypatch, raised

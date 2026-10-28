@@ -325,7 +325,8 @@ class ContextFold:
     def _cache_bounds(self, active: list[Any]) -> tuple[set, int, int]:
         """With the prompt cache placed (ADR-0130 Amendment 4): the protected first round's
         messages, the index in ``active`` of its last one, and of the newest compaction note
-        (-1 for none). A round still pending is protected; an excluded one is not."""
+        (-1 for none). A round still pending, answered and not yet decided, is protected; an
+        excluded one is not."""
         if not self._places_cache():
             return set(), -1, -1
         from lionagi.operations.chat._prepare import first_round, is_note
@@ -477,12 +478,11 @@ class ContextFold:
         restored = set(self.branch.metadata.get("context_restored_results", []))
         read_ranges = self.branch.metadata.get("context_read_results", {})
         full = self.branch.msgs.progression
-        # A protected first round's results keep their bytes, and so do clips standing for them.
-        protected = {str(uid) for uid in self._cache_bounds(list(self.branch.progression))[0]}
+        # With the cache placed a clip takes only what follows the first round and the newest
+        # note, so the prefix through both keeps its bytes, clips standing for them included.
+        start = max(self._cache_bounds(list(self.branch.progression))[1:]) + 1
         for slot, message in enumerate(view):
-            if not isinstance(message, ActionResponse):
-                continue
-            if str(message.id) in protected:
+            if slot < start or not isinstance(message, ActionResponse):
                 continue
             source = projection.source(message)
             original = source.original
@@ -710,11 +710,9 @@ class ContextFold:
         candidates = []
         restored = set(self.branch.metadata.get("context_restored_results", []))
         read_ranges = self.branch.metadata.get("context_read_results", {})
-        protected = {str(uid) for uid in self._cache_bounds(active)[0]}
+        start = max(self._cache_bounds(active)[1:]) + 1
         for slot, message in enumerate(view):
-            if not isinstance(message, ActionResponse):
-                continue
-            if str(message.id) in protected:
+            if slot < start or not isinstance(message, ActionResponse):
                 continue
             original_id = message.metadata.get("clipped_from")
             original = (
