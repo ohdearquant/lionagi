@@ -873,6 +873,19 @@ def test_a_second_install_returns_the_branch_s_fold():
     assert branch._hooks is not None, "a branch with no bus gets one, or the fold never fires"
     with pytest.raises(ValueError, match="cap"):
         install_context_fold(branch, cap=2_000)
+    with pytest.raises(ValueError, match="tail_margin"):
+        install_context_fold(branch, cap=1_000, tail_margin=0)
+    assert first.tail_margin == 0.045
+
+
+@pytest.mark.parametrize(("setting", "margin"), [(None, 0.045), (0, 0), (0.02, 0.02)])
+def test_the_launch_setting_is_the_margin_the_fold_runs_under(setting, margin):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    branch = Branch(chat_model=_haiku(None))
+    fold = agent_mod._install_api_input_cap(branch, 20000, context_fold_tail_margin=setting)
+    assert fold.tail_margin == margin
 
 
 async def _clip_fixture(outputs, cap=6000):
@@ -1752,6 +1765,7 @@ _POLICY_KEYS = (
     "tool_result_max_chars",
     "context_fold_at",
     "context_fold_target",
+    "context_fold_tail_margin",
     "prompt_caching",
 )
 
@@ -1765,6 +1779,9 @@ _POLICY_KEYS = (
         {"context_fold_at": 0.9},
         {"context_fold_target": 0.5},
         {"context_fold_at": 0.9, "context_fold_target": 0.5, "prompt_caching": True},
+        {"context_fold_tail_margin": 0},
+        {"context_fold_tail_margin": 0.02},
+        {"context_fold_at": 0.6, "context_fold_target": 0.3, "context_fold_tail_margin": 0.5},
         {},
     ],
 )
@@ -1794,10 +1811,17 @@ _BAD_POLICY_SETTINGS = (
         for value in (True, False, 0, -0.1, 1.1, float("nan"), float("inf"), -float("inf"), "0.9")
     ]
     + [
+        {"context_fold_tail_margin": value}
+        for value in (True, False, -0.01, 1, 1.5, float("nan"), float("inf"), "0.045")
+    ]
+    + [
         {"context_fold_at": 0.6},
         {"context_fold_target": 0.8},
         {"context_fold_at": 0.9, "context_fold_target": 0.9},
         {"context_fold_at": 0.7, "context_fold_target": 0.8},
+        # The margin must stay under the effective fold line, 0.9 when unset.
+        {"context_fold_tail_margin": 0.9},
+        {"context_fold_at": 0.6, "context_fold_target": 0.3, "context_fold_tail_margin": 0.6},
     ]
     + [{"prompt_caching": value} for value in (0, 1, "true", "false", "yes", [], {})]
 )
@@ -1837,6 +1861,7 @@ def test_every_policy_declaration_requires_api_tools_even_false(key):
         "tool_result_max_chars": 4000,
         "context_fold_at": 0.9,
         "context_fold_target": 0.5,
+        "context_fold_tail_margin": 0.02,
     }
     value = values[key]
     with pytest.raises(ConfigurationError, match="but no api_tools"):
@@ -1868,6 +1893,7 @@ async def test_every_policy_declaration_on_cli_is_refused_before_run(leg, monkey
         "tool_result_max_chars": 4000,
         "context_fold_at": 0.9,
         "context_fold_target": 0.5,
+        "context_fold_tail_margin": 0.02,
     }
     error = None
     try:
@@ -1969,7 +1995,7 @@ async def test_resume_policy_replays_then_clears_omissions_and_disables_cache(le
                 copy.deepcopy(branch.metadata["api_launch"]),
                 branch.chat_model.tool_result_max_chars,
                 branch.chat_model.endpoint.config.prompt_caching,
-                (kwargs["fold"].fold_at, kwargs["fold"].target),
+                (kwargs["fold"].fold_at, kwargs["fold"].target, kwargs["fold"].tail_margin),
             )
         )
         return await real(branch, *args, **kwargs)
@@ -1982,16 +2008,17 @@ async def test_resume_policy_replays_then_clears_omissions_and_disables_cache(le
         tool_result_max_chars=4000,
         context_fold_at=0.9,
         context_fold_target=0.5,
+        context_fold_tail_margin=0.02,
         prompt_caching=True,
     )
     first = await leg.run(profile)
     branch_id = first[2]
     leg.replies = [_last_round(), _answer("recorded")]
     await agent_mod._run_agent(None, "again", resume=branch_id, cwd=str(leg.workspace))
-    assert seen[1][1:] == (4000, True, (0.9, 0.5))
+    assert seen[1][1:] == (4000, True, (0.9, 0.5, 0.02))
     leg.replies = [_last_round(), _answer("cleared")]
     await leg.run(_profile(api_tools="read", max_input_tokens=50000), model=None, resume=branch_id)
-    assert seen[2][1:] == (None, True, (0.8, 0.6))
+    assert seen[2][1:] == (None, True, (0.8, 0.6, 0.045))
     assert all(seen[2][0][key] is None for key in _POLICY_KEYS)
     leg.replies = [_last_round(), _answer("disabled")]
     await leg.run(
@@ -1999,10 +2026,10 @@ async def test_resume_policy_replays_then_clears_omissions_and_disables_cache(le
         model=None,
         resume=branch_id,
     )
-    assert seen[3][1:] == (None, False, (0.8, 0.6))
+    assert seen[3][1:] == (None, False, (0.8, 0.6, 0.045))
     leg.replies = [_last_round(), _answer("still disabled")]
     await agent_mod._run_agent(None, "one more", resume=branch_id, cwd=str(leg.workspace))
-    assert seen[4][1:] == (None, False, (0.8, 0.6))
+    assert seen[4][1:] == (None, False, (0.8, 0.6, 0.045))
     assert seen[4][0]["prompt_caching"] is False
 
 
@@ -2020,7 +2047,7 @@ async def test_startup_policy_survives_usage_and_terminal_writes(
     policy = {
         "prompt_caching": True,
         "tool_result_max_chars": 4000,
-        "context_fold": {"fold_at": 0.9, "target": 0.5},
+        "context_fold": {"fold_at": 0.9, "target": 0.5, "tail_margin": 0.02},
     }
     snapshots, startup_disk = [], []
     write, turn = RunDir.write_manifest, agent_mod._run_api_turn
@@ -2049,6 +2076,7 @@ async def test_startup_policy_survives_usage_and_terminal_writes(
         tool_result_max_chars=4000,
         context_fold_at=0.9,
         context_fold_target=0.5,
+        context_fold_tail_margin=0.02,
         prompt_caching=True,
     )
     if ending == "completed":
@@ -2110,7 +2138,7 @@ def test_installing_a_fold_requires_cap_line_and_target_agreement():
         {"cap": 20000, "fold_at": 0.8, "target": 0.5},
         {"cap": 20000, "fold_at": 0.9, "target": 0.6},
     ):
-        with pytest.raises(ValueError, match="cap, fold_at or target"):
+        with pytest.raises(ValueError, match="cap, fold_at, target or tail_margin"):
             install_context_fold(branch, **settings)
     assert [
         p for p, h in branch._pending_hook_bus_entries if getattr(h, "__self__", None) is fold
@@ -2356,7 +2384,7 @@ def test_rejected_fold_pair_leaves_models_and_pending_hooks_unchanged():
     views = fold._request_views
     pending = (tuple(str(uid) for uid in branch.progression),)
     views.set(pending)
-    with pytest.raises(ValueError, match="cap, fold_at or target"):
+    with pytest.raises(ValueError, match="cap, fold_at, target or tail_margin"):
         agent_mod._install_api_input_cap(
             branch,
             20000,

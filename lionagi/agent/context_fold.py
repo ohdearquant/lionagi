@@ -1170,6 +1170,7 @@ def install_context_fold(
     cap: int,
     fold_at: float = _FOLD_AT,
     target: float = _FOLD_TARGET,
+    tail_margin: float = _TAIL_MARGIN,
     log: Callable[[str], None] | None = None,
 ) -> ContextFold:
     """Attach a ContextFold to the branch's API_PRE_CALL hook point and return it.
@@ -1180,7 +1181,7 @@ def install_context_fold(
 
     A branch with no HookBus yet gets one of its own; a Session joined later takes the handler
     over through ``attach_hook_bus``, as it does for every queued branch handler. A branch keeps
-    one fold: installing again returns it only when cap, line and target agree.
+    one fold: installing again returns it only when cap, line, target and margin agree.
     """
     from lionagi.hooks.bus import HookBus, HookPoint
 
@@ -1191,12 +1192,19 @@ def install_context_fold(
     for point, handler in branch._pending_hook_bus_entries:
         existing = getattr(handler, "__self__", None)
         if point == HookPoint.API_PRE_CALL and isinstance(existing, ContextFold):
-            if (existing.cap, existing.fold_at, existing.target) != (cap, fold_at, target):
+            if (existing.cap, existing.fold_at, existing.target, existing.tail_margin) != (
+                cap,
+                fold_at,
+                target,
+                tail_margin,
+            ):
                 raise ValueError(
-                    "branch already has a fold with a different cap, fold_at or target"
+                    "branch already has a fold with a different cap, fold_at, target or tail_margin"
                 )
             return existing
-    fold = ContextFold(branch, cap=cap, fold_at=fold_at, target=target, log=log)
+    fold = ContextFold(
+        branch, cap=cap, fold_at=fold_at, target=target, tail_margin=tail_margin, log=log
+    )
     branch._pending_hook_bus_entries.append((HookPoint.API_PRE_CALL, fold.on_api_pre_call))
     branch._pending_hook_bus_entries.append((HookPoint.API_POST_CALL, fold.on_api_post_call))
     branch.attach_hook_bus(branch._hooks if branch._hooks is not None else HookBus())

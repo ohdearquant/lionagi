@@ -921,6 +921,51 @@ async def test_auth_failure_blocks_the_bound_account_without_retrying(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [
+        (None, RouterErrorCode.CREDENTIAL_MISSING),
+        # Below the minimum length, so refused as invalid; distinctive, so a leak is found.
+        ("kQ7zXw3", RouterErrorCode.CREDENTIAL_INVALID),
+    ],
+    ids=["missing", "invalid"],
+)
+async def test_a_key_refusal_names_the_bound_account_and_its_unsent_attempt(
+    monkeypatch, tmp_path, value, code
+):
+    path = _install_accounts(
+        monkeypatch,
+        tmp_path,
+        accounts=[{"name": "primary", "key_env": KEY_NAME, "budget_usd": "20"}],
+    )
+    if value is None:
+        monkeypatch.delenv(KEY_NAME)
+    else:
+        monkeypatch.setenv(KEY_NAME, value)
+    model, transport = _model(monkeypatch, [])
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await model.endpoint.call(REQUEST)
+
+    error = caught.value
+    assert error.code is code
+    assert error.account == "primary"
+    assert error.http_status is None
+    assert str(error) == f"{code.value} account=primary attempt={error.attempt_id}"
+    assert KEY_NAME not in str(error)
+    # Only the code-only refusal it replaced is linked to it, and no link holds the value.
+    linked = _every_linked_error(error)
+    assert all(isinstance(each, AccountRoutingError) for each in linked)
+    if value is not None:
+        assert not any(value in repr(each.args) for each in linked)
+    assert transport.calls == []
+    rows = _attempts(path)
+    assert [(row[0], row[1], row[4]) for row in rows] == [
+        (str(error.attempt_id), "primary", "not_sent")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_retries_with_a_new_reservation(monkeypatch, tmp_path):
     path = _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [StubResponse(429), _response()])

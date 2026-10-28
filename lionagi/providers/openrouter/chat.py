@@ -40,6 +40,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "anthropic/claude-sonnet-5.5": 1_000_000,
     "anthropic/claude-haiku-5.5": 1_000_000,
     "openai/gpt-6.1-sol": 1_050_000,
+    "openai/gpt-6.1-terra": 1_050_000,
     "openai/gpt-6-astra": 1_050_000,
     "openai/gpt-6-sol": 1_050_000,
     "openai/gpt-6-luna": 1_050_000,
