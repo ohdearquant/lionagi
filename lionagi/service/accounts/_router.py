@@ -132,7 +132,11 @@ class AccountRouter:
             key = await resolve_account_key(account.key_env, self.sources)
         except AccountRoutingError as exc:
             await self.settle_reservation_not_sent(reservation)
-            raise exc from None
+            # Name the account whose key could not be used; its name was validated at
+            # configuration and is never key material.
+            raise AccountRoutingError(
+                exc.code, account=account.name, attempt_id=reservation.attempt_id
+            ) from None
         except BaseException:
             await self.settle_reservation_not_sent(reservation)
             raise
