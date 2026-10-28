@@ -759,13 +759,24 @@ async def test_shared_memory_late_ack_is_idempotent_and_accepts_retirement():
             release.set()
 
 
-def test_private_memory_late_ack_after_original_loop_closes():
-    from lionagi.state.lifecycle.reconciler import _store_identity, _workers, _workers_lock
+def test_private_memory_late_ack_waits_for_original_loop_next_pass(monkeypatch):
+    from lionagi.state.lifecycle import reconciler as reconciliation
 
     db = StateDB(":memory:")
     started, release = threading.Event(), threading.Event()
+    calls = []
+    loop = asyncio.new_event_loop()
+    real_ack = reconciliation.ack_delivery
+
+    async def guarded_ack(*args, **kwargs):
+        # A different loop must not touch the original private connection.
+        assert asyncio.get_running_loop() is loop
+        return await real_ack(*args, **kwargs)
+
+    monkeypatch.setattr(reconciliation, "ack_delivery", guarded_ack)
 
     def work():
+        calls.append("started")
         started.set()
         return DeliveryOutcome.SUCCESS if release.wait(8) else DeliveryOutcome.FAILURE
 
@@ -775,27 +786,40 @@ def test_private_memory_late_ack_after_original_loop_closes():
     async def start():
         await db.open()
         event_id = await _seed(db)
-        key = (_store_identity(db), "private-loop-test", event_id)
-        reconciler = TerminalReconciler(key[1], prepare, batch_size=1, timeout=0.05)
-        assert (await reconciler.run_pass(db))["failed"] == 1 and started.is_set()
-        return key
+        key = (reconciliation._store_identity(db), "private-loop-test", event_id)
+        instance = TerminalReconciler(key[1], prepare, batch_size=1, timeout=0.05)
+        assert (await instance.run_pass(db))["failed"] == 1 and started.is_set()
+        return key, instance
 
-    async def finish(key):
-        release.set()
+    async def wait_and_try_wrong_loop(key):
+        def deferred():
+            with reconciliation._workers_lock:
+                worker = reconciliation._workers.get(key)
+                return worker is not None and worker.deferred
 
-        def no_worker():
-            with _workers_lock:
-                return key not in _workers
+        await _wait_until(deferred)
+        # No database operation is permitted through the wrong loop.
+        await reconciliation._drain_deferred(db, key[1], key[0])
+        assert deferred()
 
-        await _wait_until(no_worker)
+    async def finish(key, instance):
+        assert not await is_acknowledged(db, key[2], key[1])
+        result = await instance.run_pass(db)
+        assert result["attempted"] == 0
         assert await is_acknowledged(db, key[2], key[1])
+        assert calls == ["started"]
         await db.close()
 
     try:
-        key = asyncio.run(start())
-        asyncio.run(finish(key))
+        key, instance = loop.run_until_complete(start())
+        release.set()
+        asyncio.run(wait_and_try_wrong_loop(key))
+        loop.run_until_complete(finish(key, instance))
     finally:
         release.set()
+        if db._engine is not None:
+            loop.run_until_complete(db.close())
+        loop.close()
 
 
 @pytest.mark.parametrize("missing", ["consumer-table", "eligibility-column"])

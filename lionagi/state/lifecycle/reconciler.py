@@ -319,19 +319,10 @@ def _finish_late(worker: _Worker) -> None:
                     await ack_delivery(worker.db, worker.key[2], worker.key[1])
 
             if not worker.loop.is_running():
-                try:
-                    asyncio.run(acknowledge_private())
-                except _MemoryStoreChangedError:
-                    _release_worker(worker)
-                    return
-                except Exception:
-                    logger.exception(
-                        "Late private-memory acknowledgement deferred for %s", worker.key[2]
-                    )
-                    with _workers_lock:
-                        worker.deferred = True
-                    return
-                _release_worker(worker)
+                # Its private-memory connection belongs to that loop. A later
+                # pass on the same loop may drain this completed delivery.
+                with _workers_lock:
+                    worker.deferred = True
                 return
 
             coroutine = acknowledge_private()
@@ -426,10 +417,17 @@ def _run_worker(worker: _Worker, call: Callable[[], Any]) -> None:
 
 async def _drain_deferred(db: Any, consumer: str, store: str) -> None:
     """Record completed memory-store deliveries even if their original loop ended."""
+    loop = asyncio.get_running_loop()
     while True:
         with _workers_lock:
             worker = next(
-                (w for key, w in _workers.items() if key[:2] == (store, consumer) and w.deferred),
+                (
+                    w
+                    for key, w in _workers.items()
+                    if key[:2] == (store, consumer)
+                    and w.deferred
+                    and (not store.startswith("sqlite-memory:private:") or w.loop is loop)
+                ),
                 None,
             )
             if worker is not None:

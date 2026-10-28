@@ -589,6 +589,9 @@ started in that process. A later normal completion is acknowledged; an exception
 size; at the bound, a pass starts no further attempts for that consumer and reports saturation.
 Replacing the SQLite store file while the daemon runs is unsupported; late acknowledgements may
 be lost or refused.
+For a private in-memory SQLite store whose owning event loop has stopped, a later successful
+result is retained in process and acknowledged on that store's next pass on the original loop;
+the connection is not reused across event loops.
 
 ### Scope and configuration
 

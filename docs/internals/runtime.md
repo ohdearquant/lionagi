@@ -445,6 +445,9 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   acknowledged and abandoned workers are bounded per consumer by the batch size.
   Replacing the SQLite store file while the daemon runs is unsupported; late
   acknowledgements may be lost or refused.
+  For a private in-memory SQLite store whose owning event loop has stopped, a
+  later successful result is retained in process and acknowledged on that store's
+  next pass on the original loop; its connection is not reused across event loops.
   Immediately before each handler call, the reconciler rechecks that the consumer
   is active. Retirement stops attempts whose check occurs after it commits; it
   does not cancel attempts that have already passed the check. No lock is held
