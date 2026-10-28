@@ -388,7 +388,7 @@ Named operational limits cover broker count, subscribers, queue rows/bytes, per-
 
 #### Overflow, reconnect and resnapshot
 
-Reserve a control path independent of payload-queue capacity. Overflow or invalid retained state sends `resync_required`, a typed reason and a conservative starting marker, then closes the subscription. Message controls carry `resume_cursor`; signal controls carry `resume_after_seq`. Before streaming starts, return HTTP 409 with `detail.code="stream_resync_required"` and a reason. Reasons include overflow, expired, foreign_epoch, frontier_unavailable, anchor_mismatch, frontier_shrunk and resource_limit. V1 invalid cursors retain their existing 400 behavior.
+Reserve a control path independent of payload-queue capacity. Overflow or invalid retained state sends `resync_required`, a typed reason and a conservative marker at the last yielded payload (or the subscription start before any payload), then closes the subscription. Message controls carry `resume_cursor`; signal controls carry `resume_after_seq`. Before streaming starts, return HTTP 409 with `detail.code="stream_resync_required"` and a reason. Reasons include overflow, expired, foreign_epoch, frontier_unavailable, anchor_mismatch, frontier_shrunk and resource_limit. V1 invalid cursors retain their existing 400 behavior.
 
 Server markers are advisory; enqueueing or yielding does not acknowledge browser application. The client keeps its last successfully applied cursor/sequence and advances only after its consumer returns normally. Heartbeat, done and resync controls never advance it. A rejected live request never silently becomes legacy replay.
 

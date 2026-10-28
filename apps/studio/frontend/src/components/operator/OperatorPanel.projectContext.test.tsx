@@ -3,7 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { SessionDetail } from "@/lib/api";
+import type { SessionDetail, SessionSignalPage } from "@/lib/api";
 import { validateFleetSearch } from "@/routes/fleet";
 
 const api = vi.hoisted(() => ({
@@ -22,6 +22,7 @@ const api = vi.hoisted(() => ({
   updateOperatorConversation: vi.fn(),
   getRunFile: vi.fn(),
   getSession: vi.fn(),
+  getSessionSignalPage: vi.fn(),
   getInvocation: vi.fn(),
   streamSession: vi.fn(),
   streamSignals: vi.fn(),
@@ -31,7 +32,14 @@ const router = vi.hoisted(() => ({
   location: { pathname: "/fleet", search: {} as Record<string, unknown> },
 }));
 
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api", async () => {
+  const { readSessionStreamSnapshot } =
+    await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...api,
+    readSessionStreamSnapshot,
+  };
+});
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({ children }: { children?: React.ReactNode }) => <a href="/fleet">{children}</a>,
@@ -54,7 +62,15 @@ const { default: AppShell } = await import("@/components/shell/AppShell");
 const { default: RunDetail } = await import("@/components/history/RunDetail");
 
 function session(id: string, project?: string | null): SessionDetail {
-  return { id, name: id, project, created_at: 1, updated_at: 1, status: "completed", branches: [] };
+  return {
+    id,
+    name: id,
+    project,
+    created_at: 1,
+    updated_at: 1,
+    status: "completed",
+    branches: [],
+  };
 }
 
 function deferred<T>() {
@@ -86,7 +102,11 @@ describe("Operator project context", () => {
     router.location = { pathname: "/fleet", search: {} };
     window.history.replaceState(null, "", "/fleet");
     api.getOperatorConversation.mockResolvedValue({
-      conversation: { id: "conversation-1", status: "active", activeRequestId: null },
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
       frames: [],
     });
     api.listOperatorConversations.mockResolvedValue([
@@ -96,6 +116,17 @@ describe("Operator project context", () => {
     api.reportOperatorView.mockResolvedValue(undefined);
     api.submitOperatorTurn.mockResolvedValue({ requestId: "request-1" });
     api.streamOperatorConversation.mockReturnValue(vi.fn());
+    api.getSessionSignalPage.mockImplementation(
+      async (
+        _id: string,
+        params: { afterSeq: number; throughSeq: number },
+      ): Promise<SessionSignalPage> => ({
+        signals: [],
+        next_after_seq: params.afterSeq,
+        through_seq: params.throughSeq,
+        has_more: false,
+      }),
+    );
     api.streamSession.mockReturnValue(vi.fn());
     api.streamSignals.mockReturnValue(vi.fn());
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -157,7 +188,9 @@ describe("Operator project context", () => {
 
     expect(await viewProject()).toBe("selected-project");
     expect(await sendProject()).toBe("selected-project");
-    expect(api.getSession).toHaveBeenCalledExactlyOnceWith("selected");
+    expect(api.getSession).toHaveBeenCalledExactlyOnceWith("selected", {
+      liveSnapshot: true,
+    });
   });
 
   it("reports a project when detail resolves without a route change", async () => {
@@ -240,7 +273,10 @@ describe("Operator project context", () => {
   );
 
   it("uses the validated selection from an array-valued link", async () => {
-    router.location.search = { s: ["", "selected", "other"], project: "list-project" };
+    router.location.search = {
+      s: ["", "selected", "other"],
+      project: "list-project",
+    };
     api.getSession.mockResolvedValue(session("selected", "selected-project"));
     await render("selected");
     expect(await viewProject()).toBe("selected-project");
@@ -265,7 +301,10 @@ describe("Operator project context", () => {
     await render("previous");
     expect(await viewProject()).toBe("previous-project");
 
-    router.location = { pathname: "/fleet", search: { s: "selected", project: "list-project" } };
+    router.location = {
+      pathname: "/fleet",
+      search: { s: "selected", project: "list-project" },
+    };
     await render("previous");
     expect(await viewProject()).toBeUndefined();
     await render("selected");
@@ -284,7 +323,10 @@ describe("Operator project context", () => {
       api.getSession.mockReturnValueOnce(previous.promise).mockReturnValueOnce(selected.promise);
       router.location.search = { s: "previous" };
       await render("previous");
-      router.location = { pathname: "/fleet", search: { s: "selected", project: "list-project" } };
+      router.location = {
+        pathname: "/fleet",
+        search: { s: "selected", project: "list-project" },
+      };
       await render("selected");
       expect(await viewProject()).toBeUndefined();
 
@@ -464,7 +506,10 @@ describe("Operator project context", () => {
     await act(async () => refreshed.resolve(session("selected", "refreshed-project")));
     expect(await viewProject()).toBe("refreshed-project");
 
-    router.location = { pathname: "/system", search: { project: "other-project" } };
+    router.location = {
+      pathname: "/system",
+      search: { project: "other-project" },
+    };
     await render();
     expect(await viewProject()).toBeUndefined();
     expect(await sendProject()).toBeUndefined();
