@@ -14,6 +14,7 @@ from .hooks import (
 )
 
 if TYPE_CHECKING:
+    from ._prompt_cache import cache_intent
     from .broadcaster import Broadcaster
     from .connections.api_calling import APICalling
     from .connections.endpoint import Endpoint, EndpointConfig
@@ -34,6 +35,7 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "APICalling": ("connections.api_calling", "APICalling"),
     "TokenCalculator": ("token_calculator", "TokenCalculator"),
     "Broadcaster": ("broadcaster", "Broadcaster"),
+    "cache_intent": ("_prompt_cache", "cache_intent"),
 }
 
 
@@ -54,6 +56,7 @@ __all__ = (
     "HookedEvent",
     "RateLimitedAPIExecutor",
     "TokenCalculator",
+    "cache_intent",
     "global_hook_logger",
     "iModel",
     "iModelManager",
