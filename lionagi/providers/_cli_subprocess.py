@@ -737,6 +737,35 @@ def observe_spawned(pid: int, *, expected_marker: str) -> SpawnedProcess:
     )
 
 
+# How long a spawn keeps re-reading a running child whose identity did not read at once. A
+# launcher script starts as its interpreter's launcher: `#!/usr/bin/env node` first runs
+# /usr/bin/env, which then execs node in the same pid, and macOS discloses no environment for a
+# system binary, so until that exec the spawn marker reads as absent. Measured on macOS: about
+# 1 ms after the spawn returns, 70 ms under load, once past 2 s. Only a child whose identity
+# never reads waits the whole budget, and that child is refused either way.
+_SPAWN_OBSERVATION_BUDGET = 10.0
+
+
+async def _observe_running_child(
+    child: asyncio.subprocess.Process, *, expected_marker: str
+) -> SpawnedProcess:
+    """Repeat :func:`observe_spawned` with short sleeps while *child* runs, until its start
+    time reads or :data:`_SPAWN_OBSERVATION_BUDGET` passes.
+
+    Repeating is safe: once this child is reaped a stranger may take its pid, but no stranger
+    carries the marker, so a later read can never bind the stranger as this child.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _SPAWN_OBSERVATION_BUDGET
+    delay = 0.001
+    observed = observe_spawned(child.pid, expected_marker=expected_marker)
+    while observed.create_time is None and child.returncode is None and loop.time() < deadline:
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 0.05)
+        observed = observe_spawned(child.pid, expected_marker=expected_marker)
+    return observed
+
+
 def _no_stderr_reason(
     rc: int,
     unavailable: str | None,
@@ -1113,7 +1142,7 @@ async def ndjson_from_cli(
             try:
                 observed = observe_spawned(child.pid, expected_marker=spawn_marker)
                 if (lease.slots or admission is not None) and observed.create_time is None:
-                    observed = observe_spawned(child.pid, expected_marker=spawn_marker)
+                    observed = await _observe_running_child(child, expected_marker=spawn_marker)
             except Exception as exc:
                 if admission is None:
                     raise

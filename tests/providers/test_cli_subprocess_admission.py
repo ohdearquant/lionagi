@@ -155,6 +155,7 @@ async def test_a_cap_set_and_an_unreadable_start_time_refuses_and_frees_the_slot
     the moment this holder exits, so the spawn is refused and the child is ended."""
     from lionagi.providers import _cli_subprocess
 
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 0.05)
     marker = capped / "started"
     spawns = []
     callbacks = []
@@ -183,10 +184,92 @@ async def test_a_cap_set_and_an_unreadable_start_time_refuses_and_frees_the_slot
     with pytest.raises(SubagentAdmissionRefusedError, match="start time"):
         async with contextlib.aclosing(stream):
             await stream.__anext__()
-    assert len(observations) == 2
-    assert spawns == observations[:1]
+    assert len(observations) > 2
+    assert set(observations) == set(spawns)
+    assert len(spawns) == 1
     assert _await_death(spawns[0])
     assert callbacks == []
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_start_time_that_reads_only_after_the_launcher_execs_is_admitted(
+    capped, monkeypatch
+):
+    """A launcher script's marker reads as absent until its interpreter execs; a spawn whose
+    first reads come back empty is admitted once a later read binds the child."""
+    from lionagi.providers import _cli_subprocess
+
+    observations = []
+    real_observe = _cli_subprocess.observe_spawned
+
+    def _late_start_time(pid, *, expected_marker):
+        observations.append(pid)
+        observed = real_observe(pid, expected_marker=expected_marker)
+        if len(observations) <= 3:
+            return _cli_subprocess.SpawnedProcess(
+                pid=observed.pid, pgid=observed.pgid, create_time=None
+            )
+        return observed
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _late_start_time)
+    seen = []
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex", on_spawn=seen.append)
+    async with contextlib.aclosing(stream):
+        assert (await stream.__anext__()) == {"type": "hello"}
+        [spawned] = seen
+        assert spawned.create_time is not None
+        assert len(observations) == 4
+        [holder] = _held()["holders"]
+        assert holder["child_pid"] == spawned.pid
+    assert _await_death(spawned.pid)
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_exits_before_its_start_time_reads_is_refused_at_once(
+    capped, monkeypatch
+):
+    """Re-reading stops when the child is gone, so a child that exits at start is refused
+    without waiting out the observation budget."""
+    from lionagi.providers import _cli_subprocess
+
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
+    real_observe = _cli_subprocess.observe_spawned
+
+    def _no_start_time(pid, *, expected_marker):
+        observed = real_observe(pid, expected_marker=expected_marker)
+        return _cli_subprocess.SpawnedProcess(
+            pid=observed.pid, pgid=observed.pgid, create_time=None
+        )
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
+    stream = ndjson_from_cli([sys.executable, "-c", "pass"], engine="codex")
+    started = time.monotonic()
+    with pytest.raises(SubagentAdmissionRefusedError, match="start time"):
+        async with contextlib.aclosing(stream):
+            await stream.__anext__()
+    assert time.monotonic() - started < 30.0
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_launcher_script_run_through_usr_bin_env_is_admitted(capped, tmp_path):
+    """The shape of a node-script CLI (`#!/usr/bin/env node`): the kernel runs /usr/bin/env,
+    which execs the interpreter in the same pid. On macOS the marker of /usr/bin/env cannot be
+    read, so a spawn that read only at once was refused."""
+    interpreter = Path(sys.executable)
+    launcher = tmp_path / "launcher"
+    launcher.write_text(f"#!/usr/bin/env {interpreter.name}\n{_SLEEPER}\n")
+    launcher.chmod(0o755)
+    env = {**os.environ, "PATH": f"{interpreter.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+    seen = []
+    stream = ndjson_from_cli([str(launcher)], engine="codex", env=env, on_spawn=seen.append)
+    async with contextlib.aclosing(stream):
+        assert (await stream.__anext__()) == {"type": "hello"}
+        [spawned] = seen
+        assert spawned.create_time is not None
+    assert _await_death(spawned.pid)
     assert _held()["held"] == 0
 
 
@@ -677,6 +760,7 @@ async def test_an_abandoned_child_without_a_start_time_keeps_the_lock_when_its_e
     _cancel_the_caller_as_the_spawn_finishes(monkeypatch, first, pids)
     monkeypatch.setattr(_cli_subprocess, "admit_subagent", _keep_lease)
     monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 0.05)
     monkeypatch.setattr(_cli_subprocess, "end_child_group", _end_raises)
     stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
     first.append(asyncio.ensure_future(stream.__anext__()))
