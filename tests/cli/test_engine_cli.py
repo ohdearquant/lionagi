@@ -764,7 +764,8 @@ def test_main_routes_engine_command(monkeypatch):
     main_module = importlib.import_module("lionagi.cli.main")
     engine_mod = importlib.import_module("lionagi.cli.engine")
 
-    from lionagi._auto import _MARKER_ATTR, _isolated_registry_for_tests
+    from lionagi._auto import _MARKER_ATTR
+    from lionhub.cli import catalog
 
     run_engine_calls = []
 
@@ -783,8 +784,8 @@ def test_main_routes_engine_command(monkeypatch):
     # 'engine run research <spec>' — must be routed to run_engine. The seed
     # registry is isolated so this test's monkeypatch is what gets discovered,
     # regardless of whether another test already realized the "engine" seed.
-    with _isolated_registry_for_tests():
-        rc = main_module.main(["engine", "run", "research", "test topic"])
+    monkeypatch.setattr(catalog, "_cli_realized", {})
+    rc = main_module.main(["engine", "run", "research", "test topic"])
     assert rc == 0
     assert len(run_engine_calls) == 1
     assert run_engine_calls[0].command == "engine"

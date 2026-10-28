@@ -431,7 +431,7 @@ def test_cli_package_getattr_raises_for_unknown_attr():
 
 def test_command_registry_loaders_expose_parser_and_handler():
     """Every registry entry resolves before a command-specific parse needs it."""
-    from lionagi._auto import build_cli_parser, iter_cli_seeds
+    from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds
 
     for seed in iter_cli_seeds():
         build = build_cli_parser(seed)

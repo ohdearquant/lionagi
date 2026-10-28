@@ -9,8 +9,8 @@ import signal
 import sys
 import traceback
 
-from lionagi._auto import build_cli_parser, seed_for
 from lionagi.ln import import_module
+from lionhub.cli.catalog import build_cli_parser, seed_for
 
 from ._logging import configure_cli_logging, log_error
 from ._util import (

@@ -9,10 +9,25 @@ import dataclasses
 import importlib.util
 import sys
 import types
+from contextlib import contextmanager
 
 import pytest
 
 from lionagi import _auto
+from lionhub.cli import catalog as _catalog
+
+
+@contextmanager
+def _isolated_registries():
+    cache = dict(_catalog._cli_realized)
+    _catalog._cli_realized.clear()
+    try:
+        with _auto._isolated_registry_for_tests():
+            yield
+    finally:
+        _catalog._cli_realized.clear()
+        _catalog._cli_realized.update(cache)
+
 
 _EXPECTED_CLI_SEEDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("orchestrate", ("o",), "lionagi.cli.orchestrate"),
@@ -129,33 +144,33 @@ def test_auto_register_rejects_empty_cli_seed():
 
 
 def test_cli_seeds_are_fixed_21_in_order():
-    seeds = _auto.iter_cli_seeds()
+    seeds = _catalog.iter_cli_seeds()
     assert len(seeds) == 21
     actual = tuple((s.name, s.aliases, s.module) for s in seeds)
     assert actual == _EXPECTED_CLI_SEEDS
 
 
 def test_seed_for_and_command_exists_resolve_canonical_names_and_aliases():
-    assert _auto.seed_for("orchestrate").name == "orchestrate"
-    assert _auto.seed_for("o").name == "orchestrate"
-    assert _auto.seed_for("mon").name == "monitor"
-    assert _auto.seed_for("does-not-exist") is None
-    assert _auto.command_exists("mcp") is True
-    assert _auto.command_exists("does-not-exist") is False
+    assert _catalog.seed_for("orchestrate").name == "orchestrate"
+    assert _catalog.seed_for("o").name == "orchestrate"
+    assert _catalog.seed_for("mon").name == "monitor"
+    assert _catalog.seed_for("does-not-exist") is None
+    assert _catalog.command_exists("mcp") is True
+    assert _catalog.command_exists("does-not-exist") is False
 
 
 def test_duplicate_seed_token_raises_duplicate_registration_error():
     a = _auto.CliSeed(name="alpha", help="a", module="m.a")
     b = _auto.CliSeed(name="beta", help="b", module="m.b", aliases=("alpha",))
     with pytest.raises(_auto.DuplicateRegistrationError):
-        _auto._build_seed_by_token((a, b))
+        _catalog._build_seed_by_token((a, b))
 
 
 def test_duplicate_canonical_seed_name_raises_duplicate_registration_error():
     a = _auto.CliSeed(name="same", help="a", module="m.a")
     b = _auto.CliSeed(name="same", help="b", module="m.b")
     with pytest.raises(_auto.DuplicateRegistrationError):
-        _auto._build_seed_by_token((a, b))
+        _catalog._build_seed_by_token((a, b))
 
 
 # --- HTTP compilation ---------------------------------------------------------
@@ -177,7 +192,7 @@ def test_http_load_compiles_in_fixed_module_and_definition_order(monkeypatch):
         "def b1():\n    return 3\n",
     )
     monkeypatch.setattr(_auto, "_HTTP_MODULES", (mod_a.__name__, mod_b.__name__))
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         _auto.load_http_modules()
         registrations = _auto.iter_http()
         assert [r.qualname for r in registrations] == ["a1", "a2", "b1"]
@@ -194,7 +209,7 @@ def test_http_tags_default_to_area_when_unset_and_preserved_when_set(monkeypatch
         "def tagged():\n    return 2\n",
     )
     monkeypatch.setattr(_auto, "_HTTP_MODULES", (mod.__name__,))
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         _auto.load_http_modules()
         by_name = {r.qualname: r for r in _auto.iter_http()}
         assert by_name["untagged"].http.tags == ("widgets",)
@@ -209,7 +224,7 @@ def test_http_rescan_of_cached_module_is_idempotent(monkeypatch):
         "def handler():\n    return 1\n",
     )
     monkeypatch.setattr(_auto, "_HTTP_MODULES", (mod.__name__,))
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         _auto.load_http_modules()
         _auto.load_http_modules()
         assert len(_auto.iter_http()) == 1
@@ -227,7 +242,7 @@ def test_http_duplicate_identity_with_different_callable_raises(monkeypatch):
     # Force a colliding identity: same module/qualname/path/method, distinct objects.
     mod.handler2.__qualname__ = mod.handler.__qualname__
     monkeypatch.setattr(_auto, "_HTTP_MODULES", (mod.__name__,))
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         with pytest.raises(_auto.DuplicateRegistrationError):
             _auto.load_http_modules()
 
@@ -246,7 +261,7 @@ def test_http_scan_ignores_imported_callables_and_cli_only_markers(monkeypatch):
         "from tests.contracts._fake_http_source import local_http, local_cli\n",
     )
     monkeypatch.setattr(_auto, "_HTTP_MODULES", (importer_mod.__name__,))
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         _auto.load_http_modules()
         assert _auto.iter_http() == ()
 
@@ -265,10 +280,10 @@ def test_cli_load_command_imports_only_the_selected_module(monkeypatch):
     seed_b = _auto.CliSeed(
         name="beta", help="h", module="tests.contracts._nonexistent_should_not_import"
     )
-    monkeypatch.setattr(_auto, "_cli_seeds", (seed_a, seed_b))
-    monkeypatch.setattr(_auto, "_cli_seed_by_token", {"alpha": seed_a, "beta": seed_b})
-    with _auto._isolated_registry_for_tests():
-        registration = _auto.load_cli_command(seed_a)
+    monkeypatch.setattr(_catalog, "_cli_seeds", (seed_a, seed_b))
+    monkeypatch.setattr(_catalog, "_cli_seed_by_token", {"alpha": seed_a, "beta": seed_b})
+    with _isolated_registries():
+        registration = _catalog.load_cli_command(seed_a)
         assert registration.handler is mod_a.add_alpha_subparser
         assert "tests.contracts._nonexistent_should_not_import" not in sys.modules
 
@@ -281,19 +296,19 @@ def test_cli_load_command_is_cached(monkeypatch):
         "def handler():\n    return 1\n",
     )
     seed_a = _auto.CliSeed(name="alpha", help="h", module=mod_a.__name__)
-    monkeypatch.setattr(_auto, "_cli_seeds", (seed_a,))
-    with _auto._isolated_registry_for_tests():
-        first = _auto.load_cli_command(seed_a)
-        second = _auto.load_cli_command(seed_a)
+    monkeypatch.setattr(_catalog, "_cli_seeds", (seed_a,))
+    with _isolated_registries():
+        first = _catalog.load_cli_command(seed_a)
+        second = _catalog.load_cli_command(seed_a)
         assert first is second
 
 
 def test_cli_zero_matching_markers_raises_contract_error(monkeypatch):
     mod_a = _make_module("tests.contracts._fake_cli_zero", "x = 1\n")
     seed_a = _auto.CliSeed(name="alpha", help="h", module=mod_a.__name__)
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         with pytest.raises(_auto.RegistrationContractError):
-            _auto.load_cli_command(seed_a)
+            _catalog.load_cli_command(seed_a)
 
 
 def test_cli_multiple_matching_markers_raises_contract_error(monkeypatch):
@@ -306,9 +321,9 @@ def test_cli_multiple_matching_markers_raises_contract_error(monkeypatch):
         "def two():\n    return 2\n",
     )
     seed_a = _auto.CliSeed(name="alpha", help="h", module=mod_a.__name__)
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         with pytest.raises(_auto.RegistrationContractError):
-            _auto.load_cli_command(seed_a)
+            _catalog.load_cli_command(seed_a)
 
 
 def test_cli_marker_module_mismatch_raises_contract_error(monkeypatch):
@@ -323,16 +338,16 @@ def test_cli_marker_module_mismatch_raises_contract_error(monkeypatch):
         "from tests.contracts._fake_cli_origin import handler\n",
     )
     seed_a = _auto.CliSeed(name="alpha", help="h", module=reexport_mod.__name__)
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         with pytest.raises(_auto.RegistrationContractError):
-            _auto.load_cli_command(seed_a)
+            _catalog.load_cli_command(seed_a)
 
 
 # --- build_cli_parser ------------------------------------------------------------
 
 
 def test_build_cli_parser_with_no_selection_registers_every_seed_as_stub():
-    build = _auto.build_cli_parser(None)
+    build = _catalog.build_cli_parser(None)
     assert build.parser.prog == "li"
     assert build.seed is None
     assert build.registration is None
@@ -342,7 +357,7 @@ def test_build_cli_parser_with_no_selection_registers_every_seed_as_stub():
     choices = build.parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
     assert "orchestrate" in choices
     assert "o" in choices  # alias registered
-    assert len(_auto.iter_cli_seeds()) == 21
+    assert len(_catalog.iter_cli_seeds()) == 21
 
 
 def test_build_cli_parser_with_selection_uses_its_parser_factory(monkeypatch):
@@ -364,10 +379,10 @@ def test_build_cli_parser_with_selection_uses_its_parser_factory(monkeypatch):
     )
     marker_mod = _make_module("tests.contracts._fake_cli_build_marker", marker_source)
     seed_a = _auto.CliSeed(name="alpha", help="h", module=marker_mod.__name__)
-    monkeypatch.setattr(_auto, "_cli_seeds", (seed_a,))
-    monkeypatch.setattr(_auto, "_cli_seed_by_token", {"alpha": seed_a})
-    with _auto._isolated_registry_for_tests():
-        build = _auto.build_cli_parser(seed_a)
+    monkeypatch.setattr(_catalog, "_cli_seeds", (seed_a,))
+    monkeypatch.setattr(_catalog, "_cli_seed_by_token", {"alpha": seed_a})
+    with _isolated_registries():
+        build = _catalog.build_cli_parser(seed_a)
         assert build.seed is seed_a
         assert build.registration.handler is marker_mod.add_alpha_subparser
         assert isinstance(build.selected_parser, argparse.ArgumentParser)
@@ -385,27 +400,27 @@ def test_isolated_registry_for_tests_restores_previous_state():
     # set below belongs to this test's own before/after assertions.
     _auto._http.clear()
     _auto._http_keys.clear()
-    _auto._cli_realized.clear()
+    _catalog._cli_realized.clear()
     sentinel_reg = _auto.Registration(
         order=0, area="pre", module="m", qualname="q", handler=lambda: None
     )
     _auto._http.append(sentinel_reg)
-    _auto._cli_realized["pre"] = sentinel_reg
+    _catalog._cli_realized["pre"] = sentinel_reg
     try:
-        with _auto._isolated_registry_for_tests():
+        with _isolated_registries():
             assert _auto.iter_http() == ()
-            assert _auto._cli_realized == {}
+            assert _catalog._cli_realized == {}
             _auto._http.append(
                 _auto.Registration(
                     order=0, area="inside", module="m", qualname="q2", handler=lambda: None
                 )
             )
         assert _auto.iter_http() == (sentinel_reg,)
-        assert _auto._cli_realized == {"pre": sentinel_reg}
+        assert _catalog._cli_realized == {"pre": sentinel_reg}
     finally:
         _auto._http.clear()
         _auto._http_keys.clear()
-        _auto._cli_realized.clear()
+        _catalog._cli_realized.clear()
 
 
 # --- import isolation boundary -------------------------------------------------
@@ -448,7 +463,7 @@ def test_auto_loaders_delegate_to_shared_import_and_keep_registration(monkeypatc
         return real_import(module_name, *args, **kwargs)
 
     monkeypatch.setattr(ln, "import_module", shared_import)
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         if surface == "http":
             monkeypatch.setattr(_auto, "_HTTP_MODULES", (name,))
             _auto.load_http_modules()
@@ -459,10 +474,10 @@ def test_auto_loaders_delegate_to_shared_import_and_keep_registration(monkeypatc
             assert calls == [(name, (), {}), (name, (), {})]
         else:
             seed = _auto.CliSeed(name="shared-import", help="h", module=name)
-            monkeypatch.setattr(_auto, "_cli_seeds", (seed,))
-            first = _auto.load_cli_command(seed)
+            monkeypatch.setattr(_catalog, "_cli_seeds", (seed,))
+            first = _catalog.load_cli_command(seed)
             assert first.handler is module.handler
-            assert _auto.load_cli_command(seed) is first
+            assert _catalog.load_cli_command(seed) is first
             assert calls == [(name, (), {})]
 
 
@@ -485,17 +500,17 @@ def test_auto_import_failure_preserves_the_shared_error_boundary(
     monkeypatch.setitem(sys.modules, carrier_name, carrier)
     (tmp_path / f"{name}.py").write_text(f"from {carrier_name} import failure\nraise failure\n")
     monkeypatch.syspath_prepend(str(tmp_path))
-    with _auto._isolated_registry_for_tests():
+    with _isolated_registries():
         with pytest.raises(ImportError) as raised:
             if surface == "http":
                 monkeypatch.setattr(_auto, "_HTTP_MODULES", (name, "never_imported_after_failure"))
                 _auto.load_http_modules()
             else:
                 seed = _auto.CliSeed(name="shared-import", help="h", module=name)
-                monkeypatch.setattr(_auto, "_cli_seeds", (seed,))
-                _auto.load_cli_command(seed)
+                monkeypatch.setattr(_catalog, "_cli_seeds", (seed,))
+                _catalog.load_cli_command(seed)
         assert _auto.iter_http() == ()
-        assert _auto._cli_realized == {}
+        assert _catalog._cli_realized == {}
         assert "never_imported_after_failure" not in sys.modules
         if missing:
             assert raised.value is failure

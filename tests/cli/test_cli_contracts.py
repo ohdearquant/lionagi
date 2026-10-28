@@ -56,7 +56,7 @@ def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
     contract. Private argparse attributes are used deliberately — they are
     the stable introspection surface for this.
     """
-    from lionagi._auto import build_cli_parser, seed_for
+    from lionhub.cli.catalog import build_cli_parser, seed_for
 
     seed = seed_for(command)
     parser = build_cli_parser(seed).parser

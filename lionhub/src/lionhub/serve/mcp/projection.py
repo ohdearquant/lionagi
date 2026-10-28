@@ -29,9 +29,10 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from lionagi._auto import CliSeed, build_cli_parser, iter_cli_seeds, seed_for
+from lionagi._auto import CliSeed
 from lionagi.cli._argtypes import BoundedInt, JsonArgument
 from lionagi.ln import hash_file
+from lionhub.cli.catalog import build_cli_parser, iter_cli_seeds, seed_for
 
 __all__ = (
     "SchemaProjectionError",
