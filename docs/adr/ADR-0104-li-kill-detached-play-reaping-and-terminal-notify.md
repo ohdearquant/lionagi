@@ -349,8 +349,8 @@ cannot help once the runner has been killed outright.
 no persisted session, has no record and is not stopped by this arm. A run writing into a store
 in compatibility mode (ADR-0128) installs no generation and writes no records, since the managing
 lineage's schema holds neither, so its workers are outside this arm in the same way; its setup
-result says so, and a persisted setup result that carries no owner and does not say so is
-refused. An automatic resume of a run whose setup returned no session carries no continuation and
+result says so in `worker_spawns_unrecorded`, and a persisted setup result that carries no owner
+and does not say so is refused. An automatic resume of a run whose setup returned no session carries no continuation and
 starts as a fresh launch, since no running row exists for it to adopt. A runner that dies between
 the OS spawn and the record's commit leaves a worker with no record. A worker whose leader has
 already exited when `li kill` runs is refused even if a descendant still runs, since no recorded
