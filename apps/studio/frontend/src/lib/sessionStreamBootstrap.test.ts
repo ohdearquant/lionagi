@@ -124,6 +124,22 @@ describe("paired session bootstrap with the existing signal reducer", () => {
     await expect(loadSessionLiveBootstrap("s1", () => true)).rejects.toThrow("prefix unavailable");
   });
 
+  it.each([
+    ["a short last page", [signal(1), signal(2)], 2],
+    ["an empty last page", [], 0],
+  ])("rejects %s that ends below the cut", async (_label, rows, last) => {
+    vi.mocked(getSession).mockResolvedValue(detail(7));
+    vi.mocked(getSessionSignalPage).mockResolvedValue({
+      signals: rows,
+      next_after_seq: last,
+      through_seq: 7,
+      has_more: false,
+    });
+    await expect(loadSessionLiveBootstrap("s1", () => true)).rejects.toThrow(
+      "Signal history ended before the snapshot cut",
+    );
+  });
+
   it("rejects a mismatched detail instead of subscribing to another session", async () => {
     vi.mocked(getSession).mockResolvedValue({ ...detail(), id: "other" });
     await expect(loadSessionLiveBootstrap("s1", () => true)).rejects.toThrow(/selected session/);

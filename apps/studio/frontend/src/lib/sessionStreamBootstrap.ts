@@ -28,7 +28,13 @@ export async function loadSessionLiveBootstrap(
       });
       if (!isCurrent()) return null;
       for (const signal of page.signals) projection.append(signal);
-      if (!page.has_more) break;
+      if (!page.has_more) {
+        // Seqs are dense per session and leave only with their session, so the last page ends
+        // at the cut; one that stops short has lost rows the live tail will never resend.
+        if (page.next_after_seq !== snapshot.signal_seq)
+          throw new Error("Signal history ended before the snapshot cut");
+        break;
+      }
       if (page.next_after_seq <= afterSeq) throw new Error("Signal history page did not advance");
       afterSeq = page.next_after_seq;
     }

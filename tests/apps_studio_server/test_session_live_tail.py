@@ -200,6 +200,8 @@ async def test_signal_pages_pin_upper_cut_and_preserve_legacy_after_semantics(li
         after = page["next_after_seq"]
         if not page["has_more"]:
             break
+    # The client rejects a last page that stops below the cut, so the server's last page ends at it.
+    assert after == mark["signal_seq"] == 501
     assert seen == list(range(1, 502))
     assert (await signals.get_signals_after("session", 501))[0]["seq"] == 502
 
