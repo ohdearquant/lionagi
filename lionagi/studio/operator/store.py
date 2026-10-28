@@ -1565,7 +1565,6 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         sequence=sequence,
                         reason=over_budget,
                         now=now,
-                        commit=False,
                     )
                     or _ELIDED
                 )
@@ -1607,13 +1606,10 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         sequence: int,
         reason: str,
         now: float,
-        commit: bool = True,
     ) -> dict[str, Any] | None:
         """Fold one refused frame into the turn's single truncation summary frame.
 
-        Commits by default; a caller already inside its own transaction
-        (``_append_frame_in_tx``) passes ``commit=False`` so the summary lands
-        with that transaction instead of ending it early.
+        The caller owns the already-open transaction and commits or rolls it back.
         """
         existing = await (
             await db.execute(
@@ -1635,8 +1631,6 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 "WHERE request_id=? AND sequence=?",
                 (self._json(summary), request_id, existing["sequence"]),
             )
-            if commit:
-                await db.commit()
             return None
         summary = {
             "reason": reason,
@@ -1672,8 +1666,6 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 now,
             ),
         )
-        if commit:
-            await db.commit()
         return {
             "version": 1,
             "conversationId": conversation_id,

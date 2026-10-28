@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared bounds and redaction helpers for the Studio Operator read tools.
 
-``public_project`` mirrors the helper already inline in ``application_mcp.py``
-(extracted here so a second read-service module can use it without importing
-back into that module — see ``run_progress.py``/``run_findings.py``). The
-caps below match the bounds the existing read tools already apply
+The application-tool registry and read services share the project projection
+below. The caps match the bounds the existing read tools already apply
 (``list_recent_runs`` returns at most 20, Operator context values are
 truncated at 2 KB in ``engine.py``); no new tool widens what the Operator can
 see about secrets, tokens, or absolute host paths.
@@ -67,10 +65,7 @@ _SECRET_KEY_MARKERS = SECRET_KEY_MARKERS
 
 
 def public_project(value: Any) -> str | None:
-    """Reduce a project/path value to a leaf name so no filesystem layout is
-    disclosed. Identical logic to ``application_mcp.public_project`` —
-    duplicated rather than imported to avoid a load-time circular import
-    between the new read-service modules and the tool-registry module."""
+    """Reduce a project/path value to a leaf name without disclosing filesystem layout."""
     if not isinstance(value, str) or not value:
         return None
     if Path(value).is_absolute():
