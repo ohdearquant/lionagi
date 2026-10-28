@@ -105,13 +105,14 @@ the child only the provider's own variable, such as `ANTHROPIC_API_KEY`. That ch
 nothing, so its run records no account, and spend per account cannot be counted from the runs.
 
 Decision: a launcher that chose the key may name its account in `LIONAGI_API_ACCOUNT`, and
-`li agent` records the name in run.json as `api_account` (`lionagi/cli/agent.py:2097-2098`). The
+`li agent` records the name in run.json as `api_account` (`lionagi/cli/agent.py:2096-2097`). The
 value must be an account name: 1 to 64 characters of letters, digits, `_`, `.`, `@` and `-`,
 starting with a letter or digit and not with `sk-` (`lionagi/cli/agent.py:115`). A long value or
 one with a provider key prefix is the likeliest sign that a key was passed by mistake, so any
 value outside the rule is refused with `ConfigurationError` before the run writes anything
-(`lionagi/cli/agent.py:1458`), and the error does not repeat the value, which keeps D2's rule that
-key material is never serialized. Unset, the run records no `api_account`, as before.
+(`lionagi/cli/agent.py:1370`, called at `:1457`), and the error does not repeat the value, which
+keeps D2's rule that key material is never serialized. Unset, the run records no `api_account`, as
+before.
 
 Not covered: the name is not checked against the configured accounts (D1), selects no key, and
 is not budgeted by D4's ledger. For routed calls `account_labels` stays the record.
