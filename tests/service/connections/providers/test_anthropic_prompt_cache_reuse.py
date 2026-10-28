@@ -92,8 +92,8 @@ def _ledger(*rows):
     return {"version": 1, "entries": dict(rows), "evicted_until": None}
 
 
-def _place(payload, ledger, intent="continuing", anchors=()):
-    call = PromptCacheCall(ledger=ledger, intent=intent, anchors=anchors)
+def _place(payload, ledger, intent="continuing", anchors=(), tail_skip=None):
+    call = PromptCacheCall(ledger=ledger, intent=intent, anchors=anchors, tail_skip=tail_skip)
     call.placement = planner.place(payload, call)
     return call, call.placement
 
@@ -366,6 +366,56 @@ def test_a_final_request_places_no_anchor():
     _, record = _place(payload, _ledger(), intent="final", anchors=(anchor,))
 
     assert sorted(_ttls(record)) == [1]
+
+
+# --- a request a fold follows (Amendment 4) ---
+
+TAIL_SKIP = {"estimate": 89_436, "fold_line": 90_000, "margin": 4_500}
+
+
+def test_a_request_a_fold_follows_reads_through_its_anchor_and_marks_no_turn():
+    payload = _payload(75, tools=False)
+    anchor = (_point(payload, 52).message, 0)
+    _, record = _place(payload, _ledger(_row(payload, 40)), anchors=(anchor,), tail_skip=TAIL_SKIP)
+
+    assert sorted(_ttls(record)) == [1, 52]
+    assert set(_roles(record)[52]) == {"anchor", "read"}
+    assert record["g1"] == "met"
+    assert record["tail_skip"] == TAIL_SKIP
+
+
+def test_a_request_a_fold_follows_marks_the_entry_it_reads_in_place_of_the_turn():
+    payload = _payload(25, tools=False)
+    ledger = _ledger(_row(payload, 10))
+    _, kept = _place(copy.deepcopy(payload), ledger)
+    _, skipped = _place(payload, ledger, tail_skip=TAIL_SKIP)
+
+    assert sorted(_ttls(kept)) == [1, 25]
+    assert set(_roles(kept)[25]) == {"tail", "read"}
+    assert sorted(_ttls(skipped)) == [1, 10]
+    assert _roles(skipped)[10] == ["read"]
+    assert skipped["g1"] == "met"
+
+
+def test_a_request_a_fold_follows_keeps_the_stable_mark_and_probes_the_deeper_entries():
+    payload = _payload(100)
+    ledger = _ledger(_row(payload, 20), _row(payload, 60, process="another process"))
+    _, record = _place(payload, ledger, tail_skip=TAIL_SKIP)
+
+    assert _ttls(record) == {2: "1h", 20: "5m", 60: "5m"}
+    assert _roles(record)[60] == ["probe"]
+    assert "tail" not in {role for roles in _roles(record).values() for role in roles}
+
+
+@pytest.mark.parametrize("intent", ["final", "side"])
+def test_a_final_or_side_request_ignores_a_tail_skip(intent):
+    payload = _payload(35, tools=False)
+    ledger = _ledger(_row(payload, 10))
+    _, plain = _place(copy.deepcopy(payload), ledger, intent=intent)
+    _, skipped = _place(payload, ledger, intent=intent, tail_skip=TAIL_SKIP)
+
+    assert skipped["marks"] == plain["marks"]
+    assert "tail_skip" not in skipped
 
 
 def test_a_side_request_places_only_the_stable_mark():

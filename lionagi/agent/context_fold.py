@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 _FOLD_AT = 0.8
 _FOLD_TARGET = 0.6
+# A request whose estimate is within this share of the cap below the fold line is likely the
+# last before a fold, so its end-of-turn cache entry would go unread (ADR-0127 Amendment 4).
+_TAIL_MARGIN = 0.045
 # Newest active messages a fold never touches: the latest round's instruction, answer and
 # tool records, then the last two messages when the first pass was not enough.
 _KEEP_TAILS = (6, 2)
@@ -187,14 +190,23 @@ class ContextFold:
         target: float = _FOLD_TARGET,
         log: Callable[[str], None] | None = None,
         estimate: Callable[[Branch], int] = estimate_next_request_tokens,
+        tail_margin: float = _TAIL_MARGIN,
     ) -> None:
         if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
             raise ValueError("cap must be a positive integer")
         _validate_fold_pair(fold_at, target)
+        if (
+            not isinstance(tail_margin, (int, float))
+            or isinstance(tail_margin, bool)
+            or not math.isfinite(tail_margin)
+            or not 0 <= tail_margin < fold_at
+        ):
+            raise ValueError("tail_margin must be a finite number with 0 <= tail_margin < fold_at")
         self.branch = branch
         self.cap = cap
         self.fold_at = fold_at
         self.target = target
+        self.tail_margin = tail_margin
         self.records: list[dict[str, Any]] = []
         self._log = log or logger.warning
         self._estimate = estimate
@@ -215,6 +227,11 @@ class ContextFold:
         self._request_views: ContextVar[tuple[tuple[str, ...] | None, ...]] = ContextVar(
             f"context_fold_requests_{id(self)}", default=()
         )
+        # Set at each request's API_PRE_CALL and read by that request's compile (chat.py).
+        self._tail_skip: ContextVar[dict[str, int] | None] = ContextVar(
+            f"context_fold_tail_skip_{id(self)}", default=None
+        )
+        branch._prompt_cache_tail_skip = self._tail_skip.get
         if "context_delivered" not in branch.metadata:
             from lionagi.protocols.messages import AssistantResponse
 
@@ -267,12 +284,28 @@ class ContextFold:
         """API_PRE_CALL handler: fold when the next request would pass ``fold_at`` of the cap."""
         from lionagi.tools.context.context import _automatic_summary
 
+        self._tail_skip.set(None)
         if _automatic_summary.get():
             self._request_views.set((*self._request_views.get(), None))
             return
         try:
-            if not self._busy and self.estimate() >= self.fold_at * self.cap:
-                await self.fold(reason="threshold")
+            if not self._busy:
+                line = self.fold_at * self.cap
+                estimate = self.estimate()
+                if estimate >= line and await self.fold(reason="threshold"):
+                    estimate = self.estimate()
+                # Below the line and close enough to it that the next request likely folds, so
+                # nothing would read an entry written at the end of this one's turn. A request
+                # still at or past the line keeps its mark: its fold landed nothing or not enough,
+                # and nothing says the next one lands (ADR-0127 Amendment 4).
+                if 0 < line - estimate <= self.tail_margin * self.cap:
+                    self._tail_skip.set(
+                        {
+                            "estimate": estimate,
+                            "fold_line": round(line),
+                            "margin": round(self.tail_margin * self.cap),
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001 — the cap still refuses an oversized request
             from lionagi.state.compat import refusal_in
 
