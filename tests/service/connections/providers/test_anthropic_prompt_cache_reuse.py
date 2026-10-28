@@ -294,6 +294,14 @@ def test_a_final_request_reads_the_established_entry_and_probes_the_deeper_unkno
     assert record["g1"] == "met"
 
 
+def test_an_unknown_entry_the_tail_already_reaches_takes_no_probe_mark():
+    payload = _payload(100, tools=False)
+    _, record = _place(payload, _ledger(_row(payload, 90, process="another process")))
+
+    assert sorted(_ttls(record)) == [1, 100]
+    assert [row["index"] for row in record["landing"]] == [_point(payload, 90).index]
+
+
 def test_after_a_resume_the_deepest_unknown_entries_are_probed_first():
     payload = _payload(100, tools=False)
     rows = [_row(payload, p, process="another process") for p in (20, 40, 60)]
@@ -566,8 +574,9 @@ def test_a_short_read_by_an_attempt_that_started_after_the_entry_expired_is_belo
     [
         SimpleNamespace(status=EventStatus.FAILED, response=None),
         SimpleNamespace(status=EventStatus.COMPLETED, response={"usage": {"output_tokens": 3}}),
+        _completed(read=1000, creation=10, status=EventStatus.FAILED),
     ],
-    ids=["failed", "no input count"],
+    ids=["failed", "no input count", "failed with usage"],
 )
 def test_an_attempt_without_complete_usage_is_unevaluated_and_writes_nothing(api_call):
     payload = _payload(100, tools=False)
@@ -578,6 +587,19 @@ def test_an_attempt_without_complete_usage_is_unevaluated_and_writes_nothing(api
     record = settle(call, api_call)
 
     assert record["read"] == "unevaluated"
+    assert ledger == before
+
+
+def test_a_request_with_no_attempt_or_no_placement_is_unevaluated_and_writes_nothing():
+    payload = _payload(100, tools=False)
+    ledger = _ledger(_row(payload, 40))
+    before = copy.deepcopy(ledger)
+    unsent, _ = _place(payload, ledger)
+    unplaced = PromptCacheCall(ledger=ledger, intent="continuing")
+    _attempt(unplaced)
+
+    assert settle(unsent, _completed(read=1000, creation=10))["read"] == "unevaluated"
+    assert settle(unplaced, _completed(read=1000, creation=10))["read"] == "unevaluated"
     assert ledger == before
 
 
@@ -611,6 +633,20 @@ def test_an_equal_read_refreshes_only_the_entry_a_mark_reaches():
 
     assert record["hit"] == {"identified": inside[0]}
     assert ledger["entries"][outside[0]]["hit_at"] is None
+
+
+def test_two_reached_entries_of_the_read_length_leave_the_hit_unidentified():
+    payload = _payload(100, tools=False)
+    shallow = _row(payload, 85, length=500)
+    deep = _row(payload, 90, length=500)
+    ledger = _ledger(shallow, deep)
+    call, _ = _place(payload, ledger)
+    _attempt(call)
+    record = settle(call, _completed(read=500, creation=100))
+
+    assert record["hit"] == "unidentified"
+    assert ledger["entries"][shallow[0]]["hit_at"] is None
+    assert ledger["entries"][deep[0]]["hit_at"] is None
 
 
 def test_an_entry_held_on_another_account_is_never_identified_as_this_attempts_hit(routes):
@@ -795,3 +831,31 @@ async def test_a_branchs_second_request_reads_the_entry_its_first_request_wrote(
     first_turn = next(mark for mark in first["marks"] if mark["roles"] == ["tail"])
     assert second["hit"] == {"identified": first_turn["cert"]}
     assert branch.metadata["prompt_cache"]["entries"][first_turn["cert"]]["length"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_a_branch_on_a_model_without_prompt_caching_keeps_no_rows_and_settles_nothing():
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
+        model = iModel(provider="anthropic", model=MODEL, max_tokens=100)
+    branch = Branch(system=SYSTEM, chat_model=model)
+
+    async def respond(*_args, **_kwargs):
+        return {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": MODEL,
+            "content": [{"type": "text", "text": "an answer"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        }
+
+    with (
+        patch.object(model.endpoint, "call", side_effect=respond),
+        patch.object(ledger_mod, "settle") as settled,
+    ):
+        await branch.communicate("first question")
+
+    assert model.endpoint.places_prompt_cache is False
+    assert "prompt_cache" not in branch.metadata
+    settled.assert_not_called()
