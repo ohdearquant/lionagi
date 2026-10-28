@@ -303,8 +303,8 @@ the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
 (`lionagi/providers/_secret_resolution.py:88`,
 `lionagi/providers/_secret_resolution.py:213`,
-`lionagi/providers/_secret_resolution.py:380`,
-`lionagi/providers/_secret_resolution.py:454`). Reusing the
+`lionagi/providers/_secret_resolution.py:389`,
+`lionagi/providers/_secret_resolution.py:463`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes
