@@ -1602,10 +1602,11 @@ async def test_setup_resume_repairs_null_session_progression_id(
     legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
     try:
         await legacy_db.create_progression(branch_prog)
-        # Session row with NULL progression_id.
+        # A terminal historical row admits a new generation when resumed;
+        # its missing session progression is the condition being repaired.
         await legacy_db.execute(
             "INSERT INTO sessions (id, created_at, progression_id, "
-            "updated_at) VALUES (?, ?, NULL, ?)",
+            "updated_at, status) VALUES (?, ?, NULL, ?, 'completed')",
             (session_id, 0.0, 0.0),
         )
         # Branch row with a valid branch progression.
