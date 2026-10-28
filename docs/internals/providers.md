@@ -457,6 +457,22 @@ runtime field to every provider request model; resetting the binding immediately
 after task creation prevents concurrent runs from sharing ownership. The public
 `on_spawn(SpawnedProcess)` contract remains identity-only.
 
+Durable worker accounting uses a separate context-local recorder bound by the
+persisted producer. The shared provider admits an attempt before creating its
+spawn task and retains that task, registration, and late cleanup under the owner.
+After observing the child, registration writes the stable attempt ID and its
+exact session/generation association before the engine observer, public
+`on_spawn` callback, or pipe I/O can expose output. Repeating the same attempt
+keeps its ID and immutable fields. A registration refusal remains a typed provider
+failure and enters the existing child-cleanup path.
+
+The provider supplies only the six observed identity facts; the StateDB adapter
+adds the association and diagnostic fields. Neither environment values nor the
+private process-group marker are stored. Providers import the recorder protocol,
+not StateDB. Closing the owner stops further admission and waits for retained
+spawn/registration/cleanup work before the producer can terminalize or close its
+database. These records do not themselves establish process-group absence.
+
 Group cleanup signals only through that positively marker-bound observation.
 The shielded spawn task captures `(pid, pgid, create_time)` before publishing
 its result, including to the abandoned-spawn callback. At teardown, that spawn
@@ -473,16 +489,14 @@ cancellation cannot turn a stale number into authority. A process group is
 also not a containment boundary — a descendant that calls `setsid()` leaves
 it, and cleanup then says nothing about that descendant.
 
-One hole is stated rather than closed: if the coroutine awaiting subprocess
-creation is cancelled after the OS has created the child but before the
-pid comes back, nothing in this process can reach it — asyncio closes the
-direct child's transport but never touches its group. This was measured,
-not reasoned about: a leg spawned under a loop that shuts down mid-creation
-leaves a SIGTERM-ignoring descendant running. Closing the window needs the
-pid before the creation call returns, which means reimplementing
-`create_subprocess_exec` on stdlib internals outside their public surface —
-declined as too fragile across Python versions, so the loss is logged as a
-warning instead.
+The retained spawn task keeps ownership across caller cancellation while
+creation and registration finish. An attempted spawn that returns no process
+handle is an unconfirmed launch, even when it raises. The spawn path preserves
+the original exception or cancellation and adds a safe `launch outcome unconfirmed`
+diagnostic naming the admission pools still held. Their locks remain with the
+spawning process until it exits; no exception-type or traceback heuristic turns
+a missing handle into evidence that no child exists. The same retention applies
+when group cleanup is unconfirmed, even if the direct child has exited.
 
 Streaming has its own hazard. `stdin_data` feeds a large prompt through a
 pipe (avoiding the OS argv length limit) via a task that runs concurrently
@@ -566,21 +580,22 @@ that collide on the last slot do not retry in step, until
 `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` runs out. The refusal is one line naming
 the pool, its cap, the variable that set it and the holder pids.
 
-The lease is released when the spawn fails, when the `on_spawn` observer fails,
-and in the generator's final `finally` after `end_child_group()`, so the slot
-frees only once the worker's group has been ended. If `end_child_group()`
-raises and every slot holds the child's record with its start time, the slots
-give up their locks but keep that record, so they read held while that child
-runs, as after their holder exits; when any slot lacks it, every slot keeps its
-lock until the process exits. The stdin
-payload is encoded before admission, so an input that cannot be encoded is
-refused with nothing to give back. A spawn cancelled while the creation call
-runs keeps its slot until that call returns: the abandoned-spawn callback
-records the late child in the slot, sends SIGKILL to its group (to the child
-alone without spawn-time witnesses) and then releases it; if that end raises,
-the slot is kept for the child in the same way.
-A spawn task that is itself cancelled hands back no pid, so only
-the direct child's transport is closed before the slot is released.
+Before an OS spawn attempt, the executable is resolved using the child's
+environment `PATH` and working directory, with `os.defpath` when `PATH` is absent.
+An absolute or relative executable path must exist and permit execution. An
+unresolvable or non-executable command is a pre-attempt refusal: no subprocess
+creation is called and the unused admission capacity is returned. The stdin
+payload is also encoded before admission, so encoding failure starts no child.
+
+After an attempt, a missing handle or unconfirmed group cleanup keeps the
+spawning process's admission locks until that process exits. This includes a
+binary removed between the executable check and the actual spawn: the earlier
+check does not prove that the later attempt created no child. The original
+exception or cancellation is preserved, with the safe held-pool diagnostic.
+These are holder locks, not locks transferred to a child that may already have
+exited. In a resident host they continue to consume machine-wide capacity;
+refusing common missing-executable cases before the attempt avoids consuming
+that capacity for a command known not to be executable.
 
 `iModel.stream()` re-raises every stream failure as a `ValueError` whose
 `__cause__` is the provider's error. `li agent` walks that chain: a refusal

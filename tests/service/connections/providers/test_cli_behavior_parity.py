@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -670,7 +671,7 @@ async def test_a_cli_failed_call_keeps_the_provider_session_it_ran_in(
 async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
     """tail_repair callback is invoked on a malformed final JSON fragment and
     the repaired dict is yielded rather than silently dropped."""
-    from lionagi.providers._cli_subprocess import ndjson_from_cli
+    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     malformed = b'{"type": "done", "missing_close":'
 
@@ -694,9 +695,18 @@ async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
         return repaired_obj
 
     collected = []
-    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        patch(
+            "lionagi.providers._cli_subprocess.observe_spawned",
+            side_effect=lambda pid, *, expected_marker: SpawnedProcess(
+                pid=pid, pgid=pid, create_time=None
+            ),
+        ),
+        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+    ):
         async with __import__("contextlib").aclosing(
-            ndjson_from_cli(["fake-cli"], tail_repair=_repair)
+            ndjson_from_cli([sys.executable], tail_repair=_repair)
         ) as stream:
             async for obj in stream:
                 collected.append(obj)
@@ -711,7 +721,7 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
     """Without tail_repair the malformed tail is logged and dropped (default)."""
     import logging
 
-    from lionagi.providers._cli_subprocess import ndjson_from_cli
+    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     malformed = b'{"type": "bad"'
 
@@ -729,9 +739,20 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
         return proc
 
     collected = []
-    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        patch(
+            "lionagi.providers._cli_subprocess.observe_spawned",
+            side_effect=lambda pid, *, expected_marker: SpawnedProcess(
+                pid=pid, pgid=pid, create_time=None
+            ),
+        ),
+        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+    ):
         with caplog.at_level(logging.ERROR):
-            async with __import__("contextlib").aclosing(ndjson_from_cli(["fake-cli"])) as stream:
+            async with __import__("contextlib").aclosing(
+                ndjson_from_cli([sys.executable])
+            ) as stream:
                 async for obj in stream:
                     collected.append(obj)
 
@@ -876,7 +897,7 @@ async def test_pi_ndjson_passes_inherit_stdin():
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
     """When stdin=_INHERIT_STDIN the helper must NOT pass stdin to create_subprocess_exec."""
-    from lionagi.providers._cli_subprocess import _INHERIT_STDIN, ndjson_from_cli
+    from lionagi.providers._cli_subprocess import _INHERIT_STDIN, SpawnedProcess, ndjson_from_cli
 
     captured_kwargs: list[dict] = []
 
@@ -894,9 +915,18 @@ async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
         proc.kill = MagicMock()
         return proc
 
-    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        patch(
+            "lionagi.providers._cli_subprocess.observe_spawned",
+            side_effect=lambda pid, *, expected_marker: SpawnedProcess(
+                pid=pid, pgid=pid, create_time=None
+            ),
+        ),
+        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+    ):
         async with __import__("contextlib").aclosing(
-            ndjson_from_cli(["fake-cli"], stdin=_INHERIT_STDIN)
+            ndjson_from_cli([sys.executable], stdin=_INHERIT_STDIN)
         ) as stream:
             async for _ in stream:
                 pass
@@ -912,7 +942,7 @@ async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_devnull_passes_stdin_devnull():
     """Default stdin=DEVNULL must be forwarded to create_subprocess_exec (Claude/Codex)."""
-    from lionagi.providers._cli_subprocess import ndjson_from_cli
+    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     captured_kwargs: list[dict] = []
 
@@ -930,8 +960,17 @@ async def test_ndjson_from_cli_devnull_passes_stdin_devnull():
         proc.kill = MagicMock()
         return proc
 
-    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-        async with __import__("contextlib").aclosing(ndjson_from_cli(["fake-cli"])) as stream:
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        patch(
+            "lionagi.providers._cli_subprocess.observe_spawned",
+            side_effect=lambda pid, *, expected_marker: SpawnedProcess(
+                pid=pid, pgid=pid, create_time=None
+            ),
+        ),
+        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+    ):
+        async with __import__("contextlib").aclosing(ndjson_from_cli([sys.executable])) as stream:
             async for _ in stream:
                 pass
 

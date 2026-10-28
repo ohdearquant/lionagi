@@ -73,8 +73,8 @@ sources (`lionagi/studio/config.py:653`, `lionagi/studio/config.py:709`, `lionag
 the embedded task. A recent-file window does not cap an active transcript's lifetime length.
 
 Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
-(`lionagi/cli/_runs.py:2023`); flow branches share a session progression
-(`lionagi/cli/orchestrate/_orchestration.py:2202`); run import can create or replace complete
+(`lionagi/cli/_runs.py:2094-2095`); flow branches share a session progression
+(`lionagi/cli/orchestrate/_orchestration.py:2252`); run import can create or replace complete
 unbounded orders (`lionagi/cli/state.py:247`, `lionagi/cli/state.py:284`). The small current population justifies a
 staged rollout, not a permanent assumption that these histories remain small.
 
@@ -414,7 +414,7 @@ Keeping that column current would retain the performance defect.
    unrelated-message selectivity. An ordinal primary key alone does not satisfy this obligation.
    If the required plan cannot be obtained, that consumer's cutover remains disabled until an
    equivalent indexed read design is accepted; silently changing stream order is prohibited.
-4. **Full readers and last-ID consumers.** Route `lionagi/cli/_runs.py:1000`, `lionagi/cli/_runs.py:2039` and
+4. **Full readers and last-ID consumers.** Route `lionagi/cli/_runs.py:1001`, `lionagi/cli/_runs.py:2108` and
    `lionagi/cli/_context_from.py:193` through complete authority. Replace the last-ID-only load
    at `lionagi/state/_mirror_common.py:315` with an indexed one-item tail. Do not describe
    intentionally complete reconstruction or role aggregation as constant-time work.

@@ -3896,6 +3896,8 @@ async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypa
         )
 
         assert ctx is not None
+        assert ctx["worker_spawn_owner"] is None
+        assert ctx["worker_spawns_unrecorded"] is True
         assert lookups == []
         assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(1,)]
         assert _rows(store, f"SELECT name, model, provider, agent_name, {OWNER} FROM branches") == [
@@ -3945,6 +3947,8 @@ async def test_native_agent_setup_reaches_no_store_beside_its_own(tmp_path, monk
         )
 
         assert ctx is not None
+        assert ctx["worker_spawn_owner"] is not None
+        assert ctx["worker_spawns_unrecorded"] is False
         assert lookups == []
         session = await handle.get_session(ctx["session_id"])
         assert (session["status"], session["status_reason_code"]) == ("running", "run.started.ok")

@@ -32,6 +32,7 @@ from lionagi.cli.orchestrate._control import (
 )
 from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.state.db import StateDB
+from tests.cli._worker_fixtures import WorkerSetup
 
 # These tests run on asyncio only: the agent CLI and the state store it writes
 # to (aiosqlite) are asyncio code.
@@ -913,10 +914,14 @@ async def test_the_runner_sweeps_after_it_terminalizes_not_before(
         async def fake_operate(self, instruction=None, **kw):
             return "done"
 
+        worker_setup = WorkerSetup(sid)
+
         async def fake_setup(*a, **kw):
-            return {"db": db, "session_id": sid}
+            context = await worker_setup.setup(*a, **kw)
+            return {**context, "db": db}
 
         async def fake_teardown(ctx, *, status="completed", **kw):
+            await worker_setup.teardown(ctx, status=status, **kw)
             # What the real teardown does that matters here: the session's
             # terminal transition.
             await _terminalize(db, sid)
@@ -1316,13 +1321,17 @@ async def test_the_sweep_survives_the_teardown_closing_the_handle_it_was_given(
         async def fake_operate(self, instruction=None, **kw):
             return "done"
 
+        worker_setup = WorkerSetup(sid)
+
         async def fake_setup(*a, **kw):
-            return {"db": db, "session_id": sid}
+            context = await worker_setup.setup(*a, **kw)
+            return {**context, "db": db}
 
         async def fake_teardown(ctx, *, status="completed", **kw):
             # Both halves of what the real teardown does to this path: the
             # terminal transition, and then closing the handle on the way out.
             nonlocal closed
+            await worker_setup.teardown(ctx, status=status, **kw)
             await _terminalize(db, sid)
             await db.close()
             closed = True
@@ -1400,14 +1409,23 @@ async def test_the_runner_does_not_sweep_a_store_in_compatibility_mode(
     async def fake_operate(self, instruction=None, **kw):
         return "done"
 
+    worker_setup = WorkerSetup("s1")
+
     async def fake_setup(*a, **kw):
-        return {
-            "db": SimpleNamespace(compatibility=profile if compatibility else None),
-            "session_id": "s1",
-        }
+        if compatibility:
+            return {
+                "db": SimpleNamespace(compatibility=profile),
+                "session_id": "s1",
+                "worker_spawn_owner": None,
+                "worker_spawns_unrecorded": True,
+            }
+        context = await worker_setup.setup(*a, **kw)
+        return {**context, "db": SimpleNamespace(compatibility=None)}
 
     async def fake_teardown(ctx, *, status="completed", **kw):
-        return status
+        if compatibility:
+            return status
+        return await worker_setup.teardown(ctx, status=status, **kw)
 
     async def no_drain(*a, **kw):
         return None
@@ -1651,7 +1669,8 @@ async def test_a_resume_that_does_not_reopen_keeps_the_row_declaration_one_gap_o
     """
     import lionagi.cli._runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-noreopen")
 
@@ -1664,33 +1683,53 @@ async def test_a_resume_that_does_not_reopen_keeps_the_row_declaration_one_gap_o
     )
     assert first is not None
     session_id = first["session_id"]
-    await first["db"].close()
+    snapshot = branch.to_dict()
+    handoff_status = await teardown_agent_persist(first, status="timed_out", defer_terminal=True)
+    assert handoff_status == "timed_out"
+    continuation = _prepare_worker_spawn_continuation(
+        first["worker_spawn_owner"], db_close_witness=first["worker_spawn_db_closed"]
+    )
 
-    # Deliberately NOT terminalized: the row still reads running, which is both
-    # what a live leg looks like and what a leg that died leaves behind.
+    # Deferred teardown keeps this execution's running row and generation;
+    # the next leg joins it through the authenticated handoff above.
     async with StateDB() as db:
         assert (await db.get_session(session_id))["status"] == "running"
+        admitted = await db.get_session(session_id)
+        assert admitted["cli_worker_generation"] == first["worker_spawn_owner"].generation_id
+        assert admitted["run_id"] == "20260802T000000-noreopen"
+        assert (await db.get_branch(str(branch.id)))["session_id"] == session_id
 
+    resumed_branch = Branch.from_dict(snapshot)
+    assert str(resumed_branch.id) == str(branch.id)
+    assert resumed_branch._owning_session_id is None
     second = await setup_agent_persist(
-        Branch.from_dict(branch.to_dict()),
+        resumed_branch,
         agent_name="claude",
         share_db=False,
         drains_controls=declared_by_the_resumer,
+        _worker_spawn_continuation=continuation,
     )
     assert second is not None
-    assert second["session_id"] == session_id, "this did not adopt the row, so it proves nothing"
-    await second["db"].close()
+    try:
+        assert second["session_id"] == session_id, (
+            "this did not adopt the row, so it proves nothing"
+        )
+        assert (
+            second["worker_spawn_owner"].generation_id == first["worker_spawn_owner"].generation_id
+        )
 
-    async with StateDB() as db:
-        row = await db.get_session(session_id)
-    assert _runner_drains_controls(row) is declared_by_the_first_leg, (
-        "the row was rewritten; this path is supposed to leave it alone"
-    )
+        async with StateDB() as db:
+            row = await db.get_session(session_id)
+        assert _runner_drains_controls(row) is declared_by_the_first_leg, (
+            "the row was rewritten; this path is supposed to leave it alone"
+        )
 
-    _message, exit_code = await _enqueue_control_inner(
-        entity_id=session_id, verb="message", payload={"text": "steer"}
-    )
-    assert (exit_code == 0) is admits, _message
+        _message, exit_code = await _enqueue_control_inner(
+            entity_id=session_id, verb="message", payload={"text": "steer"}
+        )
+        assert (exit_code == 0) is admits, _message
+    finally:
+        await teardown_agent_persist(second, status="timed_out", defer_terminal=True)
 
 
 @pytest.mark.asyncio
@@ -1715,7 +1754,8 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
 
     import lionagi.cli._runs as runs_mod
     from lionagi import Branch
-    from lionagi.cli._runs import setup_agent_persist
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-undeclared")
 
@@ -1725,12 +1765,22 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
     )
     assert first is not None
     session_id = first["session_id"]
-    await first["db"].close()
+    snapshot = branch.to_dict()
+    handoff_status = await teardown_agent_persist(first, status="timed_out", defer_terminal=True)
+    assert handoff_status == "timed_out"
+    continuation = _prepare_worker_spawn_continuation(
+        first["worker_spawn_owner"], db_close_witness=first["worker_spawn_db_closed"]
+    )
 
     # Turn it into a row that predates the field. Removing the key is the point:
     # writing False instead would test the case the parametrized test already
     # covers, and absent is the state this one exists to distinguish.
     async with StateDB() as db:
+        admitted = await db.get_session(session_id)
+        assert admitted["status"] == "running"
+        assert admitted["cli_worker_generation"] == first["worker_spawn_owner"].generation_id
+        assert admitted["run_id"] == "20260802T000000-undeclared"
+        assert (await db.get_branch(str(branch.id)))["session_id"] == session_id
         meta = dict((await db.get_session(session_id)).get("node_metadata") or {})
         meta.pop("drains_controls", None)
         await db.update_session(session_id, node_metadata=_json.dumps(meta))
@@ -1740,41 +1790,52 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
             "the row still declares, so the rest of this test would prove nothing"
         )
 
+    resumed_branch = Branch.from_dict(snapshot)
+    assert str(resumed_branch.id) == str(branch.id)
+    assert resumed_branch._owning_session_id is None
     second = await setup_agent_persist(
-        Branch.from_dict(branch.to_dict()),
+        resumed_branch,
         agent_name="claude",
         share_db=False,
         drains_controls=True,
+        _worker_spawn_continuation=continuation,
     )
     assert second is not None
-    assert second["session_id"] == session_id, "this did not adopt the row, so it proves nothing"
-    await second["db"].close()
+    try:
+        assert second["session_id"] == session_id, (
+            "this did not adopt the row, so it proves nothing"
+        )
+        assert (
+            second["worker_spawn_owner"].generation_id == first["worker_spawn_owner"].generation_id
+        )
 
-    async with StateDB() as db:
-        row = await db.get_session(session_id)
-    after = row["node_metadata"] or {}
-    assert "drains_controls" not in after, (
-        "the non-reopening path wrote a declaration; it is documented as writing nothing"
-    )
-    # The owner gate runs first and returns the same nonzero code, so without
-    # this the whole test passes on a row that lost its run_id and never
-    # reached the predicate under test. Verified by mutation: stripping run_id
-    # at creation leaves every other assertion here satisfied.
-    assert row["run_id"] == "20260802T000000-undeclared", (
-        "the row lost its run_id, so a refusal below proves nothing about the declaration"
-    )
+        async with StateDB() as db:
+            row = await db.get_session(session_id)
+        after = row["node_metadata"] or {}
+        assert "drains_controls" not in after, (
+            "the non-reopening path wrote a declaration; it is documented as writing nothing"
+        )
+        # The owner gate runs first and returns the same nonzero code, so without
+        # this the whole test passes on a row that lost its run_id and never
+        # reached the predicate under test. Verified by mutation: stripping run_id
+        # at creation leaves every other assertion here satisfied.
+        assert row["run_id"] == "20260802T000000-undeclared", (
+            "the row lost its run_id, so a refusal below proves nothing about the declaration"
+        )
 
-    message, exit_code = await _enqueue_control_inner(
-        entity_id=session_id, verb="message", payload={"text": "steer"}
-    )
-    assert exit_code != 0, (
-        "a row carrying no declaration must refuse however capable the leg adopting it is"
-    )
-    assert "does not consume operator controls" in message, (
-        f"refused by a different gate than the one under test: {message}"
-    )
-    async with StateDB() as db:
-        assert await db.list_pending_session_controls(session_id) == []
+        message, exit_code = await _enqueue_control_inner(
+            entity_id=session_id, verb="message", payload={"text": "steer"}
+        )
+        assert exit_code != 0, (
+            "a row carrying no declaration must refuse however capable the leg adopting it is"
+        )
+        assert "does not consume operator controls" in message, (
+            f"refused by a different gate than the one under test: {message}"
+        )
+        async with StateDB() as db:
+            assert await db.list_pending_session_controls(session_id) == []
+    finally:
+        await teardown_agent_persist(second, status="timed_out", defer_terminal=True)
 
 
 @pytest.mark.asyncio
@@ -1901,11 +1962,15 @@ async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
         async def fake_operate(self, instruction=None, **kw):
             return "done"
 
+        worker_setup = WorkerSetup(sid)
+
         async def fake_setup(*a, **kw):
-            return {"db": db, "session_id": sid}
+            context = await worker_setup.setup(*a, **kw)
+            return {**context, "db": db}
 
         async def fake_teardown(ctx, *, status="completed", **kw):
             nonlocal opened_after_teardown
+            await worker_setup.teardown(ctx, status=status, **kw)
             await _terminalize(db, sid)
             await db.close()
             opened_after_teardown = True

@@ -24,6 +24,7 @@ from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.ln.concurrency import move_on_after
 from lionagi.state import engine as state_engine
 from lionagi.state.db import StateDB
+from tests.cli._worker_fixtures import create_worker_session
 from tests.cli.orchestrate.test_control_poller import _FakeExecutor, _make_session, _queue_control
 from tests.cli.orchestrate.test_control_poller_lifecycle import _plan_and_dag
 from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
@@ -103,18 +104,13 @@ async def test_foreground_prints_persisted_session_before_inner_run(
     async def start(env, **kwargs):
         db = StateDB(db_path)
         await db.open()
-        sid = await _make_session(db)
+        ctx = await create_worker_session(db, run_id=env.run.run_id)
+        sid = ctx["session_id"]
         assert kwargs["extra_node_metadata"]["flow_control_poller"] == "pending"
         await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
         if invocation_id:
             await db.update_session(sid, invocation_id=invocation_id)
-        row = await db.get_session(sid)
-        env._live_persist = {
-            "db": db,
-            "session_id": sid,
-            "session_prog_id": row["progression_id"],
-            "shared_db_registered": False,
-        }
+        env._live_persist = {**ctx, "shared_db_registered": False}
         env.test_session_id = sid
 
     async def inner(*args, **kwargs):
@@ -488,16 +484,11 @@ async def test_teardown_opens_the_store_writable_only_with_a_control_to_close(
     async def start(env, **kwargs):
         db = StateDB(db_path)
         await db.open()
-        sid = await _make_session(db)
+        ctx = await create_worker_session(db, run_id=env.run.run_id)
+        sid = ctx["session_id"]
         await db.update_session(sid, invocation_kind="flow")
         await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
-        row = await db.get_session(sid)
-        env._live_persist = {
-            "db": db,
-            "session_id": sid,
-            "session_prog_id": row["progression_id"],
-            "shared_db_registered": False,
-        }
+        env._live_persist = {**ctx, "shared_db_registered": False}
         env.test_session_id = sid
 
     async def inner(*args, **kwargs):
@@ -549,16 +540,11 @@ async def test_teardown_closes_controls_even_when_its_status_write_raises(
     async def start(env, **kwargs):
         db = StateDB(db_path)
         await db.open()
-        sid = await _make_session(db)
+        ctx = await create_worker_session(db, run_id=env.run.run_id)
+        sid = ctx["session_id"]
         await db.update_session(sid, invocation_kind="flow")
         await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
-        row = await db.get_session(sid)
-        env._live_persist = {
-            "db": db,
-            "session_id": sid,
-            "session_prog_id": row["progression_id"],
-            "shared_db_registered": False,
-        }
+        env._live_persist = {**ctx, "shared_db_registered": False}
         env.test_session_id = sid
 
     async def inner(*args, **kwargs):
@@ -935,10 +921,12 @@ async def test_double_native_cancel_has_no_standalone_phase_clear_barrier(
     async def start(env, **kwargs):
         db = StateDB(db_path)
         await db.open()
-        sid = await _make_session(db)
+        ctx = await create_worker_session(db, run_id=env.run.run_id)
+        sid = ctx["session_id"]
         env.test_db = db
         env.test_session_id = sid
-        env._live_persist = {"db": db, "session_id": sid}
+        env._live_persist = {**ctx, "shared_db_registered": False}
+        env.test_worker_owner = ctx["worker_spawn_owner"]
         original_update = db.update_session
 
         async def update(session_id, **fields):
@@ -987,6 +975,7 @@ async def test_double_native_cancel_has_no_standalone_phase_clear_barrier(
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if getattr(env, "test_db", None) is not None:
+            await env.test_worker_owner.aclose()
             await env.test_db.close()
 
 
@@ -1191,16 +1180,11 @@ async def test_teardown_closes_a_control_its_poller_never_applied(db_path, tmp_p
     async def start(env, **kwargs):
         db = StateDB(db_path)
         await db.open()
-        sid = await _make_session(db)
+        ctx = await create_worker_session(db, run_id=env.run.run_id)
+        sid = ctx["session_id"]
         await db.update_session(sid, invocation_kind="flow")
         await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
-        row = await db.get_session(sid)
-        env._live_persist = {
-            "db": db,
-            "session_id": sid,
-            "session_prog_id": row["progression_id"],
-            "shared_db_registered": False,
-        }
+        env._live_persist = {**ctx, "shared_db_registered": False}
         env.test_session_id = sid
 
     async def inner(*args, **kwargs):

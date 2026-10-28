@@ -74,6 +74,32 @@ process. Unsupported compatibility profiles refuse them before SQL. A version-4
 native writable open refuses a version-5 store with `SchemaTooNewError`; read-only
 inspection retains its existing no-migration behavior.
 
+Persisted CLI producers install one generation before any setup hook or worker
+can spawn. A fresh execution writes it with the session row; a terminal agent
+resume adopts the existing session key and replaces the generation in the same
+status write that reopens it. Knowing a running session's key and generation
+does not authorize a separate invocation to join it. The automatic timeout
+continuation is a private, single-use in-process handoff: the parent first drains
+its owned work and closes its exact database handle, and the child checks that
+the same session is still running under the same generation. The child retains
+that session and generation while using its own diagnostic run ID.
+
+A recorder is scoped to that admitted execution. Agent setup hooks and turns,
+flow/fanout planning, workers and synthesis, and CLI engine workers use the
+owning persisted session; an engine uses its signal-session row rather than a
+parent association or an in-memory run ID. A background flow binds in its
+detached runner, not in the launcher. Descendant provider calls inherit the
+binding. The adapter in `lionagi/state/cli_workers.py` translates observed
+identity facts into the store's producer fields; providers depend only on the
+context-local recorder protocol and do not import StateDB.
+
+Registration completes before provider output is exposed. Admission closes and
+all admitted spawn, registration and late-cleanup tasks drain before terminal
+status writes or database close. Cancellation is propagated after that drain;
+it does not turn a failed terminal write into a durable cancelled status.
+Recording and draining do not settle worker records or add recovered-process
+signalling to `li kill`.
+
 Three kinds of schema change show up in the code:
 
 - **In-place table rebuilds**, used when SQLite's lack of `ALTER TABLE ...
