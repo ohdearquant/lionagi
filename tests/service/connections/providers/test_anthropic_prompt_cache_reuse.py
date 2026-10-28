@@ -358,6 +358,15 @@ def test_a_side_request_places_only_the_stable_mark():
     assert sorted(_ttls(record)) == [1]
 
 
+def test_a_side_request_reads_and_probes_no_conversation_entry():
+    payload = _payload(30, tools=False)
+    ledger = _ledger(_row(payload, 5), _row(payload, 10, process="another process"))
+    _, record = _place(payload, ledger, intent="side")
+
+    assert sorted(_ttls(record)) == [1]
+    assert "target" not in record
+
+
 def test_a_request_built_outside_a_call_marks_the_turn_and_the_stable_end():
     record = planner.place(_payload(30, tools=False), None)
 
@@ -572,6 +581,17 @@ def test_an_attempt_without_complete_usage_is_unevaluated_and_writes_nothing(api
     assert ledger == before
 
 
+def test_a_completed_request_drops_the_rows_that_have_expired():
+    payload = _payload(100, tools=False)
+    expired = _row(payload, 40, age=400.0)
+    ledger = _ledger(expired)
+    call, _ = _place(payload, ledger)
+    _attempt(call)
+    settle(call, _completed(creation=900))
+
+    assert expired[0] not in ledger["entries"]
+
+
 def test_an_excluded_attempt_records_its_read_size_without_a_verdict():
     payload = _payload(100, tools=False)
     call, _ = _place(payload, _ledger())
@@ -591,6 +611,19 @@ def test_an_equal_read_refreshes_only_the_entry_a_mark_reaches():
 
     assert record["hit"] == {"identified": inside[0]}
     assert ledger["entries"][outside[0]]["hit_at"] is None
+
+
+def test_an_entry_held_on_another_account_is_never_identified_as_this_attempts_hit(routes):
+    routes("A", "B")
+    payload = _payload(50, tools=False)
+    cert, row = _row(payload, 40, length=500, on=("A",))
+    ledger = _ledger((cert, row))
+    call, _ = _place(payload, ledger)
+    _attempt(call, "B")
+    record = settle(call, _completed(read=500, creation=100))
+
+    assert record["hit"] == "unidentified"
+    assert ledger["entries"][cert]["hit_at"] is None
 
 
 def test_a_deeper_reached_entry_of_unknown_length_leaves_the_hit_unidentified():
