@@ -13,6 +13,7 @@ from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
 from lionagi.models.field_model import FieldModel
 from lionagi.providers._provider_errors import ProviderError
+from lionagi.service._prompt_cache import cache_intent
 from lionagi.service.imodel import iModel
 
 from .._defaults import make_parse_param
@@ -638,10 +639,13 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
                 operate_kwargs[param] = resp_ctx[param]
 
     try:
-        if "context" in resp_ctx_updates:  # the final call's own context, not the caller's
-            out = await operate(**operate_kwargs)
-        else:
-            out = await _context_once(operate, **operate_kwargs)
+        # The answer ends the loop: its request reads what the rounds cached and writes no
+        # entry of its own.
+        with cache_intent("final"):
+            if "context" in resp_ctx_updates:  # the final call's own context, not the caller's
+                out = await operate(**operate_kwargs)
+            else:
+                out = await _context_once(operate, **operate_kwargs)
 
         if isinstance(out, dict) and all(i is None for i in out.values()):
             if not continue_after_failed_response:

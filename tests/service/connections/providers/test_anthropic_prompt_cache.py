@@ -361,8 +361,9 @@ def test_marks_inside_a_tool_result_count_toward_the_four():
 
     marks = [b for b in _blocks_with_nested_content(payload) if b.get("cache_control") is not None]
     assert len(marks) == 4
-    assert payload["system"][-1]["cache_control"] == ONE_HOUR
-    assert "cache_control" not in payload["messages"][-1]["content"][-1]
+    # The one free slot goes to the end of the turn, which outranks the stable segment.
+    assert payload["messages"][-1]["content"][-1]["cache_control"] == FIVE_MINUTES
+    assert "cache_control" not in payload["system"][-1]
 
 
 def _blocks_with_nested_content(payload):
@@ -496,9 +497,10 @@ def test_marks_the_caller_placed_count_toward_the_four(caller_marks):
 
     marks = _marks(payload)
     assert len(marks) == 4
-    # The one-hour mark is placed first while there is room, so it comes before every other mark.
-    assert (marks[0] == ONE_HOUR) is (caller_marks < 4)
-    assert ("cache_control" in payload["messages"][-1]["content"][-1]) is (caller_marks < 3)
+    # The end of the turn takes the first free slot and the one-hour stable mark the next;
+    # the stable mark sits ahead of every other mark in the request.
+    assert ("cache_control" in payload["messages"][-1]["content"][-1]) is (caller_marks < 4)
+    assert (marks[0] == ONE_HOUR) is (caller_marks < 3)
 
 
 # --- option on, declaration absent ---

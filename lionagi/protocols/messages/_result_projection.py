@@ -15,6 +15,10 @@ from typing import Any
 
 __all__ = ()
 
+# Bumped when the projection renders the same result and bound differently; a protected first
+# round records the version it was decided under (ADR-0130 Amendment 4).
+PROJECTION_VERSION = 1
+
 
 @dataclass(frozen=True)
 class _ResultBody:

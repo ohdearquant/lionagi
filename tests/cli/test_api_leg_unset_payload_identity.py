@@ -30,6 +30,7 @@ from lionagi.providers.anthropic.messages import (
     AnthropicMessagesEndpoint,
     CreateMessageRequest,
 )
+from lionagi.service._prompt_cache import cache_anchors, protection
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import CodingToolkit
@@ -337,6 +338,24 @@ async def test_unset_api_leg_payload_bytes(
         index = branch.msgs.progression.index(original.id)
         cap = math.ceil(estimate_next_request_tokens(branch) / 0.8)
         fold = ContextFold(branch, cap=cap)
+        if branch.chat_model.endpoint.places_prompt_cache:
+            # The read is in the first round, which every fold leaves alone until a request
+            # decides it (ADR-0130 Amendment 4); decide it as the next request's compile would.
+            view: dict = {}
+            _instruction, request = _prepare_run_kwargs(
+                branch,
+                None,
+                ChatParam.from_branch(branch),
+                ins=next(
+                    branch.msgs.messages[uid]
+                    for uid in reversed(list(branch.progression))
+                    if isinstance(branch.msgs.messages[uid], Instruction)
+                ),
+                imodel=branch.chat_model,
+                cache_view=view,
+            )
+            cache_anchors(branch.metadata, view, request["messages"], branch._prompt_cache_protect)
+            assert protection(branch.metadata)["included"] is False
         assert await fold._clip_once("threshold")
         assert fold.records[-1]["outcome"] == "landed"
         assert fold.records[-1]["estimate_after"] < fold.records[-1]["estimate_before"]
