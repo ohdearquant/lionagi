@@ -92,6 +92,10 @@ class AgentSpec(HooksMixin):
     # its requests unchanged, as the option does everywhere.
     prompt_caching: bool = False
     command_env_allowlist: tuple[str, ...] = ()
+    # The output-token limit set on the API model create_agent builds, in the
+    # request field the endpoint names ``max_tokens``. None sets nothing, so the
+    # provider's own default applies (Anthropic's endpoint sends 8192 then).
+    max_tokens: int | None = None
 
     @classmethod
     def compose(
@@ -113,6 +117,7 @@ class AgentSpec(HooksMixin):
         contain_account_integrations: bool = False,
         prompt_caching: bool = False,
         command_env_allowlist: tuple[str, ...] = (),
+        max_tokens: int | None = None,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
         from lionagi._command_env import normalize_command_env_allowlist
@@ -135,6 +140,7 @@ class AgentSpec(HooksMixin):
             contain_account_integrations=contain_account_integrations,
             prompt_caching=prompt_caching,
             command_env_allowlist=normalize_command_env_allowlist(command_env_allowlist),
+            max_tokens=max_tokens,
         )
 
     @classmethod
@@ -184,6 +190,11 @@ class AgentSpec(HooksMixin):
                 got = "no value" if value is None else type(value).__name__
                 raise ValueError(f"{key} must be true or false, got {got}")
             flags[key] = value
+        max_tokens = data.get("max_tokens")
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1
+        ):
+            raise ValueError(f"max_tokens must be a positive integer, got {max_tokens!r}")
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
@@ -196,6 +207,7 @@ class AgentSpec(HooksMixin):
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
             command_env_allowlist=data.get("command_env_allowlist", ()),
+            max_tokens=max_tokens,
             **flags,
         )
         # compose() defaults lion_system to True, so a saved False must be
@@ -252,6 +264,8 @@ class AgentSpec(HooksMixin):
             data["contain_account_integrations"] = True
         if self.prompt_caching:
             data["prompt_caching"] = True
+        if self.max_tokens is not None:
+            data["max_tokens"] = self.max_tokens
         if isinstance(self.khive_injection, (bool, dict)):
             data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:

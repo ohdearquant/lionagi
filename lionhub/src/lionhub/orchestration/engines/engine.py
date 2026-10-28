@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import Semaphore, gather, move_on_after, sleep
@@ -717,6 +718,7 @@ class EngineRun:
         modes: list[str] | None = None,
         model: str | None = None,
         effort: str | None = None,
+        max_tokens: int | None = None,
         tools: tuple[str, ...] = (),
         emits: tuple[type, ...] = (),
         permissions: Any = None,
@@ -759,6 +761,7 @@ class EngineRun:
         prof_model, prof_effort = role_profile_route(role)
         resolved_model = model or self.engine.model or prof_model
         resolved_effort = effort or self.engine.effort
+        resolved_max_tokens = max_tokens if max_tokens is not None else self.engine.max_tokens
         if not resolved_effort and resolved_model:
             from lionagi.service.providers import parse_model_spec  # noqa: PLC0415
 
@@ -792,6 +795,7 @@ class EngineRun:
             yolo=self.engine.yolo,
             contain_account_integrations=built_under[1],
             prompt_caching=bool(self.engine.prompt_caching),
+            max_tokens=resolved_max_tokens,
             command_env_allowlist=command_env_allowlist,
         )
         if mcp_servers is not None:
@@ -1803,6 +1807,13 @@ class EngineResult(str):
 _JUDGE_CHAIN_LIMIT = 100
 
 
+def check_max_tokens(name: str, value: Any) -> int:
+    """*value* as an output-token limit: a positive int (a bool is not one)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigurationError(f"{name} must be a positive integer, got {value!r}")
+    return value
+
+
 class Engine:
     """Stateless event-driven engine base; subclasses implement ``_run()``. See docs/reference/engines.md for parameter details."""
 
@@ -1830,6 +1841,7 @@ class Engine:
         yolo: bool = False,
         contain_account_integrations: bool = False,
         prompt_caching: bool = False,
+        max_tokens: int | None = None,
         emission_reply_text: bool = False,
         fallback_deadline_s: float | None = None,
     ) -> None:
@@ -1880,6 +1892,10 @@ class Engine:
         # (a CLI agent) sends its requests unchanged. Workers cloned from those
         # agents share an API model by reference, so they cache too.
         self.prompt_caching = prompt_caching
+        # Output-token limit for every API agent model make_agent builds, unless the
+        # call names its own. None leaves the provider's default (Anthropic: 8192).
+        # A CLI agent has no such limit and refuses it at build.
+        self.max_tokens = None if max_tokens is None else check_max_tokens("max_tokens", max_tokens)
         # Put the leg's last reply text (capped at RAW_RESPONSE_TEXT_CAP) on the
         # emission_repair / emission_missing events. Off by default: the text can
         # quote the diff or context the leg was given, and every on_event sink
