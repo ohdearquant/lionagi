@@ -22,7 +22,13 @@ from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, Lio
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln import coerce_created_at
-from lionagi.ln.concurrency import CancelScope, current_time, move_on_after, sleep
+from lionagi.ln.concurrency import (
+    CancelScope,
+    cancelled_exc_classes,
+    current_time,
+    move_on_after,
+    sleep,
+)
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
@@ -3104,404 +3110,440 @@ async def _run_flow(
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
-    stamp_worker_depth()
+    from lionagi._cli_worker_context import _bind_cli_worker_recorder
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
-    if "max_agents" in legacy_kwargs and max_ops == 0:
-        max_ops = legacy_kwargs.pop("max_agents")
-    elif "max_agents" in legacy_kwargs:
-        legacy_kwargs.pop("max_agents")
-    if legacy_kwargs:
-        raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
+    with contextlib.ExitStack() as _worker_spawn_bindings:
+        _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))
+        stamp_worker_depth()
 
-    if invocation_id is not None:
-        await _validate_flow_invocation(invocation_id)
+        if "max_agents" in legacy_kwargs and max_ops == 0:
+            max_ops = legacy_kwargs.pop("max_agents")
+        elif "max_agents" in legacy_kwargs:
+            legacy_kwargs.pop("max_agents")
+        if legacy_kwargs:
+            raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
 
-    _started_at = time.time()
-    _invocation_kind = "play" if playbook_name else "flow"
-    # The directory this run resolves its MCP config from: the launching
-    # process's on a first run, the persisted one on a resume, so a resume
-    # started elsewhere searches where the original run searched.
-    mcp_launch_dir = mcp_launch_dir or os.getcwd()
+        if invocation_id is not None:
+            await _validate_flow_invocation(invocation_id)
 
-    # The checkpoint's own "config" replays THIS call's kwargs verbatim on
-    # --resume (dry_run/show_graph excluded — presentation flags, not "what
-    # happened"). Built unconditionally so a resumed run stays resumable.
-    _checkpoint_config = {
-        "model_spec": model_spec,
-        "with_synthesis": with_synthesis,
-        "synthesis_model": synthesis_model,
-        "max_concurrent": max_concurrent,
-        "yolo": yolo,
-        "bypass": bypass,
-        "verbose": verbose,
-        "effort": effort,
-        "theme": theme,
-        "output_format": output_format,
-        "save_dir": save_dir,
-        "team_name": team_name,
-        "team_attach": team_attach,
-        "team_max_rounds": team_max_rounds,
-        "cwd": cwd,
-        "timeout": timeout,
-        "agent_name": agent_name,
-        "bare": bare,
-        "workers_str": workers_str,
-        "max_ops": max_ops,
-        "reactive_spec": reactive_spec,
-        "fast": fast,
-        "playbook_name": playbook_name,
-        "playbook_artifacts": playbook_artifacts,
-        "invocation_id": invocation_id,
-        "project": project,
-        "pack": pack,
-        "mcp_config": _canonical_mcp_config(mcp_config, base=mcp_launch_dir),
-        "no_mcp_config": no_mcp_config,
-        "mcp_launch_dir": mcp_launch_dir,
-    }
+        _started_at = time.time()
+        _invocation_kind = "play" if playbook_name else "flow"
+        # The directory this run resolves its MCP config from: the launching
+        # process's on a first run, the persisted one on a resume, so a resume
+        # started elsewhere searches where the original run searched.
+        mcp_launch_dir = mcp_launch_dir or os.getcwd()
 
-    env = await setup_orchestration(
-        pattern_name="Flow",
-        model_spec=model_spec,
-        agent_name=agent_name,
-        save_dir=save_dir,
-        cwd=cwd,
-        yolo=yolo,
-        bypass=bypass,
-        verbose=verbose,
-        effort=effort,
-        theme=theme,
-        bare=bare,
-        fast=fast,
-        total_budget=timeout,
-        pack=pack,
-        mcp_config=mcp_config,
-        no_mcp_config=no_mcp_config,
-        mcp_launch_dir=mcp_launch_dir,
-    )
+        # The checkpoint's own "config" replays THIS call's kwargs verbatim on
+        # --resume (dry_run/show_graph excluded — presentation flags, not "what
+        # happened"). Built unconditionally so a resumed run stays resumable.
+        _checkpoint_config = {
+            "model_spec": model_spec,
+            "with_synthesis": with_synthesis,
+            "synthesis_model": synthesis_model,
+            "max_concurrent": max_concurrent,
+            "yolo": yolo,
+            "bypass": bypass,
+            "verbose": verbose,
+            "effort": effort,
+            "theme": theme,
+            "output_format": output_format,
+            "save_dir": save_dir,
+            "team_name": team_name,
+            "team_attach": team_attach,
+            "team_max_rounds": team_max_rounds,
+            "cwd": cwd,
+            "timeout": timeout,
+            "agent_name": agent_name,
+            "bare": bare,
+            "workers_str": workers_str,
+            "max_ops": max_ops,
+            "reactive_spec": reactive_spec,
+            "fast": fast,
+            "playbook_name": playbook_name,
+            "playbook_artifacts": playbook_artifacts,
+            "invocation_id": invocation_id,
+            "project": project,
+            "pack": pack,
+            "mcp_config": _canonical_mcp_config(mcp_config, base=mcp_launch_dir),
+            "no_mcp_config": no_mcp_config,
+            "mcp_launch_dir": mcp_launch_dir,
+        }
 
-    # `--notify` is compatibility sugar over the terminal-callback registry:
-    # registered against this run's own entity, unregistered in `finally`
-    # below. The handler fires from the same guarded lifecycle transition
-    # that persists the terminal status — no direct notify call at teardown.
-    _notify_scope_name: str | None = None
-    _notify_entity_kind = "invocation" if invocation_id else "session"
-    _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
-    if notify:
-        from lionagi.state.lifecycle.notify_settings import (
-            record_notify_rejection_to_run,
-        )
-
-        def _notify_override_refused(reason: str) -> None:
-            # This run explicitly asked for a notifier and will not get one.
-            # Recording it here is what keeps a refusal distinguishable from
-            # never having configured one; both otherwise register nothing.
-            record_notify_rejection_to_run(env.run, reason)
-
-        _notify_scope_name = register_flow_notify_scope(
-            override=notify,
-            entity_kind=_notify_entity_kind,
-            entity_id=_notify_entity_id,
-            invocation_id=invocation_id,
-            flow_kind=_invocation_kind,
-            playbook=playbook_name,
+        env = await setup_orchestration(
+            pattern_name="Flow",
+            model_spec=model_spec,
+            agent_name=agent_name,
             save_dir=save_dir,
-            cwd=cwd or os.getcwd(),
-            started_at=_started_at,
-            on_rejection=_notify_override_refused,
+            cwd=cwd,
+            yolo=yolo,
+            bypass=bypass,
+            verbose=verbose,
+            effort=effort,
+            theme=theme,
+            bare=bare,
+            fast=fast,
+            total_budget=timeout,
+            pack=pack,
+            mcp_config=mcp_config,
+            no_mcp_config=no_mcp_config,
+            mcp_launch_dir=mcp_launch_dir,
         )
 
-    # Bind this run into the notify.on_terminal handler at registration time so
-    # a late outcome lands here or nowhere, never on a later run. Skipped when
-    # --notify already owns this entity (a second override would double-fire).
-    from lionagi.state.lifecycle.notify_settings import (
-        register_run_notify_outcome_scope,
-        unregister_run_notify_outcome_scope,
-    )
+        # `--notify` is compatibility sugar over the terminal-callback registry:
+        # registered against this run's own entity, unregistered in `finally`
+        # below. The handler fires from the same guarded lifecycle transition
+        # that persists the terminal status — no direct notify call at teardown.
+        _notify_scope_name: str | None = None
+        _notify_entity_kind = "invocation" if invocation_id else "session"
+        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
+        if notify:
+            from lionagi.state.lifecycle.notify_settings import (
+                record_notify_rejection_to_run,
+            )
 
-    _notify_outcome_scope_name = (
-        None
-        if notify
-        else register_run_notify_outcome_scope(
-            env.run,
-            entity_kind=_notify_entity_kind,
-            entity_id=_notify_entity_id,
-            project_dir=cwd,
+            def _notify_override_refused(reason: str) -> None:
+                # This run explicitly asked for a notifier and will not get one.
+                # Recording it here is what keeps a refusal distinguishable from
+                # never having configured one; both otherwise register nothing.
+                record_notify_rejection_to_run(env.run, reason)
+
+            _notify_scope_name = register_flow_notify_scope(
+                override=notify,
+                entity_kind=_notify_entity_kind,
+                entity_id=_notify_entity_id,
+                invocation_id=invocation_id,
+                flow_kind=_invocation_kind,
+                playbook=playbook_name,
+                save_dir=save_dir,
+                cwd=cwd or os.getcwd(),
+                started_at=_started_at,
+                on_rejection=_notify_override_refused,
+            )
+
+        # Bind this run into the notify.on_terminal handler at registration time so
+        # a late outcome lands here or nowhere, never on a later run. Skipped when
+        # --notify already owns this entity (a second override would double-fire).
+        from lionagi.state.lifecycle.notify_settings import (
+            register_run_notify_outcome_scope,
+            unregister_run_notify_outcome_scope,
         )
-    )
 
-    _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
-
-    artifact_contract = None
-    if playbook_artifacts is not None or (
-        agent_name is not None and getattr(env.orc_profile, "artifact_defaults", None) is not None
-    ):
-        from lionagi.state.artifact_verifier import resolve_artifact_contract
-
-        agent_defaults = (
-            getattr(env.orc_profile, "artifact_defaults", None) if agent_name is not None else None
-        )
-        artifact_contract = resolve_artifact_contract(
-            playbook_artifacts=playbook_artifacts,
-            agent_defaults=agent_defaults,
+        _notify_outcome_scope_name = (
+            None
+            if notify
+            else register_run_notify_outcome_scope(
+                env.run,
+                entity_kind=_notify_entity_kind,
+                entity_id=_notify_entity_id,
+                project_dir=cwd,
+            )
         )
 
-    # Every flow run stamps its own run_id into node_metadata so a later
-    # --resume can resolve this session back to a checkpoint; a resumed run
-    # additionally links to the run it resumed from.
-    _extra_node_metadata: dict = {
-        "run_id": env.run.run_id,
-        "flow_control_poller": "pending",
-    }
-    if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
-        _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
+        _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
-    # start_live_persist resolves `project` (explicit arg, or detect_project()
-    # fallback) and stashes the RESOLVED value on env._project — what the
-    # session row actually gets — for _execute_dag's escalation-mirror-link
-    # hook, which runs deeper in the call chain and must inherit the same
-    # project the run itself was attributed, not re-guess from cwd.
-    await start_live_persist(
-        env,
-        invocation_kind=_invocation_kind,
-        playbook_name=playbook_name,
-        # The profile the run resolved, not the one this call named: a call that
-        # named neither an agent nor a model named none, and recording that
-        # `agent_name` would leave the record unable to say what it ran under.
-        agent_name=env.orc_profile_name,
-        artifacts_path=str(env.run.artifact_root),
-        invocation_id=invocation_id,
-        model=_orc_model,
-        provider=_orc_provider,
-        effort=getattr(env, "orc_effort", None),
-        project=project,
-        artifact_contract=artifact_contract,
-        extra_node_metadata=_extra_node_metadata,
-    )
+        artifact_contract = None
+        if playbook_artifacts is not None or (
+            agent_name is not None
+            and getattr(env.orc_profile, "artifact_defaults", None) is not None
+        ):
+            from lionagi.state.artifact_verifier import resolve_artifact_contract
 
-    if env._live_persist is not None:
-        from .._logging import hint
+            agent_defaults = (
+                getattr(env.orc_profile, "artifact_defaults", None)
+                if agent_name is not None
+                else None
+            )
+            artifact_contract = resolve_artifact_contract(
+                playbook_artifacts=playbook_artifacts,
+                agent_defaults=agent_defaults,
+            )
 
-        session_id = env._live_persist["session_id"]
-        hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")
+        # Every flow run stamps its own run_id into node_metadata so a later
+        # --resume can resolve this session back to a checkpoint; a resumed run
+        # additionally links to the run it resumed from.
+        _extra_node_metadata: dict = {
+            "run_id": env.run.run_id,
+            "flow_control_poller": "pending",
+        }
+        if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
+            _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
 
-    inner_kw = dict(
-        env=env,
-        with_synthesis=with_synthesis,
-        synthesis_model=synthesis_model,
-        max_concurrent=max_concurrent,
-        output_format=output_format,
-        team_name=team_name,
-        team_attach=team_attach,
-        team_max_rounds=team_max_rounds,
-        workers_str=workers_str,
-        max_ops=max_ops,
-        dry_run=dry_run,
-        show_graph=show_graph,
-        reactive_spec=reactive_spec,
-        resume_checkpoint=resume_checkpoint,
-        allow_degraded_context=allow_degraded_context,
-        retry_failed=retry_failed,
-        checkpoint_config=_checkpoint_config,
-    )
-    _terminal_status = "completed"
-    result: str = ""
-    try:
-        if timeout:
-            # Fix the deadline immediately before the scope whose clock it
-            # describes, and carry the instant rather than the duration.
-            # Deriving it later measures from whenever "later" happens to be,
-            # so every second spent planning pushed the deadline every op was
-            # told a second further out than the one this scope will actually
-            # enforce. Reading the clock just before entry rather than inside
-            # the scope leaves a gap of one context-manager entry, which makes
-            # the advertised deadline very slightly early; that is the safe
-            # direction, since an op told it has less time than the scope will
-            # allow finishes early instead of being cancelled mid-work.
-            env.budget_deadline_epoch = time.time() + timeout
-            with move_on_after(timeout) as cancel_scope:
+        # start_live_persist resolves `project` (explicit arg, or detect_project()
+        # fallback) and stashes the RESOLVED value on env._project — what the
+        # session row actually gets — for _execute_dag's escalation-mirror-link
+        # hook, which runs deeper in the call chain and must inherit the same
+        # project the run itself was attributed, not re-guess from cwd.
+        _terminal_status = "completed"
+        result: str = ""
+        _pending_worker_cancel = None
+        try:
+            await start_live_persist(
+                env,
+                invocation_kind=_invocation_kind,
+                playbook_name=playbook_name,
+                # The profile the run resolved, not the one this call named: a call that
+                # named neither an agent nor a model named none, and recording that
+                # `agent_name` would leave the record unable to say what it ran under.
+                agent_name=env.orc_profile_name,
+                artifacts_path=str(env.run.artifact_root),
+                invocation_id=invocation_id,
+                model=_orc_model,
+                provider=_orc_provider,
+                effort=getattr(env, "orc_effort", None),
+                project=project,
+                artifact_contract=artifact_contract,
+                extra_node_metadata=_extra_node_metadata,
+            )
+
+            _worker_owner = (env._live_persist or {}).get("worker_spawn_owner")
+            if (
+                env._live_persist is not None
+                and _worker_owner is None
+                and env._live_persist.get("worker_spawns_unrecorded") is not True
+            ):
+                raise _WorkerSpawnAdmissionError("persisted orchestration has no worker owner")
+            _worker_spawn_bindings.enter_context(
+                _worker_owner.bind()
+                if _worker_owner is not None
+                else _bind_cli_worker_recorder(None)
+            )
+            if env._live_persist is not None:
+                from .._logging import hint
+
+                session_id = env._live_persist["session_id"]
+                hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")
+
+            inner_kw = dict(
+                env=env,
+                with_synthesis=with_synthesis,
+                synthesis_model=synthesis_model,
+                max_concurrent=max_concurrent,
+                output_format=output_format,
+                team_name=team_name,
+                team_attach=team_attach,
+                team_max_rounds=team_max_rounds,
+                workers_str=workers_str,
+                max_ops=max_ops,
+                dry_run=dry_run,
+                show_graph=show_graph,
+                reactive_spec=reactive_spec,
+                resume_checkpoint=resume_checkpoint,
+                allow_degraded_context=allow_degraded_context,
+                retry_failed=retry_failed,
+                checkpoint_config=_checkpoint_config,
+            )
+            if timeout:
+                # Fix the deadline immediately before the scope whose clock it
+                # describes, and carry the instant rather than the duration.
+                # Deriving it later measures from whenever "later" happens to be,
+                # so every second spent planning pushed the deadline every op was
+                # told a second further out than the one this scope will actually
+                # enforce. Reading the clock just before entry rather than inside
+                # the scope leaves a gap of one context-manager entry, which makes
+                # the advertised deadline very slightly early; that is the safe
+                # direction, since an op told it has less time than the scope will
+                # allow finishes early instead of being cancelled mid-work.
+                env.budget_deadline_epoch = time.time() + timeout
+                with move_on_after(timeout) as cancel_scope:
+                    result = await _run_flow_inner(model_spec, prompt, **inner_kw)
+                if cancel_scope.cancelled_caught:
+                    _terminal_status = "timed_out"
+                    raise LionTimeoutError(f"Flow timed out after {timeout}s")
+            else:
                 result = await _run_flow_inner(model_spec, prompt, **inner_kw)
-            if cancel_scope.cancelled_caught:
-                _terminal_status = "timed_out"
-                raise LionTimeoutError(f"Flow timed out after {timeout}s")
-        else:
-            result = await _run_flow_inner(model_spec, prompt, **inner_kw)
-    except BaseException as exc:
-        _terminal_status = classify_exception(exc)
-        raise
-    finally:
-        with CancelScope(shield=True):
-            # Teardown clears the live phase in its terminal status UPDATE.
-            # This shield covers cooperative cancel scopes; native task.cancel
-            # can still interrupt the existing teardown before that commit.
-            _control_session_id = (env._live_persist or {}).get("session_id")
-            try:
-                effective_status = await stop_live_persist(env, status=_terminal_status)
-            finally:
-                if _control_session_id is not None:
-                    # The DAG poller is gone, so a control still queued and unclaimed
-                    # will never be applied: close it, as the agent runner closes its
-                    # undelivered steers. This runs even when the teardown above raised
-                    # after its terminal commit, so a failure there cannot leave a
-                    # control queued against a consumer that has already gone. The
-                    # sweep refuses a session whose stored status is not terminal, and
-                    # leaves a claimed row to whoever claimed it; teardown closed the
-                    # live handle, so it gets a fresh one.
-                    from lionagi.cli.agent import _tombstone_pending_steers
-                    from lionagi.state.db import (
-                        SESSION_TERMINAL_STATUSES,
-                        StateDB,
-                        read_only_open_supported,
-                        state_db_known_absent,
-                    )
-
-                    try:
-                        # A read-only probe first, because the sweep needs a writable
-                        # handle and the writable open takes the store's writer lock and
-                        # re-runs the schema reconciliation. Most runs queue no control at
-                        # all, and for a file store a read-only open skips both, so that
-                        # common exit stays a read. Read-only is SQLite-only: a store with
-                        # no file path (a server-backed URL) opens writable either way, so
-                        # the probe is an optimisation for file stores, not for every
-                        # store. The sweep re-checks the terminal precondition and the
-                        # claim before it writes, so the probe is only an optimisation.
-                        if not state_db_known_absent():
-                            async with StateDB(readonly=read_only_open_supported()) as _probe_db:
-                                _probe_session = await _probe_db.get_session(_control_session_id)
-                                _probe_pending = await _probe_db.list_pending_session_controls(
-                                    _control_session_id
-                                )
-                            if (_probe_session or {}).get(
-                                "status"
-                            ) in SESSION_TERMINAL_STATUSES and any(
-                                row.get("result") is None for row in _probe_pending
-                            ):
-                                async with StateDB() as _sweep_db:
-                                    await _tombstone_pending_steers(
-                                        {"db": _sweep_db, "session_id": _control_session_id},
-                                        result=(
-                                            "rejected: run reached terminal status before its DAG "
-                                            "poller applied the control"
-                                        ),
-                                    )
-                    except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
-                        logger.warning("control tombstone write failed: %r", _sweep_exc)
-            if effective_status != _terminal_status:
-                _terminal_status = effective_status
-            import time as _time
-
-            # Terminal-notify no longer fires from a direct call here: the
-            # session/invocation status writes below are guarded lifecycle
-            # transitions that push through the terminal-callback registry.
-            _ended_at = _time.time()
-            if invocation_id:
-                from lionagi.state.db import StateDB
-
-                _invocation_previous_status = "unknown"
-                # Populated once resolution succeeds, so the fallback below can
-                # tell "resolution never produced an outcome" from "resolution
-                # produced one and only the write failed".
-                inv_status: str | None = None
-                inv_rc: str | None = None
+        except BaseException as exc:
+            _terminal_status = classify_exception(exc)
+            raise
+        finally:
+            with CancelScope(shield=True):
+                # Teardown clears the live phase in its terminal status UPDATE.
+                # This shield covers cooperative cancel scopes; native task.cancel
+                # can still interrupt the existing teardown before that commit.
+                _worker_stop_ctx = env._live_persist
+                _control_session_id = (_worker_stop_ctx or {}).get("session_id")
                 try:
-                    async with StateDB() as _status_db:
-                        _invocation_row = await _status_db.get_invocation(invocation_id)
-                    if _invocation_row and _invocation_row.get("status"):
-                        _invocation_previous_status = str(_invocation_row["status"])
-                    (
-                        inv_status,
-                        inv_rc,
-                        inv_rs,
-                        inv_ev,
-                        inv_meta,
-                    ) = await _resolve_invocation_terminal_flow(
-                        invocation_id, fallback_status=_terminal_status
-                    )
-                    async with StateDB() as _inv_db:
-                        # ended_at rides in extra_fields so it lands in the same
-                        # atomic transition as the status write below -- a
-                        # separate prior update_invocation() call could persist
-                        # ended_at on a row this status write then fails to move.
-                        # Guarded on the row still running, like every other
-                        # invocation terminal writer: a run a kill (or any other
-                        # finalizer) already closed keeps that outcome and its end
-                        # time, instead of this later write replacing the reason on
-                        # an already-terminal row.
-                        _inv_written = await _inv_db.update_status(
-                            "invocation",
-                            invocation_id,
-                            new_status=inv_status,
-                            reason_code=inv_rc,
-                            reason_summary=inv_rs,
-                            evidence_refs=inv_ev,
-                            source="executor",
-                            actor=invocation_id,
-                            metadata=inv_meta,
-                            expected_statuses={"running"},
-                            extra_fields={"ended_at": _ended_at},
-                        )
-                    if not _inv_written:
-                        # The guarded write was refused: the row left running
-                        # between the read above and here, so another writer owns
-                        # its outcome and already fired that entity's terminal
-                        # callbacks. Report the refusal rather than pretend this
-                        # run's own terminal status was recorded.
-                        logger.info(
-                            "Refused terminal write for invocation %s: the row is no longer "
-                            "running, so it keeps its stored outcome; requested %s.",
-                            invocation_id,
-                            inv_status,
-                        )
-                except Exception:
-                    import logging as _logging
-
-                    _logging.getLogger("lionagi.cli").exception(
-                        "Failed to finalize invocation %s", invocation_id
-                    )
-                    # The guarded update_status() above never committed, so the
-                    # terminal-callback registry never fired for this entity;
-                    # emit a best-effort envelope directly instead of silently
-                    # dropping the notification. Prefer the invocation
-                    # status/reason resolution already settled (it can differ
-                    # from the flow's own coarser status, e.g. completed_empty)
-                    # and fall back to the flow's own terminal status only when
-                    # resolution never produced one.
                     try:
-                        import uuid as _uuid
-
-                        from lionagi.state.lifecycle.callbacks import (
-                            DEFAULT_TERMINAL_CALLBACKS,
-                            Correlation,
-                            EntityRef,
-                            RunTerminalEnvelope,
+                        effective_status = await stop_live_persist(env, status=_terminal_status)
+                    except cancelled_exc_classes() as exc:
+                        _pending_worker_cancel = exc
+                        effective_status = (_worker_stop_ctx or {}).get(
+                            "worker_spawn_teardown_status"
+                        )
+                        if effective_status is None:
+                            effective_status = "unknown"
+                finally:
+                    if _control_session_id is not None:
+                        # The DAG poller is gone, so a control still queued and unclaimed
+                        # will never be applied: close it, as the agent runner closes its
+                        # undelivered steers. This runs even when the teardown above raised
+                        # after its terminal commit, so a failure there cannot leave a
+                        # control queued against a consumer that has already gone. The
+                        # sweep refuses a session whose stored status is not terminal, and
+                        # leaves a claimed row to whoever claimed it; teardown closed the
+                        # live handle, so it gets a fresh one.
+                        from lionagi.cli.agent import _tombstone_pending_steers
+                        from lionagi.state.db import (
+                            SESSION_TERMINAL_STATUSES,
+                            StateDB,
+                            read_only_open_supported,
+                            state_db_known_absent,
                         )
 
-                        _notify_status = inv_status or _terminal_status
-                        _notify_reason = inv_rc or _fallback_notify_reason(_notify_status)
+                        try:
+                            # A read-only probe first, because the sweep needs a writable
+                            # handle and the writable open takes the store's writer lock and
+                            # re-runs the schema reconciliation. Most runs queue no control at
+                            # all, and for a file store a read-only open skips both, so that
+                            # common exit stays a read. Read-only is SQLite-only: a store with
+                            # no file path (a server-backed URL) opens writable either way, so
+                            # the probe is an optimisation for file stores, not for every
+                            # store. The sweep re-checks the terminal precondition and the
+                            # claim before it writes, so the probe is only an optimisation.
+                            if not state_db_known_absent():
+                                async with StateDB(
+                                    readonly=read_only_open_supported()
+                                ) as _probe_db:
+                                    _probe_session = await _probe_db.get_session(
+                                        _control_session_id
+                                    )
+                                    _probe_pending = await _probe_db.list_pending_session_controls(
+                                        _control_session_id
+                                    )
+                                if (_probe_session or {}).get(
+                                    "status"
+                                ) in SESSION_TERMINAL_STATUSES and any(
+                                    row.get("result") is None for row in _probe_pending
+                                ):
+                                    async with StateDB() as _sweep_db:
+                                        await _tombstone_pending_steers(
+                                            {"db": _sweep_db, "session_id": _control_session_id},
+                                            result=(
+                                                "rejected: run reached terminal status before its DAG "
+                                                "poller applied the control"
+                                            ),
+                                        )
+                        except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                            logger.warning("control tombstone write failed: %r", _sweep_exc)
+                if effective_status != _terminal_status:
+                    _terminal_status = effective_status
+                import time as _time
 
-                        await DEFAULT_TERMINAL_CALLBACKS.emit(
-                            RunTerminalEnvelope(
-                                event_id=str(_uuid.uuid4()),
-                                entity=EntityRef(kind="invocation", id=invocation_id),
-                                previous_status=_invocation_previous_status,
-                                terminal_status=_notify_status,
-                                reason_code=_notify_reason,
-                                occurred_at=_ended_at,
-                                correlation=Correlation(invocation_id=invocation_id),
-                                durable=False,
+                # Terminal-notify no longer fires from a direct call here: the
+                # session/invocation status writes below are guarded lifecycle
+                # transitions that push through the terminal-callback registry.
+                _ended_at = _time.time()
+                if invocation_id:
+                    from lionagi.state.db import StateDB
+
+                    _invocation_previous_status = "unknown"
+                    # Populated once resolution succeeds, so the fallback below can
+                    # tell "resolution never produced an outcome" from "resolution
+                    # produced one and only the write failed".
+                    inv_status: str | None = None
+                    inv_rc: str | None = None
+                    try:
+                        async with StateDB() as _status_db:
+                            _invocation_row = await _status_db.get_invocation(invocation_id)
+                        if _invocation_row and _invocation_row.get("status"):
+                            _invocation_previous_status = str(_invocation_row["status"])
+                        (
+                            inv_status,
+                            inv_rc,
+                            inv_rs,
+                            inv_ev,
+                            inv_meta,
+                        ) = await _resolve_invocation_terminal_flow(
+                            invocation_id, fallback_status=_terminal_status
+                        )
+                        async with StateDB() as _inv_db:
+                            # ended_at rides in extra_fields so it lands in the same
+                            # atomic transition as the status write below -- a
+                            # separate prior update_invocation() call could persist
+                            # ended_at on a row this status write then fails to move.
+                            # Guarded on the row still running, like every other
+                            # invocation terminal writer: a run a kill (or any other
+                            # finalizer) already closed keeps that outcome and its end
+                            # time, instead of this later write replacing the reason on
+                            # an already-terminal row.
+                            _inv_written = await _inv_db.update_status(
+                                "invocation",
+                                invocation_id,
+                                new_status=inv_status,
+                                reason_code=inv_rc,
+                                reason_summary=inv_rs,
+                                evidence_refs=inv_ev,
+                                source="executor",
+                                actor=invocation_id,
+                                metadata=inv_meta,
+                                expected_statuses={"running"},
+                                extra_fields={"ended_at": _ended_at},
                             )
-                        )
+                        if not _inv_written:
+                            # The guarded write was refused: the row left running
+                            # between the read above and here, so another writer owns
+                            # its outcome and already fired that entity's terminal
+                            # callbacks. Report the refusal rather than pretend this
+                            # run's own terminal status was recorded.
+                            logger.info(
+                                "Refused terminal write for invocation %s: the row is no longer "
+                                "running, so it keeps its stored outcome; requested %s.",
+                                invocation_id,
+                                inv_status,
+                            )
                     except Exception:
+                        import logging as _logging
+
                         _logging.getLogger("lionagi.cli").exception(
-                            "Failed to emit fallback terminal notify for invocation %s",
-                            invocation_id,
+                            "Failed to finalize invocation %s", invocation_id
                         )
+                        # The guarded update_status() above never committed, so the
+                        # terminal-callback registry never fired for this entity;
+                        # emit a best-effort envelope directly instead of silently
+                        # dropping the notification. Prefer the invocation
+                        # status/reason resolution already settled (it can differ
+                        # from the flow's own coarser status, e.g. completed_empty)
+                        # and fall back to the flow's own terminal status only when
+                        # resolution never produced one.
+                        try:
+                            import uuid as _uuid
 
-            unregister_flow_notify_scope(_notify_scope_name)
-            unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
-            for _br in env.session.branches:
-                await _br.mdls.shutdown()
+                            from lionagi.state.lifecycle.callbacks import (
+                                DEFAULT_TERMINAL_CALLBACKS,
+                                Correlation,
+                                EntityRef,
+                                RunTerminalEnvelope,
+                            )
 
-    return result, _terminal_status
+                            _notify_status = inv_status or _terminal_status
+                            _notify_reason = inv_rc or _fallback_notify_reason(_notify_status)
+
+                            await DEFAULT_TERMINAL_CALLBACKS.emit(
+                                RunTerminalEnvelope(
+                                    event_id=str(_uuid.uuid4()),
+                                    entity=EntityRef(kind="invocation", id=invocation_id),
+                                    previous_status=_invocation_previous_status,
+                                    terminal_status=_notify_status,
+                                    reason_code=_notify_reason,
+                                    occurred_at=_ended_at,
+                                    correlation=Correlation(invocation_id=invocation_id),
+                                    durable=False,
+                                )
+                            )
+                        except Exception:
+                            _logging.getLogger("lionagi.cli").exception(
+                                "Failed to emit fallback terminal notify for invocation %s",
+                                invocation_id,
+                            )
+
+                unregister_flow_notify_scope(_notify_scope_name)
+                unregister_run_notify_outcome_scope(_notify_outcome_scope_name)
+                for _br in env.session.branches:
+                    await _br.mdls.shutdown()
+                if _pending_worker_cancel is not None:
+                    raise _pending_worker_cancel
+
+        return result, _terminal_status
 
 
 async def _run_flow_inner(

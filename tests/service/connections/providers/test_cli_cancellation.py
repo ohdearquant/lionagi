@@ -7,23 +7,53 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.providers._executable_fixtures import cli_executable
+
+_SYNTHETIC_PROCESS_IDS = frozenset({8101, 8102, 8103, 8104})
+_MOCK_PROCESSES: dict[int, MagicMock] = {}
+
 
 @pytest.fixture(autouse=True)
 def _block_real_process_group_signals(monkeypatch):
-    """Turn an unsafe mock PID into a test failure, never a worker signal."""
+    """Reject real signals; only completed, enumerated fake children report absence."""
     import lionagi.ln._proc as proc_mod
 
-    if not hasattr(proc_mod.os, "killpg"):
-        return
+    _MOCK_PROCESSES.clear()
 
     def fail_if_unmocked(pgid, sig):
+        proc = _MOCK_PROCESSES.get(pgid)
+        if (
+            sig == 0
+            and pgid in _SYNTHETIC_PROCESS_IDS
+            and proc is not None
+            and type(proc.returncode) is int
+        ):
+            raise ProcessLookupError(pgid)
         raise AssertionError(f"unmocked os.killpg({pgid}, {sig}) in subprocess unit test")
 
-    monkeypatch.setattr(proc_mod.os, "killpg", fail_if_unmocked)
+    if hasattr(proc_mod.os, "killpg"):
+        monkeypatch.setattr(proc_mod.os, "killpg", fail_if_unmocked)
+    try:
+        yield
+    finally:
+        _MOCK_PROCESSES.clear()
+
+
+def _exited_group_probe(proc, signal_calls):
+    """Model an exited fake child's absence without accepting a group signal."""
+
+    def probe(pgid, sig):
+        if pgid == proc.pid and sig == 0 and type(proc.returncode) is int:
+            raise ProcessLookupError(pgid)
+        signal_calls.append((pgid, sig))
+        raise AssertionError(f"unexpected group signal or premature absence probe: {pgid}, {sig}")
+
+    return probe
 
 
 def _spawn_call_for(mock_exec, executable: str):
@@ -41,7 +71,7 @@ class TestSubprocessSessionIsolation:
     """Verify CLI subprocesses are isolated from the parent's process group."""
 
     @pytest.mark.asyncio
-    async def test_claude_cli_uses_start_new_session(self):
+    async def test_claude_cli_uses_start_new_session(self, tmp_path):
         from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         request = ClaudeCodeRequest(prompt="test")
@@ -49,7 +79,10 @@ class TestSubprocessSessionIsolation:
         from lionagi.providers.anthropic.claude_code import _ndjson_from_cli
 
         with (
-            patch("lionagi.providers.anthropic.claude_code.CLAUDE_CLI", "claude"),
+            patch(
+                "lionagi.providers.anthropic.claude_code.CLAUDE_CLI",
+                cli_executable(tmp_path, "claude"),
+            ),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = _make_mock_proc(pid=8101)
@@ -67,7 +100,7 @@ class TestSubprocessSessionIsolation:
             )
 
     @pytest.mark.asyncio
-    async def test_codex_cli_uses_start_new_session(self):
+    async def test_codex_cli_uses_start_new_session(self, tmp_path):
         from lionagi.providers.openai.codex import CodexCodeRequest
 
         request = CodexCodeRequest(prompt="test")
@@ -75,7 +108,7 @@ class TestSubprocessSessionIsolation:
         from lionagi.providers.openai.codex import _ndjson_from_cli
 
         with (
-            patch("lionagi.providers.openai.codex.CODEX_CLI", "codex"),
+            patch("lionagi.providers.openai.codex.CODEX_CLI", cli_executable(tmp_path, "codex")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = _make_mock_proc(pid=8102)
@@ -89,7 +122,7 @@ class TestSubprocessSessionIsolation:
             assert kwargs.get("start_new_session") is True
 
     @pytest.mark.asyncio
-    async def test_gemini_cli_uses_start_new_session(self):
+    async def test_gemini_cli_uses_start_new_session(self, tmp_path):
         from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         request = GeminiCodeRequest(prompt="test")
@@ -97,7 +130,7 @@ class TestSubprocessSessionIsolation:
         from lionagi.providers.google.gemini_code import _ndjson_from_cli
 
         with (
-            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", cli_executable(tmp_path, "agy")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = _make_mock_proc(pid=8103)
@@ -255,7 +288,7 @@ class TestNdjsonCleanupPropagation:
     """Verify _ndjson_from_cli finally block doesn't swallow CancelledError."""
 
     @pytest.mark.asyncio
-    async def test_cancelled_error_not_swallowed_by_finally(self):
+    async def test_cancelled_error_not_swallowed_by_finally(self, tmp_path):
         # Fix: except asyncio.TimeoutError (not CancelledError)
         from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeRequest,
@@ -264,9 +297,17 @@ class TestNdjsonCleanupPropagation:
 
         request = ClaudeCodeRequest(prompt="test")
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        with (
+            patch(
+                "lionagi.providers.anthropic.claude_code.CLAUDE_CLI",
+                cli_executable(tmp_path, "claude"),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
             mock_proc = MagicMock()
             mock_proc.pid = 8104
+            _MOCK_PROCESSES[8104] = mock_proc
+            child_exited = asyncio.Event()
 
             read_call = 0
 
@@ -285,9 +326,19 @@ class TestNdjsonCleanupPropagation:
             mock_proc.stdout.read = slow_read
             mock_proc.stderr = MagicMock()
             mock_proc.stderr.read = AsyncMock(return_value=b"")
-            mock_proc.wait = AsyncMock(return_value=0)
-            mock_proc.terminate = MagicMock()
-            mock_proc.kill = MagicMock()
+
+            async def wait_for_exit():
+                await child_exited.wait()
+                return mock_proc.returncode
+
+            def stop_child(returncode):
+                if mock_proc.returncode is None:
+                    mock_proc.returncode = returncode
+                child_exited.set()
+
+            mock_proc.wait = AsyncMock(side_effect=wait_for_exit)
+            mock_proc.terminate = MagicMock(side_effect=lambda: stop_child(-15))
+            mock_proc.kill = MagicMock(side_effect=lambda: stop_child(-9))
             mock_exec.return_value = mock_proc
 
             with pytest.raises(asyncio.CancelledError):
@@ -426,6 +477,8 @@ def _make_mock_proc(pid=12345):
     mock_proc.wait = AsyncMock(side_effect=_wait)
     mock_proc.terminate = MagicMock()
     mock_proc.kill = MagicMock()
+    if pid in _SYNTHETIC_PROCESS_IDS:
+        _MOCK_PROCESSES[pid] = mock_proc
     return mock_proc
 
 
@@ -439,7 +492,7 @@ class TestProcessGroupCleanup:
     """
 
     @pytest.mark.asyncio
-    async def test_gemini_reaped_cleanup_does_not_signal_a_numeric_group(self):
+    async def test_gemini_reaped_cleanup_does_not_signal_a_numeric_group(self, tmp_path):
         from lionagi.providers.google.gemini_code import (
             GeminiCodeRequest,
             _ndjson_from_cli,
@@ -450,11 +503,11 @@ class TestProcessGroupCleanup:
         killpg_calls: list[tuple] = []
 
         with (
-            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", cli_executable(tmp_path, "agy")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
-                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+                side_effect=_exited_group_probe(mock_proc, killpg_calls),
             ),
         ):
             mock_exec.return_value = mock_proc
@@ -469,7 +522,7 @@ class TestProcessGroupCleanup:
         )
 
     @pytest.mark.asyncio
-    async def test_pi_reaped_cleanup_does_not_signal_a_numeric_group(self):
+    async def test_pi_reaped_cleanup_does_not_signal_a_numeric_group(self, tmp_path):
         from lionagi.providers.pi.cli import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
@@ -477,11 +530,11 @@ class TestProcessGroupCleanup:
         killpg_calls: list[tuple] = []
 
         with (
-            patch("lionagi.providers.pi.cli.PI_CLI", "pi"),
+            patch("lionagi.providers.pi.cli.PI_CLI", cli_executable(tmp_path, "pi")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
-                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+                side_effect=_exited_group_probe(mock_proc, killpg_calls),
             ),
         ):
             mock_exec.return_value = mock_proc
@@ -496,7 +549,7 @@ class TestProcessGroupCleanup:
         )
 
     @pytest.mark.asyncio
-    async def test_gemini_mock_pid_guard_skips_killpg(self):
+    async def test_gemini_mock_pid_guard_skips_killpg(self, tmp_path):
         """pid=1 must be filtered by the safety guard, not passed to os.killpg."""
         from lionagi.providers.google.gemini_code import (
             GeminiCodeRequest,
@@ -512,7 +565,7 @@ class TestProcessGroupCleanup:
         killpg_calls: list = []
 
         with (
-            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", cli_executable(tmp_path, "agy")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
@@ -532,7 +585,7 @@ class TestProcessGroupCleanup:
         )
 
     @pytest.mark.asyncio
-    async def test_gemini_cleanup_no_killpg_platform(self, monkeypatch):
+    async def test_gemini_cleanup_no_killpg_platform(self, tmp_path, monkeypatch):
         """When os.killpg is absent (Windows), cleanup must fall through to proc.terminate()."""
         import lionagi.ln._proc as proc_mod
         from lionagi.providers.google import gemini_code as models
@@ -544,7 +597,7 @@ class TestProcessGroupCleanup:
         monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
 
         with (
-            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", cli_executable(tmp_path, "agy")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_exec.return_value = mock_proc
@@ -560,7 +613,7 @@ class TestProcessGroupCleanup:
         # already exited, and would pass whether or not the group was dealt with.
 
     @pytest.mark.asyncio
-    async def test_pi_cleanup_no_killpg_platform(self, monkeypatch):
+    async def test_pi_cleanup_no_killpg_platform(self, tmp_path, monkeypatch):
         """When os.killpg is absent (Windows), Pi cleanup must fall through to proc.terminate()."""
         import lionagi.ln._proc as proc_mod
         from lionagi.providers.pi import cli as models
@@ -571,7 +624,7 @@ class TestProcessGroupCleanup:
         monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
 
         with (
-            patch("lionagi.providers.pi.cli.PI_CLI", "pi"),
+            patch("lionagi.providers.pi.cli.PI_CLI", cli_executable(tmp_path, "pi")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_exec.return_value = mock_proc
@@ -593,7 +646,7 @@ class TestKillpgUnavailablePlatform:
     fall through to proc.terminate() instead."""
 
     @pytest.mark.asyncio
-    async def test_claude_cleanup_no_killpg_platform(self, monkeypatch):
+    async def test_claude_cleanup_no_killpg_platform(self, tmp_path, monkeypatch):
         import lionagi.ln._proc as proc_mod
         from lionagi.providers.anthropic import claude_code as models
 
@@ -601,28 +654,11 @@ class TestKillpgUnavailablePlatform:
         mock_proc = _make_mock_proc(pid=9201)
         monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_exec.return_value = mock_proc
-            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
-                async for _ in stream:
-                    pass
-
-        # Reaching here is the assertion: cleanup ran to completion with no
-        # AttributeError from the absent killpg. Asserting terminate() was
-        # called instead pins a call that does nothing on a child which has
-        # already exited, and would pass whether or not the group was dealt with.
-
-    @pytest.mark.asyncio
-    async def test_codex_cleanup_no_killpg_platform(self, monkeypatch):
-        import lionagi.ln._proc as proc_mod
-        from lionagi.providers.openai import codex as models
-
-        request = models.CodexCodeRequest(prompt="test")
-        mock_proc = _make_mock_proc(pid=9202)
-        monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
-
         with (
-            patch("lionagi.providers.openai.codex.CODEX_CLI", "codex"),
+            patch(
+                "lionagi.providers.anthropic.claude_code.CLAUDE_CLI",
+                cli_executable(tmp_path, "claude"),
+            ),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_exec.return_value = mock_proc
@@ -635,12 +671,68 @@ class TestKillpgUnavailablePlatform:
         # called instead pins a call that does nothing on a child which has
         # already exited, and would pass whether or not the group was dealt with.
 
+    @pytest.mark.asyncio
+    async def test_codex_cleanup_no_killpg_platform(self, tmp_path, monkeypatch):
+        import lionagi.ln._proc as proc_mod
+        from lionagi.providers.openai import codex as models
+
+        request = models.CodexCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9202)
+        monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
+
+        with (
+            patch("lionagi.providers.openai.codex.CODEX_CLI", cli_executable(tmp_path, "codex")),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        # Reaching here is the assertion: cleanup ran to completion with no
+        # AttributeError from the absent killpg. Asserting terminate() was
+        # called instead pins a call that does nothing on a child which has
+        # already exited, and would pass whether or not the group was dealt with.
+
+    @pytest.mark.asyncio
+    async def test_unrecorded_launch_warns_when_group_cleanup_is_unconfirmed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """With no worker recorder bound, a successful run whose group cannot be read
+        still completes, and the unconfirmed cleanup is reported as a warning."""
+        import lionagi.ln._proc as proc_mod
+        from lionagi.providers.anthropic import claude_code as models
+
+        request = models.ClaudeCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9203)
+        monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
+
+        with (
+            patch(
+                "lionagi.providers.anthropic.claude_code.CLAUDE_CLI",
+                cli_executable(tmp_path, "claude"),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            caplog.at_level(logging.WARNING, logger="lionagi.providers._cli_subprocess"),
+        ):
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "lionagi.providers._cli_subprocess"
+            and "CLI child group cleanup remains unconfirmed" in record.getMessage()
+        ], "an unconfirmed cleanup on an unrecorded launch ended with no warning"
+
 
 class TestStderrDeadlockPrevention:
     """Gemini and Pi drain stderr concurrently; a large payload must not deadlock."""
 
     @pytest.mark.asyncio
-    async def test_gemini_large_stderr_does_not_deadlock(self):
+    async def test_gemini_large_stderr_does_not_deadlock(self, tmp_path):
         import asyncio
 
         from lionagi.providers.google.gemini_code import (
@@ -653,6 +745,7 @@ class TestStderrDeadlockPrevention:
 
         mock_proc = MagicMock()
         mock_proc.pid = 9003
+        mock_proc.returncode = None
         mock_proc.stdout = MagicMock()
         # stdout returns empty immediately (no JSON output)
         mock_proc.stdout.read = AsyncMock(return_value=b"")
@@ -667,12 +760,17 @@ class TestStderrDeadlockPrevention:
             return val
 
         mock_proc.stderr.read = fake_stderr_read
-        mock_proc.wait = AsyncMock(return_value=1)  # non-zero exit to test error path
+
+        async def wait_for_exit():
+            mock_proc.returncode = 1
+            return 1
+
+        mock_proc.wait = AsyncMock(side_effect=wait_for_exit)  # non-zero exit to test error path
         mock_proc.terminate = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
-            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", cli_executable(tmp_path, "agy")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch("lionagi.ln._proc.os.killpg"),
         ):
@@ -689,7 +787,7 @@ class TestStderrDeadlockPrevention:
         )
 
     @pytest.mark.asyncio
-    async def test_pi_large_stderr_does_not_deadlock(self):
+    async def test_pi_large_stderr_does_not_deadlock(self, tmp_path):
         from lionagi.providers.pi.cli import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
@@ -697,6 +795,7 @@ class TestStderrDeadlockPrevention:
 
         mock_proc = MagicMock()
         mock_proc.pid = 9004
+        mock_proc.returncode = None
         mock_proc.stdout = MagicMock()
         mock_proc.stdout.read = AsyncMock(return_value=b"")
         mock_proc.stderr = MagicMock()
@@ -710,12 +809,17 @@ class TestStderrDeadlockPrevention:
             return val
 
         mock_proc.stderr.read = fake_stderr_read
-        mock_proc.wait = AsyncMock(return_value=1)
+
+        async def wait_for_exit():
+            mock_proc.returncode = 1
+            return 1
+
+        mock_proc.wait = AsyncMock(side_effect=wait_for_exit)
         mock_proc.terminate = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
-            patch("lionagi.providers.pi.cli.PI_CLI", "pi"),
+            patch("lionagi.providers.pi.cli.PI_CLI", cli_executable(tmp_path, "pi")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch("lionagi.ln._proc.os.killpg"),
         ):

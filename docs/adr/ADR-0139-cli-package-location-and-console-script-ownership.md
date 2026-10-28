@@ -168,7 +168,7 @@ boundaries, and step 6 moves the remaining CLI
 | `lionagi/cli/_mcp_resolve.py:22` | `lionhub.orchestration.mcp_config` | Entire module and its resolution data type. |
 | `lionagi/cli/_project.py:19` | `lionhub.orchestration.project` | Entire module and project-detection helper closure. |
 | `lionagi/cli/_providers.py:124` | `lionhub.orchestration.spawn` | Entire module: construction, profiles, and common argument declarations. |
-| `lionagi/cli/_runs.py:36` | `lionhub.orchestration.runs` | Entire module, including its sole run-allocation and persistence state. |
+| `lionagi/cli/_runs.py:37` | `lionhub.orchestration.runs` | Entire module, including its sole run-allocation and persistence state. |
 | `lionagi/cli/_util.py:14` | `lionhub.orchestration.job` | Entire module: status codes, invocation state, process identity and entity lookup. |
 | `lionagi/cli/orchestrate/_checkpoint.py:21` | `lionhub.orchestration.flow.checkpoint` | Entire module and checkpoint state. |
 
@@ -177,7 +177,7 @@ release containing that move as `deprecated_in` and `2.0.0` as `removed_in`.
 No forwarding file remains at those eight source paths. This preserves module
 identity, including mutable globals: the current run allocation and invocation
 state live in `_runs` and `_util`
-(`lionagi/cli/_runs.py:78`, `lionagi/cli/_util.py:36`).
+(`lionagi/cli/_runs.py:79`, `lionagi/cli/_util.py:36`).
 Copying these bindings into a facade is not equivalent.
 
 **Shared definitions extracted from modules that retain CLI adapters:**
@@ -185,11 +185,11 @@ Copying these bindings into a facade is not equivalent.
 | Source at this HEAD | Step-3 public owner | Extraction; retained adapter |
 | --- | --- | --- |
 | `lionagi/cli/orchestrate/__init__.py:394`, `lionagi/cli/orchestrate/__init__.py:425` | `lionhub.orchestration.flow.parsing` | Orchestration parser construction and its MCP-argument helper; retain command dispatch and execution wrappers. The common argument declarations come from `orchestration.spawn`. |
-| `lionagi/cli/orchestrate/_orchestration.py:2137` | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
+| `lionagi/cli/orchestrate/_orchestration.py:2187` | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
 | `lionagi/cli/status.py:37`, `lionagi/cli/status.py:55` | `lionhub.orchestration.inspection` | Status constants and the resolution functions from `_fetch_by_id` through `_resolve_primary_session` (`lionagi/cli/status.py:262`); retain the subsequent progress, presentation and dispatch helpers. |
 | `lionagi/cli/kill.py:32`, `lionagi/cli/kill.py:497`, `lionagi/cli/kill.py:740` | `lionhub.orchestration.kill` | Process identity, child lookup, termination, cancellation persistence and degraded-run handling through the helper group preceding `_do_kill`; retain command selection, parser and presentation. |
 | `lionagi/cli/team.py:42` | `lionhub.orchestration.team` | `read_team_json`, the concrete shared reader; retain other team command functions. |
-| `lionagi/cli/engine.py:23`, `lionagi/cli/engine.py:56` | `lionhub.orchestration.engine_definitions` | The shared kind metadata and class lookup; retain parser and execution adapter. |
+| `lionagi/cli/engine.py:29`, `lionagi/cli/engine.py:62` | `lionhub.orchestration.engine_definitions` | The shared kind metadata and class lookup; retain parser and execution adapter. |
 | `lionagi/cli/mirror.py:25`, `lionagi/cli/mirror.py:111`, `lionagi/cli/mirror.py:854` | `lionhub.serve.mirror` | Mirror constants, state and implementation through `mirror_forever`; retain argument parsing, `_run` and `run_mirror`. Extract its wheel-owned configuration dependency before or with it. |
 
 The table fixes ownership and the source groups, not new command semantics.
@@ -205,9 +205,9 @@ The shared dependency closure is part of step 3:
 
 - `_runs` uses the moved MCP resolution type, project resolver, job utilities
   and shared process-identity helper
-  (`lionagi/cli/_runs.py:21`, `lionagi/cli/_runs.py:33`,
-  `lionagi/cli/_runs.py:1484`, `lionagi/cli/_runs.py:1882`,
-  `lionagi/cli/_runs.py:2081`).
+  (`lionagi/cli/_runs.py:21`, `lionagi/cli/_runs.py:34`,
+  `lionagi/cli/_runs.py:1485`, `lionagi/cli/_runs.py:1913`,
+  `lionagi/cli/_runs.py:2131`).
 - Checkpoint resolution uses public inspection services instead of the retained
   status adapter (`lionagi/cli/orchestrate/_checkpoint.py:227`).
 - Shared code and Studio use the existing neutral log emitters. Their identity
@@ -304,7 +304,7 @@ replace the alias loader or weaken identity requirements.
 
 Preserve logger names when implementations move. The source includes
 `logging.getLogger("lionagi.cli")` in the run module
-(`lionagi/cli/_runs.py:791`).
+(`lionagi/cli/_runs.py:792`).
 The existing source checker admits old logger strings only when its resolved
 destination contains the current module; split destinations require a narrow
 original-logger-ownership check, not renaming the logger or ignoring arbitrary

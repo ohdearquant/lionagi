@@ -195,8 +195,8 @@ async def test_a_reap_that_succeeds_is_not_counted_as_abandoned(
     so a non-zero value means what it says."""
     import lionagi.providers._cli_subprocess as cli_subprocess
 
-    async def succeeds(*args, **kwargs) -> None:
-        return None
+    async def succeeds(*args, **kwargs):
+        return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
 
     monkeypatch.setattr(cli_subprocess, "end_child_group", succeeds)
 
@@ -208,6 +208,44 @@ async def test_a_reap_that_succeeds_is_not_counted_as_abandoned(
     record = run.cancellation_records[-1]
     assert record.processes_reaped == 1
     assert record.processes_abandoned == 0
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("result_kind", ["unconfirmed", "none"])
+async def test_unconfirmed_cleanup_remains_tracked_until_group_absence_is_confirmed(
+    monkeypatch: pytest.MonkeyPatch, result_kind: str
+) -> None:
+    import lionagi.providers._cli_subprocess as cli_subprocess
+
+    cleanup_result = (
+        cli_subprocess._ChildGroupCleanup.UNCONFIRMED if result_kind == "unconfirmed" else None
+    )
+    calls = []
+
+    async def cleanup(process, *args, **kwargs):
+        calls.append(process)
+        return cleanup_result
+
+    monkeypatch.setattr(cli_subprocess, "end_child_group", cleanup)
+    run = _StubEngineForTracking().new_run()
+    process = _tracked(run, 529999)
+    tracked = run._cli_processes[id(process)]
+
+    counts = await run._reap_cli_processes([tracked])
+
+    assert counts == (0, 1), "unconfirmed cleanup must be abandoned, not reaped"
+    assert tracked.reaped is False
+    assert run._cli_processes[id(process)] is tracked
+    assert run._live_cli_processes() == [tracked]
+
+    # A later positive result can retire the same entry; refusing everything
+    # would satisfy the first half but leave the run unable to finish cleanup.
+    cleanup_result = cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
+    assert await run._reap_cli_processes([tracked]) == (1, 0)
+    assert calls == [process, process]
+    assert tracked.reaped is True
+    assert run._live_cli_processes() == []
+    assert id(process) not in run._cli_processes
 
 
 @pytest.mark.asyncio
@@ -470,9 +508,10 @@ async def test_a_spawn_during_the_final_cancel_reap_is_ended_not_left_tracked_an
         staticmethod(lambda process, spawned: ended.append(spawned.pid)),
     )
 
-    async def reap_and_let_another_arrive(*args, **kwargs) -> None:
+    async def reap_and_let_another_arrive(*args, **kwargs):
         # A task that swallowed cancellation, spawning while the reaper works.
         _tracked(run, next(next_pid))
+        return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
 
     monkeypatch.setattr(cli_subprocess, "end_child_group", reap_and_let_another_arrive)
 
@@ -537,8 +576,9 @@ async def test_a_spawn_given_a_reaped_handles_address_is_still_reaped(
                 cli_subprocess.SpawnedProcess(pid=pid, pgid=pid, create_time=1.0),
             )
 
-        async def reap_and_let_another_arrive(*args, **kwargs) -> None:
+        async def reap_and_let_another_arrive(*args, **kwargs):
             spawn()
+            return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
 
         monkeypatch.setattr(cli_subprocess, "end_child_group", reap_and_let_another_arrive)
         spawn()
@@ -574,10 +614,11 @@ async def test_cancelling_leaves_tracking_open_for_the_partial_export(
         staticmethod(lambda process, spawned: ended.append(spawned.pid)),
     )
 
-    async def reap_and_let_another_arrive(*args, **kwargs) -> None:
+    async def reap_and_let_another_arrive(*args, **kwargs):
         # Keeps arriving, so the rescans run out and the door is shut for the
         # final reap; that is the state this test needs to see undone.
         _tracked(run, next(next_pid))
+        return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
 
     monkeypatch.setattr(cli_subprocess, "end_child_group", reap_and_let_another_arrive)
 
@@ -637,8 +678,9 @@ async def test_a_cli_started_by_the_partial_export_belongs_to_the_run(
 
     reaped: list[int] = []
 
-    async def records_reap(process, *args, **kwargs) -> None:
+    async def records_reap(process, *args, **kwargs):
         reaped.append(process.pid)
+        return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
 
     monkeypatch.setattr(cli_subprocess, "end_child_group", records_reap)
 
@@ -671,8 +713,9 @@ async def test_a_cli_still_running_at_a_budget_stop_is_reaped_before_the_partial
     reaped: list[int] = []
     reaped_before_export: list[int] = []
 
-    async def records_reap(process, *args, **kwargs) -> None:
+    async def records_reap(process, *args, **kwargs):
         reaped.append(process.pid)
+        return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
 
     monkeypatch.setattr(cli_subprocess, "end_child_group", records_reap)
 

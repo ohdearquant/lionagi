@@ -878,6 +878,8 @@ async def test_a_registered_branch_with_no_messages_does_not_fail_the_teardown(
             project="fixture-project",
         )
         assert ctx is not None
+        assert ctx["worker_spawn_owner"] is None
+        assert ctx["worker_spawns_unrecorded"] is True
         result = await _runs.teardown_persist(ctx, status="completed")
         stored = _rows(store, "SELECT status FROM sessions WHERE id = ?", (str(session.id),))
     finally:

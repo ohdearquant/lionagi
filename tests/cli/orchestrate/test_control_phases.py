@@ -15,6 +15,7 @@ from lionagi.cli.orchestrate import flow
 from lionagi.cli.orchestrate._control import _enqueue_control_inner
 from lionagi.cli.status import EXIT_UNKNOWN, _build_view, _render_human
 from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+from tests.cli._worker_fixtures import create_worker_session
 from tests.cli.orchestrate.test_control_poller import (
     _FakeExecutor,
     _make_session,
@@ -121,14 +122,9 @@ async def test_flow_finalization_clears_persisted_phase(db_path, tmp_path, monke
     async def start(env, **kwargs):
         db = StateDB(db_path)
         await db.open()
-        sid = await _make_session(db)
-        row = await db.get_session(sid)
-        env._live_persist = {
-            "db": db,
-            "session_id": sid,
-            "session_prog_id": row["progression_id"],
-            "shared_db_registered": False,
-        }
+        ctx = await create_worker_session(db, run_id=env.run.run_id)
+        sid = ctx["session_id"]
+        env._live_persist = {**ctx, "shared_db_registered": False}
         env.test_session_id = sid
 
     async def inner(*args, **kwargs):
