@@ -1024,6 +1024,12 @@ class _MonitorReadError(RuntimeError):
     """A masked store-read failure that must not be rendered as a successful view."""
 
 
+# Failed refreshes in a row before --watch gives up. One failure can be a lock or
+# a dropped connection that the next refresh clears; a store that refuses (a newer
+# schema, a bad URL) keeps refusing.
+_WATCH_READ_ATTEMPTS = 3
+
+
 async def _subagent_status() -> dict[str, Any]:
     from lionagi.ln.concurrency import run_sync as _run_sync
     from lionagi.providers._subagent_admission import subagent_admission_status
@@ -1145,6 +1151,7 @@ def _watch_loop(
         interrupted = True
 
     exit_code = 0
+    failed_reads = 0
 
     # The loop's handlers must not outlive the loop. A signal whose handler was
     # installed outside Python is left alone, since it could not be given back:
@@ -1167,22 +1174,35 @@ def _watch_loop(
                 # above. Both derive from BaseException, so they must be named.
                 interrupted = True
                 break
-            except (AmbiguousIdError, _MonitorReadError) as exc:
-                # Refreshing cannot resolve an ambiguous ID or a failed store read.
+            except AmbiguousIdError as exc:
+                # A longer prefix is the only fix; refreshing cannot resolve it.
                 log_error(str(exc))
                 exit_code = EXIT_UNKNOWN
                 break
-            _clear_screen()
-            ts = time.strftime("%H:%M:%S")
-            print(f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}")
-            print()
-            print(output)
+            except _MonitorReadError as exc:
+                # The last good view stays on screen; the failure goes to stderr.
+                log_error(str(exc))
+                failed_reads += 1
+                if failed_reads >= _WATCH_READ_ATTEMPTS:
+                    break
+            else:
+                failed_reads = 0
+                _clear_screen()
+                ts = time.strftime("%H:%M:%S")
+                print(
+                    f"{_dim(f'Updated: {ts}  (refresh every {refresh_seconds}s, Ctrl-C to exit)')}"
+                )
+                print()
+                print(output)
             # Sleep in small increments so SIGINT is responsive
             for _ in range(refresh_seconds * 10):
                 if interrupted:
                     break
                 time.sleep(0.1)
 
+    if failed_reads:
+        # Stopped, by the bound or by a signal, while the store could not be read.
+        exit_code = EXIT_UNKNOWN
     if _IS_TTY:
         print()  # newline after Ctrl-C
     return exit_code
@@ -1600,6 +1620,14 @@ def _dispatch_wait(
             except (KeyboardInterrupt, SigtermInterrupt):
                 interrupted = True
                 return None
+            except AmbiguousIdError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # The same catch-all and masking as _run_table: an unhandled store error
+                # would reach the default traceback printer with its message unmasked.
+                raise _MonitorReadError(
+                    f"error reading state.db: {mask_credentials(str(exc))}"
+                ) from None
 
         schedule_names: dict[str, str] = {}
 
@@ -1611,8 +1639,9 @@ def _dispatch_wait(
 
         try:
             resolved = _run_tick(_resolve())
-        except AmbiguousIdError as exc:
-            # Nothing to wait on: the caller named a prefix, not a run.
+        except (AmbiguousIdError, _MonitorReadError) as exc:
+            # Nothing to wait on: the caller named a prefix, not a run, or the
+            # store could not be read to find out.
             log_error(str(exc))
             return EXIT_UNKNOWN
         if resolved is None:
@@ -1651,7 +1680,12 @@ def _dispatch_wait(
             return deadline is not None and time.monotonic() >= deadline
 
         while _chain_open() and not interrupted and not _wait_expired():
-            _run_tick(_tick())
+            try:
+                _run_tick(_tick())
+            except _MonitorReadError as exc:
+                # A wait that cannot read the store cannot say how its runs ended.
+                log_error(str(exc))
+                return EXIT_UNKNOWN
             if not _chain_open() or interrupted or _wait_expired():
                 break
             _sleep_interval(interval)
@@ -1689,7 +1723,11 @@ def _dispatch_wait(
                 return bl
 
             while not interrupted:
-                tick_result = _run_tick(_follow_tick(baseline))
+                try:
+                    tick_result = _run_tick(_follow_tick(baseline))
+                except _MonitorReadError as exc:
+                    log_error(str(exc))
+                    return EXIT_UNKNOWN
                 if tick_result is not None:
                     baseline = tick_result
                 if interrupted:

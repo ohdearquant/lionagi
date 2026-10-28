@@ -1642,9 +1642,12 @@ number can never drift from what the real operation would have measured.
 
 ## `monitor.py` — `li monitor` (dashboard + `li monitor run` wait primitive)
 
-When the dashboard cannot open or read the state store, one-shot and watch modes report a
-credential-masked error on stderr and exit nonzero. A state database that has never been created
-continues to produce the normal empty-store message.
+When the dashboard cannot open or read the state store, it reports a credential-masked error on
+stderr and exits nonzero. One-shot mode exits on the first failure. Watch mode keeps the last good
+view, logs each failed refresh and exits after three in a row, or when it is stopped while the
+last refresh failed. `li monitor run` exits with the unknown status at the first failed read,
+because a wait that cannot read the store cannot say how its runs ended. A state database that
+has never been created continues to produce the normal empty-store message.
 
 ### Table rendering
 
