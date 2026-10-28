@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, SecretStr
 
-from lionagi._errors import InputTokenCapError
+from lionagi._errors import CredentialMissingError, InputTokenCapError
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import Event, EventStatus, Log
 from lionagi.protocols.ids import to_uuid
@@ -610,6 +610,7 @@ class iModel:  # noqa: N801
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
+        api_call.endpoint._require_api_key()
         self._capture_routing_scope(api_call)
         # A call stream() creates is consumed by this generator, never by the
         # executor's queue: it goes into the pile with no pending entry, because
@@ -652,7 +653,7 @@ class iModel:  # noqa: N801
                         # surface it after iteration so the caller sees the error.
                         stream_error = _terminal_stream_error(api_call)
                     except Exception as e:
-                        if self._is_routing_error(e):
+                        if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                             raise
                         raise ValueError(f"Failed to stream API call: {e}") from e
             else:
@@ -670,7 +671,7 @@ class iModel:  # noqa: N801
                         yield result if result is not None else i
                     stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
-                    if self._is_routing_error(e):
+                    if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                         raise
                     raise ValueError(f"Failed to stream API call: {e}") from e
         finally:
@@ -683,7 +684,9 @@ class iModel:  # noqa: N801
             # during generator cleanup, breaking anyio.fail_after timeout enforcement.
             self.executor.pile.pop(api_call.id, None)
         if stream_error is not None:
-            if self._is_routing_error(stream_error):
+            if isinstance(stream_error, CredentialMissingError) or self._is_routing_error(
+                stream_error
+            ):
                 raise stream_error from None
             raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         if not failed and api_call.status == EventStatus.COMPLETED:
@@ -708,6 +711,7 @@ class iModel:  # noqa: N801
             if api_call is None:
                 kw.pop("stream", None)
                 api_call = await self.create_event(**kw)
+            api_call.endpoint._require_api_key()
             self._capture_routing_scope(api_call)
             api_call.metadata.pop("served_model", None)
 
@@ -761,9 +765,8 @@ class iModel:  # noqa: N801
                     self.endpoint.session_id = response["session_id"]
 
             return completed_call
-        except InputTokenCapError:
-            # Refused before the send: re-raising it as the generic wrapper would hide the one
-            # error whose whole content is its own type, estimate and cap.
+        except (CredentialMissingError, InputTokenCapError):
+            # Preserve typed pre-send refusals instead of hiding them in the generic wrapper.
             raise
         except Exception as e:
             if self._is_routing_error(e):
@@ -909,11 +912,11 @@ class iModel:  # noqa: N801
             if allow_local_network is None:
                 e1.config.allow_local_network = _restored_opt_in(registered, data)
             # The environment's credential is for the provider's own URL only.
-            if (
-                api_key is None
-                and registered._api_key
-                and _same_base_url(_as_written(data, base_url, e1.config), registered.base_url)
+            if api_key is None and _same_base_url(
+                _as_written(data, base_url, e1.config), registered.base_url
             ):
+                e1.config.api_key = registered.api_key
+                e1.config.api_key_env = registered.api_key_env
                 e1.config._api_key = registered._api_key
         else:
             e1 = endpoint

@@ -144,7 +144,7 @@ class TestCoordinatorWiredAtMessengerConstruction:
 
 class TestExecuteDagMergesHelpEvidenceWithEscalation:
     """Regression for the merge at flow.py's post-execution evidence-fold
-    (~line 1042): a blocked help signal recorded via make_help_coordinator
+    (~line 2552): a blocked help signal recorded via make_help_coordinator
     onto env._escalated_evidence BEFORE _execute_dag runs must survive
     alongside a normal DAG-executor escalation reported in dag_result — the
     fold must APPEND both lists, never overwrite the pre-existing one.

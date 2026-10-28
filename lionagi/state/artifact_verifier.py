@@ -246,7 +246,7 @@ def verify_artifact_contract(
 
     for entry in expected:
         full = _resolve_produced(root, entry["path"])
-        present = full is not None and os.path.getsize(full) > 0
+        present = full is not None and (size := os.path.getsize(full)) > 0
         if present:
             produced.append(
                 {
@@ -254,7 +254,7 @@ def verify_artifact_contract(
                     "path": os.path.relpath(
                         full, root
                     ),  # where it was found, not just what was asked for
-                    "size": os.path.getsize(full),
+                    "size": size,
                     "present": True,
                 }
             )

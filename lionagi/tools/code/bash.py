@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi._command_env import normalize_command_env_allowlist
+from lionagi._command_env_metadata import command_environment
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -66,15 +69,15 @@ class BashResponse(BaseModel):
     )
 
 
-def _command_for_subprocess(request: BashRequest) -> list[str]:
+def _command_for_subprocess(command: str) -> list[str]:
     """Return argv list for subprocess; rejects shell control operators (shell=False enforced)."""
-    if _SHELL_CONTROL.search(request.command):
+    if _SHELL_CONTROL.search(command):
         raise PermissionError(
-            f"Shell control operators are not supported: {request.command!r}. "
+            f"Shell control operators are not supported: {command!r}. "
             "Run one command per call; use cwd= to set the working directory instead of `cd x && cmd`."
         )
     try:
-        return shlex.split(request.command)
+        return shlex.split(command)
     except ValueError as e:
         raise PermissionError(
             f"Malformed command: {e}. Check quoting — use single quotes for arguments with spaces."
@@ -87,8 +90,17 @@ def _subprocess_sync(
     timeout_sec: float,
     timeout_ms: int,
     cwd: str | None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
 ) -> BashResponse:
-    raw = _subprocess_sync_inner(cmd, shell, timeout_sec, cwd, timeout_ms=timeout_ms)
+    raw = _subprocess_sync_inner(
+        cmd,
+        shell,
+        timeout_sec,
+        cwd,
+        timeout_ms=timeout_ms,
+        env=command_environment() if _command_env is None else _command_env,
+    )
     return BashResponse(
         stdout=raw["stdout"],
         stderr=raw["stderr"],
@@ -97,33 +109,69 @@ def _subprocess_sync(
     )
 
 
+async def _run_bash(
+    command: str,
+    timeout: int | None,
+    cwd: str | None,
+    *,
+    wrap: Callable[[Sequence[str]], list[str]] | None = None,
+    _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+) -> BashResponse:
+    """Run one command for BashTool and CodingToolkit's bash: the timeout in ms
+    defaults to 30000 and is clamped to 1..300000, shell control and malformed
+    quoting are refused before anything starts. *wrap*, when given, rewrites the
+    parsed argv (the toolkit's sandbox policy) before it runs. The child's
+    environment comes from *_command_env_supplier*, read once the command is
+    accepted; without one, the default command environment is used."""
+    timeout_ms = timeout if timeout is not None else 30_000
+    timeout_ms = min(max(timeout_ms, 1), 300_000)
+    timeout_sec = timeout_ms / 1000.0
+
+    try:
+        cmd = _command_for_subprocess(command)
+    except PermissionError as e:
+        return BashResponse(stdout="", stderr=str(e), return_code=-1)
+    if wrap is not None:
+        cmd = wrap(cmd)
+
+    return await run_sync(
+        _subprocess_sync,
+        cmd,
+        False,
+        timeout_sec,
+        timeout_ms,
+        cwd or None,
+        _command_env=None if _command_env_supplier is None else _command_env_supplier(),
+    )
+
+
 class BashTool(LionTool):
     is_lion_system_tool = True
     system_tool_name = "bash_tool"
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        command_env_allowlist: Sequence[str] = (),
+        _command_env_names: frozenset[str] | None = None,
+    ):
         self._tool = None
+        self._command_env_names = (
+            None if _command_env_names is None else frozenset(_command_env_names)
+        )
+        self._command_env_allowlist = normalize_command_env_allowlist(command_env_allowlist)
 
     async def handle_request(self, request: BashRequest) -> BashResponse:
         if isinstance(request, dict):
             request = BashRequest(**request)
-
-        timeout_ms = request.timeout if request.timeout is not None else 30_000
-        timeout_ms = min(max(timeout_ms, 1), 300_000)
-        timeout_sec = timeout_ms / 1000.0
-
-        try:
-            cmd = _command_for_subprocess(request)
-        except PermissionError as e:
-            return BashResponse(stdout="", stderr=str(e), return_code=-1)
-
-        return await run_sync(
-            _subprocess_sync,
-            cmd,
-            False,
-            timeout_sec,
-            timeout_ms,
-            request.cwd or None,
+        return await _run_bash(
+            request.command,
+            request.timeout,
+            request.cwd,
+            _command_env_supplier=lambda: command_environment(
+                declared_names=self._command_env_names,
+                command_env_allowlist=self._command_env_allowlist,
+            ),
         )
 
     def to_tool(self) -> Tool:

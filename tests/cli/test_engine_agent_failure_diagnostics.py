@@ -68,7 +68,7 @@ async def test_total_agent_failure_written_to_db_as_failed(monkeypatch):
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
     mock_engine = MagicMock()
-    mock_engine._emission_failures = []
+    mock_engine.emission_failures = []
     mock_engine._total_agent_failure = True
     mock_engine._agent_errors = [
         "worker-1: API key is required",
@@ -110,7 +110,7 @@ async def test_total_agent_failure_folds_with_emission_failures(monkeypatch):
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
     mock_engine = MagicMock()
-    mock_engine._emission_failures = ["synthesizer x1"]
+    mock_engine.emission_failures = ["synthesizer x1"]
     mock_engine._total_agent_failure = True
     mock_engine._agent_errors = ["worker-1: API key is required"]
 
@@ -147,7 +147,7 @@ async def test_no_total_agent_failure_status_stays_completed(monkeypatch):
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
     mock_engine = MagicMock()
-    mock_engine._emission_failures = []
+    mock_engine.emission_failures = []
     mock_engine._total_agent_failure = False
     mock_engine._agent_errors = []
 

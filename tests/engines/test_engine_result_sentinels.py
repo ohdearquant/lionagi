@@ -57,7 +57,7 @@ async def test_engine_preserves_explicit_results_across_normal_and_partial_expor
                 _deadline=None,
                 _active=set(),
                 _budget_notified=False,
-                _emission_failures=[],
+                emission_failures=[],
                 _agent_errors=[],
                 agents_made=0,
                 _live_cli_processes=lambda: (),

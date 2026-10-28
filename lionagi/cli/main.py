@@ -8,9 +8,9 @@ import argparse
 import signal
 import sys
 import traceback
-from importlib import import_module
 
 from lionagi._auto import build_cli_parser, seed_for
+from lionagi.ln import import_module
 
 from ._logging import configure_cli_logging, log_error
 from ._util import (
@@ -22,11 +22,11 @@ from ._util import (
 
 
 def _load_orchestrate():
-    return import_module(".orchestrate", __package__)
+    return import_module(".orchestrate", package=__package__)
 
 
 def _load_machine():
-    return import_module(".machine", __package__)
+    return import_module(".machine", package=__package__)
 
 
 def _load_studio():
@@ -34,7 +34,7 @@ def _load_studio():
 
 
 def run_skill(argv: list[str]) -> int:
-    return import_module(".skill", __package__).run_skill(argv)
+    return import_module(".skill", package=__package__).run_skill(argv)
 
 
 def _print_playbook_help(name: str) -> int:
@@ -269,10 +269,24 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
     return ["o", "flow", "-p", name, *other]
 
 
-def _get_version() -> str:
-    from lionagi.version import __version__
+def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argparse.Namespace:
+    """Parse *tail* with flags anywhere around the [MODEL] PROMPT positionals.
 
-    return __version__
+    Words after a ``--`` sentinel never reach the parser, so prompt text such as
+    ``--bypass`` cannot toggle a flag; words the parser leaves over join ``query``
+    in order, and a leftover word that looks like a flag is an error.
+    """
+    if "--" in tail:
+        i = tail.index("--")
+        head, post = tail[:i], tail[i + 1 :]
+    else:
+        head, post = tail, []
+    args, extras = parser.parse_known_args(head)
+    unknown = [e for e in extras if e.startswith("-") and e != "-"]
+    if unknown:
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+    args.query = [*(args.query or []), *extras, *post]
+    return args
 
 
 def _run(argv: list[str] | None = None) -> int:
@@ -382,18 +396,7 @@ def _run(argv: list[str] | None = None) -> int:
     # sentinel between passes, letting a prompt like "--bypass" after `--`
     # toggle real flags on re-parse. Split at the sentinel ourselves instead.
     if selected is not None and selected.name == "agent":
-        agent_parser = selected_parser
-        tail = _argv[1:]
-        if "--" in tail:
-            i = tail.index("--")
-            head, post = tail[:i], tail[i + 1 :]
-        else:
-            head, post = tail, []
-        args, extras = agent_parser.parse_known_args(head)
-        unknown = [e for e in extras if e.startswith("-") and e != "-"]
-        if unknown:
-            agent_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
-        args.query = [*(args.query or []), *extras, *post]
+        args = _parse_prompt_args(selected_parser, _argv[1:])
         return build.registration.handler(args)
 
     # `li o flow` / `li o fanout` parse standalone for the same reason as
@@ -408,18 +411,7 @@ def _run(argv: list[str] | None = None) -> int:
     ):
         sub_name = _argv[1]
         assert orch_parsers is not None
-        sub_parser = orch_parsers[sub_name]
-        tail = _argv[2:]
-        if "--" in tail:
-            i = tail.index("--")
-            head, post = tail[:i], tail[i + 1 :]
-        else:
-            head, post = tail, []
-        args, extras = sub_parser.parse_known_args(head)
-        unknown = [e for e in extras if e.startswith("-") and e != "-"]
-        if unknown:
-            sub_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
-        args.query = [*(args.query or []), *extras, *post]
+        args = _parse_prompt_args(orch_parsers[sub_name], _argv[2:])
         args.command = "orchestrate"
         args.orch_command = sub_name
         return build.registration.handler(args)

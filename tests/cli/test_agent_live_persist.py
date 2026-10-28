@@ -1119,13 +1119,16 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
 async def test_rejected_second_setup_leaves_first_context_intact(
     temp_db_path: Path,
 ):
-    """A second setup on a still-owned branch must fail WITHOUT closing the
-    first context's shared DB handle or blocking its teardown release."""
+    """A second setup on a still-owned branch must be refused WITHOUT closing
+    the first context's shared DB handle or blocking its teardown release."""
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
 
-    ctx2 = await _setup_live_persist(branch)
-    assert ctx2 is None  # rejected: branch still owned by ctx1's session
+    # Refused, not degraded: the branch still belongs to ctx1's execution.
+    with pytest.raises(_WorkerSpawnAdmissionError, match="already belongs"):
+        await _setup_live_persist(branch)
 
     # ctx1's DB handle survived the rejected setup...
     assert ctx1["db"]._engine is not None
@@ -1602,10 +1605,11 @@ async def test_setup_resume_repairs_null_session_progression_id(
     legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
     try:
         await legacy_db.create_progression(branch_prog)
-        # Session row with NULL progression_id.
+        # A terminal historical row admits a new generation when resumed;
+        # its missing session progression is the condition being repaired.
         await legacy_db.execute(
             "INSERT INTO sessions (id, created_at, progression_id, "
-            "updated_at) VALUES (?, ?, NULL, ?)",
+            "updated_at, status) VALUES (?, ?, NULL, ?, 'completed')",
             (session_id, 0.0, 0.0),
         )
         # Branch row with a valid branch progression.
@@ -2079,3 +2083,35 @@ async def test_teardown_reconciles_after_delayed_mirror_row_creation(
 
     assert len(calls) >= 3
     assert final_status == "completed"
+
+
+async def test_failed_setup_closes_the_admitted_row_so_the_branch_resumes(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Setup that fails after admitting its session row closes that row out, so the
+    branch is not left behind a running row that refuses every later setup."""
+    import lionagi.hooks as hooks_mod
+
+    branch = Branch(name="b1")
+    original = hooks_mod.route_message_persistence
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("synthetic hook routing failure")
+
+    monkeypatch.setattr(hooks_mod, "route_message_persistence", refuse)
+    assert await _setup_live_persist(branch) is None
+
+    async with StateDB() as db:
+        stored = await db.get_branch(str(branch.id))
+        assert stored is not None, "the failure must land after the branch row is written"
+        row = await db.get_session(stored["session_id"])
+    assert row["status"] == "failed"
+    assert row["ended_at"] is not None
+
+    monkeypatch.setattr(hooks_mod, "route_message_persistence", original)
+    ctx = await _setup_live_persist(branch)
+    try:
+        assert ctx is not None and ctx["session_id"] == stored["session_id"]
+    finally:
+        if ctx is not None:
+            await _teardown_live_persist(ctx, status="completed")

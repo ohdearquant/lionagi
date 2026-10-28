@@ -132,7 +132,7 @@ async def test_total_agent_failure_false_on_clean_run():
 
 async def test_engine_reuse_second_run_resets_total_agent_failure():
     """A reused engine must not carry a total-failure flag from a previous run
-    into the next one, mirroring the existing _emission_failures reset guarantee."""
+    into the next one, mirroring the existing emission_failures reset guarantee."""
 
     call_count = [0]
 

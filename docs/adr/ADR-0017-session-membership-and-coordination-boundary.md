@@ -116,7 +116,7 @@ def new_branch(
     **kwargs,
 ) -> Branch: ...
 
-def remove_branch(self, branch: ID.Ref, delete: bool = False): ...
+def remove_branch(self, branch: ID.Ref, delete: bool | None = None): ...
 def split(self, branch: ID.Ref) -> Branch: ...
 def get_branch(self, branch: ID.Ref | str, default: Any = ..., /) -> Branch: ...
 def change_default_branch(self, branch: ID.Ref): ...
@@ -162,8 +162,9 @@ branch.user = None                 # only when it still equals this Session id
 
 If the removed branch was default, the first remaining branch becomes default or the default becomes
 `None` when the pile is empty. Messages, progression, models, tools, logs, metadata, providers,
-capabilities, and adopted memory stay on the branch. `delete=True` only deletes the method's local
-reference after detachment; it cannot destroy an object retained by another Python reference.
+capabilities, and adopted memory stay on the branch. `delete` is deprecated and has no effect:
+passing it emits a `DeprecationWarning`. It only ever deleted the method's local reference after
+detachment, which cannot destroy an object retained by another Python reference.
 
 Inclusion also overwrites `branch.user` with the Session id. Removal clears that field only when it
 still equals the removing Session id; it does not retain and restore an earlier conversational user

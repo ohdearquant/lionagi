@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lionagi._errors import ConfigurationError
@@ -48,7 +49,8 @@ logger = logging.getLogger(__name__)
 
 
 class _AgentSettingError(ConfigurationError):
-    """The agent being built cannot carry ``agent_env`` or ``contain_account_integrations``."""
+    """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``
+    or ``prompt_caching``."""
 
     __slots__ = ()
 
@@ -65,6 +67,7 @@ async def create_agent(
     resolved_mcp_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_mcp_explicit: bool = False,
     agent_env: Mapping[str, str] | None = None,
+    _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
 
@@ -104,6 +107,14 @@ async def create_agent(
     built here, is not held to it. The endpoint is recognised by its class, so
     a registered provider that wraps codex in another endpoint class is not
     contained.
+
+    ``spec.prompt_caching`` turns the endpoint's ``prompt_caching`` option
+    (ADR-0127) on for the model this factory builds. Only an endpoint that
+    declares prefix caching places the marks; any other endpoint, a CLI agent
+    included, sends its requests unchanged without an error. Like the
+    containment default, it raises with a caller-supplied ``chat_model`` or
+    with no ``spec.model``, because either way this factory builds no endpoint
+    to set it on.
     """
     spec = config
 
@@ -184,6 +195,17 @@ async def create_agent(
             "factory builds no endpoint, and the model the branch builds by default "
             "is not contained."
         )
+    if spec.prompt_caching and chat_model is not None:
+        raise _AgentSettingError(
+            "spec.prompt_caching cannot be combined with a caller-supplied chat_model: it "
+            "is set on the endpoint this factory builds. Set endpoint.config.prompt_caching "
+            "on the model you built, or let this factory build it."
+        )
+    if spec.prompt_caching and chat_model is None and not spec.model:
+        raise _AgentSettingError(
+            "spec.prompt_caching requires spec.model: with no model this factory builds "
+            "no endpoint, and the model the branch builds by default does not cache."
+        )
 
     branch_kwargs = {}
     # The request field holding an effort this factory derived from the codex user
@@ -261,6 +283,8 @@ async def create_agent(
                 f"built for model {model_name!r}: this endpoint takes no environment for "
                 "a child process (the codex and claude_code CLI endpoints do)."
             )
+        if spec.prompt_caching:
+            chat_model.endpoint.config.prompt_caching = True
         if spec.contain_account_integrations or agent_env:
             from lionagi.providers.openai.codex import CodexCLIEndpoint
 
@@ -306,12 +330,60 @@ async def create_agent(
         branch.msgs.set_system(branch.msgs.create_system(system=full_prompt))
 
     _apply_permissions(spec)
-    _register_tools(branch, spec)
+    prepared_mcp = _prepare_mcp_forwarding(
+        branch,
+        spec,
+        trust_project_settings=trust_project_settings,
+        resolved_servers=resolved_mcp_servers,
+    )
+    from .hooks import auto_format_python
+
+    formatter_bound = any(
+        handler is auto_format_python
+        for key, handlers in spec.hook_handlers.items()
+        if key.startswith("post:")
+        for handler in handlers
+    )
+    command_names = None
+    command_env_supplier = None
+    if (
+        {"coding", "bash", "search"}.intersection(spec.tools)
+        or formatter_bound
+        or _command_env_names_out is not None
+    ):
+        from lionagi._command_env import normalize_command_env_allowlist
+        from lionagi._command_env_metadata import command_environment, configured_command_env_names
+
+        active_reference = branch.chat_model.endpoint.config.api_key_env
+        command_names = frozenset(
+            configured_command_env_names(
+                active_reference_names=(active_reference,) if active_reference is not None else (),
+                mcp_auth_env_names=_selected_mcp_auth_env_names(prepared_mcp),
+            )
+        )
+        command_allowlist = normalize_command_env_allowlist(spec.command_env_allowlist)
+
+        def prepared_command_environment() -> Mapping[str, str]:
+            return command_environment(
+                declared_names=command_names, command_env_allowlist=command_allowlist
+            )
+
+        command_env_supplier = prepared_command_environment
+
+    _register_tools(
+        branch,
+        spec,
+        command_env_names=command_names,
+        _command_env_supplier=command_env_supplier,
+    )
     _register_providers(branch, spec)
     native_mcp_servers: frozenset[str] = frozenset()
     if resolved_mcp_servers is Unset:
         native_mcp_servers = await _load_mcp(
-            branch, spec, trust_project_settings=trust_project_settings
+            branch,
+            spec,
+            trust_project_settings=trust_project_settings,
+            _command_env_supplier=command_env_supplier,
         )
     _forward_mcp_to_cli_request(
         branch,
@@ -320,6 +392,7 @@ async def create_agent(
         resolved_servers=resolved_mcp_servers,
         resolved_servers_explicit=resolved_mcp_explicit,
         native_mcp_servers=native_mcp_servers,
+        _prepared=prepared_mcp,
     )
     if derived_effort_kwarg:
         request_kwargs = branch.chat_model.endpoint.config.kwargs
@@ -332,6 +405,9 @@ async def create_agent(
     if op := spec.emission_operable():
         branch.grant_capabilities(op)
 
+    if _command_env_names_out is not None:
+        assert command_names is not None
+        _command_env_names_out(command_names)
     return branch
 
 
@@ -450,7 +526,12 @@ def _chain_pre_hooks(
     return chained
 
 
-def _chain_post_hooks(tool_name: str, hooks: list[Callable]) -> Callable | None:
+def _chain_post_hooks(
+    tool_name: str,
+    hooks: list[Callable],
+    *,
+    _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+) -> Callable | None:
     if not hooks:
         return None
 
@@ -458,7 +539,14 @@ def _chain_post_hooks(tool_name: str, hooks: list[Callable]) -> Callable | None:
         if not isinstance(result, dict):
             return result
         for handler in hooks:
-            modified = await handler(tool_name, "", {}, result)
+            from .hooks import auto_format_python
+
+            if handler is auto_format_python and _command_env_supplier is not None:
+                modified = await handler(
+                    tool_name, "", {}, result, _command_env=_command_env_supplier()
+                )
+            else:
+                modified = await handler(tool_name, "", {}, result)
             if isinstance(modified, dict):
                 result = modified
         return result
@@ -499,12 +587,20 @@ def _compose_postprocessor(original: Callable | None, new: Callable) -> Callable
     return composed
 
 
-def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
+def _attach_hooks(
+    tool: Any,
+    spec: AgentSpec,
+    canonical_name: str,
+    *,
+    _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+) -> Any:
     security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
     user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
     post_hooks = _tool_hooks(spec, "post", canonical_name)
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
-    post = _chain_post_hooks(canonical_name, post_hooks)
+    post = _chain_post_hooks(
+        canonical_name, post_hooks, _command_env_supplier=_command_env_supplier
+    )
     if pre is not None:
         tool.preprocessor = _compose_preprocessor(tool.preprocessor, pre)
     if post is not None:
@@ -512,24 +608,42 @@ def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
     return tool
 
 
-def _register_tools(branch: Branch, spec: AgentSpec) -> None:
+def _register_tools(
+    branch: Branch,
+    spec: AgentSpec,
+    *,
+    command_env_names: frozenset[str] | None = None,
+    _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+) -> None:
     for tool_spec in spec.tools:
         if tool_spec == "coding":
-            _register_coding_tools(branch, spec)
+            _register_coding_tools(branch, spec, command_env_names=command_env_names)
         elif tool_spec == "reader":
             from lionagi.tools.file.reader import ReaderTool
 
-            tool = _attach_hooks(ReaderTool().to_tool(), spec, "reader")
+            tool = _attach_hooks(
+                ReaderTool().to_tool(), spec, "reader", _command_env_supplier=_command_env_supplier
+            )
             branch.register_tools(tool)
         elif tool_spec == "editor":
             from lionagi.tools.file.editor import EditorTool
 
-            tool = _attach_hooks(EditorTool().to_tool(), spec, "editor")
+            tool = _attach_hooks(
+                EditorTool().to_tool(), spec, "editor", _command_env_supplier=_command_env_supplier
+            )
             branch.register_tools(tool)
         elif tool_spec == "bash":
             from lionagi.tools.code.bash import BashTool
 
-            tool = _attach_hooks(BashTool().to_tool(), spec, "bash")
+            tool = _attach_hooks(
+                BashTool(
+                    command_env_allowlist=spec.command_env_allowlist,
+                    _command_env_names=command_env_names,
+                ).to_tool(),
+                spec,
+                "bash",
+                _command_env_supplier=_command_env_supplier,
+            )
             branch.register_tools(tool)
         elif tool_spec == "search":
             from pathlib import Path
@@ -538,7 +652,14 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
 
             workspace_root = str(Path(spec.cwd) if spec.cwd else Path.cwd())
             tool = _attach_hooks(
-                SearchTool(workspace_root=workspace_root).to_tool(), spec, "search"
+                SearchTool(
+                    workspace_root=workspace_root,
+                    _command_env_names=command_env_names,
+                    _command_env_allowlist=spec.command_env_allowlist,
+                ).to_tool(),
+                spec,
+                "search",
+                _command_env_supplier=_command_env_supplier,
             )
             branch.register_tools(tool)
 
@@ -639,7 +760,9 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     _register_providers(branch, provider_spec)
 
 
-def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
+def _register_coding_tools(
+    branch: Branch, spec: AgentSpec, *, command_env_names: frozenset[str] | None = None
+) -> None:
     from pathlib import Path
 
     from lionagi.tools.coding import DEFAULT_CODING_TOOLS, CodingToolkit
@@ -654,7 +777,10 @@ def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
     else:
         tools = tuple(t for t in selected if context_management or t != "context")
     toolkit = CodingToolkit(
-        workspace_root=workspace_root, tools=tools, seatbelt=getattr(spec, "seatbelt", None)
+        workspace_root=workspace_root,
+        tools=tools,
+        seatbelt=getattr(spec, "seatbelt", None),
+        command_env_allowlist=spec.command_env_allowlist,
     )
 
     for key, handlers in spec.hook_handlers.items():
@@ -672,7 +798,7 @@ def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
             elif phase == "error":
                 toolkit.on_error(tool_name, handler)
 
-    tools = toolkit.bind(branch)
+    tools = toolkit.bind(branch, _command_env_names=command_env_names)
     branch.register_tools(tools)
 
 
@@ -730,6 +856,7 @@ async def _load_mcp(
     spec: AgentSpec,
     *,
     trust_project_settings: bool = False,
+    _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
 ) -> frozenset[str]:
     mcp_path = _resolve_mcp_path(spec, trust_project_settings=trust_project_settings)
     if mcp_path is None:
@@ -757,7 +884,7 @@ async def _load_mcp(
                     f"MCP server {server_name!r} returned registered tool "
                     f"{tool_name!r}, but the branch registry does not contain it"
                 )
-            _attach_hooks(tool, spec, tool_name)
+            _attach_hooks(tool, spec, tool_name, _command_env_supplier=_command_env_supplier)
 
     return frozenset(loaded)
 
@@ -1069,6 +1196,90 @@ def _drop_forwarded_mcp_servers(kwargs: dict[str, Any]) -> None:
         kwargs.pop("profile", None)
 
 
+@dataclass(frozen=True)
+class _PreparedMCPForwarding:
+    path: str | None
+    has_config: bool
+    servers: dict[str, Any]
+    skip: bool = False
+
+
+def _prepare_mcp_forwarding(
+    branch: Branch,
+    spec: AgentSpec,
+    *,
+    trust_project_settings: bool = False,
+    resolved_servers: dict[str, Any] | None | UnsetType = Unset,
+) -> _PreparedMCPForwarding:
+    """Select the CLI mapping before tools bind, without activating transports."""
+    caller_resolved = resolved_servers is not Unset
+    mcp_path = (
+        None
+        if caller_resolved
+        else _resolve_mcp_path(spec, trust_project_settings=trust_project_settings)
+    )
+    has_config = resolved_servers is not None if caller_resolved else mcp_path is not None
+    if not has_config and spec.mcp_servers is None:
+        return _PreparedMCPForwarding(mcp_path, has_config, {}, skip=True)
+    provider = getattr(branch.chat_model.endpoint.config, "provider", None)
+    if not provider_accepts_forwarded_mcp(provider):
+        return _PreparedMCPForwarding(mcp_path, has_config, {})
+
+    if caller_resolved:
+        servers: dict = dict(resolved_servers or {})
+    elif mcp_path is None:
+        servers = {}
+    else:
+        import json
+        from pathlib import Path
+
+        try:
+            data = json.loads(Path(mcp_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Could not read/parse MCP config %r for forwarding to the %s "
+                "CLI request (%s: %s); MCP servers will not be reachable for "
+                "this branch (role %s, branch %s).",
+                mcp_path,
+                provider,
+                type(exc).__name__,
+                exc,
+                spec.profile.role.name,
+                branch.id,
+            )
+            if spec.mcp_config_path:
+                # An explicitly configured path failing to parse is a
+                # configuration error, not a soft no-op.
+                raise ConfigurationError(
+                    f"spec.mcp_config_path={spec.mcp_config_path!r} could not be "
+                    f"read or parsed as JSON: {type(exc).__name__}: {exc}"
+                ) from exc
+            return _PreparedMCPForwarding(mcp_path, has_config, {}, skip=True)
+        servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
+
+    if spec.mcp_servers is not None:
+        servers = {name: cfg for name, cfg in servers.items() if name in spec.mcp_servers}
+
+    return _PreparedMCPForwarding(mcp_path, has_config, servers)
+
+
+def _selected_mcp_auth_env_names(prepared: _PreparedMCPForwarding) -> frozenset[str]:
+    """Read authentication-variable declarations from the selected CLI mapping."""
+    names: set[str] = set()
+    for server in prepared.servers.values():
+        if not isinstance(server, Mapping):
+            continue
+        bearer = server.get("bearer_token_env_var")
+        if isinstance(bearer, str) and bearer:
+            names.add(bearer)
+        headers = server.get("env_http_headers")
+        if isinstance(headers, Mapping):
+            names.update(name for name in headers.values() if isinstance(name, str) and name)
+    return frozenset(names)
+
+
 def _forward_mcp_to_cli_request(
     branch: Branch,
     spec: AgentSpec,
@@ -1077,6 +1288,7 @@ def _forward_mcp_to_cli_request(
     resolved_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_servers_explicit: bool = False,
     native_mcp_servers: Collection[str] = (),
+    _prepared: _PreparedMCPForwarding | None = None,
 ) -> None:
     """Forward an MCP server set into the CLI provider's own request.
 
@@ -1087,12 +1299,17 @@ def _forward_mcp_to_cli_request(
     docs/internals/agent-runtime.md#mcp-server-forwarding.
     """
     caller_resolved = resolved_servers is not Unset
-    mcp_path = (
-        None
-        if caller_resolved
-        else _resolve_mcp_path(spec, trust_project_settings=trust_project_settings)
+    prepared = (
+        _prepare_mcp_forwarding(
+            branch,
+            spec,
+            trust_project_settings=trust_project_settings,
+            resolved_servers=resolved_servers,
+        )
+        if _prepared is None
+        else _prepared
     )
-    has_config = resolved_servers is not None if caller_resolved else mcp_path is not None
+    has_config = prepared.has_config
     if not has_config and spec.mcp_servers is None:
         return
 
@@ -1136,42 +1353,9 @@ def _forward_mcp_to_cli_request(
         # so this stays a silent no-op (mirrors _load_mcp's own shape).
         return
 
-    if caller_resolved:
-        servers: dict = dict(resolved_servers or {})
-    elif mcp_path is None:
-        servers = {}
-    else:
-        import json
-        from pathlib import Path
-
-        try:
-            data = json.loads(Path(mcp_path).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Could not read/parse MCP config %r for forwarding to the %s "
-                "CLI request (%s: %s); MCP servers will not be reachable for "
-                "this branch (role %s, branch %s).",
-                mcp_path,
-                provider,
-                type(exc).__name__,
-                exc,
-                spec.profile.role.name,
-                branch.id,
-            )
-            if spec.mcp_config_path:
-                # An explicitly configured path failing to parse is a
-                # configuration error, not a soft no-op.
-                raise ConfigurationError(
-                    f"spec.mcp_config_path={spec.mcp_config_path!r} could not be "
-                    f"read or parsed as JSON: {type(exc).__name__}: {exc}"
-                ) from exc
-            return
-        servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
-
-    if spec.mcp_servers is not None:
-        servers = {name: cfg for name, cfg in servers.items() if name in spec.mcp_servers}
+    if prepared.skip:
+        return
+    servers = prepared.servers
 
     # Branch keeps a caller-supplied chat_model by reference; copy before
     # mutating config.kwargs to avoid cross-contaminating other branches.

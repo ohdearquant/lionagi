@@ -40,6 +40,7 @@ _EXPECTED_ALL = (
     "ExecutionError",
     "ProviderStreamError",
     "ConfigurationError",
+    "CredentialMissingError",
     "ContainmentRefusedError",
     "TimeoutError",
     "EmptyOutgoingContentError",

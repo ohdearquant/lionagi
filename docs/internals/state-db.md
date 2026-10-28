@@ -9,10 +9,11 @@ and PostgreSQL does not.
 
 ## Schema shape and how it evolves
 
-The schema is defined once, in `schema_meta.py`, as SQLAlchemy `Table`
-objects; `db.py` never hand-writes DDL that could drift from that source of
-truth (`schema.sql`/`schema_meta.py` parity is test-enforced). `SCHEMA_VERSION`
-records the shape this code understands. A writable `StateDB.open()` rewrites
+The native tables are declared in `schema_meta.py` as SQLAlchemy `Table`
+objects, with a parity-tested `schema.sql` mirror. Legacy SQLite table rebuilds
+also carry replacement DDL and must preserve every reconciled column when they
+copy rows into the replacement table. `SCHEMA_VERSION`
+records the shape this code understands. A native writable `StateDB.open()` rewrites
 an older on-disk database into the current shape and stamps the new version;
 if the on-disk version is *higher* than `SCHEMA_VERSION`, open refuses rather
 than guessing what a later release's shape means (`SchemaTooNewError`).
@@ -21,6 +22,83 @@ application (`ForeignLineageError`, ADR-0128 D7), reading that row on each
 writable connection before the connection's settings change the file; a store
 with no such row, or one naming lionagi, opens as before. Read-only opens
 apply no schema migration at all and are unaffected by these checks.
+
+### Durable CLI worker records
+
+Schema version 5 adds nullable `sessions.cli_worker_generation` and
+`cli_worker_spawns`. An existing session receives no invented generation or
+worker row: a null generation means unknown. A generation is a canonical UUID
+installed with session creation or the same status write that reopens an
+execution.
+
+Each spawn row has its own UUID `spawn_id`, exact logical `session_id`, UUID
+`generation_id`, optional `run_id`/`engine_run_id`/`branch_id` diagnostics,
+`pid`/`pgid`, raw `pid_create_time`, `pid_host`, `pid_boot_time`, local
+`process_identity_mode`, store-assigned `recorded_at`, and nullable
+`confirmed_empty_at`. The process IDs are equal integers greater than one;
+identity times must be finite. Associations have no physical foreign keys and
+are never inferred from current PID or runner metadata. The index
+`idx_cli_worker_spawns_session` covers
+`(session_id, confirmed_empty_at, generation_id)`.
+
+`register_cli_worker_spawn` admits a new row only under the running session's
+current nonnull generation, ordered against session updates and deletion.
+An identical replay compares the twelve producer-supplied fields and writes
+nothing, including after terminalization, generation change or parent deletion.
+The store creates `recorded_at` once; registration callers supply neither
+timestamp column. A conflicting replay refuses, and a new spawn ID does not
+bypass admission. All identity and association columns, including `recorded_at`,
+are immutable.
+
+`snapshot_cli_worker_spawns` reads session status/generation and all unresolved
+records for that exact session in one snapshot, across every generation. No
+records means no recorded proof, not proof that no worker exists. A missing
+session returns no session snapshot even when historical logical records remain.
+`settle_cli_worker_spawn` conditionally fills only that exact row's
+`confirmed_empty_at`; it neither writes session state/history nor proves process
+absence itself. The authorized cleanup caller must establish the required kernel
+group absence. Normal return, PID mismatch or an incomplete process scan is not
+settlement evidence.
+
+A null `confirmed_empty_at` means unresolved, not necessarily alive. Every
+library-owned session-deletion path retains a session with any unresolved worker
+record, including one from an older generation, before archiving or changing its
+dependents. Settled rows do not block deletion and remain unchanged afterward;
+their logical session reference is not nulled or cascaded away. A stale record
+cannot recreate a deleted session's cleanup handle. Arbitrary SQL supplied to
+`execute()` or `transaction()` remains the caller's responsibility.
+Retention does not garbage-collect these evidence rows.
+
+These operations store evidence without launching, probing or signalling a
+process. Unsupported compatibility profiles refuse them before SQL. A version-4
+native writable open refuses a version-5 store with `SchemaTooNewError`; read-only
+inspection retains its existing no-migration behavior.
+
+Persisted CLI producers install one generation before any setup hook or worker
+can spawn. A fresh execution writes it with the session row; a terminal agent
+resume adopts the existing session key and replaces the generation in the same
+status write that reopens it. Knowing a running session's key and generation
+does not authorize a separate invocation to join it. The automatic timeout
+continuation is a private, single-use in-process handoff: the parent first drains
+its owned work and closes its exact database handle, and the child checks that
+the same session is still running under the same generation. The child retains
+that session and generation while using its own diagnostic run ID.
+
+A recorder is scoped to that admitted execution. Agent setup hooks and turns,
+flow/fanout planning, workers and synthesis, and CLI engine workers use the
+owning persisted session; an engine uses its signal-session row rather than a
+parent association or an in-memory run ID. A background flow binds in its
+detached runner, not in the launcher. Descendant provider calls inherit the
+binding. The adapter in `lionagi/state/cli_workers.py` translates observed
+identity facts into the store's producer fields; providers depend only on the
+context-local recorder protocol and do not import StateDB.
+
+Registration completes before provider output is exposed. Admission closes and
+all admitted spawn, registration and late-cleanup tasks drain before terminal
+status writes or database close. Cancellation is propagated after that drain;
+it does not turn a failed terminal write into a durable cancelled status.
+Recording and draining do not settle worker records or add recovered-process
+signalling to `li kill`.
 
 Three kinds of schema change show up in the code:
 

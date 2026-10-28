@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from lionagi.ln import HashAlgorithm, compute_hash, hash_file, is_import_installed
+from lionagi.ln import HashAlgorithm, compute_hash, hash_file, import_module, is_import_installed
 from lionagi.ln.types import Enum
 
 __all__ = (
@@ -73,18 +73,14 @@ class EndpointMeta:
         is_agentic = self.endpoint_type == EndpointType.AGENTIC
         api_key: Any = "internal" if is_agentic else None
         if not is_agentic and self.api_key_env and "api_key" not in overrides:
-            from lionagi.config import settings
-
-            raw = getattr(settings, self.api_key_env, None)
-            # Pass SecretStr directly so _validate_api_key uses its dedicated branch;
-            # None means the env var is unset, fall back to the testing sentinel.
-            api_key = raw if raw is not None else "dummy-key-for-testing"
+            api_key = self.api_key_env
         defaults = dict(
             name=f"{self.provider}_{self.endpoint}",
             provider=self.provider,
             base_url=self.base_url or ("internal" if is_agentic else ""),
             endpoint=self.endpoint,
             api_key=api_key,
+            api_key_env=None if is_agentic else self.api_key_env,
             request_options=self.options,
             timeout=3600 if is_agentic else 600,
             auth_type=self.auth_type or ("bearer" if not is_agentic else "bearer"),
@@ -609,8 +605,6 @@ def _import_provider_module(mod: str) -> None:
     A missing dependency skips the import entirely (debug log, module body
     never runs); once dependencies resolve, any ``ImportError`` is
     unconditionally a provider-load failure (warning)."""
-    import importlib
-
     missing = [
         dep for dep in _PROVIDER_OPTIONAL_DEPENDENCIES.get(mod, ()) if not is_import_installed(dep)
     ]
@@ -622,7 +616,7 @@ def _import_provider_module(mod: str) -> None:
         )
         return
     try:
-        importlib.import_module(mod)
+        import_module(mod)
     except ImportError as e:
         logger.warning(
             "provider module %r failed to import and was not registered: %s",

@@ -428,7 +428,7 @@ Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
 - After token validation, acknowledgement uses the status read from the row as its CAS source. A
   concurrent status change returns `False`.
 - The dispatch adapter enforces the registered closed edge graph
-  (`lionagi/state/lifecycle/policy.py:340-374`): `acked` is reachable only from `pending` and
+  (`lionagi/state/lifecycle/policy.py:341-375`): `acked` is reachable only from `pending` and
   `delivering`, `dead_letter` and `expired` re-enter `pending` only through an operator-gated
   edge, and `delivered`/`acked` have no outgoing edges. An ack attempt against any other current
   status raises before the CAS runs.

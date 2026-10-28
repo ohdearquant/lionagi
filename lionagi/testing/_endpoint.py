@@ -135,7 +135,9 @@ class ScriptedEndpoint(AgenticEndpoint):
         **kwargs: Any,
     ) -> AsyncGenerator[StreamChunk]:
         """Yield StreamChunk objects from the script (no HTTP, no SSE parsing)."""
+        self._require_api_key()
         payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
+        headers = self._dispatch_headers(headers)
         entry, matched_by = self._script.next(payload, len(self.calls))
 
         if isinstance(entry, ErrorResponse):

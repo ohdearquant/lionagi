@@ -644,9 +644,7 @@ class ReviewEngine(Engine):
                 dimension=dimension,
                 error_type=error_type,
             )
-            marker = f"review-{dimension} ({error_type})"
-            if marker not in run._emission_failures:
-                run._emission_failures.append(marker)
+            run.record_emission_failure(f"review-{dimension} ({error_type})")
 
     async def _isolate_verification_failure(
         self, run: EngineRun, exc: BaseException, *, stage: str
@@ -656,9 +654,7 @@ class ReviewEngine(Engine):
             return False
         error_type = _failure_label(exc)
         run.notify("verification_failed", stage=stage, error_type=error_type)
-        marker = f"{stage} ({error_type})"
-        if marker not in run._emission_failures:
-            run._emission_failures.append(marker)
+        run.record_emission_failure(f"{stage} ({error_type})")
         return True
 
     async def _verify_isolated(self, run: EngineRun, issue: IssueFound) -> None:
@@ -693,6 +689,23 @@ class ReviewEngine(Engine):
                 model=self.model_for("review"),
                 emits=emits,
             )
+            # `models["review_fallback"]` names ONE more attempt on a different model
+            # for a dimension whose reviewer stayed silent through its repairs. Read
+            # with optional_model_for(), not model_for(): that falls back to the
+            # engine's base model, which would turn "unset" into a retry on the same model.
+            fallback_model = self.optional_model_for("review_fallback")
+
+            async def _fallback_agent() -> Any:
+                # A fresh leg: repair replays the whole conversation onto the same
+                # branch, so asking that branch again only grows its context.
+                return await run.make_agent(
+                    self.reviewer_role,
+                    name=f"review-{dimension}-fallback",
+                    modes=[mode] if mode else None,
+                    model=fallback_model,
+                    emits=emits,
+                )
+
             # Repair re-prompts a reviewer that emitted prose instead of a
             # fenced emission. A clean dimension arrives as an affirmative
             # dimension_clean, so reaching the repair path means transport
@@ -703,6 +716,8 @@ class ReviewEngine(Engine):
                 arrived=lambda: dimension in self._reported_dimensions(run),
                 emits=emits,
                 retries=self.repair_retries,
+                fallback=_fallback_agent if fallback_model else None,
+                fallback_model=fallback_model,
             )
 
     async def _verify(self, run: EngineRun, issue: IssueFound) -> None:

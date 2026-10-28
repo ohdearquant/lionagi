@@ -1036,12 +1036,16 @@ async def test_imodel_stream_propagates_cancellation():
         session_id = None
         DEFAULT_QUEUE_CAPACITY = 10
 
+        def _require_api_key(self):
+            return None
+
         async def stream(self, request=None, extra_headers=None, **kw):
             yield StreamChunk(type="text", content="unused")
 
     m.endpoint = SlowEndpoint()
 
     api_call = AsyncMock(spec=APICalling)
+    api_call.endpoint = m.endpoint
     # A real UUID: Progression.exclude() rejects anything else, which would
     # make the pending-queue bookkeeping below a no-op.
     api_call.id = uuid4()

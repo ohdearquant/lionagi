@@ -32,13 +32,6 @@ async def _resolve_liveness(session: dict, artifacts: Path | None) -> bool | Non
     )
 
 
-# Phantom PhantomReason → SessionReasons code (mirrors admin._PHANTOM_REASON_CODES).
-_PHANTOM_REASON_CODES: dict[str, str] = {
-    "process_dead": SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
-    "missing_artifacts": SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
-    "stale_lock": SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS,
-}
-
 # Dead-runner-in-flight play statuses. Deliberately EXCLUDES:
 #   gated   — a paused gate is legitimately long-lived, never reap
 #   pending — queued, may be waiting on depends_on; not an in-flight crash
@@ -345,7 +338,9 @@ async def reap_phantom_sessions_detailed(
     for phantom in phantoms:
         sid = phantom["session_id"]
         phantom_reason = phantom.get("reason", "process_dead")
-        reason_code = _PHANTOM_REASON_CODES.get(
+        # The phantom reason → SessionReasons code map is admin's, which the
+        # health report reads too; a reason it does not name is an orphan.
+        reason_code = admin_svc._PHANTOM_REASON_CODES.get(
             phantom_reason, SessionReasons.HEALTH_ORPHANED_NO_PROCESS
         )
         try:
@@ -807,43 +802,35 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
 # ── Startup + periodic entry points ──────────────────────────────────────────
 
 
+async def _run_reapers(phase: str) -> dict[str, int]:
+    """Run every reaper in order, each isolated: one that raises is logged
+    with *phase* and counted as 0, and the rest still run."""
+    # Built per call so a patched module attribute is the one that runs.
+    reapers = (
+        ("phantom_sessions", "phantom", reap_phantom_sessions),
+        ("null_status_sessions", "null-status", reap_null_status_sessions),
+        ("stale_invocations", "invocation", reap_stale_invocations),
+        ("stale_plays", "play", reap_stale_plays),
+        ("stale_shows", "show", reap_stale_shows),
+        ("stale_schedule_runs", "schedule_run", reap_stale_schedule_runs),
+    )
+    results: dict[str, int] = {}
+    for key, label, reap in reapers:
+        try:
+            results[key] = await reap()
+        except Exception:
+            _log.exception("%s %s reaper failed", phase, label)
+            results[key] = 0
+    return results
+
+
 async def run_startup_reconciliation() -> dict[str, int]:
     """One-shot reconciliation called on Studio startup.
 
     Runs all reapers so stale rows left from an unclean shutdown are
     cleaned up before the scheduler begins firing new invocations.
     """
-    results: dict[str, int] = {}
-    try:
-        results["phantom_sessions"] = await reap_phantom_sessions()
-    except Exception:
-        _log.exception("Startup phantom reaper failed")
-        results["phantom_sessions"] = 0
-    try:
-        results["null_status_sessions"] = await reap_null_status_sessions()
-    except Exception:
-        _log.exception("Startup null-status reaper failed")
-        results["null_status_sessions"] = 0
-    try:
-        results["stale_invocations"] = await reap_stale_invocations()
-    except Exception:
-        _log.exception("Startup invocation reaper failed")
-        results["stale_invocations"] = 0
-    try:
-        results["stale_plays"] = await reap_stale_plays()
-    except Exception:
-        _log.exception("Startup play reaper failed")
-        results["stale_plays"] = 0
-    try:
-        results["stale_shows"] = await reap_stale_shows()
-    except Exception:
-        _log.exception("Startup show reaper failed")
-        results["stale_shows"] = 0
-    try:
-        results["stale_schedule_runs"] = await reap_stale_schedule_runs()
-    except Exception:
-        _log.exception("Startup schedule_run reaper failed")
-        results["stale_schedule_runs"] = 0
+    results = await _run_reapers("Startup")
     if any(v for v in results.values()):
         _log.info("Startup reconciliation: %s", results)
     return results
@@ -856,38 +843,7 @@ async def run_periodic_reapers(now: float | None = None) -> dict[str, int]:
     handled by the caller (``SchedulerEngine._tick``).
     """
     _ = now  # reserved for future rate-limiting based on wall clock
-    results: dict[str, int] = {}
-    try:
-        results["phantom_sessions"] = await reap_phantom_sessions()
-    except Exception:
-        _log.exception("Periodic phantom reaper failed")
-        results["phantom_sessions"] = 0
-    try:
-        results["null_status_sessions"] = await reap_null_status_sessions()
-    except Exception:
-        _log.exception("Periodic null-status reaper failed")
-        results["null_status_sessions"] = 0
-    try:
-        results["stale_invocations"] = await reap_stale_invocations()
-    except Exception:
-        _log.exception("Periodic invocation reaper failed")
-        results["stale_invocations"] = 0
-    try:
-        results["stale_plays"] = await reap_stale_plays()
-    except Exception:
-        _log.exception("Periodic play reaper failed")
-        results["stale_plays"] = 0
-    try:
-        results["stale_shows"] = await reap_stale_shows()
-    except Exception:
-        _log.exception("Periodic show reaper failed")
-        results["stale_shows"] = 0
-    try:
-        results["stale_schedule_runs"] = await reap_stale_schedule_runs()
-    except Exception:
-        _log.exception("Periodic schedule_run reaper failed")
-        results["stale_schedule_runs"] = 0
-    return results
+    return await _run_reapers("Periodic")
 
 
 async def get_phantom_count(*, stale_hours: float | None = None) -> int:

@@ -1390,3 +1390,164 @@ async def test_unbound_handler_drops_adapter_stderr_rather_than_sharing_it(monke
     assert len(warn_calls) == 1
     assert secret not in warn_calls[0]
     assert "not captured" in warn_calls[0]
+
+
+@pytest.fixture
+def python_adapter_package(tmp_path, monkeypatch):
+    name = "_python_notify_import_case"
+    root = tmp_path / name
+    root.mkdir()
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield name, root
+    for module_name in tuple(sys.modules):
+        if module_name == name or module_name.startswith(name + "."):
+            sys.modules.pop(module_name, None)
+
+
+def test_python_adapter_resolves_the_real_handler_through_the_shared_importer(
+    python_adapter_package, monkeypatch
+):
+    from lionagi.ln import import_module
+    from lionagi.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+    target = name + ".adapter"
+    (root / "adapter.py").write_text(
+        "def on_terminal(event):\n    return event\n", encoding="utf-8"
+    )
+    bound_importer = getattr(notify_settings, "import_module", None)
+    calls = []
+
+    def observed_import(module_name, *args, **kwargs):
+        calls.append((module_name, args, kwargs))
+        return import_module(module_name, *args, **kwargs)
+
+    monkeypatch.setattr(notify_settings, "import_module", observed_import, raising=False)
+    reasons = []
+    handler = notify_settings.build_handler(
+        ResolvedNotifyHandler(python_ref=target + ":on_terminal"),
+        on_build_failure=reasons.append,
+    )
+
+    assert handler is sys.modules[target].on_terminal
+    marker = object()
+    assert handler(marker) is marker
+    assert reasons == []
+    assert bound_importer is import_module
+    assert [call[0] for call in calls] == [target]
+    assert all(not args and kwargs.get("import_name") is None for _, args, kwargs in calls)
+
+
+@pytest.mark.parametrize("error_kind", ["ordinary", "subclass", "missing"])
+def test_python_adapter_import_errors_preserve_cause_and_disabled_reason(
+    python_adapter_package, monkeypatch, caplog, error_kind
+):
+    import types
+
+    from lionagi.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+
+    class AdapterImportError(ImportError):
+        pass
+
+    error_type = {
+        "ordinary": ImportError,
+        "subclass": AdapterImportError,
+        "missing": ModuleNotFoundError,
+    }[error_kind]
+    original = error_type(
+        "adapter initialization failed", name="adapter_dependency", path="adapter.py"
+    )
+    state = types.ModuleType(name + ".state")
+    state.error = original
+    monkeypatch.setitem(sys.modules, state.__name__, state)
+    target = name + ".broken"
+    (root / "broken.py").write_text("from .state import error\nraise error\n", encoding="utf-8")
+    ref = target + ":on_terminal"
+
+    with pytest.raises(ImportError) as caught:
+        notify_settings._make_python_handler(ref)
+
+    if error_kind == "missing":
+        assert caught.value is original
+        assert caught.value.name == "adapter_dependency"
+        assert caught.value.path == "adapter.py"
+        assert caught.value.msg == "adapter initialization failed"
+    else:
+        assert type(caught.value) is ImportError
+        assert str(caught.value) == f"Failed to import module {target}: {original}"
+        assert caught.value.msg == str(caught.value)
+        assert caught.value.name is None
+        assert caught.value.path is None
+        assert caught.value.__cause__ is original
+
+    reasons = []
+    with caplog.at_level(logging.WARNING, logger=notify_settings.logger.name):
+        handler = notify_settings.build_handler(
+            ResolvedNotifyHandler(python_ref=ref), on_build_failure=reasons.append
+        )
+
+    assert handler is None
+    assert reasons == ["python_adapter_unresolvable"]
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == notify_settings.logger.name and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "failed to import" in warnings[0].getMessage()
+    reported = warnings[0].args[1]
+    if error_kind == "missing":
+        assert reported is original
+    else:
+        assert str(reported) == f"Failed to import module {target}: {original}"
+        assert reported.__cause__ is original
+
+
+@pytest.mark.parametrize("attribute", ["child", ""], ids=["child", "empty"])
+def test_python_adapter_missing_attribute_never_imports_a_package_child(
+    python_adapter_package, caplog, attribute
+):
+    from lionagi.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+    (root / "child.py").write_text("EXECUTED = True\n", encoding="utf-8")
+    reasons = []
+    with caplog.at_level(logging.WARNING, logger=notify_settings.logger.name):
+        handler = notify_settings.build_handler(
+            ResolvedNotifyHandler(python_ref=name + ":" + attribute),
+            on_build_failure=reasons.append,
+        )
+
+    assert handler is None
+    assert reasons == ["python_adapter_unresolvable"]
+    assert name + ".child" not in sys.modules
+
+
+def test_python_adapter_keeps_attribute_import_errors_outside_module_import_wrapping(
+    python_adapter_package, monkeypatch
+):
+    import types
+
+    from lionagi.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+    original = ImportError(
+        "handler attribute unavailable", name="handler_dependency", path="handler.py"
+    )
+    state = types.ModuleType(name + ".state")
+    state.error = original
+    monkeypatch.setitem(sys.modules, state.__name__, state)
+    (root / "__init__.py").write_text(
+        "from .state import error\ndef __getattr__(name):\n    raise error\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportError) as caught:
+        notify_settings._make_python_handler(name + ":on_terminal")
+
+    assert caught.value is original
+    assert caught.value.name == "handler_dependency"
+    assert caught.value.path == "handler.py"

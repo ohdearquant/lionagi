@@ -5,8 +5,9 @@ import json
 import os
 import re
 from decimal import Decimal
+from inspect import getattr_static
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -269,10 +270,17 @@ class AppSettings(BaseSettings, frozen=True):
         return _parse_accounts(value)
 
     def get_secret(self, key_name: str) -> str:
-        if not hasattr(self, key_name):
-            if "ollama" in key_name.lower():
-                return "ollama"
-            raise AttributeError(f"Secret key '{key_name}' not found in settings")
+        field = type(self).model_fields.get(key_name)
+        if field is None:
+            try:
+                getattr_static(self, key_name)
+            except AttributeError:
+                if "ollama" in key_name.lower():
+                    return "ollama"
+                raise AttributeError(f"Secret key '{key_name}' not found in settings") from None
+            raise TypeError(f"Setting '{key_name}' is not a secret")
+        if field.annotation is not SecretStr and SecretStr not in get_args(field.annotation):
+            raise TypeError(f"Setting '{key_name}' is not a secret")
 
         secret = getattr(self, key_name)
         if secret is None:

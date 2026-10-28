@@ -593,10 +593,10 @@ lines:
   first retained message under a system message is not an Instruction
   (`lionagi/operations/chat/_prepare.py:351`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:416-429`). That guard tests the current turn, the last entry appended to the
+  or images (`:420-433`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
-  `_last_index` (`:374-375`, `:405-406`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:470-483`). No section boundary refuses
+  `_last_index` (`:374-375`, `:409-410`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`:474-487`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action

@@ -16,6 +16,8 @@ class this file exists to catch.
 
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +41,31 @@ def _line(relpath: str, number: int) -> str:
 
 def _span(relpath: str, start: int, end: int) -> str:
     return "\n".join((ROOT / relpath).read_text(encoding="utf-8").splitlines()[start - 1 : end])
+
+
+def _tree(relpath: str) -> ast.Module:
+    return ast.parse((ROOT / relpath).read_text(encoding="utf-8"))
+
+
+def _class(tree: ast.AST, name: str) -> ast.ClassDef:
+    found = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name), None
+    )
+    assert found is not None, f"class {name} is not in the module the amendment cites"
+    return found
+
+
+def _method(cls: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    found = next(
+        (
+            n
+            for n in cls.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+        ),
+        None,
+    )
+    assert found is not None, f"{cls.name}.{name} is not in the class the amendment cites"
+    return found
 
 
 def _amendment() -> str:
@@ -81,17 +108,62 @@ def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
     assert "return []" in body
 
 
+REVIEW = "lionhub/src/lionhub/orchestration/engines/review.py"
+ENGINE = "lionhub/src/lionhub/orchestration/engines/engine.py"
+
+
 def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
-    assert "class ReviewVerdict(Verdict)" in _line(
-        "lionhub/src/lionhub/orchestration/engines/review.py", 281
-    )
-    assert "await run.emit(final)" in _line(
-        "lionhub/src/lionhub/orchestration/engines/review.py", 842
-    )
+    review = _tree(REVIEW)
+    verdict = _class(review, "ReviewVerdict")
+    assert [b.id for b in verdict.bases if isinstance(b, ast.Name)] == ["Verdict"]
+    body = _method(_class(review, "ReviewEngine"), "_verdict").body
+
+    def is_emit_of_final(stmt: ast.stmt) -> bool:
+        call = (
+            stmt.value.value
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Await)
+            else None
+        )
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "emit"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "run"
+            and [a.id for a in call.args if isinstance(a, ast.Name)] == ["final"]
+        )
+
+    def is_rule_into_final(stmt: ast.stmt) -> bool:
+        return (
+            isinstance(stmt, ast.Assign)
+            and [t.id for t in stmt.targets if isinstance(t, ast.Name)] == ["final"]
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Attribute)
+            and stmt.value.func.attr == "_rule"
+        )
+
+    # The verdict the synthesis rules produced is emitted at the method's own level,
+    # after `final = self._rule(...)`; the shared-session refusal emits from inside a branch.
+    ruled = next(i for i, stmt in enumerate(body) if is_rule_into_final(stmt))
+    assert any(is_emit_of_final(stmt) for stmt in body[ruled + 1 :])
+
+
+def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> None:
+    notifier = _method(_class(_tree(ENGINE), "EngineRun"), "_notify_budget_once")
+    notified = [
+        n.args[0].value
+        for n in ast.walk(notifier)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "notify"
+        and n.args
+        and isinstance(n.args[0], ast.Constant)
+    ]
+    assert notified == ["budget_exhausted"]
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _line("lionagi/state/schema.sql", 464)
+    assert "github_cursor" in _line("lionagi/state/schema.sql", 487)
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
@@ -111,13 +183,13 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
         _line("lionagi/cli/orchestrate/_orchestration.py", 1597)
     )
     assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1633)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2083)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2089)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5386)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7225)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7250)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5743)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7582)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7607)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -136,9 +208,9 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:801-805" in flat
-    assert "lionagi/state/db.py:7225-7235" in flat
-    assert "lionagi/state/db.py:7250-7267" in flat
+    assert "lionagi/state/schema.sql:824-828" in flat
+    assert "lionagi/state/db.py:7582-7592" in flat
+    assert "lionagi/state/db.py:7607-7624" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -173,7 +245,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py:1697" in flat
+    assert "lionagi/cli/_runs.py:1719" in flat
     assert "lionagi/studio/services/workflow_run.py:110" in flat
 
 
@@ -189,7 +261,21 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionhub/src/lionhub/orchestration/engines/review.py:281`, `:842" in flat
+    assert (
+        "the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, "
+        "both in `lionhub/src/lionhub/orchestration/engines/review.py`" in flat
+    )
+    assert (
+        "`EngineRun._notify_budget_once` in `lionhub/src/lionhub/orchestration/engines/engine.py`"
+        in flat
+    )
+    # A line number in either citation goes stale on the next edit above it and nothing checks it.
+    first = flat.index("the `ReviewVerdict` class and the `await run.emit(final)`")
+    second = (
+        "`EngineRun._notify_budget_once` in `lionhub/src/lionhub/orchestration/engines/engine.py`"
+    )
+    cited = flat[first : flat.index(second) + len(second)]
+    assert re.search(r"engines/(?:review|engine)\.py:\d", cited) is None
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven
@@ -259,8 +345,8 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
-    assert "lionagi/state/schema.sql:464" in flat
-    assert "lionagi/state/db.py:5386-5388" in flat
+    assert "lionagi/state/schema.sql:487" in flat
+    assert "lionagi/state/db.py:5743-5745" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
@@ -270,7 +356,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:2083-2128" in flat
+    assert "lionagi/cli/orchestrate/flow.py:2089-2134" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 

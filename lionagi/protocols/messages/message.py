@@ -292,11 +292,6 @@ class Message(Node, Sendable):
             return None
         return validate_sender_recipient(v)
 
-    def to_dict(self, mode="python", **kw):
-        d = super().to_dict(mode=mode, **kw)
-        d["role"] = self.role.value if isinstance(self.role, MessageRole) else str(self.role)
-        return d
-
     def model_dump(self, **kw):
         d = super().model_dump(**kw)
         d["role"] = self.role.value if isinstance(self.role, MessageRole) else str(self.role)

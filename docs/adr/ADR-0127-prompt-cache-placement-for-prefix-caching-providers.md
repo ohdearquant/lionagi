@@ -6,7 +6,8 @@
   the tool section in the stable segment (D2), the system text as its own block (D3), the one-hour
   mark on the stable segment and the five-minute mark on the turn (D5), and cache writes recorded per
   lifetime (D6) are shipped; the conversation segment and its mark (D1, D4), the lookback mark, the
-  segment-change count and the multi-round acceptance test (D7) are open
+  segment-change count and the multi-round acceptance test (D7) are open; Amendment 1 is Proposed
+  and not started
 - **Area**: messages-context
 - **Date**: 2026-10-16
 - **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
@@ -19,7 +20,8 @@
   with the option off the promise holds; carries the cache placement ADR-0126 R3 assigns to this
   record, whose reference is Claude Code's placement (lion1 ADR-0028 S10 and A1), a claim external
   to this repository's ADR corpus and held here at `lion1/docs/adr/028-anthropic/`; read with
-  ADR-0125 step 2, whose request compiler inherits these rules
+  ADR-0125 step 2, whose request compiler inherits these rules; Amendment 1 qualifies ADR-0132
+  Amendment 2's placement of the first round's guidance on endpoints that place the prompt cache
 
 **Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16
 (13:46 to 13:55 ET): "the problem with our own harness for too much stuff is the caching
@@ -37,6 +39,86 @@ scope).
 Purpose: repeated model calls inside one conversation should reuse the provider's prompt cache, so a
 conversation on a per-token API model pays the write price for the tokens each call adds and the read
 price for the rest, instead of the full input price for everything.
+
+## Amendment 1 (2026-10-26): an LNDL Middle's round guidance in the stable segment
+
+Status: Proposed. Extends D1, D2, D3, D5 and D7 for guidance an LNDL Middle (ADR-0132) holds
+constant for a whole operation, and qualifies ADR-0132 Amendment 2's placement of the first round's
+guidance. Every rule here applies only while both gates of the Decision are on. With the option off,
+or on an endpoint without the declaration, compiled requests keep their previous bytes, wording and
+guidance placement, and no loop default changes.
+
+**Placement.** When the endpoint that sends the request places the prompt cache, the LNDL Middle's
+rules, its fixed target spec and, for `lndl-calls`, the tools rendered as calls render in the stable
+segment, after the Branch's system text and before any tool section. One resolution of the model the
+operation runs on decides both the placement and the request: a model the caller passes for the
+operation is used whatever its value, as `_run_round_chat` in `lndl_middle.py` already selects it,
+and the Branch's model only when none is passed.
+
+**Ownership.** The Middle passes that text as the operation's stable guidance, an explicit field of
+the chat parameters that defaults to none, and passes the instruction to leave the `Tools:` section
+out of the stable segment on the same path. Request compilation reads both only from there, never
+from ambient context, so a nested call, a call on another Branch, or a task started while a round
+runs receives neither. The stable guidance is not written into any instruction, is not persisted
+with one, and is not forwarded to the provider as a request option. The `_no_tool_section` context
+variable of ADR-0132 Amendment 2 moves onto this path.
+
+**Caller guidance.** Guidance the caller supplies keeps its place in the first round's instruction
+and is never copied into the stable guidance. Response schemas and formats other than the Middle's
+fixed target spec keep D2's turn placement.
+
+**`lndl-calls`.** The tools appear only as LNDL calls, and the stable segment holds no further
+`Tools:` section. Every request of the operation carries the same stable guidance, and the first
+round's user content no longer carries it.
+
+**Stability.** The complete stable segment is taken once, before the operation's first request, and
+normal, repair and final rounds all send the same bytes; a repair never rebuilds it. A change to the
+Branch's system text or tool set while the operation runs is refused.
+
+**Transitions.** The next operation on the Branch uses its own configuration. A stable segment that
+differs from the previous request's, including one that adds or drops operation guidance, is a new
+segment, and D6 counts it before the request is sent.
+
+**Resume.** A resumed LNDL operation rebuilds its stable guidance from the recorded configuration and
+guidance version; a changed configuration starts a new, counted segment. Instructions already in
+history are not rewritten.
+
+**Marks.** D5 is unchanged. The one-hour mark at the end of the stable segment now covers the
+guidance with the system text.
+
+**Acceptance.** D7 adds checks on captured payloads: caller guidance stays in the turn segment and
+never reaches the stable segment; a nested call, a call on another Branch and a task started inside a
+round carry no stable guidance and no tool-section suppression, and both are cleared on success,
+error and cancellation; the stable bytes are identical across normal, repair and final rounds; an
+LNDL, then ordinary, then LNDL sequence on one Branch counts each segment change; a resumed operation
+rebuilds the same stable bytes, and a record from before this amendment resumes with a counted
+change; with the option off, on filtered and unfiltered endpoints, and on an endpoint without the
+declaration, requests are byte-identical to before; a model passed explicitly decides the placement.
+
+**Why.** With caching on and `lndl-calls`, the stable segment under D3 is the system text alone, 656
+characters in the measured configuration, below the 512-token minimum cacheable prompt of
+`anthropic/claude-haiku-5-5`, so its one-hour mark caches nothing. The rules and the calls, about
+11,000 characters, sit in the first round's user message beside the task, with no mark between
+them, so every new operation writes them to the cache again. Measured on 50 SWE-bench Verified tasks
+on `anthropic/claude-haiku-5-5`, `lndl-calls`, caching on, three runs per layout:
+
+| | guidance in the first round (shipped) | guidance in the stable segment |
+|---|---|---|
+| cache reads over all input, per run | 84.4%, 85.0%, 86.4% | 88.8%, 88.9%, 89.8% |
+| first replies written as provider tool markup, which nothing runs | 112 of 150 | 31 of 150 |
+| requests whose output reached the 8,192-token cap | 57 | 14 |
+| cost of a 50-task run, mean | $0.365 | $0.220 |
+| tasks resolved | 106 of 150 | 100 of 150 |
+
+Most of the saving is output: fewer rounds that run to the cap, and fewer requests. The arms differ
+in more than placement: the measured change also reworded one sentence of the guidance, which this
+amendment does not adopt, wrapped the guidance differently, carried it in another role, and copied
+the caller's guidance into the system block as well, which the Caller guidance rule above forbids.
+These numbers describe that change as measured, not placement alone. Averaged per task, the stable
+layout resolved 4.0 points fewer, with a standard error of 2.45 across the 50 tasks, which does not
+establish a quality difference in either direction.
+A claim about placement alone needs runs with the wording held constant and the arms interleaved.
+`prompt_caching` stays off unless set, so the amendment changes no default.
 
 ## Context
 
@@ -63,7 +145,7 @@ is a separate characterization, distinct from the acceptance tests in D7):
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
 `Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:211-216`);
-once it is history it is re-rendered without them (`operations/chat/_prepare.py:275`). Rounds 0 to
+once it is history it is re-rendered without them (`operations/chat/_prepare.py:277`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
 content alone), almost all of it those sections, sent uncached on every call.
@@ -87,7 +169,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:514-517`) before `messages.py:1187` looks for it. Building that
+  (`service/connections/endpoint.py:514-517`) before `messages.py:1200` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -95,7 +177,7 @@ that code on one of two paths, and the two paths differ:
   from a plain dict. There the flag is not filtered out, so the flag reaches the mark code and one
   ephemeral five-minute mark lands on the last message's last block.
 
-`iModel` then pops the same flag from the request (`service/imodel.py:394`) and, in `Endpoint.call`,
+`iModel` then pops the same flag from the request (`service/imodel.py:403`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
 (`service/connections/endpoint.py:656`, `:726-744`), a different feature.
 
@@ -164,7 +246,7 @@ run record counts it (D6).
 A **history rewrite** is a turn-segment change, not a new class. It is allowed; it breaks the prefix
 from the rewritten message on, so every later request in the conversation is a cache miss from
 there; and the run record counts it (D6). Today's rewrites are the hide, show and summarize
-directives of ADR-0125 step 2 (`operations/chat/_prepare.py:234-297`).
+directives of ADR-0125 step 2 (`operations/chat/_prepare.py:236-299`).
 
 ### D2: tools render once; an instruction renders the same everywhere
 

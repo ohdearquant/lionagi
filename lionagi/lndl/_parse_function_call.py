@@ -78,6 +78,43 @@ def _ast_to_value(node: ast.AST) -> Any:
         raise ValueError(f"Cannot convert AST node: {type(node).__name__}") from e
 
 
+def _call_to_dict(call: ast.Call) -> dict[str, Any]:
+    """Decode one parsed call node into ``{action, arguments[, service]}``."""
+    service = None
+    action = None
+
+    if isinstance(call.func, ast.Name):
+        action = call.func.id
+    elif isinstance(call.func, ast.Attribute):
+        action = call.func.attr
+        node = call.func.value
+        if isinstance(node, ast.Name):
+            service = node.id
+        elif isinstance(node, ast.Attribute):
+            service = node.attr
+    else:
+        raise ValueError(f"Unsupported function type: {type(call.func)}")
+
+    arguments = {}
+    for i, arg in enumerate(call.args):
+        arguments[f"_pos_{i}"] = _ast_to_value(arg)
+
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            raise ValueError("**kwargs not supported")
+        arguments[keyword.arg] = _ast_to_value(keyword.value)
+
+    result: dict[str, Any] = {
+        "action": action,
+        "arguments": arguments,
+    }
+
+    if service:
+        result["service"] = service
+
+    return result
+
+
 def parse_function_call(call_str: str) -> dict[str, Any]:
     """Parse a Python-style function call string, handling an optional
     service prefix (``svc.tool(...)`` → ``{service: "svc", action: "tool", ...}``)."""
@@ -90,39 +127,7 @@ def parse_function_call(call_str: str) -> dict[str, Any]:
         if not isinstance(call, ast.Call):
             raise ValueError("Not a function call")
 
-        service = None
-        action = None
-
-        if isinstance(call.func, ast.Name):
-            action = call.func.id
-        elif isinstance(call.func, ast.Attribute):
-            action = call.func.attr
-            node = call.func.value
-            if isinstance(node, ast.Name):
-                service = node.id
-            elif isinstance(node, ast.Attribute):
-                service = node.attr
-        else:
-            raise ValueError(f"Unsupported function type: {type(call.func)}")
-
-        arguments = {}
-        for i, arg in enumerate(call.args):
-            arguments[f"_pos_{i}"] = _ast_to_value(arg)
-
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                raise ValueError("**kwargs not supported")
-            arguments[keyword.arg] = _ast_to_value(keyword.value)
-
-        result: dict[str, Any] = {
-            "action": action,
-            "arguments": arguments,
-        }
-
-        if service:
-            result["service"] = service
-
-        return result
+        return _call_to_dict(call)
 
     except (SyntaxError, ValueError) as e:
         raise ValueError(f"Invalid function call syntax: {e}") from e
@@ -152,10 +157,7 @@ def parse_batch_function_calls(batch_str: str) -> list[dict[str, Any]]:
             if not isinstance(element, ast.Call):
                 raise ValueError(f"List element is not a function call: {ast.dump(element)}")
 
-            # Convert the Call node back to source code and parse it
-            call_str = ast.unparse(element)
-            parsed = parse_function_call(call_str)
-            results.append(parsed)
+            results.append(_call_to_dict(element))
 
         return results
 

@@ -32,6 +32,8 @@ class ReaderRequest(BaseModel):
             "the line-number prefix is for navigation only — strip it (and the tab) "
             "before using any line as editor old_string. For large files use "
             "offset+limit to read in windows rather than loading everything at once.\n"
+            "Text reads include total_lines and reached_eof. An offset at or past the "
+            "end of a nonempty file returns an end-of-file notice.\n"
             "- 'list_dir': List files in a directory."
         ),
     )
@@ -80,11 +82,24 @@ class ReaderResponse(BaseModel):
     )
     content: str | None = Field(
         None,
-        description="The file content (for 'read') or path listing (for 'list_dir').",
+        description=(
+            "The file content or end-of-file notice (for 'read'), or path listing (for 'list_dir')."
+        ),
     )
     error: str | None = Field(
         None,
         description="Error message when success=False.",
+    )
+    total_lines: int | None = Field(
+        None,
+        description="Total number of lines in the text file; None when not known.",
+    )
+    reached_eof: bool | None = Field(
+        None,
+        description=(
+            "Whether the read window reaches or starts beyond the end of the text file; "
+            "None when not known."
+        ),
     )
 
 
@@ -139,9 +154,21 @@ def _read_sync(
             success=False, error=f"Read error: {e}. Check file permissions and encoding."
         )
 
+    total_lines = len(lines)
     selected = lines[start : start + max_lines]
-    numbered = "".join(f"{start + i + 1}\t{line}" for i, line in enumerate(selected))
-    return ReaderResponse(success=True, content=numbered)
+    if total_lines > 0 and start >= total_lines:
+        content = (
+            f"Offset {start} is at or beyond the end of the file ({total_lines} lines). "
+            f"Use an offset below {total_lines} to read file content."
+        )
+    else:
+        content = "".join(f"{start + i + 1}\t{line}" for i, line in enumerate(selected))
+    return ReaderResponse(
+        success=True,
+        content=content,
+        total_lines=total_lines,
+        reached_eof=start + len(selected) >= total_lines,
+    )
 
 
 def _list_dir_sync(
@@ -225,7 +252,9 @@ class ReaderTool(LionTool):
                 Use action='read' for text files. Output format is `<number>\\t<code>` per line;
                 the number prefix is for reference only — strip the leading `<digits>\\t` before
                 using any line as an editor old_string. Use offset+limit to read large files in
-                windows (e.g. offset=200, limit=200 to get lines 200-400).
+                windows (e.g. offset=200, limit=200 to get lines 200-400). Text reads
+                include total_lines and reached_eof; an offset at or past a nonempty
+                file's end returns an end-of-file notice instead of numbered content.
 
                 Use action='list_dir' for directory listings.
 

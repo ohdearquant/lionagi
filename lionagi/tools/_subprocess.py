@@ -8,13 +8,13 @@ import subprocess
 import threading
 from collections.abc import Mapping
 
+from lionagi._command_env_metadata import command_environment
 from lionagi.ln import (
     capture_group_witnesses,
     observe_process_group_leader,
     prepare_process_group_env,
     terminate_process_group,
 )
-from lionagi.ln._proc import env_without_state_db_url
 
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
@@ -54,12 +54,9 @@ def _subprocess_sync(
     timeout_ms: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict:
-    """Run ``cmd`` synchronously; ``env=None`` inherits the parent environment without the
-    state-store URL, an explicit mapping scopes less-trusted commands to a minimal one."""
-    # The command is the agent's, any program at all: it names its own store if it needs one, and
-    # an explicit mapping is the caller's choice, passed as given.
+    """Run a coding command with a scrubbed default or an explicitly supplied mapping."""
     child_env, group_marker = prepare_process_group_env(
-        env_without_state_db_url() if env is None else env
+        command_environment() if env is None else env
     )
     try:
         proc = subprocess.Popen(  # noqa: S603

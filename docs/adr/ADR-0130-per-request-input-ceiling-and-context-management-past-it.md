@@ -36,9 +36,9 @@ rejected by the provider.
 
 **P1 — price tiers change at a prompt size, and nothing in the request path knows it.** The pricing
 table prices some models by prompt length: `claude-haiku-5-5` carries a first tier bounded at
-100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:125-146`, `PriceTier.max_prompt_tokens`
-at `:54`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
-`ModelPrice.max_input_tokens` (`:64`) is the model's capacity, one million, and is used to reserve
+100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:128-149`, `PriceTier.max_prompt_tokens`
+at `:57`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
+`ModelPrice.max_input_tokens` (`:67`) is the model's capacity, one million, and is used to reserve
 spend; it is not the size a caller wants to stay under. No code before a send compares the request
 against either number.
 
@@ -60,7 +60,7 @@ turn input is limited to 1,048,576 characters, and died at turn start.
 
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
-(`lionagi/providers/_cli_subprocess.py:1259-1282`), and Codex carries the system text as a separate
+(`lionagi/providers/_cli_subprocess.py:1536-1559`), and Codex carries the system text as a separate
 argument (`lionagi/providers/openai/codex.py:1879-1885`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 

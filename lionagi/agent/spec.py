@@ -87,6 +87,11 @@ class AgentSpec(HooksMixin):
     # agent's endpoint by default (a call can still lift it; see create_agent).
     # An agent of another provider is built unchanged.
     contain_account_integrations: bool = False
+    # Turn the endpoint's prompt_caching option on (ADR-0127) for the model
+    # create_agent builds. A provider that does not declare prefix caching sends
+    # its requests unchanged, as the option does everywhere.
+    prompt_caching: bool = False
+    command_env_allowlist: tuple[str, ...] = ()
 
     @classmethod
     def compose(
@@ -106,8 +111,12 @@ class AgentSpec(HooksMixin):
         yolo: bool = False,
         khive_injection: Any = None,
         contain_account_integrations: bool = False,
+        prompt_caching: bool = False,
+        command_env_allowlist: tuple[str, ...] = (),
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
+        from lionagi._command_env import normalize_command_env_allowlist
+
         prof = Profile.compose(role, modes=modes)
         perm = _resolve_permissions(permissions)
         return cls(
@@ -124,6 +133,8 @@ class AgentSpec(HooksMixin):
             yolo=yolo,
             khive_injection=khive_injection,
             contain_account_integrations=contain_account_integrations,
+            prompt_caching=prompt_caching,
+            command_env_allowlist=normalize_command_env_allowlist(command_env_allowlist),
         )
 
     @classmethod
@@ -164,12 +175,15 @@ class AgentSpec(HooksMixin):
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        contain = data.get("contain_account_integrations", False)
-        if not isinstance(contain, bool):
-            # bool("false") is True, and a key with no value reads as None; either is a
-            # mistake to report, not to read.
-            got = "no value" if contain is None else type(contain).__name__
-            raise ValueError(f"contain_account_integrations must be true or false, got {got}")
+        flags = {}
+        for key in ("contain_account_integrations", "prompt_caching"):
+            value = data.get(key, False)
+            if not isinstance(value, bool):
+                # bool("false") is True, and a key with no value reads as None; either is a
+                # mistake to report, not to read.
+                got = "no value" if value is None else type(value).__name__
+                raise ValueError(f"{key} must be true or false, got {got}")
+            flags[key] = value
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
@@ -181,7 +195,8 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
-            contain_account_integrations=contain,
+            command_env_allowlist=data.get("command_env_allowlist", ()),
+            **flags,
         )
         # compose() defaults lion_system to True, so a saved False must be
         # restored explicitly or it would be silently dropped.
@@ -214,6 +229,8 @@ class AgentSpec(HooksMixin):
 
     def to_yaml(self, path: str | Path) -> None:
         """Save spec to YAML (without hook callables — those are code-only)."""
+        from lionagi._command_env import normalize_command_env_allowlist
+
         data = {
             "role": self.profile.role.name,
             "modes": [m.name for m in self.profile.modes],
@@ -225,11 +242,16 @@ class AgentSpec(HooksMixin):
             "yolo": self.yolo,
             "lion_system": self.lion_system,
             "context_management": self.context_management,
+            "command_env_allowlist": list(
+                normalize_command_env_allowlist(self.command_env_allowlist)
+            ),
         }
         if self.cwd:
             data["cwd"] = self.cwd
         if self.contain_account_integrations:
             data["contain_account_integrations"] = True
+        if self.prompt_caching:
+            data["prompt_caching"] = True
         if isinstance(self.khive_injection, (bool, dict)):
             data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:

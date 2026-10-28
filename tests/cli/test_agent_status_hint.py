@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.cli._worker_fixtures import WorkerSetup
+
 
 def _reset_channel(name: str) -> logging.Logger:
     """Clear handlers + force propagate=True so caplog captures this channel.
@@ -50,22 +52,15 @@ def _wire_agent_stubs(monkeypatch, tmp_path, *, session_id: str | None):
 
     monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
 
-    async def fake_setup(*a, **kw):
-        return {"session_id": session_id} if session_id else None
+    persistence = WorkerSetup(session_id=session_id or "sess-0")
 
-    async def fake_teardown(
-        ctx,
-        *,
-        status="completed",
-        exception=None,
-        cwd=None,
-        engine_session_uid=None,
-        defer_terminal=False,
-    ):
-        return status
+    async def fake_setup(*args, **kwargs):
+        if session_id:
+            return await persistence.setup(*args, **kwargs)
+        return None
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", persistence.teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,

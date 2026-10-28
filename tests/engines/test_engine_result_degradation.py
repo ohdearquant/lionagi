@@ -376,7 +376,7 @@ class _AlwaysArriveBranch:
 @pytest.mark.asyncio
 async def test_emission_failure_alone_flags_degraded_true():
     """A run that hits no deadline/budget limit, but where one dimension
-    agent's emission retries are exhausted (run._emission_failures
+    agent's emission retries are exhausted (run.emission_failures
     non-empty), must still report EngineResult.degraded is True.
 
     Pre-fix, _wrap_result only derived .degraded from degrade_reason (set

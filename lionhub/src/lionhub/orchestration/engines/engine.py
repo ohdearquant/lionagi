@@ -10,7 +10,7 @@ import contextlib
 import logging
 import os
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln import short_id
-from lionagi.ln.concurrency import Semaphore, gather, sleep
+from lionagi.ln.concurrency import Semaphore, gather, move_on_after, sleep
 from lionagi.ln.concurrency._compat import (
     ExceptionGroup,
     get_exception_group_exceptions,
@@ -120,6 +120,113 @@ def _is_all_budget_error(exc: BaseException) -> bool:
     if is_exception_group(exc):
         return all(_is_all_budget_error(e) for e in get_exception_group_exceptions(exc))
     return False
+
+
+# Cap on the reply text an emission event carries when the engine records it
+# (``Engine(emission_reply_text=True)``). A reply that did not emit is usually
+# short prose or a malformed fence; the cap bounds the rare runaway one and the
+# event says it truncated (``text_truncated`` + ``text_chars``).
+RAW_RESPONSE_TEXT_CAP = 16_000
+
+
+def _read_anthropic_messages(body: dict[str, Any]) -> dict[str, Any]:
+    """Anthropic Messages body: ``stop_reason`` and a ``content`` list of typed blocks. Also the reading for a body of unknown shape."""
+    blocks = body.get("content")
+    return {
+        "stop_reason": body.get("stop_reason"),
+        "block_types": (
+            [b.get("type") for b in blocks if isinstance(b, dict)]
+            if isinstance(blocks, list)
+            else None
+        ),
+    }
+
+
+def _read_chat_completion(body: dict[str, Any]) -> dict[str, Any]:
+    """OpenAI chat-completions body: the reason lives on ``choices[0].finish_reason``; there are no typed blocks."""
+    choices = body.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    return {
+        "stop_reason": choice.get("finish_reason") if isinstance(choice, dict) else None,
+        "block_types": None,
+    }
+
+
+def _read_openai_responses(body: dict[str, Any]) -> dict[str, Any]:
+    """OpenAI Responses body: ``status`` (``incomplete_details.reason`` when the reply was cut short) and an ``output`` list of typed items."""
+    details = body.get("incomplete_details")
+    reason = details.get("reason") if isinstance(details, dict) else None
+    items = body.get("output")
+    return {
+        "stop_reason": reason or body.get("status"),
+        "block_types": (
+            [i.get("type") for i in items if isinstance(i, dict)]
+            if isinstance(items, list)
+            else None
+        ),
+    }
+
+
+def _read_reply_shape(body: dict[str, Any]) -> dict[str, Any]:
+    """The stop reason and block types of a provider reply body, by the shape of the body.
+
+    A new provider shape adds a reader above and a branch here; ``usage``, ``model``
+    and ``id`` are top-level keys in all three shapes and are read by the caller.
+    """
+    if body.get("object") == "response" or (
+        isinstance(body.get("output"), list) and "status" in body
+    ):
+        return _read_openai_responses(body)
+    if body.get("stop_reason") is None and isinstance(body.get("choices"), list):
+        return _read_chat_completion(body)
+    return _read_anthropic_messages(body)
+
+
+def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, Any] | None:
+    """What a leg's last reply held, for an emission event: stop reason, usage, model, block types, and the reply text when asked.
+
+    Without it an ``emission_missing`` records only that nothing parsed, never why
+    (truncated at ``max_tokens``, thinking blocks and no text, a fence that is not
+    JSON). Best effort by contract: the diagnostics must never kill the run they
+    describe, and a branch with no recorded reply (a test double, a leg that died
+    before replying) yields None, so the event simply carries no ``raw_response``.
+
+    The reply text can quote the diff or context the leg was given, and an event
+    reaches every ``on_event`` sink, so ``text`` is present only when
+    ``include_text`` is set (``Engine(emission_reply_text=True)``). ``text_chars``
+    is always present; ``text`` and ``text_truncated`` appear together.
+
+    ``http_status`` is 200 for an API leg and None for a CLI worker. A call the
+    provider answered with anything but 200 raises before a message exists
+    (service/connections/endpoint.py, both the plain and the streaming path), so a
+    recorded API reply was by construction a 200.
+    """
+    try:
+        last = branch.msgs.last_response
+        if last is None:
+            return None
+        text = last.response or ""
+        raw = last.model_response
+    except Exception:
+        return None
+    first = raw[0] if isinstance(raw, list) and raw else raw
+    if not isinstance(first, dict):
+        first = {}
+    is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
+    out: dict[str, Any] = {"text_chars": len(text)}
+    if include_text:
+        out["text"] = text[:RAW_RESPONSE_TEXT_CAP]
+        out["text_truncated"] = len(text) > RAW_RESPONSE_TEXT_CAP
+    out.update(_read_reply_shape(first))
+    out.update(
+        {
+            "usage": first.get("usage"),
+            "model": first.get("model"),
+            "response_id": first.get("id"),
+            "http_status": None if is_cli else 200,
+        }
+    )
+    return out
 
 
 _ROLE_PROFILE_CACHE: dict[tuple[str, str], tuple[str | None, str | None]] = {}
@@ -495,6 +602,11 @@ class EngineRun:
         # Emission-missing diagnostics for the CLI's engine_runs.error column,
         # e.g. "<agent> x<attempts>", even when overall status is "completed".
         self._emission_failures: list[str] = []
+        # One row per emission that only arrived on the fallback leg:
+        # {"agent", "model", "attempt", "after_attempts"}. These dimensions are NOT in
+        # _emission_failures (the fallback produced their output), so a reader that
+        # wants to say which leg produced an emission reads this list.
+        self.emission_fallbacks: list[dict[str, Any]] = []
         # Terminal sub-agent failures (e.g. missing API key), so a run where
         # every agent errored can be surfaced as failed instead of green.
         self._agent_errors: list[str] = []
@@ -616,6 +728,8 @@ class EngineRun:
         extra_prompt: str | None = None,
         env: Mapping[str, str] | None = None,
         khive_injection: Any = None,
+        command_env_allowlist: Sequence[str] = (),
+        _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
@@ -677,6 +791,8 @@ class EngineRun:
             # call and reports success with nothing in it.
             yolo=self.engine.yolo,
             contain_account_integrations=built_under[1],
+            prompt_caching=bool(self.engine.prompt_caching),
+            command_env_allowlist=command_env_allowlist,
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -689,7 +805,12 @@ class EngineRun:
         # create_agent is the single grant site; capabilities are granted once here.
         # AgentSpec has no env field, so the overlay goes to create_agent, which
         # hands it to the CLI endpoint it builds: the carrier that reaches the child.
-        branch = await create_agent(spec, load_settings=False, agent_env=env)
+        branch = await create_agent(
+            spec,
+            load_settings=False,
+            agent_env=env,
+            _command_env_names_out=_command_env_names_out,
+        )
         if built_under[0] is not None or built_under[1]:
             self._agent_branches[str(branch.id)] = (
                 built_under,
@@ -705,23 +826,57 @@ class EngineRun:
         self._bind_agent_emitter(branch)
         return branch
 
-    async def operate_with_repair(
+    # -- emission diagnostics ---------------------------------------------------
+
+    @property
+    def emission_failures(self) -> list[str]:
+        """Markers of the agents and stages whose emission never arrived, in the order they were recorded (a copy)."""
+        return list(self._emission_failures)
+
+    def record_emission_failure(self, marker: str) -> None:
+        """Record *marker* once; recording the same marker again is a no-op."""
+        if marker not in self._emission_failures:
+            self._emission_failures.append(marker)
+
+    def _notify_emission(
+        self, kind: str, *, agent: str, leg: Any | None = None, **fields: Any
+    ) -> None:
+        """Send one emission event; the single place their payloads are assembled.
+
+        ``leg`` is the branch whose newest reply explains the event. Its
+        ``raw_response`` is built only while an ``on_event`` observer is attached,
+        since nothing else reads it, and carries the reply text only when the
+        engine records it (``Engine(emission_reply_text=True)``).
+
+        Numbering, one name per meaning: ``emission_repair.repair_index`` counts the
+        repair prompts sent to the leg, so the leg's operate call number is
+        ``repair_index + 1``; ``emission_recovered.operate_call`` is the operate call
+        number within the fallback leg that produced the emission;
+        ``emission_missing.attempts`` counts the operate calls across both legs.
+        ``attempt`` is kept on the first two with the same value as the name that
+        replaced it, for readers written against it.
+        """
+        if leg is not None and self.on_event:
+            raw = _raw_leg_response(leg, include_text=self.engine.emission_reply_text)
+            if raw is not None:
+                fields["raw_response"] = raw
+        self.notify(kind, agent=agent, **fields)
+
+    async def _attempt_emission(
         self,
         branch: Branch,
         instruction: str,
         *,
         arrived: Callable[[], bool],
-        emits: tuple[type, ...] = (),
-        retries: int = 1,
-        actions: bool = False,
-    ) -> Any:
-        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints.
+        emits: tuple[type, ...],
+        retries: int,
+        actions: bool,
+        calls: list[int] | None = None,
+    ) -> tuple[Any, int]:
+        """One leg's turn: operate, then re-prompt up to *retries* times while *arrived*() is false. Returns (last reply, repair attempts made).
 
-        ``actions`` must be True when the branch was given tools (e.g. bash)
-        that the stage instruction requires it to actually call — CLI
-        providers execute their own tools regardless, but a non-CLI (API)
-        model only gets lionagi's registered tool schemas, and therefore only
-        invokes them, when ``branch.operate(actions=True)``.
+        ``calls`` is a one-slot counter bumped before every operate call, so a caller
+        that cancels this turn still knows how many calls were started.
         """
         # CLI workers emit prose, not fenced JSON — front-load the full example
         # form; waiting for the repair pass costs a whole extra CLI process.
@@ -731,41 +886,190 @@ class EngineRun:
             instruction = f"{instruction}{_cli_emission_primer(hint, emits)}"
         # Omit actions entirely when False so a minimal test double still works.
         operate_kwargs: dict[str, Any] = {"actions": True} if actions else {}
+        if calls is not None:
+            calls[0] += 1
         res = await branch.operate(instruction=instruction, **operate_kwargs)
         attempt = 0
         while not arrived() and attempt < retries:
+            agent_name = getattr(branch, "name", "") or ""
             budget = getattr(branch, "token_budget", None)
             if getattr(budget, "is_critical", False):
-                self.notify(
+                self._notify_emission(
                     "emission_repair_skipped",
-                    agent=getattr(branch, "name", "") or "",
+                    agent=agent_name,
                     reason="context_critical",
                     used=getattr(budget, "used", None),
                     limit=getattr(budget, "limit", None),
                 )
                 break
             attempt += 1
-            self.notify(
+            # The leg's newest reply is the one that just failed to emit; it is
+            # recorded here, before the repair prompt replaces it.
+            self._notify_emission(
                 "emission_repair",
-                agent=getattr(branch, "name", "") or "",
+                agent=agent_name,
+                leg=branch,
                 attempt=attempt,
+                repair_index=attempt,
                 cli_worker=is_cli,
             )
             if is_cli:
                 repair_msg = _cli_repair_instruction(hint, emits)
             else:
                 repair_msg = _repair_instruction(hint)
+            if calls is not None:
+                calls[0] += 1
             res = await branch.operate(instruction=repair_msg, **operate_kwargs)
+        return res, attempt
+
+    async def _run_fallback(
+        self,
+        fallback: Callable[[], Awaitable[Branch]],
+        fallback_model: str | None,
+        *,
+        agent: str,
+        first_leg: Branch,
+        first_reply: Any,
+        instruction: str,
+        arrived: Callable[[], bool],
+        emits: tuple[type, ...],
+        retries: int,
+        actions: bool,
+        after_attempts: int,
+    ) -> tuple[Any, Branch, int, bool] | None:
+        """One fresh fallback leg's turn. None when no leg ran (the factory raised ``EngineBudgetError``); else ``(reply, leg, operate calls made, recovered)``.
+
+        When the leg emits, the recovery is recorded here (``emission_fallbacks`` and
+        an ``emission_recovered`` event). With ``Engine.fallback_deadline_s`` set, a
+        leg still running at that limit is abandoned (``emission_fallback_timeout``)
+        and its operate calls are counted as started, a call cut short included.
+        If the emission had already arrived by then it is recovered all the same (the
+        leg is returned, the reply stays the first leg's, since the abandoned call
+        returned none); otherwise the reply and leg stay the first leg's and the
+        emission is not recovered.
+        """
+        try:
+            leg = await fallback()
+        except EngineBudgetError:
+            self._notify_emission(
+                "emission_fallback_skipped",
+                agent=agent,
+                reason="agent_budget",
+                model=fallback_model,
+            )
+            return None
+        self._notify_emission(
+            "emission_fallback", agent=agent, model=fallback_model, after_attempts=after_attempts
+        )
+        limit = self.engine.fallback_deadline_s
+        made = [0]
+        reply = first_reply
+        with move_on_after(limit) as scope:
+            reply, _ = await self._attempt_emission(
+                leg,
+                instruction,
+                arrived=arrived,
+                emits=emits,
+                retries=retries,
+                actions=actions,
+                calls=made,
+            )
+        if scope.cancelled_caught:
+            self._notify_emission(
+                "emission_fallback_timeout",
+                agent=agent,
+                model=fallback_model,
+                after_attempts=after_attempts,
+                limit_s=limit,
+            )
+        recovered = arrived()
+        if scope.cancelled_caught and not recovered:
+            return first_reply, first_leg, made[0], False
+        if recovered:
+            operate_call = made[0]
+            self.emission_fallbacks.append(
+                {
+                    "agent": agent,
+                    "model": fallback_model,
+                    "attempt": operate_call,
+                    "after_attempts": after_attempts,
+                }
+            )
+            self._notify_emission(
+                "emission_recovered",
+                agent=agent,
+                via="fallback",
+                model=fallback_model,
+                attempt=operate_call,
+                operate_call=operate_call,
+                after_attempts=after_attempts,
+            )
+        return reply, leg, made[0], recovered
+
+    async def operate_with_repair(
+        self,
+        branch: Branch,
+        instruction: str,
+        *,
+        arrived: Callable[[], bool],
+        emits: tuple[type, ...] = (),
+        retries: int = 1,
+        actions: bool = False,
+        fallback: Callable[[], Awaitable[Branch]] | None = None,
+        fallback_model: str | None = None,
+    ) -> Any:
+        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints.
+
+        ``actions`` must be True when the branch was given tools (e.g. bash)
+        that the stage instruction requires it to actually call — CLI
+        providers execute their own tools regardless, but a non-CLI (API)
+        model only gets lionagi's registered tool schemas, and therefore only
+        invokes them, when ``branch.operate(actions=True)``.
+
+        ``fallback`` is a factory for ONE fresh leg (``fallback_model`` names its
+        model, for the events and the record). When the first leg is still silent
+        after its repairs, that leg gets the same instruction and the same
+        operate-then-repair turn BEFORE the emission is recorded as missing. A fresh
+        leg, not a re-prompt of the first: repair replays the whole conversation, so
+        asking the same branch again only grows its context. If the fallback leg
+        emits, nothing is recorded as missing: ``emission_fallbacks`` and an
+        ``emission_recovered`` event name which leg produced it. If it does not,
+        ``emission_missing`` counts every attempt across both legs. A factory that
+        raises ``EngineBudgetError`` is skipped (``emission_fallback_skipped``) and
+        the emission is recorded missing as before; ``Engine.fallback_deadline_s``
+        bounds the fallback leg's time (``_run_fallback``).
+        """
+        res, attempt = await self._attempt_emission(
+            branch, instruction, arrived=arrived, emits=emits, retries=retries, actions=actions
+        )
+        agent_name = getattr(branch, "name", "") or ""
+        attempts = attempt + 1
+        last_leg = branch
+        if retries and not arrived() and fallback is not None:
+            ran = await self._run_fallback(
+                fallback,
+                fallback_model,
+                agent=agent_name,
+                first_leg=branch,
+                first_reply=res,
+                instruction=instruction,
+                arrived=arrived,
+                emits=emits,
+                retries=retries,
+                actions=actions,
+                after_attempts=attempts,
+            )
+            if ran is not None:
+                res, last_leg, calls, recovered = ran
+                if recovered:
+                    return res
+                attempts += calls
         if retries and not arrived():
-            _agent_name = getattr(branch, "name", "") or ""
-            _attempts = attempt + 1
-            self.notify(
-                "emission_missing",
-                agent=_agent_name,
-                attempts=_attempts,
+            self._notify_emission(
+                "emission_missing", agent=agent_name, leg=last_leg, attempts=attempts
             )
             self._emission_failures.append(
-                f"{_agent_name} x{_attempts}" if _agent_name else f"x{_attempts}"
+                f"{agent_name} x{attempts}" if agent_name else f"x{attempts}"
             )
         return res
 
@@ -904,7 +1208,10 @@ class EngineRun:
         exited on its own.
         """
 
-        from lionagi.providers._cli_subprocess import end_child_group  # noqa: PLC0415
+        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+            _ChildGroupCleanup,
+            end_child_group,
+        )
 
         async def _reap_one(tracked: _TrackedCLIProcess) -> str:
             # An exited leader is not a finished group, so this deliberately
@@ -915,7 +1222,7 @@ class EngineRun:
             # is what let a descendant outlive the reap.
             leader_exited = getattr(tracked.process, "returncode", None) is not None
             try:
-                await end_child_group(
+                cleanup = await end_child_group(
                     tracked.process,
                     grace=_RUN_PROCESS_TERM_GRACE_S,
                     spawned=tracked.spawned,
@@ -926,9 +1233,11 @@ class EngineRun:
                     tracked.spawned.pid,
                 )
                 return "abandoned"
-            # end_child_group returned, so the group is finished and the entry
-            # retires. A reap that raised deliberately does not set this: the
-            # child may still be alive and a later pass has to see it again.
+            if cleanup is not _ChildGroupCleanup.CONFIRMED_EMPTY:
+                logger.warning("cancel_active: run-owned CLI group cleanup remains unconfirmed")
+                return "abandoned"
+            # Only confirmed group absence retires the tracked entry. A failed
+            # or unconfirmed cleanup remains available to the existing reap.
             tracked.reaped = True
             # A leader that had already exited is reported separately: the
             # sweep still ran, but counting it as a cancellation would overstate
@@ -1525,6 +1834,9 @@ class Engine:
         khive_injection: Any = None,
         yolo: bool = False,
         contain_account_integrations: bool = False,
+        prompt_caching: bool = False,
+        emission_reply_text: bool = False,
+        fallback_deadline_s: float | None = None,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
@@ -1568,6 +1880,22 @@ class Engine:
         # config set it. PlanningEngine refuses it: its workers are not built by
         # make_agent.
         self.contain_account_integrations = contain_account_integrations
+        # Turn the endpoint's prompt_caching option (ADR-0127) on for every agent
+        # model make_agent builds. An endpoint that does not declare prefix caching
+        # (a CLI agent) sends its requests unchanged. Workers cloned from those
+        # agents share an API model by reference, so they cache too.
+        self.prompt_caching = prompt_caching
+        # Put the leg's last reply text (capped at RAW_RESPONSE_TEXT_CAP) on the
+        # emission_repair / emission_missing events. Off by default: the text can
+        # quote the diff or context the leg was given, and every on_event sink
+        # receives the event. The scalar facts (stop reason, usage, model, block
+        # types) are always on the event. A host that persists failed replies for
+        # diagnosis turns it on.
+        self.emission_reply_text = emission_reply_text
+        # Time limit, in seconds, on the one fallback leg of operate_with_repair
+        # (a stage's ``review_fallback`` model). The run's own deadline_s is shared
+        # by every stage; this bounds the fallback alone. None leaves it unbounded.
+        self.fallback_deadline_s = fallback_deadline_s
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,
         # None defers to each stage role's agent profile).
@@ -1583,9 +1911,25 @@ class Engine:
         self.judge_model = judge_model
         self.judge_role = judge_role
         self.cancel_timeout_s = cancel_timeout_s
+        # Set from each run (see run()); empty until one has run.
+        self._emission_failures: list[str] = []
 
     def model_for(self, stage: str) -> str | None:
         return self.models.get(stage) or self.model
+
+    def optional_model_for(self, stage: str) -> str | None:
+        """The model set for *stage*, or None when it is unset.
+
+        Unlike ``model_for`` this never falls back to the engine's base model. Use it for a
+        stage whose absence means "skip it" (``review_fallback``), where that fallback would
+        turn "unset" into a retry on the model that just failed.
+        """
+        return self.models.get(stage) or None
+
+    @property
+    def emission_failures(self) -> list[str]:
+        """Emission-failure markers of the most recent run (a copy); empty before any run."""
+        return list(self._emission_failures)
 
     def effort_for(self, stage: str) -> str | None:
         return self.efforts.get(stage) or self.effort
@@ -1712,7 +2056,7 @@ class Engine:
         """Wrap a str _run()/_partial_export() result into EngineResult; pass through anything else unchanged (e.g. CodingEngine's structured CodeResultRecorded)."""
         if not isinstance(result, str) or isinstance(result, EngineResult):
             return result
-        skipped = list(run._emission_failures)
+        skipped = run.emission_failures
         # A dimension/agent whose emission never arrived is a skipped part of
         # the result regardless of whether a deadline/budget also fired — a
         # result blind to a skipped agent is degraded by construction, so
@@ -1790,9 +2134,9 @@ class Engine:
             degrade_reason = "budget"
             partial_result = await self._degrade_export(run, args, kwargs)
         finally:
-            # Copy diagnostics onto the engine instance (fresh list) so the CLI's
-            # getattr(engine, "_emission_failures", []) sees them on every exit path.
-            self._emission_failures = list(run._emission_failures)
+            # Copy diagnostics onto the engine instance (fresh list) so the CLI reading
+            # engine.emission_failures sees them on every exit path.
+            self._emission_failures = run.emission_failures
             # Flag total failure only when every agent made for this run
             # terminally errored, so partial/soft-empty runs aren't over-flagged.
             self._agent_errors = list(run._agent_errors)

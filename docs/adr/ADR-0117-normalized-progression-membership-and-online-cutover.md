@@ -2,501 +2,642 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: not-started — no implementation begins before the start trigger
+  below is met
 - **Area**: persistence-state
 - **Date**: 2026-08-11
-- **Relations**: supersedes ADR-0055 D3 when accepted; extends ADR-0056
+- **Relations**: supersedes ADR-0055 D3 when accepted; extends ADR-0056; Refs
+  [#3104](https://github.com/ohdearquant/lionagi/issues/3104)
 
 ## Context
 
-ADR-0055 D3 chose one JSON-array text value as the persistence representation of a
-progression's ordered message identifiers. That choice preserves the runtime collection shape in
-one row and makes duplicate append a no-op, but its cost grows with the history that preceded the
-append.
+Line citations in this record are at source baseline
+`c325f4ef138d72b84eea589a6a590d81cc80ecea`.
 
-**P1 — append cost grows with branch lifetime.** The SQLite append scans `json_each(collection)`
-for membership and rewrites the full JSON value with `json_insert`. PostgreSQL casts the full text
-value to `jsonb`, checks membership, appends, and casts it back. A live message normally updates
-both its branch progression and its session progression in one transaction. The bytes inspected
-and rewritten over a progression's lifetime are therefore quadratic.
+ADR-0055 D3 stores an ordered collection of message identifiers as one JSON-array text value.
+This gives a simple full reconstruction and idempotent append, but append work grows with the
+history already stored. SQLite scans membership and reconstructs the array; PostgreSQL expands
+the text as JSON, checks membership, appends and serializes it again
+(`lionagi/state/db.py:3371`). Live persistence normally updates both a branch progression and
+a session progression in one transaction (`lionagi/state/db.py:4299`).
 
-Synthetic measurements using 32-character identifiers and the production SQLite statement shape
-showed median append cost rising from 0.185 ms at 1,000 identifiers to 21.452 ms at 100,000. The
-100,000-identifier value was about 3.5 MB, and a real store contained a progression with 100,949
-identifiers in a 3.94 MB JSON value. Updating the branch and session progressions puts roughly
-43 ms of JSON work on one message before WAL flush or lock wait.
+Bulk insertion already avoids one rewrite per message: it decodes a string-ID collection,
+deduplicates a batch with a set and rewrites the collection once
+(`lionagi/state/db.py:3444`). This improves amortization but retains full-history work per batch.
 
-**P2 — page and tail reads cannot seek.** The stored value provides no indexable ordinal. A caller
-that needs the last 200 identifiers must parse or expand the full array before discarding the
-prefix. Counts have the same lifetime-shaped cost.
+### Measured cost and population
 
-**P3 — the store must preserve compatibility, not merely order.** Current behavior includes more
-than an ordered happy path: duplicate appends retain the first position; append to a missing
-progression is a successful no-op; `get_progression()` returns `[]` for both missing and empty;
-progressions may retain identifiers whose message rows were pruned; and administrative import can
-replace a collection wholesale. A migration that adds a message foreign key, changes missing-row
-behavior, or renumbers a retry would be a contract change disguised as optimization.
+Measurements supplied on 2026-10-26 exercised `_persist_live_message`, `insert_messages` and
+`get_progression` against fresh SQLite stores. The measured persistence code is unchanged
+between revision `1717674a` and that baseline.
 
-**P4 — a large live store cannot be converted under one writer transaction.** A global migration
-would hold SQLite's writer, grow the WAL, and force every progression to share one failure domain.
-Backfill must be resumable and independently verifiable per progression while ordinary appends
-continue.
+| Nominal starting IDs | Live p50 / p95, ms | Bulk b=1 p95, ms/call | Bulk b=10 p95, ms/call | Full-list read p95, ms | Compact JSON bytes, both progressions after live phase |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 1.304 / 2.123 | 4.150 | 6.990 | 0.753 | 93,992 |
+| 10,000 | 3.881 / 7.464 | 12.183 | 14.323 | 1.325 | 795,992 |
+| 100,000 | 42.909 / 48.113 | 79.694 | 84.276 | 8.127 | 7,815,992 |
 
-**P5 — rollback and hot-write performance pull in opposite directions.** Keeping the legacy JSON
-column current after cutover would retain the full-value rewrite on every append and fail the
-purpose of this ADR. Stopping JSON writes makes that value a correct prefix, not a complete
-fallback. The rollback contract must say this explicitly; returning stale history is not a
-rollback.
+Live p95 grows 22.7 times between the nominal 1k and 100k cases. Approximately 7.8 MB of logical
+array payload is reconstructed for two 100k progressions. This is not a measurement of physical
+disk or WAL bytes. The script uses UUID strings, five warm-up calls, 200 measured live calls,
+50 calls per bulk size and 20 reads. Live calls grow the starting length by 205; subsequent
+bulk calls grow it by another 605 before reads. Thus these are nominal size buckets, not
+constant-length samples. Bulk latency is per call, not per identifier.
 
-| Concern | Decision |
-|---------|----------|
-| Ordered storage | D1: Store progression membership as `(progression_id, ordinal, message_id)` rows without a message foreign key. |
-| Append semantics | D2: Serialize allocation per progression and preserve duplicate, missing-row, and wholesale-replace behavior. |
-| Online migration | D3: Admit, dual-write, chunk-backfill, verify, and cut over each progression independently. |
-| Reads and rollback | D4: Route reads by per-progression phase; after cutover, compatibility fallback combines the frozen JSON prefix with the normalized tail. |
-| Operations | D5: Make migration bounded, observable, resumable, and fail-closed through one maintenance service. |
-| Performance gate | D6: Require seek plans and lifetime-independent append cost before accepting cutover as implemented. |
+The run was on a loaded host and did not measure PostgreSQL, concurrent writers or a production
+working set of historical message rows. The numbers establish an observed growth problem and
+motivate a regression gate; they are not cross-machine latency guarantees.
 
-This ADR does **not** decide:
+A contemporaneous census of the larger retained store reports 31,608 progressions, a maximum
+of 286,003 IDs, and approximate text-size thresholds of 308 near/above 1k, 40 near/above 10k and
+12 near/above 100k. Large examples are transcript histories, commonly represented by equal-length
+branch and session progressions. These row counts are not unique transcript counts. The census
+does not provide total membership cardinality or the cost of normalized indexes.
 
-- Retention duration, archive policy, or compaction. Issue #2769 owns how much history remains;
-  this ADR changes how retained order is represented.
-- The runtime `Progression` abstraction. It remains an ordered identifier collection.
-- Message or artifact storage. In particular, no message foreign key is introduced.
-- A universal event log or database change-data-capture system. The migration journal here is
-  specific to progression representation.
-- Removal of the JSON column. The first implementation keeps it as a frozen compatibility prefix.
+The 12 large transcript-mirror progressions hold approximately 100k–286k IDs each, with no
+writes reported in the preceding 56 h. They carry the demonstrated large-history cost but are
+not the currently written population. Their append saving would arise only if writes resume.
+
+Recent writes were much smaller: the largest updated progression in the preceding day was
+1,295 IDs. A collection of 10,545 branch snapshots had p99 689 and maximum 3,483 messages.
+The smaller configured store had ten progressions and maximum eleven IDs. The measurement
+therefore does not establish a current latency problem for most runs, and it does not measure
+the exact cost at the observed 3,483-ID maximum.
+
+### Why a storage decision is still needed
+
+Mirroring is a supported recurring feature. It has a standalone loop and historical catch-up
+mode (`lionagi/cli/mirror.py:47`, `lionagi/cli/mirror.py:59`, `lionagi/cli/mirror.py:995`), and Studio starts an embedded task
+(`lionagi/studio/app.py:225`, `lionagi/studio/app.py:390`). Mirroring is enabled by default when the profile has eligible
+sources (`lionagi/studio/config.py:653`, `lionagi/studio/config.py:709`, `lionagi/studio/config.py:717`). A process-name search cannot rule out
+the embedded task. A recent-file window does not cap an active transcript's lifetime length.
+
+Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
+(`lionagi/cli/_runs.py:2094-2095`); flow branches share a session progression
+(`lionagi/cli/orchestrate/_orchestration.py:2252`); run import can create or replace complete
+unbounded orders (`lionagi/cli/state.py:247`, `lionagi/cli/state.py:284`). The small current population justifies a
+staged rollout, not a permanent assumption that these histories remain small.
+
+Read amplification persists for idle histories. A detail page loads entire arrays before taking
+a tail window (`lionagi/studio/services/sessions.py:1292`, `lionagi/studio/services/sessions.py:1318`), counts expand JSON (`lionagi/studio/services/sessions.py:538`),
+and streaming expands membership (`lionagi/studio/services/sessions.py:1554`). The measured 8.127 ms read is only a warmed full-list
+read near 100k, not endpoint latency at the observed maximum. These are reachable read costs;
+the supplied evidence does not measure how often the idle large histories are read.
+
+Choosing one representation for all sizes distributes migration and compatibility costs beyond
+the population with the demonstrated large-history problem. For current small writes, the
+benefit is preventive and a latency improvement is unmeasured. The decision supports future large
+writes and potentially cheaper reads of retained large histories; it does not establish an
+immediate performance return on migrating every stored progression.
+
+The column is also a published read surface. Direct readers include retention code that protects
+messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py:555`;
+`lionagi/cli/state.py:906`). Freezing JSON without migrating these readers can hide references
+and affect deletion correctness, not merely display stale counts.
+
+## Teardown of the previous premises
+
+- Small present-day runs do not establish a storage invariant. Resume, imports and session
+  aggregation permit continued growth.
+- A bounded result set does not establish bounded work. Parsing one full array before taking a
+  slice is still a full-history read; an indexed `COUNT(*)` still visits membership entries.
+- A 500-row backfill limit does not bound JSON parsing, source extraction, verification or writer
+  lock duration. Those costs must be separated from write chunks.
+- Frozen JSON is a prefix after the first target-only append. Reading that column alone cannot
+  be a complete rollback. A fallback that still needs the relational tail is not an independent
+  recovery copy.
+- A message-unique constraint would reject legacy duplicate-bearing arrays. Duplicate prevention
+  for new appends and faithful reconstruction of existing positions are separate obligations.
 
 ## Decision
 
-### D1 — Ordered membership is relational and progression-scoped
+Use relational membership for all progression sizes as the target representation, preserving
+logical identities. Deployment proceeds by store and then by progression; the existence of a
+new schema does not automatically enable migration. Existing JSON stays authoritative until all
+compatibility and parity gates for that progression and store pass.
 
-The target representation stores one row per position. Ordinals are zero-based, monotonically
-allocated within a progression, and never reused by append. They are storage positions, not new
-runtime identities.
+| Concern | Decision |
+|---|---|
+| Ordered membership | D1: One row per original position, no message foreign key, exact cached membership count. |
+| Writers | D2: One lock protocol for all append, bulk, replacement and migration operations; transactional contiguous ordinals within a generation. |
+| Migration | D3: JSON authority during chunked backfill; full scans outside writer locks; revision-checked cutover. |
+| Readers and fallback | D4: Explicit authority and versioned reader compatibility; complete prefix-plus-tail fallback after cutover. The rollback contract is open (Open item 1). |
+| Rollout | D5: Upgrade readers and writers first; migrate with explicit controls and observable progress. |
+| Evidence | D6: Semantic parity, query plans, restart safety and measured real-path performance before completion. |
 
-**The contract.** The canonical schema target is:
+This decision does not change the runtime ordered-ID abstraction, session identity, message
+contents, retention duration or eligibility, artifact storage, or transcript import policy.
+Retention implementations must adapt to the new representation while preserving their existing
+policy. It does not remove `progressions.collection` in the first implementation.
+
+### D1 — Relational membership and exact counts
+
+The membership relation is:
 
 ```sql
 CREATE TABLE progression_items (
-  progression_id TEXT   NOT NULL REFERENCES progressions(id) ON DELETE CASCADE,
-  ordinal        BIGINT NOT NULL,
-  message_id     TEXT   NOT NULL,
-  PRIMARY KEY (progression_id, ordinal)
+    progression_id TEXT NOT NULL REFERENCES progressions(id) ON DELETE CASCADE,
+    ordinal BIGINT NOT NULL CHECK (ordinal >= 0),
+    message_id TEXT NOT NULL,
+    PRIMARY KEY (progression_id, ordinal)
 );
 
 CREATE INDEX idx_progression_items_message
-  ON progression_items(progression_id, message_id);
+    ON progression_items(progression_id, message_id, ordinal);
 ```
 
-There is deliberately no uniqueness constraint on `(progression_id, message_id)`. Runtime append
-continues to prevent new duplicates under the per-progression allocator lock, while backfill can
-faithfully preserve a legacy collection that already contains the same identifier more than once.
-The non-unique message index makes the duplicate check seekable and lets compatibility tooling
-identify such rows without changing them.
+There is no uniqueness constraint on message membership and no foreign key to `messages`.
+Legacy repeated IDs occupy their original positions. References survive message-row pruning.
+Deleting a progression deletes its membership; deleting a session must continue to protect any
+progression still shared by another surviving owner.
 
-There is deliberately no foreign key from `message_id` to `messages.id`. A progression may retain
-an identifier after retention prunes the message row, as ADR-0055 records. The foreign key to the
-progression itself is safe: deleting the owning progression already deletes its ordering state,
-and cascading the normalized rows only makes that existing ownership explicit.
+The canonical runtime schema remains SQLAlchemy metadata, with the compatibility DDL kept in
+parity (`lionagi/state/schema_meta.py:84`; `lionagi/state/schema.sql:71`). Existing progression
+IDs, timestamps and owner references remain unchanged.
 
-The public full-read behavior remains:
+Each progression has a storage-state row (`progression_storage_state`) with these defined fields:
 
-```python
-async def get_progression(progression_id: str) -> list[str]: ...
-```
+| Field | Contract |
+|---|---|
+| `progression_id` | Primary key and cascading foreign key to the progression. |
+| `incarnation` | Fresh opaque token for each progression/state lifetime; never reused after deletion and recreation of the same progression ID. |
+| `phase` | `json`, `dual`, or `items`. JSON is authoritative in the first two; items in the third. |
+| `blocked_reason` | Nullable bounded reason code; blocks migration advancement without erasing phase or authority. |
+| `generation` | Nonnegative, monotonically incremented on every wholesale replacement or explicit migration reset. |
+| `json_revision` | Monotonic version of JSON content, incremented on every actual JSON append or replacement by an admitted writer. |
+| `item_count` | Exact logical membership count, including duplicate positions and missing-message references; nullable only while a legacy JSON row has not been counted. |
+| `next_ordinal` | Next position; equals `item_count` in initialized `dual` and `items` phases. |
+| `source_count`, `backfill_next` | Admission prefix length and next uncopied prefix position. |
+| `frozen_count` | Prefix length represented by frozen JSON after cutover. |
+| `verified_revision` | JSON revision whose complete contents passed the successful parity check. |
+| `source_digest`, `items_digest` | Ordered digests from the last successful verification, with generation and revision context. |
+| `compat_read` | Persisted selection of complete prefix-plus-tail full reads after cutover. |
+| `shadow_cleanup_pending` | Prevents readmission until abandoned shadow rows have been removed in bounded chunks. |
+| `updated_at`, `cutover_at` | Maintenance observability. |
 
-Bounded consumers gain an ordinal-bearing read rather than loading the full list:
+All counters use nonnegative 64-bit integer domains with overflow refused transactionally.
+Constraints require initialized `dual`/`items` counts and allocator fields, a backfill cursor
+between zero and `source_count`, and complete prefix state for `items`. A missing state row
+means legacy JSON, not a missing progression. State creation always checks and locks the owning
+progression first. Metadata may be created lazily; initialization assigns its incarnation before
+any migration snapshot is taken. Every participating JSON writer must update its revision before
+migration can be enabled.
 
-```python
-async def list_progression_items(
-    progression_id: str,
-    *,
-    after_ordinal: int | None = None,
-    before_ordinal: int | None = None,
-    limit: int = 500,
-    newest_first: bool = False,
-) -> list[tuple[int, str]]: ...
+Snapshots, verification results, maintenance work and new storage cursors identify both
+incarnation and generation. Every generation comparison below also requires the same incarnation.
+Replacement/reset advances generation within a lifetime; deletion and recreation establish a
+different incarnation even when a transcript importer deterministically reuses the progression
+ID. A stale worker must not populate a newly recreated progression from its predecessor's cache.
 
-async def count_progression_items(progression_id: str) -> int: ...
-```
+Ordinals are contiguous from zero through `item_count - 1` in a completed representation within
+one generation. They are allocated by a transactional row update, never by a non-transactional
+sequence. Rollback and duplicate no-op consume no position. There is no individual membership
+deletion operation in this contract. Wholesale replacement creates a new generation and assigns
+positions from zero again. This makes count-based frozen boundaries exact; arbitrary ordinal
+gaps are not permitted.
 
-**Exact semantics.**
+`get_progression(id)` still returns `list[str]`, and still returns `[]` for missing and empty
+progressions. It intentionally remains proportional to the requested history. New bounded item
+reads expose incarnation, generation and `(ordinal, message_id)` positions. Forward reads seek strictly
+after an ordinal; reverse reads seek strictly before it. The two cursor directions are mutually
+exclusive. Limit defaults to 500, must be positive and is capped at 1,000. A cursor may carry an
+expected incarnation and generation; a mismatch is a stale-cursor error, never silently reused
+positions.
 
-- `get_progression()` still returns `[]` for a missing progression and an existing empty one.
-- Full reads order by `ordinal ASC` and return message identifiers only.
-- Forward bounded reads seek `ordinal > after_ordinal`; reverse reads seek
-  `ordinal < before_ordinal` and order by `ordinal DESC`. A caller reverses a reverse page when it
-  needs chronological presentation.
-- `limit` is positive and capped at 1,000. The default 500 matches existing bounded state-query
-  chunks and limits response allocation without declaring a UI page size.
-- Ordinal gaps are legal. Allocation may consume an ordinal before a transaction discovers a
-  conflict or rolls back on a backend whose sequence primitive is non-transactional. Ordering uses
-  comparison, never `ordinal == count`.
-- Existing duplicate identifiers, if any, reconstruct at every stored ordinal. New appends of an
-  identifier already present remain a no-op and retain the first position.
-- A pruned or never-created message row does not invalidate its membership row.
+`count_progression_items(id)` returns zero for a missing row and the cached `item_count` after
+initialization. It counts positions, not distinct IDs or surviving message rows. Uninitialized
+legacy JSON may still require a full parse. Target count plans must be primary-key metadata
+lookups; `COUNT(*)` over every item is reserved for verification, not the hot count API.
 
-**Why this way.** A composite primary key makes tail, forward page, reverse page, and count plans
-progression-local. A separate surrogate item id would add identity without helping any contract.
-A unique message constraint would simplify duplicate admission but could make an otherwise
-readable legacy progression impossible to migrate faithfully.
+**MAY:** add indexes justified by actual reader plans. **MAY NOT:** add message ownership through
+a foreign key, deduplicate historical positions, or expose storage position as message identity.
+**Verify by:** round-trip reconstruction including duplicate and pruned-message cases, cached
+count parity, stale-cursor cases, and schema parity on both backends.
 
-Code anchors for the current boundary: `lionagi/state/schema.sql`;
-`lionagi/state/schema_meta.py`; `lionagi/state/db.py`.
+### D2 — Every writer uses the same transactional authority
 
-### D2 — One allocator lock defines append and replacement semantics
+SQLite uses its existing `BEGIN IMMEDIATE` transaction ownership. PostgreSQL locks the owning
+progression row before creating or locking its storage-state row, which closes the absent-state
+initialization race. Transactions touching multiple progressions acquire their locks in sorted
+progression-ID order. This protocol must apply consistently to single append, bulk append,
+message persistence, replacement, deletion and migration. Integration must also account for the
+other message/session locks those transactions take; no separate lock order is introduced in
+one helper alone.
 
-Every normalized append is serialized against the migration state row for that progression.
-SQLite already enters writes with `BEGIN IMMEDIATE`; PostgreSQL additionally locks that one state
-row with `SELECT ... FOR UPDATE`. Appends to different progressions remain concurrent on
-PostgreSQL.
+In `items` phase, append checks the progression/message index under that lock. If present, it
+returns without changing membership, count or allocator. Otherwise it inserts at `next_ordinal`
+and increments count and allocator in the same transaction. A missing progression remains a
+successful no-op. The normal append path neither parses nor rewrites JSON and never loads the
+full normalized list to construct a Python set.
 
-**The contract.** Per-progression storage state is:
+Bulk append preserves incoming order and admits each new ID once, including duplicate IDs within
+the batch. Indexed membership checks and insert work scale with batch size and index access, not
+the entire prior collection. Message upsert, both progression updates, and session-activity
+updates retain their current transaction boundary (`lionagi/state/db.py:3410`, `lionagi/state/db.py:4266`). A
+duplicate membership does not suppress an otherwise valid message-content upsert.
 
-```sql
-CREATE TABLE progression_storage_state (
-  progression_id      TEXT PRIMARY KEY
-                            REFERENCES progressions(id) ON DELETE CASCADE,
-  phase               TEXT NOT NULL
-                            CHECK (phase IN ('json', 'dual', 'items', 'blocked')),
-  source_count        BIGINT,
-  backfill_next       BIGINT NOT NULL DEFAULT 0,
-  next_ordinal        BIGINT NOT NULL DEFAULT 0,
-  frozen_count        BIGINT,
-  source_digest       TEXT,
-  items_digest        TEXT,
-  blocked_reason      TEXT,
-  updated_at          REAL NOT NULL,
-  cutover_at          REAL
-);
-```
+In `json`, preserve legacy append and bulk behavior. Increment the JSON revision only when the
+collection changes; update an initialized exact count in the same transaction, or leave the
+count explicitly unknown until initialization. Do not serve a stale cached count after a JSON
+append or replacement.
 
-`source_count` is the JSON length captured when the progression enters `dual`. New dual-written
-items allocate at or above that boundary while backfill owns ordinals below it. `frozen_count` is
-the exact JSON-prefix length at cutover.
+In `dual`, the legacy JSON result decides whether an ID is new, including duplicates still only
+in the uncopied prefix. Successful new IDs receive contiguous positions at or above
+`source_count`. JSON, shadow items, count, allocator and revision commit atomically. Full JSON
+cost intentionally remains during this finite phase. A target failure must not be hidden behind
+a committed JSON-only append presented as a successful dual write.
 
-Normalized append behaves conceptually as:
+Creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression does not reset
+its representation or content (`lionagi/state/db.py:3331`). Newly created progressions may use
+`items` only after the store's compatibility gate enables that default. Their supplied collection
+is materialized in input order, preserving duplicates, and their initial JSON value is an exact
+frozen prefix. Empty creation uses an empty prefix. No count is inferred from message existence.
 
-```python
-async def append_to_progression(progression_id: str, message_id: str) -> None:
-    async with progression_write_lock(progression_id) as state:
-        if state is None:
-            return
-        if await membership_exists(progression_id, message_id):
-            return
-        ordinal = state.next_ordinal
-        await insert_item(progression_id, ordinal, message_id)
-        await advance_next_ordinal(progression_id, ordinal + 1)
-```
+`set_progression` remains a wholesale replacement and a missing-row no-op
+(`lionagi/state/db.py:3341`). It locks the progression, increments generation and JSON revision,
+and invalidates pending snapshots and verification. It preserves phase:
 
-The real `dual` path also performs the legacy JSON append in the same database transaction and
-adds the item only when the JSON statement appended it. A duplicate that exists only in the
-not-yet-backfilled JSON prefix therefore remains a no-op; backfill later copies its original
-position.
+- `json`: replace JSON; reset migration evidence. Any abandoned shadow is ineligible for use.
+- `dual`: replace JSON and all item rows atomically in input order; set source count, count,
+  allocator and backfill cursor to the replacement length. Require a fresh verification before
+  cutover, even though the replacement has filled all positions.
+- `items`: replace items and the JSON value atomically; the complete replacement becomes the new
+  frozen prefix. Set source count and backfill cursor to the replacement length as well as
+  resetting count, allocator, prefix length and digests. Subsequent
+  appends again leave JSON untouched.
 
-**Exact semantics.**
+A blocking reason is not cleared merely by replacement. Failed replacement rolls back all
+changes. Replacement is explicitly allowed O(old membership + replacement payload) work; it is
+not subject to the normal-append performance promise. The frozen-JSON rule applies to append,
+not to this explicit whole-collection operation. Very large replacement needs separately
+scheduled capacity; the first implementation must not disguise it as chunked non-atomic update.
 
-- A missing progression has no storage-state row. Append updates nothing and returns normally.
-- A duplicate lookup happens while holding the per-progression allocation lock. Concurrent
-  retries cannot create two new positions.
-- An append transaction either commits its membership and allocator movement together or commits
-  neither. In `dual`, the JSON and item writes share that transaction too.
-- `create_progression(id, collection)` creates item rows in input order when normalized storage is
-  the configured default. It may preserve duplicate identifiers supplied by import, even though
-  subsequent append treats them as already present.
-- `set_progression(id, collection)` is an explicit wholesale operation, not an append. It locks the
-  progression, replaces the JSON value once, replaces item rows in input order, resets allocator
-  and migration metadata, and commits atomically. Its work is proportional to the replacement
-  input, which is the operation's declared payload, not to hidden prior history.
-- A failed bulk replacement leaves both representations and phase unchanged.
+**MAY:** batch indexed checks and inserts within backend parameter limits. **MAY NOT:** bypass
+the router through the bulk fast path, allocate outside the transaction, drop owner restrictions,
+or infer duplicate membership from `messages.id`. **Verify by:** concurrent duplicate and unique
+appends, reversed progression lists, repeated creation, replacement races and atomic failure on
+both backends, including compatibility-mode refusal behavior.
 
-**Phase after `set_progression`.** The operation is phase-preserving. It replaces content within
-the phase the progression is already in and never advances or regresses it, because a wholesale
-replacement is a statement about contents and carries no evidence about migration progress. What
-"resets allocator and migration metadata" means is therefore specific to the phase, and every
-downstream authority rule in D4 keeps reading the same row it read before:
+### D3 — Resumable migration without full-history work under writer locks
 
-- absent or `json`: the JSON value is replaced. No allocator row, `frozen_count`, or digest exists
-  to reset, and none is created.
-- `dual`: both representations are replaced in the same transaction. Any partially copied prefix
-  and any recorded verification are discarded, and the backfill boundary restarts from the new
-  contents. The progression stays `dual` and must verify again before cutover.
-- `items`: item rows are replaced and the JSON value is replaced with the complete new collection.
-  `frozen_count` is set to the length of that collection and both digests are recomputed over the
-  new contents in the same transaction. This keeps `compat_json` exact: the frozen prefix is the
-  whole replacement and the relational tail is empty, so the adapter returns the replacement and
-  nothing else. Subsequent appends allocate above `frozen_count` and JSON is not extended again.
-- `blocked`: the progression stays `blocked`. A replacement does not demonstrate that the parity
-  failure or error which blocked it has been repaired, so automatic cutover stays refused until an
-  operator clears the state deliberately.
-- A blocked progression continues to serve from its last authoritative representation but refuses
-  automatic cutover. Ordinary appends follow that authoritative representation and surface a
-  metric; they do not guess at repair.
-
-**Why this way.** Deriving `MAX(ordinal) + 1` on every append is seekable but still lets two
-PostgreSQL writers race. A global allocator would serialize unrelated branches. A per-progression
-row gives migration and append one lock and one source of phase truth.
-
-### D3 — Migration is a per-progression state machine
-
-Migration proceeds independently for each progression:
+Migration has three authority phases, with a separate blocking flag:
 
 ```text
-          admit             verified cutover
-  json ------------> dual --------------------> items
-    ^                  |  \                       |
-    | rollback         |   \ parity/error        | read fallback only
-    +------------------+    +-----> blocked <-----+
+json  --admit-->  dual  --verified revision check-->  items
+                     
+blocked_reason may stop advancement in any phase without changing authority.
 ```
 
-**Admission (`json` to `dual`).** In one short write transaction:
+Old writers must be excluded before admission: a JSON mutation that does not advance the revision
+would invalidate this protocol. A version marker that old software ignores is insufficient.
 
-1. lock or create the storage-state row;
-2. validate that `collection` is a JSON array of strings;
-3. capture its length as `source_count` and initialize `next_ordinal` to that value;
-4. set `backfill_next = 0` and `phase = 'dual'`.
+**Admission.** Read JSON and its generation/revision in a consistent read snapshot, validate the
+array of encodable strings and compute its length outside a writer transaction. Then take the
+progression lock and compare generation/revision. If changed, discard the candidate and retry
+later. If unchanged, with no pending shadow cleanup, record the prefix count, count/allocator,
+zero cursor and `dual` phase in one short transaction. No full JSON parse occurs under this lock.
+Malformed or unsupported legacy values stay JSON-authoritative with an explicit reason; their
+existing read behavior, including existing parse failures, is not silently repaired.
 
-After admission, append writes JSON and normalized membership atomically. New items receive
-ordinals at or above `source_count`; the captured prefix is append-only and remains safe for
-chunked backfill.
+**Extraction and backfill.** Once admitted, normal append cannot modify the captured prefix.
+Read and decode that prefix outside the writer transaction; retain it for successive chunks
+rather than expanding the entire JSON value under a lock for every 500 IDs. Process death may
+require another full source read, but the committed cursor still determines what remains to copy.
+Replacement/reset changes generation, so a worker must discard a stale extracted prefix.
 
-**Backfill.** Each transaction copies no more than 500 JSON elements or 4 MiB of identifier text,
-whichever comes first, beginning at `backfill_next` and stopping at `source_count`. It inserts
-their original JSON indexes as ordinals, advances `backfill_next`, and commits. Repeating a chunk
-uses primary-key conflict no-ops and is safe after process death. The byte cap prevents one chunk
-of unusually large identifiers from defeating the row cap.
+Each write chunk contains at most 500 positions and 4 MiB of encoded identifier text. It locks
+the progression, checks phase, generation and expected cursor, inserts the original JSON indexes
+as ordinals, and commits cursor movement with the inserted rows. The worker checks a conflicting
+existing row's ID: exact equality is an idempotent replay; unequal content blocks migration.
+`ON CONFLICT DO NOTHING` alone is not a parity check. A single identifier exceeding the byte
+budget blocks automatic migration with an explicit reason, rather than silently exceeding the
+budget or changing the value. Backend indexability failures receive the same treatment.
 
-**Verification.** Once the prefix is copied, verification compares count and an ordered digest
-over the complete JSON value and item rows while holding the progression lock. The digest is
-SHA-256 over repeated `uint64_be(byte_length) || utf8(message_id)` frames. It does not depend on
-JSON whitespace or backend serialization.
+Source reading and decoding remain O(n) and have separately reported memory, elapsed-time and
+snapshot-lifetime costs. A row or byte cap bounds the submitted write payload, not the time a
+database statement waits for I/O or locks. The service yields between chunks and supports
+cancellation; a nominal time budget is cooperative, not a guarantee that an in-flight SQL
+statement can be preempted at that instant. Neither admission nor chunk extraction may take
+SQLite's writer reservation to do a full-history scan.
 
-If count and digest match, the same transaction records `frozen_count`, both digests,
-`cutover_at`, and `phase = 'items'`. JSON is complete through `frozen_count - 1` and is never
-mutated by later append. If parity fails or the JSON is malformed, phase becomes `blocked` with a
-bounded reason code; automatic work stops for that progression.
+**Verification and cutover.** Once `backfill_next == source_count`, obtain a consistent read
+snapshot of JSON, ordered items and their state. Verify contiguous ordinals, complete count,
+allocator/count equality and an ordered SHA-256 digest. The digest frames each ID as
+`uint64_be(utf8_byte_length) || utf8_bytes`, preserving repeated positions without depending on
+JSON whitespace. Compute it outside the writer transaction. The read snapshot must not use a
+connection hook that acquires `BEGIN IMMEDIATE` merely to begin a read.
 
-**Exact semantics.**
+Take a short write lock and require exactly the same generation and JSON revision, complete
+cursor, expected count and no blocking reason. Only then record both digests, verified revision,
+`frozen_count = item_count`, timestamp and `phase = items` atomically. If a writer changed the
+revision, retry verification later. The check-to-flip interval contains no unprotected append.
+If a consistent-snapshot parity check fails, block that generation's migration with a reason;
+do not classify a stale snapshot from a replaced generation as current data corruption.
 
-- Backfill never scans beyond the admission prefix. Dual-written tail rows already exist.
-- A crash before cursor commit repeats at most one chunk. A crash after commit resumes at the next
-  ordinal.
-- Admission, append, verification, and cutover all observe one per-progression lock. No append can
-  land between parity verification and the phase flip.
-- Migration order across progressions is oldest-smallest first by default, but it is not semantic.
-  Operators may prioritize a hot progression explicitly.
-- One blocked progression does not stop migration or appends for another.
-- Malformed JSON, a non-string member, a parity mismatch, or an ordinal collision blocks cutover;
-  no code silently drops or coerces an identifier.
-- The first implementation does not drop or rewrite the legacy column after cutover.
+Verification may starve on a continuously changing progression. A bounded retry budget leaves it
+in `dual`, reports the condition and yields. It must not solve starvation by moving the full
+verification into a long writer transaction. Explicit scheduling in an idle window is allowed;
+automatic write suspension is not part of this decision. Long read snapshots can also affect
+WAL retention and must be monitored and cancelled when rollout limits are exceeded.
 
-**Why this way.** A global flag cannot distinguish complete from partially copied progressions and
-turns one bad row into a fleet-wide stop. Per-progression state makes the failure and rollback
-boundary match the data being changed. Capturing the prefix length lets live append continue
-without making backfill chase a moving end.
+Before cutover, JSON remains complete. Stopping migration leaves reads on JSON immediately.
+An explicit abandonment may return writes to `json`, invalidate the generation and mark shadow
+cleanup pending. Cleanup deletes only abandoned shadow data in bounded chunks before readmission;
+new JSON appends remain valid throughout. After cutover, there is no automatic representation
+reversal. Reader fallback is defined separately in D4.
 
-### D4 — Read authority follows phase, with an honest compatibility fallback
+A blocking reason preserves phase. In `json` or `dual`, existing JSON authority remains readable;
+dual appends remain atomic where possible, otherwise the transaction fails without partial
+commit. In `items`, a known authority-integrity failure must not silently serve frozen JSON as
+complete. Writes stop for the affected progression until authority is repaired; reads may use
+the complete fallback only when its prefix and required tail are trustworthy. Unrelated
+progressions continue.
 
-The read router chooses its source from storage state:
+**MAY:** cache a validated source snapshot between chunks and adjust chunk sizes downward.
+**MAY NOT:** cut over on count alone, reparse full history while holding the writer, reuse a
+stale generation, or let one blocked progression change another's authority. **Verify by:**
+restart at every chunk boundary, concurrent replacement and append, mismatched conflict rows,
+snapshot invalidation, and measured write-lock/WAL behavior at the observed largest size.
 
-| Phase | Authoritative full read | Bounded read |
-|-------|-------------------------|--------------|
-| absent / `json` | legacy JSON | JSON expansion, explicitly legacy-slow |
-| `dual` | legacy JSON | JSON expansion until verified |
-| `items` | `progression_items` | composite-key seek |
-| `blocked` | last recorded authority | no automatic cutover |
+### D4 — Complete readers, with a precise fallback contract
 
-After cutover, an operator may enable `compat_json` read mode for one progression or globally.
-That adapter returns the legacy list-shaped API from:
+| Phase | Full read | Bounded items and membership count |
+|---|---|---|
+| Missing state / `json` | Current JSON through the legacy decoder | Legacy expansion/counting until initialized; explicitly not the target performance path. |
+| `dual` | Current JSON | JSON for ordered items; initialized exact logical count is available from state. |
+| `items` | Ordered relational items, or selected complete compatibility read | Ordinal index seeks and primary-key count lookup. |
+
+Routing and data reads must observe one consistent snapshot or validate the generation/phase
+again. Separate autocommit queries that can combine pre-replacement JSON with post-replacement
+items are not a valid complete read.
+
+In `items`, `compat_read` reconstructs:
 
 ```text
-JSON collection[0:frozen_count]
-  + progression_items WHERE ordinal >= frozen_count ORDER BY ordinal
+the frozen JSON prefix of length frozen_count
+  + relational items with ordinal >= frozen_count, ordered by ordinal
 ```
 
-This is the rollback switch for reader implementation or query-plan regressions. It uses the
-frozen JSON as the historical prefix and only the post-cutover relational tail. It does not claim
-that the raw JSON column is current.
+Validate the prefix length and boundary against state. The tail, if present, starts at
+`frozen_count` and is contiguous through `item_count - 1`. A gap, overlap, inconsistent
+generation or known corrupt required tail is an error. Ordinary append leaves prefix content
+unchanged. Wholesale replacement establishes a new exact prefix under D2.
 
-**Exact semantics.**
+This is an immediate **reader fallback**, not a downgrade to an old writer and not a second
+complete storage copy. It may bypass normalized prefix reads, but still depends on normalized
+tail rows. It does not recover lost tail data. Returning to a complete raw JSON column after
+items-only writes requires an explicit rebuild and write-routing decision.
 
-- Before cutover, `dual` can return to `json` immediately because both writes were atomic and JSON
-  remains current. Shadow rows may be retained for diagnosis or deleted later.
-- After the first items-only append, writes never return automatically to JSON. Doing so would
-  restore the O(n) hot-path rewrite this ADR removes.
-- `compat_json` may replace normalized prefix reads when item-prefix corruption or a query-plan
-  regression is suspected. It still needs relational tail rows written after cutover. If those
-  rows are untrustworthy, no complete second source exists; the progression becomes `blocked` and
-  reads fail closed rather than return stale history.
-- The fallback must compare the frozen prefix length and first tail ordinal. A gap or overlap is an
-  error, not something to sort away.
-- Public callers continue to receive `list[str]`. The source selection and ordinals remain a
-  persistence detail unless they call the bounded item API.
+Which rollback contract acceptance adopts is not decided here (Open item 1). Under this
+reader-fallback contract the acceptance wording is: “A rollback switch returns complete
+list-shaped reads using the frozen JSON prefix and the committed relational tail; before cutover
+it returns reads to current JSON.” If instead the required behavior is an instant switch to the
+raw JSON column after any new append, items-only cutover is not authorized by this decision.
+Keeping that column current would retain the performance defect.
 
-**Why this way.** An instant switch to the raw JSON column after items-only writes would silently
-lose the tail. Continuing to rewrite JSON forever would preserve that switch but preserve the
-performance defect too. A frozen prefix plus normalized tail is the only immediate compatibility
-path that is complete, avoids reverse-synthesizing millions of rows, and removes full-history work
-from append.
+#### Required consumer changes
 
-### D5 — One maintenance service owns bounded migration and evidence
+1. **Detail and ordinal windows.** Replace the full-array read at
+   `lionagi/studio/services/sessions.py:1292` with bounded membership reads. Preserve current
+   first-occurrence message anchors (`lionagi/studio/services/sessions.py:744`) with indexed lowest-ordinal lookup, generation
+   checks for new cursor formats, missing-message handling and existing hydration budgets.
+2. **Counts.** Replace JSON length queries at `lionagi/studio/services/sessions.py:538`,
+   `lionagi/studio/services/admin.py:987`, and full-list counts at `lionagi/cli/state.py:381`
+   with cached membership counts. Preserve branch aggregation versus session-order semantics.
+   Role counts and surviving-message counts remain distinct and must not be replaced by the
+   membership count (`lionagi/studio/services/sessions.py:1353`).
+3. **Timestamp streaming.** `lionagi/studio/services/sessions.py:1554` orders by message time,
+   message ID and branch ID, not ordinal. Preserve that cursor contract. Replace JSON expansion
+   with relational membership and a timestamp-seeking query. A messages-driven seek on a
+   composite `(created_at, id)` index with progression/message membership probes is permitted;
+   the implementation must supply an actual plan demonstrating that seek and must measure
+   unrelated-message selectivity. An ordinal primary key alone does not satisfy this obligation.
+   If the required plan cannot be obtained, that consumer's cutover remains disabled until an
+   equivalent indexed read design is accepted; silently changing stream order is prohibited.
+4. **Full readers and last-ID consumers.** Route `lionagi/cli/_runs.py:1001`, `lionagi/cli/_runs.py:2108` and
+   `lionagi/cli/_context_from.py:193` through complete authority. Replace the last-ID-only load
+   at `lionagi/state/_mirror_common.py:315` with an indexed one-item tail. Do not describe
+   intentionally complete reconstruction or role aggregation as constant-time work.
+5. **Deletion and shared references.** Adapt `lionagi/state/db.py:4049`, `lionagi/state/db.py:4072`,
+   `lionagi/studio/services/db_maintenance.py:393`, `lionagi/studio/services/db_maintenance.py:555` and `lionagi/cli/state.py:901`, `lionagi/cli/state.py:906`
+   before any JSON freeze. Candidate and survivor reference checks must include target-only
+   tail items, including shared progressions and retained references to absent message rows.
+6. **Other direct readers.** Publish a versioned complete-reader contract for SQL clients,
+   including phase interpretation and equivalent queries on both backends. A compatibility
+   helper or view may assemble complete JSON on demand at full-read cost; it must not maintain
+   that assembly on every append. It must not promise that an unchanged query against the raw
+   `collection` column stays complete.
 
-Migration is driven by an idempotent state service that can run from the daemon's maintenance lane
-or an explicit CLI command. Request handlers never opportunistically backfill.
+Post-cutover ordinal tail and membership-count paths must not use either backend's JSON expansion
+functions. Timestamp streams must seek their equivalent timestamp index, and may not expand the
+old collection. Expensive full-history aggregates remain explicitly identified; their cost must
+not be hidden inside a claimed bounded page or membership-count operation.
 
-**The contract.** The service surface is:
+**MAY:** preserve a slow, explicitly requested full compatibility read. **MAY NOT:** freeze JSON
+before supported readers are adapted, silently return a prefix, change timestamp cursor order,
+or confuse membership with message survival. **Verify by:** current API/cursor behavior, direct
+SQL consumer fixtures, post-cutover tails, retained-reference deletion cases and actual plans.
 
-```python
-class ProgressionMigrationService:
-    async def step(
-        self,
-        *,
-        progression_id: str | None = None,
-        max_items: int = 500,
-        max_bytes: int = 4 * 1024 * 1024,
-        max_seconds: float = 1.0,
-    ) -> MigrationStep: ...
+### D5 — Compatibility first, then staged maintenance
 
-    async def verify(self, progression_id: str) -> VerificationResult: ...
-    async def set_compat_read(self, progression_id: str, enabled: bool) -> None: ...
-    async def status(self, *, limit: int = 100) -> MigrationStatus: ...
-```
+Rollout is opt-in and scoped to a store. A compatibility-mode connection to an externally managed
+schema must not create tables, migrate progressions, or gain new writes merely because the native
+schema has changed. Such stores require their schema owner's explicit versioned contract and
+updated admission profiles; otherwise they stay on legacy JSON behavior.
 
-The CLI exposes the same owner rather than implementing SQL separately:
+Release order is fixed:
 
-```text
-li state progression-migrate status
-li state progression-migrate step [--progression ID]
-li state progression-migrate verify PROGRESSION_ID
-li state progression-migrate compat-read PROGRESSION_ID --enable|--disable
-```
+1. Accept this ADR, with Open item 1 resolved and its rollback wording recorded, before any
+   representation/read cutover.
+   Update ADR-0055 D3 and ADR-0056's append clause to reference phase-specific authority.
+2. Deploy additive native schema, all routed writers, compatible readers, retention adaptations,
+   diagnostic tools and fallback selection. Leave migration and target defaults disabled.
+3. Inventory attached applications and external SQL consumers. Demonstrate that old writers
+   cannot mutate admitted progressions and that supported readers obtain complete history.
+   Application shutdown/upgrade or enforceable database access controls may provide this
+   barrier. Raw readers that cannot upgrade keep the store in JSON mode. A migration flag does
+   not protect clients that ignore it.
+4. Measure semantic and performance gates on both backends. Run a small representative canary,
+   including duplicates, missing message rows, bulk ingestion and a large progression.
+5. Enable per-progression migration. After the canary, prioritize known large histories and
+   observed hot progressions; do not spend the initial rollout only on already-cheap small rows.
+   Enable normalized creation only after the same store compatibility gate passes.
 
-**Exact semantics.**
+The census is a rollout input, not a migration manifest. Compute exact counts and ownership
+relationships at execution time. The 31,608 existing rows require no destructive table rebuild:
+they remain authoritative until separately admitted and verified. Space planning must measure
+the sum of memberships and both indexes, plus retained JSON and WAL. Unknown or malformed rows
+are reported and remain legacy; there is no silent success by omission. The smaller store is a
+separate rollout unit and is not merged into the larger store by this decision.
 
-- Automatic maintenance is disabled until schema creation, dual-write tests, and rollback reads
-  have shipped. Enabling it is an explicit release/configuration step.
-- One `step()` respects all three caps. Hitting a cap commits completed chunks and yields; it is not
-  an error.
-- Status reports counts by phase, remaining prefix items, oldest update time, blocked reason-code
-  counts, and the hottest still-JSON progressions by observed append count. It does not expose
-  message identifiers.
-- Error fields store bounded codes and sanitized context, never message content.
-- Two maintenance processes may race. Optimistic cursor checks and primary keys make one winner;
-  the loser rereads state and continues without duplicating rows.
-- The service records duration, rows, bytes, and parity outcome for each step so rollout can be
-  paused on lock latency, WAL growth, or mismatch.
+One maintenance service owns admission, chunking, verification, status and fallback selection.
+It may run in a maintenance lane or from explicit state CLI commands. Request handlers do not
+opportunistically backfill. Controls support stop, resume, per-progression priority, explicit
+shadow abandonment and per-progression/global compatibility reads. A global selection applies
+through the phase router; it never makes raw frozen JSON a complete source.
 
-**Why this way.** Hiding migration inside a read makes latency unpredictable and gives every UI
-request authority to mutate storage. A separate idempotent service provides backpressure and an
-operator-visible stop button while reusing the same code from daemon and CLI.
+Status reports phase counts, blocking reasons, remaining prefix positions, cleanup work,
+verification retries, oldest progress time, logical bytes copied, lock-wait and lock-held time,
+read-snapshot duration, WAL growth, mismatch count and fallback selection. Logs contain bounded
+codes and sanitized metadata rather than message contents. Multiple maintenance processes use
+locked generation/cursor checks; a stale worker yields without writing stale rows.
 
-### D6 — Cutover is gated by plans, parity, and scale behavior
+**MAY:** pause rollout without stopping ordinary safe writes, and leave cold JSON data unmigrated
+until capacity is available. **MAY NOT:** treat schema installation as admission, silently
+migrate an externally managed schema, start migration from a read request, or claim external
+reader compatibility without an adopted contract. **Verify by:** mixed-phase operation,
+unupgraded-client admission barriers, maintenance restart and explicit stop/resume controls.
 
-Implementation is not complete when the new tables exist. It is complete only when the hot path
-and the migration satisfy deterministic gates on both supported backends.
+### D6 — Completion requires evidence on the real paths
 
-**The contract.** Required gates are:
+Required implementation evidence:
 
-- ordered reconstruction, missing-row, empty-row, legacy duplicate, duplicate append,
-  first-position, wholesale replace, and pruned-message-reference parity on SQLite and PostgreSQL;
-- crash injection after item insert, after cursor movement, during dual append, and immediately
-  before and after cutover;
-- concurrent append tests proving one position per new message and unchanged first position on a
-  duplicate retry;
-- `EXPLAIN` assertions that post-cutover tail and count use the
-  `(progression_id, ordinal)` primary-key range and do not invoke `json_each` or
-  `jsonb_array_elements_text`;
-- a warmed synthetic benchmark at 1,000 and 100,000 existing items, at least 100 measured appends
-  per size, where 100,000-item append p95 is no more than twice 1,000-item p95 on the same host;
-- a restart test after every backfill chunk boundary, producing identical final count and ordered
-  digest;
-- a compatibility-read test with post-cutover tail appends, proving the frozen JSON prefix plus
-  normalized tail exactly equals the authoritative item read.
+- SQLite and PostgreSQL parity for missing/empty rows, repeated creation, duplicate appends,
+  duplicate-bearing imports, first position, order, pruned-message references, bulk batches,
+  wholesale replacement and owner restrictions.
+- Race and crash cases covering simultaneous first-state initialization, same-ID retries,
+  different IDs, reversed progression lock lists, deletion/recreation under a reused ID,
+  backfill insert/cursor commit, replacement
+  during extraction/verification, and both sides of cutover. A committed message must not
+  appear in only one of its intended progressions through a partial transaction.
+- Independent full count/ordered-digest comparison after every restart boundary; stale workers
+  and unequal primary-key conflicts must not be mistaken for successful replay.
+- Post-cutover query plans for ordinal pages, reverse tails, cached counts and the existing
+  timestamp stream. Reject full-array expansion on those paths and reject full item scans for
+  membership counts. Include unrelated messages and legacy duplicates in stream plan fixtures.
+- Representative end-to-end detail, listing, polling and retention measurements. Explicitly
+  separate full-history aggregates from bounded membership operations and measure empty polls.
+- Repeated same-host benchmarks at 1k, 10k, 100k and the observed 286k scale, recording host
+  conditions and backend settings. At least 200 measured live calls per size after warm-up;
+  enough independent repetitions to report dispersion. Alternate size/variant order. Require
+  100k live append p95 no greater than twice 1k p95 on each backend after cutover.
+- Exercise `insert_messages` separately at b=1, b=10 and the production mirror chunk size of 500 (`lionagi/state/_mirror_common.py:59`).
+  Compare like batch sizes across histories; require the same 2x 100k/1k ratio for each admitted
+  fixed batch size. Do not divide batch p95 by batch size and present it as single-append p95.
+- Structural evidence that no target-only live or bulk append reads, rewrites, serializes or
+  hashes full prior membership. Record logical changed rows/bytes, database/WAL growth and
+  concurrent lock behavior. The p95 gate does not apply to intentionally dual-writing phases
+  or explicit whole-collection replacement.
+- Compatibility-read equality after target-only append and replacement, fallback persistence
+  across restart, explicit failure when the necessary tail is untrustworthy, and deletion tests
+  where a survivor references a message only through its post-cutover tail.
 
-Performance numbers are regression gates, not cross-machine promises. CI may run a structural
-statement-count and query-plan gate while a documented benchmark job owns the p95 ratio.
-
-**Why this way.** Unit parity alone can ship the same O(n) statement behind a new helper. Query
-plans prove bounded reads structurally, while the size-ratio benchmark catches accidental
-full-history work in allocation, duplicate detection, or serialization.
-
-## Consequences
-
-- A normal append after cutover writes one small membership row and one allocator update rather
-  than scanning and rewriting the progression's lifetime.
-- Tail and count consumers can pay for the requested window. `get_progression()` intentionally
-  remains a full-history API and can still allocate O(n) memory when a caller asks for all ids.
-- The representation adds rows and indexes. A progression with 100,000 identifiers no longer hides
-  them in one value; backup and page-cache behavior changes and must be measured during rollout.
-- PostgreSQL gains per-progression concurrency instead of full-value update contention. SQLite
-  remains one-writer-at-a-time, but each append holds that writer for bounded work.
-- Migration has more states than a one-shot schema bump. Contributors must preserve the phase
-  authority rules and may not add a third write path in a request handler.
-- Existing malformed or duplicate-bearing JSON remains readable. Malformed data blocks automatic
-  cutover rather than being silently repaired.
-- JSON is retained as a frozen compatibility prefix in the first implementation. Removing it is a
-  later ADR amendment with backup, downgrade, and support-window evidence.
-- Reversing D1 after cutover requires an explicit representation migration. Reversing D2 changes
-  retry and ordering behavior. Reversing D3/D4 without a migration can lose live tails. D5 and D6
-  can change tooling and thresholds, but not phase authority or parity guarantees.
+No performance or concurrency result is implied by this proposed text. Query plans establish
+structure, not a universal runtime bound; repeated measurements establish performance for their
+stated conditions. Both are required before declaring migration complete.
 
 ## Alternatives considered
 
-### Keep JSON and add faster SQL expressions
+### Retain JSON and segment transcript sessions
 
-Backend-specific JSON indexes can accelerate some membership predicates, but append still creates
-a new full array value. PostgreSQL native arrays or `jsonb` would also diverge from SQLite and keep
-full-value write amplification. This loses on the measured lifetime curve.
+A physical ceiling near 1,000 IDs targets the observed large writer and preserves small JSON
+rows. However, splitting only branches leaves session membership unbounded. Splitting sessions
+breaks deterministic transcript-to-session identity and one-row source-ID lookup unless a new
+logical transcript/segment mapping is introduced. Resume, shared session aggregates and general
+imports remain unbounded. This is appropriate only with an explicit bounded-session product
+contract and changed acceptance requirements, neither of which this ADR establishes.
 
-### Rewrite JSON periodically in larger batches
+### Store bounded JSON segments under one progression ID
 
-Buffering identifiers and appending them in batches reduces the number of rewrites but introduces
-a durability window or another journal, while tail reads still expand the full value. Once a
-durable ordered journal exists, it is already the normalized representation under another name.
+This preserves identity and bounds tail rewrites, but exact duplicate no-op requires searching
+all old segments or maintaining an indexed membership directory. The latter adds most of the
+relational membership machinery while retaining segmentation, rollover and directory-parity
+invariants. It needs the same online migration and reader coordination. It remains a viable
+alternative if measured storage or full-scan benefits exceed that extra complexity; no such
+comparison is available.
 
-### Dual-write JSON forever for instant raw-column rollback
+### Remove only the duplicate scan
 
-This makes rollback simple and leaves the hot path quadratic. It directly fails P1 and D6. The
-frozen-prefix compatibility adapter preserves complete reads without pretending the raw column is
-current.
+This changes duplicate semantics unless another exact check replaces it. It leaves the full JSON
+rewrite and all old reader costs. The normal bulk path already uses a Python set rather than the
+SQL predicate, so this edit does not improve that path's mechanism. A paired benchmark can
+attribute live-path cost, but no measured percentage is presently known.
 
-### One global migration flag and transaction
+### Keep JSON current forever alongside items
 
-This is simpler to reason about on an empty test database. On a multi-gigabyte live store it creates
-one writer exclusion window, one WAL spike, and one bad-row failure domain. Per-progression state
-costs another table but permits bounded, resumable work.
+This preserves direct-column readers and immediate raw-column fallback, but retains the append
+rewrite. It is a valid compatibility phase, not the target solution to this performance problem.
+It cannot simultaneously meet the target-only write bound.
 
-### Unique `(progression_id, message_id)` membership
+### One global conversion or only normalize future progressions
 
-A unique constraint would make duplicate admission concise. It cannot preserve a legacy array that
-already contains a repeated identifier, even though current create and wholesale-set paths can
-store one. The allocator lock plus a non-unique lookup index preserves old bytes and prevents new
-append duplicates.
+A global transaction combines unrelated histories into one lock and failure domain. Normalizing
+only future rows is safer to introduce but leaves the measured large histories and resumed
+writers unchanged. New-row rollout may be a deployment stage; it is not completion of the
+existing-data requirement.
 
-### Foreign-key membership to messages
+## Rationale
 
-This would give referential cleanup and make orphan detection easy. It would also delete or reject
-memberships whose messages retention intentionally pruned, changing ADR-0055's contract. Message
-retention and progression ordering remain separate.
+Relational membership addresses the demonstrated growth mechanism without replacing logical
+session identity or requiring every writer to adopt a lifetime ceiling. The same representation
+supports insertion order, exact indexed duplicate checks, bounded ordinal reads and faithful
+legacy reconstruction. The census narrows urgency and migration priority; it does not eliminate
+the supported growth paths or direct-reader compatibility obligations.
 
-### Linked-list or fractional-rank ordering
+The migration state is warranted by the existing published read surface and retained data, not
+by current write volume alone. Its complexity must be paid once at the persistence boundary,
+including bulk writers and maintenance consumers, rather than recreated independently in each
+writer or UI query.
 
-Linked rows make append cheap but make reverse pages, integrity checking, and recovery depend on
-pointer chains. Fractional ranks help insertion between existing items, which progression append
-does not need, and require rebalancing. Monotonic ordinals fit the append-only order contract.
+## Risks and unknowns
 
-### A global event log as the source of progression order
+- **Migration size:** total membership and index size are unknown. Measure before enabling a
+  store and retain headroom for JSON, target rows, indexes and WAL.
+- **Low current urgency:** most observed histories are small. Keep rollout opt-in and prioritize
+  compatibility work over rapid conversion; current small-write measurements do not justify
+  a forced migration window.
+- **Verification churn:** revision checks can repeatedly invalidate a large snapshot. Report
+  retries and use idle windows; persistent churn requires a separately chosen scheduling remedy.
+- **Reader inventory:** external SQL consumers are not all present in this source tree. Unknown
+  reader adoption blocks store cutover; it is not evidence that no readers exist.
+- **Timestamp streaming:** an ordinal index does not solve timestamp-order selectivity. Require
+  the actual equivalent seek plan and measured behavior before that consumer can cut over.
+- **Whole-history operations:** reconstruction, role aggregates and replacement may remain
+  linear. Membership normalization alone does not make an entire detail endpoint constant-cost.
+- **Fallback dependence:** complete fallback still depends on the relational tail. Recovery from
+  loss of that tail requires backups or another independently durable source, outside this ADR.
+- **Rollback wording:** undecided (Open item 1). If current raw-column fallback is mandatory,
+  keep dual writes and defer items-only cutover.
 
-An event log could serve more than progressions and enable replay. It would introduce global
-sequence, compaction, and projection-lag contracts far beyond the measured defect. This ADR keeps
-the authority progression-scoped.
+## Open items
 
-## Notes
+1. **Rollback contract: reader fallback or raw-JSON rollback.** Not decided by this record. D4
+   specifies the reader fallback: complete reads from the frozen JSON prefix plus the committed
+   relational tail, with no second complete copy. The alternative is a rollback switch that
+   returns reads to the raw JSON column after any new append. That requires keeping the column
+   current, which retains the append cost this record removes, so under it dual writes stay and
+   items-only cutover is not authorized. Acceptance resolves this item and records the chosen
+   wording in D4.
 
-- ADR-0055 D3 remains binding until this record is accepted. The first dependent implementation PR
-  is the acceptance trigger under the ADR corpus lifecycle.
-- Issue #3104 carries the motivating measurements and implementation tracker.
-- The word “rollback” here distinguishes reader rollback from representation reversal. Before
-  cutover, writes can return to JSON. After cutover, only the complete compatibility read can be
-  switched immediately; restoring JSON writes would require a new migration decision.
+## Start trigger
+
+This record stays Proposed with implementation not started. Implementation begins only when one
+of these is observed and recorded beside the population figures in Context:
+
+1. **Writes resume on large progressions:** new appends are written to progressions above
+   10,000 IDs, such as the large transcript-mirror histories that had no writes in the 56 h
+   before the census.
+2. **A measured large-history read cost:** a supported read path (a full read, count or ordinal
+   window) is measured paying full-history cost on a progression above 10,000 IDs.
+
+Either condition starts rollout planning under D5. Neither authorizes a cutover by itself:
+cutover still requires the gates in D3 to D6.
+
+## Consequences and implementation fences
+
+Normal target append writes one membership position and transactional metadata per affected
+progression instead of reconstructing the full lifetime. SQLite remains single-writer; PostgreSQL
+uses progression-scoped row locks. Both need real-path performance evidence. Indexed lookups are
+not a mathematical constant-time claim.
+
+The implementation MAY stage by store/progression, adjust chunk sizes downward, expose compatible
+complete full reads at linear cost, and preserve cold JSON rows until scheduled. It MAY NOT drop
+the old column, change retention policy or transcript identity, discard duplicate positions,
+add a message foreign key, permit stale raw-column reads to masquerade as complete history, or
+introduce a second uncoordinated writer path. Verification is D6, including direct SQL and
+retention consumers, not merely API unit parity.
+
+ADR-0055 D3 remains binding until this proposed successor is accepted. Accepting this text does
+not certify an implementation or authorize an automatic production migration. Reversing the
+target representation after target-only writes requires an explicit data migration; the reader
+fallback is deliberately a smaller operation.

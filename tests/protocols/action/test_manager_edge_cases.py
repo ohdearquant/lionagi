@@ -1242,6 +1242,28 @@ class TestLoadMCPToolsFunction:
             with pytest.raises(ValueError, match="unknown request options"):
                 await load_mcp_tools(server_names=["alpha"])
 
+    @pytest.mark.asyncio
+    async def test_load_mcp_tools_defaults_to_the_servers_in_its_own_file(self, tmp_path):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        earlier = tmp_path / "earlier.json"
+        earlier.write_text('{"mcpServers": {"alpha": {"command": "a"}}}')
+        current = tmp_path / "current.json"
+        current.write_text('{"mcpServers": {"beta": {"command": "b"}}}')
+
+        with patch.object(MCPConnectionPool, "_configs", {}):
+            MCPConnectionPool.load_config(str(earlier))
+            with patch("lionagi.protocols.action.manager.ActionManager") as manager_class:
+                manager = Mock()
+                manager.registry = {}
+                manager.register_mcp_server = AsyncMock(return_value=[])
+                manager_class.return_value = manager
+
+                await load_mcp_tools(config_path=str(current))
+
+        servers = [call.args[0] for call in manager.register_mcp_server.await_args_list]
+        assert servers == [{"server": "beta"}]
+
 
 class TestActionManagerValidation:
     def test_action_manager_is_manager_subclass(self):

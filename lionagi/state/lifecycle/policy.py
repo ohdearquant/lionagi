@@ -179,6 +179,7 @@ def build_default_registry() -> PolicyRegistry:
             "current_phase",
             # liveness markers a sweep reads; must move atomically with status
             "node_metadata",
+            "cli_worker_generation",
         }
     )
     registry.register(

@@ -412,3 +412,112 @@ class TestPrepareMessagesForChat:
         result = prepare_messages_for_chat(pile, system_prefix="## PREFIX")
         assert "## PREFIX" in result[0]["content"]
         assert "main text" in result[0]["content"]
+
+
+class TestPrepareMessagesForChatActionContext:
+    """Action outputs fold into the next instruction at each of the three places one can
+    follow them: an instruction in history, a new instruction that also takes the system
+    message, and the final new instruction."""
+
+    @pytest.fixture(autouse=True)
+    def _pinned_clock(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import lionagi.protocols.messages.prepare as prepare_mod
+
+        monkeypatch.setattr(prepare_mod, "time", SimpleNamespace(time=lambda: 1000.0))
+
+    @staticmethod
+    def _call(n: int) -> tuple[ActionRequest, ActionResponse]:
+        request = ActionRequest(content={"function": f"f{n}", "arguments": {"n": n}})
+        response = ActionResponse(content={"function": f"f{n}", "output": f"ok{n}"})
+        return request, response
+
+    @staticmethod
+    def _round(n: int, requests, responses, msg_count: int, notify: bool) -> list[str]:
+        import lionagi.protocols.messages.prepare as prepare_mod
+
+        parts = []
+        if notify:
+            parts.append(prepare_mod._build_round_notification(None, n, msg_count, None))
+        request_contents = [r.content for r in requests]
+        response_contents = [r.content for r in responses]
+        parts.append(prepare_mod._aggregate_round_actions(request_contents, response_contents, n))
+        return parts
+
+    @pytest.mark.parametrize("notify", [False, True])
+    def test_aggregated_rounds_reach_the_history_and_the_final_instruction(self, notify):
+        from lionagi.protocols.generic.pile import Pile
+
+        first = Instruction(content=InstructionContent(instruction="first"))
+        second = Instruction(content=InstructionContent(instruction="second"))
+        req1, resp1 = self._call(1)
+        req2, resp2 = self._call(2)
+        pile: Pile = Pile(collections=[first, req1, resp1, second, req2, resp2])
+
+        result = prepare_messages_for_chat(
+            pile,
+            new_instruction=InstructionContent(instruction="next"),
+            to_chat=False,
+            aggregate_actions=True,
+            round_notifications=notify,
+        )
+
+        assert len(result) == 3
+        assert result[0].prompt_context == []
+        assert result[1].prompt_context == self._round(1, [req1], [resp1], 6, notify)
+        assert result[2].prompt_context == self._round(2, [req2], [resp2], 6, notify)
+
+    @pytest.mark.parametrize("notify", [False, True])
+    def test_aggregated_round_reaches_a_new_instruction_that_takes_the_system(self, notify):
+        from lionagi.protocols.generic.pile import Pile
+        from lionagi.protocols.messages import System, SystemContent
+
+        system = System(content=SystemContent(system_message="You are helpful."))
+        req1, resp1 = self._call(1)
+        pile: Pile = Pile(collections=[system, req1, resp1])
+
+        result = prepare_messages_for_chat(
+            pile,
+            new_instruction=InstructionContent(instruction="next"),
+            to_chat=False,
+            aggregate_actions=True,
+            round_notifications=notify,
+        )
+
+        assert len(result) == 1
+        assert "You are helpful." in result[0].instruction
+        assert result[0].prompt_context == self._round(1, [req1], [resp1], 3, notify)
+
+    def test_rendered_outputs_reach_the_history_and_the_final_instruction(self):
+        from lionagi.protocols.generic.pile import Pile
+
+        first = Instruction(content=InstructionContent(instruction="first"))
+        second = Instruction(content=InstructionContent(instruction="second"))
+        _, resp1 = self._call(1)
+        _, resp2 = self._call(2)
+        pile: Pile = Pile(collections=[first, resp1, second, resp2])
+
+        result = prepare_messages_for_chat(
+            pile, new_instruction=InstructionContent(instruction="next"), to_chat=False
+        )
+
+        assert len(result) == 3
+        assert result[1].prompt_context == [resp1.content.render()]
+        assert result[2].prompt_context == [resp2.content.render()]
+
+    def test_rendered_output_reaches_a_new_instruction_that_takes_the_system(self):
+        from lionagi.protocols.generic.pile import Pile
+        from lionagi.protocols.messages import System, SystemContent
+
+        system = System(content=SystemContent(system_message="You are helpful."))
+        _, resp1 = self._call(1)
+        pile: Pile = Pile(collections=[system, resp1])
+
+        result = prepare_messages_for_chat(
+            pile, new_instruction=InstructionContent(instruction="next"), to_chat=False
+        )
+
+        assert len(result) == 1
+        assert "You are helpful." in result[0].instruction
+        assert result[0].prompt_context == [resp1.content.render()]

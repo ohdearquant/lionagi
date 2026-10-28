@@ -1,10 +1,80 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17 and 2026-10-25 (see Amendments 1 and 2)
+- **Status**: Accepted, amended 2026-10-17, 2026-10-25 and 2026-10-27 (see Amendments 1, 2 and 3)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 3 (2026-10-27) — child environments for coding tools
+
+**Status: Accepted.**
+
+Coding-tool subprocesses do not automatically inherit declared credential environment variables.
+Names come from secret settings fields, provider and account references, configured secret lookup
+names, explicit authentication-variable declarations, and any name matching the sensitive-name
+patterns already applied to MCP server environments. Matching for removal is case-insensitive.
+An operator may grant exact named variables through the agent specification or coding toolkit;
+tool-call arguments cannot grant them. Shell startup variables `BASH_ENV` and `ENV` are excluded
+by default. The same environment policy applies with and without the Seatbelt command wrapper.
+Configured worktree test gates and auto-repair commands run with the scrubbed environment because
+they execute agent-edited code. Configured hooks, notifications, scheduled commands, secret
+resolvers and provider processes retain their existing environment policies, including existing
+MCP filtering.
+
+The environment policy has two deny checks:
+
+- `credential_env_names(...)` computes the declared name set from the `SecretStr` fields of
+  `AppSettings`, provider `api_key_env` names, account `key_env` names, configured secret lookup
+  names, and explicit authentication-variable declarations, including MCP authentication references.
+  It reads names only, not credentials, and does not execute a secret lookup to discover them.
+  Unset declarations remain in the set. When the global settings file cannot be read or its
+  secret lookup section is invalid, the set is unknown: building a coding agent or toolkit raises
+  `ConfigurationError`, and so does a command that computes the set itself (a standalone coding
+  tool). The policy never falls back to a partial set.
+- A variable is also removed when its upper-cased name contains any member of the existing
+  `_SENSITIVE_ENV_PATTERNS` frozenset in `service/connections/mcp_wrapper.py`. The policy reuses that
+  one pattern set; it does not copy it into a second catalog. This covers names such as
+  `AWS_SECRET_ACCESS_KEY`, `DB_PASSWORD` and `SOMEVENDOR_API_KEY` without requiring a provider or
+  account declaration.
+
+The scrubbed environment is the default for bash and search, the Seatbelt writer and its cache
+location discovery, automatic formatting, static tools, coding-tool Git helpers, and configured worktree test
+gates and auto-repair commands. An explicitly supplied exec-cell environment remains an explicit
+grant; prompt cells continue to refuse a nonempty supplied environment. An exec-cell environment
+is supplied only by the Python caller that constructs the `Cell`; no tool call or agent-visible
+argument can set it.
+
+The operator-owned opt-in is `AgentSpec.command_env_allowlist: tuple[str, ...] = ()`, with the
+matching `CodingToolkit(command_env_allowlist=...)` option and the same named opt-in on
+`CodingEngine`. The specification's composition and YAML read/write paths preserve the names.
+Names are literal variable names, not patterns or values. An opt-in restores the exact spelling
+requested from the parent environment, including a name removed by either deny check; it does
+not restore a different case alias or another credential variable. A missing variable adds
+nothing. `LIONAGI_STATE_DB_URL` stays excluded from coding-tool environments even when named in
+the opt-in. No bash or search tool-call argument can change the grant. Process-group ownership,
+timeouts and output bounds keep their existing behavior.
+
+Required checks use isolated settings and synthetic values:
+
+- `bash env` exposes no denied name, including case aliases, with and without confinement.
+- An unrelated non-credential variable survives. A pattern-only name is removed; a near miss such
+  as `MY_TOKENIZER_PATH` survives when no pattern matches it.
+- The opt-in restores exactly the named variable, including a pattern-only name, while other
+  denied names and the state-store URL remain absent.
+- Shell startup files named by inherited `BASH_ENV` or `ENV` are not loaded automatically by the
+  default environment policy.
+- Configured hooks still receive their intended credential variables under their existing policy.
+- Configured worktree gates and auto-repair commands cannot read an ambient credential through
+  agent-edited code by default; the named operator opt-in permits it when explicitly granted.
+
+Limits:
+
+This closes automatic credential-variable inheritance by coding tools. It does not confine reads:
+a command can still read files the user can read, including `.env`, credential stores, and startup
+scripts. A child can load those files or obtain credentials through other configured services.
+Names in no declaration that match no pattern, and variables an operator explicitly grants, are
+outside this protection. It is not a credential confidentiality boundary for arbitrary code.
 
 ## Amendment 2 (2026-10-25) — the write set runs its editor and bash under the macOS sandbox
 

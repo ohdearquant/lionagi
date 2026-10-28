@@ -188,7 +188,7 @@ async def test_facade_discard_reports_failure_and_keeps_session(git_repo, monkey
     created = await sandbox(action="create")
     assert created["success"] is True
 
-    async def fake_discard(session):
+    async def fake_discard(session, *, _command_env=None):
         return {
             "worktree_removed": False,
             "branch_deleted": True,
@@ -217,7 +217,7 @@ async def test_facade_discard_branch_delete_only_failure_reported(git_repo, monk
     created = await sandbox(action="create")
     assert created["success"] is True
 
-    async def fake_discard(session):
+    async def fake_discard(session, *, _command_env=None):
         return {
             "worktree_removed": True,
             "branch_deleted": False,
