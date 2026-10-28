@@ -925,7 +925,8 @@ async def test_auth_failure_blocks_the_bound_account_without_retrying(monkeypatc
     ("value", "code"),
     [
         (None, RouterErrorCode.CREDENTIAL_MISSING),
-        ("short", RouterErrorCode.CREDENTIAL_INVALID),
+        # Below the minimum length, so refused as invalid; distinctive, so a leak is found.
+        ("kQ7zXw3", RouterErrorCode.CREDENTIAL_INVALID),
     ],
     ids=["missing", "invalid"],
 )
@@ -952,8 +953,11 @@ async def test_a_key_refusal_names_the_bound_account_and_its_unsent_attempt(
     assert error.http_status is None
     assert str(error) == f"{code.value} account=primary attempt={error.attempt_id}"
     assert KEY_NAME not in str(error)
-    # Only the code-only refusal it replaced is linked to it.
-    assert all(isinstance(linked, AccountRoutingError) for linked in _every_linked_error(error))
+    # Only the code-only refusal it replaced is linked to it, and no link holds the value.
+    linked = _every_linked_error(error)
+    assert all(isinstance(each, AccountRoutingError) for each in linked)
+    if value is not None:
+        assert not any(value in repr(each.args) for each in linked)
     assert transport.calls == []
     rows = _attempts(path)
     assert [(row[0], row[1], row[4]) for row in rows] == [
