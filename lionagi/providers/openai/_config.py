@@ -93,6 +93,7 @@ CodexConfigs._PROVIDER_ALIASES = ["openai-codex"]
 
 CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-6.1-sol": 1_050_000,
+    "gpt-6.1-terra": 1_050_000,
     "gpt-6-astra": 1_050_000,
     "gpt-6-sol": 1_050_000,
     "gpt-6-luna": 1_050_000,

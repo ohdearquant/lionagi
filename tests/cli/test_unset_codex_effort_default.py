@@ -230,11 +230,12 @@ class TestGlobalEffortIsClampedToTheResolvedModel:
         )
         assert spec == "codex/gpt-5.3-codex-spark"
 
-    def test_minimal_global_effort_is_omitted_for_a_model_without_minimal(self, codex_home):
+    @pytest.mark.parametrize("target", ["gpt-6-sol", "gpt-6.1-terra"])
+    def test_minimal_global_effort_is_omitted_for_a_model_without_minimal(self, codex_home, target):
         _write_global(codex_home, 'model_reasoning_effort = "minimal"\n')
         model = build_chat_model(
             provider="codex",
-            model="gpt-6-sol",
+            model=target,
             yolo=True,
             verbose=False,
             theme=None,
