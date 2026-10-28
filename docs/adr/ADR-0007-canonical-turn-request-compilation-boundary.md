@@ -567,14 +567,14 @@ lines:
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
   and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
-  exposes one turn's names (`lionagi/session/branch.py:296-308`). Those are event counts: they
+  exposes one turn's names (`lionagi/session/branch.py:298-310`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
   (`lionagi/tools/context/context.py:390-404`, `:406-423`) by excluding them from
   `metadata["current_progression"]` (`:164-171`), which `Branch.progression` returns in place of
-  the manager's progression when it is present (`lionagi/session/branch.py:253-259`). An evicted
+  the manager's progression when it is present (`lionagi/session/branch.py:255-261`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of

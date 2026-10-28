@@ -405,14 +405,14 @@ with request 0 at all (the two message 0 values share the folded system line, 46
 text, before the injected block makes them differ).
 
 **P4: the Anthropic adapter places one five-minute mark, and whether the flag that asks for it
-reaches the mark code depends on the endpoint.** `providers/anthropic/messages.py:1151-1177` marks only
+reaches the mark code depends on the endpoint.** `providers/anthropic/messages.py:1152-1178` marks only
 the last message's last block, with no lifetime choice, and lifts a native `system` field only when
 the first message has role `system`, which the fold never produces. The `cache_control` flag reaches
 that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:562-565`) before `messages.py:1151` looks for it. Building that
+  (`service/connections/endpoint.py:562-565`) before `messages.py:1152` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -452,7 +452,7 @@ native system block and caches by prompt prefix (D3 names the declaration) **and
 configuration turns prompt caching on. The option is `prompt_caching` (bool, default False), off
 unless set (D5). With the option off, every provider's compiled request is byte-identical to today's
 on every path, with no exception: the Anthropic adapter's `cache_control`-triggered last-message mark
-(`providers/anthropic/messages.py:1151-1177`) stays exactly as today wherever it fires today.
+(`providers/anthropic/messages.py:1152-1178`) stays exactly as today wherever it fires today.
 
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
@@ -565,8 +565,8 @@ handed.
 
 Placing a second block in the system field is an adapter change, not a compiler-only one. The
 Anthropic adapter today lifts at most one leading system-role message out of the messages and wraps
-that one string in a single-element `system` list (`providers/anthropic/messages.py:1111-1116` and
-`:1179-1181`), so a request carrying two system messages is rejected as an invalid payload. The
+that one string in a single-element `system` list (`providers/anthropic/messages.py:1112-1117` and
+`:1180-1182`), so a request carrying two system messages is rejected as an invalid payload. The
 compiler therefore hands the adapter the ordered lists it needs — the stable blocks and the
 conversation blocks — and the adapter must accept an ordered list of system blocks and mark the end
 of each segment, rather than lifting a single message. ADR-0027 D4 owns that boundary: provider
@@ -614,7 +614,7 @@ The option is `prompt_caching` (bool, default False), a field of the endpoint co
 adapter reads it from that configuration before the request-option filter runs, so a filtered
 endpoint cannot drop it, and it is never written into the request body. With the option off every
 provider's compiled request is byte-identical to today's on every path, the adapter's
-`cache_control`-triggered last-message mark (`providers/anthropic/messages.py:1151-1177`) included
+`cache_control`-triggered last-message mark (`providers/anthropic/messages.py:1152-1178`) included
 wherever it fires today. The mark code only runs when the option is on and the provider declares that
 it accepts a native system block and caches by prefix (D3); marks come only from this option. With
 the option on and the declaration present, this decision's placement replaces that one
