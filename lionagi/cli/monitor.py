@@ -1110,7 +1110,9 @@ async def _run_detail(entity_id: str) -> str:
         # turn into a non-success exit code, not a rendered detail body.
         raise
     except Exception as exc:  # noqa: BLE001
-        raise _MonitorReadError(f"error reading monitor data: {mask_credentials(str(exc))}") from None
+        raise _MonitorReadError(
+            f"error reading monitor data: {mask_credentials(str(exc))}"
+        ) from None
 
 
 # ── Watch loop ────────────────────────────────────────────────────────────────
