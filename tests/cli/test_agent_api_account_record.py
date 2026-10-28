@@ -48,9 +48,10 @@ def _real_runs_root(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path):
+@pytest.mark.parametrize("value", ["team_b-1", "a" * 32], ids=["name", "32 characters"])
+async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path, value):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
-    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team_b-1")
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", value)
     runs_root = _real_runs_root(monkeypatch, tmp_path)
 
     from lionagi.cli.agent import _run_agent
@@ -58,7 +59,7 @@ async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path)
     await _run_agent("claude/sonnet", "go")
 
     (manifest,) = runs_root.rglob("run.json")
-    assert json.loads(manifest.read_text())["api_account"] == "team_b-1"
+    assert json.loads(manifest.read_text())["api_account"] == value
 
 
 @pytest.mark.asyncio
@@ -71,11 +72,27 @@ async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path)
         "Team-B",
         "team.b",
         "team@b",
-        "a" * 65,
+        "0team",
+        "-team",
+        "_team",
+        "a" * 33,
         "two words",
         "",
     ],
-    ids=["key", "key prefix", "mixed case", "capital", "dot", "at", "too long", "space", "empty"],
+    ids=[
+        "key",
+        "key prefix",
+        "mixed case",
+        "capital",
+        "dot",
+        "at",
+        "digit first",
+        "dash first",
+        "underscore first",
+        "too long",
+        "space",
+        "empty",
+    ],
 )
 async def test_a_value_that_is_not_an_account_name_is_refused_without_being_shown(
     monkeypatch, tmp_path, value
@@ -94,34 +111,84 @@ async def test_a_value_that_is_not_an_account_name_is_refused_without_being_show
     assert not runs_root.exists() or not list(runs_root.rglob("run.json"))
 
 
+# A stand-in for a key that the name rule admits: lowercase hex after a letter.
+_STAND_IN = "f3a9c27e1b84d56a"
+_TEAM_B = [{"name": "team-b", "key_env": "ACCT_B", "budget_usd": "10"}]
+
+
+def _settings(monkeypatch, tmp_path, *, accounts=(), dotenv=None):
+    """Settings declaring ``accounts``, built from one dotenv file holding ``dotenv`` if given."""
+    from lionagi import config
+    from lionagi.config import AppSettings
+
+    env_file = None
+    if dotenv is not None:
+        env_file = tmp_path / "account.env"
+        env_file.write_text(dotenv, encoding="utf-8")
+    settings = AppSettings(_env_file=env_file, ANTHROPIC_ACCOUNTS=list(accounts))
+    monkeypatch.setattr(config, "settings", settings)
+
+
 @pytest.mark.asyncio
-async def test_the_value_of_a_credential_variable_is_refused_without_being_shown(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("holder", "accounts", "in_dotenv"),
+    [
+        ("EXAMPLE_API_KEY", (), False),
+        ("ACCT_B", _TEAM_B, False),
+        ("EXAMPLE_API_KEY", (), True),
+        ("ACCT_B", _TEAM_B, True),
+    ],
+    ids=[
+        "credential variable",
+        "configured account variable",
+        "credential in dotenv",
+        "configured account in dotenv",
+    ],
+)
+async def test_a_key_the_process_holds_is_refused_without_being_shown(
+    monkeypatch, tmp_path, holder, accounts, in_dotenv
 ):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
-    stand_in = "0f3a9c27e1b84d56"
-    monkeypatch.setenv("EXAMPLE_API_KEY", stand_in)
-    monkeypatch.setenv("LIONAGI_API_ACCOUNT", stand_in)
+    if in_dotenv:
+        _settings(monkeypatch, tmp_path, accounts=accounts, dotenv=f"{holder}={_STAND_IN}\n")
+    else:
+        _settings(monkeypatch, tmp_path, accounts=accounts)
+        monkeypatch.setenv(holder, _STAND_IN)
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", _STAND_IN)
     runs_root = _real_runs_root(monkeypatch, tmp_path)
 
     from lionagi.cli.agent import _run_agent
 
-    with pytest.raises(ConfigurationError, match="value of EXAMPLE_API_KEY") as info:
+    with pytest.raises(ConfigurationError, match=f"value of {holder};") as info:
         await _run_agent("claude/sonnet", "go")
 
-    assert stand_in not in str(info.value)
+    assert _STAND_IN not in str(info.value)
     assert not runs_root.exists() or not list(runs_root.rglob("run.json"))
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("name", "value"),
-    [("EXAMPLE_API_KEY", "a-different-value"), ("EXAMPLE_TEAM", "team-b")],
-    ids=["credential holds another value", "a plain variable holds the same value"],
+    ("holder", "value", "in_dotenv"),
+    [
+        ("EXAMPLE_API_KEY", "a-different-value", False),
+        ("EXAMPLE_TEAM", "team-b", False),
+        ("EXAMPLE_TEAM", "team-b", True),
+    ],
+    ids=[
+        "credential holds another value",
+        "a plain variable holds the same value",
+        "a plain dotenv entry holds the same value",
+    ],
 )
-async def test_a_name_that_is_no_credentials_value_is_recorded(monkeypatch, tmp_path, name, value):
+async def test_a_name_that_is_no_held_key_is_recorded(
+    monkeypatch, tmp_path, holder, value, in_dotenv
+):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
-    monkeypatch.setenv(name, value)
+    if in_dotenv:
+        _settings(monkeypatch, tmp_path, accounts=_TEAM_B, dotenv=f"{holder}={value}\n")
+    else:
+        _settings(monkeypatch, tmp_path, accounts=_TEAM_B)
+        monkeypatch.setenv(holder, value)
     monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team-b")
     runs_root = _real_runs_root(monkeypatch, tmp_path)
 
@@ -131,3 +198,27 @@ async def test_a_name_that_is_no_credentials_value_is_recorded(monkeypatch, tmp_
 
     (manifest,) = runs_root.rglob("run.json")
     assert json.loads(manifest.read_text())["api_account"] == "team-b"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_dotenv_file_refuses_the_name_without_quoting_it(monkeypatch, tmp_path):
+    import pydantic_settings
+
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    _settings(monkeypatch, tmp_path, dotenv="EXAMPLE_TEAM=team-b\n")
+
+    def unreadable(*args, **kwargs):
+        raise ValueError(f"line 1 holds {_STAND_IN}")
+
+    monkeypatch.setattr(pydantic_settings, "DotEnvSettingsSource", unreadable)
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team-b")
+    runs_root = _real_runs_root(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    with pytest.raises(ConfigurationError, match="could not be checked") as info:
+        await _run_agent("claude/sonnet", "go")
+
+    assert _STAND_IN not in str(info.value)
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+    assert not runs_root.exists() or not list(runs_root.rglob("run.json"))
