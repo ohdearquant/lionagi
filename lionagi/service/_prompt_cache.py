@@ -11,12 +11,14 @@ and the response usage and returns the call's cache record.
 
 Rows are written only from a completed request's own placement and usage, never at compile time.
 Evidence that the provider holds an entry is kept per route (an account name, or ``direct``) and
-per process: a row restored with a resumed Branch, or copied into a clone, starts with no
-evidence, because the provider may no longer hold what another process wrote.
+per process: a row restored in another process, as a resumed run's Branch is, or copied into a
+clone, starts with no evidence, because the provider may no longer hold what another process
+wrote. A row that does not have the shape written here is dropped when the rows are read.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -139,11 +141,44 @@ def placement_routes() -> frozenset[str]:
     return frozenset(spec.name for spec in accounts) if accounts else frozenset({"direct"})
 
 
+def _time(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _valid_row(cert: Any, entry: Any) -> bool:
+    if not isinstance(cert, str) or not isinstance(entry, dict):
+        return False
+    routes = entry.get("routes")
+    length = entry.get("length")
+    hit_at = entry.get("hit_at")
+    ttl = entry.get("ttl")
+    return (
+        isinstance(ttl, str)
+        and ttl in TTL_SECONDS
+        and isinstance(entry.get("tier"), str)
+        and _time(entry.get("marked_at"))
+        and (hit_at is None or _time(hit_at))
+        and (length is None or (isinstance(length, int) and not isinstance(length, bool)))
+        and isinstance(routes, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in routes.items())
+    )
+
+
 def ledger_for(metadata: dict) -> dict:
+    """The Branch's rows, created when absent; a malformed ledger starts over, a malformed row
+    is dropped, so a stored value never fails a request after it was sent."""
     ledger = metadata.get(LEDGER_KEY)
-    if not isinstance(ledger, dict) or not isinstance(ledger.get("entries"), dict):
+    evicted_until = ledger.get("evicted_until") if isinstance(ledger, dict) else None
+    if (
+        not isinstance(ledger, dict)
+        or not isinstance(ledger.get("entries"), dict)
+        or not (evicted_until is None or _time(evicted_until))
+    ):
         ledger = {"version": 1, "entries": {}, "evicted_until": None}
         metadata[LEDGER_KEY] = ledger
+    entries = ledger["entries"]
+    for cert in [cert for cert, entry in entries.items() if not _valid_row(cert, entry)]:
+        del entries[cert]
     return ledger
 
 
@@ -171,9 +206,9 @@ def clone_ledger(ledger: Any) -> dict | None:
 
 
 def _count(usage: dict, key: str) -> int | None:
+    # An absent count is unknown, never zero: a response that does not report its cache split
+    # says nothing about what the provider wrote.
     value = usage.get(key)
-    if value is None:
-        return 0 if key != "input_tokens" else None
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 

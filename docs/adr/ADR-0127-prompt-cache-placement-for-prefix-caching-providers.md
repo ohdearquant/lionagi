@@ -204,8 +204,9 @@ wrote or read, keyed by certificate: the lifetime, the tier, the stored prefix l
 known, the time it was last marked and last read, and, per route (an account name, or `direct`),
 the process that saw it written or read there. Rows are written only from a completed request's own
 placement and usage, never at compile time. An entry is established when this process saw it on
-every route the request can take: the configured accounts, or `direct`. A row restored with a
-resumed Branch, or copied into a clone, therefore starts with no evidence. Rows leave at expiry. Past
+every route the request can take: the configured accounts, or `direct`. A row restored in another
+process, as a resumed run's Branch is, or copied into a clone, therefore starts with no evidence; a
+row without the shape written here is dropped when the rows are read. Rows leave at expiry. Past
 512 rows the rows that matter least are evicted (five-minute rows first, then the shortest prefixes,
 then the soonest to expire), and the latest expiry evicted is kept as a watermark until which the
 guarantee below does not apply.

@@ -172,6 +172,15 @@ def test_a_string_turn_and_its_one_text_block_certify_alike():
     assert _certs(as_string) == _certs(_payload(6))
 
 
+def test_the_order_of_keys_in_a_block_does_not_change_its_certificate():
+    reordered = _payload(6)
+    reordered["tools"][0] = dict(reversed(list(reordered["tools"][0].items())))
+    for message in reordered["messages"]:
+        message["content"] = [dict(reversed(list(b.items()))) for b in message["content"]]
+
+    assert _certs(reordered) == _certs(_payload(6))
+
+
 def test_a_message_level_field_retires_the_entries_from_its_message_on():
     before = _certs(_payload(10))
     changed = _payload(10)
@@ -441,6 +450,32 @@ def test_a_one_hour_entry_after_a_five_minute_caller_mark_is_not_read():
     assert record["g1"] == {"excluded": "ttl_order"}
 
 
+def test_a_one_hour_entry_after_a_five_minute_mark_inside_a_tool_result_is_not_read():
+    payload = _payload(130, tools=False)
+    payload["messages"][8]["content"] = [  # message 8 sits at position 10
+        {
+            "type": "tool_result",
+            "tool_use_id": "call-1",
+            "content": [{"type": "text", "text": "found it", "cache_control": FIVE}],
+        }
+    ]
+    _, record = _place(payload, _ledger(_row(payload, 40, ttl="1h")))
+
+    assert _ttls(record) == {1: "1h", 130: "5m"}
+    assert "ttl_order:read" in record["degraded"]
+    assert record["g1"] == {"excluded": "ttl_order"}
+
+
+def test_a_caller_mark_on_the_stable_end_kept_at_five_minutes_is_recorded():
+    payload = _payload(20)
+    _block(payload, 1)["cache_control"] = FIVE
+    _block(payload, 2)["cache_control"] = FIVE
+    _, record = _place(payload, _ledger())
+
+    assert _ttls(record) == {1: "5m", 2: "5m", 20: "5m"}
+    assert "ttl_order:stable" in record["degraded"]
+
+
 # --- routes ---
 
 
@@ -575,8 +610,22 @@ def test_a_short_read_by_an_attempt_that_started_after_the_entry_expired_is_belo
         SimpleNamespace(status=EventStatus.FAILED, response=None),
         SimpleNamespace(status=EventStatus.COMPLETED, response={"usage": {"output_tokens": 3}}),
         _completed(read=1000, creation=10, status=EventStatus.FAILED),
+        SimpleNamespace(
+            status=EventStatus.COMPLETED,
+            response={"usage": {"input_tokens": 10, "output_tokens": 1}},
+        ),
+        SimpleNamespace(
+            status=EventStatus.COMPLETED,
+            response={
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 1000,
+                    "cache_creation_input_tokens": None,
+                }
+            },
+        ),
     ],
-    ids=["failed", "no input count", "failed with usage"],
+    ids=["failed", "no input count", "failed with usage", "no cache counts", "null write count"],
 )
 def test_an_attempt_without_complete_usage_is_unevaluated_and_writes_nothing(api_call):
     payload = _payload(100, tools=False)
@@ -612,6 +661,52 @@ def test_a_completed_request_drops_the_rows_that_have_expired():
     settle(call, _completed(creation=900))
 
     assert expired[0] not in ledger["entries"]
+
+
+def _stored(**changes):
+    row = {
+        "ttl": "5m",
+        "tier": "messages",
+        "length": 5,
+        "marked_at": time.time(),
+        "hit_at": None,
+        "routes": {"direct": ledger_mod._PROCESS},
+    }
+    return {**row, **changes}
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "not a row",
+        _stored(ttl=["5m"]),
+        _stored(marked_at="yesterday"),
+        _stored(hit_at=float("nan")),
+        _stored(length="long"),
+        _stored(routes=["direct"]),
+        _stored(tier=None),
+    ],
+    ids=["text", "ttl list", "time text", "time nan", "length text", "routes list", "no tier"],
+)
+def test_a_stored_row_of_another_shape_is_dropped_and_the_request_still_settles(row):
+    payload = _payload(100, tools=False)
+    kept = _row(payload, 40)
+    metadata = {"prompt_cache": _ledger(kept, ("f" * 64, row))}
+    ledger = ledger_for(metadata)
+
+    assert set(ledger["entries"]) == {kept[0]}
+    call, _ = _place(payload, ledger)
+    _attempt(call)
+    assert settle(call, _completed(read=1000, creation=10))["hit"] == {"identified": kept[0]}
+
+
+def test_a_stored_ledger_with_a_malformed_watermark_starts_over():
+    payload = _payload(100, tools=False)
+    metadata = {"prompt_cache": {**_ledger(_row(payload, 40)), "evicted_until": "later"}}
+    ledger = ledger_for(metadata)
+
+    assert ledger == {"version": 1, "entries": {}, "evicted_until": None}
+    assert metadata["prompt_cache"] is ledger
 
 
 def test_an_excluded_attempt_records_its_read_size_without_a_verdict():

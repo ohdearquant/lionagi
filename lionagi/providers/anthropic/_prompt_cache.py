@@ -56,10 +56,14 @@ class Point:
     slot: int
     markable: bool
     mark: str | None
+    # Lifetimes of the caller's marks inside the block's own content, in the order sent.
+    nested: tuple[str, ...] = ()
 
 
 def _canon(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode()
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str
+    ).encode()
 
 
 def _step(state: bytes, part: bytes) -> bytes:
@@ -91,14 +95,15 @@ def _caller_mark(block: Any) -> str | None:
     return None
 
 
-def _count_caller_marks(block: Any) -> int:
-    if not isinstance(block, dict):
-        return 0
-    count = block.get("cache_control") is not None
-    inner = block.get("content")
-    if isinstance(inner, list):
-        count += sum(1 for b in inner if isinstance(b, dict) and b.get("cache_control") is not None)
-    return count
+def _nested_marks(block: Any) -> tuple[str, ...]:
+    inner = block.get("content") if isinstance(block, dict) else None
+    if not isinstance(inner, list):
+        return ()
+    return tuple(
+        _ttl(b["cache_control"])
+        for b in inner
+        if isinstance(b, dict) and b.get("cache_control") is not None
+    )
 
 
 def points(payload: dict) -> tuple[list[Point], int]:
@@ -134,11 +139,11 @@ def points(payload: dict) -> tuple[list[Point], int]:
             and block.get("type") not in _UNMARKABLE
             and not _is_blank_text(block)
         )
-        caller += _count_caller_marks(block)
+        mark = _caller_mark(block)
+        nested = _nested_marks(block)
+        caller += (mark is not None) + len(nested)
         out.append(
-            Point(
-                len(out), position, tier, state.hex(), message, slot, markable, _caller_mark(block)
-            )
+            Point(len(out), position, tier, state.hex(), message, slot, markable, mark, nested)
         )
 
     for slot, tool in enumerate(payload.get("tools") or ()):
@@ -165,7 +170,7 @@ def _reaches(mark: Point, entry: Point) -> bool:
     return mark.index >= entry.index and mark.position - entry.position < LOOKBACK
 
 
-def _legal(ttls: dict[int, str]) -> bool:
+def _legal(ttls: dict[float, str]) -> bool:
     seen_short = False
     for index in sorted(ttls):
         if ttls[index] == "5m":
@@ -201,6 +206,13 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
     blocks, caller_count = points(payload)
     ttls: dict[int, str] = {p.index: p.mark for p in blocks if p.mark is not None}
     roles: dict[int, list[str]] = {index: ["caller"] for index in ttls}
+    # The caller's marks inside a block's content are read before the block's own mark, so for
+    # the order of lifetimes they sit between that block and the one before it.
+    nested = {
+        p.index - 1 + (k + 1) / (len(p.nested) + 1): ttl
+        for p in blocks
+        for k, ttl in enumerate(p.nested)
+    }
     degraded: list[str] = []
 
     live = {
@@ -221,7 +233,7 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
             return True
         if not free():
             return False
-        trial = {**ttls, index: ttl}
+        trial = {**nested, **ttls, index: ttl}
         if not _legal(trial):
             degraded.append(f"ttl_order:{role}")
             return False
@@ -291,6 +303,8 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
             earlier = [t for i, t in ttls.items() if i < stable.index]
             if all(t == "1h" for t in earlier):
                 ttls[stable.index] = "1h"
+            elif ttls[stable.index] == "5m":
+                degraded.append("ttl_order:stable")
             roles[stable.index].append("stable")
         else:
             add(stable.index, "1h", "stable")
