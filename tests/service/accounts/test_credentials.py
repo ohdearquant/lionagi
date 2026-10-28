@@ -41,6 +41,9 @@ async def _code(key_env: str, sources: CredentialSources) -> RouterErrorCode:
         await resolve_account_key(key_env, sources)
     # The error says what happened and nothing about the value.
     assert str(caught.value) == caught.value.code.value
+    # Nothing chained: a decode or parser error can hold the value or quote the file.
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     return caught.value.code
 
 
