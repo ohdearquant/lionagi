@@ -1452,8 +1452,13 @@ async def ndjson_from_cli(
                     raise primary_error  # noqa: B904 -- preserve the consumer error's own cause
                 raise
             _finish_child_lease(lease, outcome)
-            if outcome is not _ChildGroupCleanup.CONFIRMED_EMPTY and (
-                primary_error is None or isinstance(primary_error, GeneratorExit)
+            # Only a recorded launch claims its group was ended; an unrecorded one
+            # keeps the warning and the held slots, so a platform without killpg
+            # still completes a run that succeeded.
+            if (
+                outcome is not _ChildGroupCleanup.CONFIRMED_EMPTY
+                and admission is not None
+                and (primary_error is None or isinstance(primary_error, GeneratorExit))
             ):
                 raise ProviderTeardownError("CLI child group cleanup remains unconfirmed")
 
