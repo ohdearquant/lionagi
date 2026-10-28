@@ -75,15 +75,25 @@ async def chat(
         if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
             kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
 
+        from lionagi.service._prompt_cache import conversation_call
         from lionagi.service.imodel import _branch_routing_context
 
-        with _branch_routing_context(branch.id, imodel):
+        with (
+            _branch_routing_context(branch.id, imodel),
+            conversation_call(branch.metadata, imodel) as cache_call,
+        ):
             api_call = await imodel.invoke(**kw)
     except BaseException as exc:
         # BaseException (asyncio.CancelledError included): cancellation mid-invoke
         # must still pair with a post emission, or a hook-bus observer sees an open span.
         await emit_api_post_call(branch, imodel, error=exc)
         raise
+    if cache_call is not None:
+        from lionagi.service._prompt_cache import settle
+
+        # Recorded on the call before it is logged, so the branch log carries the marks,
+        # the intent and the read verdict beside the usage they are judged against.
+        api_call.metadata["prompt_cache"] = settle(cache_call, api_call)
     await emit_api_post_call(branch, imodel, api_call)
 
     await branch.emit_and_log(api_call)

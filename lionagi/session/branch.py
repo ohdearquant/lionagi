@@ -612,6 +612,13 @@ class Branch(Element, Relational):
             response_id = getattr(content, "action_response_id", None)
             if response_id is not None and str(response_id) in id_map:
                 content.action_response_id = str(id_map[str(response_id)])
+        if "prompt_cache" in self.metadata:
+            from lionagi.service._prompt_cache import clone_ledger
+
+            # Keyed by request content, so nothing to remap; the clone holds no evidence of
+            # its own that the provider still has these entries, so each starts unknown.
+            if (ledger := clone_ledger(self.metadata["prompt_cache"])) is not None:
+                branch_clone.metadata["prompt_cache"] = ledger
         if "context_delivered" in self.metadata:
             branch_clone.metadata["context_delivered"] = [
                 str(id_map[str(uid)])

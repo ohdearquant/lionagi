@@ -1020,11 +1020,23 @@ class ContextFold:
         model = self.branch.chat_model
         prior_refusal = getattr(model, "input_cap_refusal", None)
         try:
-            with _branch_routing_context(self.branch.id, model):
+            from lionagi.service._prompt_cache import prompt_cache_call
+
+            # A side request: it shares no prefix with the conversation, so it places no
+            # conversation marks and writes none of the conversation's cache entries.
+            with _branch_routing_context(self.branch.id, model), prompt_cache_call(None, "side"):
                 api_call = await model.invoke(messages=[{"role": "user", "content": prompt}])
             from lionagi.operations._api_hooks import _extract_tokens, _typed_usage
 
-            self._summary_usage = _typed_usage(_extract_tokens(api_call.response))
+            tokens = _extract_tokens(api_call.response)
+            usage = _typed_usage(tokens)
+            if usage is not None:
+                # The cache split too, so a summary request's cost is known, not only its size.
+                for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                    value = tokens.get(key)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        usage[key] = value
+            self._summary_usage = usage
             text = AssistantResponse.from_response(api_call.response).response
         except Exception as exc:  # noqa: BLE001 — the host-written list stands in
             self._log(f"context fold summary call failed: {exc!r}")
