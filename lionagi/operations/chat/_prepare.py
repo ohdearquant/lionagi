@@ -41,6 +41,8 @@ class _PreparedContent:
     cache_variant: str | None = None
     content: MessageContent | None = None
     tool_refs: list[Any] | None = None
+    # Context providers' blocks kept for this turn, sent after its content as one more block.
+    context: tuple[str, ...] = ()
 
     @property
     def base_content(self) -> MessageContent:
@@ -210,6 +212,13 @@ def _prepare_run_kwargs(
     places_cache = bool(getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False))
     projection = _projection_session(branch, imodel)
 
+    # ADR-0127 D4: there the blocks a context provider gathers for a turn are kept on that turn's
+    # instruction and sent after it on this and every later request, so no later request rewrites
+    # an earlier one. The first blocks kept stay; a gather repeated for the same instruction does
+    # not replace them. Off, each request shows only its own blocks, in the first instruction.
+    if places_cache and context_blocks and _TURN_CONTEXT not in ins.metadata:
+        ins.metadata[_TURN_CONTEXT] = list(context_blocks)
+
     # ADR-0127 D2: there the Branch's tool set renders once, as a section of the system block,
     # and every instruction, current or history, renders the same bytes: its requested tools by
     # name and its response format kept. Off, history drops both, as before.
@@ -295,6 +304,7 @@ def _prepare_run_kwargs(
                     cache_variant=variant if not overlay else None,
                     content=(msg.content.with_updates(**updates) if overlay else None),
                     tool_refs=refs if not overlay else None,
+                    context=_turn_context(msg) if places_cache else (),
                 )
             )
 
@@ -334,29 +344,41 @@ def _prepare_run_kwargs(
                 from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
                 g = minimal_yaml(g).strip()
-            injected = "\n".join(context_blocks) if context_blocks else ""
             if places_cache:
-                return injected + g
+                return g
+            injected = "\n".join(context_blocks) if context_blocks else ""
             return branch.msgs.system.rendered + injected + g
 
+        current_context = _turn_context(ins) if places_cache else ()
         if len(_contents) == 0:
             _contents.append(
                 _PreparedContent(
-                    content=_as_sent(ins.content.with_updates(guidance=f(ins.content)))
+                    content=_as_sent(ins.content.with_updates(guidance=f(ins.content))),
+                    context=current_context,
                 )
             )
         elif len(_contents) >= 1:
+            head_context = _contents[0].context
             first = _contents[0].materialize()
             if not isinstance(first, InstructionContent):
                 raise ValueError("First message in progression must be an Instruction or System")
-            _contents[0] = _PreparedContent(content=first.with_updates(guidance=f(first)))
+            _contents[0] = _PreparedContent(
+                content=first.with_updates(guidance=f(first)), context=head_context
+            )
             content_to_append = _use_ins_content or ins.content
             if content_to_append is not None:
-                _contents.append(_PreparedContent(content=_as_sent(content_to_append)))
+                _contents.append(
+                    _PreparedContent(content=_as_sent(content_to_append), context=current_context)
+                )
     else:
         content_to_append = _use_ins_content or ins.content
         if content_to_append is not None:
-            _contents.append(_PreparedContent(content=_as_sent(content_to_append)))
+            _contents.append(
+                _PreparedContent(
+                    content=_as_sent(content_to_append),
+                    context=_turn_context(ins) if places_cache else (),
+                )
+            )
 
     kw = (param.imodel_kw or {}).copy()
     if places_cache:
@@ -410,6 +432,8 @@ def _prepare_run_kwargs(
             _current_turn_rendered = rendered
         if not rendered:
             continue
+        if entry.context:
+            rendered = _with_context(rendered, entry.context)
         role = entry.role
         role_str = role.value if isinstance(role, MessageRole) else str(role)
         chat_msgs.append({"role": role_str, "content": rendered})
@@ -508,3 +532,22 @@ def _collect_action_dicts(act_res_msgs, projection=None):
 # Set while an LNDL round runs whose tools are shown only as LNDL calls (lndl_middle.py): that
 # round's request carries no tool section in a cached system block.
 _no_tool_section: ContextVar[bool] = ContextVar("_no_tool_section", default=False)
+
+# Instruction metadata key holding the context blocks gathered for that instruction's turn.
+_TURN_CONTEXT = "context_blocks"
+
+
+def _turn_context(message: Any) -> tuple[str, ...]:
+    """The context blocks kept on an instruction for its turn, or none."""
+    if not isinstance(message, Instruction):
+        return ()
+    blocks = message.metadata.get(_TURN_CONTEXT)
+    if isinstance(blocks, list) and all(isinstance(block, str) for block in blocks):
+        return tuple(blocks)
+    return ()
+
+
+def _with_context(rendered: str | list, blocks: tuple[str, ...]) -> list:
+    """A turn's rendered content followed by its context blocks as one more text block."""
+    parts = [{"type": "text", "text": rendered}] if isinstance(rendered, str) else list(rendered)
+    return [*parts, {"type": "text", "text": "\n".join(blocks)}]
