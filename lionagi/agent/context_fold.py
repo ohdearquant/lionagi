@@ -211,6 +211,7 @@ class ContextFold:
         self._compact: Callable[..., Any] | None = None
         self._summary_usage: dict[str, Any] | None = None
         branch._context_restore_check = self._restore_fits
+        branch._prompt_cache_protect = self._decide_protection
         self._request_views: ContextVar[tuple[tuple[str, ...] | None, ...]] = ContextVar(
             f"context_fold_requests_{id(self)}", default=()
         )
@@ -303,6 +304,60 @@ class ContextFold:
         pile = self.branch.msgs.messages
         return self._estimate_view([pile[uid] for uid in view]) <= self.cap
 
+    def _places_cache(self) -> bool:
+        endpoint = getattr(self.branch.chat_model, "endpoint", None)
+        return bool(getattr(endpoint, "places_prompt_cache", False))
+
+    def _decide_protection(self, view: dict, messages: list[dict]) -> dict:
+        """The request compile's decider for the first round (chat.py), sized as the cap counts."""
+        from lionagi.service._prompt_cache import decide_protection
+
+        return decide_protection(
+            self.branch.metadata,
+            view,
+            messages,
+            cap=self.cap,
+            scale=self._provider_scale() * self._scale,
+            max_chars=getattr(self.branch.chat_model, "tool_result_max_chars", None),
+            decided_by="context_fold",
+        )
+
+    def _cache_bounds(self, active: list[Any]) -> tuple[set, int, int]:
+        """With the prompt cache placed (ADR-0130 Amendment 4): the protected first round's
+        messages, the index in ``active`` of its last one, and of the newest compaction note
+        (-1 for none). A round still pending is protected; an excluded one is not."""
+        if not self._places_cache():
+            return set(), -1, -1
+        from lionagi.operations.chat._prepare import first_round, is_note
+        from lionagi.service._prompt_cache import protection
+
+        record = protection(self.branch.metadata)
+        if record is None:
+            members = set(first_round(self.branch, active) or ())
+        else:
+            members = set(record["members"]) if record["included"] else set()
+        pile = self.branch.msgs.messages
+        protected = {uid for uid in active if str(uid) in members}
+        frontier = max((i for i, uid in enumerate(active) if uid in protected), default=-1)
+        note = max((i for i, uid in enumerate(active) if is_note(pile[uid])), default=-1)
+        return protected, frontier, note
+
+    def _note_tokens(self, active: list[Any]) -> int:
+        """The compaction notes in the view, counted as the cap counts."""
+        from lionagi.operations.chat._prepare import is_note
+        from lionagi.service.connections.api_calling import estimate_payload_input_tokens
+
+        pile = self.branch.msgs.messages
+        notes = [
+            {"role": "assistant", "content": pile[uid].rendered}
+            for uid in active
+            if is_note(pile[uid])
+        ]
+        if not notes:
+            return 0
+        raw = estimate_payload_input_tokens({"messages": notes})
+        return int(raw * self._provider_scale() * self._scale)
+
     def _delivery_keep(self) -> set:
         """Undelivered results and their original calls survive either compaction mode."""
         from lionagi.protocols.messages import ActionResponse
@@ -330,6 +385,12 @@ class ContextFold:
         reasoning when the floor view fits. The two folds try their wider tail first.
         ``observed`` is the estimate a refusal reported for the request it refused; it
         calibrates this estimate first; a refusal resumes only after a pass strictly shrinks.
+
+        With the prompt cache placed (ADR-0130 Amendment 4), a protected first round is never
+        folded or clipped, and these stages fold only what follows the newest note, so every
+        earlier request's prefix through that note stays the next one's. A reset then folds
+        everything after the first round, earlier notes included, into one note: when the
+        notes pass 15% of the cap, or when the view stays above target without it.
         """
         if self._busy:
             return False
@@ -342,23 +403,31 @@ class ContextFold:
             # Compile before any pass, including clip: values without a YAML form refuse here.
             self.estimate()
             landed = False
-            for keep_tail in _KEEP_TAILS:
-                if self.estimate() <= self.target * self.cap and not (
+
+            def done() -> bool:
+                return self.estimate() <= self.target * self.cap and not (
                     observed is not None and not landed
-                ):
+                )
+
+            cache = self._places_cache()
+            # Notes past this share of the cap are folded into one before anything else.
+            reset_first = cache and self._note_tokens(list(self.branch.progression)) * 100 > (
+                15 * self.cap
+            )
+            if not reset_first:
+                for keep_tail in _KEEP_TAILS:
+                    if done():
+                        return landed
+                    landed = await self._fold_once("tool_io", keep_tail, reason) or landed
+                if self.estimate() > self.target * self.cap:
+                    landed = await self._clip_once(reason) or landed
+                if done():
                     return landed
-                landed = await self._fold_once("tool_io", keep_tail, reason) or landed
-            if self.estimate() > self.target * self.cap:
-                landed = await self._clip_once(reason) or landed
-            if self.estimate() <= self.target * self.cap and not (
-                observed is not None and not landed
-            ):
-                return landed
             from lionagi.protocols.messages import Instruction
 
             active = list(self.branch.progression)
             pile = self.branch.msgs.messages
-            keep = self._delivery_keep() | set(active[-2:])
+            keep = self._delivery_keep() | set(active[-2:]) | self._cache_bounds(active)[0]
             if active:
                 keep.add(active[0])
             anchor = next((uid for uid in active if isinstance(pile[uid], Instruction)), None)
@@ -368,12 +437,15 @@ class ContextFold:
             if floor > self.cap:
                 return landed
             tails = (2,) if floor > self.target * self.cap else _KEEP_TAILS
-            for keep_tail in tails:
-                if self.estimate() <= self.target * self.cap and not (
-                    observed is not None and not landed
-                ):
-                    return landed
-                landed = await self._fold_once("all", keep_tail, reason) or landed
+            if not cache:
+                stages = ("all",)
+            else:
+                stages = ("reset",) if reset_first else ("all", "reset")
+            for stage in stages:
+                for keep_tail in tails:
+                    if done():
+                        return landed
+                    landed = await self._fold_once(stage, keep_tail, reason) or landed
             return landed
         finally:
             self._busy = False
@@ -405,8 +477,12 @@ class ContextFold:
         restored = set(self.branch.metadata.get("context_restored_results", []))
         read_ranges = self.branch.metadata.get("context_read_results", {})
         full = self.branch.msgs.progression
+        # A protected first round's results keep their bytes, and so do clips standing for them.
+        protected = {str(uid) for uid in self._cache_bounds(list(self.branch.progression))[0]}
         for slot, message in enumerate(view):
             if not isinstance(message, ActionResponse):
+                continue
+            if str(message.id) in protected:
                 continue
             source = projection.source(message)
             original = source.original
@@ -634,8 +710,11 @@ class ContextFold:
         candidates = []
         restored = set(self.branch.metadata.get("context_restored_results", []))
         read_ranges = self.branch.metadata.get("context_read_results", {})
+        protected = {str(uid) for uid in self._cache_bounds(active)[0]}
         for slot, message in enumerate(view):
             if not isinstance(message, ActionResponse):
+                continue
+            if str(message.id) in protected:
                 continue
             original_id = message.metadata.get("clipped_from")
             original = (
@@ -816,16 +895,20 @@ class ContextFold:
         )
         return landed
 
-    async def _fold_once(self, mode: str, keep_tail: int, reason: str) -> bool:
+    async def _fold_once(self, stage: str, keep_tail: int, reason: str) -> bool:
         from lionagi.protocols.messages import ActionRequest, ActionResponse, Instruction
 
+        # A reset is the `all` fold over everything after the protected first round.
+        mode = "all" if stage == "reset" else stage
         active = list(self.branch.progression)
         end = len(active) - keep_tail
-        if end <= 0:
+        protected, frontier, note = self._cache_bounds(active)
+        start = frontier + 1 if stage == "reset" else max(frontier, note) + 1
+        if end <= start:
             return False
         pile = self.branch.msgs.messages
-        span = [pile[uid] for uid in active[:end] if uid in pile]
-        keep = self._delivery_keep()
+        span = [pile[uid] for uid in active[start:end] if uid in pile]
+        keep = self._delivery_keep() | protected
         tool_msgs = [
             m for m in span if isinstance(m, ActionRequest | ActionResponse) and m.id not in keep
         ]
@@ -835,7 +918,7 @@ class ContextFold:
         # head of the view whatever the range, so a span holding nothing else has nothing to
         # fold and is not worth a summary request.
         head = active[0] if active else None
-        anchor = next((m for m in span if isinstance(m, Instruction)), None)
+        anchor = next((pile[uid] for uid in active if isinstance(pile[uid], Instruction)), None)
         folded = [m for m in span if m is not anchor and m.id != head and m.id not in keep]
         if mode == "all" and not folded:
             return False
@@ -854,13 +937,13 @@ class ContextFold:
             if model_summary:
                 summary_source = "model"
         n_folded = len(tool_msgs) if mode == "tool_io" else len(folded)
-        note = self._note(n_folded, listed, model_summary)
+        summary = self._note(n_folded, listed, model_summary)
         result = await self._compact_view()(
             action="compact",
-            start=0,
+            start=start,
             end=end,
             mode=mode,
-            summary=note,
+            summary=summary,
             _keep=keep,
         )
         if not result.get("success"):
@@ -889,7 +972,7 @@ class ContextFold:
         record = {
             "at": time.time(),
             "reason": reason,
-            "stage": mode,
+            "stage": stage,
             "kept_tail": keep_tail,
             "messages_folded": result.get("compacted", 0),
             "tool_calls": calls[:_MAX_RECORDED_CALLS],
@@ -905,7 +988,7 @@ class ContextFold:
         }
         self.records.append(record)
         self._log(
-            f"context fold ({reason}, {mode}): {record['messages_folded']} messages folded, "
+            f"context fold ({reason}, {stage}): {record['messages_folded']} messages folded, "
             f"estimated input {before:,} -> {after:,} tokens (cap {self.cap:,})"
         )
         return landed

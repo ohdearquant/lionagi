@@ -63,6 +63,8 @@ async def chat(
     # host-side context fold) shapes the request it precedes rather than the next one.
     await emit_api_pre_call(branch, imodel)
     try:
+        places_cache = getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False)
+        cache_view: dict | None = {} if places_cache else None
         ins, kw = _prepare_run_kwargs(
             branch,
             instruction,
@@ -70,17 +72,29 @@ async def chat(
             ins=provider_ins or ins,
             context_blocks=context_report.blocks if context_report else None,
             imodel=imodel,
+            cache_view=cache_view,
         )
 
         if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
             kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
 
-        from lionagi.service._prompt_cache import conversation_call
+        from lionagi.service._prompt_cache import cache_anchors, conversation_call
         from lionagi.service.imodel import _branch_routing_context
+
+        anchors: tuple[tuple[int, int], ...] = ()
+        frontier = None
+        if cache_view is not None:
+            # This is the request's own compile, so the first round is decided here, once
+            # (ADR-0130 Amendment 4); the fold's sizing compiles only read the decision.
+            anchors, frontier = cache_anchors(
+                branch.metadata, cache_view, kw["messages"], branch._prompt_cache_protect
+            )
 
         with (
             _branch_routing_context(branch.id, imodel),
-            conversation_call(branch.metadata, imodel) as cache_call,
+            conversation_call(
+                branch.metadata, imodel, anchors=anchors, frontier=frontier
+            ) as cache_call,
         ):
             api_call = await imodel.invoke(**kw)
     except BaseException as exc:

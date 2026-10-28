@@ -104,6 +104,8 @@ class Branch(Element, Relational):
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
     _context_restore_check: Any = PrivateAttr(None)
+    # Set by a context fold: decides, at a request's compile, whether the first round is protected.
+    _prompt_cache_protect: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
     _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
     _hook_bus_synced_to: Any = PrivateAttr(None)
@@ -615,9 +617,11 @@ class Branch(Element, Relational):
         if "prompt_cache" in self.metadata:
             from lionagi.service._prompt_cache import clone_ledger
 
-            # Keyed by request content, so nothing to remap; the clone holds no evidence of
-            # its own that the provider still has these entries, so each starts unknown.
-            if (ledger := clone_ledger(self.metadata["prompt_cache"])) is not None:
+            # Rows are keyed by request content, so nothing to remap; the clone holds no evidence
+            # of its own that the provider still has these entries, so each starts unknown. The
+            # first round's decision names messages, so its members take the clone's ids.
+            clone_ids = {str(source): str(clone) for source, clone in id_map.items()}
+            if (ledger := clone_ledger(self.metadata["prompt_cache"], clone_ids)) is not None:
                 branch_clone.metadata["prompt_cache"] = ledger
         if "context_delivered" in self.metadata:
             branch_clone.metadata["context_delivered"] = [

@@ -1156,7 +1156,10 @@ async def test_the_summary_request_places_no_turn_mark_and_keeps_its_cache_usage
     )
     branch.metadata["context_delivered"] = [str(uid) for uid in branch.progression]
     fold = ContextFold(branch, cap=1000000)
-    floor = fold._estimate_view([task, *list(branch.msgs.messages)[-2:]])
+    messages = list(branch.msgs.messages)
+    # With the prompt cache placed the first round, the task and its answer, is kept ahead of
+    # every fold until it is decided (ADR-0130 Amendment 4).
+    floor = fold._estimate_view([task, messages[1], *messages[-2:]])
     fold.cap = math.ceil(floor / 0.8)
     sent = []
 

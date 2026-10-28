@@ -14,10 +14,17 @@ Evidence that the provider holds an entry is kept per route (an account name, or
 per process: a row restored in another process, as a resumed run's Branch is, or copied into a
 clone, starts with no evidence, because the provider may no longer hold what another process
 wrote. A row that does not have the shape written here is dropped when the rows are read.
+
+Beside the rows, ``protected`` records the decision about the conversation's first round
+(ADR-0130 Amendment 4): whether its compiled messages stay ahead of every later fold, so the
+entry through them is read by every later request. It is decided once, at the compile of the
+first request that carries the round whole, and kept across a ledger reset, resume and clone.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import time
 from contextlib import contextmanager, nullcontext
@@ -29,20 +36,24 @@ from uuid import uuid4
 __all__ = (
     "CEILING",
     "LEDGER_KEY",
+    "PROTECTION_VERSION",
     "TTL_SECONDS",
     "PromptCacheCall",
     "activate_call",
+    "cache_anchors",
     "cache_intent",
     "clone_ledger",
     "conversation_call",
     "current_call",
     "current_intent",
+    "decide_protection",
     "established",
     "expires_at",
     "ledger_for",
     "note_attempt",
     "placement_routes",
     "prompt_cache_call",
+    "protection",
     "settle",
 )
 
@@ -52,6 +63,10 @@ LEDGER_KEY = "prompt_cache"
 # A bound for a pathological run, not a working limit: rows leave by expiry long before it.
 CEILING = 512
 TTL_SECONDS = {"5m": 300.0, "1h": 3600.0}
+PROTECTION_KEY = "protected"
+PROTECTION_VERSION = 1
+# The first round stays ahead of every fold when its compiled size is at most a tenth of the cap.
+HEAD_BUDGET_DIVISOR = 10
 
 _PROCESS = uuid4().hex
 
@@ -87,6 +102,9 @@ class PromptCacheCall:
     anchors: tuple[tuple[int, int], ...] = ()
     placement: dict | None = None
     attempts: list[tuple[str, float]] = field(default_factory=list)
+    # The protected first round as this request compiled it: ``kept`` when its messages hash as
+    # they did at the decision, ``changed`` when they do not (a cache miss, never a re-decision).
+    frontier: str | None = None
 
 
 _call: ContextVar[PromptCacheCall | None] = ContextVar("lionagi_prompt_cache_call", default=None)
@@ -98,9 +116,15 @@ def current_call() -> PromptCacheCall | None:
 
 @contextmanager
 def prompt_cache_call(
-    ledger: dict | None, intent: Intent | None = None, *, anchors: tuple[tuple[int, int], ...] = ()
+    ledger: dict | None,
+    intent: Intent | None = None,
+    *,
+    anchors: tuple[tuple[int, int], ...] = (),
+    frontier: str | None = None,
 ) -> Iterator[PromptCacheCall]:
-    call = PromptCacheCall(ledger=ledger, intent=intent or current_intent(), anchors=anchors)
+    call = PromptCacheCall(
+        ledger=ledger, intent=intent or current_intent(), anchors=anchors, frontier=frontier
+    )
     token = _call.set(call)
     try:
         yield call
@@ -108,12 +132,18 @@ def prompt_cache_call(
         _call.reset(token)
 
 
-def conversation_call(metadata: dict, imodel: Any):
+def conversation_call(
+    metadata: dict,
+    imodel: Any,
+    *,
+    anchors: tuple[tuple[int, int], ...] = (),
+    frontier: str | None = None,
+):
     """The call context for one request of a conversation: its branch's rows when the
     endpoint places marks, else none."""
     if not getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False):
         return nullcontext()
-    return prompt_cache_call(ledger_for(metadata))
+    return prompt_cache_call(ledger_for(metadata), anchors=anchors, frontier=frontier)
 
 
 @contextmanager
@@ -174,12 +204,133 @@ def ledger_for(metadata: dict) -> dict:
         or not isinstance(ledger.get("entries"), dict)
         or not (evicted_until is None or _time(evicted_until))
     ):
+        # The rows start over; a decision about the first round stands.
+        kept = ledger.get(PROTECTION_KEY) if isinstance(ledger, dict) else None
         ledger = {"version": 1, "entries": {}, "evicted_until": None}
+        if _valid_protection(kept):
+            ledger[PROTECTION_KEY] = kept
         metadata[LEDGER_KEY] = ledger
     entries = ledger["entries"]
     for cert in [cert for cert, entry in entries.items() if not _valid_row(cert, entry)]:
         del entries[cert]
     return ledger
+
+
+def _count_value(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_protection(record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+    members = record.get("members")
+    frontier = record.get("frontier")
+    projection = record.get("projection")
+    return (
+        record.get("version") == PROTECTION_VERSION
+        and record.get("state") == "decided"
+        and isinstance(record.get("included"), bool)
+        and isinstance(members, list)
+        and bool(members)
+        and all(isinstance(member, str) for member in members)
+        and isinstance(frontier, dict)
+        and _count_value(frontier.get("message"))
+        and _count_value(frontier.get("slot"))
+        and isinstance(frontier.get("hash"), str)
+        and isinstance(projection, dict)
+        and (projection.get("max_chars") is None or _count_value(projection.get("max_chars")))
+    )
+
+
+def protection(metadata: dict) -> dict | None:
+    """The decision about the first round, or None while it is pending (or stored malformed)."""
+    ledger = metadata.get(LEDGER_KEY)
+    record = ledger.get(PROTECTION_KEY) if isinstance(ledger, dict) else None
+    return record if _valid_protection(record) else None
+
+
+def _through(messages: list[dict], message: int, slot: int) -> list[dict]:
+    """The compiled messages up to and including block ``slot`` of message ``message``, a
+    string content read as the one text block the provider reads it as."""
+    head = []
+    for entry in messages[: message + 1]:
+        content = entry.get("content")
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}] if content.strip() else []
+        head.append({**entry, "content": content})
+    if isinstance(head[-1]["content"], list):
+        head[-1]["content"] = head[-1]["content"][: slot + 1]
+    return head
+
+
+def _hash(messages: list[dict]) -> str:
+    text = json.dumps(messages, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def decide_protection(
+    metadata: dict,
+    view: dict,
+    messages: list[dict],
+    *,
+    cap: int,
+    scale: float,
+    max_chars: int | None,
+    decided_by: str,
+) -> dict:
+    """Decide, once, whether the first round stays ahead of every fold, and record it.
+
+    ``view`` is the compiler's cache view of this request: the round's member ids and its
+    frontier, the (message, block) place where the round's compiled material ends. The round is
+    included when its compiled size, counted as the input cap counts, is at most a tenth of
+    ``cap``; equality fits.
+    """
+    from lionagi.protocols.messages._result_projection import PROJECTION_VERSION
+    from lionagi.service.connections.api_calling import estimate_payload_input_tokens
+
+    message, slot = view["frontier"]
+    head = _through(messages, message, slot)
+    size = math.ceil(estimate_payload_input_tokens({"messages": head}) * scale)
+    record = {
+        "version": PROTECTION_VERSION,
+        "state": "decided",
+        "included": size * HEAD_BUDGET_DIVISOR <= cap,
+        "members": list(view["round"]),
+        "frontier": {"message": message, "slot": slot, "hash": _hash(head)},
+        "cap": cap,
+        "head_budget": cap / HEAD_BUDGET_DIVISOR,
+        "size": size,
+        "scale": scale,
+        "projection": {"max_chars": max_chars, "version": PROJECTION_VERSION},
+        "decided_at": time.time(),
+        "decided_by": decided_by,
+    }
+    ledger_for(metadata)[PROTECTION_KEY] = record
+    return record
+
+
+def cache_anchors(
+    metadata: dict, view: dict, messages: list[dict], decide: Any = None
+) -> tuple[tuple[tuple[int, int], ...], str | None]:
+    """The anchors a request names for its marks, and how it compiled the protected round.
+
+    The first round is decided here when it is still pending and this request carries it whole
+    (``decide`` is the fold's decider; without a fold nothing is decided). The anchors are the
+    end of an included first round and the newest compaction note.
+    """
+    record = protection(metadata)
+    frontier = view.get("frontier")
+    if record is None and frontier is not None and view.get("round") and decide is not None:
+        record = decide(view, messages)
+    anchors: list[tuple[int, int]] = []
+    state = None
+    if record is not None and record["included"] and frontier is not None:
+        anchors.append(tuple(frontier))
+        same = _hash(_through(messages, *frontier)) == record["frontier"]["hash"]
+        state = "kept" if same else "changed"
+    if (note := view.get("note")) is not None and tuple(note) not in anchors:
+        anchors.append(tuple(note))
+    return tuple(anchors), state
 
 
 def expires_at(entry: dict) -> float:
@@ -193,8 +344,11 @@ def established(entry: dict, routes: frozenset[str] | set[str]) -> bool:
     return bool(routes) and all(held.get(route) == _PROCESS for route in routes)
 
 
-def clone_ledger(ledger: Any) -> dict | None:
-    """A copy for a cloned Branch: the same rows, none of them evidenced for the clone."""
+def clone_ledger(ledger: Any, id_map: dict[str, Any] | None = None) -> dict | None:
+    """A copy for a cloned Branch: the same rows, none of them evidenced for the clone, and the
+    first round's decision with its members renamed to the clone's messages (``id_map``: source
+    id to clone id). A decision naming a message the clone does not hold is left behind, and
+    the clone's first round is pending again."""
     if not isinstance(ledger, dict) or not isinstance(ledger.get("entries"), dict):
         return None
     entries = {
@@ -202,14 +356,25 @@ def clone_ledger(ledger: Any) -> dict | None:
         for cert, entry in ledger["entries"].items()
         if isinstance(entry, dict)
     }
-    return {"version": 1, "entries": entries, "evicted_until": ledger.get("evicted_until")}
+    copied = {"version": 1, "entries": entries, "evicted_until": ledger.get("evicted_until")}
+    record = ledger.get(PROTECTION_KEY)
+    if _valid_protection(record) and id_map is not None:
+        members = [id_map.get(member) for member in record["members"]]
+        if all(member is not None for member in members):
+            copied[PROTECTION_KEY] = {
+                **record,
+                "members": [str(member) for member in members],
+                "frontier": dict(record["frontier"]),
+                "projection": dict(record["projection"]),
+            }
+    return copied
 
 
 def _count(usage: dict, key: str) -> int | None:
     # An absent count is unknown, never zero: a response that does not report its cache split
     # says nothing about what the provider wrote.
     value = usage.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return value if _count_value(value) else None
 
 
 def _complete_usage(api_call: Any) -> dict | None:
@@ -262,6 +427,8 @@ def settle(call: PromptCacheCall, api_call: Any) -> dict:
     """
     record = dict(call.placement or {})
     record.setdefault("intent", call.intent)
+    if call.frontier is not None:
+        record["frontier"] = call.frontier
     usage = _complete_usage(api_call)
     if usage is None or not call.attempts or call.placement is None:
         record["read"] = "unevaluated"
