@@ -110,9 +110,9 @@ from ._util import (
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
 # The name of the account whose API key the launcher handed this process, never the key
-# itself: a key is longer than 64 characters, and a value starting "sk-" is refused outright.
+# itself: a name is lowercase, so a mixed-case value or one starting "sk-" is refused outright.
 _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
-_API_ACCOUNT_RE = re.compile(r"^(?!sk-)[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$")
+_API_ACCOUNT_RE = re.compile(r"^(?!sk-)[a-z0-9][a-z0-9_-]{0,63}$")
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -1362,15 +1362,25 @@ def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | No
 def _read_api_account() -> str | None:
     """The account name in ``LIONAGI_API_ACCOUNT`` (ADR-0126 Amendment 4), None when it is unset.
 
-    A value that is not 1-64 characters of letters, digits, ``_``, ``.``, ``@`` and ``-``, or that
-    starts with ``sk-``, raises ``ConfigurationError`` without repeating it: it may be the key.
+    A value outside the name rule, or equal to the value of a credential variable in this
+    environment, raises ``ConfigurationError`` without repeating it: it may be the key.
     """
+    from lionagi.libs.credential_fields import is_secret_field_name
+
     api_account = os.environ.get(_API_ACCOUNT_ENV)
-    if api_account is not None and _API_ACCOUNT_RE.fullmatch(api_account) is None:
+    if api_account is None:
+        return None
+    if _API_ACCOUNT_RE.fullmatch(api_account) is None:
         raise ConfigurationError(
-            f"{_API_ACCOUNT_ENV} must be an account name of 1-64 characters "
-            "(letters, digits, '_', '.', '@', '-'), never a key; the value is not shown"
+            f"{_API_ACCOUNT_ENV} must be an account name: 1-64 lowercase letters, digits, '_' "
+            "or '-', starting with a letter or digit and not with 'sk-'; the value is not shown"
         )
+    for name, value in os.environ.items():
+        if name != _API_ACCOUNT_ENV and value == api_account and is_secret_field_name(name):
+            raise ConfigurationError(
+                f"{_API_ACCOUNT_ENV} holds the value of {name}; it must name the account, "
+                "never carry its key; the value is not shown"
+            )
     return api_account
 
 

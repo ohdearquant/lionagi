@@ -50,7 +50,7 @@ def _real_runs_root(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
-    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team.b@example-1")
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team_b-1")
     runs_root = _real_runs_root(monkeypatch, tmp_path)
 
     from lionagi.cli.agent import _run_agent
@@ -58,14 +58,24 @@ async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path)
     await _run_agent("claude/sonnet", "go")
 
     (manifest,) = runs_root.rglob("run.json")
-    assert json.loads(manifest.read_text())["api_account"] == "team.b@example-1"
+    assert json.loads(manifest.read_text())["api_account"] == "team_b-1"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "value",
-    ["sk-ant-api03-" + "x" * 90, "sk-short", "a" * 65, "two words", ""],
-    ids=["key", "key prefix", "too long", "space", "empty"],
+    [
+        "sk-ant-api03-" + "x" * 90,
+        "sk-short",
+        "Xy7q" * 10,
+        "Team-B",
+        "team.b",
+        "team@b",
+        "a" * 65,
+        "two words",
+        "",
+    ],
+    ids=["key", "key prefix", "mixed case", "capital", "dot", "at", "too long", "space", "empty"],
 )
 async def test_a_value_that_is_not_an_account_name_is_refused_without_being_shown(
     monkeypatch, tmp_path, value
@@ -82,3 +92,42 @@ async def test_a_value_that_is_not_an_account_name_is_refused_without_being_show
     if value:
         assert value not in str(info.value)
     assert not runs_root.exists() or not list(runs_root.rglob("run.json"))
+
+
+@pytest.mark.asyncio
+async def test_the_value_of_a_credential_variable_is_refused_without_being_shown(
+    monkeypatch, tmp_path
+):
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    stand_in = "0f3a9c27e1b84d56"
+    monkeypatch.setenv("EXAMPLE_API_KEY", stand_in)
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", stand_in)
+    runs_root = _real_runs_root(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    with pytest.raises(ConfigurationError, match="value of EXAMPLE_API_KEY") as info:
+        await _run_agent("claude/sonnet", "go")
+
+    assert stand_in not in str(info.value)
+    assert not runs_root.exists() or not list(runs_root.rglob("run.json"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("EXAMPLE_API_KEY", "a-different-value"), ("EXAMPLE_TEAM", "team-b")],
+    ids=["credential holds another value", "a plain variable holds the same value"],
+)
+async def test_a_name_that_is_no_credentials_value_is_recorded(monkeypatch, tmp_path, name, value):
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "team-b")
+    runs_root = _real_runs_root(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("claude/sonnet", "go")
+
+    (manifest,) = runs_root.rglob("run.json")
+    assert json.loads(manifest.read_text())["api_account"] == "team-b"
