@@ -553,14 +553,24 @@ async def list_sessions(
         page_where = ""
         page_limit = ""
         if recent_unfiltered:
-            # The recent index supplies order directly; aggregates stay on
-            # returned rows. Other filters and sorts keep the page-first rail.
+            # Pin schema and data while deciding whether the direct projection
+            # can use this index without evaluating aggregates before a sort.
+            await db.execute("BEGIN")
+            cursor = await db.execute("PRAGMA index_list(sessions)")
+            indexes = await cursor.fetchall()
+            await cursor.close()
+            recent_unfiltered = any(
+                row["name"] == "idx_sessions_updated" and not row["partial"] for row in indexes
+            )
+        fallback = (page_cte, page_source, page_where, page_limit)
+        if recent_unfiltered:
             page_cte = ""
-            page_source = "sessions s"
+            page_source = "sessions s INDEXED BY idx_sessions_updated"
             page_where = clause
             page_limit = "LIMIT ? OFFSET ?"
-        cur = await db.execute(
-            f"""
+
+        def listing_sql() -> str:
+            return f"""
             {page_cte}
             SELECT
                 s.id,
@@ -611,9 +621,21 @@ async def list_sessions(
             {page_where}
             ORDER BY {order_by}
             {page_limit}
-            """,  # noqa: S608
-            [*params, limit, offset],
-        )
+            """  # noqa: S608 -- SQL fragments are fixed and filter values are bound
+
+        query_params = [*params, limit, offset]
+        sql = listing_sql()
+        if recent_unfiltered:
+            cursor = await db.cursor()
+            await cursor.execute("EXPLAIN QUERY PLAN " + sql, query_params)
+            plan = await cursor.fetchall()
+            await cursor.close()
+            if any(
+                "TEMP B-TREE" in row[3].upper() and "ORDER BY" in row[3].upper() for row in plan
+            ):
+                page_cte, page_source, page_where, page_limit = fallback
+                sql = listing_sql()
+        cur = await db.execute(sql, query_params)
         rows = await cur.fetchall()
 
     return [
