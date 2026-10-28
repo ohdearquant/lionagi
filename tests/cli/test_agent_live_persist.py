@@ -19,6 +19,11 @@ from lionagi import Branch
 from lionagi.cli._runs import setup_agent_persist as _setup_live_persist
 from lionagi.cli._runs import teardown_agent_persist as _teardown_live_persist
 from lionagi.state.db import StateDB
+from tests.cli._aiosqlite_threads import (
+    aiosqlite_threads,
+    new_aiosqlite_threads,
+    settled_new_aiosqlite_threads,
+)
 
 # Fixtures
 
@@ -31,20 +36,38 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
-def _aiosqlite_thread_count() -> int:
-    """Live aiosqlite connection-worker threads — a leaked connection shows up here.
+async def test_the_worker_thread_guard_sees_a_live_connection(temp_db_path: Path):
+    """The leak guard below must see a real connection's worker; a guard that
+    matches nothing passes every 'no worker leaked' assertion."""
+    before = aiosqlite_threads()
+    db = StateDB(temp_db_path)
+    await db.open()
+    try:
+        await db.execute("SELECT 1")
+        assert new_aiosqlite_threads(before)
+    finally:
+        await db.close()
+    assert not await settled_new_aiosqlite_threads(before)
 
-    Matched by the worker's run target ``_connection_worker_thread`` (stable across
-    aiosqlite versions; current builds surface it in the auto thread name, and the
-    ``_target`` qualname is the fallback) plus the legacy ``sqlite_<path>`` name prefix.
-    """
-    return sum(
-        1
-        for t in threading.enumerate()
-        if "_connection_worker_thread" in t.name
-        or t.name.startswith("sqlite")
-        or getattr(getattr(t, "_target", None), "__name__", "") == "_connection_worker_thread"
-    )
+
+async def test_a_worker_from_before_the_test_that_exits_is_not_a_leak(temp_db_path: Path):
+    """A worker another test left running may exit while this one runs; the guard
+    reads that as nothing new, where a count comparison read one fewer as a change."""
+    start = aiosqlite_threads()
+    earlier = StateDB(temp_db_path)
+    await earlier.open()
+    await earlier.execute("SELECT 1")
+    earlier_workers = new_aiosqlite_threads(start)
+    assert earlier_workers
+
+    before = aiosqlite_threads()
+    await earlier.close()
+    for _ in range(20):
+        if not aiosqlite_threads() & earlier_workers:
+            break
+        await asyncio.sleep(0.05)
+    assert not aiosqlite_threads() & earlier_workers
+    assert not new_aiosqlite_threads(before)
 
 
 # _setup_live_persist: happy path + invariants
@@ -126,7 +149,7 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
 
     monkeypatch.setattr(StateDB, "open", boom)
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     branch = Branch(name="b1")
 
     ctx = await _setup_live_persist(branch)
@@ -135,8 +158,8 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
     # The PERSISTENCE hook was NEVER registered when setup failed — only the
     # branch's baseline hooks (_schedule_emit, _track_message_in_view) remain.
     assert branch.on_message_added == [branch._schedule_emit, branch._track_message_in_view]
-    # No leaked aiosqlite worker — the count is stable.
-    assert _aiosqlite_thread_count() == before
+    # No aiosqlite worker started by this test is still running.
+    assert not new_aiosqlite_threads(before)
 
 
 async def test_setup_create_session_failure_closes_db(
@@ -154,7 +177,7 @@ async def test_setup_create_session_failure_closes_db(
 
     monkeypatch.setattr(StateDB, "create_session", fail)
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     branch = Branch(name="b1")
 
     ctx = await _setup_live_persist(branch)
@@ -163,11 +186,7 @@ async def test_setup_create_session_failure_closes_db(
     # Only the baseline hooks remain; no persistence hook.
     assert branch.on_message_added == [branch._schedule_emit, branch._track_message_in_view]
     # Give aiosqlite a moment to join its thread after close().
-    for _ in range(20):
-        if _aiosqlite_thread_count() == before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before, (
+    assert not await settled_new_aiosqlite_threads(before), (
         "DB was not closed on setup failure — aiosqlite worker leaked"
     )
 
@@ -183,7 +202,7 @@ async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path)
     leaves no shared StateDB whose non-daemon aiosqlite worker would block exit."""
     from lionagi.state.db import _SHARED, get_shared_db
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     branch = Branch(name="b1")
 
     ctx = await _setup_live_persist(branch, agent_name="reviewer")
@@ -198,11 +217,7 @@ async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path)
 
     # Registry swept — nothing left to leak its aiosqlite worker thread.
     assert ctx["db"].url not in _SHARED
-    for _ in range(20):
-        if _aiosqlite_thread_count() == before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before, (
+    assert not await settled_new_aiosqlite_threads(before), (
         "shared StateDB survived teardown — aiosqlite worker thread leaked"
     )
 
@@ -216,7 +231,7 @@ async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
         unregister_shared_db,
     )
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     db1 = StateDB(temp_db_path)
     await db1.open()
     await register_shared_db(db1)
@@ -227,11 +242,7 @@ async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
 
     assert _SHARED.get(db2.url) is db2
     assert db1._engine is None, "displaced StateDB was orphaned instead of closed"
-    for _ in range(20):
-        if _aiosqlite_thread_count() == before + 1:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before + 1, (
+    assert len(await settled_new_aiosqlite_threads(before, expected=1)) == 1, (
         "displaced connection's aiosqlite worker thread leaked"
     )
 
@@ -241,11 +252,7 @@ async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
 
     await close_shared_db()
     await db2.close()
-    for _ in range(20):
-        if _aiosqlite_thread_count() == before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before
+    assert not await settled_new_aiosqlite_threads(before)
 
 
 async def test_close_shared_db_sweeps_inflight_open(
@@ -255,7 +262,7 @@ async def test_close_shared_db_sweeps_inflight_open(
     just-opened connection is swept, not orphaned past teardown."""
     from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     opened = asyncio.Event()
     release = asyncio.Event()
     real_open = StateDB.open
@@ -280,11 +287,7 @@ async def test_close_shared_db_sweeps_inflight_open(
 
     assert opened_db.url not in _SHARED
     assert opened_db._engine is None, "in-flight-opened StateDB survived close_shared_db()"
-    for _ in range(20):
-        if _aiosqlite_thread_count() == before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before, (
+    assert not await settled_new_aiosqlite_threads(before), (
         "in-flight-opened aiosqlite worker leaked past close_shared_db()"
     )
 
@@ -294,7 +297,7 @@ async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
     resurrect the singleton (raise), not open a fresh worker that survives teardown."""
     from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     await get_shared_db(temp_db_path)  # give the sweep something to slow-close
 
     entered = asyncio.Event()
@@ -320,11 +323,9 @@ async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
             await asyncio.wait_for(getter, timeout=5)
 
     assert temp_db_path not in _SHARED
-    for _ in range(20):
-        if _aiosqlite_thread_count() == before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before, "stale-waiter open leaked an aiosqlite worker"
+    assert not await settled_new_aiosqlite_threads(before), (
+        "stale-waiter open leaked an aiosqlite worker"
+    )
 
 
 # A close from another event loop
@@ -1095,18 +1096,13 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
 
     monkeypatch.setattr(StateDB, "update_session", boom)
 
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
     # MUST NOT raise — teardown logs and continues.
     await _teardown_live_persist(ctx, status="completed")
 
     # The connection was closed even though update_session failed.
     assert db._engine is None
-    for _ in range(20):
-        if _aiosqlite_thread_count() <= before:
-            break
-        await asyncio.sleep(0.05)
-    # Worker count should be back to (or below) baseline.
-    assert _aiosqlite_thread_count() <= before
+    assert not await settled_new_aiosqlite_threads(before)
 
     # Ownership release also ran despite the failure: the long-lived branch
     # is back to a clean standalone state and can be re-wrapped on resume.
@@ -1353,7 +1349,7 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
 
     branch = Branch(name="b1")
 
-    baseline = _aiosqlite_thread_count()
+    baseline = aiosqlite_threads()
 
     for _ in range(3):
         ctx = await _setup_live_persist(branch)
@@ -1368,11 +1364,7 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
 
         # aiosqlite uses a per-connection thread that joins on close.
         # Allow a brief window for the join.
-        for _ in range(20):
-            if _aiosqlite_thread_count() <= baseline:
-                break
-            await asyncio.sleep(0.05)
-        assert _aiosqlite_thread_count() <= baseline, (
+        assert not await settled_new_aiosqlite_threads(baseline), (
             "aiosqlite worker thread leaked across setup/teardown cycle"
         )
 
