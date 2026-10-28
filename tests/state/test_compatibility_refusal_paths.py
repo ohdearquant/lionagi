@@ -44,6 +44,23 @@ async def _refusing_handle(tmp_path: Path, name: str):
     return await _open(store, _profile(reference))
 
 
+async def _refusing_admission_handle(tmp_path: Path, name: str):
+    """A refusing handle whose fresh-key read answers absent.
+
+    Admission reads the new session key before it writes. A managed store that holds the
+    profile's session table answers that read with no row; the synthetic store holds only its
+    own tables, so the read is answered here and the first admission write is what the store
+    refuses.
+    """
+    handle = await _refusing_handle(tmp_path, name)
+
+    async def no_row(session_id):
+        return None
+
+    handle.get_session = no_row
+    return handle
+
+
 # 1. ReAct: a refused final turn is raised, not answered with an earlier round's reply
 
 
@@ -98,7 +115,7 @@ async def test_a_refusal_inside_a_group_fails_the_orchestration_run(tmp_path: Pa
 
     refusal = StateCompatibilityRefused("create_progression", "owned@1", "refused")
 
-    async def grouped():
+    async def grouped(**_):
         raise BaseExceptionGroup("setup", [refusal, ValueError("other")])
 
     monkeypatch.setattr(_orchestration, "_open_shared_db", grouped)
@@ -126,8 +143,8 @@ async def test_a_refused_orchestration_admission_fails_the_run(tmp_path: Path, m
     from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
 
-    handle = await _refusing_handle(tmp_path, "admission")
-    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _resolved(handle))
+    handle = await _refusing_admission_handle(tmp_path, "admission")
+    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda **_: _resolved(handle))
     monkeypatch.setattr(_orchestration, "_SQLITE_ADMISSION_RETRY_DELAYS", (0.0, 0.0))
     # The run-identity markers read host process facts a restricted environment can deny; fix
     # them so the admission write, not the marker read, is what the store refuses.
@@ -178,8 +195,8 @@ async def test_a_refused_admission_without_a_manifest_leaves_run_json_as_it_was(
     from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
 
-    handle = await _refusing_handle(tmp_path, "admission-no-manifest")
-    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _resolved(handle))
+    handle = await _refusing_admission_handle(tmp_path, "admission-no-manifest")
+    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda **_: _resolved(handle))
     monkeypatch.setattr(_orchestration, "_SQLITE_ADMISSION_RETRY_DELAYS", (0.0, 0.0))
     monkeypatch.setattr(
         "lionagi.cli.kill.current_pid_markers",
@@ -214,15 +231,46 @@ async def _resolved(value):
     return value
 
 
-async def test_a_non_refusal_from_a_displaced_close_degrades_the_run(tmp_path: Path, monkeypatch):
-    """A displaced handle whose close raised an ordinary error reaches orchestration admission as a
-    setup failure: the run records persistence degraded and keeps running. Only a store refusal
-    fails the run, so the admission path must not fail the run on an error that is not one."""
-    import lionagi.state.db as db_mod
+async def test_a_non_refusal_from_admission_degrades_the_run(tmp_path: Path, monkeypatch):
+    """An ordinary error while opening the store reaches orchestration admission as a setup
+    failure: the run records persistence degraded and keeps running. Only a store refusal fails
+    the run, so the admission path must not fail the run on an error that is not one."""
     from lionagi import Session
     from lionagi.cli._runs import RunDir
     from lionagi.cli.orchestrate import _orchestration
-    from lionagi.state.db import StateDB, register_shared_db
+
+    async def broken_open(**_):
+        raise RuntimeError("the store would not open")
+
+    monkeypatch.setattr(_orchestration, "_open_shared_db", broken_open)
+    run = RunDir(
+        run_id="degraded-admission",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    manifest: dict = {"status": "running"}
+    run.write_manifest(manifest)
+
+    ctx = await _orchestration.setup_orchestration_persist(
+        Session(), run=run, run_manifest=manifest
+    )
+
+    assert ctx is None
+    assert manifest["status"] == "running", "an ordinary setup error failed the run"
+    assert "the store would not open" in manifest["persistence_degraded_reason"]
+
+
+async def test_orchestration_admission_leaves_the_registered_shared_handle_in_place(
+    tmp_path: Path, monkeypatch
+):
+    """Orchestration writes through its own handle and never replaces the process's shared one,
+    so a handle another owner registered is neither closed nor displaced by this setup."""
+    import lionagi.state.db as db_mod
+    from lionagi import Session
+    from lionagi.cli._runs import RunDir, teardown_persist
+    from lionagi.cli.orchestrate import _orchestration
+    from lionagi.state.db import StateDB, get_shared_db, register_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -239,15 +287,16 @@ async def test_a_non_refusal_from_a_displaced_close_degrades_the_run(tmp_path: P
         },
     )
 
-    displaced = StateDB(store)
-    await displaced.open()
-    await register_shared_db(displaced)
+    registered = StateDB(store)
+    await registered.open()
+    await register_shared_db(registered)
+    closes: list[int] = []
 
-    async def refused_close():
-        raise RuntimeError("the displaced handle would not close")
+    async def counted_close():
+        closes.append(1)
 
     run = RunDir(
-        run_id="degraded-displacement",
+        run_id="no-displacement",
         state_root=tmp_path / "state",
         artifact_root=tmp_path / "artifacts",
     )
@@ -255,18 +304,21 @@ async def test_a_non_refusal_from_a_displaced_close_degrades_the_run(tmp_path: P
     manifest: dict = {"status": "running"}
     run.write_manifest(manifest)
 
+    ctx = None
     try:
         with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(displaced, "close", refused_close)
+            patch.setattr(registered, "close", counted_close)
             ctx = await _orchestration.setup_orchestration_persist(
                 Session(), run=run, run_manifest=manifest
             )
+            assert closes == [], "orchestration setup closed a handle another owner registered"
+            assert await get_shared_db(store) is registered
+            assert ctx is not None and ctx["db"] is not registered
     finally:
-        await displaced.close()
-
-    assert ctx is None
-    assert manifest["status"] == "running", "a displaced close error failed the run"
-    assert "the displaced handle would not close" in manifest["persistence_degraded_reason"]
+        if ctx is not None:
+            await teardown_persist(ctx, status="completed")
+        await registered.close()
+    assert manifest["status"] == "running"
 
 
 # 3. Flow: a refused write settles the sibling held behind the fan-out's semaphore

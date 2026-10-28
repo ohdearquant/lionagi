@@ -45,8 +45,11 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
     monkeypatch.setattr(db_mod, "StateDB", functools.partial(StateDB, db_path))
     monkeypatch.setattr(engine_mod, "progress", lambda *_a, **_kw: None)
     monkeypatch.setattr(engine_mod, "warn", lambda *_a, **_kw: None)
+    from uuid import UUID
+
     fixed = SimpleNamespace(hex="engine-run-fixed")
-    monkeypatch.setattr(engine_mod.uuid, "uuid4", lambda: fixed)
+    allocations = iter((fixed, UUID("28ba4cac-2d17-42f8-a70b-050f79473c8b")))
+    monkeypatch.setattr(engine_mod, "uuid", SimpleNamespace(uuid4=lambda: next(allocations)))
 
     sentinel = "sk-input-must-not-enter-outcome-1234567890"
     run_handle = SimpleNamespace(run_id="span-fixed")
@@ -61,7 +64,7 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
 
     class FakeEngine:
         _total_agent_failure = False
-        _emission_failures: list[str] = []
+        emission_failures: list[str] = []
         model = None
         models: dict[str, str] = {}
 

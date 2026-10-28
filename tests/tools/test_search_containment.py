@@ -23,13 +23,12 @@ class TestValidateSearchPathContainment:
     def test_allows_path_inside_root(self, tmp_path):
         inner = tmp_path / "project"
         inner.mkdir()
-        resolved, err = _validate_search_path(str(inner), str(tmp_path))
-        assert err is None
-        assert resolved  # returns non-empty string
+        resolved = _validate_search_path(str(inner), str(tmp_path))
+        assert resolved == str(inner.resolve())
 
     def test_allows_path_equal_to_root(self, tmp_path):
-        resolved, err = _validate_search_path(str(tmp_path), str(tmp_path))
-        assert err is None
+        resolved = _validate_search_path(str(tmp_path), str(tmp_path))
+        assert resolved == str(tmp_path.resolve())
 
     def test_rejects_dotdot_escape(self, tmp_path):
         """Classic ../escape attack must be rejected with PermissionError."""
@@ -61,8 +60,8 @@ class TestValidateSearchPathContainment:
         """Without workspace_root, no containment check is applied."""
         outside = tmp_path / "anywhere"
         outside.mkdir()
-        resolved, err = _validate_search_path(str(outside), None)
-        assert err is None
+        resolved = _validate_search_path(str(outside), None)
+        assert resolved == str(outside.resolve())
 
 
 class TestSearchToolHandleRequestContainment:
@@ -175,15 +174,13 @@ class TestRelativePathResolvedAgainstRoot:
         """path='.' must resolve to workspace_root, not the process cwd."""
         root = tmp_path / "ws"
         root.mkdir()
-        resolved, err = _validate_search_path(".", str(root))
-        assert err is None
+        resolved = _validate_search_path(".", str(root))
         assert resolved == str(root.resolve())
 
     def test_relative_subpath_resolves_under_root(self, tmp_path):
         root = tmp_path / "ws"
         (root / "src").mkdir(parents=True)
-        resolved, err = _validate_search_path("src", str(root))
-        assert err is None
+        resolved = _validate_search_path("src", str(root))
         assert resolved == str((root / "src").resolve())
 
     def test_relative_escape_rejected(self, tmp_path):
@@ -238,7 +235,6 @@ class TestRelativeWorkspaceRootIsFrozen:
         assert "escapes workspace root" in (resp.error or "").lower()
 
         # And path="." must still resolve to the frozen a/ws, not b/ws.
-        resolved, err = _validate_search_path(".", tool._workspace_root)
-        assert err is None
+        resolved = _validate_search_path(".", tool._workspace_root)
         assert resolved == str((base_a / "ws").resolve())
         assert os.path.isabs(tool._workspace_root)

@@ -25,6 +25,7 @@ from lionagi.providers.openai.codex import (
     CodexCodeRequest,
     toml_override_value,
 )
+from tests.providers._executable_fixtures import cli_executable
 
 try:
     import tomllib
@@ -1010,7 +1011,7 @@ async def test_a_copied_environment_the_spawn_cannot_encode_is_refused_before_it
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     entry = (
@@ -1266,7 +1267,7 @@ async def test_a_copied_environment_is_checked_as_the_spawn_copies_it(tmp_path, 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
@@ -1373,7 +1374,7 @@ async def test_the_process_receives_the_environment_the_check_read(tmp_path, mon
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     value = _ChangesAfterItsFirstRead()
@@ -1407,7 +1408,7 @@ async def test_a_copied_environment_value_that_cannot_be_read_is_refused_without
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
@@ -1441,7 +1442,7 @@ async def test_a_bytes_value_whose_own_decode_raises_is_passed_as_the_spawn_woul
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     value = _UndecodableBytes(b"x")
@@ -1496,7 +1497,7 @@ async def test_a_bytes_value_is_read_as_the_spawn_reads_it_not_by_its_own_bytes_
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
@@ -1527,7 +1528,7 @@ async def test_a_bytes_value_beside_its_text_twin_is_taken_as_one_entry(tmp_path
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     env = {"HOME": "/h", "\u00e9": "x", b"\xc3\xa9": _ChangingBytes(b"x")}
@@ -1565,7 +1566,7 @@ async def test_a_copied_environment_key_that_cannot_be_read_is_refused_without_i
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": {key: "v"}})
@@ -1612,7 +1613,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_refused_by_position(
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update={"env": env})
@@ -1642,7 +1643,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_taken_when_their_val
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
@@ -1671,7 +1672,7 @@ async def test_keys_and_values_spelled_two_ways_that_encode_alike_are_taken(tmp_
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     env = {"\u00e9": "\u00e9", "\udcc3\udca9": "\udcc3\udca9"}
@@ -1700,7 +1701,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_refused_when_their_v
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
@@ -1898,7 +1899,7 @@ async def test_a_lone_surrogate_behind_a_subclass_encoder_is_refused_without_its
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     value = _EncodesToAPlainStringHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
@@ -1938,7 +1939,7 @@ async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_pl
         given.update(kwargs["env"])
         raise _StoppedAtTheSpawn
 
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", cli_executable(tmp_path, "codex"))
     monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
     monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
     value = _EncodesToAnotherTextSubclass(_SECRET_IN_A_VALUE)

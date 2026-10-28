@@ -205,9 +205,8 @@ class ScheduleLifecycleAdapter:
         self,
         reason: ReasonRecord,
         row: Mapping[str, Any],
-        audit_context: ScheduleAuditContext | None,
+        context: ScheduleAuditContext,
     ) -> ReasonRecord:
-        context = self.validate_context(audit_context)
         metadata = {
             **reason.metadata,
             "schedule_name": row.get("name"),

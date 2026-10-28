@@ -38,6 +38,20 @@ def _build_args(**kwargs) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
+class _SignalSessionRows:
+    """Keep session create/readback facts in the persistence test doubles."""
+
+    def __init__(self):
+        self._signal_sessions: dict[str, dict] = {}
+
+    async def get_session(self, session_id):
+        row = self._signal_sessions.get(session_id)
+        return dict(row) if row is not None else None
+
+    async def create_session(self, session):
+        self._signal_sessions.setdefault(session["id"], dict(session))
+
+
 # Subparser registration
 
 
@@ -272,20 +286,14 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
 
     update_calls: list[dict] = []
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             pass
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -339,20 +347,14 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
 
     update_calls: list[dict] = []
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             pass
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -405,20 +407,18 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     update_calls: list[dict] = []
     created_sessions: list[dict] = []
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             pass
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
             pass
 
         async def create_session(self, session):
+            await super().create_session(session)
             created_sessions.append(session)
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -472,20 +472,14 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
     update_calls: list[dict] = []
     close_count = [0]
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             close_count[0] += 1
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -536,20 +530,14 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
     update_calls: list[dict] = []
     close_count = [0]
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             close_count[0] += 1
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -598,20 +586,14 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
     insert_calls: list[dict] = []
     update_calls: list[dict] = []
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             pass
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -693,20 +675,14 @@ async def test_import_failure_closes_db(monkeypatch):
     close_count = [0]
     update_calls: list[dict] = []
 
-    class MockStateDB:
+    class MockStateDB(_SignalSessionRows):
         async def open(self):
             pass
 
         async def close(self):
             close_count[0] += 1
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, prog_id, collection=None):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
@@ -1083,7 +1059,7 @@ async def test_actual_engine_import_failure_is_logged_stored_and_closed(
     monkeypatch.setattr(engine_module, "log_error", errors.append)
     monkeypatch.setattr(engine_module, "warn", lambda *args, **kwargs: None)
 
-    class RecordingDB:
+    class RecordingDB(_SignalSessionRows):
         async def open(self):
             pass
 
@@ -1093,13 +1069,7 @@ async def test_actual_engine_import_failure_is_logged_stored_and_closed(
         async def insert_engine_run(self, **kwargs):
             pass
 
-        async def get_session(self, session_id):
-            return None
-
         async def create_progression(self, progression_id):
-            pass
-
-        async def create_session(self, session):
             pass
 
         async def update_status(self, *args, **kwargs):

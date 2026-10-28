@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi.cli._providers import _parse_profile
+from tests.cli._worker_fixtures import WorkerSetup
 
 # Shared stub wiring (mirrors tests/cli/test_agent_profile_timeout.py)
 
@@ -50,22 +51,9 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
     monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "claude_code/sonnet")
 
-    async def fake_setup(*a, **kw):
-        return {"session_id": "sess-0"}
-
-    async def fake_teardown(
-        ctx,
-        *,
-        status="completed",
-        exception=None,
-        cwd=None,
-        engine_session_uid=None,
-        defer_terminal=False,
-    ):
-        return status
-
-    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    persistence = WorkerSetup()
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", persistence.setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", persistence.teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,

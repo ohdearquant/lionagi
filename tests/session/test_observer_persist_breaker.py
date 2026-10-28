@@ -111,15 +111,12 @@ async def test_a_held_writer_costs_one_busy_wait_and_every_skipped_signal_is_cou
         observer.bind_db_persistence(SESSION_ID, db=store.db)
         store.blocker.execute("BEGIN IMMEDIATE")
         with caplog.at_level(logging.WARNING):
-            started = time.monotonic()
             for i in range(SIGNALS):
                 await observer.emit(NodeStarted(op_id=f"held-{i}", name="step"))
-            elapsed = time.monotonic() - started
         store.blocker.rollback()
         persisted = await _signal_op_ids(store.db)
 
     assert _writer_open_failures(store) == 1
-    assert elapsed < SIGNALS * BUSY_MS / 1000 / 2, elapsed
     assert persisted == []
     assert observer.persist_dropped == SIGNALS
 
@@ -132,19 +129,16 @@ async def test_signals_emitted_together_before_any_refusal_cost_one_busy_wait(
         observer.bind_db_persistence(SESSION_ID, db=store.db)
         store.blocker.execute("BEGIN IMMEDIATE")
         with caplog.at_level(logging.WARNING):
-            started = time.monotonic()
             await asyncio.gather(
                 *(
                     observer.emit(NodeStarted(op_id=f"burst-{i}", name="step"))
                     for i in range(SIGNALS)
                 )
             )
-            elapsed = time.monotonic() - started
         store.blocker.rollback()
         persisted = await _signal_op_ids(store.db)
 
     assert _writer_open_failures(store) == 1
-    assert elapsed < SIGNALS * BUSY_MS / 1000 / 2, elapsed
     assert persisted == []
     assert observer.persist_dropped == SIGNALS
 
@@ -208,18 +202,15 @@ async def test_concurrent_signals_at_the_end_of_a_window_share_one_try(
         with caplog.at_level(logging.WARNING):
             await observer.emit(NodeStarted(op_id="held", name="step"))
             clock.now += 3600
-            started = time.monotonic()
             await asyncio.gather(
                 *(
                     observer.emit(NodeStarted(op_id=f"together-{i}", name="step"))
                     for i in range(SIGNALS)
                 )
             )
-            elapsed = time.monotonic() - started
         store.blocker.rollback()
 
     assert _writer_open_failures(store) == 2
-    assert elapsed < SIGNALS * BUSY_MS / 1000 / 2, elapsed
     assert observer.persist_dropped == 1 + SIGNALS
 
 

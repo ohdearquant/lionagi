@@ -36,6 +36,12 @@ class ProviderError(RuntimeError):
         self.raw: str = raw or message
 
 
+class _WorkerSpawnAdmissionError(ProviderError):
+    """A durable worker owner refused admission or registration."""
+
+    retryable: ClassVar[bool] = False
+
+
 class ProviderQuotaError(ProviderError):
     """The provider CLI rejected the request due to usage/rate limits."""
 

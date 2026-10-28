@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from lionagi.protocols.generic.element import Element
 
@@ -52,13 +52,6 @@ VALID_TRANSITIONS: dict[str, frozenset[str]] = {
 
 class FieldSpec(Element):
     """Declaration of a single typed field inside a WorkForm."""
-
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        use_enum_values=True,
-        populate_by_name=True,
-        extra="forbid",
-    )
 
     name: str = Field(..., description="Field identifier (alphanumeric + underscores).")
     type: FieldType = Field("str", description="Expected value type.")
@@ -119,13 +112,6 @@ class FieldSpec(Element):
 
 class WorkForm(Element):
     """Structured data container for a single worker invocation; immutable by convention."""
-
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        use_enum_values=True,
-        populate_by_name=True,
-        extra="forbid",
-    )
 
     title: str = Field("", description="Human-readable form title.")
     fields: dict[str, FieldSpec] = Field(

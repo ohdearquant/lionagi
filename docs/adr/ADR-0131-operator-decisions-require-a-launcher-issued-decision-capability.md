@@ -30,7 +30,7 @@ the capability is recorded unattributed.
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
 `decide_operator_proposal` (`lionagi/studio/services/operator.py:335-397`) call the coordinator's
 `decide()` (`lionagi/studio/operator/coordinator.py:1016`), which claims the proposal in the store
-(`lionagi/studio/operator/store.py:2180`). The proposal's hash and version bind what is decided, not
+(`lionagi/studio/operator/store.py:2172`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
 no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:123`), so a command-line client, a script and a
 tool's HTTP request are all admitted.

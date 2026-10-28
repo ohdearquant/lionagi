@@ -73,7 +73,7 @@ async def test_critical_context_skips_repair_that_can_only_overflow() -> None:
         event["type"] == "emission_repair_skipped" and event["reason"] == "context_critical"
         for event in events
     )
-    assert run._emission_failures == ["near-limit x1"]
+    assert run.emission_failures == ["near-limit x1"]
 
 
 class _PartiallyFailingReview(ReviewEngine):
@@ -546,11 +546,11 @@ async def test_bare_connection_closed_payload_uses_live_transport_evidence(
 
                 if isolated:
                     await engine._review_dimension_isolated(run, "artifact", "security")
-                    assert run._emission_failures == ["review-security (McpError)"]
+                    assert run.emission_failures == ["review-security (McpError)"]
                 else:
                     with pytest.raises(McpError):
                         await engine._review_dimension_isolated(run, "artifact", "security")
-                    assert run._emission_failures == []
+                    assert run.emission_failures == []
 
                 task_group.cancel_scope.cancel()
 

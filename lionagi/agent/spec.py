@@ -91,6 +91,20 @@ class AgentSpec(HooksMixin):
     # create_agent builds. A provider that does not declare prefix caching sends
     # its requests unchanged, as the option does everywhere.
     prompt_caching: bool = False
+    command_env_allowlist: tuple[str, ...] = ()
+    # The output-token limit set on the Anthropic model create_agent builds, in the
+    # request field its endpoint names ``max_tokens``; any other provider refuses it.
+    # None sets nothing, so the provider's own default applies (Anthropic sends 8192).
+    max_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        # Every way of building a spec (constructor, compose, from_yaml) passes here, so a
+        # limit the provider would reject or a bool that reads as 1 stops at the spec.
+        value = self.max_tokens
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            raise ValueError(f"max_tokens must be a positive integer, got {value!r}")
 
     @classmethod
     def compose(
@@ -111,8 +125,12 @@ class AgentSpec(HooksMixin):
         khive_injection: Any = None,
         contain_account_integrations: bool = False,
         prompt_caching: bool = False,
+        command_env_allowlist: tuple[str, ...] = (),
+        max_tokens: int | None = None,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
+        from lionagi._command_env import normalize_command_env_allowlist
+
         prof = Profile.compose(role, modes=modes)
         perm = _resolve_permissions(permissions)
         return cls(
@@ -130,6 +148,8 @@ class AgentSpec(HooksMixin):
             khive_injection=khive_injection,
             contain_account_integrations=contain_account_integrations,
             prompt_caching=prompt_caching,
+            command_env_allowlist=normalize_command_env_allowlist(command_env_allowlist),
+            max_tokens=max_tokens,
         )
 
     @classmethod
@@ -179,6 +199,7 @@ class AgentSpec(HooksMixin):
                 got = "no value" if value is None else type(value).__name__
                 raise ValueError(f"{key} must be true or false, got {got}")
             flags[key] = value
+        max_tokens = data.get("max_tokens")
         spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
@@ -190,6 +211,8 @@ class AgentSpec(HooksMixin):
             system_prompt=data.get("system_prompt"),
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
+            command_env_allowlist=data.get("command_env_allowlist", ()),
+            max_tokens=max_tokens,
             **flags,
         )
         # compose() defaults lion_system to True, so a saved False must be
@@ -223,6 +246,8 @@ class AgentSpec(HooksMixin):
 
     def to_yaml(self, path: str | Path) -> None:
         """Save spec to YAML (without hook callables — those are code-only)."""
+        from lionagi._command_env import normalize_command_env_allowlist
+
         data = {
             "role": self.profile.role.name,
             "modes": [m.name for m in self.profile.modes],
@@ -234,6 +259,9 @@ class AgentSpec(HooksMixin):
             "yolo": self.yolo,
             "lion_system": self.lion_system,
             "context_management": self.context_management,
+            "command_env_allowlist": list(
+                normalize_command_env_allowlist(self.command_env_allowlist)
+            ),
         }
         if self.cwd:
             data["cwd"] = self.cwd
@@ -241,6 +269,8 @@ class AgentSpec(HooksMixin):
             data["contain_account_integrations"] = True
         if self.prompt_caching:
             data["prompt_caching"] = True
+        if self.max_tokens is not None:
+            data["max_tokens"] = self.max_tokens
         if isinstance(self.khive_injection, (bool, dict)):
             data["khive_injection"] = self.khive_injection
         with open(path, "w") as f:

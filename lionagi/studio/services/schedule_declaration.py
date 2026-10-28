@@ -1257,12 +1257,6 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         if _row_action_kind(schedule) == "play" and value.startswith("-"):
             return value
         return value if _launch_reading(name).acts_on(_row_action_kind(schedule)) else None
-    if name == "cron_expr":
-        # Only a cron trigger reads the expression.
-        return value if schedule.get("trigger_type") == "cron" else None
-    if name in ("github_repo", "github_filter"):
-        # Only a github_poll trigger reads the repository and its filter.
-        return value if schedule.get("trigger_type") == "github_poll" else None
     if name == "interval_sec":
         trigger_type = schedule.get("trigger_type")
         if trigger_type == "github_poll":
@@ -1300,9 +1294,6 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         except ValueError:
             return value
         return value if _row_action_kind(schedule) == "command" else None
-    if name == "action_flow_yaml":
-        # Only a flow_yaml launch writes the snapshot to a spec file.
-        return value if _row_action_kind(schedule) == "flow_yaml" else None
     if name == "action_cwd" and value:
         # The launch runs in the resolved directory, so two spellings of one
         # directory (a symlink, a trailing slash) act alike.

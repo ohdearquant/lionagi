@@ -49,11 +49,12 @@ def _stand_in(pidfile, *, ignore_term: bool) -> str:
             f"#!{sys.executable}",
             "import json, os, signal, subprocess, sys, time",
             ignore,
+            # stdin is closed only after the parent has recorded the spawn identity.
+            "sys.stdin.read()",
             "desc = subprocess.Popen([sys.executable, '-c', "
             f"'import signal, time; {ignore}time.sleep(120)'])",
             f"with open({str(pidfile)!r}, 'w') as f:",
             "    json.dump({'leader': os.getpid(), 'descendant': desc.pid}, f)",
-            "sys.stdin.read()",
             "print(json.dumps({'type': 'thread.started', 'thread_id': 't-idle'}), flush=True)",
             "print(json.dumps({'type': 'item.completed', "
             "'item': {'type': 'agent_message', 'text': 'partial'}}), flush=True)",
@@ -71,9 +72,69 @@ def _stand_in(pidfile, *, ignore_term: bool) -> str:
 async def test_idle_timeout_after_partial_output_ends_the_worker_group(
     tmp_path, monkeypatch, ignore_term
 ) -> None:
-    from lionagi.providers.openai import codex as codex_mod
+    await _run_until_idle_and_require_the_group_gone(
+        tmp_path, monkeypatch, tmp_path / "pids.json", ignore_term=ignore_term
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="psutil reads the boot time on every call only on Linux"
+)
+@pytest.mark.slow_timing
+async def test_idle_timeout_ends_the_worker_group_when_the_boot_time_steps(
+    tmp_path, monkeypatch
+) -> None:
+    """A boot time that moves after spawn must not cost the group kill.
+
+    psutil's Linux backend adds ``boot_time()``, re-read from ``/proc/stat``
+    on every call, to a start time counted from boot. A clock step after spawn
+    moves that whole-second value, so the leader's start time read at teardown
+    no longer matches its spawn record and, without a stable reader, no group
+    member can be confirmed: the leader is signalled alone and its child lives.
+    """
+    from psutil import _pslinux
+
+    from lionagi.ln import _proc
+    from lionagi.providers import _cli_subprocess
+
+    # Select the reader before the clock moves, as a long-running process has.
+    monkeypatch.setattr(_proc, "_read_raw_create_time", None)
+    _proc.raw_create_time(psutil.Process(os.getpid()))
 
     pidfile = tmp_path / "pids.json"
+    real_boot_time = _pslinux.boot_time
+
+    def stepped_boot_time():
+        return real_boot_time() + (1.0 if pidfile.exists() else 0.0)
+
+    monkeypatch.setattr(_pslinux, "boot_time", stepped_boot_time)
+
+    # The step must land between the spawn record and teardown. If the
+    # stand-in wrote its pid file before the spawn record was read, both reads
+    # would be shifted alike and the test would pass without a moved clock.
+    real_observe = _cli_subprocess.observe_spawned
+    recorded_before_the_step = []
+
+    def observe_spawned(pid, **kwargs):
+        observed = real_observe(pid, **kwargs)
+        recorded_before_the_step.append(not pidfile.exists())
+        return observed
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", observe_spawned)
+
+    await _run_until_idle_and_require_the_group_gone(
+        tmp_path, monkeypatch, pidfile, ignore_term=False
+    )
+    assert recorded_before_the_step, "the run recorded no spawn identity"
+    assert all(recorded_before_the_step), "the spawn record was read after the clock step"
+
+
+async def _run_until_idle_and_require_the_group_gone(
+    tmp_path, monkeypatch, pidfile, *, ignore_term: bool
+) -> None:
+    from lionagi.providers.openai import codex as codex_mod
+
     fake_cli = tmp_path / "fake-codex"
     fake_cli.write_text(_stand_in(pidfile, ignore_term=ignore_term))
     fake_cli.chmod(0o755)

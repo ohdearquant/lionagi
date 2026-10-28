@@ -29,7 +29,7 @@ from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
 from lionagi.ln._json_dump import raise_if_non_finite
-from lionagi.ln.concurrency import sleep
+from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
@@ -1976,7 +1976,13 @@ async def setup_orchestration_persist(
     extra_node_metadata: dict | None = None,
 ) -> dict | None:
     db = None
-    from lionagi.state.compat import refusal_in
+    owner = None
+    ctx = None
+    admission_checked = False
+    generation_id = str(uuid.uuid4())
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi.state.cli_workers import _WorkerSpawnOwner
+    from lionagi.state.compat import is_compatibility_store, refusal_in
 
     try:
         session_id = str(session.id)
@@ -2008,6 +2014,7 @@ async def setup_orchestration_persist(
             "artifacts_path": artifacts_path,
             "artifact_contract_json": artifact_contract,
             "status": "running",
+            "cli_worker_generation": generation_id,
             "started_at": time.time(),
             "invocation_id": invocation_id,
             "model": _provenance.resolve_model_spec(provider, model),
@@ -2027,13 +2034,31 @@ async def setup_orchestration_persist(
         for attempt in range(len(_SQLITE_ADMISSION_RETRY_DELAYS) + 1):
             try:
                 if db is None:
-                    db = await _open_shared_db()
+                    db = await _open_shared_db(register=False)
+                    # Another lineage lays out a store in compatibility mode, and its schema
+                    # carries no worker generation and no spawn records, so the run starts with
+                    # no worker owner and its workers stay outside the terminal kill arm.
+                    if is_compatibility_store(db):
+                        session_record["cli_worker_generation"] = None
+                if not admission_checked:
+                    if await db.get_session(session_id) is not None:
+                        raise _WorkerSpawnAdmissionError("orchestration session is already owned")
+                    admission_checked = True
                 # Both writes are idempotent on their stable IDs.  A retry after
                 # progression committed but session lost the writer therefore
                 # fills the missing row without creating a second progression or
                 # initial lifecycle event.
                 await db.create_progression(session_prog_id)
                 await db.create_session(session_record)
+                admitted = await db.get_session(session_id)
+                if (
+                    not isinstance(admitted, dict)
+                    or admitted.get("id") != session_id
+                    or admitted.get("status") != "running"
+                    or admitted.get("cli_worker_generation")
+                    != session_record["cli_worker_generation"]
+                ):
+                    raise _WorkerSpawnAdmissionError("orchestration generation admission refused")
                 break
             except Exception as admission_exc:
                 dialect = getattr(db, "dialect", configured_dialect)
@@ -2053,7 +2078,14 @@ async def setup_orchestration_persist(
                 )
                 await _sleep_before_sqlite_admission_retry(delay)
 
-        ctx: dict[str, Any] = {
+        if session_record["cli_worker_generation"] is not None:
+            owner = _WorkerSpawnOwner(
+                db,
+                session_id=session_id,
+                generation_id=generation_id,
+                run_id=run.run_id if run is not None else session_record["run_id"],
+            )
+        ctx = {
             "db": db,
             "session": session,
             "session_id": session_id,
@@ -2064,6 +2096,13 @@ async def setup_orchestration_persist(
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
             "identity_markers": _identity_markers,
+            "shared_db_registered": False,
+            "worker_spawn_owner": owner,
+            # Set only where the store cannot hold worker records, so a setup result without an
+            # owner is refused unless it says why it has none.
+            "worker_spawns_unrecorded": owner is None,
+            "worker_spawn_db_closed": None,
+            "worker_spawn_teardown_status": None,
             # The RESOLVED project (explicit arg, or detect_project() fallback) —
             # what the session row above actually got, not the caller's raw
             # argument. Anything downstream attributing other data to this run's
@@ -2073,64 +2112,75 @@ async def setup_orchestration_persist(
             "project_source": _proj_src,
         }
 
-        # Bind to the already-open DB so signals write without a per-signal open.
-        session.observer.bind_db_persistence(session_id, db=db)
-
-        for branch in branches or []:
-            register_branch_hook(ctx, branch)
+        # Every route uses this execution's handle rather than a global replacement.
+        with owner.bind() if owner is not None else contextlib.nullcontext():
+            session.observer.bind_db_persistence(session_id, db=db)
+            for branch in branches or []:
+                register_branch_hook(ctx, branch)
 
         return ctx
-    except Exception as exc:
-        refusal = refusal_in(exc)
-        if refusal is not None:
-            # The store refused an admission write in compatibility mode, alone or inside a
-            # group, so the run fails with that refusal as its reason instead of going on without
-            # persistence (ADR-0128 D6). The refusal is recorded on the run's own manifest here,
-            # the way `li agent` records it at its setup: setup returns no context, so nothing
-            # downstream writes the reason for this run.
-            _log_orch.error("live persist setup refused: %s", refusal)
-            if run is not None and run_manifest is not None:
-                run_manifest["status"] = "failed"
-                run_manifest["ended_at"] = time.time()
-                run_manifest["error"] = f"The store refused a write: {refusal}"
-                try:
-                    run.write_manifest(run_manifest)
-                except Exception as write_exc:  # noqa: BLE001 — the refusal is what to report
-                    _log_orch.warning("could not record the refusal on this run: %s", write_exc)
+    except BaseException as exc:
+        refusal = exc if isinstance(exc, _WorkerSpawnAdmissionError) else refusal_in(exc)
+        drain_cancel = None
+        with CancelScope(shield=True):
+            if owner is not None:
+                while True:
+                    try:
+                        await owner.aclose()
+                        break
+                    except cancelled_exc_classes() as close_cancel:
+                        if drain_cancel is None:
+                            drain_cancel = close_cancel
+            if ctx is not None:
+                from .._runs import _unroute_message_hooks
+
+                _unroute_message_hooks(ctx)
+                session.observer.unbind_db_persistence()
+            if refusal is not None:
+                _log_orch.error("live persist setup refused: %s", refusal)
+                if run is not None and run_manifest is not None:
+                    run_manifest["status"] = "failed"
+                    run_manifest["ended_at"] = time.time()
+                    label = (
+                        "Worker spawn admission refused"
+                        if isinstance(refusal, _WorkerSpawnAdmissionError)
+                        else "The store refused a write"
+                    )
+                    run_manifest["error"] = f"{label}: {refusal}"
+                    try:
+                        run.write_manifest(run_manifest)
+                    except Exception as write_exc:  # noqa: BLE001 -- keep the refusal primary
+                        _log_orch.warning("could not record the refusal on this run: %s", write_exc)
+            elif isinstance(exc, Exception):
+                _log_orch.warning(
+                    "live persist setup failed (%r) — disabling persistence for this run",
+                    exc,
+                    exc_info=True,
+                )
+                _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
+                warn(
+                    f"run {run.run_id if run is not None else '(no run id)'}: persistence setup "
+                    f"returned no session, and its run id is no `li kill` handle; its process "
+                    f"is pid {os.getpid()}"
+                )
             if db is not None:
                 try:
                     await db.close()
                 except Exception as close_exc:
                     _log_orch.warning(
-                        "fallback db.close after setup refusal also failed: %s", close_exc
+                        "fallback db.close after setup failure also failed: %s", close_exc
                     )
-                from lionagi.state.db import unregister_shared_db
+                if ctx is not None and ctx.get("shared_db_registered", False):
+                    from lionagi.state.db import unregister_shared_db
 
-                unregister_shared_db(db)
+                    unregister_shared_db(db)
+        if drain_cancel is not None:
+            raise drain_cancel  # noqa: B904 -- preserve the drain cancellation's own cause
+        if not isinstance(exc, Exception):
             raise
-        _log_orch.warning(
-            "live persist setup failed (%r) — disabling persistence for this run",
-            exc,
-            exc_info=True,
-        )
-        _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
-        # It records no process to stop, so its run id is no `li kill` handle: say so now, with the
-        # pid, rather than leave the operator to find out at kill time (ADR-0104 Amendment 2).
-        warn(
-            f"run {run.run_id if run is not None else '(no run id)'}: persistence setup returned no "
-            f"session, and its run id is no `li kill` handle; its process is pid {os.getpid()}"
-        )
-        if db is not None:
-            try:
-                await db.close()
-            except Exception as close_exc:
-                _log_orch.warning(
-                    "fallback db.close after setup failure also failed: %s", close_exc
-                )
-            # Drop the now-closed handle so get_shared_db() can't hand it out.
-            from lionagi.state.db import unregister_shared_db
-
-            unregister_shared_db(db)
+        if refusal is not None:
+            # Re-raised as it arrived: a refusal inside an exception group keeps its siblings.
+            raise
         return None
 
 
@@ -2281,19 +2331,35 @@ async def stop_live_persist(
     finalize_error = getattr(env, "_finalize_error", None)
     artifact_write_error = getattr(env, "_artifact_write_error", None)
     gate_rejected_evidence = getattr(env, "_gate_rejected_evidence", None)
-    final_status = await teardown_persist(
-        ctx,
-        status=status,
-        exception=exception,
-        extras=extras,
-        escalated_evidence=escalated_evidence,
-        failed_operation_evidence=failed_operation_evidence,
-        spawn_refusal_evidence=spawn_refusal_evidence,
-        finalize_error=finalize_error,
-        artifact_write_error=artifact_write_error,
-        gate_rejected_evidence=gate_rejected_evidence,
-        cwd=env.cwd,
+    pending_worker_cancel = None
+    try:
+        final_status = await teardown_persist(
+            ctx,
+            status=status,
+            exception=exception,
+            extras=extras,
+            escalated_evidence=escalated_evidence,
+            failed_operation_evidence=failed_operation_evidence,
+            spawn_refusal_evidence=spawn_refusal_evidence,
+            finalize_error=finalize_error,
+            artifact_write_error=artifact_write_error,
+            gate_rejected_evidence=gate_rejected_evidence,
+            cwd=env.cwd,
+        )
+    except cancelled_exc_classes() as exc:
+        pending_worker_cancel = exc
+        status = "cancelled"
+        exception = exc
+        final_status = (ctx or {}).get("worker_spawn_teardown_status")
+        if final_status is None:
+            final_status = "unknown"
+    from .._runs import TERMINAL_WRITE_LOST_FIELD, lost_terminal_write
+
+    lost_write = lost_terminal_write(
+        ctx, requested=status, exception=exception, returned=final_status
     )
+    if lost_write is not None:
+        env._run_manifest[TERMINAL_WRITE_LOST_FIELD] = lost_write
     env._run_manifest["status"] = final_status
     decided = ctx.get("terminal_reason") if ctx is not None else None
     from lionagi.state.compat import is_compatibility_store
@@ -2313,4 +2379,6 @@ async def stop_live_persist(
         env._run_manifest["ended_at"] = time.time()
     env.run.write_manifest(env._run_manifest)
     env._live_persist = None
+    if pending_worker_cancel is not None:
+        raise pending_worker_cancel
     return final_status

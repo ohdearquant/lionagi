@@ -465,7 +465,7 @@ way from its own recorded `status`. Nothing on either path reads or re-checks
 the declared artifact set. The artifact root the resumed run reads is not the
 original run's: without `--save`, `allocate_run` gives it a fresh
 `<state_root>/artifacts` directory, and with `--save` it is the path `--save`
-names (`lionagi/cli/_runs.py:616-619`), neither read from the original `RunDir`
+names (`lionagi/cli/_runs.py:617-620`), neither read from the original `RunDir`
 that `resolve_checkpoint_target` returned. What a result-verifying resume would
 need — reading the persisted `artifact_contract_json`, checking the declared
 set, the completion-time digest for contract-less nodes, the byte-level check,
@@ -911,7 +911,9 @@ point of a durable outbox. Every write here is a single-row guarded compare-and-
 **`_do_engine_run` create_session** — `create_session` is `INSERT OR IGNORE`: a pre-existing
 row with this id would be silently reused, appending our signals to an unrelated session and
 mirroring terminal status onto it. `run_id` is a fresh `uuid4` so this should never happen —
-but never bind to a row this run did not create.
+but never bind to a row this run did not create. The signal-session row receives and verifies
+its generation before the engine constructor runs; constructor-scheduled provider work inherits
+the same owner. The owner drains before engine/session terminal writes and database close.
 
 **`_do_engine_run` engine.run() dispatch** — `CodingEngine` has its own `.run()` signature
 (positional spec + keyword `test_cmd`/`workspace`/`export_dir`); other engines use
@@ -920,8 +922,8 @@ but never bind to a row this run did not create.
 **`_do_engine_run` BaseException handling** — `asyncio.CancelledError` and
 `KeyboardInterrupt` are `BaseException` paths that bypass the `except Exception` handler.
 Mark the row cancelled before re-raising so Studio doesn't show it as permanently "running".
-`run_async()` (`lionagi/ln/concurrency/utils.py:124`) cancels the task on SIGINT (`:175`) and then raises
-`KeyboardInterrupt` at `:202`; re-raising here preserves that exit-code behavior (interpreter
+`run_async()` in `lionagi/ln/concurrency/utils.py` cancels the task on SIGINT and then raises
+`KeyboardInterrupt`; re-raising here preserves that exit-code behavior (interpreter
 default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
@@ -1134,7 +1136,7 @@ LION system text. The post-factory `add_message` on the preset path is skipped t
 
 **`_run_agent` raw_body vs system_prompt** — uses `profile.raw_body` (not
 `profile.system_prompt`) to avoid duplicating `LION_SYSTEM_MESSAGE`: `_parse_profile` prepends
-it into `system_prompt` when `lion_system=True`, and `factory.py:300-303` also prepends it
+it into `system_prompt` when `lion_system=True`, and `factory.py:324-327` also prepends it
 because `spec.lion_system` remains `True`. `raw_body` is the profile body before that expansion;
 the factory adds the header exactly once. When `lion_system=False`, `raw_body == system_prompt`
 so both paths are consistent.
@@ -1164,6 +1166,14 @@ the current profile.
 leg is about to fire on this same session, so this leg's teardown must not stamp a terminal
 status the resumed leg would then be blocked from overwriting by the ADR-0035 terminal guard
 (see `_runs.py` `_teardown_common` defer_terminal, below).
+
+The continuation is an in-process, single-use capability, created only after the
+parent's worker owner has drained and its exact database handle has closed.
+The child consumes it before awaiting a session read, then verifies the same
+persisted session is still `running` with the same generation. A failed read or
+mismatch burns the capability. The child gets a new diagnostic run directory;
+only its final teardown owns the session's terminal write. A saved session key,
+generation, or automatic-resume flag cannot substitute for this handoff.
 
 The same ownership governs the direct no-persistence notice, and for the same reason: an
 interim leg has no answer to report. It is delivered from the tail rather than from the
@@ -1336,6 +1346,27 @@ signal reaching it).
 
 ## `_runs.py` — agent session setup/teardown (ADR-0035)
 
+**Persisted worker ownership** — fresh setup writes and verifies a new execution
+generation before emitting lifecycle hooks. A terminal resume uses the adopted
+persisted session key and installs its new generation atomically with reopening.
+The owner is bound during setup hooks and subsequent work, so provider attempts
+carry that exact session and generation. Invalid ownership or an unsupported
+compatibility profile refuses admission rather than degrading to an unowned
+persisted run. A new CLI invocation with no persisted owner masks an inherited
+binding; an embedded engine may inherit an explicitly bound owner. A setup that
+fails after admitting its session row writes that row `failed` (`cancelled` when a
+cancellation ended it) before closing its handle, so a later setup on the branch
+finds a terminal session to reopen instead of a running one it must refuse.
+
+Teardown closes admission and drains both tokens and retained tasks before its
+existing terminal writes and bound database close. A cancellation received during
+the drain is remembered and propagated afterward, and it makes `cancelled` the
+status this teardown requests. The effective status remains
+the actual teardown result, including a persisted nonterminal status or failure;
+cancellation intent does not erase a store refusal or a lost terminal-write
+marker. A database-close witness is published only after the exact bound handle
+successfully closes. Ordinary drain failure blocks terminalization and close.
+
 **`_linked_engine_session`** — linking a profile-typed session to its engine-typed mirror twin.
 `engine_session_uid` is the provider-native session id (e.g. a Claude Code session uuid or a
 Codex thread id), captured from `endpoint.session_id` while streaming — the same id the mirror
@@ -1437,10 +1468,10 @@ long-lived branch unresumable.
 `BRANCH_CREATE`) reach a db via `get_shared_db()`; the opened db is registered so they reuse
 this owned connection rather than opening a second one whose aiosqlite worker thread leaks.
 
-**`setup_agent_persist` branch-claim ordering invariant** — the branch is claimed BEFORE
-touching the shared DB registry: a branch still owned by a live persist session must be
-rejected here without side effects (registering a shared DB closes the previous handle, which
-would break the owning context's teardown).
+**`setup_agent_persist` branch-claim ordering invariant** — the branch is claimed before
+touching the shared DB registry. The prospective database is opened without registering it,
+and session/generation admission succeeds before it replaces a shared handle. A branch or
+running session owned by another execution is rejected without closing that owner's handle.
 
 **`setup_agent_persist` signal-persistence bind** — signal persistence binds through the
 already-open DB so every `Signal` emitted on this session's observer lands in
@@ -1462,18 +1493,11 @@ session-policy rule, so each reopening stays individually attributable instead o
 terminal-exit to every writer — finality is what the reapers, the teardown guard, and
 `li wait` all rest on.
 
-**`_reopen_session_for_resume` unresolved drain-declaration race** — when a resume does *not*
-reopen (the adopted row is still `running`), the row keeps whatever the earlier leg declared
-for whether its runner drains operator controls. Three states reach this point: explicit
-`True`, explicit `False`, and no declaration at all (a row written before the field existed,
-which refuses controls like `False` but means "nobody answered" rather than "no"). Only `True`
-is risky — if that leg is genuinely alive it's the right answer, but if it died without
-terminalizing, a stale `True` would admit a control for a drain that's gone, and a row reading
-`running` is the only evidence available either way; the stale-session doctor resolves it after
-the fact. This is left alone deliberately: writing the declaration here would be a
-read-modify-write against a row a live leg may be concurrently updating — the same race that
-once overwrote an exited leg's process markers with a live leg's — so the narrower failure mode
-(a `False`/undeclared row keeps refusing controls it could actually drain) is accepted instead.
+**`_reopen_session_for_resume` running-session admission** — an independent invocation
+refuses a session that is still `running`, before repairing associations or replacing a shared
+database handle. Only the parent's private automatic continuation can join the same running
+generation, after the parent's drain and successful database close. Reopening a terminal row
+installs a fresh generation in the same guarded status write.
 
 ## `mirror.py` — Claude transcript mirroring into StateDB
 

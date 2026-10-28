@@ -289,11 +289,9 @@ def create_agent(name: str, data: dict[str, Any]) -> dict[str, Any]:
     body = (data.get("system_prompt") or "").strip()
 
     _AGENTS_ROOT.mkdir(parents=True, exist_ok=True)
-    if fm:
-        fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-        new_text = f"---\n{fm_text}\n---\n\n{body}\n" if body else f"---\n{fm_text}\n---\n"
-    else:
-        new_text = f"{body}\n" if body else ""
+    # fm always holds lion_system, so a created file always opens with frontmatter.
+    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    new_text = f"---\n{fm_text}\n---\n\n{body}\n" if body else f"---\n{fm_text}\n---\n"
 
     path.write_text(new_text)
     return get_agent(stem)

@@ -491,3 +491,42 @@ async def write_mirrored_messages(
             session_id=session_id if last else None,
             activity_at=activity_at if last else None,
         )
+
+
+async def prepare_mirrored_rows(
+    db: StateDB,
+    messages: Sequence[Any],
+    message_sources: Sequence[SourceLine | None],
+    *,
+    source_kind: MirrorKind,
+    source_session_uid: str,
+    max_preview_chars: int | None,
+) -> list[dict[str, Any]]:
+    """The stored rows for one mirrored batch, ready for ``write_mirrored_messages``: each
+    message in db form, its repeated results named, and, when a preview bound is set and the
+    message has a source line, its content bounded behind a pointer to that line."""
+    entries: list[tuple[dict[str, Any], SourceLine | None]] = []
+    for m, src in zip(messages, message_sources, strict=False):
+        md = m.to_dict(mode="db")
+        entries.append((md, src))
+    # Name each repeated result before its content is bounded: the source pointer's
+    # content hash must cover the row as stored, name included, or a reader reconstructing
+    # the unnamed ActionResponse would mismatch and fall back to the stored preview.
+    await name_answered_results(db, [md for md, _ in entries])
+    written: list[dict[str, Any]] = []
+    for md, src in entries:
+        if max_preview_chars is not None and src is not None:
+            preview, pointer = bound_mirror_content(
+                md["content"],
+                md["id"],
+                src,
+                source_kind=source_kind,
+                source_session_uid=source_session_uid,
+                max_preview_chars=max_preview_chars,
+            )
+            md["content"] = preview
+            nm = dict(md.get("node_metadata") or {})
+            nm["mirror_source"] = pointer
+            md["node_metadata"] = nm
+        written.append(md)
+    return written

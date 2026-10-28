@@ -24,19 +24,6 @@ from typing import Any
 __all__ = ("build_run_detail",)
 
 
-class _DetailUnavailableError(Exception):
-    """Raised inside the reshape to name a specific soft-failure reason.
-
-    Caught separately from the generic ``except Exception`` boundary in
-    ``build_run_detail`` so a distinguishable cause (malformed vs. absent)
-    survives instead of collapsing into one catch-all reason.
-    """
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-
 async def build_run_detail(run_id: str) -> dict[str, Any]:
     """``{"nodes": ..., "artifact_contract": ..., "stalls": ...}`` for *run_id*,
     or ``{"detail_unavailable": <reason>}`` when any of that cannot be built.
@@ -99,8 +86,6 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
             "artifact_contract": _build_artifact_contract(session),
             "stalls": _build_stalls(nodes, session),
         }
-    except _DetailUnavailableError as exc:
-        return {"detail_unavailable": exc.reason}
     except Exception:
         return {"detail_unavailable": "malformed_session_detail"}
 
@@ -227,12 +212,12 @@ def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
         ]
 
     if not isinstance(graph, dict):
-        raise _DetailUnavailableError("malformed_session_detail")
+        raise ValueError("session graph is not a mapping")
     graph_nodes = graph.get("nodes")
     if graph_nodes is None:
         graph_nodes = []
     elif not isinstance(graph_nodes, list):
-        raise _DetailUnavailableError("malformed_session_detail")
+        raise ValueError("session graph nodes are not a list")
 
     segments_by_op = _segments_by_op_id(session)
     nodes: list[dict[str, Any]] = []

@@ -5,6 +5,7 @@
 
 import asyncio
 import inspect
+import warnings
 
 import pytest
 from pydantic import ValidationError
@@ -255,6 +256,53 @@ async def test_bash_shell_control_rejected(tmp_path):
     assert "Shell control" in result["stderr"] or "rejected" in result["stderr"]
 
 
+async def test_bash_runs_in_the_workspace_root_not_the_process_cwd(tmp_path, monkeypatch):
+    """A command with no cwd= runs where the other tools read and write.
+
+    The host process can be started from any directory; a command that ran
+    there would test, build or inspect a different tree from the one the
+    editor just changed.
+    """
+    workspace = tmp_path / "workspace"
+    elsewhere = tmp_path / "elsewhere"
+    workspace.mkdir()
+    elsewhere.mkdir()
+    _, _, tools = _make_toolkit(workspace)
+    monkeypatch.chdir(elsewhere)
+
+    result = await _tool_fn(tools, "bash")(command="/bin/pwd -P")
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == str(workspace.resolve())
+
+
+async def test_bash_takes_a_relative_cwd_from_the_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "pkg").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "pkg").mkdir(parents=True)
+    _, _, tools = _make_toolkit(workspace)
+    monkeypatch.chdir(elsewhere)
+
+    result = await _tool_fn(tools, "bash")(command="/bin/pwd -P", cwd="pkg")
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == str((workspace / "pkg").resolve())
+
+
+async def test_bash_keeps_an_absolute_cwd(tmp_path):
+    workspace = tmp_path / "workspace"
+    other = tmp_path / "other"
+    workspace.mkdir()
+    other.mkdir()
+    _, _, tools = _make_toolkit(workspace)
+
+    result = await _tool_fn(tools, "bash")(command="/bin/pwd -P", cwd=str(other))
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == str(other.resolve())
+
+
 @pytest.mark.parametrize(
     "action,pattern",
     [
@@ -500,3 +548,69 @@ async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
     ).model_dump()
 
     assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "text, offset, total_lines, reached_eof, expected_content",
+    [
+        pytest.param("alpha\nbeta\ngamma\n", 0, 3, False, "1\talpha\n2\tbeta\n", id="before-end"),
+        pytest.param(
+            "alpha\nbeta\ngamma\n", 1, 3, True, "2\tbeta\n3\tgamma\n", id="ends-at-last-line"
+        ),
+        pytest.param("alpha\nbeta\ngamma\n", 3, 3, True, None, id="at-end"),
+        pytest.param("alpha\nbeta\ngamma\n", 8, 3, True, None, id="past-end"),
+        pytest.param("", 0, 0, True, "", id="empty"),
+    ],
+)
+async def test_reader_passes_file_extent_through_the_bound_tool(
+    tmp_path, text, offset, total_lines, reached_eof, expected_content
+):
+    path = tmp_path / "window.txt"
+    path.write_text(text)
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "reader")(action="read", path=str(path), offset=offset, limit=2)
+
+    assert result["success"] is True
+    assert result.get("total_lines") == total_lines
+    assert result.get("reached_eof") is reached_eof
+    if expected_content is None:
+        assert result["content"] == (
+            f"Offset {offset} is at or beyond the end of the file ({total_lines} lines). "
+            f"Use an offset below {total_lines} to read file content."
+        )
+    else:
+        assert result["content"] == expected_content
+
+
+def _toolkit_deprecations(caught):
+    return [
+        w
+        for w in caught
+        if issubclass(w.category, DeprecationWarning) and "CodingToolkit(" in str(w.message)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("notify_threshold", 0.5), ("notify_max_tokens", 1000)],
+)
+def test_unread_nudge_settings_warn_at_the_caller_when_passed(tmp_path, name, value):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), **{name: value})
+
+    found = _toolkit_deprecations(caught)
+    assert len(found) == 1
+    assert f"CodingToolkit({name}=...)" in str(found[0].message)
+    assert found[0].filename == __file__
+    assert getattr(tk, name) == value
+
+
+def test_unread_nudge_settings_keep_their_values_when_omitted(tmp_path):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+
+    assert _toolkit_deprecations(caught) == []
+    assert (tk.notify_threshold, tk.notify_max_tokens) == (0.7, 200_000)

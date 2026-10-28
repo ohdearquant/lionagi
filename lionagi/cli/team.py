@@ -137,6 +137,20 @@ def _message_targets(msg: Mapping[str, Any]) -> list[str]:
     return [to] if isinstance(to, str) else list(to)
 
 
+def _unread_for(data: Mapping[str, Any], me: str | None) -> list[dict]:
+    """Messages addressed to *me* that *me* has not marked read; every message
+    when no member is named. Selection only: callers mark under their own lock."""
+    unread: list[dict] = []
+    for msg in data.get("messages", []):
+        read_by = _read_by_map(msg.get("read_by"))
+        if me and me in read_by:
+            continue
+        targets = _message_targets(msg)
+        if targets == ["*"] or (me and me in targets) or not me:
+            unread.append(msg)
+    return unread
+
+
 def _build_message(
     sender: str,
     to: str | list[str],
@@ -487,16 +501,7 @@ def cmd_receive(args: argparse.Namespace) -> int:
         if me and me not in data.get("members", []):
             warn(f"'{me}' is not a member of '{data.get('name', args.team)}'")
 
-        msgs = data.get("messages", [])
-        unread: list[dict] = []
-        for msg in msgs:
-            read_by = _read_by_map(msg.get("read_by"))
-            if me and me in read_by:
-                continue
-            targets = msg["to"]
-            if targets == ["*"] or (me and me in targets) or not me:
-                unread.append(msg)
-
+        unread = _unread_for(data, me)
         if not unread:
             print("No new messages." if me else "No messages.")
             return 0
@@ -510,7 +515,8 @@ def cmd_receive(args: argparse.Namespace) -> int:
 
     # Print outside the lock — display I/O shouldn't hold the lock.
     for msg in unread:
-        to_str = "all" if msg["to"] == ["*"] else ", ".join(msg["to"])
+        targets = _message_targets(msg)
+        to_str = "all" if targets == ["*"] else ", ".join(targets)
         ts = msg.get("timestamp", "")[:19]
         op = msg.get("from_op")
         op_str = f" op={op}" if op else ""
@@ -823,16 +829,7 @@ def _machine_receive(argv: list[str]) -> dict[str, Any]:
                 raise MachineError("not_found", f"Team '{args.team}' is empty or missing")
             team_id = data.get("id", args.team)
 
-            msgs = data.get("messages", [])
-            unread: list[dict] = []
-            for msg in msgs:
-                read_by = _read_by_map(msg.get("read_by"))
-                if me and me in read_by:
-                    continue
-                targets = msg["to"]
-                if targets == ["*"] or (me and me in targets) or not me:
-                    unread.append(msg)
-
+            unread = _unread_for(data, me)
             now = now_utc().isoformat()
             for msg in unread:
                 read_by = _read_by_map(msg.get("read_by"))

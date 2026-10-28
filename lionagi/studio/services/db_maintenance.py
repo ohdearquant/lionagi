@@ -14,7 +14,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import LionError
-from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
+from lionagi.state.db import (
+    StateDB,
+    _locked_cli_worker_prune_candidates,
+    state_db_file,
+    state_db_known_absent,
+)
 from lionagi.studio.services.retention_archive import archive_chunk_id, write_archive_chunk
 
 _log = logging.getLogger(__name__)
@@ -352,6 +357,12 @@ async def _prune_session_chunk(
         "UPDATE sessions SET updated_at = updated_at WHERE id",
         session_ids,
     )
+
+    session_ids = await _locked_cli_worker_prune_candidates(
+        conn, session_ids, dialect=conn.dialect.name
+    )
+    if not session_ids:
+        return 0
 
     # Recheck under lock, narrowed to this chunk's ids.
     rows = await _fetch_chunked(

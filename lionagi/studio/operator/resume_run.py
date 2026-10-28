@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
 
+from . import _common
 from .redact import scrub_text
 from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
@@ -115,14 +116,7 @@ def _kind_argument_mismatch(
 
 
 def _identity() -> tuple[OperatorStore, str, str]:
-    import os
-
-    db_path = os.environ.get("LIONAGI_OPERATOR_DB_PATH")
-    conversation_id = os.environ.get("LIONAGI_OPERATOR_CONVERSATION_ID")
-    request_id = os.environ.get("LIONAGI_OPERATOR_REQUEST_ID")
-    if not db_path or not conversation_id or not request_id:
-        raise RuntimeError("Studio application bridge is missing its durable turn identity")
-    return OperatorStore(db_path), conversation_id, request_id
+    return _common._identity(OperatorStore)
 
 
 def _redacted_resume_result(proposal: dict[str, Any], run_id: str) -> dict[str, Any]:
@@ -230,15 +224,13 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
         summary=summary,
         idempotency_key=f"operator-app:{stable}",
     )
-    while True:
-        proposal = await store.get_proposal(proposal["id"])
-        status = proposal["status"]
-        if status == "pending" and proposal["expiresAt"] <= time.time():
-            proposal = await store.expire_proposal(proposal["id"])
-            status = proposal["status"]
-        if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
-            return _redacted_resume_result(proposal, run_id)
-        await sleep(0.1)
+    proposal = await _common.wait_for_proposal(
+        store,
+        proposal,
+        clock=lambda: time.time(),
+        sleep=lambda interval: sleep(interval),
+    )
+    return _redacted_resume_result(proposal, run_id)
 
 
 async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:

@@ -10,7 +10,7 @@ import threading
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from concurrent.futures import Future as _ThreadFuture
 from contextlib import contextmanager
-from functools import cache, partial
+from functools import partial
 from types import FrameType
 from typing import Any, TypeVar
 
@@ -36,15 +36,11 @@ __all__ = (
 )
 
 
-@cache
-def _is_coro_func_cached(func: Callable[..., Any]) -> bool:
-    return inspect.iscoroutinefunction(func)
-
-
 def is_coro_func(func: Callable[..., Any]) -> bool:
+    # Not cached: a cache keyed on a bound method or a closure keeps its owner alive.
     while isinstance(func, partial):
         func = func.func
-    return _is_coro_func_cached(func)
+    return inspect.iscoroutinefunction(func)
 
 
 async def run_sync(

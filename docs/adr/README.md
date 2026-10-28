@@ -250,7 +250,8 @@ its area block.
   plus one parser-generated dispatch verb)
 - 0067 — unused (intentional gap)
 - [ADR-0104](ADR-0104-li-kill-detached-play-reaping-and-terminal-notify.md) — `li kill` reaping of
-  detached-play workers and terminal-notify on kill (sequential number; see Numbering)
+  detached-play workers and terminal-notify on kill; Amendment 4 adds stopping the recorded CLI
+  worker of a terminal session (sequential number; see Numbering)
 - [ADR-0106](ADR-0106-lion-machine-result-contract-v1.md) — The lion machine-result contract,
   v1 (sequential number; see Numbering)
 - [ADR-0107](ADR-0107-conclusive-orphan-terminal-reaping.md) — Conclusive orphan terminal

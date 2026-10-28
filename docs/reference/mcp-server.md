@@ -104,8 +104,7 @@ relative timestamps, formatted durations, or tables.
   "verb_count": 70,
   "available_count": 44,
   "max_ops": 8,
-  "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ...",
-  "synonyms_removed_after": "2026-09-30"
+  "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ..."
 }
 ```
 
@@ -381,27 +380,12 @@ an outcome — read each entry's `outcome` for that.
 
 ## Compatibility
 
-An earlier version of this server advertised one tool per operation. Those flat
-names are still accepted as **synonyms** inside `ops` and resolve silently to
-their namespaced verb:
-
-| Old name | Verb |
-|----------|------|
-| `submit_agent` | `agent.submit` |
-| `submit_flow` | `flow.submit` |
-| `submit_fanout` | `fanout.submit` |
-| `submit_play` | `play.submit` |
-| `job_status` | `job.status` |
-| `job_output` | `job.output` |
-| `job_kill` | `job.kill` |
-| `job_wait` | `job.wait` |
-| `jobs_list` | `job.list` |
-| `server_info` | `server.info` |
-
-They exist for callers already scripted against them, not as something new
-callers should learn, which is why they do not appear in the catalog. They will
-be **removed after the date the catalog reports as `synonyms_removed_after`**,
-currently `2026-09-30`. Write new calls against the namespaced verbs.
+An earlier version of this server advertised one tool per operation, with flat
+names such as `submit_agent`, `job_status` and `server_info`. Those names were
+accepted inside `ops` for one release and are now removed: an op that uses one is
+refused as `not_found`, like any other unknown verb. Each maps to the namespaced
+verb with the same words, `submit_agent` to `agent.submit` and `jobs_list` to
+`job.list`; `help=true` lists them all.
 
 If your client shows a single entry in `tools/list`, that is correct and
 current. The operations are behind `request`, and `help=true` lists them.

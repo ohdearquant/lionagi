@@ -14,17 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import sys
 import time
-from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from lionagi.ln.concurrency import run_sync, sleep
 
+from . import _common
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
 from .conversation_metadata import UpdateConversationInput
 from .redact import (
@@ -32,6 +31,7 @@ from .redact import (
     PER_ITEM_TEXT_CAP,
     fold_field_name,
     is_secret_field_name,
+    public_project,
     scrub_text,
 )
 from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
@@ -400,12 +400,7 @@ _TOOL_SCHEMAS = [
 
 
 def _identity() -> tuple[OperatorStore, str, str]:
-    db_path = os.environ.get("LIONAGI_OPERATOR_DB_PATH")
-    conversation_id = os.environ.get("LIONAGI_OPERATOR_CONVERSATION_ID")
-    request_id = os.environ.get("LIONAGI_OPERATOR_REQUEST_ID")
-    if not db_path or not conversation_id or not request_id:
-        raise RuntimeError("Studio application bridge is missing its durable turn identity")
-    return OperatorStore(db_path), conversation_id, request_id
+    return _common._identity(OperatorStore)
 
 
 async def update_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -423,18 +418,6 @@ async def update_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
         return {"updated": False, "reason": "turn_not_active"}
     except OperatorNotFoundError:
         return {"updated": False, "reason": "not_found"}
-
-
-def public_project(value: Any) -> str | None:
-    """Reduce a project to a leaf name so no filesystem layout is disclosed."""
-    if not isinstance(value, str) or not value:
-        return None
-    if Path(value).is_absolute():
-        return Path(value).name or "external-project"
-    windows_path = PureWindowsPath(value)
-    if windows_path.is_absolute():
-        return windows_path.name or "external-project"
-    return value[:160]
 
 
 _SIGNAL_PAYLOAD_BYTE_CAP = 100_000
@@ -1234,15 +1217,13 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
         idempotency_key=f"operator-app:{stable}",
         target_version=target_version,
     )
-    while True:
-        proposal = await store.get_proposal(proposal["id"])
-        status = proposal["status"]
-        if status == "pending" and proposal["expiresAt"] <= time.time():
-            proposal = await store.expire_proposal(proposal["id"])
-            status = proposal["status"]
-        if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
-            return _redacted_launch_result(proposal)
-        await sleep(0.1)
+    proposal = await _common.wait_for_proposal(
+        store,
+        proposal,
+        clock=lambda: time.time(),
+        sleep=lambda interval: sleep(interval),
+    )
+    return _redacted_launch_result(proposal)
 
 
 _TOOL_HANDLERS = {

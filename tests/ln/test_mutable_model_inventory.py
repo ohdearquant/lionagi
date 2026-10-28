@@ -208,7 +208,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.messages.message:181:9": "a declared field set by name",
     "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
     "lionagi.providers.anthropic.claude_code:1143:17": "a runtime field copied by name",
-    "lionagi.service.connections.endpoint_config:224:17": "a config key set by name",
+    "lionagi.service.connections.endpoint_config:258:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:86:9": "a probe attribute set on an exception",
     "lionagi.state.compat:1702:13": (
         "a frozen dataclass folding its own string fields in __post_init__"
@@ -240,7 +240,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
-    "lionagi.service.connections.endpoint:90:36": "``httpx.ConnectError``, imported lazily",
+    "lionagi.service.connections.endpoint:96:36": "``httpx.ConnectError``, imported lazily",
     # A base reached through a submodule import (``import importlib.abc``), which the scan
     # does not resolve; each class is an import hook, not a model:
     "lionagi._moved:106:20": "``importlib.abc.Loader``, the import system's loader base",
@@ -266,8 +266,8 @@ _ALLOWLIST: dict[str, str] = {
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:
-    "lionagi.config:170:5": "a pydantic settings config, which sets no frozen option",
-    "lionagi.studio.operator.types:50:5": "a config whose alias generator is a callable",
+    "lionagi.config:171:5": "a pydantic settings config, which sets no frozen option",
+    "lionagi.studio.operator.types:52:5": "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",

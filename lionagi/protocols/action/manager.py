@@ -590,10 +590,11 @@ async def load_mcp_tools(
     # caller authorized for the same identity.
 
     if config_path:
-        MCPConnectionPool.load_config(config_path)
-
-    if server_names is None and config_path:
-        server_names = list(MCPConnectionPool._configs.keys())
+        loaded_names = MCPConnectionPool.load_config(config_path)
+        if server_names is None:
+            # Same default as load_mcp_config: the servers in this file, not
+            # every server the process-global pool has accumulated.
+            server_names = loaded_names
 
     if server_names is None:
         raise ValueError("Either provide server_names or config_path to discover servers")

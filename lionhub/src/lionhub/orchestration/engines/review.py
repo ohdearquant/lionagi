@@ -13,6 +13,7 @@ from typing import Any
 import anyio
 from pydantic import Field
 
+from lionagi._errors import ConfigurationError
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import compute_hash
 from lionagi.ln import gather as ln_gather
@@ -29,7 +30,7 @@ from lionagi.providers._provider_errors import (
     ProviderUnsupportedModelError,
 )
 
-from .engine import Engine, EngineEvent, EngineRun
+from .engine import Engine, EngineEvent, EngineRun, check_max_tokens
 
 __all__ = (
     "IssueFound",
@@ -345,6 +346,9 @@ _DIM_MODE: dict[str, str] = {
     "maintainability": "metacognitive",
 }
 
+# The stages ReviewEngine builds agents for, i.e. the keys stage_max_tokens can name.
+_MAX_TOKENS_STAGES: tuple[str, ...] = ("review", "review_fallback", "verify", "verdict")
+
 
 _LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
 
@@ -529,6 +533,7 @@ class ReviewEngine(Engine):
         verify_severities: tuple[str, ...] = ("critical", "major"),
         verify_clean: bool = True,
         repair_retries: int = 1,
+        stage_max_tokens: dict[str, int] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -539,6 +544,21 @@ class ReviewEngine(Engine):
         self.verify_severities = set(verify_severities)
         self.verify_clean = verify_clean
         self.repair_retries = repair_retries
+        # Per-stage output-token limit, over the engine-wide ``max_tokens``. Only a stage this
+        # engine builds agents for is accepted: a name it never reads would be set and ignored.
+        self.stage_max_tokens = {
+            stage: check_max_tokens(f"stage_max_tokens[{stage!r}]", limit)
+            for stage, limit in (stage_max_tokens or {}).items()
+        }
+        unknown = sorted(set(self.stage_max_tokens) - set(_MAX_TOKENS_STAGES))
+        if unknown:
+            raise ConfigurationError(
+                f"stage_max_tokens names {unknown}, which ReviewEngine builds no agent for; "
+                f"its stages are {list(_MAX_TOKENS_STAGES)}"
+            )
+
+    def max_tokens_for(self, stage: str) -> int | None:
+        return self.stage_max_tokens.get(stage) or self.max_tokens
 
     # -- lifecycle --------------------------------------------------------------
 
@@ -644,9 +664,7 @@ class ReviewEngine(Engine):
                 dimension=dimension,
                 error_type=error_type,
             )
-            marker = f"review-{dimension} ({error_type})"
-            if marker not in run._emission_failures:
-                run._emission_failures.append(marker)
+            run.record_emission_failure(f"review-{dimension} ({error_type})")
 
     async def _isolate_verification_failure(
         self, run: EngineRun, exc: BaseException, *, stage: str
@@ -656,9 +674,7 @@ class ReviewEngine(Engine):
             return False
         error_type = _failure_label(exc)
         run.notify("verification_failed", stage=stage, error_type=error_type)
-        marker = f"{stage} ({error_type})"
-        if marker not in run._emission_failures:
-            run._emission_failures.append(marker)
+        run.record_emission_failure(f"{stage} ({error_type})")
         return True
 
     async def _verify_isolated(self, run: EngineRun, issue: IssueFound) -> None:
@@ -691,13 +707,14 @@ class ReviewEngine(Engine):
                 name=f"review-{dimension}",
                 modes=[mode] if mode else None,
                 model=self.model_for("review"),
+                max_tokens=self.max_tokens_for("review"),
                 emits=emits,
             )
             # `models["review_fallback"]` names ONE more attempt on a different model
             # for a dimension whose reviewer stayed silent through its repairs. Read
-            # from `models` directly, not model_for(): that falls back to the engine's
-            # base model, which would turn "unset" into a retry on the same model.
-            fallback_model = self.models.get("review_fallback")
+            # with optional_model_for(), not model_for(): that falls back to the
+            # engine's base model, which would turn "unset" into a retry on the same model.
+            fallback_model = self.optional_model_for("review_fallback")
 
             async def _fallback_agent() -> Any:
                 # A fresh leg: repair replays the whole conversation onto the same
@@ -707,6 +724,7 @@ class ReviewEngine(Engine):
                     name=f"review-{dimension}-fallback",
                     modes=[mode] if mode else None,
                     model=fallback_model,
+                    max_tokens=self.max_tokens_for("review_fallback"),
                     emits=emits,
                 )
 
@@ -733,6 +751,7 @@ class ReviewEngine(Engine):
                 name=f"verify-{issue.dimension}",
                 modes=["adversarial"],
                 model=self.model_for("verify"),
+                max_tokens=self.max_tokens_for("verify"),
                 emits=emits,
             )
             # Arrival keys on the echoed ref token; the verbatim-description
@@ -779,6 +798,7 @@ class ReviewEngine(Engine):
                 name="verify-clean",
                 modes=["adversarial"],
                 model=self.model_for("verify"),
+                max_tokens=self.max_tokens_for("verify"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -834,6 +854,7 @@ class ReviewEngine(Engine):
             self.synthesis_role,
             name="verdict",
             model=self.model_for("verdict"),
+            max_tokens=self.max_tokens_for("verdict"),
             emits=(ProposedVerdict,),
             exempt=True,
         )

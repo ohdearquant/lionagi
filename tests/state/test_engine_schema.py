@@ -284,6 +284,7 @@ ALL_TABLES = {
     "progressions",
     "projects",
     "sessions",
+    "cli_worker_spawns",
     "branches",
     "definitions",
     "shows",
@@ -833,3 +834,31 @@ async def test_compatibility_wal_warning_leaves_journal_mode_unchanged(
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal
         assert conn.execute("SELECT id FROM retained").fetchall() == [(1,)]
+
+
+# mask_db_url: the blanked view
+
+
+@pytest.mark.parametrize(
+    ("url", "masked", "views"),
+    [
+        ("postgresql+asyncpg://admin:abc@host/db", "postgresql+asyncpg://admin:***@host/db", 1),
+        ("postgresql://u@h/db?password=pw123", "postgresql://u@h/db?password=***", 2),
+    ],
+)
+def test_mask_reads_a_blanked_view_only_when_a_query_value_is_masked(
+    monkeypatch, url, masked, views
+):
+    import lionagi.state.engine as engine_mod
+
+    real = engine_mod._URL_USER
+    scanned: list[str] = []
+
+    class _CountingPattern:
+        def finditer(self, s):
+            scanned.append(s)
+            return real.finditer(s)
+
+    monkeypatch.setattr(engine_mod, "_URL_USER", _CountingPattern())
+    assert mask_db_url(url) == masked
+    assert len(scanned) == views

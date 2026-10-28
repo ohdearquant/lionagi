@@ -33,7 +33,7 @@ def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
     for node in graph.internal_nodes.values():
         if not isinstance(node, Operation):
             continue
-        preds = [str(e.head) for e in graph.internal_edges.values() if str(e.tail) == str(node.id)]
+        preds = [str(head) for head in graph.predecessor_ids(node)]
         meta[str(node.id)] = {
             "parent_id": preds[0] if len(preds) == 1 else None,
             "depends_on": preds,

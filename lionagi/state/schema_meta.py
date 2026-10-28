@@ -161,6 +161,7 @@ sessions = Table(
     # run_id cannot reach the lifecycle row, so nothing that writes only the
     # row (a kill, for one) is visible to a reader holding a run_id.
     Column("run_id", Text),
+    Column("cli_worker_generation", Text),
     Column("created_at", Float, nullable=False),
     Column("node_metadata", JSON),
     Column("name", Text),
@@ -292,6 +293,36 @@ Index(
         "ended_at IS NULL AND status IN "
         "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
     ),
+)
+
+# CLI worker identities. Associations remain logical so retained evidence survives deletion.
+
+cli_worker_spawns = Table(
+    "cli_worker_spawns",
+    metadata,
+    Column("spawn_id", Text, primary_key=True, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("generation_id", Text, nullable=False),
+    Column("run_id", Text),
+    Column("engine_run_id", Text),
+    Column("branch_id", Text),
+    Column("pid", Integer, nullable=False),
+    Column("pgid", Integer, nullable=False),
+    Column("pid_create_time", Float, nullable=False),
+    Column("pid_host", Text, nullable=False),
+    Column("pid_boot_time", Float, nullable=False),
+    Column("process_identity_mode", Text, nullable=False),
+    Column("recorded_at", Float, nullable=False),
+    Column("confirmed_empty_at", Float),
+    CheckConstraint("pid > 1 AND pgid = pid", name="ck_cli_worker_spawns_process_group"),
+    CheckConstraint("process_identity_mode = 'local'", name="ck_cli_worker_spawns_identity_mode"),
+)
+
+Index(
+    "idx_cli_worker_spawns_session",
+    cli_worker_spawns.c.session_id,
+    cli_worker_spawns.c.confirmed_empty_at,
+    cli_worker_spawns.c.generation_id,
 )
 
 # branches

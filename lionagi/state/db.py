@@ -39,7 +39,14 @@ from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln import short_id
-from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, run_sync, shield
+from lionagi.ln.concurrency import (
+    CancelScope,
+    Lock,
+    fail_after,
+    get_cancelled_exc_class,
+    run_sync,
+    shield,
+)
 from lionagi.ln.types import SingletonType
 from lionagi.state.compat import (
     _LINEAGE_KEY,
@@ -198,7 +205,7 @@ CursorClaim = float | str | None | NoCursorClaim
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
 # migration changes the shape a reader would see.
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
@@ -299,6 +306,7 @@ _SESSION_COLUMNS = frozenset(
     {
         "cc_session_id",
         "run_id",
+        "cli_worker_generation",
         "name",
         "user",
         "node_metadata",
@@ -470,7 +478,14 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     # duration_ms is derived from ended_at and ended_at_is_approximate describes it, so both carry
     # the same requirement: they must land in the status write, never a separate earlier one.
     "session": frozenset(
-        {"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata", "current_phase"}
+        {
+            "ended_at",
+            "duration_ms",
+            "ended_at_is_approximate",
+            "node_metadata",
+            "current_phase",
+            "cli_worker_generation",
+        }
     ),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
@@ -645,6 +660,159 @@ _SQLITE_TABLE_NAMES = (
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite~_%' ESCAPE '~'"
 )
 _SQLITE_SCHEMA_META_COLUMNS = "SELECT name FROM pragma_table_info('schema_meta')"
+
+
+_CLI_WORKER_OPERATION_TIMEOUT_SECONDS = 5.0
+_CLI_WORKER_PRUNE_CHUNK = 500
+_CLI_WORKER_PRODUCER_FIELDS = (
+    "spawn_id",
+    "session_id",
+    "generation_id",
+    "run_id",
+    "engine_run_id",
+    "branch_id",
+    "pid",
+    "pgid",
+    "pid_create_time",
+    "pid_host",
+    "pid_boot_time",
+    "process_identity_mode",
+)
+_CLI_WORKER_DIAGNOSTIC_FIELDS = frozenset({"run_id", "engine_run_id", "branch_id"})
+_CLI_WORKER_STORED_FIELDS = (*_CLI_WORKER_PRODUCER_FIELDS, "recorded_at", "confirmed_empty_at")
+
+
+def _validate_cli_worker_uuid(value: object, *, field: str, nullable: bool = False) -> str | None:
+    if value is None and nullable:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be UUID text")
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be UUID text") from exc
+
+
+def _validate_cli_worker_generation(value: object) -> str | None:
+    return _validate_cli_worker_uuid(value, field="cli_worker_generation", nullable=True)
+
+
+def _validate_cli_worker_timestamp(value: object, *, field: str) -> float:
+    if type(value) not in (int, float):
+        raise ValueError(f"{field} must be a finite number")
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{field} must be a finite number") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{field} must be a finite number")
+    return result
+
+
+def _validate_cli_worker_session_id(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("session_id must be nonempty text")
+    return value
+
+
+def _validate_cli_worker_spawn(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy and validate producer fields without accepting store-owned timestamps."""
+    if not isinstance(record, Mapping) or any(not isinstance(key, str) for key in record):
+        raise ValueError("a worker spawn must be a mapping with text field names")
+    unknown = set(record) - set(_CLI_WORKER_PRODUCER_FIELDS)
+    missing = set(_CLI_WORKER_PRODUCER_FIELDS) - _CLI_WORKER_DIAGNOSTIC_FIELDS - set(record)
+    if unknown or missing:
+        raise ValueError(
+            f"invalid worker spawn fields: unknown={sorted(unknown)}, missing={sorted(missing)}"
+        )
+    result = {field: record.get(field) for field in _CLI_WORKER_PRODUCER_FIELDS}
+    for field in ("spawn_id", "generation_id"):
+        result[field] = _validate_cli_worker_uuid(result[field], field=field)
+    result["session_id"] = _validate_cli_worker_session_id(result["session_id"])
+    for field in _CLI_WORKER_DIAGNOSTIC_FIELDS:
+        value = result[field]
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"{field} must be nonempty text or None")
+    for field in ("pid", "pgid"):
+        if type(result[field]) is not int or result[field] <= 1:
+            raise ValueError(f"{field} must be an integer greater than one")
+    if result["pid"] != result["pgid"]:
+        raise ValueError("a worker spawn must have pid equal to pgid")
+    for field in ("pid_create_time", "pid_boot_time"):
+        result[field] = _validate_cli_worker_timestamp(result[field], field=field)
+    host = result["pid_host"]
+    if not isinstance(host, str) or not host.strip():
+        raise ValueError("pid_host must be nonempty host text")
+    if (
+        not isinstance(result["process_identity_mode"], str)
+        or result["process_identity_mode"] != "local"
+    ):
+        raise ValueError("process_identity_mode must be local")
+    return result
+
+
+def _validate_cli_worker_spawn_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a complete stored row separately from the producer payload."""
+    if set(row) != set(_CLI_WORKER_STORED_FIELDS):
+        raise ValueError("stored worker spawn has incomplete or unknown fields")
+    _validate_cli_worker_spawn({field: row[field] for field in _CLI_WORKER_PRODUCER_FIELDS})
+    _validate_cli_worker_timestamp(row["recorded_at"], field="recorded_at")
+    if row["confirmed_empty_at"] is not None:
+        _validate_cli_worker_timestamp(row["confirmed_empty_at"], field="confirmed_empty_at")
+    return dict(row)
+
+
+async def _locked_cli_worker_prune_candidates(
+    conn: AsyncConnection, session_ids: Sequence[str], *, dialect: str
+) -> list[str]:
+    """Lock caller-owned candidates, then exclude every unresolved worker owner.
+
+    The caller keeps this transaction open and rechecks its retention predicate
+    before archiving, changing dependents or deleting any returned session.
+    SQLite callers enter through their existing writer transaction.
+    """
+    if dialect not in {"sqlite", "postgresql"}:
+        raise ValueError("worker retention requires a SQLite or PostgreSQL transaction")
+    if not conn.in_transaction():
+        raise ValueError("worker retention requires the caller's active transaction")
+    ids = sorted({_validate_cli_worker_session_id(value) for value in session_ids})
+    if not ids:
+        return []
+    if dialect == "postgresql":
+        await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
+    eligible: list[str] = []
+    for start in range(0, len(ids), _CLI_WORKER_PRUNE_CHUNK):
+        chunk = ids[start : start + _CLI_WORKER_PRUNE_CHUNK]
+        parameters = {f"sid{i}": value for i, value in enumerate(chunk)}
+        placeholders = ", ".join(f":sid{i}" for i in range(len(chunk)))
+        lock_sql = f"SELECT id FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
+        if dialect == "postgresql":
+            # Match Python's key ordering across batches even when the
+            # database's default locale orders text differently.
+            lock_sql += ' ORDER BY id COLLATE "C" FOR UPDATE'
+        else:
+            lock_sql += " ORDER BY id"
+        locked = (await conn.execute(text(lock_sql), parameters)).scalars().all()
+        if not locked:
+            continue
+        # A previously absent key may be created after the lock query on
+        # PostgreSQL. It was not locked, so it cannot become this caller's
+        # deletion candidate merely by appearing in the second statement.
+        parameters = {f"sid{i}": value for i, value in enumerate(locked)}
+        placeholders = ", ".join(f":sid{i}" for i in range(len(locked)))
+        rows = (
+            await conn.execute(
+                text(
+                    f"SELECT s.id FROM sessions s WHERE s.id IN ({placeholders}) "  # noqa: S608
+                    "AND NOT EXISTS (SELECT 1 FROM cli_worker_spawns w "
+                    "WHERE w.session_id = s.id AND w.confirmed_empty_at IS NULL) "
+                    "ORDER BY s.id"
+                ),
+                parameters,
+            )
+        ).all()
+        eligible.extend(row[0] for row in rows)
+    return sorted(eligible)
 
 
 class _StoreRows(NamedTuple):
@@ -2202,6 +2370,7 @@ class StateDB:
                               id              TEXT    PRIMARY KEY,
                               cc_session_id   TEXT,
                               run_id          TEXT,
+                              cli_worker_generation TEXT,
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,
@@ -3339,6 +3508,11 @@ class StateDB:
             _SOURCE_KINDS,
             adr="ADR-0012",
         )
+        generation = _validate_cli_worker_generation(session.get("cli_worker_generation"))
+        if generation is not None:
+            self._refuse_in_compatibility(
+                "create_session", "cli_worker_generation requires a native state store"
+            )
         now = time.time()
         created_at = session.get("created_at", now)
         updated_at = session.get("updated_at", now)
@@ -3371,6 +3545,7 @@ class StateDB:
             "id": session["id"],
             "cc_session_id": session.get("cc_session_id"),
             "run_id": session.get("run_id"),
+            "cli_worker_generation": generation,
             "created_at": created_at,
             "node_metadata": session.get("node_metadata"),
             "name": session.get("name"),
@@ -3403,12 +3578,13 @@ class StateDB:
             "duration_ms": duration_ms,
         }
         if self._compat is not None:
+            params.pop("cli_worker_generation")
             await self._create_session_compat(session, params, now)
             return
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, cc_session_id, run_id, created_at, node_metadata, name, "user",
+                    """INSERT INTO sessions (id, cc_session_id, run_id, cli_worker_generation, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -3417,7 +3593,7 @@ class StateDB:
                        last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source, duration_ms)
-                       VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
+                       VALUES (:id, :cc_session_id, :run_id, :cli_worker_generation, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
@@ -3563,6 +3739,170 @@ class StateDB:
                     {"now": now, "inv_id": invocation_id},
                 )
 
+    @_operation("register_cli_worker_spawn")
+    async def register_cli_worker_spawn(self, record: Mapping[str, Any]) -> None:
+        """Admit an immutable worker record or accept an identical durable replay.
+
+        New records require a running session and its current generation. A
+        replay compares producer fields only, in any session state, and writes
+        neither the session nor the worker's store-owned timestamps.
+        """
+        self._refuse_in_compatibility(
+            "register_cli_worker_spawn", "worker spawn records require native storage"
+        )
+        payload = _validate_cli_worker_spawn(record)
+
+        def compare(existing: Mapping[str, Any]) -> None:
+            if any(existing[field] != payload[field] for field in _CLI_WORKER_PRODUCER_FIELDS):
+                raise ValueError("spawn_id already names different worker contents")
+
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            async with self._read() as conn:
+                existing = (
+                    (
+                        await conn.execute(
+                            text("SELECT * FROM cli_worker_spawns WHERE spawn_id = :spawn_id"),
+                            {"spawn_id": payload["spawn_id"]},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+            if existing is not None:
+                compare(existing)
+                return
+            async with self._tx() as conn:
+                if self.dialect == "postgresql":
+                    await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                parent_sql = (
+                    "SELECT status, cli_worker_generation FROM sessions WHERE id = :session_id"
+                )
+                if self.dialect == "postgresql":
+                    parent_sql += " FOR UPDATE"
+                parent = (
+                    (await conn.execute(text(parent_sql), {"session_id": payload["session_id"]}))
+                    .mappings()
+                    .first()
+                )
+                # Another registration may have committed while this call
+                # waited for the parent lock, followed by terminalization or
+                # resume. Recheck durable replay before testing NEW admission.
+                existing = (
+                    (
+                        await conn.execute(
+                            text("SELECT * FROM cli_worker_spawns WHERE spawn_id = :spawn_id"),
+                            {"spawn_id": payload["spawn_id"]},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if existing is not None:
+                    compare(existing)
+                    return
+                if parent is None or parent["status"] != "running":
+                    raise ValueError("a new worker spawn requires a running session")
+                if parent["cli_worker_generation"] != payload["generation_id"]:
+                    raise ValueError("a new worker spawn requires the current session generation")
+                parameters = dict(payload)
+                parameters["recorded_at"] = _validate_cli_worker_timestamp(
+                    time.time(), field="recorded_at"
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO cli_worker_spawns "
+                        "(spawn_id, session_id, generation_id, run_id, engine_run_id, branch_id, "
+                        "pid, pgid, pid_create_time, pid_host, pid_boot_time, process_identity_mode, "
+                        "recorded_at, confirmed_empty_at) VALUES "
+                        "(:spawn_id, :session_id, :generation_id, :run_id, :engine_run_id, :branch_id, "
+                        ":pid, :pgid, :pid_create_time, :pid_host, :pid_boot_time, :process_identity_mode, "
+                        ":recorded_at, NULL) ON CONFLICT (spawn_id) DO NOTHING"
+                    ),
+                    parameters,
+                )
+                stored = (
+                    (
+                        await conn.execute(
+                            text("SELECT * FROM cli_worker_spawns WHERE spawn_id = :spawn_id"),
+                            {"spawn_id": payload["spawn_id"]},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if stored is None:
+                    raise RuntimeError("worker spawn insert returned without a stored record")
+                compare(stored)
+
+    @_operation("snapshot_cli_worker_spawns")
+    async def snapshot_cli_worker_spawns(self, session_id: str) -> dict[str, Any] | None:
+        """Read one session and all its unresolved generations in one snapshot."""
+        self._refuse_in_compatibility(
+            "snapshot_cli_worker_spawns", "worker spawn records require native storage"
+        )
+        session_id = _validate_cli_worker_session_id(session_id)
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            async with self.read_snapshot() as conn:
+                session = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT id, status, cli_worker_generation FROM sessions WHERE id = :id"
+                            ),
+                            {"id": session_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if session is None:
+                    return None
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT * FROM cli_worker_spawns WHERE session_id = :id "
+                                "AND confirmed_empty_at IS NULL ORDER BY recorded_at, spawn_id"
+                            ),
+                            {"id": session_id},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                return {
+                    "session": dict(session),
+                    "spawns": [_validate_cli_worker_spawn_row(row) for row in rows],
+                }
+
+    @_operation("settle_cli_worker_spawn")
+    async def settle_cli_worker_spawn(self, spawn_id: str, *, confirmed_empty_at: float) -> bool:
+        """Set the exact record's empty marker once, without changing its owner.
+
+        The caller must have established kernel process-group absence under
+        the recorded-identity contract. Normal child exit or lost identity
+        witnesses do not establish that observation.
+        """
+        self._refuse_in_compatibility(
+            "settle_cli_worker_spawn", "worker spawn records require native storage"
+        )
+        spawn_id = _validate_cli_worker_uuid(spawn_id, field="spawn_id")
+        confirmed_empty_at = _validate_cli_worker_timestamp(
+            confirmed_empty_at, field="confirmed_empty_at"
+        )
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            async with self._tx() as conn:
+                if self.dialect == "postgresql":
+                    await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                result = await conn.execute(
+                    text(
+                        "UPDATE cli_worker_spawns SET confirmed_empty_at = :at "
+                        "WHERE spawn_id = :spawn_id AND confirmed_empty_at IS NULL"
+                    ),
+                    {"spawn_id": spawn_id, "at": confirmed_empty_at},
+                )
+                return bool(result.rowcount)
+
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
             row = (
@@ -3655,6 +3995,10 @@ class StateDB:
             if row is None:
                 return False
             if str(row["source_kind"] or "") != require_source_kind:
+                return False
+            if not await _locked_cli_worker_prune_candidates(
+                conn, [session_id], dialect=self.dialect
+            ):
                 return False
 
             prog_ids: list[str] = [row["progression_id"]] if row["progression_id"] else []
@@ -4026,6 +4370,13 @@ class StateDB:
         the payload sends replaces the stored object there, and a stored or given value that is not
         a JSON object is refused.
         """
+        if "cli_worker_generation" in fields:
+            fields["cli_worker_generation"] = _validate_cli_worker_generation(
+                fields["cli_worker_generation"]
+            )
+            self._refuse_in_compatibility(
+                "update_session", "cli_worker_generation requires a native state store"
+            )
         if self._compat is not None:
             self._require_created("sessions", session_id, "session")
             for link, table, what, created in _SESSION_LINKS:
@@ -4515,6 +4866,12 @@ class StateDB:
         # `table` kept for message-format parity with the earlier error text;
         # the lifecycle policy for `canonical_type` resolves to the same table.
         table = _reason_entity_table(canonical_type)
+        if canonical_type == "session" and extra_fields and "cli_worker_generation" in extra_fields:
+            generation = _validate_cli_worker_generation(extra_fields["cli_worker_generation"])
+            self._refuse_in_compatibility(
+                "update_status", "cli_worker_generation requires a native state store"
+            )
+            extra_fields = dict(extra_fields, cli_worker_generation=generation)
         if extra_fields:
             allowed_extra = EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE.get(
                 canonical_type, frozenset()
@@ -8407,9 +8764,10 @@ async def register_shared_db(db: StateDB) -> None:
     The handle being displaced is closed before the entry is replaced. Any error that close raises
     reaches the caller, not just a refusal, and the registry keeps the handle that is still open
     rather than filing one with no entry to reach it by. A caller that registers for a run takes
-    that error as a setup failure: both ``setup_agent_persist`` and orchestration admission disable
-    persistence for the run, record it degraded and leave it running, and only a
-    ``StateCompatibilityRefused`` fails the run with the refusal as its reason.
+    that error as a setup failure: ``setup_agent_persist`` disables persistence for the run,
+    records it degraded and leaves it running, and only a ``StateCompatibilityRefused`` fails the
+    run with the refusal as its reason. Orchestration admission writes through its own handle and
+    registers none.
     """
     gen = _SHARED_CLOSE_GEN
     async with _holding_shared_lock():

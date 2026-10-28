@@ -1,3 +1,6 @@
+import gc
+import weakref
+
 import pytest
 from pydantic import BaseModel
 
@@ -698,3 +701,28 @@ def test_branch_round_trips_without_duplicate_system_message():
 
     assert len(restored.msgs.messages) == original_msg_count
     assert restored_system_count == original_system_count
+
+
+def test_released_branch_is_collected_with_its_messages():
+    def construct_and_release():
+        model = iModel(provider="openai", model="no-request", api_key="dummy-key-for-testing")
+        branch = Branch(
+            system="Keep this constructed branch local.",
+            system_datetime=False,
+            chat_model=model,
+        )
+        # Adding the system message ran the branch's own bound-method hooks.
+        assert any(getattr(cb, "__self__", None) is branch for cb in branch.on_message_added)
+        assert branch.system is not None and len(branch.messages) == 1
+        assert model.calls_sent == 0
+        released = {
+            "branch": weakref.ref(branch),
+            "message manager": weakref.ref(branch.msgs),
+            "system message": weakref.ref(branch.system),
+        }
+        del branch
+        return released
+
+    released = construct_and_release()
+    gc.collect()
+    assert [name for name, ref in released.items() if ref() is not None] == []

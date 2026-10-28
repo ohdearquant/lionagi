@@ -18,12 +18,12 @@ ADR-0055 D3 stores an ordered collection of message identifiers as one JSON-arra
 This gives a simple full reconstruction and idempotent append, but append work grows with the
 history already stored. SQLite scans membership and reconstructs the array; PostgreSQL expands
 the text as JSON, checks membership, appends and serializes it again
-(`lionagi/state/db.py:3202`). Live persistence normally updates both a branch progression and
-a session progression in one transaction (`lionagi/state/db.py:3955`).
+(`lionagi/state/db.py:3371`). Live persistence normally updates both a branch progression and
+a session progression in one transaction (`lionagi/state/db.py:4299`).
 
 Bulk insertion already avoids one rewrite per message: it decodes a string-ID collection,
 deduplicates a batch with a set and rewrites the collection once
-(`lionagi/state/db.py:3275`). This improves amortization but retains full-history work per batch.
+(`lionagi/state/db.py:3444`). This improves amortization but retains full-history work per batch.
 
 ### Measured cost and population
 
@@ -67,14 +67,14 @@ the exact cost at the observed 3,483-ID maximum.
 ### Why a storage decision is still needed
 
 Mirroring is a supported recurring feature. It has a standalone loop and historical catch-up
-mode (`lionagi/cli/mirror.py:47`, `lionagi/cli/mirror.py:59`, `lionagi/cli/mirror.py:1003`), and Studio starts an embedded task
+mode (`lionagi/cli/mirror.py:47`, `lionagi/cli/mirror.py:59`, `lionagi/cli/mirror.py:995`), and Studio starts an embedded task
 (`lionagi/studio/app.py:225`, `lionagi/studio/app.py:390`). Mirroring is enabled by default when the profile has eligible
 sources (`lionagi/studio/config.py:653`, `lionagi/studio/config.py:709`, `lionagi/studio/config.py:717`). A process-name search cannot rule out
 the embedded task. A recent-file window does not cap an active transcript's lifetime length.
 
 Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
-(`lionagi/cli/_runs.py:2023`); flow branches share a session progression
-(`lionagi/cli/orchestrate/_orchestration.py:2202`); run import can create or replace complete
+(`lionagi/cli/_runs.py:2094-2095`); flow branches share a session progression
+(`lionagi/cli/orchestrate/_orchestration.py:2252`); run import can create or replace complete
 unbounded orders (`lionagi/cli/state.py:247`, `lionagi/cli/state.py:284`). The small current population justifies a
 staged rollout, not a permanent assumption that these histories remain small.
 
@@ -91,8 +91,8 @@ writes and potentially cheaper reads of retained large histories; it does not es
 immediate performance return on migrating every stored progression.
 
 The column is also a published read surface. Direct readers include retention code that protects
-messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py:544`;
-`lionagi/cli/state.py:884`). Freezing JSON without migrating these readers can hide references
+messages referenced by surviving progressions (`lionagi/studio/services/db_maintenance.py:555`;
+`lionagi/cli/state.py:906`). Freezing JSON without migrating these readers can hide references
 and affect deletion correctness, not merely display stale counts.
 
 ## Teardown of the previous premises
@@ -233,7 +233,7 @@ full normalized list to construct a Python set.
 Bulk append preserves incoming order and admits each new ID once, including duplicate IDs within
 the batch. Indexed membership checks and insert work scale with batch size and index access, not
 the entire prior collection. Message upsert, both progression updates, and session-activity
-updates retain their current transaction boundary (`lionagi/state/db.py:3241`, `lionagi/state/db.py:3922`). A
+updates retain their current transaction boundary (`lionagi/state/db.py:3410`, `lionagi/state/db.py:4266`). A
 duplicate membership does not suppress an otherwise valid message-content upsert.
 
 In `json`, preserve legacy append and bulk behavior. Increment the JSON revision only when the
@@ -248,13 +248,13 @@ cost intentionally remains during this finite phase. A target failure must not b
 a committed JSON-only append presented as a successful dual write.
 
 Creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression does not reset
-its representation or content (`lionagi/state/db.py:3162`). Newly created progressions may use
+its representation or content (`lionagi/state/db.py:3331`). Newly created progressions may use
 `items` only after the store's compatibility gate enables that default. Their supplied collection
 is materialized in input order, preserving duplicates, and their initial JSON value is an exact
 frozen prefix. Empty creation uses an empty prefix. No count is inferred from message existence.
 
 `set_progression` remains a wholesale replacement and a missing-row no-op
-(`lionagi/state/db.py:3172`). It locks the progression, increments generation and JSON revision,
+(`lionagi/state/db.py:3341`). It locks the progression, increments generation and JSON revision,
 and invalidates pending snapshots and verification. It preserves phase:
 
 - `json`: replace JSON; reset migration evidence. Any abandoned shadow is ineligible for use.
@@ -414,12 +414,12 @@ Keeping that column current would retain the performance defect.
    unrelated-message selectivity. An ordinal primary key alone does not satisfy this obligation.
    If the required plan cannot be obtained, that consumer's cutover remains disabled until an
    equivalent indexed read design is accepted; silently changing stream order is prohibited.
-4. **Full readers and last-ID consumers.** Route `lionagi/cli/_runs.py:1000`, `lionagi/cli/_runs.py:2039` and
+4. **Full readers and last-ID consumers.** Route `lionagi/cli/_runs.py:1001`, `lionagi/cli/_runs.py:2108` and
    `lionagi/cli/_context_from.py:193` through complete authority. Replace the last-ID-only load
    at `lionagi/state/_mirror_common.py:315` with an indexed one-item tail. Do not describe
    intentionally complete reconstruction or role aggregation as constant-time work.
-5. **Deletion and shared references.** Adapt `lionagi/state/db.py:3705`, `lionagi/state/db.py:3728`,
-   `lionagi/studio/services/db_maintenance.py:382`, `lionagi/studio/services/db_maintenance.py:544` and `lionagi/cli/state.py:879`, `lionagi/cli/state.py:884`
+5. **Deletion and shared references.** Adapt `lionagi/state/db.py:4049`, `lionagi/state/db.py:4072`,
+   `lionagi/studio/services/db_maintenance.py:393`, `lionagi/studio/services/db_maintenance.py:555` and `lionagi/cli/state.py:901`, `lionagi/cli/state.py:906`
    before any JSON freeze. Candidate and survivor reference checks must include target-only
    tail items, including shared progressions and retained references to absent message rows.
 6. **Other direct readers.** Publish a versioned complete-reader contract for SQL clients,
