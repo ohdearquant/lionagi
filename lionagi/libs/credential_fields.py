@@ -18,7 +18,8 @@ __all__ = (
     "is_secret_field_name",
 )
 
-# Multi-word markers include both their separated and run-together spellings.
+# The marker vocabulary includes separated and run-together spellings. The
+# predicate below owns their matching rules; not every marker is a substring.
 # Field-name folding normalizes punctuation but intentionally does not guess
 # camel-case boundaries, so ``accessKey`` folds to ``accesskey`` while
 # ``access-key`` folds to ``access_key``.
@@ -36,6 +37,10 @@ SECRET_KEY_MARKERS = (
     "accesskey",
     "private_key",
     "privatekey",
+    "hmac_key",
+    "hmackey",
+    "signing_key",
+    "signingkey",
     "client_secret",
     "bearer",
 )
@@ -45,6 +50,11 @@ SECRET_KEY_MARKERS = (
 EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
 
 _FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+# The new key-material markers need word boundaries so ``designing_key``,
+# ``signing_keyword`` and ``hmac_keyboard`` do not identify credentials.
+_SIGNING_KEY_MARKERS = frozenset({"hmac_key", "hmackey", "signing_key", "signingkey"})
+_CAMEL_WORD_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_SIGNING_KEY_RE = re.compile(r"(?:^|_)(?:hmac_?key|signing_?key)(?:_|$)")
 
 
 def fold_field_name(key: str) -> str:
@@ -60,6 +70,11 @@ def fold_field_name(key: str) -> str:
 def is_secret_field_name(key: str) -> bool:
     """Return whether ``key`` identifies a credential-bearing field."""
     folded = fold_field_name(key)
-    return folded in EXACT_SECRET_FIELD_NAMES or any(
-        marker in folded for marker in SECRET_KEY_MARKERS
+    signing_words = fold_field_name(_CAMEL_WORD_RE.sub("_", key))
+    return (
+        folded in EXACT_SECRET_FIELD_NAMES
+        or bool(_SIGNING_KEY_RE.search(signing_words))
+        or any(
+            marker in folded for marker in SECRET_KEY_MARKERS if marker not in _SIGNING_KEY_MARKERS
+        )
     )

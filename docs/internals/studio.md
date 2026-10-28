@@ -1719,11 +1719,17 @@ Whether a *field name* itself means a credential is decided once, by
 copies of this rule used to exist, and a value under an `auth` key was
 withheld on some projections and served on others. `fold_field_name`
 normalizes separators first (`X-API-Key`, `api.key`, and `api_key` all fold
-to the same spelling) so the marker list only needs one spelling per
-concept. A short, closed set of names (`auth`, `authentication`, `bearer`)
+to the same spelling); the marker list also includes run-together spellings
+such as `apikey`. A short, closed set of names (`auth`, `authentication`, `bearer`)
 is matched by exact equality rather than substring, because those words
 also occur inside unrelated field names (`author`, `authorized_keys_count`)
-that must not be redacted. The free-text rule asks the same question: a
+that must not be redacted. HMAC-key and signing-key names are credential
+markers, including separated and run-together spellings; these markers use
+word boundaries, including camel-case transitions, so `mySigningKeyValue`
+is matched while `designing_key` and `signing_keyword` are not. Runs without
+separators or camel-case transitions have no visible embedded word boundary:
+`MYSIGNINGKEY`, `mysigningkey` and `signingkeyvalue` do not match.
+A bare `key` is not a marker. The free-text rule asks the same question: a
 `name=value` or `name: value` assignment in prose is matched generically and
 then judged by `is_secret_field_name`, so a name the mapping layer calls a
 credential cannot be one the prose layer serves. That gap was real —

@@ -12,10 +12,83 @@ from __future__ import annotations
 
 import pytest
 
+from lionagi.adapters._base import _redact_url
 from lionagi.studio.operator import redact
+from lionagi.studio.operator.application_mcp import _safe_content
 
 NO_KNOWN_VALUES: frozenset[str] = frozenset()
 SECRET = "s3cr3t-value-abc123def456"
+
+
+@pytest.mark.parametrize("path", ["classifier", "mapping", "text", "url", "environment", "mcp"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "LIONAGI_STUDIO_EVIDENCE_HMAC_KEY",
+        "hmac-key",
+        "hmacKey",
+        "SIGNING_KEY",
+        "signing-key",
+        "signingKey",
+        "my_signing_key_id",
+        "mySigningKeyValue",
+        "myHMACKeyBase64",
+        "signingKeyValue",
+        "hmacKeyBase64",
+        "SIGNINGKEY",
+        "SIGNING_KEY_ID",
+    ],
+)
+def test_signing_key_names_are_withheld_across_redaction_paths(name, path, monkeypatch):
+    # This value cannot be caught by the shape heuristic or by known env values.
+    value = "opaque/value=="
+    assert not redact._looks_like_secret_value(value)
+    if path == "classifier":
+        assert redact.is_secret_field_name(name)
+    elif path == "mapping":
+        assert redact.redact_scalar(name, value) == "[redacted]"
+    elif path == "text":
+        assert redact.scrub_text(f"{name}={value}", known_values=NO_KNOWN_VALUES) == (
+            f"{name}=[redacted]"
+        )
+    elif path == "url":
+        assert _redact_url(f"https://example.com/?{name}=opaque-value&safe=visible") == (
+            f"https://example.com/?{name}=***&safe=visible"
+        )
+    elif path == "environment":
+        monkeypatch.setenv(name, value)
+        assert value in redact.known_secret_values()
+    else:
+        assert _safe_content({name: {"value": value}}) == {name: "[redacted]"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "sort_key",
+        "cache_key",
+        "primary_key",
+        "signing_keyword",
+        "hmac_keyboard",
+        "designing_key",
+        "MYSIGNINGKEY",
+        "mysigningkey",
+        "signingkeyvalue",
+    ],
+)
+def test_unrelated_key_names_remain_visible(name):
+    assert not redact.is_secret_field_name(name)
+    assert redact.redact_scalar(name, "visible") == "visible"
+    assert redact.scrub_text(f"{name}=visible", known_values=NO_KNOWN_VALUES) == f"{name}=visible"
+    assert _safe_content({name: {"value": "visible"}}) == {name: {"value": "visible"}}
+    url = f"https://example.com/?{name}=visible"
+    assert _redact_url(url) == url
+
+
+def test_known_signing_key_value_is_scrubbed_when_echoed(monkeypatch):
+    value = "opaque/value=="
+    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", value)
+    assert redact.scrub_text(f"echo {value}") == "echo [redacted]"
 
 
 def _scrub(text: str) -> str:
