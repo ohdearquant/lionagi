@@ -659,6 +659,14 @@ async def end_child_group(
                     group_witnesses=witnesses,
                     expected_marker=expected_marker,
                 )
+            if witnesses:
+                # The forced kill waits for the child alone. A member it killed
+                # still answers the group probe until it is reaped, by init once
+                # the child is gone, so absence is read after the same bounded
+                # wait as below rather than at the instant the child exits.
+                with move_on_after(grace):
+                    while _group_has_members(proc.pid):
+                        await asyncio.sleep(_GROUP_EXIT_POLL_SECONDS)
         elif witnesses:
             # The stream may have ended because the child exited while a
             # descendant kept stdout open. The leader is already reaped here,
