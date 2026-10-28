@@ -231,7 +231,7 @@ async def test_runner_marker_swap_conflicts_at_same_generation(
     snapshot = await store.snapshot_cli_worker_spawns(sid)
     captured = _identity(snapshot["session"]["node_metadata"])
     replacement = {"pid": 45678, "pid_create_time": 444.5, "pid_host": "other-host"}
-    # Keep the timestamp equal to the snapshot in one arm to pin Amendment 2.
+    # One arm keeps updated_at equal to the snapshot, so only the runner identity can refuse.
     with monkeypatch.context() as context:
         context.setattr(
             db_module, "time", SimpleNamespace(time=lambda: version if same_time else version + 1.0)

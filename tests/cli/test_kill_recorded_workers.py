@@ -942,13 +942,6 @@ async def test_final_session_read_failure_reports_unconfirmed_without_stale_stat
     assert "terminal status remains" not in capsys.readouterr().out
 
 
-"""Append these tests to the existing private candidate's CLI test module.
-
-They depend on that module's imports, _CleanupDB, and _stub_recorded_groups.
-No test here invokes the real process table or sends real OS signals.
-"""
-
-
 @pytest.mark.asyncio
 async def test_terminal_generations_share_grace_and_kill_only_survivor(monkeypatch, capsys):
     import lionagi.cli.kill as module
@@ -1218,9 +1211,6 @@ async def test_native_corrupt_worker_row_refuses_entire_snapshot_without_probe(
             == before_spawns
         )
         assert all(row["confirmed_empty_at"] is None for row in before_spawns)
-
-
-"""Append to the private CLI test candidate; no test sends real OS signals."""
 
 
 async def _seed_native_running_cleanup(tmp_path, monkeypatch):
