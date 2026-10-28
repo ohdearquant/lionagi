@@ -125,7 +125,7 @@ session's event bus and its default persistence handlers. They import only `ln`,
 `Session.hooks` builds the bus on first use (`session/session.py:137-146`) with four default handlers (session
 start, session end, branch create, branch end; `hooks/loader.py:25-30, 81-104`), and operations and `Branch`
 take `HookPoint` from it at 9 sites (`operations/_api_hooks.py:150, 179, 219`, `operations/act/act.py:106, 138,
-164`, `operations/chat/chat.py:28`, `operations/run/run.py:451`, `session/branch.py:413`). A bus moved out of
+164`, `operations/chat/chat.py:28`, `operations/run/run.py:451`, `session/branch.py:415`). A bus moved out of
 the core would need its default builder supplied by a bootstrap, and an injected bus that starts empty would
 drop those defaults. These five modules and the package initializer stay in the core under their current
 paths, with no table row.

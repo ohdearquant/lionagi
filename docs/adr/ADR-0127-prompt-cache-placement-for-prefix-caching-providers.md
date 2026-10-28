@@ -302,7 +302,7 @@ is a separate characterization, distinct from the acceptance tests in D7):
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
 `Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:211-216`);
-once it is history it is re-rendered without them (`operations/chat/_prepare.py:286`). Rounds 0 to
+once it is history it is re-rendered without them (`operations/chat/_prepare.py:314`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
 content alone), almost all of it those sections, sent uncached on every call.
@@ -403,7 +403,7 @@ run record counts it (D6).
 A **history rewrite** is a turn-segment change, not a new class. It is allowed; it breaks the prefix
 from the rewritten message on, so every later request in the conversation is a cache miss from
 there; and the run record counts it (D6). Today's rewrites are the hide, show and summarize
-directives of ADR-0125 step 2 (`operations/chat/_prepare.py:245-309`).
+directives of ADR-0125 step 2 (`operations/chat/_prepare.py:258-344`).
 
 ### D2: tools render once; an instruction renders the same everywhere
 
