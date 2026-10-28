@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -692,6 +693,39 @@ class TestKillpgUnavailablePlatform:
         # AttributeError from the absent killpg. Asserting terminate() was
         # called instead pins a call that does nothing on a child which has
         # already exited, and would pass whether or not the group was dealt with.
+
+    @pytest.mark.asyncio
+    async def test_unrecorded_launch_warns_when_group_cleanup_is_unconfirmed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """With no worker recorder bound, a successful run whose group cannot be read
+        still completes, and the unconfirmed cleanup is reported as a warning."""
+        import lionagi.ln._proc as proc_mod
+        from lionagi.providers.anthropic import claude_code as models
+
+        request = models.ClaudeCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9203)
+        monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
+
+        with (
+            patch(
+                "lionagi.providers.anthropic.claude_code.CLAUDE_CLI",
+                cli_executable(tmp_path, "claude"),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            caplog.at_level(logging.WARNING, logger="lionagi.providers._cli_subprocess"),
+        ):
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "lionagi.providers._cli_subprocess"
+            and "CLI child group cleanup remains unconfirmed" in record.getMessage()
+        ], "an unconfirmed cleanup on an unrecorded launch ended with no warning"
 
 
 class TestStderrDeadlockPrevention:

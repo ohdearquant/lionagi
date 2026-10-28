@@ -727,8 +727,13 @@ def test_cleanup_requires_kernel_absence_even_after_direct_child_exit(monkeypatc
     from lionagi.ln import _proc
     from lionagi.providers import _cli_subprocess as cs
 
+    # Recorded rather than asserted inside the double: the probe's caller reads any
+    # exception as an unanswered probe, so an assertion raised here would be swallowed
+    # and every case but "absent" would still pass.
+    calls: list[tuple[int, int]] = []
+
     def killpg(pgid, sig):
-        assert (pgid, sig) == (12345, 0)
+        calls.append((pgid, sig))
         if probe == "absent":
             raise ProcessLookupError
         if probe == "permission-denied":
@@ -738,6 +743,7 @@ def test_cleanup_requires_kernel_absence_even_after_direct_child_exit(monkeypatc
     child = SimpleNamespace(pid=12345, returncode=0)
     result = cs._group_cleanup_outcome(child, cs.SpawnedProcess(12345, 12345, 1.0))
     assert (result is cs._ChildGroupCleanup.CONFIRMED_EMPTY) is (probe == "absent")
+    assert calls == [(12345, 0)]
 
 
 def test_group_absence_does_not_replace_a_nonlive_owned_child(monkeypatch):
