@@ -910,6 +910,9 @@ async def test_real_python_child_commits_its_identity_before_callback_and_first_
                     "id": session_id,
                     "status": "running",
                     "cli_worker_generation": _GENERATION,
+                    "node_metadata": None,
+                    "artifacts_path": None,
+                    "source_kind": "live",
                 }
                 row = snapshot["spawns"][0]
                 assert set(row) == {

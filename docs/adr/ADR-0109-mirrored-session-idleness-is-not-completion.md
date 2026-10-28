@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:4821-4832`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:4918-4929`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -275,10 +275,10 @@ Three things block it, each read at the source:
 - The mirror does not write through the edge-enforcing path at all. It calls
   `StateDB.update_status` (`lionagi/state/_mirror_common.py:343-371`), which the
   compatibility adapter routes to `service._transition`
-  (`lionagi/state/lifecycle/adapters.py:92-97`) without passing
+  (`lionagi/state/lifecycle/adapters.py:95-100`) without passing
   `enforce_edges`. That parameter defaults to `False`
-  (`lionagi/state/lifecycle/service.py:316`), and at
-  `service.py:425` the declared edges are read as an empty tuple when it is
+  (`lionagi/state/lifecycle/service.py:364`), and at
+  `service.py:492` the declared edges are read as an empty tuple when it is
   false. So the declared-edge policy, `actor_types` included, is never
   inspected on the only path that writes a mirrored session's status.
 - A reason prefix is not an authorization: `lionagi/state/reasons.py:221-229`
@@ -309,11 +309,11 @@ mirror uses. That is true only *before* step 2. Step 2 moves the mirror off that
 path, and before step 2 that path cannot reject the transition under test:
 `StateDB.update_status` routes through `run_update_status`, which calls
 `LifecycleService._transition` without `enforce_edges`
-(`lionagi/state/lifecycle/adapters.py:92-97`), so the parameter takes its
-default of `False` (`lionagi/state/lifecycle/service.py:316`) and the declared
-edge graph is never consulted (`service.py:425`). That path can still reject two
+(`lionagi/state/lifecycle/adapters.py:95-100`), so the parameter takes its
+default of `False` (`lionagi/state/lifecycle/service.py:364`) and the declared
+edge graph is never consulted (`service.py:492`). That path can still reject two
 things — a same-status move where the policy says `reject`, and leaving a
-terminal status without an override (`service.py:466-467`, `service.py:480-484`) — but
+terminal status without an override (`service.py:533-534`, `service.py:547-551`) — but
 `running → idle` is neither, so it falls through to the unrestricted write. The
 requirement therefore asked for a test that is impossible before the change and
 irrelevant after it. The requirement is therefore not "the current

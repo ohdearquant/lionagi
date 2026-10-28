@@ -21,11 +21,11 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from urllib.parse import parse_qsl, urlencode
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
@@ -3847,7 +3847,8 @@ class StateDB:
                     (
                         await conn.execute(
                             text(
-                                "SELECT id, status, cli_worker_generation FROM sessions WHERE id = :id"
+                                "SELECT id, status, cli_worker_generation, node_metadata, "
+                                "artifacts_path, source_kind FROM sessions WHERE id = :id"
                             ),
                             {"id": session_id},
                         )
@@ -3871,9 +3872,105 @@ class StateDB:
                     .all()
                 )
                 return {
-                    "session": dict(session),
+                    "session": self._row_to_dict(session),
                     "spawns": [_validate_cli_worker_spawn_row(row) for row in rows],
                 }
+
+    @_cancellation_wins
+    @asynccontextmanager
+    async def guard_cli_worker_signal(
+        self,
+        session_id: str,
+        snapshotted_status: str,
+        snapshotted_generation: str | None,
+        spawn_id: str,
+    ) -> AsyncIterator[Literal["unchanged", "changed"]]:
+        """Hold the execution and exact unresolved record stable for one signal.
+
+        The caller performs only synchronous identity checks and its signal
+        while this context is entered. No grace wait belongs under this lock.
+        """
+        self._refuse_in_compatibility(
+            "guard_cli_worker_signal", "worker cleanup requires native storage"
+        )
+        if self.readonly:
+            raise ValueError("worker signal guards require a writable state handle")
+        session_id = _validate_cli_worker_session_id(session_id)
+        generation = _validate_cli_worker_generation(snapshotted_generation)
+        spawn_id = _validate_cli_worker_uuid(spawn_id, field="spawn_id")
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            async with self._tx() as conn:
+                if self.dialect == "postgresql":
+                    await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                parent_sql = "SELECT status, cli_worker_generation FROM sessions WHERE id = :id"
+                if self.dialect == "postgresql":
+                    parent_sql += " FOR UPDATE"
+                parent = (
+                    (await conn.execute(text(parent_sql), {"id": session_id})).mappings().first()
+                )
+                if (
+                    parent is None
+                    or parent["status"] != snapshotted_status
+                    or parent["cli_worker_generation"] != generation
+                ):
+                    yield "changed"
+                    return
+                record_sql = (
+                    "SELECT * FROM cli_worker_spawns WHERE spawn_id = :spawn_id "
+                    "AND session_id = :session_id AND confirmed_empty_at IS NULL"
+                )
+                if self.dialect == "postgresql":
+                    record_sql += " FOR UPDATE"
+                stored = (
+                    (
+                        await conn.execute(
+                            text(record_sql), {"spawn_id": spawn_id, "session_id": session_id}
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if stored is None:
+                    yield "changed"
+                    return
+                # Registration makes the identity and association immutable.
+                # Older recorded generations remain eligible for this snapshot.
+                _validate_cli_worker_spawn_row(stored)
+                yield "unchanged"
+
+    @_operation("cancel_session_if_worker_generation")
+    async def cancel_session_if_worker_generation(
+        self,
+        session_id: str,
+        generation_id: str | None,
+        *,
+        expected_runner_identity: Mapping[str, Any],
+        reason_code: str,
+        reason_summary: str,
+        evidence: dict[str, Any],
+    ) -> Literal["applied", "conflict", "missing", "rejected"]:
+        """Cancel only the captured running execution, through lifecycle policy."""
+        self._refuse_in_compatibility(
+            "cancel_session_if_worker_generation", "worker cleanup requires native storage"
+        )
+        if self.readonly:
+            raise ValueError("worker cancellation requires a writable state handle")
+        session_id = _validate_cli_worker_session_id(session_id)
+        generation_id = _validate_cli_worker_generation(generation_id)
+        if not isinstance(expected_runner_identity, Mapping):
+            raise ValueError("expected_runner_identity must be a mapping")
+        expected_runner_identity = dict(expected_runner_identity)
+        _validate_reason_code(reason_code)
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            return await _lifecycle_adapters.run_cancel_session_if_worker_generation(
+                self._lifecycle_service(),
+                session_id=session_id,
+                generation_id=generation_id,
+                expected_runner_identity=expected_runner_identity,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence=evidence,
+            )
 
     @_operation("settle_cli_worker_spawn")
     async def settle_cli_worker_spawn(self, spawn_id: str, *, confirmed_empty_at: float) -> bool:

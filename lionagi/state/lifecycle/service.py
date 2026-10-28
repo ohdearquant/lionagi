@@ -8,6 +8,7 @@ the ``_transition()`` adapter-only kwargs contract.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Mapping
@@ -41,6 +42,52 @@ from .schedules import ScheduleLifecycleAdapter
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection
+
+
+# Only these fields supplied the dead-runner evidence. An omitted key means
+# the snapshot lacked the key; unrelated metadata is intentionally not guarded.
+_RUNNER_IDENTITY_FIELDS = frozenset(
+    {"pid", "pid_create_time", "pid_host", "pid_boot_time", "process_identity_mode"}
+)
+
+
+def _same_runner_value(expected: Any, actual: Any) -> bool:
+    """Compare JSON values without treating booleans as numeric identities."""
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return type(expected) is bool and type(actual) is bool and expected is actual
+    if type(expected) in (int, float) and type(actual) in (int, float):
+        return expected == actual
+    if type(expected) is not type(actual):
+        return False
+    if isinstance(expected, list):
+        return len(expected) == len(actual) and all(
+            _same_runner_value(left, right) for left, right in zip(expected, actual, strict=True)
+        )
+    if isinstance(expected, dict):
+        return expected.keys() == actual.keys() and all(
+            _same_runner_value(expected[key], actual[key]) for key in expected
+        )
+    return expected == actual
+
+
+def _runner_identity_matches(captured: Mapping[str, Any], stored: Any, *, dialect: str) -> bool:
+    if isinstance(stored, str):
+        # SQLite returns raw JSON text; asyncpg has already decoded JSON once.
+        # A PostgreSQL string is a JSON scalar, even when it looks like an object.
+        if dialect != "sqlite":
+            return False
+        try:
+            stored = json.loads(stored)
+        except (ValueError, RecursionError):
+            return False
+    if not isinstance(stored, dict):
+        return False
+    for key in _RUNNER_IDENTITY_FIELDS:
+        if (key in captured) != (key in stored):
+            return False
+        if key in captured and not _same_runner_value(captured[key], stored[key]):
+            return False
+    return True
 
 
 class _TxProvider(Protocol):
@@ -313,6 +360,7 @@ class SQLAlchemyLifecycleService:
         command: TransitionCommand,
         *,
         extra_guard: Mapping[str, Any] | None = None,
+        expected_runner_identity: Mapping[str, Any] | None = None,
         enforce_edges: bool = False,
         undeclared_edge_mode: str = "raise",
         raise_on_unguarded_conflict: bool = False,
@@ -320,6 +368,14 @@ class SQLAlchemyLifecycleService:
         fill_only_if_absent: frozenset[str] = frozenset(),
         owned_links: tuple[tuple[str, str, str], ...] = (),
     ) -> TransitionOutcome:
+        if expected_runner_identity is not None:
+            if command.entity_type != "session":
+                raise LifecycleValidationError("runner identity guard requires a session")
+            if not isinstance(expected_runner_identity, Mapping):
+                raise LifecycleValidationError("runner identity guard requires a mapping")
+            if set(expected_runner_identity) - _RUNNER_IDENTITY_FIELDS:
+                raise LifecycleValidationError("runner identity guard has unsupported fields")
+            expected_runner_identity = dict(expected_runner_identity)
         if command.entity_type == "schedule":
             if fill_only_if_absent or owned_links:
                 raise LifecycleValidationError("unsupported schedule transition companion fields")
@@ -393,6 +449,8 @@ class SQLAlchemyLifecycleService:
             # SELECT unique, but never let that guard disable the terminal-end
             # invariant itself.
             fetch_cols = list(dict.fromkeys(["status", "updated_at", *guard_cols]))
+            if expected_runner_identity is not None and "node_metadata" not in fetch_cols:
+                fetch_cols.append("node_metadata")
             if needs_duration_basis:
                 fetch_cols.extend(
                     col
@@ -414,6 +472,15 @@ class SQLAlchemyLifecycleService:
             if (
                 command.expected_statuses is not None
                 and previous_status not in command.expected_statuses
+            ):
+                return TransitionOutcome(
+                    result="conflict",
+                    previous_status=previous_status,
+                    current_status=previous_status,
+                    transition_id=None,
+                )
+            if expected_runner_identity is not None and not _runner_identity_matches(
+                expected_runner_identity, row["node_metadata"], dialect=self._db.dialect
             ):
                 return TransitionOutcome(
                     result="conflict",
