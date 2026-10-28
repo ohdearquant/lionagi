@@ -573,6 +573,51 @@ async def test_unpersisted_orchestration_masks_an_outer_owner(
 
 
 @pytest.mark.parametrize("kind", ["flow", "fanout"])
+@pytest.mark.parametrize("declared", [False, True], ids=["undeclared", "declared"])
+async def test_an_ownerless_persisted_orchestration_runs_only_when_its_setup_says_why(
+    orchestration_workers, monkeypatch, kind, declared
+):
+    """ADR-0104 Amendment 4, Limits: "its setup result says so in `worker_spawns_unrecorded`, and
+    a persisted setup result that carries no owner and does not say so is refused"."""
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+
+    h = orchestration_workers
+    env = h.make_env(f"ownerless-{kind}-{'declared' if declared else 'undeclared'}")
+    recorders = []
+
+    async def setup(**kwargs):
+        return env
+
+    async def start(env_, **kwargs):
+        env_._live_persist = {"session_id": str(env_.session.id), "worker_spawn_owner": None}
+        if declared:
+            env_._live_persist["worker_spawns_unrecorded"] = True
+
+    async def stop(env_, *, status, **kwargs):
+        return status
+
+    async def inner(*args, **kwargs):
+        recorders.append(h.get_recorder())
+        return "ran"
+
+    module = getattr(h, kind)
+    monkeypatch.setattr(module, "setup_orchestration", setup)
+    monkeypatch.setattr(module, "start_live_persist", start)
+    monkeypatch.setattr(module, "stop_live_persist", stop)
+    monkeypatch.setattr(module, f"_run_{kind}_inner", inner)
+    if declared:
+        output, _ = await h.run(kind)
+        assert output == "ran"
+        assert recorders == [None], "an unrecorded run's workers launch with no recorder"
+    else:
+        with pytest.raises(
+            _WorkerSpawnAdmissionError, match="persisted orchestration has no worker owner"
+        ):
+            await h.run(kind)
+        assert recorders == [], "the refusal comes before any work"
+
+
+@pytest.mark.parametrize("kind", ["flow", "fanout"])
 async def test_orchestration_drains_registration_before_terminal_and_close(
     orchestration_workers, monkeypatch, kind
 ):
