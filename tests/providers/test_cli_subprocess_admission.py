@@ -253,11 +253,89 @@ async def test_a_child_that_exits_before_its_start_time_reads_is_refused_at_once
     assert _held()["held"] == 0
 
 
+def _reread_without_a_start_time(monkeypatch, module, observations, ended, rereading):
+    real_observe = module.observe_spawned
+    real_end_group = module.end_child_group
+
+    def _no_start_time(pid, *, expected_marker):
+        observations.append(pid)
+        if len(observations) >= 3:
+            rereading.set()
+        observed = real_observe(pid, expected_marker=expected_marker)
+        return module.SpawnedProcess(pid=observed.pid, pgid=observed.pgid, create_time=None)
+
+    async def _record_end(proc, **kwargs):
+        ended.append((proc.pid, _held()["held"]))
+        return await real_end_group(proc, **kwargs)
+
+    monkeypatch.setattr(module, "observe_spawned", _no_start_time)
+    monkeypatch.setattr(module, "end_child_group", _record_end)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_cancelled_while_the_start_time_is_reread_keeps_the_slot_until_the_child_ends(
+    capped, monkeypatch
+):
+    """The caller unwinds at once; the spawn keeps re-reading, then refuses and ends the
+    child, and the slot is held until the child is gone."""
+    from lionagi.providers import _cli_subprocess
+
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 1.5)
+    observations, ended, rereading = [], [], asyncio.Event()
+    _reread_without_a_start_time(monkeypatch, _cli_subprocess, observations, ended, rereading)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
+    first = asyncio.ensure_future(stream.__anext__())
+    await asyncio.wait_for(rereading.wait(), timeout=5.0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    pid = observations[0]
+    assert _is_alive(pid)
+    assert _held()["held"] == 1
+    assert ended == []
+
+    await _join_owned_cli_tasks(_cli_subprocess)
+    assert ended == [(pid, 1)]
+    assert _await_death(pid)
+    assert _held()["held"] == 0
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_cancelled_while_the_start_time_is_reread_ends_the_child_and_frees_the_slot(
+    capped, monkeypatch
+):
+    """Cancelling the spawn itself inside the re-read window, as a loop shutdown does, ends
+    the child before the slot is given back."""
+    from lionagi.providers import _cli_subprocess
+
+    monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
+    observations, ended, rereading = [], [], asyncio.Event()
+    _reread_without_a_start_time(monkeypatch, _cli_subprocess, observations, ended, rereading)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
+    first = asyncio.ensure_future(stream.__anext__())
+    await asyncio.wait_for(rereading.wait(), timeout=5.0)
+    [spawn] = [task for task in _cli_subprocess._RETAINED_CLI_TASKS if not task.done()]
+    spawn.cancel()
+    started = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await _join_owned_cli_tasks(_cli_subprocess)
+    assert time.monotonic() - started < 30.0
+    pid = observations[0]
+    assert ended == [(pid, 1)]
+    assert _await_death(pid)
+    assert _held()["held"] == 0
+    await stream.aclose()
+
+
 @pytest.mark.asyncio
 async def test_a_launcher_script_run_through_usr_bin_env_is_admitted(capped, tmp_path):
     """The shape of a node-script CLI (`#!/usr/bin/env node`): the kernel runs /usr/bin/env,
     which execs the interpreter in the same pid. On macOS the marker of /usr/bin/env cannot be
-    read, so a spawn that read only at once was refused."""
+    read, so a spawn that read only at once was refused. On Linux the marker reads at once, so
+    there this checks only that the launcher shape is admitted; the re-read itself is pinned by
+    the patched tests above."""
     interpreter = Path(sys.executable)
     launcher = tmp_path / "launcher"
     launcher.write_text(f"#!/usr/bin/env {interpreter.name}\n{_SLEEPER}\n")
