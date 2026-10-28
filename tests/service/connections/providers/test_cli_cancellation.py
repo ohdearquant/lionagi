@@ -43,6 +43,18 @@ def _block_real_process_group_signals(monkeypatch):
         _MOCK_PROCESSES.clear()
 
 
+def _exited_group_probe(proc, signal_calls):
+    """Model an exited fake child's absence without accepting a group signal."""
+
+    def probe(pgid, sig):
+        if pgid == proc.pid and sig == 0 and type(proc.returncode) is int:
+            raise ProcessLookupError(pgid)
+        signal_calls.append((pgid, sig))
+        raise AssertionError(f"unexpected group signal or premature absence probe: {pgid}, {sig}")
+
+    return probe
+
+
 def _spawn_call_for(mock_exec, executable: str):
     """Return the provider spawn, excluding credential-helper subprocesses."""
     matches = [
@@ -494,7 +506,7 @@ class TestProcessGroupCleanup:
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
-                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+                side_effect=_exited_group_probe(mock_proc, killpg_calls),
             ),
         ):
             mock_exec.return_value = mock_proc
@@ -521,7 +533,7 @@ class TestProcessGroupCleanup:
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
-                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+                side_effect=_exited_group_probe(mock_proc, killpg_calls),
             ),
         ):
             mock_exec.return_value = mock_proc
