@@ -34,6 +34,7 @@ vi.mock("@/lib/api", async () => {
   return {
     ...actual,
     getSession: vi.fn(),
+    getSessionSignalPage: vi.fn(),
     getInvocation: vi.fn(),
     streamSession: vi.fn(() => () => {}),
     streamSignals: vi.fn(() => () => {}),
@@ -178,7 +179,8 @@ describe("history/RunDetail.tsx — bounded incremental signal projection", () =
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
   it("feeds the stream into SignalProjection instead of an ever-growing React array", () => {
-    expect(src).toMatch(/const projection = new SignalProjection\(\)/);
+    expect(src).toMatch(/loadSessionLiveBootstrap/);
+    expect(src).toMatch(/const projection = bootstrap\.projection/);
     expect(src).toMatch(/projection\.append\(sig\)/);
     expect(src).not.toMatch(/setSignalEvents/);
     expect(src).not.toMatch(/prev\.some\(\(e\) => e\.id === sig\.id\)/);

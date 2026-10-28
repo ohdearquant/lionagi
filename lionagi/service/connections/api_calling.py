@@ -19,6 +19,8 @@ from .._api_telemetry import (
     is_collecting,
     mark_dispatch,
 )
+from .._prompt_cache import PromptCacheCall, activate_call, note_attempt
+from .._prompt_cache import current_call as current_prompt_cache_call
 from ..hooks.hooked_event import HookedEvent
 from ..token_budget import lookup_context_window
 from ..types.stream_chunk import StreamChunk
@@ -89,6 +91,14 @@ class APICalling(HookedEvent):
     _counted_input_tokens: int | None = PrivateAttr(default=None)
     _telemetry_initialized: bool = PrivateAttr(default=False)
     _telemetry_frame: RequestFrame | None = PrivateAttr(default=None)
+    # The prompt-cache call open where this request was built; the send runs in the
+    # processor's context, so the attempt is recorded on this object, not on the ambient one.
+    _prompt_cache_call: PromptCacheCall | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _capture_prompt_cache_call(self) -> Self:
+        self._prompt_cache_call = current_prompt_cache_call()
+        return self
 
     @model_validator(mode="after")
     def _validate_streaming(self) -> Self:
@@ -259,12 +269,19 @@ class APICalling(HookedEvent):
 
         return None
 
+    def _note_direct_attempt(self) -> None:
+        # A routed request records each attempt where the router picks its account.
+        routed = getattr(self.endpoint, "_account_routing_enabled", None)
+        if not (routed and routed()):
+            note_attempt("direct")
+
     async def _core_invoke(self):
         scope_kwargs = (
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )
         mark_dispatch(self._telemetry_frame)
-        with activate_request(self._telemetry_frame):
+        with activate_request(self._telemetry_frame), activate_call(self._prompt_cache_call):
+            self._note_direct_attempt()
             return await self.endpoint.call(
                 request=self.payload,
                 cache_control=self.cache_control,
@@ -288,7 +305,8 @@ class APICalling(HookedEvent):
         )
         failure: StreamChunk | None = None
         mark_dispatch(self._telemetry_frame)
-        with activate_request(self._telemetry_frame):
+        with activate_request(self._telemetry_frame), activate_call(self._prompt_cache_call):
+            self._note_direct_attempt()
             source = self.endpoint.stream(
                 request=self.payload,
                 extra_headers=self.headers if self.headers else None,

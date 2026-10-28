@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
+  branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in
+  `metadata["prompt_cache"]`, keyed by a prefix certificate over the request through the marked
+  block. A request marks the deepest entry known to be held on every route it can take, so a round
+  that adds more than the provider's lookback still places a mark that reaches the previous round's
+  entry. A `ReAct` answer request, an LNDL Middle's last round and a parse repair read without
+  writing a turn entry; the context fold's summary request places only the one-hour mark on the
+  tools and system blocks. Each call records the marks, the read target, whether a mark reached it,
+  how the read compared with the entry's length, and which entry was hit, under `prompt_cache` in
+  its metadata. With the option off, requests are unchanged.
+
 - `AgentSpec.max_tokens` sets the output-token limit on the Anthropic model `create_agent` builds,
   `Engine(max_tokens=...)` sets it for every agent the engine makes, and
   `ReviewEngine(stage_max_tokens={...})` sets it per stage (`review`, `review_fallback`,

@@ -10,7 +10,7 @@ import math
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -108,6 +108,10 @@ from ._util import (
 
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
+# The name of the account whose API key the launcher handed this process, never the key
+# itself. It follows the routed-account name rule (``_ACCOUNT_NAME_RE`` in lionagi/config.py),
+# so a mixed-case value is refused, and so is one starting "sk-".
+_API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
 _NO_PERSISTED_EXECUTION = object()
@@ -1354,6 +1358,59 @@ def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | No
     return None
 
 
+def _read_api_account() -> str | None:
+    """The account name in ``LIONAGI_API_ACCOUNT`` (ADR-0126 Amendment 4), None when it is unset.
+
+    A value outside the routed-account name rule, one starting ``sk-``, or one equal to a key
+    this process holds raises ``ConfigurationError`` without repeating it. A held key is the
+    value of a credential-named or configured-account variable, in the environment or in the
+    dotenv files the settings were built from.
+    """
+    api_account = os.environ.get(_API_ACCOUNT_ENV)
+    if api_account is None:
+        return None
+    from pydantic_settings import DotEnvSettingsSource
+
+    from lionagi import config
+    from lionagi.libs.credential_fields import is_secret_field_name
+
+    if config._ACCOUNT_NAME_RE.fullmatch(api_account) is None or api_account.startswith("sk-"):
+        raise ConfigurationError(
+            f"{_API_ACCOUNT_ENV} must be an account name: a lowercase letter, then up to 31 "
+            "lowercase letters, digits, '_' or '-', not starting with 'sk-'; the value is not shown"
+        )
+    settings = config.settings
+    key_names = {account.key_env for account in settings.ANTHROPIC_ACCOUNTS}
+    sources: list[Mapping[str, str | None]] = [os.environ]
+    if settings._dotenv_files:
+        try:
+            sources.append(
+                DotEnvSettingsSource(
+                    config.AppSettings,
+                    env_file=settings._dotenv_files,
+                    env_file_encoding=settings.model_config.get("env_file_encoding"),
+                    case_sensitive=True,
+                ).env_vars
+            )
+        except Exception:  # noqa: BLE001 -- a parser error can quote the file
+            raise ConfigurationError(
+                f"{_API_ACCOUNT_ENV} could not be checked against the dotenv files; "
+                "the value is not shown"
+            ) from None
+    for source in sources:
+        for name, value in source.items():
+            if (
+                name != _API_ACCOUNT_ENV
+                and value == api_account
+                and (name in key_names or is_secret_field_name(name))
+            ):
+                raise ConfigurationError(
+                    f"{_API_ACCOUNT_ENV} holds the value of {name}; it must name the account, "
+                    "never carry its key; the value is not shown"
+                )
+    return api_account
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -1433,6 +1490,8 @@ async def _run_agent(
             raise ConfigurationError(
                 f"--idle-timeout must be at most {MAX_TIMEOUT_SECONDS} seconds, not {idle_timeout}."
             )
+        # Refused before anything is written, so a refused run leaves no run.json.
+        api_account = _read_api_account()
         if preset and (resume or continue_last):
             raise ConfigurationError(
                 "--preset only applies to new branches; cannot combine with --resume / --continue-last."
@@ -2071,6 +2130,8 @@ async def _run_agent(
             run_manifest["api_usage"] = _api_usage.snapshot()
         if context_from:
             run_manifest["context_from"] = list(context_from)
+        if api_account is not None:
+            run_manifest["api_account"] = api_account
         _write_run_manifest = getattr(run, "write_manifest", None)
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)

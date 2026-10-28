@@ -1,5 +1,5 @@
 {
-  "count": 145,
+  "count": 146,
   "routes": [
     {
       "ordinal": 0,
@@ -6620,6 +6620,54 @@
         "module": "lionagi.studio.services.sessions",
         "qualname": "label_session_route"
       }
+    },
+    {
+      "ordinal": 145,
+      "path": "/api/sessions/{session_id}/signals/page",
+      "methods": [
+        "GET"
+      ],
+      "name": "session_signals_page",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Session Signals Page Api Sessions  Session Id  Signals Page Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": "One bounded persisted prefix page; this read does not subscribe to a live tail.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "session_signals_page"
+      }
     }
   ],
   "openapi": {
@@ -12045,6 +12093,16 @@
           "summary": "Get Session",
           "parameters": [
             {
+              "name": "live_snapshot",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "default": false,
+                "title": "Live Snapshot"
+              }
+            },
+            {
               "name": "message_cursor",
               "in": "query",
               "required": false,
@@ -12186,12 +12244,44 @@
               }
             },
             {
+              "name": "mode",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mode"
+              }
+            },
+            {
               "name": "session_id",
               "in": "path",
               "required": true,
               "schema": {
                 "type": "string",
                 "title": "Session Id"
+              }
+            },
+            {
+              "name": "snapshot",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot"
               }
             }
           ],
@@ -12202,6 +12292,83 @@
                 "application/json": {
                   "schema": {
                     "title": "Response Stream Signals Api Sessions  Session Id  Signals Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/sessions/{session_id}/signals/page": {
+        "get": {
+          "tags": [
+            "sessions"
+          ],
+          "summary": "Session Signals Page",
+          "description": "One bounded persisted prefix page; this read does not subscribe to a live tail.",
+          "parameters": [
+            {
+              "name": "after_seq",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "title": "After Seq"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "maximum": 500,
+                "minimum": 1,
+                "default": 500,
+                "title": "Limit"
+              }
+            },
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            },
+            {
+              "name": "through_seq",
+              "in": "query",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "title": "Through Seq"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Session Signals Page Api Sessions  Session Id  Signals Page Get"
                   }
                 }
               }
@@ -12243,6 +12410,22 @@
                 "title": "Cursor"
               },
               "description": "Opaque cursor from the last delivered session-message SSE frame"
+            },
+            {
+              "name": "mode",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mode"
+              }
             },
             {
               "name": "session_id",
@@ -13326,7 +13509,7 @@
         }
       }
     },
-    "path_count": 111,
+    "path_count": 112,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {

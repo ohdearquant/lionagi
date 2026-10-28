@@ -189,33 +189,37 @@ async def parse(
         # directly — not a user-originated turn, so it must never mint or
         # fire its own USER_PROMPT_SUBMIT: the outer call this repair serves
         # (whatever public ingress that was) already fired at most once.
+        from lionagi.service._prompt_cache import cache_intent
+
         from .._turn_origin import TurnOrigin
 
-        _, res = await branch.chat(
-            instruction="reformat text into specified model or structure",
-            guidance=attempts.guidance(),
-            context=[{"text_to_format": text}],
-            request_fields=(
-                parse_param.response_format
-                if isinstance(parse_param.response_format, dict)
-                else None
-            ),
-            response_format=(
-                parse_param.response_format
-                if isinstance(parse_param.response_format, BaseModel)
-                or is_pydantic_model_class(parse_param.response_format)
-                else None
-            ),
-            imodel=(
-                branch.parse_model
-                if parse_param._is_sentinel(parse_param.imodel)
-                else parse_param.imodel
-            ),
-            sender=branch.user,
-            recipient=branch.id,
-            return_ins_res_message=True,
-            _turn_origin=TurnOrigin.no_origin(),
-        )
+        # The repair request shares the conversation and nothing continues from it.
+        with cache_intent("final"):
+            _, res = await branch.chat(
+                instruction="reformat text into specified model or structure",
+                guidance=attempts.guidance(),
+                context=[{"text_to_format": text}],
+                request_fields=(
+                    parse_param.response_format
+                    if isinstance(parse_param.response_format, dict)
+                    else None
+                ),
+                response_format=(
+                    parse_param.response_format
+                    if isinstance(parse_param.response_format, BaseModel)
+                    or is_pydantic_model_class(parse_param.response_format)
+                    else None
+                ),
+                imodel=(
+                    branch.parse_model
+                    if parse_param._is_sentinel(parse_param.imodel)
+                    else parse_param.imodel
+                ),
+                sender=branch.user,
+                recipient=branch.id,
+                return_ins_res_message=True,
+                _turn_origin=TurnOrigin.no_origin(),
+            )
 
         res.metadata["is_parsed"] = True
         res.metadata["original_text"] = text

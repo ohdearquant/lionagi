@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 import aiosqlite
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from lionagi._errors import NotFoundError
@@ -25,9 +25,46 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import require_file_store, store_exists, store_path, table_columns
 from ._io import parse_json_col as _parse_json_col
+from ._session_tail import SessionTailRegistry, StreamResyncError, capture_frontiers
 from .artifact_verification import resolve_artifact_verification
 
 SESSION_DONE_STABLE_SECS = 60.0
+
+
+def _session_tail_registry(request: Request | None) -> SessionTailRegistry:
+    if request is None:
+        raise HTTPException(status_code=503, detail="Live streams require an application context")
+    registry = getattr(request.app.state, "session_tail_registry", None)
+    if registry is None:
+        registry = SessionTailRegistry(store_path())
+        request.app.state.session_tail_registry = registry
+    if registry.path != store_path():
+        raise HTTPException(
+            status_code=409, detail=StreamResyncError("frontier_unavailable").detail
+        )
+    return registry
+
+
+def _live_tail_response(subscriber: Any) -> Any:
+    from starlette.responses import StreamingResponse
+
+    from lionagi.ln.concurrency import CancelScope
+
+    from ._sse import SSE_HEADERS
+
+    class LiveTailResponse(StreamingResponse):
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                # This lease exists before body iteration; even a failed header
+                # send or an unstarted generator must release it.
+                with CancelScope(shield=True):
+                    await subscriber.owner.registry.unsubscribe(subscriber)
+
+    return LiveTailResponse(
+        subscriber.frames(), media_type="text/event-stream", headers=SSE_HEADERS
+    )
 
 
 class SessionLabelBody(BaseModel):
@@ -263,7 +300,9 @@ async def _fetch_action_link_ids(
             """,  # noqa: S608
             [*chunk, MAX_ACTION_ID_SCAN_CHARS],
         )
-        for row in await cur.fetchall():
+        rows = await cur.fetchall()
+        await cur.close()
+        for row in rows:
             found = {
                 key: str(row[key])
                 for key in ("action_request_id", "action_response_id")
@@ -1220,6 +1259,8 @@ async def get_session(
     message_limit: int = DEFAULT_MESSAGE_LIMIT,
     message_offset: int = 0,
     message_cursor: str | None = None,
+    live_snapshot: bool = False,
+    tail_registry: SessionTailRegistry | None = None,
 ) -> dict[str, Any] | None:
     require_file_store()
     if not store_exists():
@@ -1233,7 +1274,15 @@ async def get_session(
         else None
     )
 
+    stream_snapshot = None
+    if live_snapshot and tail_registry is None:
+        raise ValueError("live_snapshot requires an application tail registry")
+    if live_snapshot and tail_registry.path != store_path():
+        raise StreamResyncError("frontier_unavailable")
     async with _open_db(store_path()) as db:
+        if live_snapshot:
+            async with db.execute("BEGIN"):
+                pass
         approximate_end = await _approximate_end_selection(db)
         user_label = await _user_label_selection(db)
         cur = await db.execute(
@@ -1415,6 +1464,23 @@ async def get_session(
             else None
         )
 
+        if live_snapshot:
+            async with db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_signals'"
+            ) as cursor:
+                has_signals = await cursor.fetchone() is not None
+            signal_seq = 0
+            if has_signals:
+                async with db.execute(
+                    "SELECT COALESCE(MAX(seq),0) FROM session_signals WHERE session_id=?",
+                    (session_id,),
+                ) as cursor:
+                    signal_seq = (await cursor.fetchone())[0]
+            stream_snapshot = tail_registry.snapshot(
+                session_id, capture_frontiers(branch_rows, progression_ids), signal_seq
+            )
+            await db.rollback()
+
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
     ended_at_is_approximate = bool(session_row["ended_at_is_approximate"])
@@ -1441,6 +1507,7 @@ async def get_session(
     )
 
     return {
+        **({"stream_snapshot": stream_snapshot} if live_snapshot else {}),
         "id": session_row["id"],
         # Nullable CLI-run provenance; consumers must use ``id`` for this
         # Session projection's routes, controls, streams, and row identity.
@@ -1686,6 +1753,8 @@ async def get_session_route(
     message_limit: int = DEFAULT_MESSAGE_LIMIT,
     message_offset: int = 0,
     message_cursor: str | None = None,
+    live_snapshot: bool = False,
+    request: Request = None,
 ) -> dict[str, Any]:
     try:
         session = await get_session(
@@ -1693,7 +1762,14 @@ async def get_session_route(
             message_limit=message_limit,
             message_offset=message_offset,
             message_cursor=message_cursor,
+            **(
+                {"live_snapshot": True, "tail_registry": _session_tail_registry(request)}
+                if live_snapshot
+                else {}
+            ),
         )
+    except StreamResyncError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     except MessageCursorError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if session is None:
@@ -1727,11 +1803,26 @@ async def stream_session_route(
     cursor: str | None = Query(
         None, description="Opaque cursor from the last delivered session-message SSE frame"
     ),
+    mode: str | None = None,
+    request: Request = None,
 ):
     # Pre-flight 404 guard: without it a non-existent session silently
     # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
+
+    if mode is not None:
+        if mode != "live":
+            raise HTTPException(status_code=400, detail="Unsupported session stream mode")
+        try:
+            if not cursor:
+                raise StreamResyncError("frontier_unavailable")
+            subscriber = await _session_tail_registry(request).subscribe(
+                session_id, "messages", cursor
+            )
+        except StreamResyncError as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        return _live_tail_response(subscriber)
 
     # A reconnecting client passes back the id of the last frame it handled, so the
     # replay starts after that row rather than at the top of the session.
@@ -1818,10 +1909,29 @@ async def stream_session_route(
     name="stream_signals",
     response_class=None,
 )
-async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
+async def stream_signals(
+    session_id: str,
+    after_seq: int = 0,
+    mode: str | None = None,
+    snapshot: str | None = None,
+    request: Request = None,
+) -> Any:
     # Pre-flight 404 guard before opening the stream (ADR-0076).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
+
+    if mode is not None:
+        if mode != "live":
+            raise HTTPException(status_code=400, detail="Unsupported signal stream mode")
+        try:
+            if not snapshot:
+                raise StreamResyncError("frontier_unavailable")
+            subscriber = await _session_tail_registry(request).subscribe(
+                session_id, "signals", snapshot, after_seq=after_seq
+            )
+        except StreamResyncError as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        return _live_tail_response(subscriber)
 
     from . import signals as signals_svc
 
@@ -1865,3 +1975,34 @@ async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
     from ._sse import sse_response
 
     return sse_response(generate())
+
+
+@studio_route(
+    "/sessions/{session_id}/signals/page",
+    method="GET",
+    area="sessions",
+    name="session_signals_page",
+)
+async def session_signals_page(
+    session_id: str,
+    through_seq: int = Query(..., ge=0),
+    after_seq: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=500),
+) -> dict[str, Any]:
+    """One bounded persisted prefix page; this read does not subscribe to a live tail."""
+    if through_seq < after_seq:
+        raise HTTPException(status_code=422, detail="through_seq must be at least after_seq")
+    if not await session_exists(session_id):
+        raise NotFoundError(f"Session '{session_id}' not found")
+    from . import signals as signals_svc
+
+    rows = await signals_svc.get_signals_after(
+        session_id, after_seq, through_seq=through_seq, limit=limit + 1
+    )
+    page = rows[:limit]
+    return {
+        "signals": page,
+        "next_after_seq": page[-1]["seq"] if page else after_seq,
+        "through_seq": through_seq,
+        "has_more": len(rows) > limit,
+    }

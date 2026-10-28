@@ -338,11 +338,6 @@ def _mask_content_runs(body: Any, key: Any) -> Any:
     return body
 
 
-# The Messages API takes at most four cache marks per request and refuses one on a thinking block.
-_MAX_CACHE_MARKS = 4
-_UNMARKABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
-
-
 def _system_blocks(content: Any) -> list[dict]:
     """System content as a list of block copies: a string, a block, or a list of either.
 
@@ -363,76 +358,32 @@ def _system_blocks(content: Any) -> list[dict]:
     return blocks
 
 
-def _is_marked(block: Any) -> bool:
-    return isinstance(block, dict) and block.get("cache_control") is not None
-
-
 def _is_blank_text(block: dict) -> bool:
     return block.get("type") == "text" and not (
         isinstance(block.get("text"), str) and block["text"].strip()
     )
 
 
-def _blocks_in_prompt_order(payload: dict) -> list:
-    """Every block that can carry a cache mark, in the order the API reads the prompt: the tools,
-    the system blocks, then each message's blocks with a tool result's own blocks after it."""
-    blocks = [*(payload.get("tools") or ()), *(payload.get("system") or ())]
-    for message in payload.get("messages") or ():
-        content = message.get("content") if isinstance(message, dict) else None
-        for block in content if isinstance(content, list) else ():
-            blocks.append(block)
-            inner = block.get("content") if isinstance(block, dict) else None
-            if isinstance(inner, list):
-                blocks.extend(inner)
-    return blocks
-
-
 def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
-    """Write the stable blocks as the native system field and mark the segment ends (ADR-0127 D5).
+    """Write the stable blocks as the native system field and place the cache marks.
 
-    One one-hour mark ends the stable segment, on its last block; one five-minute mark goes on the
-    last block of the last message that can carry one, the end of the turn segment. The API reads
-    a one-hour mark only before every five-minute mark and takes at most four marks, so a one-hour
-    mark that would follow a five-minute mark already in the tools or the stable blocks is not
-    placed, and neither is a mark that would take the request past four. A block that already
-    carries a mark has it replaced. The last message is copied before it is marked, so the
-    caller's message list is left as it was handed in.
+    The marks follow ADR-0127 Amendment 3: a read of the deepest entry earlier requests of the
+    conversation wrote, the end of the turn when more of the conversation follows, one hour on
+    the end of the stable segment, then probes and the compiler's anchors, at most four in all
+    with the caller's own marks counted. Lists and blocks are copied before a mark is written,
+    so the caller's request is left as it was handed in. The placement is kept on the current
+    call, when there is one, for the completed request to update the conversation's entries.
     """
+    from lionagi.service._prompt_cache import current_call
+
+    from ._prompt_cache import place
+
     if stable_blocks:
         payload["system"] = stable_blocks
-    marks = sum(1 for block in _blocks_in_prompt_order(payload) if _is_marked(block))
-    if stable_blocks:
-        last = stable_blocks[-1]
-        earlier = [*(payload.get("tools") or ()), *stable_blocks[:-1]]
-        follows_a_short_mark = any(
-            _is_marked(block) and block["cache_control"].get("ttl") != "1h" for block in earlier
-        )
-        if not follows_a_short_mark and (_is_marked(last) or marks < _MAX_CACHE_MARKS):
-            marks += not _is_marked(last)
-            last["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
-    messages = payload.get("messages")
-    if not messages or not isinstance(messages[-1], dict):
-        return
-    content = messages[-1].get("content")
-    if isinstance(content, str):
-        content = [{"type": "text", "text": content}] if content.strip() else []
-    if not isinstance(content, list):
-        return
-    index = next(
-        (
-            i
-            for i in range(len(content) - 1, -1, -1)
-            if isinstance(content[i], dict)
-            and content[i].get("type") not in _UNMARKABLE_BLOCK_TYPES
-            and not _is_blank_text(content[i])
-        ),
-        None,
-    )
-    if index is None or (not _is_marked(content[index]) and marks >= _MAX_CACHE_MARKS):
-        return
-    marked = {**content[index], "cache_control": {"type": "ephemeral"}}
-    content = [*content[:index], marked, *content[index + 1 :]]
-    payload["messages"] = [*messages[:-1], {**messages[-1], "content": content}]
+    call = current_call()
+    placement = place(payload, call)
+    if call is not None:
+        call.placement = placement
 
 
 @AnthropicConfigs.MESSAGES.register

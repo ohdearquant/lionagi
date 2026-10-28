@@ -1872,6 +1872,56 @@ class TestReapedAndUnreapedTeardownBoundaries:
 
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
+    @pytest.mark.asyncio
+    async def test_absence_is_read_once_the_killed_members_are_reaped(self, monkeypatch):
+        """A member the forced kill reached answers the group probe until init
+        reaps it, which a loaded host can take a while to do after the child
+        exits. The teardown waits for that rather than reporting the group
+        unconfirmed at the instant the child is gone."""
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None)
+        spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
+        monkeypatch.setattr(cs, "capture_group_witnesses", lambda *args, **kwargs: ((4243, 10.0),))
+
+        async def forced(child, *, grace, group_witnesses):
+            child.returncode = -signal.SIGKILL
+
+        probes = []
+
+        def members(pgid):
+            probes.append(pgid)
+            return len(probes) <= 3
+
+        monkeypatch.setattr(cs, "aterminate_process_group", forced)
+        monkeypatch.setattr(cs, "_group_has_members", members)
+
+        outcome = await cs.end_child_group(proc, grace=1.0, spawned=spawned)
+
+        assert outcome is cs._ChildGroupCleanup.CONFIRMED_EMPTY
+        assert probes == [4242] * 5
+
+    @pytest.mark.asyncio
+    async def test_a_member_that_stays_leaves_the_group_unconfirmed_after_grace(self, monkeypatch):
+        import lionagi.providers._cli_subprocess as cs
+
+        proc = SimpleNamespace(pid=4242, returncode=None)
+        spawned = SpawnedProcess(pid=4242, pgid=4242, create_time=10.0)
+        monkeypatch.setattr(cs, "capture_group_witnesses", lambda *args, **kwargs: ((4243, 10.0),))
+
+        async def forced(child, *, grace, group_witnesses):
+            child.returncode = -signal.SIGKILL
+
+        monkeypatch.setattr(cs, "aterminate_process_group", forced)
+        monkeypatch.setattr(cs, "_group_has_members", lambda pgid: True)
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        outcome = await cs.end_child_group(proc, grace=0.1, spawned=spawned)
+
+        assert outcome is cs._ChildGroupCleanup.UNCONFIRMED
+        assert 0.1 <= loop.time() - started < 1.0
+
     def test_a_completed_but_reaped_spawn_is_not_signalled(self, monkeypatch):
         """A spawn task can complete AND its child be reaped before the
         done-callback runs. The pid is then just a number, and this path has no
