@@ -8,6 +8,7 @@ import pytest
 
 from lionagi.cli._api_usage import APIUsageCollector
 from lionagi.service._api_telemetry import collect_api_turn
+from lionagi.service._prompt_cache import ledger_for, prompt_cache_call
 from lionagi.service.accounts._types import AccountRoutingError
 from lionagi.service.resilience import RetryConfig
 from tests.service.accounts import test_routed_endpoint as routed
@@ -113,3 +114,18 @@ async def test_selected_attempt_sink_failure_preserves_real_response(monkeypatch
         result = await model.invoke(**routed.REQUEST)
     assert result.response["model"] == routed.MODEL
     assert len(transport.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_each_routed_attempt_is_noted_for_the_prompt_cache_under_its_account(
+    monkeypatch, tmp_path
+):
+    routed._install_accounts(monkeypatch, tmp_path)
+    model, transport = routed._model(monkeypatch, [routed.StubResponse(429), routed._response()])
+    model.endpoint.retry_config = RetryConfig(max_retries=1, base_delay=0.01, jitter=False)
+
+    with prompt_cache_call(ledger_for({})) as call:
+        await model.invoke(**routed.REQUEST)
+
+    assert len(transport.calls) == 2
+    assert [route for route, _started in call.attempts] == ["primary", "primary"]

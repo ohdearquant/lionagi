@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 from lionagi.ln.concurrency import CancelScope
 from lionagi.service._api_telemetry import record_selected_attempt
+from lionagi.service._prompt_cache import note_attempt
 
 from ._credentials import CredentialSources, resolve_account_key
 from ._ledger import CredentialLedger, default_ledger_path
@@ -147,6 +148,8 @@ class AccountRouter:
         record_selected_attempt(
             attempt_id=str(attempt.attempt_id), provider="anthropic", account_label=label
         )
+        # The prompt-cache entries this attempt writes or reads are evidenced on its account.
+        note_attempt(label)
         return attempt
 
     async def settle_response(self, attempt: RouterAttempt, body: Any) -> None:

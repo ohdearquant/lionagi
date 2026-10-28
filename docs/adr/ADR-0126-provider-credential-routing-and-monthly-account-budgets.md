@@ -147,8 +147,8 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:81`, `lionagi/service/imodel.py:706`,
-`lionagi/service/connections/api_calling.py:268-275`). HTTP retry happens inside the
+(`lionagi/operations/chat/chat.py:99`, `lionagi/service/imodel.py:709`,
+`lionagi/service/connections/api_calling.py:285-292`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
 `lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
@@ -157,7 +157,7 @@ Neither a successful outer operation nor its final response accounts for every
 attempt that might have reached the provider.
 
 **P3 — Shared models are not conversation identities.** API Branch clones share
-their models (`lionagi/session/branch.py:576`). Binding a credential on that
+their models (`lionagi/session/branch.py:578`). Binding a credential on that
 shared endpoint would couple independent conversations. Switching accounts per
 call would instead disrupt cache reuse. The Claude API isolates caches by
 workspace, so keys of different organizations never share a cache

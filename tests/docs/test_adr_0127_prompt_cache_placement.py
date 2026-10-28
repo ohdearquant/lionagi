@@ -333,6 +333,27 @@ def test_amendment_2_keeps_a_turns_context_at_that_turn_only_with_the_option_on(
     assert "the kept blocks survive a serialized round trip" in am2
 
 
+def test_amendment_3_chooses_marks_from_the_entries_written_only_with_the_option_on() -> None:
+    am3 = _amendment(3)
+    assert "Status: Proposed and implemented. Replaces D5's list of Anthropic marks" in am3
+    assert (
+        "With the option off, or on an endpoint without the declaration, compiled requests keep "
+        "their previous bytes" in am3
+    )
+    assert "The only edit before hashing is removing `cache_control` from the block itself" in am3
+    assert "fewer than 20 lookback positions past it" in am3
+    assert "Rows are written only from a completed request's own placement and usage" in am3
+    assert "therefore starts with no evidence" in am3
+    assert "a read's lifetime is never changed to make it legal" in am3
+    assert "A `final` request places no turn mark and no anchors" in am3
+    assert "Only `defect` is a defect" in am3
+    assert "is expected and measured, never guaranteed" in am3
+    assert "The streaming `run()` path opens no call context" in am3
+    assert "The chat compile names two: the end of an included first round" in am3
+    assert "**Amended by Amendment 3:**" in _decision(5)
+    assert "**Amended by Amendment 2:**" in _decision(4)
+
+
 def test_the_adapter_builds_the_native_system_block() -> None:
     d3 = _decision(3)
     assert (

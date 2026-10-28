@@ -148,7 +148,7 @@ what was measured and not a proof that there is no fourth:
 
 The second and third are the shadowing shape. Both are reachable without any private API:
 `update=True` is documented on two public functions, and the dict form is reachable
-through `Branch.register_tools([{...}])` (`branch.py:664-667` → `:657-662`). All three are decided
+through `Branch.register_tools([{...}])` (`branch.py:675-678` → `:668-673`). All three are decided
 by config ordering or argument type rather than by anything a caller expressed, and none
 announces itself.
 

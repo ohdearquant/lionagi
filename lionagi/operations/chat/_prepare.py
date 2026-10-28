@@ -15,6 +15,7 @@ from lionagi.protocols.messages import (
     AssistantResponse,
     Instruction,
     MessageRole,
+    System,
 )
 from lionagi.protocols.messages._result_projection import _projection_session
 from lionagi.protocols.messages.assistant_response import AssistantResponseContent
@@ -43,6 +44,10 @@ class _PreparedContent:
     tool_refs: list[Any] | None = None
     # Context providers' blocks kept for this turn, sent after its content as one more block.
     context: tuple[str, ...] = ()
+    # With the prompt cache placed: the round's tool results, rendered as their own text block
+    # ahead of the content (``results_of`` names the results it renders).
+    results: str | None = None
+    results_of: tuple[Any, ...] = ()
 
     @property
     def base_content(self) -> MessageContent:
@@ -203,7 +208,15 @@ def _prepare_run_kwargs(
     context_blocks: Sequence[str] | None = None,
     imodel: Any = None,
     _use_render_cache: bool = True,
+    cache_view: dict | None = None,
 ) -> tuple[Instruction, dict]:
+    """Compile the request for ``ins`` from the branch's active view.
+
+    With the prompt cache placed, ``cache_view``, when given, is filled with where the compiled
+    messages hold the end of the first round (``frontier``: message index, block index, and the
+    round's message ids) and the newest compaction note (``note``), as (message, block) places in
+    ``kw["messages"]``.
+    """
     if ins is None:
         ins = _build_instruction(branch, instruction, param)
 
@@ -266,11 +279,26 @@ def _prepare_run_kwargs(
                     prompt_context=_without_context(ins, shown)
                 )
 
+    frozen = _frozen_projection(branch, places_cache)
+
+    def _results(responses: list) -> str:
+        return _results_text(responses, projection, frozen)
+
     for i, msg in enumerate(branch.msgs.messages[j] for j in progression):
         if isinstance(msg, ActionResponse):
             _act_res.append(msg)
 
         elif isinstance(msg, AssistantResponse):
+            if places_cache and _act_res:
+                # ADR-0130 Amendment 4: results whose next instruction is gone keep their own
+                # user message at their place, the bytes they had at the head of that message.
+                _contents.append(
+                    _PreparedContent(
+                        content=InstructionContent(plain_content=_results(_act_res)),
+                        results_of=tuple(_act_res),
+                    )
+                )
+                _act_res = []
             _contents.append(
                 _PreparedContent(
                     source=msg,
@@ -285,16 +313,21 @@ def _prepare_run_kwargs(
                 if places_cache
                 else {"tool_schemas": [], "response_format": None}
             )
-            overlay = bool(_act_res) or i in _leave_out
+            merges_results = bool(_act_res) and not places_cache
+            overlay = merges_results or i in _leave_out
 
             if i in _leave_out:
                 updates["prompt_context"] = _without_context(msg, shown)
 
-            if _act_res:
+            results, results_of = None, ()
+            if merges_results:
                 d_ = _collect_action_dicts(_act_res, projection)
                 extended_ctx = list(updates.get("prompt_context", msg.content.prompt_context))
                 extended_ctx.extend(z for z in d_ if z not in extended_ctx)
                 updates["prompt_context"] = extended_ctx
+                _act_res = []
+            elif _act_res:
+                results, results_of = _results(_act_res), tuple(_act_res)
                 _act_res = []
 
             variant = "instruction_tool_refs" if places_cache else "prepared_instruction"
@@ -305,10 +338,15 @@ def _prepare_run_kwargs(
                     content=(msg.content.with_updates(**updates) if overlay else None),
                     tool_refs=refs if not overlay else None,
                     context=_turn_context(msg) if places_cache else (),
+                    results=results,
+                    results_of=results_of,
                 )
             )
 
-    if _act_res:
+    current_results, current_results_of = None, ()
+    if _act_res and places_cache:
+        current_results, current_results_of = _results(_act_res), tuple(_act_res)
+    elif _act_res:
         d_ = _collect_action_dicts(_act_res, projection)
         current = _use_ins_content if _use_ins_content is not None else ins.content
         extended_ctx = list(current.prompt_context)
@@ -323,7 +361,11 @@ def _prepare_run_kwargs(
         for entry in _contents[1:]:
             content = entry.base_content
             if isinstance(content, AssistantResponseContent):
-                if isinstance(merged[-1].base_content, AssistantResponseContent):
+                if places_cache:
+                    # Joined into one message at assembly, one text block each, so a later
+                    # response or note appends a block and leaves the earlier ones' bytes.
+                    merged.append(entry)
+                elif isinstance(merged[-1].base_content, AssistantResponseContent):
                     previous = merged[-1]
                     previous_content = previous.materialize()
                     previous_content.assistant_response = (
@@ -355,20 +397,30 @@ def _prepare_run_kwargs(
                 _PreparedContent(
                     content=_as_sent(ins.content.with_updates(guidance=f(ins.content))),
                     context=current_context,
+                    results=current_results,
+                    results_of=current_results_of,
                 )
             )
         elif len(_contents) >= 1:
-            head_context = _contents[0].context
-            first = _contents[0].materialize()
+            head = _contents[0]
+            first = head.materialize()
             if not isinstance(first, InstructionContent):
                 raise ValueError("First message in progression must be an Instruction or System")
             _contents[0] = _PreparedContent(
-                content=first.with_updates(guidance=f(first)), context=head_context
+                content=first.with_updates(guidance=f(first)),
+                context=head.context,
+                results=head.results,
+                results_of=head.results_of,
             )
             content_to_append = _use_ins_content or ins.content
             if content_to_append is not None:
                 _contents.append(
-                    _PreparedContent(content=_as_sent(content_to_append), context=current_context)
+                    _PreparedContent(
+                        content=_as_sent(content_to_append),
+                        context=current_context,
+                        results=current_results,
+                        results_of=current_results_of,
+                    )
                 )
     else:
         content_to_append = _use_ins_content or ins.content
@@ -377,6 +429,8 @@ def _prepare_run_kwargs(
                 _PreparedContent(
                     content=_as_sent(content_to_append),
                     context=_turn_context(ins) if places_cache else (),
+                    results=current_results,
+                    results_of=current_results_of,
                 )
             )
 
@@ -396,8 +450,14 @@ def _prepare_run_kwargs(
     _last_index = len(_contents) - 1
     _current_turn_rendered = None
 
+    placed = cache_view is not None and places_cache
+    round_ids = _round_ids(branch, progression, places_cache) if placed else None
+    if cache_view is not None and round_ids:
+        cache_view["round"] = round_ids
     chat_msgs = []
     for i, entry in enumerate(_contents):
+        # The stored message this entry renders, when it renders one: a note or a round member.
+        source = entry.source
         if _use_render_cache and entry.source is not None and entry.cache_variant is not None:
             source = entry.source
             if entry.cache_variant == "prepared_instruction":
@@ -430,13 +490,36 @@ def _prepare_run_kwargs(
             rendered = ""
         if i == _last_index:
             _current_turn_rendered = rendered
-        if not rendered:
+        if not rendered and entry.results is None:
             continue
-        if entry.context:
+        if rendered and entry.context:
             rendered = _with_context(rendered, entry.context)
+        if entry.results is not None:
+            # An instruction that renders nothing still sends the results it carries.
+            rendered = [
+                {"type": "text", "text": entry.results},
+                *(_as_blocks(rendered) if rendered else []),
+            ]
+        elif entry.results_of:
+            rendered = _as_blocks(rendered)
         role = entry.role
         role_str = role.value if isinstance(role, MessageRole) else str(role)
-        chat_msgs.append({"role": role_str, "content": rendered})
+        if (
+            places_cache
+            and role_str == "assistant"
+            and chat_msgs
+            and chat_msgs[-1]["role"] == "assistant"
+        ):
+            previous = chat_msgs[-1]
+            blocks = _as_blocks(previous["content"])
+            slot = len(blocks)
+            previous["content"] = [*blocks, *_as_blocks(rendered)]
+        else:
+            slot = 0
+            chat_msgs.append({"role": role_str, "content": rendered})
+        if cache_view is not None and places_cache:
+            last = slot + len(_as_blocks(rendered)) - 1
+            _note_view(cache_view, source, entry, len(chat_msgs) - 1, slot, last, round_ids)
 
     # If the caller supplied real content but it rendered empty and got
     # filtered out above, the call would silently go out carrying only
@@ -551,3 +634,95 @@ def _with_context(rendered: str | list, blocks: tuple[str, ...]) -> list:
     """A turn's rendered content followed by its context blocks as one more text block."""
     parts = [{"type": "text", "text": rendered}] if isinstance(rendered, str) else list(rendered)
     return [*parts, {"type": "text", "text": "\n".join(blocks)}]
+
+
+def _as_blocks(rendered: str | list) -> list:
+    return [{"type": "text", "text": rendered}] if isinstance(rendered, str) else list(rendered)
+
+
+def _results_text(responses: list, projection: Any, frozen: Any) -> str:
+    """Tool results as the block that carries them when the prompt cache is placed.
+
+    Results of the protected first round are projected with the bound recorded when the round
+    was protected, so they keep their bytes when the current bound changes.
+    """
+    from lionagi.libs.schema.minimal_yaml import minimal_yaml
+
+    members, frozen_projection = frozen
+    dicts = []
+    for response in to_list(responses, flatten=True, unique=True):
+        used = frozen_projection if str(response.id) in members else projection
+        dicts.extend(_collect_action_dicts([response], used))
+    return minimal_yaml({"ToolResults": dicts}).strip()
+
+
+def _frozen_projection(branch: "Branch", places_cache: bool) -> tuple[frozenset, Any]:
+    """The protected round's member ids and the projection its results compile with."""
+    from lionagi.service._prompt_cache import protection
+
+    record = protection(branch.metadata) if places_cache else None
+    if not record or not record.get("included"):
+        return frozenset(), None
+    from lionagi.protocols.messages._result_projection import _authority, _ProjectionSession
+
+    bound = (record.get("projection") or {}).get("max_chars")
+    current = _authority.get()
+    authority = current[1] if current is not None and current[0] is branch else None
+    session = (
+        _ProjectionSession(branch, bound, authority=authority) if isinstance(bound, int) else None
+    )
+    return frozenset(record.get("members") or ()), session
+
+
+def _round_ids(branch: "Branch", progression: Sequence, places_cache: bool) -> tuple | None:
+    """The first round's member ids: the protection record's once decided, else the view's."""
+    from lionagi.service._prompt_cache import protection
+
+    record = protection(branch.metadata) if places_cache else None
+    if record is not None:
+        return tuple(record["members"]) or None
+    return first_round(branch, progression)
+
+
+def first_round(branch: "Branch", progression: Sequence) -> tuple[str, ...] | None:
+    """The ids of the first round in the active view, in order: the first instruction, its
+    answer and that answer's tool calls and results, up to the next instruction, answer or
+    compaction note; None until that round has an answer."""
+    ids: list[str] = []
+    answered = False
+    for uid in progression:
+        msg = branch.msgs.messages[uid]
+        if isinstance(msg, System):
+            continue
+        if is_note(msg):
+            # A note stands for the rounds it folded, never for this one.
+            break
+        if isinstance(msg, Instruction):
+            if ids:
+                break
+        elif not ids:
+            return None
+        if isinstance(msg, AssistantResponse):
+            if answered:
+                break
+            answered = True
+        ids.append(str(msg.id))
+    return tuple(ids) if answered else None
+
+
+def is_note(message: Any) -> bool:
+    """A compaction note, recognized by the provenance the context tool writes on it."""
+    return isinstance(message, AssistantResponse) and "context_first_index" in message.metadata
+
+
+def _note_view(view: dict, source, entry, index: int, slot: int, last: int, round_ids) -> None:
+    """Record where the newest note and the end of the first round sit in the messages."""
+    if source is not None and is_note(source):
+        view["note"] = (index, last)
+    if not round_ids:
+        return
+    # The round's results open the message that follows its answer: its last block is theirs.
+    if entry.results_of and all(str(r.id) in round_ids for r in entry.results_of):
+        view["frontier"] = (index, slot)
+    elif source is not None and str(source.id) in round_ids:
+        view["frontier"] = (index, last)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import JsonValue, ValidationError
@@ -29,6 +30,7 @@ from lionagi.lndl import (
     normalize_lndl_text,
     replace_actions,
 )
+from lionagi.service._prompt_cache import cache_intent
 
 from .._defaults import get_default_action_call
 from .._turn_origin import TurnOrigin
@@ -508,8 +510,11 @@ def build_lndl_middle(
             # Tools shown as calls are shown nowhere else: the round's request carries no
             # tool section in a cached system block either.
             token = _no_tool_section.set(True) if tools_as_calls else None
+            # No round follows the last one, so its request reads the cache and writes none.
+            last = cache_intent("final") if round_num == round_budget else nullcontext()
             try:
-                text = await _run_round_chat(branch, round_instruction, round_chat_param)
+                with last:
+                    text = await _run_round_chat(branch, round_instruction, round_chat_param)
             finally:
                 if token is not None:
                     _no_tool_section.reset(token)

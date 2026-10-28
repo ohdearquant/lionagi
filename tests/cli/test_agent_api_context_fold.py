@@ -1140,6 +1140,57 @@ async def test_amendment2_floor_view_controls_summary_admission(monkeypatch, ove
 
 
 @pytest.mark.asyncio
+async def test_the_summary_request_places_no_turn_mark_and_keeps_its_cache_usage(monkeypatch):
+    import math
+
+    from lionagi.agent.context_fold import ContextFold
+
+    branch, task = _branch_with_reasoning(1000000, turns=6)
+    branch.chat_model = iModel(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        api_key="test-not-a-key",
+        max_tokens=64,
+        max_input_tokens=1000000,
+        prompt_caching=True,
+    )
+    branch.metadata["context_delivered"] = [str(uid) for uid in branch.progression]
+    fold = ContextFold(branch, cap=1000000)
+    messages = list(branch.msgs.messages)
+    # With the prompt cache placed the first round, the task and its answer, is kept ahead of
+    # every fold until it is decided (ADR-0130 Amendment 4).
+    floor = fold._estimate_view([task, messages[1], *messages[-2:]])
+    fold.cap = math.ceil(floor / 0.8)
+    sent = []
+
+    async def call(self, request, *args, **kwargs):
+        sent.append(request)
+        reply = _text("short factual summary")
+        reply["usage"] = {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 7,
+            "cache_creation_input_tokens": 3,
+        }
+        return reply
+
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "call", call)
+    await fold.fold(reason="threshold")
+
+    (summary,) = [record for record in fold.records if record["stage"] == "all"]
+    assert len(sent) == 1
+    # A side request: the conversation's turn mark never lands on the summary prompt.
+    assert "cache_control" not in json.dumps(sent[0]["messages"])
+    assert summary["summary_usage"] == {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_input_tokens": 7,
+        "cache_creation_input_tokens": 3,
+    }
+    assert "prompt_cache" not in branch.metadata
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("curated", [False, True])
 @pytest.mark.parametrize("raises_scale", [False, True])
 async def test_amendment2_nonshrinking_summary_rolls_back_at_settled_scale(curated, raises_scale):
