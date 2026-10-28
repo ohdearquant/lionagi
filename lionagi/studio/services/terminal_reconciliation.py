@@ -83,7 +83,7 @@ async def _prepare_settings_delivery(
     def deliver_from_current_settings() -> Any:
         # File access and configured-module imports can block; the reconciler
         # tracks this synchronous work through timeout and late completion.
-        project_dir = path if path and Path(path).is_dir() else None
+        project_dir = path if path and Path(path).is_absolute() and Path(path).is_dir() else None
         try:
             settings = load_settings(
                 project_dir=project_dir, include_project=project_dir is not None
