@@ -843,6 +843,7 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
         {
             "actor": "create_session",
             "created_at": "<t:number>",
+            "delivery_eligible": 0,
             "entity_id": "<id:3>",
             "entity_type": "session",
             "evidence_refs": [],

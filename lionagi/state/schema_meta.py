@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Column,
     Float,
@@ -902,6 +903,7 @@ status_transitions = Table(
     Column("actor", Text),
     Column("created_at", Float, nullable=False),
     Column("metadata", JSON),
+    Column("delivery_eligible", Boolean),
 )
 
 Index(
@@ -916,6 +918,16 @@ Index(
     status_transitions.c.created_at,
 )
 Index("idx_status_transitions_created", status_transitions.c.created_at)
+
+# terminal_consumers
+
+terminal_consumers = Table(
+    "terminal_consumers",
+    metadata,
+    Column("name", Text, primary_key=True),
+    Column("registered_at", Float, nullable=False),
+    Column("retired_at", Float),
+)
 
 # terminal_deliveries
 # Reconciliation-consumer acknowledgment ledger; see

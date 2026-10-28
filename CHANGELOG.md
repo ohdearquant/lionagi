@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Studio reconciles eligible terminal transitions for a registered settings
+  consumer at startup and on its periodic tick. Delivery is at least once;
+  consumers can deduplicate by transition event ID. Operator force-transitions
+  now notify terminal consumers. Per-run notification overrides and the
+  no-session fallback remain push-only; replay uses delivery-time project or
+  global settings. An unknown or moved project path can make replay choose a
+  different notifier from the original process.
+
+- State schema version 6 records terminal-delivery eligibility and consumer
+  registrations. After upgrading, restart every process that opens the store,
+  including Studio daemons, schedulers and long-running CLI processes. Old
+  already-open processes can write unclassified rows that are excluded from
+  replay. Historical terminal rows with a NULL predecessor also remain
+  unclassified when initialization and reaper transitions cannot be separated.
+
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in
   `metadata["prompt_cache"]`, keyed by a prefix certificate over the request through the marked

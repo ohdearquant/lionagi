@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
 -- so a migrated database reports the shape it now has.
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '5');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '6');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -787,7 +787,8 @@ CREATE TABLE IF NOT EXISTS status_transitions (
   source          TEXT    NOT NULL,    -- 'executor' | 'agent' | 'admin' | 'system'
   actor           TEXT,                -- session_id, user, 'doctor_auto', ...
   created_at      REAL    NOT NULL,
-  metadata        JSON                 -- optional: timing, exit code, exc class
+  metadata        JSON,                -- optional: timing, exit code, exc class
+  delivery_eligible BOOLEAN           -- NULL only when eligibility is unknown
 );
 
 CREATE INDEX IF NOT EXISTS idx_status_transitions_entity
@@ -804,6 +805,12 @@ CREATE INDEX IF NOT EXISTS idx_status_transitions_created
 -- row here, once, when it has durably processed a terminal event. The
 -- composite primary key makes concurrent/repeated acks of the same event by
 -- the same consumer a single-row no-op (INSERT ... ON CONFLICT DO NOTHING).
+
+CREATE TABLE IF NOT EXISTS terminal_consumers (
+  name            TEXT    PRIMARY KEY,
+  registered_at   REAL    NOT NULL,
+  retired_at      REAL
+);
 
 CREATE TABLE IF NOT EXISTS terminal_deliveries (
   transition_id   TEXT    NOT NULL REFERENCES status_transitions(id),

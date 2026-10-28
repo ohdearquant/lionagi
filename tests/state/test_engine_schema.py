@@ -297,6 +297,7 @@ ALL_TABLES = {
     "admin_events",
     "artifacts",
     "status_transitions",
+    "terminal_consumers",
     "terminal_deliveries",
     "session_signals",
     "engine_runs",

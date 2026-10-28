@@ -2157,3 +2157,303 @@ async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
         f"{sid}-timer": (True, None),
         f"{sid}-plain": (False, None),
     }
+
+
+# Terminal consumer replay uses one JSON exclusion parameter on each backend.
+# PostgreSQL cases live in this module because pg_url is session-scoped and its
+# async driver connections must not be shared across unrelated pytest loops.
+
+
+@pytest_asyncio.fixture
+async def isolated_consumer_postgres(pg_url, monkeypatch):
+    from sqlalchemy import event, text
+
+    import lionagi.state.db as db_module
+
+    schema = "consumer_" + uuid.uuid4().hex
+    make_engine = db_module.make_engine
+    admin = make_engine(pg_url)
+    state = None
+    created = False
+    try:
+        async with admin.begin() as conn:
+            # The suffix is generated locally as lowercase hexadecimal.
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))  # noqa: S608
+        created = True
+
+        def scoped_engine(url, **kwargs):
+            engine = make_engine(url, **kwargs)
+
+            @event.listens_for(engine.sync_engine, "connect")
+            def set_schema(connection, _record):
+                cursor = connection.cursor()
+                try:
+                    cursor.execute(f'SET search_path TO "{schema}"')  # noqa: S608
+                finally:
+                    cursor.close()
+                connection.commit()
+
+            return engine
+
+        with monkeypatch.context() as patch:
+            patch.setattr(db_module, "make_engine", scoped_engine)
+            state = StateDB(url=pg_url)
+            await state.open()
+        yield state
+    finally:
+        try:
+            if state is not None:
+                await state.close()
+        finally:
+            try:
+                if created:
+                    async with admin.begin() as conn:
+                        await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))  # noqa: S608
+            finally:
+                await admin.dispose()
+
+
+async def _consumer_test_fact(db: StateDB, ident: str, *, timestamp: float = 5.0) -> None:
+    await db.execute(
+        "INSERT INTO status_transitions "
+        "(id, entity_type, entity_id, previous_status, status, reason_code, source, created_at, "
+        "delivery_eligible) VALUES (:id, 'session', :id, 'running', 'failed', "
+        "'session.stale.no_heartbeat', 'system', :timestamp, :eligible)",
+        {"id": ident, "timestamp": timestamp, "eligible": True},
+    )
+
+
+async def _consumer_replay_contract(db: StateDB) -> None:
+    import asyncio
+
+    from lionagi.state.lifecycle.deliveries import (
+        ack_delivery,
+        is_acknowledged,
+        reconcile_unacknowledged,
+        register_consumer,
+        retire_consumer,
+    )
+
+    for ident in ("a", "b", "c", "d"):
+        await _consumer_test_fact(db, ident)
+    now = await register_consumer(db, "starting-now", start="now")
+    assert now.created
+    assert await reconcile_unacknowledged(db, "starting-now") == []
+    await register_consumer(db, "all", start="all")
+
+    async def ids(**kwargs):
+        return [r["transition_id"] for r in await reconcile_unacknowledged(db, "all", **kwargs)]
+
+    # Nontrivial JSON exclusion must happen in SQL before LIMIT; tie ordering
+    # must use transition id as the second cursor component.
+    assert await ids(limit=2, exclude_ids=["a", "b"]) == ["c", "d"]
+    assert await ids(limit=1, after=(5.0, "b")) == ["c"]
+    assert await ids(after=(5.0, "d")) == []
+    assert await ids() == ["a", "b", "c", "d"]
+
+    # No claim is exclusive: concurrent acknowledgements and retirement may
+    # overlap, and a late successful delivery remains acknowledged.
+    await asyncio.gather(
+        retire_consumer(db, "all"),
+        ack_delivery(db, "a", "all"),
+        ack_delivery(db, "a", "all"),
+    )
+    assert await is_acknowledged(db, "a", "all")
+    await ack_delivery(db, "b", "all")
+    assert await ids() == []
+    ack_rows = await db.fetch_all(
+        "SELECT transition_id FROM terminal_deliveries WHERE consumer = :consumer "
+        "ORDER BY transition_id",
+        {"consumer": "all"},
+    )
+    assert [r["transition_id"] for r in ack_rows] == ["a", "b"]
+    restored = await register_consumer(db, "all", start="all", reactivate=True)
+    assert restored.reactivated
+    assert await ids() == ["c", "d"]
+
+
+async def test_sqlite_consumer_replay_contract(sqlite_db):
+    await _consumer_replay_contract(sqlite_db)
+
+
+async def test_postgres_consumer_replay_contract(isolated_consumer_postgres):
+    await _consumer_replay_contract(isolated_consumer_postgres)
+
+
+async def test_postgres_registration_now_excludes_an_uncommitted_older_transition(
+    isolated_consumer_postgres,
+):
+    import asyncio
+
+    from sqlalchemy import text
+
+    from lionagi.state.lifecycle.deliveries import reconcile_unacknowledged, register_consumer
+
+    db = isolated_consumer_postgres
+    await _consumer_test_fact(db, "already-committed", timestamp=10.0)
+    # The writer really inserts before enrollment but does not commit until
+    # enrollment finishes. Its old event timestamp is not a replay watermark.
+    async with db._engine.connect() as conn:
+        transaction = await conn.begin()
+        try:
+            await conn.execute(
+                text(
+                    "INSERT INTO status_transitions "
+                    "(id, entity_type, entity_id, previous_status, status, reason_code, "
+                    "source, created_at, delivery_eligible) VALUES "
+                    "('late', 'session', 'late', 'running', 'failed', "
+                    "'session.stale.no_heartbeat', 'system', 1.0, TRUE)"
+                )
+            )
+            registration = await asyncio.wait_for(register_consumer(db, "now", start="now"), 10)
+            assert registration.created
+            await transaction.commit()
+        finally:
+            if transaction.is_active:
+                await transaction.rollback()
+    pending = await reconcile_unacknowledged(db, "now")
+    assert [row["transition_id"] for row in pending] == ["late"]
+
+
+@pytest.mark.parametrize("starts", [("now", "now"), ("all", "all"), ("now", "all")])
+async def test_postgres_concurrent_same_consumer_registration_and_ack(
+    isolated_consumer_postgres, monkeypatch, starts
+):
+    """Both registration snapshots precede the competing writes; ACKs really block on a row."""
+    import asyncio
+
+    from sqlalchemy import text
+
+    from lionagi.state.lifecycle import deliveries
+
+    db = isolated_consumer_postgres
+    await _consumer_test_fact(db, "before-a", timestamp=1.0)
+    await _consumer_test_fact(db, "before-b", timestamp=2.0)
+    original_check = deliveries._check_schema
+    snapshots_ready = asyncio.Event()
+    release_registration = asyncio.Event()
+    snapshots = []
+    check_calls = []
+
+    async def synchronized_check(conn):
+        marker = await original_check(conn)
+        pid = (await conn.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        check_calls.append(pid)
+        # The first two checks pin distinct repeatable-read snapshots. Retries
+        # must not re-enter the barrier after a serialization failure.
+        if len(snapshots) < 2:
+            snapshots.append(pid)
+            if len(snapshots) == 2:
+                snapshots_ready.set()
+            await asyncio.wait_for(release_registration.wait(), timeout=10)
+        return marker
+
+    async def register(start):
+        return await deliveries.register_consumer(db, "race", start=start)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(deliveries, "_check_schema", synchronized_check)
+        tasks = [asyncio.create_task(register(start)) for start in starts]
+        try:
+            await asyncio.wait_for(snapshots_ready.wait(), timeout=10)
+            assert len(set(snapshots)) == 2
+            release_registration.set()
+            registrations = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+        finally:
+            release_registration.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert sum(reg.created for reg in registrations) == 1
+    assert registrations[0].registered_at == registrations[1].registered_at
+    # Both snapshots predate the other's commit; the loser must retry the
+    # PostgreSQL serialization conflict and observe the existing registration.
+    assert len(check_calls) >= 3
+    winner = next(i for i, reg in enumerate(registrations) if reg.created)
+    expected = [] if starts[winner] == "now" else ["before-a", "before-b"]
+    rows = await deliveries.reconcile_unacknowledged(db, "race")
+    assert [row["transition_id"] for row in rows] == expected
+    baseline = await db.fetch_all(
+        "SELECT transition_id FROM terminal_deliveries WHERE consumer = :consumer ORDER BY transition_id",
+        {"consumer": "race"},
+    )
+    assert [row["transition_id"] for row in baseline] == (
+        ["before-a", "before-b"] if starts[winner] == "now" else []
+    )
+
+    # A separate open transaction establishes the conflicting ACK first. Both
+    # API calls are required to wait on that exact row before it commits.
+    await _consumer_test_fact(db, "ack-target", timestamp=3.0)
+    ack_pids = []
+    ack_ready = asyncio.Event()
+
+    async def trace_ack_check(conn):
+        marker = await original_check(conn)
+        ack_pids.append((await conn.execute(text("SELECT pg_backend_pid()"))).scalar_one())
+        if len(ack_pids) == 2:
+            ack_ready.set()
+        return marker
+
+    async with db._engine.connect() as blocker:
+        transaction = await blocker.begin()
+        tasks = []
+        try:
+            await blocker.execute(
+                text(
+                    "INSERT INTO terminal_deliveries (transition_id, consumer, acked_at) "
+                    "VALUES ('ack-target', 'race', 5.0)"
+                )
+            )
+            with monkeypatch.context() as patch:
+                patch.setattr(deliveries, "_check_schema", trace_ack_check)
+                tasks = [
+                    asyncio.create_task(deliveries.ack_delivery(db, "ack-target", "race"))
+                    for _ in range(2)
+                ]
+                await asyncio.wait_for(ack_ready.wait(), timeout=10)
+                assert len(set(ack_pids)) == 2
+
+                async def wait_for_lock_conflicts():
+                    async with db._engine.connect() as observer:
+                        # PostgreSQL can cache statistics within a transaction;
+                        # each observation must see a fresh activity snapshot.
+                        observer = await observer.execution_options(isolation_level="AUTOCOMMIT")
+                        while True:
+                            waiting = (
+                                (
+                                    await observer.execute(
+                                        text(
+                                            "SELECT pid FROM pg_stat_activity "
+                                            "WHERE pid IN (:first, :second) AND wait_event_type = 'Lock' "
+                                            "AND query LIKE 'INSERT INTO terminal_deliveries%'"
+                                        ),
+                                        {"first": ack_pids[0], "second": ack_pids[1]},
+                                    )
+                                )
+                                .scalars()
+                                .all()
+                            )
+                            if set(waiting) == set(ack_pids):
+                                return
+                            await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(wait_for_lock_conflicts(), timeout=10)
+                assert all(not task.done() for task in tasks)
+                await transaction.commit()
+                await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+        finally:
+            if transaction.is_active:
+                await transaction.rollback()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    ack_rows = await db.fetch_all(
+        "SELECT transition_id FROM terminal_deliveries "
+        "WHERE transition_id = :id AND consumer = :consumer",
+        {"id": "ack-target", "consumer": "race"},
+    )
+    assert ack_rows == [{"transition_id": "ack-target"}]
