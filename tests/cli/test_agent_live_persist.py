@@ -51,8 +51,9 @@ async def test_the_worker_thread_guard_sees_a_live_connection(temp_db_path: Path
 
 
 async def test_a_worker_from_before_the_test_that_exits_is_not_a_leak(temp_db_path: Path):
-    """A worker another test left running may exit while this one runs; the guard
-    reads that as nothing new, where a count comparison read one fewer as a change."""
+    """A worker already running at the snapshot, as another test's can be, may exit
+    before the check; the guard reads that as nothing new, where a count comparison
+    read one fewer as a change. The earlier worker here stands in for that test's."""
     start = aiosqlite_threads()
     earlier = StateDB(temp_db_path)
     await earlier.open()
@@ -1088,6 +1089,8 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
 ):
     """db.close() must run in finally even when update_session raises, so the aiosqlite worker is reclaimed."""
     branch = Branch(name="b1")
+    # Taken before the connection opens, so its own worker counts as new.
+    before = aiosqlite_threads()
     ctx = await _setup_live_persist(branch)
     db = ctx["db"]
 
@@ -1096,7 +1099,6 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
 
     monkeypatch.setattr(StateDB, "update_session", boom)
 
-    before = aiosqlite_threads()
     # MUST NOT raise — teardown logs and continues.
     await _teardown_live_persist(ctx, status="completed")
 

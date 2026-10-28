@@ -978,6 +978,8 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
 ):
     """If update_session raises during stop, the DB still closes via its own finally block (hang-fix invariant)."""
     env = _minimal_env()
+    # Taken before the connection opens, so its own worker counts as new.
+    before = aiosqlite_threads()
     await start_live_persist(env)
     db = env._live_persist["db"]
 
@@ -986,7 +988,6 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
 
     monkeypatch.setattr(StateDB, "update_session", boom)
 
-    before = aiosqlite_threads()
     await stop_live_persist(env, status="completed")  # MUST NOT raise
 
     # Connection was closed.
