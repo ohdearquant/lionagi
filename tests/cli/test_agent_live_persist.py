@@ -2083,3 +2083,35 @@ async def test_teardown_reconciles_after_delayed_mirror_row_creation(
 
     assert len(calls) >= 3
     assert final_status == "completed"
+
+
+async def test_failed_setup_closes_the_admitted_row_so_the_branch_resumes(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Setup that fails after admitting its session row closes that row out, so the
+    branch is not left behind a running row that refuses every later setup."""
+    import lionagi.hooks as hooks_mod
+
+    branch = Branch(name="b1")
+    original = hooks_mod.route_message_persistence
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("synthetic hook routing failure")
+
+    monkeypatch.setattr(hooks_mod, "route_message_persistence", refuse)
+    assert await _setup_live_persist(branch) is None
+
+    async with StateDB() as db:
+        stored = await db.get_branch(str(branch.id))
+        assert stored is not None, "the failure must land after the branch row is written"
+        row = await db.get_session(stored["session_id"])
+    assert row["status"] == "failed"
+    assert row["ended_at"] is not None
+
+    monkeypatch.setattr(hooks_mod, "route_message_persistence", original)
+    ctx = await _setup_live_persist(branch)
+    try:
+        assert ctx is not None and ctx["session_id"] == stored["session_id"]
+    finally:
+        if ctx is not None:
+            await _teardown_live_persist(ctx, status="completed")

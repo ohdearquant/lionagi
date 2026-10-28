@@ -1353,11 +1353,15 @@ The owner is bound during setup hooks and subsequent work, so provider attempts
 carry that exact session and generation. Invalid ownership or an unsupported
 compatibility profile refuses admission rather than degrading to an unowned
 persisted run. A new CLI invocation with no persisted owner masks an inherited
-binding; an embedded engine may inherit an explicitly bound owner.
+binding; an embedded engine may inherit an explicitly bound owner. A setup that
+fails after admitting its session row writes that row `failed` (`cancelled` when a
+cancellation ended it) before closing its handle, so a later setup on the branch
+finds a terminal session to reopen instead of a running one it must refuse.
 
 Teardown closes admission and drains both tokens and retained tasks before its
 existing terminal writes and bound database close. A cancellation received during
-the drain is remembered and propagated afterward. The effective status remains
+the drain is remembered and propagated afterward, and it makes `cancelled` the
+status this teardown requests. The effective status remains
 the actual teardown result, including a persisted nonterminal status or failure;
 cancellation intent does not erase a store refusal or a lost terminal-write
 marker. A database-close witness is published only after the exact bound handle

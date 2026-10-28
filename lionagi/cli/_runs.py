@@ -23,7 +23,7 @@ from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
-from lionagi.ln.concurrency import cancelled_exc_classes
+from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes
 from lionagi.providers._provider_errors import ProviderError, _WorkerSpawnAdmissionError
 from lionagi.utils import LIONAGI_HOME
 
@@ -2027,6 +2027,7 @@ async def setup_agent_persist(
     owner = None
     shared_db_registered = False
     fresh_session = False
+    admitted_session_id = None
     generation_id = str(uuid4())
     try:
         # Claim the branch before touching the shared DB registry: registering a
@@ -2081,6 +2082,7 @@ async def setup_agent_persist(
                 or existing_session.get("cli_worker_generation") != generation_id
             ):
                 raise _WorkerSpawnAdmissionError("the session generation was not admitted")
+            admitted_session_id = session_id
             if owner is None:
                 owner = _WorkerSpawnOwner(
                     db,
@@ -2186,6 +2188,7 @@ async def setup_agent_persist(
                 or (not unrecorded and admitted.get("cli_worker_generation") != generation_id)
             ):
                 raise _WorkerSpawnAdmissionError("the session generation was not admitted")
+            admitted_session_id = session_id
             if not unrecorded:
                 owner = _WorkerSpawnOwner(
                     db,
@@ -2322,6 +2325,7 @@ async def setup_agent_persist(
         return ctx
     except BaseException as exc:
         from lionagi.state.compat import refusal_in
+        from lionagi.state.reasons import RunReasons
 
         # A store that refuses a write in compatibility mode stops the run instead of
         # letting it go on without persistence (ADR-0128 D6); it is raised as itself, after
@@ -2343,6 +2347,34 @@ async def setup_agent_persist(
                 exc_info=True,
             )
             _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
+        if admitted_session_id is not None and db is not None:
+            # The row this setup admitted reads as a live execution while it stays running,
+            # and a later setup refuses a running session that comes without a continuation,
+            # so the branch could never be resumed. Close the row out before the handle goes.
+            cancelled = drain_cancel is not None or isinstance(exc, cancelled_exc_classes())
+            with CancelScope(shield=True):
+                try:
+                    await db.update_status(
+                        "session",
+                        admitted_session_id,
+                        new_status="cancelled" if cancelled else "failed",
+                        reason_code=(
+                            RunReasons.CANCELLED_SYSTEM
+                            if cancelled
+                            else RunReasons.FAILED_EXCEPTION
+                        ),
+                        reason_summary="live persist setup failed after the session row was admitted",
+                        source="executor",
+                        actor=admitted_session_id,
+                        expected_statuses={"running"},
+                        extra_fields=_terminal_status_extra_fields(
+                            db, ended_at=time.time(), duration_ms=None
+                        ),
+                    )
+                except Exception as status_exc:  # noqa: BLE001 -- the setup failure stays primary
+                    _log.warning(
+                        "could not close the session row a failed setup admitted: %s", status_exc
+                    )
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:
