@@ -174,7 +174,7 @@ belongs to the CLI's catalog and leaves the core with it (A4, step 3).
   fence identical to the opening one (same character, same length) at the same indentation, so a shorter or longer
   interior fence stays content; CRLF normalized inside blocks; trailing block newlines kept; blocks joined in source order; and the reply
   returned unchanged when it has no block. Its line numbers are at `c4abb363`.
-- **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:15` imports 15 LNDL names. It is LNDL's opt-in
+- **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:16` imports 15 LNDL names. It is LNDL's opt-in
   Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
   `lionagi.operations.lndl_middle`.
 - **Root exports.** `lionagi/__init__.py:97-105` exports nine LNDL names lazily through `_LAZY_MAP`. They stay

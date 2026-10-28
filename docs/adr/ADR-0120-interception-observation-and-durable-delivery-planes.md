@@ -680,7 +680,7 @@ exit of the invocation owning this subscription, including failure or cancellati
 cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
 `ReactiveExecutor` invokes each node's operation through `Operation.invoke`
 (`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
-(`lionagi/session/branch.py:475-503`, `:1197-1250`; `lionagi/operations/run/run.py:835-846`), all
+(`lionagi/session/branch.py:475-503`, `:1204-1257`; `lionagi/operations/run/run.py:835-846`), all
 before the enclosing flow returns (`lionagi/operations/flow.py:1717`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
