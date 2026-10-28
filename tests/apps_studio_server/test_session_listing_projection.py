@@ -373,9 +373,8 @@ async def test_projection_keeps_poisoned_collections_outside_nonzero_offset_page
 
 
 @pytest.mark.parametrize("reverse", [False, True], ids=["normal", "reverse-unordered"])
-async def test_recent_projection_keeps_tie_semantics_without_a_new_tiebreak(
-    projection_store, monkeypatch, reverse
-):
+async def test_recent_projection_returns_tied_rows_in_page(projection_store, monkeypatch, reverse):
+    """Tied timestamps have no specified relative order."""
     tied = {f"tie-{name}" for name in "abcd"}
     with sqlite3.connect(projection_store) as conn:
         conn.executemany(
