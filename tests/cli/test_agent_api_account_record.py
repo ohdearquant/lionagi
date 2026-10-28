@@ -15,6 +15,7 @@ from tests.cli.test_agent_run_json_error import _run
 @pytest.mark.asyncio
 async def test_the_launchers_account_name_lands_in_run_json(monkeypatch, tmp_path):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    _settings(monkeypatch, tmp_path)
     monkeypatch.setenv("LIONAGI_API_ACCOUNT", "acct-b")
     run = _run(monkeypatch, tmp_path)
 
@@ -28,6 +29,7 @@ async def test_the_launchers_account_name_lands_in_run_json(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 async def test_without_the_variable_run_json_names_no_account(monkeypatch, tmp_path):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    _settings(monkeypatch, tmp_path)
     monkeypatch.delenv("LIONAGI_API_ACCOUNT", raising=False)
     run = _run(monkeypatch, tmp_path)
 
@@ -51,6 +53,7 @@ def _real_runs_root(monkeypatch, tmp_path):
 @pytest.mark.parametrize("value", ["team_b-1", "a" * 32], ids=["name", "32 characters"])
 async def test_an_accepted_name_reaches_the_real_run_json(monkeypatch, tmp_path, value):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    _settings(monkeypatch, tmp_path)
     monkeypatch.setenv("LIONAGI_API_ACCOUNT", value)
     runs_root = _real_runs_root(monkeypatch, tmp_path)
 
@@ -98,6 +101,7 @@ async def test_a_value_that_is_not_an_account_name_is_refused_without_being_show
     monkeypatch, tmp_path, value
 ):
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    _settings(monkeypatch, tmp_path)
     monkeypatch.setenv("LIONAGI_API_ACCOUNT", value)
     runs_root = _real_runs_root(monkeypatch, tmp_path)
 
@@ -117,7 +121,8 @@ _TEAM_B = [{"name": "team-b", "key_env": "ACCT_B", "budget_usd": "10"}]
 
 
 def _settings(monkeypatch, tmp_path, *, accounts=(), dotenv=None):
-    """Settings declaring ``accounts``, built from one dotenv file holding ``dotenv`` if given."""
+    """Settings declaring ``accounts``, built from one dotenv file holding ``dotenv`` if given and
+    from no dotenv file otherwise, so no test reads a file outside its own directory."""
     from lionagi import config
     from lionagi.config import AppSettings
 

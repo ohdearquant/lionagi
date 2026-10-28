@@ -1366,14 +1366,14 @@ def _read_api_account() -> str | None:
     value of a credential-named or configured-account variable, in the environment or in the
     dotenv files the settings were built from.
     """
+    api_account = os.environ.get(_API_ACCOUNT_ENV)
+    if api_account is None:
+        return None
     from pydantic_settings import DotEnvSettingsSource
 
     from lionagi import config
     from lionagi.libs.credential_fields import is_secret_field_name
 
-    api_account = os.environ.get(_API_ACCOUNT_ENV)
-    if api_account is None:
-        return None
     if config._ACCOUNT_NAME_RE.fullmatch(api_account) is None or api_account.startswith("sk-"):
         raise ConfigurationError(
             f"{_API_ACCOUNT_ENV} must be an account name: a lowercase letter, then up to 31 "
