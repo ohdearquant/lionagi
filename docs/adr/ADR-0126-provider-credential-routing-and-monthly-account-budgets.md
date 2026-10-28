@@ -143,7 +143,7 @@ variable is unset. It pins the refusal before any run.json of a key, an `sk-` pr
 inside and at the end of a name, a mixed-case value, a capital, a `.`, an `@`, a digit, `-` or `_`
 first, a value of 33 characters, a space and an empty value; of a value held under a
 credential-named and under a configured-account variable, each in the environment and in a dotenv
-file; and of any name when a dotenv file cannot be read, with the value never shown in the error.
+file; and of a name when a dotenv file cannot be read, with the value never shown in the error.
 Its controls record the name when a credential variable holds a different value, and when a
 variable or a dotenv entry that is neither holds the same one.
 
