@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- `AgentSpec.max_tokens` sets the output-token limit on the Anthropic model `create_agent` builds,
+  `Engine(max_tokens=...)` sets it for every agent the engine makes, and
+  `ReviewEngine(stage_max_tokens={...})` sets it per stage (`review`, `review_fallback`,
+  `verify`, `verdict`). Without one, the Anthropic endpoint sends its default of 8192, which a
+  reviewer can spend entirely on thinking and return no text. A CLI agent, any other API provider
+  (the limit field is named differently there and only Anthropic's is mapped), a caller-supplied
+  `chat_model`, or an endpoint that does not keep the limit is refused at build rather than sent
+  the provider's default. A non-positive or non-integer limit is refused when the spec is built. The `raw_response` on emission events carries `max_tokens_configured`, the
+  limit the leg's model was built with.
+
 - Persisted CLI runs record worker spawn identities before output and drain owned work before terminal status or database close; agent resumes retain the adopted session with an execution generation.
 
 - API-model agent runs record per-request provider, requested model, prompt character

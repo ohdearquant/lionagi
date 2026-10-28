@@ -47,10 +47,14 @@ CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
 
 logger = logging.getLogger(__name__)
 
+# Providers whose endpoint takes ``spec.max_tokens`` as its output-token limit, each with a
+# test that reads the limit off the payload the endpoint would send.
+_MAX_TOKENS_PROVIDERS = frozenset({"anthropic"})
+
 
 class _AgentSettingError(ConfigurationError):
-    """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``
-    or ``prompt_caching``."""
+    """The agent being built cannot carry ``agent_env``, ``contain_account_integrations``,
+    ``prompt_caching`` or ``max_tokens``."""
 
     __slots__ = ()
 
@@ -115,6 +119,14 @@ async def create_agent(
     containment default, it raises with a caller-supplied ``chat_model`` or
     with no ``spec.model``, because either way this factory builds no endpoint
     to set it on.
+
+    ``spec.max_tokens`` sets the output-token limit on the Anthropic model this
+    factory builds, which sends 8192 when no layer names one. It raises with a
+    caller-supplied ``chat_model``, with no ``spec.model``, for a CLI provider,
+    which has no such limit, for any other API provider (the field is named
+    differently there, and only Anthropic's mapping is tested), and when the
+    endpoint built does not keep the limit in its request settings: each of
+    those would otherwise send the provider's default while the spec read as set.
     """
     spec = config
 
@@ -206,6 +218,17 @@ async def create_agent(
             "spec.prompt_caching requires spec.model: with no model this factory builds "
             "no endpoint, and the model the branch builds by default does not cache."
         )
+    if spec.max_tokens is not None and chat_model is not None:
+        raise _AgentSettingError(
+            "spec.max_tokens cannot be combined with a caller-supplied chat_model: it is "
+            "set on the endpoint this factory builds. Pass max_tokens when you build that "
+            "model, or let this factory build it."
+        )
+    if spec.max_tokens is not None and chat_model is None and not spec.model:
+        raise _AgentSettingError(
+            "spec.max_tokens requires spec.model: with no model this factory builds no "
+            "endpoint, and the model the branch builds by default would not carry the limit."
+        )
 
     branch_kwargs = {}
     # The request field holding an effort this factory derived from the codex user
@@ -254,6 +277,25 @@ async def create_agent(
                     derived_effort_kwarg = kwarg
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider_key, {}))
+        if spec.max_tokens is not None:
+            # A CLI request has no output limit to set: refuse, never send a limit the
+            # endpoint would drop (as the effort of a provider without an effort kwarg is).
+            if provider_key in CLI_PROVIDERS:
+                raise _AgentSettingError(
+                    f"spec.max_tokens is not carried by the {provider_key!r} CLI provider "
+                    f"(model {model_name!r}): a CLI agent has no output-token limit to set."
+                )
+            # An API provider names its limit field differently (OpenAI chat
+            # max_completion_tokens, Responses max_output_tokens), so only a provider whose
+            # mapping is tested here takes the limit; any other is refused, not sent as a
+            # key the endpoint may drop or reject.
+            if provider_key not in _MAX_TOKENS_PROVIDERS:
+                raise _AgentSettingError(
+                    f"spec.max_tokens is mapped only for {sorted(_MAX_TOKENS_PROVIDERS)}: the "
+                    f"{provider_key!r} provider (model {model_name!r}) has no tested mapping "
+                    "for an output-token limit."
+                )
+            extra["max_tokens"] = spec.max_tokens
 
         # CLI providers auth via subprocess, so a placeholder api_key is fine;
         # API providers need their real key or auth silently breaks.
@@ -282,6 +324,17 @@ async def create_agent(
                 f"agent_env was not taken by the {type(chat_model.endpoint).__name__} "
                 f"built for model {model_name!r}: this endpoint takes no environment for "
                 "a child process (the codex and claude_code CLI endpoints do)."
+            )
+        # Ask the endpoint, as for agent_env: a limit it did not keep would be sent as
+        # the provider's default while the spec read as set.
+        if (
+            spec.max_tokens is not None
+            and chat_model.endpoint.config.kwargs.get("max_tokens") != spec.max_tokens
+        ):
+            raise _AgentSettingError(
+                f"spec.max_tokens was not taken by the {type(chat_model.endpoint).__name__} "
+                f"built for model {model_name!r}: the endpoint did not keep it in its request "
+                "settings."
             )
         if spec.prompt_caching:
             chat_model.endpoint.config.prompt_caching = True
