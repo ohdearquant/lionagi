@@ -569,7 +569,7 @@ against the artifact set a node declared, it does not make.
   original run's. `resolve_checkpoint_target` returns the original run's `RunDir` with its
   `artifact_root` (`resolve_checkpoint_target` → `_find_run_dir_by_id`,
   `lionagi/cli/orchestrate/_checkpoint.py:174`), but `_resume_flow` keeps only the checkpoint dict
-  and drops the run dir (`lionagi/cli/orchestrate/flow.py:3863-3864`), and `_run_flow` allocates a run
+  and drops the run dir (`lionagi/cli/orchestrate/flow.py:3867-3868`), and `_run_flow` allocates a run
   again through `allocate_run`, whose root is chosen from `--save`: without `--save` the resumed
   run's `artifact_root` is a fresh directory, and with `--save` it is the path `--save` names. The
   path the resume passes comes from the replayed config, which carries the original `save_dir`
