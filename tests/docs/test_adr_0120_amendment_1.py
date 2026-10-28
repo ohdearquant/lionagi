@@ -225,7 +225,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     flat = _flat()
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
-    assert "lionagi/session/branch.py:477-505" in flat
+    assert "lionagi/session/branch.py:479-507" in flat
     assert "lionagi/operations/run/run.py:835-846" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:597-614" in flat
@@ -503,7 +503,8 @@ def test_amendment_citations_match_the_head_line_ranges() -> None:
     assert "already-committed source fact (`:493-498`)" in flat
     assert "durable delivery state (`:493-498`)" in flat
     assert "ADR-0125:495-499" in flat
-    assert "lionagi/session/branch.py:477-505`, `:1208-1261" in flat
+    assert "lionagi/session/branch.py:479-507`, `:1210-1263" in flat
+    assert "branch.py:477-505" not in flat
     assert "`:1197-1250" not in flat
     assert ":487-494" not in flat
     assert "(`:559`)" not in flat
