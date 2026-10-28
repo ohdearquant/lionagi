@@ -27,7 +27,8 @@ class MockApiError extends Error {
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/api")>("@/lib/api")),
   ApiError: MockApiError,
   getSession: getSessionMock,
   getInvocation: vi.fn().mockRejectedValue(new Error("no invocation in this test")),
@@ -125,7 +126,7 @@ describe("RunDetail — cursor-based backward pagination", () => {
     await mount();
 
     expect(getSessionMock).toHaveBeenCalledTimes(1);
-    expect(getSessionMock).toHaveBeenCalledWith("s1");
+    expect(getSessionMock).toHaveBeenCalledWith("s1", { liveSnapshot: true });
 
     // RunStepCard's own "N/total" counter reflects branch.messages.length —
     // the merge-correctness signal: a skip undercounts, a duplicate
