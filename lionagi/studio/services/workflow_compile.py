@@ -497,12 +497,12 @@ def build_early_graph(spec: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    node_ids = {n["id"] for n in nodes}
+    # by_id is also the membership test for an edge's endpoints.
     by_id = {n["id"]: n for n in nodes}
     edges: list[dict[str, Any]] = []
     for e in spec.get("edges", []):
         src, dst = e.get("from"), e.get("to")
-        if src not in node_ids or dst not in node_ids:
+        if src not in by_id or dst not in by_id:
             continue
         condition = e.get("condition")
         edges.append(

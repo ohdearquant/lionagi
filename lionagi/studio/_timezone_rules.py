@@ -57,13 +57,12 @@ def rules_equal(left: tuple | None, right: tuple | None) -> bool:
         return left[1] == right[1]
     if left[2] != right[2]:
         return False
-    read = [{}, {}]
     compared = 0
     points = _change_points(left[3]) | _change_points(right[3])
     for when in points | frozenset(_footer_points(left[3], right[3])):
         try:
-            mine = _behaviour(left[1], when, read[0])
-            theirs = _behaviour(right[1], when, read[1])
+            mine = _behaviour(left[1], when)
+            theirs = _behaviour(right[1], when)
         except (OverflowError, ValueError):
             # The instant itself is representable, but applying the file's own
             # offset to it is not: a transition near the end of the
@@ -110,19 +109,16 @@ def _footer_points(left: tuple, right: tuple) -> range:
     return range(max(start, _FIRST_WEEKLY_READ), min(end, _LAST_WEEKLY_READ) + 1, _WEEK_SECONDS)
 
 
-def _behaviour(zone: zoneinfo.ZoneInfo, when: int, cache: dict[int, tuple | None]) -> tuple | None:
-    """The UTC offset, daylight offset and name *zone* reads at *when*, kept once read."""
+def _behaviour(zone: zoneinfo.ZoneInfo, when: int) -> tuple | None:
+    """The UTC offset, daylight offset and name *zone* reads at *when*."""
     from lionagi.ln import coerce_created_at
 
-    if when not in cache:
-        try:
-            moment = coerce_created_at(when)
-        except (OSError, OverflowError, ValueError):
-            cache[when] = None
-        else:
-            local = moment.astimezone(zone)
-            cache[when] = (local.utcoffset(), local.dst(), local.tzname())
-    return cache[when]
+    try:
+        moment = coerce_created_at(when)
+    except (OSError, OverflowError, ValueError):
+        return None
+    local = moment.astimezone(zone)
+    return (local.utcoffset(), local.dst(), local.tzname())
 
 
 def read_tzif(path: Path, *, limit: int = MAX_TZIF_BYTES) -> bytes | None:

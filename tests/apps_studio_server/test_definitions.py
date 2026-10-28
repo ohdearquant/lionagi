@@ -738,3 +738,36 @@ async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
 
     assert result["version"] >= 1
     assert (agents_dir / "my-agent.md").exists(), "agents/ dir and file must be created"
+
+
+@pytest.mark.asyncio
+async def test_a_saved_playbook_reads_back_under_its_own_kind(tmp_path, monkeypatch):
+    """The save response and the read both name the definition's own kind, and
+    the read joins the disk content with the version the save recorded."""
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    agents_dir = fake_home / "agents"
+    playbooks_dir = fake_home / "playbooks"
+    agents_dir.mkdir(parents=True)
+    playbooks_dir.mkdir()
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    content = "name: kind-check\nsteps: []\n"
+    saved = await defs_mod.save_definition("playbook", "kind-check", content, "first")
+    assert saved["kind"] == "playbook"
+
+    got = await defs_mod.get_definition("playbook", "kind-check")
+
+    assert got is not None
+    assert got["kind"] == "playbook"
+    assert got["content"] == content
+    assert got["history_available"] is True
+    assert got["version"] == saved["version"]
+    assert [v["message"] for v in got["versions"]] == ["first"]

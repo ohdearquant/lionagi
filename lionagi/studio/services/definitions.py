@@ -240,19 +240,17 @@ def _resolve_skill_file(name: str) -> Path | None:
     return bare if bare.exists() else None
 
 
-async def _get_skill_definition(name: str) -> dict[str, Any] | None:
-    disk_file = await run_sync(partial(_resolve_skill_file, name))
-    if disk_file is None:
-        return None
-
-    content = await run_sync(disk_file.read_text)
-    path = _relative_path(disk_file)
-
+async def _definition_with_history(kind: str, name: str, path: str, content: str) -> dict[str, Any]:
+    """The disk half of a definition read, joined with its version history."""
+    # The disk half is current and correct whatever the store is, so it is
+    # answered either way. The history half is null rather than empty when the
+    # store cannot be read: a client that does not handle it fails on a null
+    # instead of quietly believing this definition was never versioned.
     try:
-        versions = await _read_history("skill", name)
+        versions = await _read_history(kind, name)
     except HistoryUnavailableError:
         return {
-            "kind": "skill",
+            "kind": kind,
             "name": name,
             "path": path,
             "content": content,
@@ -262,7 +260,7 @@ async def _get_skill_definition(name: str) -> dict[str, Any] | None:
         }
 
     return {
-        "kind": "skill",
+        "kind": kind,
         "name": name,
         "path": path,
         "content": content,
@@ -270,6 +268,15 @@ async def _get_skill_definition(name: str) -> dict[str, Any] | None:
         "versions": versions,
         "history_available": True,
     }
+
+
+async def _get_skill_definition(name: str) -> dict[str, Any] | None:
+    disk_file = await run_sync(partial(_resolve_skill_file, name))
+    if disk_file is None:
+        return None
+
+    content = await run_sync(disk_file.read_text)
+    return await _definition_with_history("skill", name, _relative_path(disk_file), content)
 
 
 async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
@@ -300,32 +307,7 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
         content = redact_agent_markdown(content, redact=True)
         path = abbreviate_path(path)
 
-    # The disk half is current and correct whatever the store is, so it is
-    # answered either way. The history half is null rather than empty when the
-    # store cannot be read: a client that does not handle it fails on a null
-    # instead of quietly believing this definition was never versioned.
-    try:
-        versions = await _read_history(kind, name)
-    except HistoryUnavailableError:
-        return {
-            "kind": kind,
-            "name": name,
-            "path": path,
-            "content": content,
-            "version": None,
-            "versions": None,
-            "history_available": False,
-        }
-
-    return {
-        "kind": kind,
-        "name": name,
-        "path": path,
-        "content": content,
-        "version": versions[0]["version"] if versions else 0,
-        "versions": versions,
-        "history_available": True,
-    }
+    return await _definition_with_history(kind, name, path, content)
 
 
 async def _read_version_row(kind: str, name: str, version: int) -> dict[str, Any] | None:
@@ -384,6 +366,40 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     }
 
 
+async def _write_version(
+    kind: str, name: str, disk_file: Path, content: str, message: str | None
+) -> dict[str, Any]:
+    """Store a new version, then write it to *disk_file*. The caller holds the
+    (kind, name) lock, so history is never behind disk."""
+    from lionagi.state.db import StateDB
+
+    now = time.time()
+
+    async with StateDB() as db:
+        version = await db.save_definition(
+            kind=kind,
+            name=name,
+            path=_relative_path(disk_file),
+            content=content,
+            message=message,
+        )
+
+    def _write_disk() -> None:
+        ensure_lionagi_dir(disk_file.parent)
+        disk_file.write_text(content)
+
+    await run_sync(_write_disk)
+
+    # ADR-0077 D2: response field is "saved_at", not "created_at"
+    return {
+        "kind": kind,
+        "name": name,
+        "version": version,
+        "saved_at": now,
+        "message": message,
+    }
+
+
 async def save_definition(
     kind: str,
     name: str,
@@ -432,8 +448,6 @@ async def save_definition(
         new_fm, _ = _parse_fm(content)
         _canonicalize_casts(dict(new_fm))
 
-    from lionagi.state.db import StateDB
-
     lock = await _lock_for(kind, name)
     async with lock:
         disk_file = await run_sync(partial(_find_definition_file, base, name))
@@ -451,31 +465,7 @@ async def save_definition(
             if _is_protected_system(existing_fm):
                 raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
 
-        now = time.time()
-
-        async with StateDB() as db:
-            version = await db.save_definition(
-                kind=kind,
-                name=name,
-                path=_relative_path(disk_file),
-                content=content,
-                message=message,
-            )
-
-        def _write_disk() -> None:
-            ensure_lionagi_dir(disk_file.parent)
-            disk_file.write_text(content)
-
-        await run_sync(_write_disk)
-
-    # ADR-0077 D2: response field is "saved_at", not "created_at"
-    return {
-        "kind": kind,
-        "name": name,
-        "version": version,
-        "saved_at": now,
-        "message": message,
-    }
+        return await _write_version(kind, name, disk_file, content, message)
 
 
 async def _save_skill_definition(
@@ -500,34 +490,9 @@ async def _save_skill_definition(
 
     disk_file = SKILLS_DIR / name / "SKILL.md"
 
-    from lionagi.state.db import StateDB
-
     lock = await _lock_for("skill", name)
     async with lock:
-        now = time.time()
-
-        async with StateDB() as db:
-            version = await db.save_definition(
-                kind="skill",
-                name=name,
-                path=_relative_path(disk_file),
-                content=content,
-                message=message,
-            )
-
-        def _write_disk() -> None:
-            ensure_lionagi_dir(disk_file.parent)
-            disk_file.write_text(content)
-
-        await run_sync(_write_disk)
-
-    return {
-        "kind": "skill",
-        "name": name,
-        "version": version,
-        "saved_at": now,
-        "message": message,
-    }
+        return await _write_version("skill", name, disk_file, content, message)
 
 
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:

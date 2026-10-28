@@ -181,7 +181,7 @@ async def _write_evidence(
     params_hash: str,
     justification_class: str | None = None,
     justification_reason: str | None = None,
-) -> dict[str, Any]:
+) -> None:
     """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free."""
     cur = await db.execute(
         "SELECT sequence, chain_hash FROM approval_evidence ORDER BY sequence DESC LIMIT 1"
@@ -235,23 +235,6 @@ async def _write_evidence(
             hmac_sig,
         ),
     )
-    return {
-        "id": evidence_id,
-        "sequence": sequence,
-        "event_type": event_type,
-        "approval_id": approval_id,
-        "action_kind": action_kind,
-        "status_from": status_from,
-        "status_to": status_to,
-        "params_hash": params_hash,
-        "justification_class": justification_class,
-        "justification_reason": justification_reason,
-        "created_at": created_at,
-        "content_hash": content_hash,
-        "previous_hash": previous_hash,
-        "chain_hash": chain_hash,
-        "hmac_sig": hmac_sig,
-    }
 
 
 async def verify_evidence_chain() -> dict[str, Any]:
