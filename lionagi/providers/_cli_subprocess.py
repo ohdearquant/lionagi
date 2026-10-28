@@ -1457,8 +1457,8 @@ async def ndjson_from_cli(
             try:
                 outcome = await end_child_group(proc, spawned=spawned)
             except BaseException as teardown_error:
-                # Without this line the error is lost: the consumer's own error is
-                # raised in its place below.
+                # The consumer's own error is the one raised below, so the teardown
+                # error is logged here or nowhere.
                 log.warning("CLI child group teardown raised %r", teardown_error)
                 _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED)
                 if primary_error is not None and not isinstance(primary_error, GeneratorExit):
