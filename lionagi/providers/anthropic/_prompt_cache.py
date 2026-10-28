@@ -63,9 +63,14 @@ class Point:
 
 
 def _canon(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str
-    ).encode()
+    try:
+        text = json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str
+        )
+    except TypeError:
+        # Keys of mixed types cannot be sorted; such a block certifies in the order it has.
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return text.encode()
 
 
 def _step(state: bytes, part: bytes) -> bytes:
@@ -295,9 +300,9 @@ def place(payload: dict, call: ledger_mod.PromptCacheCall | None) -> dict:
     # 3. One hour on the end of the tools and system blocks.
     if stable is not None:
         if stable.index in ttls and "caller" in roles[stable.index]:
-            # A caller's mark here is raised to one hour when every earlier mark is one hour.
-            earlier = [t for i, t in ttls.items() if i < stable.index]
-            if all(t == "1h" for t in earlier):
+            # A caller's mark here is raised to one hour when every earlier mark is one hour,
+            # the marks inside earlier blocks' content and its own included.
+            if _legal({**nested, **ttls, stable.index: "1h"}):
                 ttls[stable.index] = "1h"
             elif ttls[stable.index] == "5m":
                 degraded.append("ttl_order:stable")

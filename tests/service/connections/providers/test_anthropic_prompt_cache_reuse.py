@@ -476,6 +476,26 @@ def test_a_caller_mark_on_the_stable_end_kept_at_five_minutes_is_recorded():
     assert "ttl_order:stable" in record["degraded"]
 
 
+def test_a_five_minute_mark_inside_the_stable_end_keeps_its_own_mark_at_five_minutes():
+    payload = _payload(20)
+    stable = _block(payload, 2)
+    stable["content"] = [{"type": "text", "text": "rules", "cache_control": FIVE}]
+    stable["cache_control"] = FIVE
+    _, record = _place(payload, _ledger())
+
+    assert _ttls(record) == {2: "5m", 20: "5m"}
+    assert "ttl_order:stable" in record["degraded"]
+
+
+def test_a_block_with_keys_of_mixed_types_still_certifies_and_is_placed():
+    payload = _payload(6)
+    _block(payload, 5)["input"] = {1: "a", "b": 2}
+    _, record = _place(payload, _ledger())
+
+    assert _ttls(record) == {2: "1h", 6: "5m"}
+    assert _certs(payload)[5] != _certs(_payload(6))[5]
+
+
 # --- routes ---
 
 
