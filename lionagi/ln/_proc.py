@@ -642,15 +642,20 @@ def terminate_process_group(
     if grace is None:
         # Signal group AND direct child: proc.kill() is normally a no-op (child is
         # in the killed group) but prevents orphaning it when killpg is unavailable.
-        if pgid is not None:
-            signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+        # The child's own signal does not depend on the group signal succeeding.
+        try:
+            if pgid is not None:
+                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+        finally:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
         return
     # sig_first only; caller drives the wait + SIGKILL escalation.
-    signal_group_if_witnessed(pgid, witnesses, sig_first)
-    with contextlib.suppress(ProcessLookupError):
-        proc.terminate()
+    try:
+        signal_group_if_witnessed(pgid, witnesses, sig_first)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
 
 
 # How often the polls below re-read state. The first look is fast, so
@@ -727,15 +732,20 @@ async def aterminate_process_group(
     pgid = _safe_pgid(proc)
     witnesses = group_witnesses or ()
     if grace is None:
-        # No prior SIGTERM/wait: signal group AND direct child directly.
-        if pgid is not None:
-            signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+        # No prior SIGTERM/wait: signal group AND direct child directly. The
+        # child's own signal does not depend on the group signal succeeding.
+        try:
+            if pgid is not None:
+                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+        finally:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
         return
-    signal_group_if_witnessed(pgid, witnesses, sig_first)
-    with contextlib.suppress(ProcessLookupError):
-        proc.terminate()
+    try:
+        signal_group_if_witnessed(pgid, witnesses, sig_first)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
@@ -751,14 +761,17 @@ async def aterminate_process_group(
         while pgid is not None and witnesses and _group_has_members(pgid):
             await sleep(_POLL_MAX_SECONDS)
     if scope.cancelled_caught:
-        if pgid is not None and witnesses:
-            # A member captured while the live child anchored the group still
-            # matches immediately before the signal. The final identity-read to
-            # killpg gap cannot be closed with portable process-group APIs; see
-            # docs/internals/ln-primitives.md#signalling-a-group.
-            signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+        try:
+            if pgid is not None and witnesses:
+                # A member captured while the live child anchored the group still
+                # matches immediately before the signal. The final identity-read to
+                # killpg gap cannot be closed with portable process-group APIs; see
+                # docs/internals/ln-primitives.md#signalling-a-group.
+                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+        finally:
+            # The child's own kill does not depend on the group signal succeeding.
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
         # Bounded too: a caller that has already escalated to SIGKILL is done
         # negotiating, and the same pipe holder that can stall the wait above
         # can stall this one, with no timeout left to catch it.
