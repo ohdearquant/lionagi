@@ -10,6 +10,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .catalog import OperatorEffort as OperatorEffort
+from .catalog import OperatorProvider as OperatorProvider
 from .conversation_metadata import normalize_description
 
 OperatorFrameType = Literal[
@@ -123,8 +125,6 @@ class OperatorViewReport(OperatorContextSnapshot):
 # set now lives in the backend catalog (catalog.py) instead of a literal here,
 # so a browser can only ever request a model the coordinator recognizes
 # (resolve_selection rejects anything else before the turn is accepted).
-OperatorProvider = Literal["claude_code", "codex", "gemini_code"]
-OperatorEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 
 class OperatorTurnRequest(WireModel):

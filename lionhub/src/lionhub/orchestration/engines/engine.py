@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import Semaphore, gather, move_on_after, sleep
@@ -182,6 +183,14 @@ def _read_reply_shape(body: dict[str, Any]) -> dict[str, Any]:
     return _read_anthropic_messages(body)
 
 
+def _configured_max_tokens(chat_model: Any) -> int | None:
+    endpoint = getattr(chat_model, "endpoint", None)
+    config = getattr(endpoint, "config", None)
+    kwargs = getattr(config, "kwargs", None)
+    value = kwargs.get("max_tokens") if isinstance(kwargs, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, Any] | None:
     """What a leg's last reply held, for an emission event: stop reason, usage, model, block types, and the reply text when asked.
 
@@ -190,6 +199,9 @@ def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, A
     JSON). Best effort by contract: the diagnostics must never kill the run they
     describe, and a branch with no recorded reply (a test double, a leg that died
     before replying) yields None, so the event simply carries no ``raw_response``.
+
+    ``max_tokens_configured`` is the output-token limit the leg's model was built with
+    (``AgentSpec.max_tokens``), None when none was set.
 
     The reply text can quote the diff or context the leg was given, and an event
     reaches every ``on_event`` sink, so ``text`` is present only when
@@ -212,7 +224,8 @@ def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, A
     first = raw[0] if isinstance(raw, list) and raw else raw
     if not isinstance(first, dict):
         first = {}
-    is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
+    chat_model = getattr(branch, "chat_model", None)
+    is_cli = bool(getattr(chat_model, "is_cli", False))
     out: dict[str, Any] = {"text_chars": len(text)}
     if include_text:
         out["text"] = text[:RAW_RESPONSE_TEXT_CAP]
@@ -224,6 +237,9 @@ def _raw_leg_response(branch: Any, *, include_text: bool = False) -> dict[str, A
             "model": first.get("model"),
             "response_id": first.get("id"),
             "http_status": None if is_cli else 200,
+            # The limit the leg's model was built with; None names none, so the provider's
+            # default applied. A reply that stopped at max_tokens is read against this.
+            "max_tokens_configured": _configured_max_tokens(chat_model),
         }
     )
     return out
@@ -717,6 +733,7 @@ class EngineRun:
         modes: list[str] | None = None,
         model: str | None = None,
         effort: str | None = None,
+        max_tokens: int | None = None,
         tools: tuple[str, ...] = (),
         emits: tuple[type, ...] = (),
         permissions: Any = None,
@@ -759,6 +776,7 @@ class EngineRun:
         prof_model, prof_effort = role_profile_route(role)
         resolved_model = model or self.engine.model or prof_model
         resolved_effort = effort or self.engine.effort
+        resolved_max_tokens = max_tokens if max_tokens is not None else self.engine.max_tokens
         if not resolved_effort and resolved_model:
             from lionagi.service.providers import parse_model_spec  # noqa: PLC0415
 
@@ -792,6 +810,7 @@ class EngineRun:
             yolo=self.engine.yolo,
             contain_account_integrations=built_under[1],
             prompt_caching=bool(self.engine.prompt_caching),
+            max_tokens=resolved_max_tokens,
             command_env_allowlist=command_env_allowlist,
         )
         if mcp_servers is not None:
@@ -1808,6 +1827,13 @@ class EngineResult(str):
 _JUDGE_CHAIN_LIMIT = 100
 
 
+def check_max_tokens(name: str, value: Any) -> int:
+    """*value* as an output-token limit: a positive int (a bool is not one)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigurationError(f"{name} must be a positive integer, got {value!r}")
+    return value
+
+
 class Engine:
     """Stateless event-driven engine base; subclasses implement ``_run()``. See docs/reference/engines.md for parameter details."""
 
@@ -1835,6 +1861,7 @@ class Engine:
         yolo: bool = False,
         contain_account_integrations: bool = False,
         prompt_caching: bool = False,
+        max_tokens: int | None = None,
         emission_reply_text: bool = False,
         fallback_deadline_s: float | None = None,
     ) -> None:
@@ -1885,6 +1912,10 @@ class Engine:
         # (a CLI agent) sends its requests unchanged. Workers cloned from those
         # agents share an API model by reference, so they cache too.
         self.prompt_caching = prompt_caching
+        # Output-token limit for every API agent model make_agent builds, unless the
+        # call names its own. None leaves the provider's default (Anthropic: 8192).
+        # A CLI agent has no such limit and refuses it at build.
+        self.max_tokens = None if max_tokens is None else check_max_tokens("max_tokens", max_tokens)
         # Put the leg's last reply text (capped at RAW_RESPONSE_TEXT_CAP) on the
         # emission_repair / emission_missing events. Off by default: the text can
         # quote the diff or context the leg was given, and every on_event sink

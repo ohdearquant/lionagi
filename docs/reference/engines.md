@@ -10,12 +10,13 @@ Stateless event-driven engine base.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `model` | `None` | Default model string for every stage. |
+| `max_tokens` | `None` | Output-token limit for every Anthropic agent model the engine builds; a call to `make_agent` can name its own. `None` leaves the provider's default (the Anthropic endpoint sends 8192). A CLI agent has no such limit and any other API provider has no tested mapping for one; the build refuses both. |
 | `models` | `None` | Optional per-stage model overrides: `{"stage": "provider/model", ...}`. The constructor copies a provided mapping and normalizes `None` or an empty mapping to an internal `{}`. |
 | `max_depth` | `3` | Maximum recursion depth or cycle generation. |
 | `max_concurrent` | `5` | Concurrency semaphore width (simultaneous agent slots). |
 | `max_agents` | `50` | Hard cap on total agents the run may create. |
 | `deadline_s` | `None` | Wall-clock cap in seconds; `None` = unbounded. |
-| `emission_reply_text` | `False` | Put the failed reply's text (capped at `RAW_RESPONSE_TEXT_CAP` characters) on `emission_repair` and `emission_missing` events. Off, those events carry the scalar facts only: stop reason, usage, model, block types and `text_chars`. |
+| `emission_reply_text` | `False` | Put the failed reply's text (capped at `RAW_RESPONSE_TEXT_CAP` characters) on `emission_repair` and `emission_missing` events. Off, those events carry the scalar facts only: stop reason, usage, model, block types, `text_chars` and `max_tokens_configured` (the output-token limit the leg's model was built with, `None` when none was set). |
 | `fallback_deadline_s` | `None` | Seconds allowed for the one fallback leg that retries a silent stage on `models["review_fallback"]`. A leg still running at the limit is abandoned (`emission_fallback_timeout`) and the emission stays missing unless it had already arrived. `None` = unbounded. |
 | `judge_model` | `None` | If set, a cheap gate agent runs at expansion points. `None` = no gate (fail-open). |
 | `judge_role` | `"critic"` | Casts role for the judge agent. |
@@ -167,6 +168,7 @@ Extends `Engine` with:
 | `verify_severities` | `("critical", "major")` | Issue severities that reactively spawn an adversarial verifier. |
 | `verify_clean` | `True` | When a run reaches quiescence with zero `VerifyResult` (clean or minor-only review), spawn one adversarial audit of the clean verdict itself. |
 | `repair_retries` | `1` | Re-prompt turns when a reviewer or verifier emits no valid event. |
+| `stage_max_tokens` | `None` | Per-stage output-token limit over `max_tokens`: `{"review": 16384, "review_fallback": 16384}`. The stages are `review`, `review_fallback`, `verify` and `verdict`; any other name is refused. An unset stage uses `max_tokens`, then the provider's default. |
 
 Pipeline shape: fan-out (one reviewer per dimension, parallel) → adversarial verify high-severity issues → quiesce → clean-verdict audit if no verification ran → `ReviewVerdict`.
 
