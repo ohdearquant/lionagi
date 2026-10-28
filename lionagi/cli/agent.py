@@ -109,8 +109,9 @@ from ._util import (
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
 # The name of the account whose API key the launcher handed this process, never the key
-# itself. It follows the routed-account name rule (``_ACCOUNT_NAME_RE`` in lionagi/config.py),
-# so a mixed-case value is refused, and so is one starting "sk-".
+# itself. It follows the routed-account name rule (``_ACCOUNT_NAME_RE`` and ``_looks_like_a_key``
+# in lionagi/config.py), so a mixed-case value or one containing "sk-ant" is refused, and so is
+# one starting "sk-".
 _API_ACCOUNT_ENV = "LIONAGI_API_ACCOUNT"
 # The handoff an automatic resume carries when the timed-out leg's setup returned no session:
 # no running row exists for the resumed leg to adopt, so its setup starts as a fresh launch.
@@ -1361,8 +1362,9 @@ def _admission_refusal(exc: BaseException) -> SubagentAdmissionRefusedError | No
 def _read_api_account() -> str | None:
     """The account name in ``LIONAGI_API_ACCOUNT`` (ADR-0126 Amendment 4), None when it is unset.
 
-    A value outside the routed-account name rule, one starting ``sk-``, or one equal to a key
-    this process holds raises ``ConfigurationError`` without repeating it. A held key is the
+    A value outside the routed-account name rule (including its ``sk-ant`` bar), one starting
+    ``sk-``, or one equal to a key this process holds raises ``ConfigurationError`` without
+    repeating it. A held key is the
     value of a credential-named or configured-account variable, in the environment or in the
     dotenv files the settings were built from.
     """
@@ -1374,10 +1376,15 @@ def _read_api_account() -> str | None:
     from lionagi import config
     from lionagi.libs.credential_fields import is_secret_field_name
 
-    if config._ACCOUNT_NAME_RE.fullmatch(api_account) is None or api_account.startswith("sk-"):
+    if (
+        config._ACCOUNT_NAME_RE.fullmatch(api_account) is None
+        or api_account.startswith("sk-")
+        or config._looks_like_a_key(api_account)
+    ):
         raise ConfigurationError(
             f"{_API_ACCOUNT_ENV} must be an account name: a lowercase letter, then up to 31 "
-            "lowercase letters, digits, '_' or '-', not starting with 'sk-'; the value is not shown"
+            "lowercase letters, digits, '_' or '-', not starting with 'sk-' and not containing "
+            "'sk-ant'; the value is not shown"
         )
     settings = config.settings
     key_names = {account.key_env for account in settings.ANTHROPIC_ACCOUNTS}

@@ -109,39 +109,40 @@ Decision: a launcher that chose the key may name its account in `LIONAGI_API_ACC
 the process environment only (a dotenv entry for it is not read), and `li agent` records the name
 in run.json as `api_account` (the run manifest `_run_agent()` writes, in `lionagi/cli/agent.py`).
 The value must be an account name under D1's rule for routed accounts (`_ACCOUNT_NAME_RE` in
-`lionagi/config.py`): a lowercase letter, then up to 31 lowercase letters, digits, `_` or `-`; it
-must also not start with `sk-`. It must not equal a key the process holds: the value of a variable
-whose name marks a credential (`is_secret_field_name()` in `lionagi/libs/credential_fields.py`) or
-is a configured account's `key_env` (D1), whether that variable is set in the environment or in the
-dotenv files the settings were built from. A dotenv file that cannot be read for that comparison
-refuses too. Every refusal raises `ConfigurationError` before the run writes anything
-(`_read_api_account()`, called by `_run_agent()` before the run is allocated); the error names the
-rule, or the variable whose value matched, and never repeats the value. Unset, the run records no
-`api_account`, as before.
+`lionagi/config.py`): a lowercase letter, then up to 31 lowercase letters, digits, `_` or `-`, and
+not containing `sk-ant` (`_looks_like_a_key()`, the same file); it must also not start with `sk-`.
+It must not equal a key the process holds: the value of a variable whose name marks a credential
+(`is_secret_field_name()` in `lionagi/libs/credential_fields.py`) or is a configured account's
+`key_env` (D1), whether that variable is set in the environment or in the dotenv files the settings
+were built from. A dotenv file that cannot be read for that comparison refuses too. Every refusal
+raises `ConfigurationError` before the run writes anything (`_read_api_account()`, called by
+`_run_agent()` before the run is allocated); the error names the rule, or the variable whose value
+matched, and never repeats the value. Unset, the run records no `api_account`, as before.
 
 What the check guarantees: a value with any character outside the name rule (an upper-case letter,
-`.`, `@`, a space), a value starting `sk-`, and any key the process holds under a credential-named
-or configured-account variable, in its environment or its dotenv files, never reach run.json, so
-within those sources D2's bar on serializing key material holds. The comparison goes by the
-variable's name, a credential marker anywhere in it, not by its use, so a name equal to the value
-of a variable such as `MAX_TOKENS` is refused too, and the refusal names that variable. What it
-cannot do: it does not run the secret lookup, D2's third source, which runs only for a routed
-attempt; and a key made only of characters the name rule allows, such as lowercase hex after a
-letter, passes when the process does not hold it under such a name, because no check on a string's
-shape tells such a key from a name. The field is meant for names a launcher takes from its own
-account list.
+`.`, `@`, a space), a value containing `sk-ant` or starting `sk-`, and any key the process holds
+under a credential-named or configured-account variable, in its environment or its dotenv files,
+never reach run.json, so within those sources D2's bar on serializing key material holds. The
+comparison goes by the variable's name, a credential marker anywhere in it, not by its use, so a
+name equal to the value of a variable such as `MAX_TOKENS` is refused too, and the refusal names
+that variable. What it cannot do: it does not run the secret lookup, D2's third source, which runs
+only for a routed attempt; and a key made only of characters the name rule allows, such as
+lowercase hex after a letter, passes when the process does not hold it under such a name, because
+no check on a string's shape tells such a key from a name. The field is meant for names a launcher
+takes from its own account list.
 
 Not covered: the name is not checked against the configured accounts (D1), selects no key, and is
 not budgeted by D4's ledger. For routed calls `account_labels` stays the record.
 
 Verification: `tests/cli/test_agent_api_account_record.py` pins the recorded name, one of 32
-characters included, and its absence when the variable is unset. It pins the refusal before any
-run.json of a key, a key prefix, a mixed-case value, a capital, a `.`, an `@`, a digit, `-` or `_`
-first, a value of 33 characters, a space and an empty value; of a value held under a
-credential-named and under a configured-account variable, each in the environment and in a dotenv
-file; and of any name when a dotenv file cannot be read, with the value never shown in the error.
-Its controls record the name when a credential variable holds a different value, and when a
-variable or a dotenv entry that is neither holds the same one.
+characters and one beside the `sk-ant` marker (`ask-an1`) included, and its absence when the
+variable is unset. It pins the refusal before any run.json of a key, a key prefix, `sk-ant` inside
+and at the end of a name, a mixed-case value, a capital, a `.`, an `@`, a digit, `-` or `_` first,
+a value of 33 characters, a space and an empty value; of a value held under a credential-named and
+under a configured-account variable, each in the environment and in a dotenv file; and of any name
+when a dotenv file cannot be read, with the value never shown in the error. Its controls record the
+name when a credential variable holds a different value, and when a variable or a dotenv entry that
+is neither holds the same one.
 
 ## Requirements
 
