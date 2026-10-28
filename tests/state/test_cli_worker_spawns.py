@@ -239,11 +239,22 @@ async def test_snapshot_includes_only_this_sessions_unresolved_generations(db):
     other_sid, other_generation = await _owner(db, session_id="other-owner")
     await db.register_cli_worker_spawn(_record(other_sid, other_generation))
     snapshot = await db.snapshot_cli_worker_spawns(sid)
-    assert snapshot["session"] == {
+    assert {key: snapshot["session"][key] for key in ("id", "status", "cli_worker_generation")} == {
         "id": sid,
         "status": "running",
         "cli_worker_generation": new_generation,
     }
+    assert set(snapshot["session"]) == {
+        "id",
+        "status",
+        "cli_worker_generation",
+        "node_metadata",
+        "artifacts_path",
+        "source_kind",
+    }
+    assert snapshot["session"]["node_metadata"] is None
+    assert snapshot["session"]["artifacts_path"] is None
+    assert snapshot["session"]["source_kind"] == "live"
     assert {row["spawn_id"] for row in snapshot["spawns"]} == {old["spawn_id"], current["spawn_id"]}
     assert [(row["recorded_at"], row["spawn_id"]) for row in snapshot["spawns"]] == sorted(
         (row["recorded_at"], row["spawn_id"]) for row in snapshot["spawns"]
@@ -253,10 +264,24 @@ async def test_snapshot_includes_only_this_sessions_unresolved_generations(db):
 async def test_legacy_null_generation_remains_unknown(db):
     sid, _ = await _owner(db)
     await db.update_session(sid, cli_worker_generation=None)
-    assert await db.snapshot_cli_worker_spawns(sid) == {
-        "session": {"id": sid, "status": "running", "cli_worker_generation": None},
-        "spawns": [],
+    snapshot = await db.snapshot_cli_worker_spawns(sid)
+    assert {key: snapshot["session"][key] for key in ("id", "status", "cli_worker_generation")} == {
+        "id": sid,
+        "status": "running",
+        "cli_worker_generation": None,
     }
+    assert snapshot["spawns"] == []
+    assert set(snapshot["session"]) == {
+        "id",
+        "status",
+        "cli_worker_generation",
+        "node_metadata",
+        "artifacts_path",
+        "source_kind",
+    }
+    assert snapshot["session"]["node_metadata"] is None
+    assert snapshot["session"]["artifacts_path"] is None
+    assert snapshot["session"]["source_kind"] == "live"
 
 
 async def test_settlement_writes_once_and_replay_preserves_both_store_timestamps(db):

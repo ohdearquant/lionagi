@@ -103,7 +103,7 @@ was found: every site is guarded by a nearby allow-list, fixed tuple, or enum ch
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
 (`state/lifecycle/models.py:108-120`), the registry does not validate them as identifiers, and
-they are interpolated into SQL at `state/lifecycle/service.py:147-152` and elsewhere.
+they are interpolated into SQL at `state/lifecycle/service.py:194-199` and elsewhere.
 
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds

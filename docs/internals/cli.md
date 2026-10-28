@@ -1367,6 +1367,21 @@ cancellation intent does not erase a store refusal or a lost terminal-write
 marker. A database-close witness is published only after the exact bound handle
 successfully closes. Ordinary drain failure blocks terminalization and close.
 
+For a terminal session, `li kill <session>` can also stop its unresolved
+recorded worker groups. It verifies the recorded host, boot and process birth,
+freezes the live leader and group members, and checks the session generation
+before each signal. It waits once for graceful exit and escalates only while a
+frozen member still matches. A record is marked empty only after the original
+leader has exited and the kernel reports the process group absent. Workers that
+cannot be verified are left in place and reported; the terminal session and its
+transition history are not rewritten by this cleanup.
+
+When the session is still running but its recorded runner has died, the command
+first guards and records cancellation for that execution, then cleans the
+unresolved worker records captured in its snapshot, across generations. A concurrent resume or a
+failed guard prevents signalling a newer execution. A cancellation received while
+waiting stops cleanup without further signals or uncommitted settlement writes.
+
 **`_linked_engine_session`** — linking a profile-typed session to its engine-typed mirror twin.
 `engine_session_uid` is the provider-native session id (e.g. a Claude Code session uuid or a
 Codex thread id), captured from `endpoint.session_id` while streaming — the same id the mirror

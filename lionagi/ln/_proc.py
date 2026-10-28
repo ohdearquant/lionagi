@@ -5,13 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import os
 import secrets
 import signal
+import socket
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 from anyio.lowlevel import checkpoint_if_cancelled
 
@@ -395,6 +397,317 @@ def group_member_pids(pgid: int) -> tuple[list[int], bool]:
     """
     members, complete = _group_member_identities(pgid)
     return [pid for pid, _ in members], complete
+
+
+@dataclass(frozen=True)
+class _RecordedWorkerIdentity:
+    """The immutable local process identity recorded for one worker spawn."""
+
+    pid: int
+    pgid: int
+    pid_create_time: float
+    pid_host: str
+    pid_boot_time: float
+    process_identity_mode: str
+
+
+@dataclass(frozen=True)
+class _RecordedGroupWitness:
+    """Member identities captured while the recorded leader bracketed the read."""
+
+    identity: _RecordedWorkerIdentity
+    leader: tuple[int, float]
+    members: tuple[tuple[int, float], ...]
+
+
+@dataclass(frozen=True)
+class _RecordedGroupRefusal:
+    """Why recorded evidence did not establish authority over a worker group."""
+
+    reason: Literal[
+        "identity_mismatch",
+        "identity_unverifiable",
+        "host_mismatch",
+        "boot_mismatch",
+        "foreign_mode",
+        "leader_not_live",
+        "unsafe_group",
+        "unsupported_platform",
+    ]
+
+
+def _finite_process_time(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, ValueError):
+        return False
+
+
+# psutil's live process states across the supported POSIX backends. Some,
+# including ``wake-kill`` and ``suspended``, are not exported at psutil's
+# top level in every release. Unknown or dead states cannot authorize a signal.
+_RECORDED_LIVE_PROCESS_STATUSES = frozenset(
+    {
+        "running",
+        "sleeping",
+        "disk-sleep",
+        "stopped",
+        "tracing-stop",
+        "wake-kill",
+        "waking",
+        "idle",
+        "parked",
+        "locked",
+        "waiting",
+        "suspended",
+    }
+)
+
+
+def _recorded_process_create_time(
+    pid: int, *, expected_created: float | None = None
+) -> tuple[Literal["found", "gone", "zombie", "mismatch", "unknown"], float | None]:
+    """Read a recorded PID without discarding a zombie's birth identity.
+
+    The general-purpose ``process_create_time`` intentionally considers a
+    zombie gone. This narrower reader must first compare any readable birth:
+    a recycled PID remains a mismatch even when its new holder has exited.
+    """
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+    except psutil.ZombieProcess:
+        # ZombieProcess is a NoSuchProcess subclass, but still owns the PID.
+        return "unknown", None
+    except psutil.NoSuchProcess:
+        return "gone", None
+    except Exception:
+        return "unknown", None
+
+    try:
+        created = raw_create_time(proc)
+        if not _finite_process_time(created):
+            return "unknown", None
+        if expected_created is not None and not start_time_matches(created, expected_created):
+            return "mismatch", created
+        status = proc.status()
+        if status != psutil.STATUS_ZOMBIE:
+            if status in _RECORDED_LIVE_PROCESS_STATUSES:
+                return "found", created
+            return "unknown", None
+
+        # Linux caches a process handle's create time, so a new handle is
+        # required to catch PID reuse while bracketing the zombie observation.
+        again = psutil.Process(pid)
+        created_again = raw_create_time(again)
+        if not _finite_process_time(created_again):
+            return "unknown", None
+        if created_again != created:
+            return "mismatch", created_again
+        if again.status() != psutil.STATUS_ZOMBIE:
+            return "unknown", None
+        return "zombie", created
+    except Exception:
+        # Once an observation began, a reaped or unreadable zombie cannot be
+        # upgraded into proof that its recorded identity was the one seen.
+        return "unknown", None
+
+
+def _recorded_group_refusal(
+    identity: _RecordedWorkerIdentity,
+) -> _RecordedGroupRefusal | None:
+    """Validate recorded fields and the platform without looking up a process."""
+    if not isinstance(identity, _RecordedWorkerIdentity):
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if (
+        type(identity.pid) is not int
+        or type(identity.pgid) is not int
+        or identity.pid <= 1
+        or identity.pgid != identity.pid
+    ):
+        return _RecordedGroupRefusal("unsafe_group")
+    if not all(hasattr(os, name) for name in ("killpg", "getpgid", "getpgrp")):
+        return _RecordedGroupRefusal("unsupported_platform")
+    if (
+        not _finite_process_time(identity.pid_create_time)
+        or not _finite_process_time(identity.pid_boot_time)
+        or not isinstance(identity.pid_host, str)
+        or not identity.pid_host.strip()
+    ):
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if (
+        not isinstance(identity.process_identity_mode, str)
+        or identity.process_identity_mode != "local"
+    ):
+        return _RecordedGroupRefusal("foreign_mode")
+    try:
+        own_group = os.getpgrp()
+    except Exception:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if type(own_group) is not int:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if identity.pgid == own_group:
+        return _RecordedGroupRefusal("unsafe_group")
+    return None
+
+
+def _read_recorded_group_member(
+    pid: int, pgid: int, *, expected_created: float | None = None
+) -> tuple[Literal["found", "missing", "mismatch", "unreadable"], tuple[int, float] | None]:
+    """Bracket one group-membership read by two exact live birth-time reads."""
+    try:
+        state, created = _recorded_process_create_time(pid, expected_created=expected_created)
+        if state == "gone":
+            return "missing", None
+        if state == "mismatch":
+            return "mismatch", None
+        if state == "zombie":
+            if not _finite_process_time(created):
+                return "unreadable", None
+            if expected_created is not None and not start_time_matches(created, expected_created):
+                return "mismatch", None
+            return "missing", None
+        if state != "found" or not _finite_process_time(created):
+            return "unreadable", None
+        if expected_created is not None and not start_time_matches(created, expected_created):
+            return "mismatch", None
+        try:
+            group = os.getpgid(pid)
+        except ProcessLookupError:
+            return "missing", None
+        if type(group) is not int:
+            return "unreadable", None
+        again, created_again = _recorded_process_create_time(pid, expected_created=expected_created)
+    except Exception:
+        return "unreadable", None
+    if again == "gone":
+        return "missing", None
+    if again == "mismatch":
+        return "mismatch", None
+    if again == "zombie":
+        if not _finite_process_time(created_again):
+            return "unreadable", None
+        if created_again != created:
+            return "mismatch", None
+        return "missing", None
+    if again != "found" or not _finite_process_time(created_again):
+        return "unreadable", None
+    if created_again != created or group != pgid:
+        return "mismatch", None
+    return "found", (pid, created)
+
+
+def _admit_recorded_worker_group(
+    identity: _RecordedWorkerIdentity, *, boot_time_tolerance: float
+) -> _RecordedGroupWitness | _RecordedGroupRefusal:
+    """Freeze members between two identical observations of the recorded live leader."""
+    refusal = _recorded_group_refusal(identity)
+    if refusal is not None:
+        return refusal
+    if not _finite_process_time(boot_time_tolerance) or boot_time_tolerance < 0:
+        return _RecordedGroupRefusal("identity_unverifiable")
+
+    import psutil
+
+    try:
+        host = socket.gethostname()
+        boot = psutil.boot_time()
+    except Exception:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if not isinstance(host, str) or not host.strip() or not _finite_process_time(boot):
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if identity.pid_host != host:
+        return _RecordedGroupRefusal("host_mismatch")
+    if abs(identity.pid_boot_time - boot) > boot_time_tolerance:
+        return _RecordedGroupRefusal("boot_mismatch")
+
+    state, leader = _read_recorded_group_member(
+        identity.pid, identity.pgid, expected_created=identity.pid_create_time
+    )
+    if state == "missing":
+        return _RecordedGroupRefusal("leader_not_live")
+    if state == "mismatch":
+        return _RecordedGroupRefusal("identity_mismatch")
+    if state != "found" or leader is None:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    try:
+        members, _complete = _group_member_identities(identity.pgid)
+    except Exception:
+        members = []
+    again, leader_again = _read_recorded_group_member(
+        identity.pid, identity.pgid, expected_created=identity.pid_create_time
+    )
+    if again == "missing":
+        return _RecordedGroupRefusal("leader_not_live")
+    if again == "mismatch":
+        return _RecordedGroupRefusal("identity_mismatch")
+    if again != "found" or leader_again is None:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if leader_again != leader:
+        return _RecordedGroupRefusal("identity_mismatch")
+
+    # An incomplete census withholds unknown members, not the identities it pinned.
+    # Even when enumeration fails entirely, the two live leader reads remain evidence.
+    return _RecordedGroupWitness(identity, leader, tuple(sorted({leader, *members})))
+
+
+def _recorded_worker_group_matches(
+    witness: _RecordedGroupWitness,
+) -> Literal["matches", "missing", "unreadable"]:
+    """Re-read frozen members only; no new census or numeric liveness grants authority."""
+    if not isinstance(witness, _RecordedGroupWitness):
+        return "unreadable"
+    if _recorded_group_refusal(witness.identity) is not None:
+        return "unreadable"
+    unreadable = False
+    for expected in witness.members:
+        state, member = _read_recorded_group_member(
+            expected[0], witness.identity.pgid, expected_created=expected[1]
+        )
+        if state == "found" and member == expected:
+            return "matches"
+        if state == "unreadable":
+            unreadable = True
+    return "unreadable" if unreadable else "missing"
+
+
+def _recorded_worker_group_state(
+    identity: _RecordedWorkerIdentity,
+) -> Literal["empty", "present", "unreadable"]:
+    """Read kernel absence after admission has established runtime compatibility.
+
+    Call only after admission returned a witness or ``leader_not_live``: those
+    outcomes follow successful host, boot and mode checks. Other refusals forbid
+    settlement. This probe does not invent a boot-time tolerance or re-admit a group.
+    A live mismatched birth time is unreadable, never evidence that the group ended.
+    """
+    if _recorded_group_refusal(identity) is not None:
+        return "unreadable"
+    try:
+        state, created = _recorded_process_create_time(
+            identity.pid, expected_created=identity.pid_create_time
+        )
+    except Exception:
+        return "unreadable"
+    if state in ("found", "zombie"):
+        if not _finite_process_time(created) or not start_time_matches(
+            created, identity.pid_create_time
+        ):
+            return "unreadable"
+        if state == "found":
+            return "present"
+    elif state != "gone":
+        return "unreadable"
+    try:
+        os.killpg(identity.pgid, 0)
+    except ProcessLookupError:
+        return "empty"
+    except Exception:
+        return "unreadable"
+    return "present"
 
 
 def _child_is_reaped(proc: Any) -> bool:
