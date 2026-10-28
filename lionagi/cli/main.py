@@ -10,7 +10,13 @@ import sys
 import traceback
 
 from lionagi.ln import import_module
-from lionhub.cli.catalog import build_cli_parser, seed_for
+
+try:
+    from lionhub.cli.catalog import build_cli_parser, seed_for
+except ModuleNotFoundError as exc:
+    _catalog_import_error: ModuleNotFoundError | None = exc
+else:
+    _catalog_import_error = None
 
 from ._logging import configure_cli_logging, log_error
 from ._util import (
@@ -290,6 +296,9 @@ def _parse_prompt_args(parser: argparse.ArgumentParser, tail: list[str]) -> argp
 
 
 def _run(argv: list[str] | None = None) -> int:
+    if _catalog_import_error is not None:
+        raise _catalog_import_error
+
     # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
     # Scan only before the '--' sentinel so a scheduled action_prompt
