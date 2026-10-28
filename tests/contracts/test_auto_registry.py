@@ -102,10 +102,27 @@ def test_auto_register_returns_handler_unchanged_and_attaches_marker():
 
     decorated = _auto.auto_register(area="widgets", http=http)(handler)
     assert decorated is handler
-    marker = getattr(decorated, _auto._MARKER_ATTR)
+    marker = _auto.read_registration_marker(decorated)
+    assert marker is getattr(decorated, _auto._MARKER_ATTR)
     assert marker.area == "widgets"
     assert marker.http is http
     assert marker.cli is None
+
+
+def test_public_marker_reader_returns_none_for_unmarked_objects():
+    assert _auto.read_registration_marker(object()) is None
+
+
+def test_public_marker_reader_retains_cli_declaration():
+    cli = _auto.CliDeclaration(seed="sample", parser_factory=lambda subparsers: None)
+
+    @_auto.auto_register(area="sample-area", cli=cli)
+    def handler():
+        pass
+
+    marker = _auto.read_registration_marker(handler)
+    assert isinstance(marker, _auto.RegistrationMarker)
+    assert marker.area == "sample-area" and marker.cli is cli and marker.http is None
 
 
 def test_auto_register_requires_exactly_one_surface():

@@ -255,3 +255,12 @@ def _isolated_registry_for_tests() -> Iterator[None]:
         _http.extend(http_snapshot)
         _http_keys.clear()
         _http_keys.update(http_keys_snapshot)
+
+
+# Consumers can describe the unchanged marker without using its private class name.
+RegistrationMarker = _Marker
+
+
+def read_registration_marker(obj: Any) -> RegistrationMarker | None:
+    """Return the declaration attached to an object, or None when unmarked."""
+    return getattr(obj, _MARKER_ATTR, None)

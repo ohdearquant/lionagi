@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -11,6 +12,83 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+CORE = ROOT / "lionagi"
+CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "cli" / "catalog.py"
+
+
+def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
+    """Find catalog construction or command-module literals in a core module."""
+    tree = ast.parse(source, filename=str(path))
+    seed_names = {"CliSeed"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "lionagi._auto":
+            seed_names.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "CliSeed"
+            )
+    logger_names = {
+        "lionagi.cli.progress",
+        "lionagi.cli.hint",
+        "lionagi.cli.warn",
+        "lionagi.cli.error",
+    }
+    logger_arguments = {
+        id(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "getLogger"
+        and node.args
+    }
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (isinstance(func, ast.Name) and func.id in seed_names) or (
+                isinstance(func, ast.Attribute) and func.attr == "CliSeed"
+            ):
+                hits.append((node.lineno, "CliSeed"))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value
+            if id(node) in logger_arguments or (
+                path == CORE / "_log_channels.py" and value in logger_names
+            ):
+                continue
+            prefixes = ("lionagi.cli", "lionagi.studio.cli", "lionagi.casts.surfaces")
+            if any(value == prefix or value.startswith(prefix + ".") for prefix in prefixes):
+                hits.append((node.lineno, value))
+    return hits
+
+
+def _private_auto_imports(source: str) -> list[str]:
+    return [
+        alias.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module == "lionagi._auto"
+        for alias in node.names
+        if alias.name.startswith("_")
+    ]
+
+
+def test_catalog_uses_no_private_auto_imports():
+    assert _private_auto_imports(CATALOG.read_text()) == []
+    assert _private_auto_imports("from lionagi._auto import _MARKER_ATTR as marker") == [
+        "_MARKER_ATTR"
+    ]
+
+
+def test_core_catalog_guard_sees_construction_and_target_literals():
+    probe = CORE / "state" / "_probe.py"
+    source = (
+        "from lionagi._auto import CliSeed as Seed\n"
+        "item = Seed(name='x', help='h', module='lionagi.cli.agent')\n"
+        "module = 'lionagi.casts.surfaces'\n"
+        "other = auto.CliSeed(name='x', help='h', module='lionagi.studio.cli')\n"
+    )
+    hits = _core_catalog_references(probe, source)
+    assert sorted(line for line, _ in hits) == [2, 2, 3, 4, 4]
+    assert _core_catalog_references(CORE / "_log_channels.py", "name = 'lionagi.cli.warn'") == []
+    assert _core_catalog_references(probe, "logging.getLogger('lionagi.cli')") == []
+    assert _core_catalog_references(probe, "target = 'lionagi.cli'") == [(1, "lionagi.cli")]
 
 
 def _fresh(source: str, *args: str) -> str:
@@ -126,7 +204,7 @@ else:
 
 def test_core_contains_no_cli_targets():
     _fresh("""
-import ast, importlib.abc, pathlib, sys
+import importlib.abc, sys
 class RefuseHub(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname == 'lionhub' or fullname.startswith('lionhub.'):
@@ -137,8 +215,16 @@ assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
 for name in ('_CLI_SEEDS', '_cli_seeds', '_cli_seed_by_token', '_cli_realized',
              'iter_cli_seeds', 'seed_for', 'command_exists', 'load_cli_command', 'build_cli_parser'):
     assert not hasattr(auto, name), name
-tree = ast.parse(pathlib.Path(auto.__file__).read_text())
-for node in ast.walk(tree):
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        assert not node.value.startswith(('lionagi.cli.', 'lionagi.casts.', 'lionagi.studio.cli'))
 """)
+    files = [
+        path
+        for path in CORE.rglob("*.py")
+        if path.relative_to(CORE).parts[0] not in {"cli", "studio"} and path != CORE / "_moved.py"
+    ]
+    assert CORE / "_auto.py" in files
+    hits = {
+        str(path.relative_to(ROOT)): found
+        for path in files
+        if (found := _core_catalog_references(path, path.read_text()))
+    }
+    assert hits == {}

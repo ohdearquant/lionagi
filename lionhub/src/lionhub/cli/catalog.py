@@ -9,14 +9,14 @@ from collections.abc import Callable
 from typing import Any
 
 from lionagi._auto import (
-    _MARKER_ATTR,
     CliBuild,
     CliParserResult,
     CliSeed,
     DuplicateRegistrationError,
     Registration,
     RegistrationContractError,
-    _Marker,
+    RegistrationMarker,
+    read_registration_marker,
 )
 
 __all__ = (
@@ -27,8 +27,7 @@ __all__ = (
     "seed_for",
 )
 
-# Fixed CLI seed tuple: the 21 canonical commands in their existing order,
-# copied byte-for-byte from lionagi/cli/main.py's _COMMAND_REGISTRY.
+# Fixed CLI seed tuple: the 21 canonical commands in their existing order.
 _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="orchestrate",
@@ -182,9 +181,9 @@ def load_cli_command(seed: CliSeed) -> Registration:
     from lionagi.ln import import_module
 
     module = import_module(seed.module)
-    matches: list[tuple[Callable[..., Any], _Marker]] = []
+    matches: list[tuple[Callable[..., Any], RegistrationMarker]] = []
     for obj in vars(module).values():
-        marker = getattr(obj, _MARKER_ATTR, None)
+        marker = read_registration_marker(obj)
         if marker is None or marker.cli is None or marker.cli.seed != seed.name:
             continue
         matches.append((obj, marker))
