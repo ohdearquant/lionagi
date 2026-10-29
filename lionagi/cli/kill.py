@@ -147,13 +147,12 @@ def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
     return None
 
 
-def _pid_addressability(meta: dict[str, Any], pid: int | None) -> tuple[str | None, bool | None]:
+def _pid_addressability(reason: str | None, pid: int | None) -> tuple[str | None, bool | None]:
     """Resolve a boot disagreement using one liveness probe when needed.
 
     The second value is the observed liveness, or None if no probe was needed;
     callers can reuse it without observing a different process at the same PID.
     """
-    reason = _unaddressable_pid_reason(meta)
     if reason != "boot_unverifiable":
         return reason, None
     alive = pid is not None and _pid_alive(pid)
@@ -569,8 +568,12 @@ async def _kill_one(
         generation = row.get("cli_worker_generation")
     # Asked before the pid is read, not only when one exists — a pid-less row from another
     # host or runtime would otherwise fall through and get cancelled for work still running.
-    pid = _read_pid_from_entity(row)
-    unaddressable, _ = _pid_addressability(meta, pid)
+    unaddressable = _unaddressable_pid_reason(meta)
+    pid: int | None = None
+    pid_was_read = unaddressable == "boot_unverifiable"
+    if pid_was_read:
+        pid = _read_pid_from_entity(row)
+        unaddressable, _ = _pid_addressability(unaddressable, pid)
     if unaddressable in _NOT_JUDGEABLE_HERE | {"boot_unverifiable"}:
         warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
         return {
@@ -580,6 +583,8 @@ async def _kill_one(
             "pid": None,
         }
 
+    if not pid_was_read:
+        pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
     # A degraded run that `li state import` gave a row while it still ran: the row has no pid,
     # the run's own run.json does, and that is the process this kill stops (ADR-0104 Amendment 2).
@@ -747,7 +752,7 @@ def _signal_degraded_process(
     if pid <= 0:
         return None, "no_recorded_process"
 
-    signal_used, _ = _pid_addressability(manifest, pid)
+    signal_used, _ = _pid_addressability(_unaddressable_pid_reason(manifest), pid)
     if signal_used is None:
         try:
             expected_create_time = float(manifest["pid_create_time"])
@@ -785,7 +790,7 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
         return "not_ours", None
     if pid <= 0:
         return "not_ours", None
-    unaddressable, alive = _pid_addressability(manifest, pid)
+    unaddressable, alive = _pid_addressability(_unaddressable_pid_reason(manifest), pid)
     if unaddressable is not None and unaddressable != "boot_unverifiable":
         return "not_ours", None
     if alive is None:
@@ -956,11 +961,11 @@ async def _try_recorded_worker_cleanup(
     if running:
         meta = session.get("node_metadata")
         meta = meta if isinstance(meta, dict) else {}
-        unjudgeable, _ = _pid_addressability(meta, _read_pid_from_entity(session))
-        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch", "boot_unverifiable"}:
+        unjudgeable = _unaddressable_pid_reason(meta)
+        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch"}:
             # A non-Linux boot mismatch retains its existing meaning. Other
             # reasons leave this host unable to stop the recorded workers.
-            if records and unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_unverifiable"}:
+            if records and unjudgeable in _NOT_JUDGEABLE_HERE:
                 warn(
                     f"  session {sid[:12]}: {len(records)} recorded worker group(s) not "
                     f"handled: the runner {_REFUSED_SIGNAL_REASONS[unjudgeable]}"
@@ -977,9 +982,20 @@ async def _try_recorded_worker_cleanup(
             if (isinstance(raw_pid, float) and raw_pid != pid) or not 1 < pid <= 2**31 - 1:
                 raise ValueError("invalid runner pid")
         except (KeyError, ValueError, TypeError, OverflowError):
+            if unjudgeable == "boot_unverifiable":
+                # Preserve the existing boot-mismatch refusal for an invalid runner PID.
+                return None
             if records:
                 warn(f"worker group for session {sid[:12]} could not be confirmed stopped")
                 return 1
+            return None
+        if unjudgeable == "boot_unverifiable":
+            unjudgeable, _ = _pid_addressability(unjudgeable, pid)
+            if unjudgeable == "boot_unverifiable" and records:
+                warn(
+                    f"  session {sid[:12]}: {len(records)} recorded worker group(s) not "
+                    f"handled: the runner {_REFUSED_SIGNAL_REASONS[unjudgeable]}"
+                )
             return None
         state, _ = _runner_process_create_time(pid)
         if state == "unknown" and records:
@@ -1485,13 +1501,7 @@ async def _do_kill_all_stale(
                     if isinstance(row_dict.get("node_metadata"), dict)
                     else {}
                 )
-                pid = _read_pid_from_entity(row_dict)
-                unjudgeable, pid_alive_now = _pid_addressability(row_meta_for_host, pid)
-                if unjudgeable == "boot_unverifiable":
-                    await keep_unverifiable(
-                        entity_type, entity_id, row_meta_for_host, "boot_disagreement"
-                    )
-                    continue
+                unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
                 if unjudgeable in _NOT_JUDGEABLE_HERE:
                     # Another host or unmanaged runtime cannot be judged here.
                     skipped_unjudgeable += 1
@@ -1500,6 +1510,13 @@ async def _do_kill_all_stale(
                             f"  skip {entity_type} {entity_id[:12]}: "
                             f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
                         )
+                    continue
+                pid = _read_pid_from_entity(row_dict)
+                unjudgeable, pid_alive_now = _pid_addressability(unjudgeable, pid)
+                if unjudgeable == "boot_unverifiable":
+                    await keep_unverifiable(
+                        entity_type, entity_id, row_meta_for_host, "boot_disagreement"
+                    )
                     continue
 
                 if (

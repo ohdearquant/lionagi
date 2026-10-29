@@ -521,6 +521,8 @@ async def test_doctor_boot_disagreement_checks_pid_liveness(
     monkeypatch.setattr(psutil, "LINUX", True)
     monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
     monkeypatch.setattr(_util, "pid_alive", lambda pid: alive and pid == 4242)
+    monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: alive and pid == 4242)
+    monkeypatch.setattr(kill_mod.os, "kill", lambda *args: pytest.fail("unexpected OS signal"))
     monkeypatch.setattr(psutil, "Process", lambda _pid: object())
     monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 1006.0)
     sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
@@ -570,6 +572,26 @@ async def test_direct_kill_dead_pid_keeps_non_linux_boot_refusal_path(tmp_path, 
         )
         assert result["signal"] == "boot_mismatch"
         assert (await db.get_session(sid))["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_direct_kill_refuses_foreign_host_before_parsing_infinite_pid(monkeypatch):
+    monkeypatch.setattr(kill_mod.socket, "gethostname", lambda: "local-host")
+    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: pytest.fail("unexpected pid probe"))
+    monkeypatch.setattr(
+        kill_mod, "_terminate_pid", lambda *a, **kw: pytest.fail("unexpected signal")
+    )
+    warnings = []
+    monkeypatch.setattr(kill_mod, "warn", warnings.append)
+    row = {
+        "id": "foreign-session",
+        "status": "running",
+        "node_metadata": {"pid": float("inf"), "pid_host": "other-host"},
+    }
+    result = await kill_mod._kill_one(object(), "session", row["id"], row, user_reason="")
+    assert result["signal"] == "host_mismatch"
+    assert result["pid"] is None
+    assert any("different host" in message for message in warnings)
 
 
 @pytest.mark.parametrize("alive", [False, True], ids=["dead-pid", "live-pid"])
