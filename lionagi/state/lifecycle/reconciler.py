@@ -32,6 +32,8 @@ from .deliveries import (
     ConsumerSchemaError,
     ack_delivery,
     eligibility_counts,
+    get_owed_transition,
+    is_acknowledged,
     reconcile_unacknowledged,
     register_consumer,
 )
@@ -60,6 +62,8 @@ _ACKNOWLEDGE_OUTCOMES = frozenset(
     }
 )
 
+_STRICT_ACKNOWLEDGE_OUTCOMES = frozenset({DeliveryOutcome.SUCCESS, DeliveryOutcome.NOT_APPLICABLE})
+
 
 def _observe_cancelled_hook(task: asyncio.Future[Any]) -> None:
     """Consume a late hook result after timeout or enclosing cancellation."""
@@ -71,17 +75,25 @@ def _observe_cancelled_hook(task: asyncio.Future[Any]) -> None:
         logger.warning("terminal delivery hook failed after cancellation", exc_info=True)
 
 
-async def _await_hook(awaitable: Awaitable[Any], timeout: float) -> Any:
+async def _await_hook(
+    awaitable: Awaitable[Any], timeout: float, admission: _AttemptAdmission | None = None
+) -> Any:
     """Treat a hook's own cancellation as failure, but propagate parent cancellation."""
     task = asyncio.ensure_future(awaitable)
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout)
     except asyncio.CancelledError:
-        task.add_done_callback(_observe_cancelled_hook)
+        if admission is not None:
+            admission.retain(task)
+        else:
+            task.add_done_callback(_observe_cancelled_hook)
         task.cancel()
         raise
     if not done:
-        task.add_done_callback(_observe_cancelled_hook)
+        if admission is not None:
+            admission.retain(task)
+        else:
+            task.add_done_callback(_observe_cancelled_hook)
         task.cancel()
         return DeliveryOutcome.FAILURE
     try:
@@ -135,10 +147,61 @@ class _Worker:
     finished: bool = False
     late_started: bool = False
     deferred: bool = False
+    strict_outcomes: bool = False
 
 
 _workers_lock = threading.Lock()
 _workers: dict[tuple[str, str, str], _Worker] = {}
+_attempts: dict[tuple[str, str, str], _AttemptAdmission] = {}
+
+
+@dataclass(eq=False)
+class _AttemptAdmission:
+    """Keep an event reserved until its owner and detached async work settle."""
+
+    key: tuple[str, str, str]
+    limit: int
+    owner: bool = True
+    pending: int = 0
+
+    def retain(self, task: asyncio.Future[Any]) -> None:
+        with _workers_lock:
+            self.pending += 1
+
+        def settled(done: asyncio.Future[Any]) -> None:
+            try:
+                _observe_cancelled_hook(done)
+            finally:
+                with _workers_lock:
+                    self.pending -= 1
+                    if not self.owner and self.pending == 0 and _attempts.get(self.key) is self:
+                        del _attempts[self.key]
+
+        task.add_done_callback(settled)
+
+    def release(self) -> None:
+        with _workers_lock:
+            self.owner = False
+            if self.pending == 0 and _attempts.get(self.key) is self:
+                del _attempts[self.key]
+
+
+def _reserve_attempt(
+    store: str, consumer: str, transition_id: str, limit: int
+) -> _AttemptAdmission | None:
+    key = (store, consumer, transition_id)
+    with _workers_lock:
+        if key in _attempts or key in _workers:
+            return None
+        workers = [worker for k, worker in _workers.items() if k[:2] == key[:2]]
+        attempts = [item for k, item in _attempts.items() if k[:2] == key[:2]]
+        active_keys = {item.key for item in (*workers, *attempts)}
+        capacity = min([limit, *(item.limit for item in (*workers, *attempts))])
+        if len(active_keys) >= capacity:
+            return None
+        admission = _AttemptAdmission(key, limit)
+        _attempts[key] = admission
+        return admission
 
 
 def _store_identity(db: Any) -> str:
@@ -171,7 +234,13 @@ def _store_identity(db: Any) -> str:
 
 
 def _reserve_worker(
-    store: str, db: Any, consumer: str, transition_id: str, limit: int
+    store: str,
+    db: Any,
+    consumer: str,
+    transition_id: str,
+    limit: int,
+    *,
+    strict_outcomes: bool = False,
 ) -> _Worker | None:
     key = (store, consumer, transition_id)
     with _workers_lock:
@@ -192,7 +261,16 @@ def _reserve_worker(
                 filename, uri=bool(options.get("uri")), check_same_thread=False
             )
             keeper.execute("PRAGMA foreign_keys = ON")
-        worker = _Worker(key, db, asyncio.get_running_loop(), future, limit, db._engine, keeper)
+        worker = _Worker(
+            key,
+            db,
+            asyncio.get_running_loop(),
+            future,
+            limit,
+            db._engine,
+            keeper,
+            strict_outcomes=strict_outcomes,
+        )
         _workers[key] = worker
         return worker
 
@@ -291,7 +369,10 @@ def _finish_late(worker: _Worker) -> None:
                 return await _await_hook(result, timeout=HANDLER_BUDGET_SECONDS)
 
             result = asyncio.run(await_result())
-        if result not in _ACKNOWLEDGE_OUTCOMES:
+        accepted_outcomes = (
+            _STRICT_ACKNOWLEDGE_OUTCOMES if worker.strict_outcomes else _ACKNOWLEDGE_OUTCOMES
+        )
+        if result not in accepted_outcomes:
             logger.warning("Late terminal delivery failed for %s", worker.key[2])
             _release_worker(worker)
             return
@@ -457,6 +538,15 @@ class _WorkerBusyError(Exception):
     """A process-local synchronous reservation or capacity is in use."""
 
 
+@dataclass(frozen=True, slots=True)
+class AttemptResult:
+    """Result of one exact-event attempt, separate from registration."""
+
+    status: Literal["acknowledged", "failed", "uncertain", "busy", "not_owed"]
+    outcome: DeliveryOutcome | None = None
+    attempted: bool = False
+
+
 class TerminalReconciler:
     """A process-local retry cursor; independent processes may deliver the same fact.
 
@@ -513,14 +603,23 @@ class TerminalReconciler:
         return keys, len(keys)
 
     async def _invoke(
-        self, prepared: PreparedDelivery, transition_id: str, db: Any
+        self,
+        prepared: PreparedDelivery,
+        transition_id: str,
+        db: Any,
+        admission: _AttemptAdmission | None = None,
     ) -> tuple[DeliveryOutcome, _Worker | None]:
         call = prepared.call
         if inspect.iscoroutinefunction(call):
-            return await _await_hook(call(), timeout=self.timeout), None
+            return await _await_hook(call(), timeout=self.timeout, admission=admission), None
         assert self._store_identity is not None
         worker = _reserve_worker(
-            self._store_identity, db, self.consumer, transition_id, self.batch_size
+            self._store_identity,
+            db,
+            self.consumer,
+            transition_id,
+            self.batch_size,
+            strict_outcomes=admission is not None,
         )
         if worker is None:
             raise _WorkerBusyError
@@ -541,11 +640,104 @@ class TerminalReconciler:
             raise
         if inspect.isawaitable(result):
             try:
-                result = await _await_hook(result, timeout=self.timeout)
+                result = await _await_hook(result, timeout=self.timeout, admission=admission)
             except BaseException:
                 _release_worker(worker)
                 raise
         return result, worker
+
+    async def _attempt_one(
+        self,
+        db: Any,
+        transition_id: str,
+    ) -> AttemptResult:
+        """Attempt one owed event under the shared exact/replay adapter admission."""
+        store = _store_identity(db)
+        if self._store_identity is None:
+            self._store_identity = store
+        elif self._store_identity != store:
+            raise ValueError("a reconciler instance belongs to one state store")
+        admission = _reserve_attempt(store, self.consumer, transition_id, self.batch_size)
+        if admission is None:
+            return AttemptResult("busy")
+        started = False
+
+        async def perform() -> AttemptResult:
+            nonlocal started
+            row = await get_owed_transition(db, self.consumer, transition_id)
+            if row is None:
+                return AttemptResult("not_owed")
+            preparation = asyncio.ensure_future(self.prepare(row, db))
+            try:
+                prepared = await asyncio.wait_for(asyncio.shield(preparation), timeout=self.timeout)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                admission.retain(preparation)
+                preparation.cancel()
+                raise
+            if not await _consumer_is_active(db, self.consumer):
+                return AttemptResult("not_owed")
+            # Another process may have acknowledged or retired while preparation ran.
+            if await get_owed_transition(db, self.consumer, transition_id) is None:
+                return AttemptResult("not_owed")
+            started = True
+            worker = None
+            try:
+                if isinstance(prepared, PreparedDelivery):
+                    outcome, worker = await self._invoke(prepared, transition_id, db, admission)
+                else:
+                    outcome = prepared
+                accepted = outcome in _STRICT_ACKNOWLEDGE_OUTCOMES
+                if not accepted:
+                    return AttemptResult("failed", outcome, attempted=True)
+                acknowledgement = asyncio.create_task(
+                    ack_delivery(db, transition_id, self.consumer)
+                )
+                try:
+                    await asyncio.shield(acknowledgement)
+                except asyncio.CancelledError:
+                    # The transaction might have committed; prevent another
+                    # same-process attempt until its actual result is observed.
+                    admission.retain(acknowledgement)
+                    raise
+                except Exception:
+                    # A failed response can follow a successful commit. Resolve
+                    # against the durable ledger before reporting a retry debt.
+                    try:
+                        acknowledged = await is_acknowledged(db, transition_id, self.consumer)
+                    except Exception:
+                        return AttemptResult("uncertain", outcome, attempted=True)
+                    if not acknowledged:
+                        return AttemptResult("failed", outcome, attempted=True)
+                return AttemptResult("acknowledged", outcome, attempted=True)
+            finally:
+                if worker is not None:
+                    _release_worker(worker)
+
+        try:
+            return await asyncio.wait_for(perform(), timeout=self.timeout)
+        except _WorkerBusyError:
+            return AttemptResult("busy")
+        except asyncio.TimeoutError:
+            return AttemptResult("failed", attempted=started)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Terminal delivery failed for %s", transition_id)
+            return AttemptResult("failed", attempted=started)
+        finally:
+            admission.release()
+
+    async def attempt_exact(self, db: Any, transition_id: str) -> AttemptResult:
+        """Attempt exactly one existing event without enrolling a consumer.
+
+        The caller owns routing and the surrounding post-commit budget. This
+        method is not connected to the legacy callback path by itself.
+        """
+        return await self._attempt_one(db, transition_id)
+
+    async def attempt_replay(self, db: Any, transition_id: str) -> AttemptResult:
+        """Unwired replay adapter for the same exact-event attempt contract."""
+        return await self._attempt_one(db, transition_id)
 
     async def run_pass(self, db: Any) -> dict[str, int]:
         """Attempt bounded pages until the traversal wraps or the pass budget is spent.
