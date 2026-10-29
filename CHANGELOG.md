@@ -82,6 +82,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   unknown names at that point. Existing tools keep their registration-time
   transport; registering again picks up a changed configuration.
 
+  Inline transport identity accepts exact built-in `None`, `bool`, `int`,
+  `float`, `str`, `list`, `tuple`, and `dict` values recursively. Nested
+  dictionary keys may be any of those types that Python permits as keys;
+  transport fields may impose stricter rules. Other values, including `Path`
+  and built-in subclasses, and cyclic structures raise `ValueError`. Convert
+  unsupported values to strings where appropriate and remove cycles first.
+  A name absent from the default configuration now raises the loader's
+  "not declared in the selected config" error.
+
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from

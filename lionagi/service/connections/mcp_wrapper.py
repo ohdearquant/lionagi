@@ -1611,8 +1611,12 @@ class MCPConnectionPool:
                 return [kind.__name__, value]
             if kind is float:
                 return ["float", value.hex()]
-            if kind not in (dict, list, tuple) or id(value) in active:
-                raise ValueError("MCP transport config contains an unsupported or cyclic value")
+            if kind not in (dict, list, tuple):
+                raise ValueError(
+                    f"MCP transport config contains unsupported value type {kind.__name__}"
+                )
+            if id(value) in active:
+                raise ValueError(f"MCP transport config contains a cyclic {kind.__name__} value")
             active.add(id(value))
             try:
                 if kind is dict:

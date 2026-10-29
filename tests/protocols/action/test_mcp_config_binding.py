@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -197,12 +198,21 @@ def test_transport_fingerprint_preserves_nested_types_and_key_order_independence
     for left, right in pairs:
         assert key({"command": "x", "nested": left}) != key({"command": "x", "nested": right})
     opaque = object()
-    with pytest.raises(ValueError, match="unsupported or cyclic"):
+    with pytest.raises(ValueError, match="unsupported value type object"):
         key({"command": "x", "opaque": opaque})
     cyclic = []
     cyclic.append(cyclic)
-    with pytest.raises(ValueError, match="unsupported or cyclic"):
+    with pytest.raises(ValueError, match="cyclic list"):
         key({"command": "x", "args": cyclic})
+
+
+@pytest.mark.asyncio
+async def test_inline_path_command_is_rejected_with_type_name(tmp_path):
+    command = Path(tmp_path / "server")
+    with pytest.raises(ValueError, match=type(command).__name__):
+        await MCPConnectionPool.get_client(
+            {"command": command}, security=MCPSecurityConfig.trusted()
+        )
 
 
 @pytest.mark.asyncio
