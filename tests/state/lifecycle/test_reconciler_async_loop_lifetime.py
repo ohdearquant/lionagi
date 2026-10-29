@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.lifecycle.deliveries import is_acknowledged
+from lionagi.state.lifecycle.deliveries import is_acknowledged, retire_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 
 
@@ -519,7 +519,10 @@ def test_late_result_after_poll_timeout_distinguishes_success_from_hook_timeout(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", [DeliveryOutcome.SUCCESS, DeliveryOutcome.FAILURE])
-async def test_completed_task_is_observed_when_done_callback_is_lost(tmp_path, outcome):
+@pytest.mark.parametrize("retired", [False, True])
+async def test_completed_task_is_observed_when_done_callback_is_lost(tmp_path, outcome, retired):
+    from lionagi.state.lifecycle import reconciler as reconciliation
+
     loop = asyncio.new_event_loop()
     started, cancelled, release, stopped = (threading.Event() for _ in range(4))
     tasks = []
@@ -572,12 +575,20 @@ async def test_completed_task_is_observed_when_done_callback_is_lost(tmp_path, o
             await _eventually(stopped_async)
             assert tasks[0].done()
             loop.close()
-            # Inspecting pending work after closure must claim the done task's
-            # result exactly once, despite its discarded done callback.
-            reconciler._pending()
+            if retired:
+                assert await retire_consumer(db, "completion-close")
+                # A retired pass must observe completion without attempting a
+                # new delivery, even though the loop's callback was lost.
+                assert (await reconciler.run_pass(db))["attempted"] == 0
+            else:
+                reconciler._pending()
 
             async def released():
-                return reconciler._pending()[1] == 0
+                with reconciliation._workers_lock:
+                    return not any(
+                        key[1:] == ("completion-close", transition)
+                        for key in reconciliation._workers
+                    )
 
             await _eventually(released)
             assert await is_acknowledged(db, transition, "completion-close") is (
@@ -829,3 +840,104 @@ async def test_detached_factory_observes_completed_future_on_loop_closure(
             loop.close()
         thread.join(timeout=2)
         reconciliation._release_worker(worker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["hook", "wrapper"])
+async def test_closed_loop_cleanup_exception_keeps_unfinished_reservation(monkeypatch, surface):
+    import concurrent.futures
+
+    from lionagi.state.lifecycle import reconciler as reconciliation
+
+    class Pause:
+        def __await__(self):
+            yield
+
+    async def resistant_cleanup():
+        try:
+            await Pause()
+        finally:
+            await Pause()
+
+    loop = asyncio.new_event_loop()
+    hook = resistant_cleanup()
+    returned: concurrent.futures.Future = concurrent.futures.Future()
+    returned.set_result(hook)
+    worker = reconciliation._Worker(
+        ("sqlite-test", "close-cleanup", str(uuid.uuid4())), None, loop, returned, 1, None
+    )
+    with reconciliation._workers_lock:
+        reconciliation._workers[worker.key] = worker
+    wrapper = None
+    if surface == "hook":
+        # Suspend in the body; closing now enters a finally that suspends too.
+        hook.send(None)
+        loop.close()
+    else:
+        wrapper = resistant_cleanup()
+        wrapper.send(None)
+        monkeypatch.setattr(reconciliation, "_settle_late_awaitable", lambda *_args: wrapper)
+
+    thread = threading.Thread(target=reconciliation._finish_late, args=(worker,), daemon=True)
+    thread.start()
+    try:
+        if surface == "wrapper":
+
+            async def wrapper_queued():
+                return bool(loop._ready)
+
+            await _eventually(wrapper_queued)
+            loop.close()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        with reconciliation._workers_lock:
+            assert reconciliation._workers.get(worker.key) is worker
+            assert worker.abandoned
+    finally:
+        if not loop.is_closed():
+            loop.close()
+        thread.join(timeout=2)
+        reconciliation._release_worker(worker)
+        for coroutine in (hook, wrapper):
+            if coroutine is not None:
+                try:
+                    coroutine.close()
+                except RuntimeError:
+                    coroutine.close()
+
+
+@pytest.mark.asyncio
+async def test_retired_pass_releases_completed_private_ack_from_closed_loop(monkeypatch):
+    from lionagi.state.lifecycle import reconciler as reconciliation
+
+    origin = asyncio.new_event_loop()
+    origin.close()
+    async with StateDB(url="sqlite+aiosqlite:///:memory:") as db:
+        transition = await _seed(db)
+        consumer = "retired-private-closed"
+        await reconciliation.register_consumer(db, consumer, start="all")
+        assert await retire_consumer(db, consumer)
+        store = reconciliation._store_identity(db)
+        worker = reconciliation._reserve_worker(store, db, consumer, transition, 1)
+        assert worker is not None
+        worker.loop = origin
+        worker.future.set_result(DeliveryOutcome.SUCCESS)
+        worker.finished = True
+        worker.deferred = True
+
+        async def no_cross_loop_ack(*_args, **_kwargs):
+            pytest.fail("retired pass tried to ACK on a different loop")
+
+        monkeypatch.setattr(reconciliation, "ack_delivery", no_cross_loop_ack)
+
+        async def prepare(_row, _db):
+            pytest.fail("retired pass attempted a new delivery")
+
+        reconciler = TerminalReconciler(consumer, prepare, batch_size=1)
+        try:
+            assert (await reconciler.run_pass(db))["attempted"] == 0
+            with reconciliation._workers_lock:
+                assert worker.key not in reconciliation._workers
+            assert not await is_acknowledged(db, transition, consumer)
+        finally:
+            reconciliation._release_worker(worker)

@@ -439,6 +439,17 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
     return result
 
 
+def _close_late_coroutine(coroutine: Any) -> None:
+    """Best-effort cleanup must not decide whether unfinished work is settled."""
+    if inspect.iscoroutine(coroutine):
+        try:
+            coroutine.close()
+        except BaseException:
+            logger.warning(
+                "Unable to close an unfinished terminal delivery coroutine", exc_info=True
+            )
+
+
 def _finish_late(worker: _Worker) -> None:
     """Complete a detached synchronous factory, including a returned awaitable."""
     try:
@@ -454,9 +465,8 @@ def _finish_late(worker: _Worker) -> None:
                 try:
                     pending = asyncio.run_coroutine_threadsafe(coroutine, loop)
                 except RuntimeError:
-                    coroutine.close()
-                    if inspect.iscoroutine(result):
-                        result.close()
+                    _close_late_coroutine(coroutine)
+                    _close_late_coroutine(result)
                     if loop.is_closed():
                         if isinstance(result, asyncio.Future) and result.done():
                             _finish_late_result(worker, result.result())
@@ -488,7 +498,7 @@ def _finish_late(worker: _Worker) -> None:
                                 # The hook finished, but the wait wrapper's
                                 # completion callback never ran before closure.
                                 pending.cancel()
-                                coroutine.close()
+                                _close_late_coroutine(coroutine)
                                 try:
                                     result = task.result()
                                 except asyncio.CancelledError:
@@ -498,13 +508,12 @@ def _finish_late(worker: _Worker) -> None:
                                 # The wrapper never started, but the Future
                                 # returned by the factory has completed.
                                 pending.cancel()
-                                coroutine.close()
+                                _close_late_coroutine(coroutine)
                                 result = result.result()
                                 break
                             pending.cancel()
-                            coroutine.close()
-                            if inspect.iscoroutine(result):
-                                result.close()
+                            _close_late_coroutine(coroutine)
+                            _close_late_coroutine(result)
                             raise _LoopClosedBeforeCompletionError from None
             elif isinstance(result, asyncio.Future):
                 if result.done():
@@ -515,8 +524,7 @@ def _finish_late(worker: _Worker) -> None:
                 # A bare coroutine may capture resources from the old loop.
                 # Closing it prevents an unawaited-coroutine warning, but does
                 # not prove that the delivery has completed.
-                if inspect.iscoroutine(result):
-                    result.close()
+                _close_late_coroutine(result)
                 raise _LoopClosedBeforeCompletionError
     except _LoopClosedBeforeCompletionError:
         _abandon_worker(worker)
@@ -819,6 +827,9 @@ class TerminalReconciler:
                 self._store_identity = store
             elif self._store_identity != store:
                 raise ValueError("a reconciler instance belongs to one state store")
+            # Closed-loop completions and completed private-memory ACKs must be
+            # reconciled even if this consumer was retired while work ran.
+            _release_closed_loop_workers(store, self.consumer)
             await _drain_deferred(db, self.consumer, self._store_identity)
             try:
                 registration = await register_consumer(db, self.consumer, start=self.start)
