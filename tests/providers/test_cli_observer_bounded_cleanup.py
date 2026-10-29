@@ -11,12 +11,25 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import anyio
 import pytest
 
 from lionagi.providers import _cli_subprocess as cli
+
+
+def _context_contains(error: BaseException, target: BaseException) -> bool:
+    """Follow task cancellation wrappers without looping on cyclic contexts."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if current is target:
+            return True
+        seen.add(id(current))
+        current = current.__context__
+    return False
 
 
 class FakeProcess:
@@ -296,11 +309,12 @@ async def test_cleanup_task_cancellation_wins_over_observer_failure(
     fake_observer_boundary, monkeypatch, observer_kind
 ):
     process, lease, seen = fake_observer_boundary
+    primary = asyncio.CancelledError("cleanup cancellation")
 
     async def fake_end(child, *, spawned=None, **_kwargs):
         assert child is process and spawned.pid == process.pid
         seen["cleanup_started"] += 1
-        raise asyncio.CancelledError("cleanup cancellation")
+        raise primary
 
     async def observer(*_args):
         raise RuntimeError("observer sentinel")
@@ -312,7 +326,11 @@ async def test_cleanup_task_cancellation_wins_over_observer_failure(
         )
         with pytest.raises(asyncio.CancelledError) as caught:
             await stream.__anext__()
-    assert caught.value.args == ("cleanup cancellation",)
+    if sys.version_info < (3, 11):
+        # bpo-45390: task cancellation wraps the original error on Python 3.10.
+        assert _context_contains(caught.value, primary)
+    else:
+        assert caught.value.args == ("cleanup cancellation",)
     assert seen["cleanup_started"] == 1
     assert lease.recorded == [(process.pid, 1.0)]
     assert lease.released == 0

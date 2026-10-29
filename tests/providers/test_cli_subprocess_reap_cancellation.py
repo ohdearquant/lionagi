@@ -14,6 +14,18 @@ import pytest_asyncio
 from lionagi.providers import _cli_subprocess as cs
 
 
+def _context_contains(error: BaseException, target: BaseException) -> bool:
+    """Follow task cancellation wrappers without looping on cyclic contexts."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if current is target:
+            return True
+        seen.add(id(current))
+        current = current.__context__
+    return False
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def held_helpers(monkeypatch):
     names = ("stdout", "stderr", "stdin", "wait")
@@ -276,7 +288,11 @@ async def test_unconfirmed_group_end_keeps_the_slots_and_the_teardown_exception(
         assert state.runner.cancelled(), "slot retention must not replace teardown cancellation"
         with pytest.raises(asyncio.CancelledError) as raised:
             await state.runner
-        assert raised.value is primary or raised.value.__context__ is primary
+        if sys.version_info < (3, 11):
+            # bpo-45390: nested tasks may wrap the original cancellation.
+            assert _context_contains(raised.value, primary)
+        else:
+            assert raised.value is primary or raised.value.__context__ is primary
     else:
         assert state.runner.exception() is primary, "the original teardown error must stay primary"
     assert state.kept == 0 and state.released == 0, "an unconfirmed group keeps its holder locks"
