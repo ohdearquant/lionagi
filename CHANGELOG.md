@@ -199,6 +199,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `is_coro_func` recognizes callable instances whose class defines an async
+  `__call__`, including partials of those instances. Synchronous `add_message()`
+  now rejects such message hooks; use `a_add_message()` to await them.
+
 - `li team receive` reads a stored message whose recipient is a single name written as a
   string, not a list, as that whole name, as the other team commands already did. It used
   to deliver it to any member whose name was part of the string, so `bob` received a
