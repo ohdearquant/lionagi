@@ -144,10 +144,20 @@ class _MCPRecoveryCapability:
     a config dict.
     """
 
-    __slots__ = ("security",)
+    __slots__ = ("security", "_transport", "_server_name")
 
-    def __init__(self, security: MCPSecurityConfig) -> None:
+    def __init__(
+        self,
+        security: MCPSecurityConfig,
+        *,
+        transport: dict[str, Any] | None = None,
+        server_name: str | None = None,
+    ) -> None:
+        from copy import deepcopy
+
         self.security = security
+        self._transport = deepcopy(transport)
+        self._server_name = server_name
 
 
 # Generic-executor admission rule: registration-time admission control,
@@ -1634,10 +1644,18 @@ class MCPConnectionPool:
         return MCPSecurityConfig()
 
     @classmethod
-    def _mint_capability(cls, security: MCPSecurityConfig | None) -> _MCPRecoveryCapability:
+    def _mint_capability(
+        cls,
+        security: MCPSecurityConfig | None,
+        *,
+        transport: dict[str, Any] | None = None,
+        server_name: str | None = None,
+    ) -> _MCPRecoveryCapability:
         """Mint the recovery authorization for a newly authorized proxy,
         bound to the effective security in force at authorization time."""
-        return _MCPRecoveryCapability(cls._effective_security(security))
+        return _MCPRecoveryCapability(
+            cls._effective_security(security), transport=transport, server_name=server_name
+        )
 
     @classmethod
     def _resolve_config(cls, server_config: dict[str, Any]) -> dict[str, Any]:
@@ -1759,6 +1777,13 @@ class MCPConnectionPool:
         """Load MCP server configurations from a .mcp.json file; returns
         only the server names declared in THIS file (see docs/internals/runtime.md
         for the _configs accumulation gotcha)."""
+        return list(cls._load_config_snapshot(path))
+
+    @classmethod
+    def _load_config_snapshot(cls, path: str) -> dict[str, Any]:
+        """Load a file once and return a copy independent of the shared name registry."""
+        from copy import deepcopy
+
         config_path = Path(path)
         if not config_path.exists():
             raise FileNotFoundError(f"MCP config file not found: {path}")
@@ -1780,20 +1805,11 @@ class MCPConnectionPool:
         if not isinstance(servers, dict):
             raise ValueError("mcpServers must be a dictionary")
 
-        for name, new_server_config in servers.items():
-            old_server_config = cls._configs.get(name)
-            if old_server_config is not None and old_server_config != new_server_config:
-                # This name now resolves to a different transport. Drop any
-                # pooled client keyed off the OLD transport's fingerprint so
-                # a stale connection cannot linger; recovery capabilities
-                # already can't cross this boundary since each is bound to
-                # the transport it was minted for.
-                stale_prefix = f"server:{name}:"
-                for cache_key in [k for k in cls._clients if k.startswith(stale_prefix)]:
-                    cls._clients.pop(cache_key, None)
-
-        cls._configs.update(servers)
-        return list(servers.keys())
+        # Cache keys include the transport and security fingerprints. Retain
+        # old clients: an existing tool may still hold that transport, and
+        # cleanup must keep the handle needed to close it.
+        cls._configs.update(deepcopy(servers))
+        return deepcopy(servers)
 
     @classmethod
     def _resolve_identity(
@@ -1845,6 +1861,8 @@ class MCPConnectionPool:
         cls,
         server_config: dict[str, Any],
         security: MCPSecurityConfig | None = None,
+        *,
+        _bound_transport: dict[str, Any] | None = None,
     ) -> Any:
         """Get or create a pooled MCP client. `security=None` means the caller made
         no trust decision and never recovers a policy another caller authorized for
@@ -1857,8 +1875,29 @@ class MCPConnectionPool:
                 "is not available through this parameter"
             )
 
+        if _bound_transport is not None:
+            return await cls._get_bound_client(
+                _bound_transport, server_config.get("server"), security
+            )
         config, _policy_key, cache_key = cls._resolve_identity(server_config, security)
         return await cls._get_or_create_client(config, cache_key, security)
+
+    @classmethod
+    async def _get_bound_client(
+        cls, config: dict[str, Any], server_name: str | None, security: MCPSecurityConfig | None
+    ) -> Any:
+        """Connect using the selected transport without resolving its alias again."""
+        from copy import deepcopy
+
+        if security is not None and not isinstance(security, MCPSecurityConfig):
+            raise TypeError("security must be an MCPSecurityConfig or None")
+        security_fp = cls._security_fingerprint(cls._effective_security(security))
+        policy_key = cls._policy_key(config, server_name=server_name)
+        if server_name is not None:
+            cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
+        else:
+            cache_key = f"inline:{config.get('command')}:{id(config)}:sec:{security_fp}"
+        return await cls._get_or_create_client(deepcopy(config), cache_key, security)
 
     @classmethod
     async def _get_reconnect_client(
@@ -1875,6 +1914,10 @@ class MCPConnectionPool:
                 "MCP client recovery requires the authorization capability "
                 "minted for this proxy at registration time; none was "
                 "presented, so no policy can be recovered."
+            )
+        if capability._transport is not None:
+            return await cls._get_bound_client(
+                capability._transport, capability._server_name, capability.security
             )
         config, _policy_key, cache_key = cls._resolve_identity(server_config, capability.security)
         return await cls._get_or_create_client(config, cache_key, capability.security)

@@ -1,6 +1,8 @@
 """Tests for MCP security: fail-closed transport security requiring explicit opt-in before transport construction."""
 
 import copy
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -12,6 +14,27 @@ from lionagi.service.connections.mcp_wrapper import (
     _validate_command,
     _validate_url,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pool_and_block_transports(monkeypatch):
+    """Exercise validation without letting a regression start a real transport."""
+    monkeypatch.setattr(MCPConnectionPool, "_security", None)
+    monkeypatch.setattr(MCPConnectionPool, "_configs", {})
+    monkeypatch.setattr(MCPConnectionPool, "_clients", {})
+    monkeypatch.setattr(MCPConnectionPool, "_creation_locks", {})
+
+    def no_transport(*_args, **_kwargs):
+        raise AssertionError("unexpected MCP transport construction")
+
+    fastmcp = ModuleType("fastmcp")
+    fastmcp.Client = no_transport
+    client_module = ModuleType("fastmcp.client")
+    transports = ModuleType("fastmcp.client.transports")
+    transports.StdioTransport = no_transport
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setitem(sys.modules, "fastmcp.client", client_module)
+    monkeypatch.setitem(sys.modules, "fastmcp.client.transports", transports)
 
 
 class TestMCPSecurityConfig:
@@ -217,9 +240,8 @@ class TestValidateUrl:
 class TestMCPConnectionPoolFailClosed:
     """Attack regression: _create_client must reject transports before construction.
 
-    The test asserts that PermissionError is raised BEFORE FastMCPClient or
-    StdioTransport is constructed (verified by checking fastmcp was not imported
-    and no network/process side effect occurred).
+    The tests require PermissionError before the fake FastMCP client or
+    transport constructors can be reached.
     """
 
     @pytest.mark.asyncio
@@ -280,7 +302,11 @@ class TestLoadMcpConfigTrustedLoad:
 
         mgr = ActionManager()
 
-        async def fake_register(server_config, update=False, security=None):
+        async def fake_register(
+            server_config, update=False, security=None, *, _bound_transport=None
+        ):
+            assert server_config == {"server": "local"}
+            assert _bound_transport == {"command": "echo", "args": ["hi"]}
             return ["local_echo"]
 
         monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
@@ -304,8 +330,11 @@ class TestLoadMcpConfigTrustedLoad:
         mgr = ActionManager()
         seen = {}
 
-        async def fake_register(server_config, update=False, security=None):
+        async def fake_register(
+            server_config, update=False, security=None, *, _bound_transport=None
+        ):
             seen["security"] = security
+            seen["transport"] = _bound_transport
             return ["local_echo"]
 
         monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
@@ -314,6 +343,7 @@ class TestLoadMcpConfigTrustedLoad:
         # Normal usage must still register tools, not silently return [].
         assert result == {"local": ["local_echo"]}
         assert seen["security"] is None
+        assert seen["transport"] == {"command": "echo", "args": ["hi"]}
 
     async def test_explicit_trusted_preset_threads_through(self, tmp_path, monkeypatch):
         """The named, observable trusted mode (MCPSecurityConfig.trusted())
@@ -328,9 +358,12 @@ class TestLoadMcpConfigTrustedLoad:
         mgr = ActionManager()
         seen = {}
 
-        async def fake_register(server_config, update=False, security=None):
+        async def fake_register(
+            server_config, update=False, security=None, *, _bound_transport=None
+        ):
             seen["allow_commands"] = security.allow_commands
             seen["allow_urls"] = security.allow_urls
+            seen["transport"] = _bound_transport
             return ["local_echo"]
 
         monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
@@ -339,6 +372,7 @@ class TestLoadMcpConfigTrustedLoad:
         assert result == {"local": ["local_echo"]}
         assert seen["allow_commands"] is True
         assert seen["allow_urls"] is True
+        assert seen["transport"] == {"command": "echo", "args": ["hi"]}
 
     async def test_default_load_denies_command_transport_without_explicit_trust(self, tmp_path):
         """End-to-end (no mocking of register_mcp_server): a command-based
@@ -374,7 +408,9 @@ class TestLoadMcpConfigTrustedLoad:
 
         mgr = ActionManager()
 
-        async def deny_register(server_config, update=False, security=None):
+        async def deny_register(
+            server_config, update=False, security=None, *, _bound_transport=None
+        ):
             raise PermissionError("MCP command transport is disabled")
 
         monkeypatch.setattr(mgr, "register_mcp_server", deny_register)
@@ -397,7 +433,9 @@ class TestLoadMcpConfigTrustedLoad:
         try:
             mgr = ActionManager()
 
-            async def fake_register(server_config, update=False, security=None):
+            async def fake_register(
+                server_config, update=False, security=None, *, _bound_transport=None
+            ):
                 # An explicit, opted-in trusted policy arrives as an argument;
                 # the global is NEVER mutated.
                 assert security.allow_commands is True
@@ -412,7 +450,7 @@ class TestLoadMcpConfigTrustedLoad:
         finally:
             MCPConnectionPool._security = None
 
-    async def test_concurrent_loads_do_not_cross_contaminate(self, monkeypatch):
+    async def test_concurrent_loads_do_not_cross_contaminate(self, tmp_path, monkeypatch):
         """Two concurrent loads with different policies must not observe each other's policy when interleaved."""
         import asyncio
 
@@ -424,20 +462,28 @@ class TestLoadMcpConfigTrustedLoad:
             restrictive = MCPSecurityConfig()  # fail-closed
             gate = asyncio.Event()
             observed: dict[str, MCPSecurityConfig] = {}
-
-            # No real config file: load_config is a no-op and server_names are
-            # supplied explicitly to each load.
-            monkeypatch.setattr(MCPConnectionPool, "load_config", classmethod(lambda cls, p: None))
+            transports: dict[str, dict] = {}
+            arrived = 0
+            cfg_a, cfg_b = tmp_path / "a.json", tmp_path / "b.json"
+            cfg_a.write_text('{"mcpServers":{"a":{"command":"synthetic-a"}}}')
+            cfg_b.write_text('{"mcpServers":{"b":{"command":"synthetic-b"}}}')
 
             async def fake_register(
-                self, server_config, request_options=None, update=False, security=None
+                self,
+                server_config,
+                request_options=None,
+                update=False,
+                security=None,
+                *,
+                _bound_transport=None,
             ):
-                # Force interleaving so both loads are mid-flight together: the
-                # first arrival blocks until the second one releases the gate.
-                if not gate.is_set():
+                nonlocal arrived
+                arrived += 1
+                if arrived == 2:
                     gate.set()
-                    await asyncio.sleep(0.02)
+                await asyncio.wait_for(gate.wait(), timeout=1)
                 observed[server_config["server"]] = security
+                transports[server_config["server"]] = _bound_transport
                 return [f"{server_config['server']}_echo"]
 
             monkeypatch.setattr(ActionManager, "register_mcp_server", fake_register)
@@ -445,13 +491,14 @@ class TestLoadMcpConfigTrustedLoad:
             mgr_a = ActionManager()
             mgr_b = ActionManager()
             await asyncio.gather(
-                mgr_a.load_mcp_config("ignored", server_names=["a"], mcp_security=permissive),
-                mgr_b.load_mcp_config("ignored", server_names=["b"], mcp_security=restrictive),
+                mgr_a.load_mcp_config(str(cfg_a), server_names=["a"], mcp_security=permissive),
+                mgr_b.load_mcp_config(str(cfg_b), server_names=["b"], mcp_security=restrictive),
             )
 
             # Each load saw only its own policy, despite interleaving.
             assert observed["a"] is permissive
             assert observed["b"] is restrictive
+            assert transports == {"a": {"command": "synthetic-a"}, "b": {"command": "synthetic-b"}}
             assert MCPConnectionPool._security is None
         finally:
             MCPConnectionPool._security = None
@@ -496,7 +543,13 @@ class TestLoadMcpConfigTrustedLoad:
             seen = {}
 
             async def fake_register(
-                self, server_config, request_options=None, update=False, security=None
+                self,
+                server_config,
+                request_options=None,
+                update=False,
+                security=None,
+                *,
+                _bound_transport=None,
             ):
                 seen["security"] = security
                 assert MCPConnectionPool._security is None
@@ -517,7 +570,13 @@ class TestLoadMcpConfigTrustedLoad:
 
             # Restrictive policy: a denial must be raised, not swallowed to [].
             async def deny_register(
-                self, server_config, request_options=None, update=False, security=None
+                self,
+                server_config,
+                request_options=None,
+                update=False,
+                security=None,
+                *,
+                _bound_transport=None,
             ):
                 raise PermissionError("MCP command transport is disabled")
 
@@ -695,13 +754,14 @@ class TestPerServerPolicyPersistence:
         finally:
             self._reset()
 
-    async def test_register_tool_names_records_policy(self):
+    async def test_register_tool_names_records_policy(self, monkeypatch):
         from lionagi.protocols.action.manager import ActionManager
 
         self._reset()
         try:
             mgr = ActionManager()
             policy = MCPSecurityConfig(allow_commands=True)
+            monkeypatch.setitem(MCPConnectionPool._configs, "srv", {"command": "echo", "args": []})
             # tool_names branch builds Tool objects without creating a client;
             # each Tool must still carry its own recovery capability for
             # first-invocation recovery, bound to this call's policy.
@@ -755,12 +815,11 @@ class TestPerServerPolicyPersistence:
     async def test_reload_different_command_under_same_name_denies_recovered_policy(
         self, tmp_path, monkeypatch
     ):
-        """A policy trusted for one server's resolved transport must not be
-        recoverable after the same server name is reloaded with a different
-        command. The connected client cached for the old transport must also
-        be evicted, and an omitted-policy load must stay fail-closed end to
-        end."""
+        """A reload retains the old client's handle for already-bound tools,
+        but a new omitted-policy lookup must not inherit its trust."""
         import json
+
+        from lionagi.protocols.action.manager import ActionManager
 
         self._reset()
         try:
@@ -770,7 +829,20 @@ class TestPerServerPolicyPersistence:
             )
             MCPConnectionPool.load_config(str(cfg_path))
             policy = MCPSecurityConfig(allow_commands=True)
-            cached_client = type("ConnectedClient", (), {"is_connected": lambda self: True})()
+
+            class ConnectedClient:
+                closed = False
+
+                def is_connected(self):
+                    return True
+
+                async def call_tool(self, name, kwargs):
+                    return {"name": name, "arguments": kwargs}
+
+                async def __aexit__(self, *_args):
+                    self.closed = True
+
+            cached_client = ConnectedClient()
             real_create_client = MCPConnectionPool._create_client
 
             async def fake_create(config, security=None):
@@ -791,20 +863,28 @@ class TestPerServerPolicyPersistence:
             ]
             assert len(cached_keys) == 1
             stale_cache_key = cached_keys[0]
+            manager = ActionManager()
+            await manager.register_mcp_server(
+                {"server": "same-name"}, tool_names=["request"], security=policy
+            )
+            original_tool = manager.registry["mcp__same-name__request"]
 
             # Reload a DIFFERENT command under the SAME server name.
             cfg_path.write_text(
                 json.dumps({"mcpServers": {"same-name": {"command": "untrusted-server"}}})
             )
             MCPConnectionPool.load_config(str(cfg_path))
-            assert stale_cache_key not in MCPConnectionPool._clients
-            assert cached_client not in MCPConnectionPool._clients.values()
+            assert MCPConnectionPool._clients[stale_cache_key] is cached_client
+            assert await original_tool.func_callable() == {"name": "request", "arguments": {}}
 
             # The omitted-policy path must not recover the prior trusted()
             # decision or return the old connected client. The real validator
             # rejects before any replacement transport is constructed.
             with pytest.raises(PermissionError, match="allow_commands=False"):
                 await MCPConnectionPool.get_client({"server": "same-name"})
+            await MCPConnectionPool.cleanup()
+            assert cached_client.closed
+            assert MCPConnectionPool._clients == {}
         finally:
             self._reset()
             MCPConnectionPool._configs.pop("same-name", None)
@@ -929,7 +1009,7 @@ class TestFreshLoadDoesNotInheritEarlierCallerTrust:
             # The fresh loader's own (omitted) policy reached the validator --
             # it was never substituted with mgr_1's trusted() decision, and
             # the connected trusted client was never returned to it.
-            assert observed[-1] is None
+            assert observed[-1] == MCPSecurityConfig()
         finally:
             self._reset()
 

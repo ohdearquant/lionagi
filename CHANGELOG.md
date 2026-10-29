@@ -73,6 +73,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   artifact before the task. If the artifact turn fails or its reply is not the
   requested word, each dimension sends the artifact with its own task, and the
   run reports `artifact_turn_failed` or `artifact_turn_unused`.
+
+- MCP tools registered by server name now bind to the transport selected at
+  registration, so later configuration reloads cannot redirect them. Explicit
+  server names missing from the selected configuration are refused before any
+  tools are registered. Metadata-free registration also resolves names at
+  registration: registering a name before loading its configuration now fails.
+
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
