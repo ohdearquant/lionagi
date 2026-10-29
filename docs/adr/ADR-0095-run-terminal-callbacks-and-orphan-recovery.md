@@ -598,13 +598,11 @@ the connection is not reused across event loops.
 Replay resolves session context at delivery time. A session transition uses that session;
 a play uses its linked session, if present. For an invocation or schedule run, collect its
 linked sessions' distinct non-NULL project values: exactly one supplies the project; zero or
-several means no session context. Do not select the first session. For a resolved project,
-use `projects.path` only when it names an existing directory, loading settings with that
-project directory. Otherwise use global settings only, never the daemon's working directory.
+several means no session context. Do not select the first session. Replay loads global settings
+only, never a project's settings, so a notifier configured in a project's settings is push-only.
 An eligible transition without session context is not applicable and is acknowledged; the
 pass summary counts absent context and ambiguous projects separately. Kind and ID filters
-apply after resolution. Because a project path may be unknown or have moved, replay can use a
-different notifier from the one the original process would have used.
+apply after resolution.
 
 Per-run scoped `--notify` overrides and the no-session fallback remain push-only; notification
 intent is not persisted for replay.
