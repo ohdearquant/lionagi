@@ -99,7 +99,9 @@ async def _prepare_settings_delivery(
 async def run_terminal_reconciliation() -> int:
     """Run one budgeted pass against the daemon's store and log its summary."""
     global _reconciler, _reconciler_url
-    if state_db_known_absent():
+    from lionagi.studio import config as studio_config
+
+    if not studio_config.TERMINAL_RECONCILE_ENABLED or state_db_known_absent():
         return 0
     async with StateDB() as db:
         if _reconciler is None or _reconciler_url != db.url:

@@ -388,9 +388,9 @@ class SQLAlchemyLifecycleService:
     ) -> None:
         if transition_id is None:
             return
-        if not eligibility_stored:
-            # A compatibility writer that had no column must use the decision
-            # made for that write, even if the foreign schema changes afterward.
+        if not eligibility_stored or not eligibility_at_write:
+            # No column: use the decision made for that write, even if the foreign schema
+            # changes afterward. Written ineligible: never pushed, so no read is needed.
             eligible = eligibility_at_write
         else:
             try:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
@@ -48,6 +49,7 @@ async def test_first_pass_baselines_history_and_later_rows_drain_by_budget(
         "settings",
         state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": f"sqlite:///{store}"}),
     )
+    monkeypatch.setattr(studio_config, "TERMINAL_RECONCILE_ENABLED", True)
     monkeypatch.setattr(studio_config, "TERMINAL_RECONCILE_BUDGET_SECONDS", budget)
     monkeypatch.setattr(terminal, "_reconciler", None)
     monkeypatch.setattr(terminal, "_reconciler_url", None)
@@ -69,3 +71,38 @@ async def test_first_pass_baselines_history_and_later_rows_drain_by_budget(
     async with StateDB(store) as db:
         acked = [await is_acknowledged(db, t, terminal.CONSUMER_NAME) for t in later]
     assert sum(acked) == drained
+
+
+@pytest.mark.asyncio
+async def test_replay_is_off_by_default_and_the_push_still_runs(tmp_path, monkeypatch):
+    assert os.environ.get("LIONAGI_STUDIO_TERMINAL_RECONCILE") is None
+    assert studio_config.TERMINAL_RECONCILE_ENABLED is False
+    store = tmp_path / "state.db"
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": f"sqlite:///{store}"}),
+    )
+    monkeypatch.setattr(terminal, "_reconciler", None)
+    monkeypatch.setattr(terminal, "_reconciler_url", None)
+    passes = []
+
+    async def run_pass(self, db):
+        passes.append(self.consumer)
+        return {"acknowledged": 0}
+
+    monkeypatch.setattr(terminal.TerminalReconciler, "run_pass", run_pass)
+    pushed = []
+    async with StateDB(store) as db:
+        callbacks = TerminalCallbackRegistry()
+        callbacks.register("push", lambda envelope: pushed.append(envelope.event_id))
+        db._lifecycle_service()._terminal_callbacks = callbacks
+        history = await _seed(db, 2)
+
+    assert pushed == history
+    assert await terminal.run_terminal_reconciliation() == 0
+    assert passes == []
+    assert terminal._reconciler is None
+    async with StateDB(store) as db:
+        consumers = await db.fetch_all("SELECT * FROM terminal_consumers")
+    assert consumers == []

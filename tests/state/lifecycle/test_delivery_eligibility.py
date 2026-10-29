@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 
 from lionagi.state.db import StateDB
 from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
@@ -222,6 +223,30 @@ async def test_push_obeys_value_stored_after_commit(db, monkeypatch):
         "SELECT delivery_eligible FROM status_transitions WHERE id = ?", (outcome.transition_id,)
     )
     assert not row["delivery_eligible"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,edge", _EXECUTION_EDGES)
+async def test_push_reads_back_only_a_row_written_eligible(db, kind, edge):
+    entity_id = await _make_entity(db, kind, edge.source)
+    version = await _version(db, kind, entity_id) if edge.required_guard_fields else None
+    service = SQLAlchemyLifecycleService(db, terminal_callbacks=TerminalCallbackRegistry())
+    reads = []
+
+    def observed(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().startswith("SELECT delivery_eligible FROM status_transitions"):
+            reads.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", observed)
+    try:
+        outcome = await service.transition(
+            _matrix_command(kind, entity_id, edge, expected_version=version)
+        )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", observed)
+    assert outcome.result == "applied"
+    eligible = edge.target in _EXPECTED_TERMINAL[kind] and edge.source != edge.target
+    assert len(reads) == (1 if eligible else 0)
 
 
 @pytest.mark.asyncio

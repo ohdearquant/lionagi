@@ -8,8 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- Studio reconciles eligible terminal transitions for a registered settings
-  consumer at startup and on its periodic tick. Delivery is at least once;
+- With `LIONAGI_STUDIO_TERMINAL_RECONCILE` on (default off), Studio reconciles
+  eligible terminal transitions for a registered settings consumer at startup
+  and on its periodic tick. Delivery is at least once;
   consumers can deduplicate by transition event ID. Operator force-transitions
   now notify terminal consumers. Per-run notification overrides and the
   no-session fallback remain push-only. Replay loads global settings only;
@@ -19,11 +20,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   with transitions that predate it acknowledged as history, never delivered.
   A pass keeps reading pages of owed transitions until it reaches the end or
   `LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS` (default 10) have passed.
-  Known defect: the push path records nothing, so a transition whose push
-  already ran the notifier is replayed by the next pass and the notifier runs
-  again for the same event. A Python hook can deduplicate by event ID; a shell
-  command notifier runs twice. A pending ADR-0095 amendment defines what the
-  push records.
+  The setting is off by default because the push path records nothing yet:
+  with it on, a transition whose push already ran the notifier is replayed by
+  the next pass and the notifier runs again for the same event. A Python hook
+  can deduplicate by event ID; a shell command notifier runs twice. A pending
+  ADR-0095 amendment defines what the push records. With the setting off, no
+  pass runs, no consumer is registered and push delivery is unchanged.
 
 - State schema version 6 records terminal-delivery eligibility and consumer
   registrations. After upgrading, restart every process that opens the store,
@@ -34,7 +36,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   The first open after the upgrade classifies every existing transition in one
   transaction; on PostgreSQL it holds a SHARE ROW EXCLUSIVE lock on
   `status_transitions` until it commits, so writers wait for a time that grows
-  with the table's size.
+  with the table's size. On SQLite the same transaction holds the database's
+  single write lock for that time, so every other writer waits on it too.
 
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in

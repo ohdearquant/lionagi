@@ -87,6 +87,7 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
     # unrelated services do not run or touch the host in this test.
     monkeypatch.setattr(_code_identity, "snapshot_git_position", lambda: None)
     monkeypatch.setattr(notify_settings, "register_settings_terminal_callback", lambda: False)
+    monkeypatch.setattr("lionagi.studio.config.TERMINAL_RECONCILE_ENABLED", True)
     monkeypatch.setattr(scheduler, "start", noop)
     monkeypatch.setattr(scheduler, "stop", noop)
     monkeypatch.setattr(operator, "operator_startup", noop)

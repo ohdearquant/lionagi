@@ -516,9 +516,9 @@ SHOW_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_SHOW_STALE_HOURS"
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 # Seconds one terminal-notification reconciliation pass keeps reading pages of
-# owed deliveries. Checked between pages, so a pass can run past it by one page.
-# Startup awaits the pass before serving and the periodic pass runs inside the
-# scheduler tick, so this also bounds how long either waits on it.
+# owed deliveries. Checked between pages, so a pass can overrun it by up to one page
+# of four deliveries (docs/internals/runtime.md). Startup awaits the pass before
+# serving and the periodic pass runs inside the scheduler tick; both wait it out.
 TERMINAL_RECONCILE_BUDGET_SECONDS: float = float(
     os.environ.get("LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS", "10")
 )
@@ -741,3 +741,9 @@ if MIRROR_PREVIEW_CHARS < 0:
     raise ValueError(
         f"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS must be >= 0, got {MIRROR_PREVIEW_CHARS}"
     )
+
+# Durable replay of terminal notifications into the global settings notifier. Off by
+# default: the push path does not yet record what it delivered, so with this on a pass
+# replays every pushed notification and each configured notifier runs a second time.
+# The consumer API in lionagi.state.lifecycle is unaffected.
+TERMINAL_RECONCILE_ENABLED: bool = _env_flag("LIONAGI_STUDIO_TERMINAL_RECONCILE", default=False)

@@ -562,7 +562,10 @@ workers described below.
 ### Daemon delivery and bounded traversal
 
 The Studio daemon runs a named settings consumer at startup and on its existing periodic
-reconciliation tick, with a bounded batch. A handler returns an explicit outcome; only success
+reconciliation tick, with a bounded batch, when `LIONAGI_STUDIO_TERMINAL_RECONCILE` is on. It
+ships off: until the push path records what it delivered, an enabled pass replays every pushed
+event and its notifier runs a second time. With it off, no pass runs and no consumer is
+registered. A handler returns an explicit outcome; only success
 or an explicitly not-applicable outcome is acknowledged. An exec adapter succeeds on exit 0;
 nonzero exit, timeout and spawn failure fail. A Python hook succeeds on normal return other
 than explicit `False`; an exception, timeout or `False` fails. Disabled notifications and a
