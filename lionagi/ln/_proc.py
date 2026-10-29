@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
+import logging
 import math
 import os
 import secrets
@@ -24,6 +26,7 @@ from .concurrency import move_on_after, shield, sleep
 # LIVE reads of the same process must still compare exactly equal.
 CREATE_TIME_TOLERANCE = 0.1
 _PROCESS_GROUP_MARKER = "LIONAGI_INTERNAL_PROCESS_GROUP_TOKEN"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -825,12 +828,12 @@ def capture_group_witnesses(
     )
 
 
-def signal_group_if_witnessed(
+def _signal_group_outcome(
     pgid: Any,
     witnesses: tuple[tuple[int, float], ...],
     sig: signal.Signals,
-) -> bool:
-    """Signal *pgid* only when a frozen member identity still matches.
+) -> Literal["sent", "missing", "denied", "unverifiable"]:
+    """Signal only a witnessed group, distinguishing absence and refusal.
 
     The marker is checked where the witnesses are captured, so it is not taken
     again here: by this point the witness set either proves the group is ours,
@@ -838,7 +841,7 @@ def signal_group_if_witnessed(
     """
     resolved = safe_pgid_value(pgid)
     if resolved is None or not witnesses:
-        return False
+        return "unverifiable"
     witnessed = _group_has_witness(resolved, witnesses)
     if not witnessed and getattr(witnesses, "group_anchor", False):
         # The live leader identity anchored this group when the scan turned out
@@ -855,13 +858,15 @@ def signal_group_if_witnessed(
         # ownership and the SIGKILL below lands on an unrelated group.
         leader = getattr(witnesses, "leader", None)
         if leader is None or _child_is_reaped(leader):
-            return False
+            return "unverifiable"
         # Still ours by identity; a positive liveness probe is the remaining
         # requirement before using the numeric PGID.
         try:
             os.killpg(resolved, 0)
-        except (ProcessLookupError, PermissionError, OSError):
-            return False
+        except ProcessLookupError:
+            return "missing"
+        except PermissionError:
+            return "denied"
         witnessed = True
     # A second liveness-probe escalation used to sit here, justified by process
     # enumeration being unavailable. It could not reach that case: witnesses
@@ -871,12 +876,26 @@ def signal_group_if_witnessed(
     # PGID free to be reissued -- and turned a bare liveness probe on that
     # number into authority to SIGKILL whoever now holds it.
     if not witnessed:
-        return False
+        return "unverifiable"
     try:
         os.killpg(resolved, sig)
-    except (ProcessLookupError, PermissionError, OSError):
+    except ProcessLookupError:
+        return "missing"
+    except PermissionError:
+        return "denied"
+    return "sent"
+
+
+def signal_group_if_witnessed(
+    pgid: Any,
+    witnesses: tuple[tuple[int, float], ...],
+    sig: signal.Signals,
+) -> bool:
+    """Signal a witnessed group, preserving the boolean caller contract."""
+    try:
+        return _signal_group_outcome(pgid, witnesses, sig) == "sent"
+    except OSError:
         return False
-    return True
 
 
 def safe_pgid_value(pgid: Any) -> int | None:
@@ -1023,6 +1042,71 @@ async def _await_child_exit(proc: Any) -> None:
         delay = min(delay * 2, _POLL_MAX_SECONDS)
 
 
+def _attach_prior_group_error(later: BaseException, earlier: Exception) -> None:
+    """Retain an earlier group fault without overwriting or cycling a chain."""
+    if later is earlier:
+        return
+
+    def graph(root: BaseException) -> set[int] | None:
+        visited: set[int] = set()
+        active: set[int] = set()
+        pending = [(root, False)]
+        group_type = getattr(builtins, "BaseExceptionGroup", ())
+        try:
+            while pending:
+                error, leaving = pending.pop()
+                marker = id(error)
+                if leaving:
+                    active.remove(marker)
+                    continue
+                if marker in active:
+                    return None
+                if marker in visited:
+                    continue
+                visited.add(marker)
+                if len(visited) > 128:
+                    return None
+                active.add(marker)
+                pending.append((error, True))
+                children = [error.__cause__, error.__context__]
+                if group_type and isinstance(error, group_type):
+                    if len(error.exceptions) > 128 - len(visited):
+                        return None
+                    children.extend(error.exceptions)
+                elif not group_type and hasattr(error, "exceptions"):
+                    # Python 3.10 may use an exception-group backport whose
+                    # member contract is not known here.
+                    return None
+                if len(pending) + len(children) > 256:
+                    return None
+                pending.extend(
+                    (item, False) for item in children if isinstance(item, BaseException)
+                )
+        except Exception:  # noqa: BLE001 - an unreadable chain cannot be safely modified
+            return None
+        return visited
+
+    existing = graph(later)
+    prior = graph(earlier)
+    if existing is not None and id(earlier) in existing:
+        # The linked node may only be in a suppressed context or group member.
+        logger.warning("earlier process-group signal failed (%s)", type(earlier).__name__)
+        return
+    if (
+        existing is None
+        or prior is None
+        or id(later) in prior
+        or later.__cause__ is not None
+        or later.__context__ is not None
+    ):
+        logger.warning(
+            "earlier process-group signal failed (%s); could not safely attach its exception",
+            type(earlier).__name__,
+        )
+        return
+    later.__cause__ = earlier
+
+
 async def aterminate_process_group(
     proc: Any,
     *,
@@ -1054,52 +1138,58 @@ async def aterminate_process_group(
             with contextlib.suppress(ProcessLookupError, OSError):
                 proc.kill()
         return
-    # A group signal that raises ends the group's part of the cycle: the group is
-    # neither waited on nor signalled again. The child still gets its grace and its
-    # forced kill, and the error is raised once the child is dealt with.
+    # A failed initial group signal does not remove the spawn-bound witnesses.
+    # Keep the child cleanup independent and retry an unexpected failure only
+    # after grace, with the same witnesses checked again at the signal boundary.
     group_error: Exception | None = None
     try:
-        signal_group_if_witnessed(pgid, witnesses, sig_first)
+        outcome = _signal_group_outcome(pgid, witnesses, sig_first)
     except Exception as exc:
         group_error = exc
+        outcome = "error"
     finally:
         # A terminate that fails leaves the forced kill below to end the child.
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.terminate()
-    group = pgid if group_error is None and witnesses else None
+        try:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.terminate()
+        except BaseException as exc:
+            if group_error is not None:
+                _attach_prior_group_error(exc, group_error)
+            raise
+    if outcome == "denied":
+        logger.warning("permission denied signalling process group %s", pgid)
+    group = pgid if outcome in {"sent", "error"} and witnesses else None
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
-    with move_on_after(grace) as scope:
-        await _await_child_exit(proc)
-        # The child is gone; the rest of grace belongs to whatever shared its
-        # process group. Waiting on the child alone is what keeps a pipe holder
-        # from deciding when the child's own status is known, but the forced
-        # kill below exists for group members that ignored the first signal, and
-        # reaching it by way of a stalled wait was incidental: that happened
-        # only where wait() is pipe-bound, and only when a survivor happened to
-        # be holding a pipe. Timing out here is what drives the escalation.
-        while group is not None and _group_has_members(group):
-            await sleep(_POLL_MAX_SECONDS)
-    if scope.cancelled_caught:
-        try:
-            if group is not None:
-                # A member captured while the live child anchored the group still
-                # matches immediately before the signal. The final identity-read to
-                # killpg gap cannot be closed with portable process-group APIs; see
-                # docs/internals/ln-primitives.md#signalling-a-group.
-                signal_group_if_witnessed(group, witnesses, signal.SIGKILL)
-        except Exception as exc:
-            group_error = exc
-        finally:
-            # The child's own kill does not depend on the group signal succeeding.
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-        # Bounded too: a caller that has already escalated to SIGKILL is done
-        # negotiating, and the same pipe holder that can stall the wait above
-        # can stall this one, with no timeout left to catch it.
-        with move_on_after(grace), contextlib.suppress(Exception):
+    try:
+        with move_on_after(grace) as scope:
             await _await_child_exit(proc)
+            # The child's exit does not prove its group is empty.
+            while group is not None and _group_has_members(group):
+                await sleep(_POLL_MAX_SECONDS)
+        if scope.cancelled_caught:
+            try:
+                if group is not None:
+                    # The original witnesses are rechecked before escalation.
+                    # The remaining check-to-signal race is documented in
+                    # docs/internals/ln-primitives.md#signalling-a-group.
+                    retry = _signal_group_outcome(group, witnesses, signal.SIGKILL)
+                    if retry == "denied":
+                        logger.warning("permission denied signalling process group %s", group)
+            except Exception as exc:
+                if group_error is not None:
+                    _attach_prior_group_error(exc, group_error)
+                group_error = exc
+            finally:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+            with move_on_after(grace), contextlib.suppress(Exception):
+                await _await_child_exit(proc)
+    except BaseException as exc:
+        if group_error is not None:
+            _attach_prior_group_error(exc, group_error)
+        raise
     if group_error is not None:
         raise group_error
 
