@@ -1638,9 +1638,10 @@ actually touches those rows reports their size directly instead.
 
 **`_prune_candidates` / `_null_content_candidates`** — both re-run their operation's own
 selection predicate outside the operation's transaction, and print the recount beside the
-result as a cross-check: after a real run it must read zero, after a `--dry-run` preview it
-must match what the preview reported. Running inside the same transaction would read the
-operation's own uncommitted rows and agree by construction, so it deliberately runs outside it.
+result as a cross-check. After a prune, sessions still referenced by retained records remain
+selected and are reported as skipped; after a `--dry-run` preview, both the would-delete and
+skipped sessions remain selected. Running inside the same transaction would read the operation's
+own uncommitted rows and agree by construction, so it deliberately runs outside it.
 
 **`_null_content`** — replaces old message *bodies* with a size-preserving marker; it exists
 because `li state prune` can't reach this content. Prune selects and deletes **sessions**, but
