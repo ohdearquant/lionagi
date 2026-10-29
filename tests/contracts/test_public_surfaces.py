@@ -400,9 +400,17 @@ def test_mcp_projections_match_baseline():
 def test_mcp_projects_every_available_path():
     live = _capture.capture_mcp()
     assert live["projection_count"] + live["projection_error_count"] == live["available_path_count"]
-    assert live["available_path_count"] == 75
-    assert live["projection_count"] == 62
-    assert live["projection_error_count"] == 13
+    assert live["available_path_count"] == 77
+    assert live["projection_count"] == 63
+    assert live["projection_error_count"] == 14
+
+
+def test_mcp_terminal_consumer_exposes_only_list():
+    live = _capture.capture_mcp()
+    paths = {path for path in live["available_paths"] if path.startswith("state terminal-consumer")}
+    assert paths == {"state terminal-consumer", "state terminal-consumer list"}
+    assert "state terminal-consumer list" in live["projections"]
+    assert live["projection_errors"]["state terminal-consumer"]["class"] == "unresolved_subcommand"
 
 
 def test_mcp_projection_errors_are_classified():

@@ -64,6 +64,8 @@
     "state null-content",
     "state prune",
     "state stats",
+    "state terminal-consumer",
+    "state terminal-consumer list",
     "state vacuum",
     "stats",
     "stats runs",
@@ -76,7 +78,7 @@
     "team send",
     "team show"
   ],
-  "available_path_count": 75,
+  "available_path_count": 77,
   "catalog": {
     "verb_count": 70,
     "available_count": 44,
@@ -2530,6 +2532,24 @@
         "description": "Report state.db + state.db-wal sizes, per-table row counts, messages broken down by role and by age, session status distribution, and SQLite PRAGMAs (journal_mode, wal_autocheckpoint, busy_timeout). Use to spot growth and lock contention, and to check before pruning whether the keep-window can reach anything at all."
       }
     },
+    "state terminal-consumer list": {
+      "path": "state terminal-consumer list",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state terminal-consumer list",
+        "properties": {
+          "machine": {
+            "type": "boolean",
+            "description": "Emit the versioned machine-readable result.",
+            "default": false,
+            "x-flag": "--machine"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Show registered and retired consumers. Use `machine` for JSON output."
+      }
+    },
     "state vacuum": {
       "path": "state vacuum",
       "stage": "static",
@@ -2792,7 +2812,7 @@
       }
     }
   },
-  "projection_count": 62,
+  "projection_count": 63,
   "projection_errors": {
     "dispatch": {
       "kind": "SchemaProjectionError",
@@ -2842,7 +2862,12 @@
     "state": {
       "kind": "SchemaProjectionError",
       "class": "unresolved_subcommand",
-      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'vacuum']"
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'terminal-consumer', 'vacuum']"
+    },
+    "state terminal-consumer": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'state terminal-consumer' action 'terminal_consumer_command': path stops at an unresolved subcommand; name one of ['list']"
     },
     "stats": {
       "kind": "SchemaProjectionError",
@@ -2860,7 +2885,7 @@
       "message": "cannot project 'team' action 'team_command': path stops at an unresolved subcommand; name one of ['create', 'list', 'ls', 'receive', 'recv', 'send', 'show']"
     }
   },
-  "projection_error_count": 13,
+  "projection_error_count": 14,
   "absent_verbs": [
     {
       "name": "casts",
@@ -3043,7 +3068,7 @@
       "input": "state",
       "kind": "SchemaProjectionError",
       "class": "unresolved_subcommand",
-      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'vacuum']"
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'terminal-consumer', 'vacuum']"
     },
     {
       "input": "mirror",
