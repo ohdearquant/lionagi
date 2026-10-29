@@ -103,7 +103,7 @@ def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
-    body = _span("lionagi/session/observer.py", 365, 374)
+    body = _span("lionagi/session/observer.py", 365, 376)
     assert "allowed = True" in body
     assert "except Exception" in body
     assert "allowed = False" in body
@@ -234,7 +234,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "lionagi/session/branch.py:479-507" in flat
     assert "lionagi/operations/run/run.py:835-846" in flat
     assert "`unbind_db_persistence`" in flat
-    assert "lionagi/session/observer.py:597-614" in flat
+    assert "lionagi/session/observer.py:599-616" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
     assert "keeps its tail pending for the life of the session" in flat
     assert "no timeout and no new setting" in flat
@@ -292,8 +292,8 @@ def test_phase_two_is_a_target_and_the_gate_is_cited_where_it_still_runs() -> No
     flat = _flat()
     assert "Phase 2 already makes" not in text
     assert "Phase 2's target is to make `SessionObservation` signal-only" in flat
-    assert "lionagi/session/observer.py:365-374" in flat
-    assert "lionagi/session/observer.py:369-370`) and then returns at `:374" in flat
+    assert "lionagi/session/observer.py:365-376" in flat
+    assert "lionagi/session/observer.py:371-372`) and then returns at `:376" in flat
     assert "lionagi/session/observer.py:235-236" not in flat
 
 
