@@ -488,7 +488,7 @@ def record_notify_outcome_to_run(
         if stderr_text:
             stderr_path = str(run.write_notify_stderr(stderr_text))
     except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
-        logger.debug("failed to capture notify.on_terminal adapter stderr", exc_info=True)
+        logger.debug("failed to capture notify.on_terminal adapter stderr")
     try:
         run.write_notify_outcome(
             {
@@ -498,7 +498,7 @@ def record_notify_outcome_to_run(
             }
         )
     except Exception:  # noqa: BLE001 -- outcome bookkeeping must never affect the run
-        logger.debug("failed to record notify.on_terminal outcome", exc_info=True)
+        logger.debug("failed to record notify.on_terminal outcome")
     return stderr_path
 
 
