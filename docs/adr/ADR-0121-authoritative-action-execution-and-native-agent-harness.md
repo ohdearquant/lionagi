@@ -829,21 +829,30 @@ explicit deny-all never falls back to ambient server discovery.
 When `enabled` is absent, `servers` alone determines the meaning shown above. A requested name
 must match a server in the selected configuration exactly, case-sensitively and without normalization.
 
-A profile supplies a default, not the parent authority. Resolution takes the first layer that
-declares an `mcp` key: the call, then the profile, then the captured parent. A call's explicit
-deny-all overrides a profile grant, and a profile's explicit deny-all overrides the parent. If no
-layer declares a grant, inherit the captured parent's grant, or preserve today's ambient discovery
-when there is no captured parent. The captured run or engine policy is the parent. A call may
-select a narrower or wider grant than the profile default. A call or profile
-grant naming a server outside the captured parent's grant is refused before spawn, names the
-outside servers, and is never clamped to the parent. For a call grant, the resolved
-snapshot records the refusal with `source=call` and reason `exceeds-parent`. If there is no
-captured parent, as in a bare SDK `create_agent` call with no run or engine, the call is the
-authority and the resolved snapshot records `source=call`. D5's explicit-deny precedence and
-parent-policy constraints continue to apply.
+A profile supplies a default, not the parent authority. The captured run or engine policy is the
+parent. Resolution takes the first layer that declares an `mcp` key: the call, then the profile,
+then the captured parent. The table above gives the declared value its meaning, and a value the
+table refuses is refused at that layer; it never falls through to the next layer. Because the
+profile is a default, a call's grant replaces a profile's deny-all, and a call's deny-all replaces
+a profile's grant; a call may select a narrower or wider grant than the profile default. A
+profile's explicit deny-all overrides the parent. If neither the call nor the profile declares an
+`mcp` key, inherit the captured parent's grant; with no captured parent, preserve today's ambient
+discovery, meaning the MCP servers the agent's provider or runtime finds today when nothing is
+declared, unchanged by this amendment. A call or profile grant naming a server outside the captured parent's grant is refused
+before spawn, names the outside servers, and is never clamped to the parent. The resolved snapshot
+records the refusal with the layer that declared the grant, `source=call` or `source=profile`, and
+reason `exceeds-parent`. If there is no captured parent, as in a bare SDK `create_agent` call with
+no run or engine, the call is the authority and the resolved snapshot records `source=call`. D5's
+explicit-deny precedence and parent-policy constraints apply between the resolved grant and the
+captured parent.
+
+An implementation of this amendment ships conformance tests for every row of the table above and
+for each layering case in this section.
 
 Deny-all covers every model-visible MCP tool regardless of ingress, including servers discovered
-by a provider. Explicitly opting in to the `khive_injection` option on a deny-all specification is
-a contradiction and must be refused. Every requested server name that is unknown or absent must be
+by a provider. The `khive_injection` agent option calls its server through the MCP connection pool
+and places the result in the model's context, so deny-all covers it as well. Explicitly opting in
+to it at any layer of a specification that resolves to deny-all is a contradiction and must be
+refused. Every requested server name that is unknown or absent must be
 refused. A required control that an adapter cannot enforce remains subject to D8's refusal before
 spawn.
