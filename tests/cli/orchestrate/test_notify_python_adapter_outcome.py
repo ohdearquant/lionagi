@@ -181,3 +181,77 @@ async def test_python_adapter_error_only_exposes_type_in_log(
     assert f"RuntimeError: {secret}" in traceback_text
     if os.name == "posix":
         assert stat.S_IMODE(run.notify_stderr_path.stat().st_mode) & 0o077 == 0
+
+
+@pytest.mark.parametrize("adapter_kind", ["sync", "async"])
+@pytest.mark.parametrize("write_failure", [None, "stderr", "outcome"])
+async def test_debug_logs_do_not_chain_adapter_failure_on_recording_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    adapter_kind: str,
+    write_failure: str | None,
+):
+    secret = "PRIVATE_ADAPTER_EXCEPTION_SENTINEL"
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("test must not invoke processes, signals, or network")
+
+    for name in ("Popen", "run", "call", "check_call", "check_output"):
+        monkeypatch.setattr(subprocess, name, forbid)
+    for name in ("create_subprocess_exec", "create_subprocess_shell"):
+        monkeypatch.setattr(asyncio, name, forbid)
+    for name in ("kill", "killpg", "system"):
+        monkeypatch.setattr(os, name, forbid, raising=False)
+    for name in ("connect", "connect_ex", "sendto"):
+        monkeypatch.setattr(socket.socket, name, forbid)
+    monkeypatch.setattr(socket, "create_connection", forbid)
+
+    def fail(_envelope):
+        raise RuntimeError(secret)
+
+    async def async_fail(envelope):
+        fail(envelope)
+
+    def fail_write(_run, *_args, **_kwargs):
+        raise OSError(f"disk full: {secret}")
+
+    if write_failure == "stderr":
+        monkeypatch.setattr(RunDir, "write_notify_stderr", fail_write)
+    elif write_failure == "outcome":
+        monkeypatch.setattr(RunDir, "write_notify_outcome", fail_write)
+
+    run = _run(tmp_path)
+    adapter = fail if adapter_kind == "sync" else async_fail
+    with caplog.at_level(logging.DEBUG, logger="lionagi"):
+        await _deliver(run, _install_adapter(monkeypatch, adapter))
+
+    formatter = logging.Formatter()
+    for record in caplog.records:
+        assert secret not in record.getMessage()
+        assert secret not in repr(record.args)
+        assert secret not in (record.stack_info or "")
+        if record.exc_info:
+            assert secret not in formatter.formatException(record.exc_info)
+    assert secret not in caplog.text
+
+    if write_failure is None:
+        outcome = json.loads(run.notify_outcome_path.read_text())
+        assert outcome["ok"] is False
+        assert outcome["stderr_path"] == str(run.notify_stderr_path)
+        assert f"RuntimeError: {secret}" in run.notify_stderr_path.read_text()
+        assert secret not in run.notify_outcome_path.read_text()
+    elif write_failure == "stderr":
+        outcome = json.loads(run.notify_outcome_path.read_text())
+        assert outcome["ok"] is False and outcome["stderr_path"] is None
+        assert not run.notify_stderr_path.exists()
+        assert any(
+            "failed to capture notify.on_terminal adapter stderr" in r.getMessage()
+            for r in caplog.records
+        )
+    else:
+        assert not run.notify_outcome_path.exists()
+        assert f"RuntimeError: {secret}" in run.notify_stderr_path.read_text()
+        assert any(
+            "failed to record notify.on_terminal outcome" in r.getMessage() for r in caplog.records
+        )

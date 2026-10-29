@@ -265,6 +265,7 @@ async def deliver_flow_notify_now(
         reason_code=reason_code,
         occurred_at=occurred_at,
     )
+    stderr_text: str | None = None
     try:
         if is_coro_func(handler):
             await maybe_await(handler(envelope))
@@ -284,6 +285,8 @@ async def deliver_flow_notify_now(
         # so durability doesn't depend on adapter type. Traceback goes to the
         # same owner-only file the exec adapter's stderr does (free text can
         # carry a credential), referenced by path, never inlined.
-        record_notify_outcome_to_run(
-            run, ok=False, exit_code=None, stderr_text=traceback.format_exc()
-        )
+        stderr_text = traceback.format_exc()
+    if stderr_text is not None:
+        # Record after leaving the handler's exception context, so a separate
+        # file-write failure cannot chain the handler's traceback into logs.
+        record_notify_outcome_to_run(run, ok=False, exit_code=None, stderr_text=stderr_text)
