@@ -172,7 +172,12 @@ async def _consumer_is_active(db: Any, consumer: str) -> bool:
 
 @dataclass(frozen=True)
 class PreparedDelivery:
-    """A single operation returning an explicit delivery outcome."""
+    """A single operation returning an explicit delivery outcome.
+
+    A direct Future returned by a synchronous callable is observed on its
+    owning loop. Futures hidden inside another awaitable, or returned by a
+    coroutine function, are not supported as nested delivery effects.
+    """
 
     call: Callable[[], DeliveryOutcome | Awaitable[DeliveryOutcome]]
 
@@ -552,7 +557,17 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
         except RuntimeError:
             coroutine.close()
             raise _LateAckDeferredError from None
-        await asyncio.wait_for(asyncio.wrap_future(future), timeout=HANDLER_BUDGET_SECONDS)
+        wrapped = asyncio.wrap_future(future)
+        if isinstance(target, _Worker) and target.strict_outcomes:
+            try:
+                await asyncio.wait_for(asyncio.shield(wrapped), timeout=HANDLER_BUDGET_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Late ACK stuck for %s: transaction remains reserved", target.key[2])
+                # Cancelling the cross-thread proxy does not prove that the
+                # owner-loop coroutine, or its transaction, has settled.
+                await asyncio.shield(wrapped)
+        else:
+            await asyncio.wait_for(wrapped, timeout=HANDLER_BUDGET_SECONDS)
         return
 
     from lionagi.state.db import StateDB, _install_begin_immediate
@@ -587,20 +602,107 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
         await db.close()
 
 
-def _finish_late(worker: _Worker) -> None:
+async def _settle_late_awaitable(awaitable: Awaitable[Any], transition_id: str) -> Any:
+    """Cancel once at the budget, retaining ownership until actual settlement."""
+
+    async def run_effect() -> Any:
+        try:
+            return await awaitable
+        except asyncio.CancelledError:
+            return DeliveryOutcome.FAILURE
+        except BaseException as exc:
+            logger.warning("Late delivery failed for %s: %s", transition_id, type(exc).__name__)
+            return DeliveryOutcome.FAILURE
+
+    task = asyncio.create_task(run_effect())
+    done, _ = await asyncio.wait({task}, timeout=HANDLER_BUDGET_SECONDS)
+    if not done:
+        task.cancel()
+        logger.warning("Late delivery stuck for %s: effect remains reserved", transition_id)
+    return await task
+
+
+_NO_LATE_RESULT = object()
+
+
+def _observe_foreign_future(worker: _Worker, future: Any) -> None:
+    """Observe a foreign Future on its loop; keep unobservable work reserved."""
+
+    def warn_stuck() -> None:
+        with _workers_lock:
+            reserved = _workers.get(worker.key) is worker
+        if reserved:
+            logger.warning("Late delivery stuck for %s: result remains reserved", worker.key[2])
+
+    timer = threading.Timer(HANDLER_BUDGET_SECONDS, warn_stuck)
+    timer.daemon = True
+    try:
+        timer.start()
+    except BaseException as exc:
+        logger.warning(
+            "Late delivery stuck for %s: monitor failed: %s", worker.key[2], type(exc).__name__
+        )
+
+    def observed(done: Any) -> None:
+        try:
+            outcome = done.result()
+        except BaseException as exc:
+            logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
+            outcome = DeliveryOutcome.FAILURE
+        if not isinstance(outcome, DeliveryOutcome):
+            outcome = DeliveryOutcome.FAILURE
+
+        def settle() -> None:
+            try:
+                _finish_late(worker, outcome)
+            finally:
+                with _workers_lock:
+                    released = _workers.get(worker.key) is not worker
+                if released:
+                    timer.cancel()
+
+        try:
+            threading.Thread(target=settle, daemon=True).start()
+        except BaseException as exc:
+            logger.warning(
+                "Late delivery observer failed for %s: %s", worker.key[2], type(exc).__name__
+            )
+
+    def register() -> None:
+        try:
+            future.add_done_callback(observed)
+        except BaseException as exc:
+            logger.warning(
+                "Late delivery observer failed for %s: %s", worker.key[2], type(exc).__name__
+            )
+
+    try:
+        loop = future.get_loop()
+        if not loop.is_running():
+            return
+        loop.call_soon_threadsafe(register)
+    except BaseException as exc:
+        logger.warning(
+            "Late delivery observer failed for %s: %s", worker.key[2], type(exc).__name__
+        )
+
+
+def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None:
     """A detached worker may finish after the event loop that started it is gone."""
     try:
-        result = worker.future.result()
+        result = worker.future.result() if settled_result is _NO_LATE_RESULT else settled_result
+        if worker.strict_outcomes and asyncio.isfuture(result):
+            _observe_foreign_future(worker, result)
+            return
         if inspect.isawaitable(result):
+            if worker.strict_outcomes:
+                result = asyncio.run(_settle_late_awaitable(result, worker.key[2]))
+            else:
 
-            async def await_result() -> Any:
-                return await _await_hook(
-                    result,
-                    timeout=HANDLER_BUDGET_SECONDS,
-                    safe_transition_id=worker.key[2] if worker.strict_outcomes else None,
-                )
+                async def await_result() -> Any:
+                    return await _await_hook(result, timeout=HANDLER_BUDGET_SECONDS)
 
-            result = asyncio.run(await_result())
+                result = asyncio.run(await_result())
         accepted_outcomes = (
             _STRICT_ACKNOWLEDGE_OUTCOMES if worker.strict_outcomes else _ACKNOWLEDGE_OUTCOMES
         )
@@ -612,7 +714,9 @@ def _finish_late(worker: _Worker) -> None:
             asyncio.run(_acknowledge_late(worker))
         except _MemoryStoreChangedError:
             logger.warning("Private memory store closed before late ACK for %s", worker.key[2])
-        except Exception as exc:
+        except BaseException as exc:
+            if not worker.strict_outcomes and not isinstance(exc, Exception):
+                raise
             if worker.key[0].startswith("sqlite-memory:"):
                 if worker.strict_outcomes:
                     logger.warning(
@@ -624,7 +728,9 @@ def _finish_late(worker: _Worker) -> None:
                     worker.deferred = True
                 return
             raise
-    except Exception as exc:
+    except BaseException as exc:
+        if not worker.strict_outcomes and not isinstance(exc, Exception):
+            raise
         if worker.strict_outcomes:
             logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
         else:
@@ -821,6 +927,17 @@ class TerminalReconciler:
         except BaseException:
             _release_worker(worker)
             raise
+        if strict_outcomes and asyncio.isfuture(result):
+            try:
+                foreign = result.get_loop() is not asyncio.get_running_loop()
+            except BaseException:
+                foreign = True
+            if foreign:
+                # The attempt owns only this local wait. The foreign future and
+                # the retained worker continue independently after cancellation.
+                _detach_worker(worker)
+                await asyncio.Future()
+                raise AssertionError("unreachable local waiter")
         if inspect.isawaitable(result):
             try:
                 result = await _await_hook(
