@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from contextlib import suppress
 from dataclasses import replace
@@ -235,10 +236,10 @@ class OperatorCoordinator:
         # A task becomes managed only after mark_running returns. A task cancelled
         # before then may never reach its cleanup, so cancel() must finish it.
         self._managed_turns: set[str] = set()
-        # Turns whose outcome is deferred and whose teardown is therefore still to
-        # write their record: shutdown waits for these instead of cancelling the
-        # teardown that will write it.
-        self._streams_ended: set[str] = set()
+        # Track delivered cancellation separately from its durable request marker.
+        self._cancel_delivered: set[str] = set()
+        # Once an outcome is known, shutdown waits for teardown and final records.
+        self._finishing_turns: set[str] = set()
         self._started = False
         self._execution_root_resolution: OperatorExecutionRootResolution | None = None
 
@@ -274,7 +275,7 @@ class OperatorCoordinator:
         for request_id, task in tasks:
             if task.done():
                 continue
-            if request_id in self._streams_ended:
+            if request_id in self._finishing_turns:
                 # The stream has ended and teardown is running; its record and
                 # its run.json are still to be written, so wait for it rather
                 # than cancelling it (ADR-0128 D6).
@@ -283,7 +284,7 @@ class OperatorCoordinator:
                 turn = await self.store.get_turn(request_id)
             except Exception:  # noqa: BLE001
                 turn = None
-            if request_id in self._streams_ended:
+            if request_id in self._finishing_turns:
                 # The stream ended while the turn was read: teardown is running now, and the
                 # read describes the turn as it stood before.
                 continue
@@ -296,7 +297,7 @@ class OperatorCoordinator:
                 "failed",
                 "cancelled",
             }:
-                task.cancel()
+                self._cancel_task_once(request_id, task)
         if tasks:
             await asyncio.gather(
                 *(task for _request_id, task in tasks),
@@ -304,7 +305,8 @@ class OperatorCoordinator:
             )
         self._tasks.clear()
         self._managed_turns.clear()
-        self._streams_ended.clear()
+        self._cancel_delivered.clear()
+        self._finishing_turns.clear()
         self._started = False
         self._execution_root_resolution = None
 
@@ -383,7 +385,8 @@ class OperatorCoordinator:
             ready.set()
             self._tasks.pop(request_id, None)
             self._managed_turns.discard(request_id)
-            self._streams_ended.discard(request_id)
+            self._cancel_delivered.discard(request_id)
+            self._finishing_turns.discard(request_id)
             if done.cancelled():
                 return
             exc = done.exception()
@@ -413,22 +416,20 @@ class OperatorCoordinator:
         opening_write: asyncio.Future | None = None
         engine_session_uid: str | None = None
         # Keep the turn active until its canonical run has completed teardown.
-        turn_finish_deferred = False
         deferred_outcome: str | None = None
         deferred_error: dict[str, Any] | None = None
 
         async def record(outcome: str, error: dict[str, Any] | None) -> None:
-            """Record the turn's outcome, or defer it to after teardown.
+            """Keep the turn's outcome for the record written after teardown.
 
             Teardown closes the canonical run before the turn becomes terminal.
             Its result can also override the engine outcome in compatibility mode.
             """
-            nonlocal turn_finish_deferred, deferred_outcome, deferred_error
-            turn_finish_deferred = True
+            nonlocal deferred_outcome, deferred_error
             deferred_outcome = outcome
             deferred_error = error
             # Shutdown waits for teardown instead of interrupting the final record.
-            self._streams_ended.add(request_id)
+            self._finishing_turns.add(request_id)
 
         try:
             complete_turns = await self.store.list_complete_turn_frame_groups(
@@ -769,6 +770,28 @@ class OperatorCoordinator:
                     },
                 )
         finally:
+            # An exception handler may itself be interrupted before it records an
+            # outcome (for example while recovering a partially created run).
+            # Every managed turn still needs one terminal record after cleanup.
+            if deferred_outcome is None:
+                interrupted = sys.exc_info()[1]
+                if isinstance(interrupted, asyncio.CancelledError):
+                    terminal_status = "cancelled"
+                    deferred_outcome = "cancelled"
+                    deferred_error = {
+                        "code": "cancelled",
+                        "message": "The operator cancelled this turn",
+                        "retryable": False,
+                    }
+                else:
+                    terminal_status = "failed"
+                    deferred_outcome = "failed"
+                    deferred_error = {
+                        "code": "service_failure",
+                        "message": "The Operator turn ended before its outcome was recorded",
+                        "retryable": False,
+                    }
+                self._finishing_turns.add(request_id)
             # The deferred finish runs in a finally of its own, so a step before it that
             # raises -- a cancel landing in the checkpoint write included -- cannot leave the
             # turn's record unwritten for startup recovery. A cancel in the checkpoint write
@@ -857,24 +880,22 @@ class OperatorCoordinator:
                             if status in SESSION_TERMINAL_STATUSES:
                                 terminal_status = status
             finally:
-                # Whatever the steps above raised, the turn's record is written once teardown
-                # has had its say: the status teardown decided takes over, as it does for
-                # completion, so the turn never reads as retryable work while its run failed.
-                if turn_finish_deferred:
-                    finish = asyncio.ensure_future(
-                        self._finish_deferred_turn(
-                            request_id,
-                            terminal_status,
-                            live,
-                            recorded_outcome=deferred_outcome,
-                            recorded_error=deferred_error,
-                        )
+                # Write the turn record after cleanup, including when an earlier
+                # cleanup step raises. Compatibility mode uses teardown's status.
+                finish = asyncio.ensure_future(
+                    self._finish_turn_after_teardown(
+                        request_id,
+                        terminal_status,
+                        live,
+                        recorded_outcome=deferred_outcome,
+                        recorded_error=deferred_error,
                     )
-                    while not finish.done():
-                        try:
-                            await asyncio.wait((finish,))
-                        except asyncio.CancelledError as exc:
-                            early_failure = early_failure or exc
+                )
+                while not finish.done():
+                    try:
+                        await asyncio.wait((finish,))
+                    except asyncio.CancelledError as exc:
+                        early_failure = early_failure or exc
             if run_branch is not None and run_dir is not None:
                 if opening_write is not None:
                     # its thread writes whatever happens to this wait, so the wait holds through any
@@ -929,7 +950,7 @@ class OperatorCoordinator:
             if early_failure is not None:
                 raise early_failure
 
-    async def _finish_deferred_turn(
+    async def _finish_turn_after_teardown(
         self,
         request_id: str,
         terminal_status: str,
@@ -979,17 +1000,22 @@ class OperatorCoordinator:
         except Exception:  # noqa: BLE001 -- run.json must still be written
             _log.exception("Operator turn %s: its record could not be finished", request_id)
 
+    def _cancel_task_once(self, request_id: str, task: asyncio.Task) -> None:
+        # A marker may already be persisted even if its cancellation never
+        # reached the task. Conversely, do not inject a second cancellation
+        # while the first one is unwinding cleanup. A guarded Task.cancelling()
+        # cannot tell whether cancellation was delivered on Python 3.10.
+        if request_id not in self._cancel_delivered and task.cancel():
+            self._cancel_delivered.add(request_id)
+
     async def cancel(self, conversation_id: str, request_id: str) -> dict[str, Any]:
         await self.ensure_started()
         result = await self.store.request_cancel(conversation_id, request_id)
         task = self._tasks.get(request_id)
-        if (
-            task is not None
-            and not task.done()
-            and (result["cancelRequested"] or task.cancelling() == 0)
-        ):
-            task.cancel()
-        if result["cancelRequested"] and request_id not in self._managed_turns:
+        nonterminal = result["status"] not in {"completed", "failed", "cancelled"}
+        if task is not None and not task.done():
+            self._cancel_task_once(request_id, task)
+        if nonterminal and request_id not in self._managed_turns:
             # Do not rely on the task's coroutine body having started: a task
             # cancelled immediately after create_task() never enters its
             # try/except. finish_turn is idempotent with the running task's

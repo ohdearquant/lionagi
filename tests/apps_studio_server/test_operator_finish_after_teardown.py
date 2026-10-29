@@ -9,6 +9,7 @@ import asyncio
 import pytest
 
 from lionagi.cli import _runs as runs_mod
+from lionagi.state.db import StateDB
 from lionagi.studio.operator.coordinator import OperatorCoordinator
 from lionagi.studio.operator.store import OperatorStore
 from tests.apps_studio_server.test_operator_protocol import (
@@ -58,9 +59,8 @@ async def test_done_waits_for_teardown_before_next_turn(tmp_path, monkeypatch):
             cid, instruction="first", context=_CONTEXT, expected_last_sequence=0
         )
         await asyncio.wait_for(entered.wait(), 5)
-        # The old implementation exposes done while teardown is held. Submit
-        # the next turn immediately in that case to exercise the real failure.
-        # New ordering keeps done back, so release before waiting for it.
+        # If done is exposed while teardown is held, immediately exercise the
+        # next turn; otherwise release teardown before waiting for completion.
         held_frames = await store.list_frames(cid)
         early_done = bool(_done_for(held_frames, first["requestId"]))
         if early_done:
@@ -142,11 +142,95 @@ async def test_cancel_during_teardown_writes_one_turn_record(tmp_path, monkeypat
         assert len(_done_for(frames, accepted["requestId"])) == 1
         assert records.count(accepted["requestId"]) == 1
         assert (await store.get_conversation(cid))["activeRequestId"] is None
+        link = next(
+            frame["payload"]["result"]
+            for frame in frames
+            if frame["type"] == "tool_result" and frame["payload"].get("result", {}).get("runId")
+        )
+        async with StateDB(path) as db:
+            assert (await db.get_session(link["runId"]))["status"] == "completed"
     finally:
         release.set()
         if cancel_task is not None:
             await asyncio.gather(cancel_task, return_exceptions=True)
         await asyncio.wait_for(coordinator.shutdown(), 10)
+
+
+@pytest.mark.asyncio
+async def test_repeat_cancel_and_shutdown_do_not_recancel_teardown(tmp_path, monkeypatch):
+    class TrackingTask(asyncio.Task):
+        def __init__(self, coroutine, **kwargs):
+            super().__init__(coroutine, **kwargs)
+            self.cancel_calls = 0
+
+        def cancel(self, *args, **kwargs):
+            self.cancel_calls += 1
+            return super().cancel(*args, **kwargs)
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=MessageWritingEngine)
+    entered, release, interrupted, shutdown_started = (asyncio.Event() for _ in range(4))
+    real_teardown = runs_mod.teardown_agent_persist
+
+    async def paused_teardown(*args, **kwargs):
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            interrupted.set()
+            raise
+        return await real_teardown(*args, **kwargs)
+
+    async def start_shutdown():
+        shutdown_started.set()
+        await coordinator.shutdown()
+
+    monkeypatch.setattr(runs_mod, "teardown_agent_persist", paused_teardown)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    shutdown_task = None
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    try:
+        loop.set_task_factory(lambda loop, coro, **kwargs: TrackingTask(coro, loop=loop, **kwargs))
+        try:
+            accepted = await coordinator.submit(
+                cid, instruction="first", context=_CONTEXT, expected_last_sequence=0
+            )
+        finally:
+            loop.set_task_factory(previous_factory)
+        request_id = accepted["requestId"]
+        await asyncio.wait_for(entered.wait(), 5)
+        turn_task = coordinator._tasks[request_id]
+        assert isinstance(turn_task, TrackingTask)
+        assert (await coordinator.cancel(cid, request_id))["cancelRequested"] is True
+        shutdown_task = asyncio.create_task(start_shutdown())
+        await asyncio.wait_for(shutdown_started.wait(), 5)
+        assert (await coordinator.cancel(cid, request_id))["cancelRequested"] is False
+        assert turn_task.cancel_calls == 1
+        assert not interrupted.is_set()
+        assert not shutdown_task.done()
+        release.set()
+        await asyncio.wait_for(shutdown_task, 10)
+        frames = await store.list_frames(cid)
+        assert len(_done_for(frames, request_id)) == 1
+        assert (await store.get_conversation(cid))["activeRequestId"] is None
+        link = next(
+            frame["payload"]["result"]
+            for frame in frames
+            if frame["type"] == "tool_result" and frame["payload"].get("result", {}).get("runId")
+        )
+        async with StateDB(path) as db:
+            assert (await db.get_session(link["runId"]))["status"] == "completed"
+    finally:
+        loop.set_task_factory(previous_factory)
+        release.set()
+        if shutdown_task is not None:
+            await asyncio.gather(shutdown_task, return_exceptions=True)
+        else:
+            await asyncio.wait_for(coordinator.shutdown(), 10)
 
 
 @pytest.mark.asyncio
@@ -215,6 +299,95 @@ async def test_failure_before_live_setup_writes_one_turn_record(tmp_path, monkey
         assert records.count(accepted["requestId"]) == 1
         assert (await store.get_conversation(cid))["activeRequestId"] is None
     finally:
+        await asyncio.wait_for(coordinator.shutdown(), 10)
+
+
+@pytest.mark.asyncio
+async def test_unhandled_base_exception_finishes_turn_as_failed(tmp_path, monkeypatch):
+    from lionagi.studio.operator import coordinator as coordinator_mod
+
+    class TurnInterrupted(BaseException):
+        pass
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=MessageWritingEngine)
+    real_finish = store.finish_turn
+    records = []
+
+    def interrupt_compilation(*_args, **_kwargs):
+        raise TurnInterrupted("injected interruption")
+
+    async def record_finish(request_id, *args, **kwargs):
+        records.append(request_id)
+        return await real_finish(request_id, *args, **kwargs)
+
+    monkeypatch.setattr(coordinator_mod, "compile_operator_history", interrupt_compilation)
+    monkeypatch.setattr(store, "finish_turn", record_finish)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    try:
+        accepted = await coordinator.submit(
+            cid, instruction="first", context=_CONTEXT, expected_last_sequence=0
+        )
+        request_id = accepted["requestId"]
+        frames = await _wait_done(store, cid)
+        done = _done_for(frames, request_id)
+        assert len(done) == 1 and done[0]["payload"]["outcome"] == "failed"
+        assert records.count(request_id) == 1
+        assert (await store.get_turn(request_id))["status"] == "failed"
+        assert (await store.get_conversation(cid))["activeRequestId"] is None
+    finally:
+        await asyncio.wait_for(coordinator.shutdown(), 10)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_setup_failure_recovery_finishes_turn(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=MessageWritingEngine)
+    entered, release = asyncio.Event(), asyncio.Event()
+    real_finish = store.finish_turn
+    records = []
+
+    async def fail_setup(*_args, **_kwargs):
+        raise RuntimeError("injected canonical setup failure")
+
+    async def held_recovery(run_id):
+        assert run_id.startswith("operator-")
+        entered.set()
+        await release.wait()
+        return None
+
+    async def record_finish(request_id, *args, **kwargs):
+        records.append(request_id)
+        return await real_finish(request_id, *args, **kwargs)
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", fail_setup)
+    monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", held_recovery)
+    monkeypatch.setattr(store, "finish_turn", record_finish)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    submission = asyncio.create_task(
+        coordinator.submit(cid, instruction="first", context=_CONTEXT, expected_last_sequence=0)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        request_id = (await store.get_conversation(cid))["activeRequestId"]
+        assert request_id is not None
+        task = coordinator._tasks[request_id]
+        assert (await coordinator.cancel(cid, request_id))["cancelRequested"] is True
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.wait_for(submission, 5)
+        frames = await store.list_frames(cid)
+        assert len(_done_for(frames, request_id)) == 1
+        assert records.count(request_id) == 1
+        assert (await store.get_conversation(cid))["activeRequestId"] is None
+    finally:
+        release.set()
+        await asyncio.gather(submission, return_exceptions=True)
         await asyncio.wait_for(coordinator.shutdown(), 10)
 
 
@@ -306,7 +479,8 @@ async def test_repeated_cancel_delivers_missing_task_cancellation(tmp_path, monk
         # before it reached the task cancellation step.
         first = await store.request_cancel(cid, request_id)
         assert first["cancelRequested"] is True
-        assert task.cancelling() == 0
+        assert not task.done()
+        assert not engine.cancelled.is_set()
         second = await coordinator.cancel(cid, request_id)
         assert second["cancelRequested"] is False
         await asyncio.wait_for(engine.cancelled.wait(), 5)
