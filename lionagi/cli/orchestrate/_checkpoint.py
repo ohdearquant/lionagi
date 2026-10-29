@@ -56,6 +56,10 @@ class FlowCheckpointDecodeError(FlowCheckpointRecoveryError, json.JSONDecodeErro
     """Malformed checkpoint refusal compatible with legacy JSON error handling."""
 
     def __init__(self, cause: json.JSONDecodeError, report: dict[str, Any]) -> None:
+        # A cooperative FlowCheckpointRecoveryError -> LionError initializer
+        # would call JSONDecodeError with only a message, but it also requires
+        # a document and position. Initialize JSON's fields with an empty
+        # document, then copy only safe positions and the LionError fields.
         json.JSONDecodeError.__init__(self, "Checkpoint could not be parsed", "", 0)
         self.pos = cause.pos
         self.lineno = cause.lineno
@@ -77,8 +81,11 @@ class FlowV3WriterUnavailableError(FlowResumeError, CheckpointRecoveryError):
 
     def __init__(self, report: dict[str, Any] | None) -> None:
         message = "v3_writer_unavailable: cannot resume a v3 checkpoint yet"
-        # LionError's cooperative initializer would call the recovery-error
-        # initializer with a string instead of its required report object.
+        # In this MRO, LionError's cooperative initializer calls
+        # CheckpointRecoveryError with a message, not its required report.
+        # The writer gate also retains a clean report with no problem code,
+        # which CheckpointRecoveryError's refusal initializer cannot accept.
+        # Initialize the exception and LionError fields directly instead.
         Exception.__init__(self, message)
         self.message = message
         self.details = {}

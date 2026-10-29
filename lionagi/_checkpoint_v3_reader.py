@@ -14,7 +14,7 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from lionagi._checkpoint_v3_codec import (
     CodecError,
@@ -27,8 +27,8 @@ from lionagi._checkpoint_v3_codec import (
     validate_entry,
 )
 from lionagi._checkpoint_version import (
+    _SUPPORTED_CHECKPOINT_VERSIONS,
     UnsupportedCheckpointVersionError,
-    load_legacy_checkpoint_json,
 )
 
 __all__ = (
@@ -80,6 +80,9 @@ class CheckpointMalformedBaseError(CheckpointRecoveryError, json.JSONDecodeError
         }
         self.checkpoint_recovery["disposition"] = "refused"
         self.valid_prefix = None
+        # The recovery and JSON parents require incompatible initializer arguments.
+        # Initialize ValueError directly after assigning both public contracts, so
+        # neither parent retains the input document or overwrites its offsets.
         ValueError.__init__(
             self, f"{self.msg}: line {self.lineno} column {self.colno} (char {self.pos})"
         )
@@ -148,7 +151,7 @@ def _refuse(
     actual_seq: int | None = None,
     prefix: dict[str, Any] | None = None,
     detail: str | None = None,
-) -> None:
+) -> NoReturn:
     report["problem"] = {
         "code": code,
         "line": line,
@@ -160,8 +163,8 @@ def _refuse(
     raise CheckpointRecoveryError(report, copy.deepcopy(prefix), detail=detail) from None
 
 
-def _identity(stat: os.stat_result) -> tuple[int, int]:
-    return stat.st_dev, stat.st_ino
+def _identity(file_stat: os.stat_result) -> tuple[int, int]:
+    return file_stat.st_dev, file_stat.st_ino
 
 
 def _read_bound(path: Path) -> tuple[bytes, tuple[int, int]]:
@@ -403,8 +406,42 @@ class _ObjectPairs(list):
     """Mark objects during dispatch, without changing legacy duplicate semantics."""
 
 
+def _legacy_from_pairs(root: Any) -> Any:
+    """Convert the already-decoded tree to legacy last-key-wins objects iteratively."""
+
+    def container(value: Any) -> Any:
+        if isinstance(value, _ObjectPairs):
+            return {}
+        if isinstance(value, list):
+            return []
+        return value
+
+    result = container(root)
+    if isinstance(root, (_ObjectPairs, list)):
+        stack = [(root, result)]
+        while stack:
+            source, target = stack.pop()
+            if isinstance(source, _ObjectPairs):
+                for key, value in source:
+                    converted = container(value)
+                    target[key] = converted
+                    if isinstance(value, (_ObjectPairs, list)):
+                        stack.append((value, converted))
+            else:
+                for value in source:
+                    converted = container(value)
+                    target.append(converted)
+                    if isinstance(value, (_ObjectPairs, list)):
+                        stack.append((value, converted))
+    return result
+
+
 def load_checkpoint_unit(path: str | Path, *, retries: int = 4) -> tuple[Any, dict[str, Any]]:
-    """Explicitly dispatch a checkpoint; v3 always requires coherent replay."""
+    """Explicitly dispatch a checkpoint; v3 always requires coherent replay.
+
+    A base that cannot be bound after bounded retries, including an inaccessible
+    path or directory in place of the file, is refused as ``incoherent_view``.
+    """
     if type(retries) is not int or retries < 1:
         raise ValueError("retries must be a positive integer")
     report = _report()
@@ -448,5 +485,6 @@ def load_checkpoint_unit(path: str | Path, *, retries: int = 4) -> tuple[Any, di
             report["source_version"] = version
         if versions and type(version) is int and version == 3:
             return _load_checkpoint_v3(checkpoint_path, retries)
-    state = load_legacy_checkpoint_json(text)
-    return state, report
+        if versions and (type(version) is not int or version not in _SUPPORTED_CHECKPOINT_VERSIONS):
+            raise UnsupportedCheckpointVersionError("Checkpoint version is not supported.")
+    return _legacy_from_pairs(root), report

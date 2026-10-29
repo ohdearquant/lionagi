@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Standalone recovery contract; no CLI or production call-site activation."""
+"""Journal-aware recovery, dispatch and legacy reader compatibility."""
 
 import json
 import os
@@ -753,3 +753,71 @@ def test_replay_remove_then_add_moves_object_member_to_end(tmp_path):
     assert report["disposition"] == "clean"
     assert report["applied_records"] == 1
     assert report["valid_prefix_bytes"] == len(journal)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"version":1,"nested":{"x":1,"x":2,"version":1,"version":3}}',
+        '{"version":2,"first":1,"second":2,"first":3,"array":[{"x":1,"x":4},[]]}',
+        '{"nested":{"version":1,"version":2},"items":[null,true,3.5]}',
+        '[{"version":1,"version":2},[1,{"x":1,"x":2}]]',
+        '"scalar"',
+        "null",
+        "[" * 160 + '{"x":1,"x":2}' + "]" * 160,
+    ],
+    ids=["v1-nested", "v2-order", "version-absent", "array", "string", "null", "deep"],
+)
+def test_legacy_dispatch_reuses_parse_and_matches_legacy_semantics(tmp_path, monkeypatch, payload):
+    from lionagi._checkpoint_version import load_legacy_checkpoint_json
+
+    expected = load_legacy_checkpoint_json(payload)
+    path = tmp_path / "checkpoint.json"
+    path.write_text(payload, encoding="utf-8")
+    calls = []
+    original_loads = json.loads
+
+    def counted_loads(*args, **kwargs):
+        calls.append(1)
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", counted_loads)
+    state, report = reader.load_checkpoint_unit(path)
+    assert len(calls) == 1
+    assert state == expected
+    assert json.dumps(state) == json.dumps(expected)
+    assert report["disposition"] == "clean"
+
+
+@pytest.mark.parametrize("version", ["true", "2.0", '"2"', "null", "0", "4"])
+def test_legacy_dispatch_rejects_invalid_version_after_one_parse(tmp_path, monkeypatch, version):
+    path = tmp_path / "checkpoint.json"
+    path.write_text('{"version":' + version + "}", encoding="utf-8")
+    calls = []
+    original_loads = json.loads
+
+    def counted_loads(*args, **kwargs):
+        calls.append(1)
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", counted_loads)
+    with pytest.raises(UnsupportedCheckpointVersionError):
+        reader.load_checkpoint_unit(path)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("error", [PermissionError, IsADirectoryError])
+def test_dispatch_reports_incoherent_view_for_unreadable_base(tmp_path, monkeypatch, error):
+    attempts = []
+
+    def fail_read(path):
+        attempts.append(path)
+        raise error("private path")
+
+    monkeypatch.setattr(reader, "_read_bound", fail_read)
+    with pytest.raises(reader.CheckpointRecoveryError) as caught:
+        reader.load_checkpoint_unit(tmp_path / "checkpoint.json", retries=2)
+    assert len(attempts) == 2
+    assert caught.value.checkpoint_recovery["problem"]["code"] == "incoherent_view"
+    assert caught.value.checkpoint_recovery["valid_prefix_bytes"] is None
+    assert "private path" not in str(caught.value)
