@@ -829,8 +829,12 @@ explicit deny-all never falls back to ambient server discovery.
 When `enabled` is absent, `servers` alone determines the meaning shown above. A requested name
 must match a server in the selected configuration exactly, case-sensitively and without normalization.
 
-A profile supplies a default, not the parent authority. The captured run or engine policy is the
-parent. A call may select a narrower or wider grant than the profile default. A call or profile
+A profile supplies a default, not the parent authority. Resolution takes the first layer that
+declares an `mcp` key: the call, then the profile, then the captured parent. A call's explicit
+deny-all overrides a profile grant, and a profile's explicit deny-all overrides the parent. If no
+layer declares a grant, inherit the captured parent's grant, or preserve today's ambient discovery
+when there is no captured parent. The captured run or engine policy is the parent. A call may
+select a narrower or wider grant than the profile default. A call or profile
 grant naming a server outside the captured parent's grant is refused before spawn, names the
 outside servers, and is never clamped to the parent. For a call grant, the resolved
 snapshot records the refusal with `source=call` and reason `exceeds-parent`. If there is no
