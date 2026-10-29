@@ -5932,8 +5932,7 @@ class StateDB:
             "UPDATE schedules SET poller_consecutive_cap_no_dispatch = "  # noqa: S608
             "CASE WHEN :reset THEN 0 ELSE poller_consecutive_cap_no_dispatch + 1 END, "
             "poller_last_capped_page_limit = CASE WHEN :reset THEN NULL "
-            "ELSE CAST(:page_limit AS INTEGER) END, "
-            "updated_at = :updated_at" + where
+            "ELSE CAST(:page_limit AS INTEGER) END, updated_at = :updated_at" + where
         )
         params = {
             "id": schedule_id,
