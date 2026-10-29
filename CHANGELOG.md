@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- API run manifests now include provider-reported cache read and write token
+  counts per request when a supported non-streaming response supplies them.
+  Unknown counts remain `null`; cached local responses are not counted again.
+
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in
   `metadata["prompt_cache"]`, keyed by a prefix certificate over the request through the marked

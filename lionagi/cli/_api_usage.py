@@ -59,6 +59,8 @@ class APIUsageCollector:
                     "scale": _scale(decision.scale),
                 },
                 "dispatch_started": False,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
                 "selected_attempts": [],
             }
         )
@@ -72,6 +74,13 @@ class APIUsageCollector:
     def mark_dispatch(self, request_index: int) -> None:
         if row := self._row(request_index):
             row["dispatch_started"] = True
+
+    def record_cache_usage(
+        self, request_index: int, *, read: int | None, write: int | None
+    ) -> None:
+        if row := self._row(request_index):
+            row["cache_read_tokens"] = read
+            row["cache_write_tokens"] = write
 
     def record_selected_attempt(
         self,
