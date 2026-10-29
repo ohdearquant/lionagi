@@ -150,6 +150,8 @@ async def _import_one_run(
     run_dir: Path,
     manifest: dict[str, Any],
 ) -> tuple[int, int, int]:
+    from lionagi.state.db import StateDB
+
     created_at = _mtime_as_float(run_dir)
     session_name = manifest.get("kind") or "agent"
 
@@ -157,6 +159,27 @@ async def _import_one_run(
     started_at, ended_at, ended_at_is_approximate = _derive_timestamps(manifest, run_dir)
 
     session_prog_id = str(uuid.uuid4())
+    branches_dir = run_dir / "branches"
+    branch_files = list(branches_dir.glob("*.json")) if branches_dir.exists() else []
+    prepared_branches: list[tuple[Path, dict[str, Any]]] = []
+    # Read once and validate the entire run before its first database write.
+    # Later branch errors must not strand a partially imported session or
+    # overwrite a shared message before the invalid entry is discovered.
+    for branch_file in sorted(branch_files, key=lambda p: p.stat().st_mtime):
+        try:
+            branch_data = json.loads(branch_file.read_text())
+        except Exception as exc:
+            print(f"    [warn] {branch_file.name}: failed to read — {exc}")
+            continue
+        raw_collection = branch_data.get("messages", {}).get("collections", [])
+        for index, raw_msg in enumerate(raw_collection):
+            message_id = raw_msg.get("id") if isinstance(raw_msg, dict) else None
+            try:
+                StateDB._validate_progression_message_id(session_prog_id, message_id)
+            except ValueError as exc:
+                raise ValueError(f"{branch_file.name}: message entry {index}: {exc}") from exc
+        prepared_branches.append((branch_file, branch_data))
+
     await db.create_progression(session_prog_id)
 
     raw_kind = (manifest.get("kind") or "").lower()
@@ -198,23 +221,11 @@ async def _import_one_run(
         }
     )
 
-    branches_dir = run_dir / "branches"
-
-    branch_files: list[Path] = []
-    if branches_dir.exists():
-        branch_files = list(branches_dir.glob("*.json"))
-
     total_branches = 0
     total_messages = 0
     session_msg_ids: list[str] = []
 
-    for branch_file in sorted(branch_files, key=lambda p: p.stat().st_mtime):
-        try:
-            branch_data = json.loads(branch_file.read_text())
-        except Exception as exc:
-            print(f"    [warn] {branch_file.name}: failed to read — {exc}")
-            continue
-
+    for branch_file, branch_data in prepared_branches:
         branch_id = branch_data.get("id") or branch_file.stem
         branch_created_at = branch_data.get("created_at") or _mtime_as_float(branch_file)
 

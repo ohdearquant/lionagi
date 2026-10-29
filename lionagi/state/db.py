@@ -3309,6 +3309,26 @@ class StateDB:
 
     # Progressions
 
+    @staticmethod
+    def _validate_progression_message_id(progression_id: str, message_id: Any) -> None:
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError(
+                f"progression {progression_id!r} requires non-empty string message IDs"
+            )
+
+    @staticmethod
+    def _validate_progression_collection(
+        progression_id: str, collection: Any, *, allow_none: bool = False
+    ) -> list[str]:
+        if collection is None and allow_none:
+            return []
+        if not isinstance(collection, (list, tuple)):
+            raise ValueError(f"progression {progression_id!r} requires a list or tuple of IDs")
+        snapshot = list(collection)
+        for message_id in snapshot:
+            StateDB._validate_progression_message_id(progression_id, message_id)
+        return snapshot
+
     @_operation("create_progression")
     async def create_progression(
         self, progression_id: str, collection: list[str] | None = None
@@ -3325,6 +3345,9 @@ class StateDB:
             async with self._tx() as conn:
                 await self._insert_new_row(conn, "progressions", values)
             return
+        collection = self._validate_progression_collection(
+            progression_id, collection, allow_none=True
+        )
         async with self._tx() as conn:
             await conn.execute(
                 text(
@@ -3340,6 +3363,8 @@ class StateDB:
 
     async def set_progression(self, progression_id: str, collection: list[str]) -> None:
         """Replace a progression's collection wholesale, serializing the JSON here."""
+        if self._compat is None:
+            collection = self._validate_progression_collection(progression_id, collection)
         async with self._tx() as conn:
             await conn.execute(
                 text("UPDATE progressions SET collection = :col WHERE id = :id"),
@@ -3387,6 +3412,8 @@ class StateDB:
 
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
         """Idempotent append of message_id to the progression JSON array."""
+        if self._compat is None:
+            self._validate_progression_message_id(progression_id, message_id)
         async with self._tx() as conn:
             await self._append_to_progression_in_tx(conn, progression_id, message_id)
 
@@ -3423,9 +3450,10 @@ class StateDB:
         per message. Ids are appended in batch order and
         skipped when already present, so re-running a batch leaves a string-id progression
         unchanged. That single rewrite covers a stored array of string ids given string ids,
-        the shape every writer produces; any other stored value or id goes through
-        ``append_to_progression``'s own statement one id at a time, so it ends as appending
-        one message at a time would. ``session_id`` moves that session's activity clock in
+        the ordinary string-ID shape; any other stored value or id goes through the
+        legacy internal append statement one id at a time. The public
+        ``append_to_progression`` validates new IDs; this batch path retains its own
+        existing input contract. ``session_id`` moves that session's activity clock in
         the same transaction.
         """
         for msg in msgs:
