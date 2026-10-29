@@ -401,7 +401,7 @@ generation guards of Amendment 4.
    observation alone does not prove process birth. At the part-2 cutover none
    independently authorizes a recovery signal. Phase 1 retains the existing legacy
    positive decisions, including marker-only matches when creation time is absent.
-3. The first release contains the demonstrated false cancellation from an
+3. The first release prevents the demonstrated false cancellation from an
    epoch-only disagreement without changing stored epoch units. A positive
    legacy match keeps its existing behavior. The release's guarantee is limited
    to that containment in updated readers: it does not certify legacy positive
@@ -409,7 +409,9 @@ generation guards of Amendment 4.
    and stale-sweep pass prints counts by reason for Linux rows held unknown on
    an epoch-start or epoch-boot disagreement; each reason comes from the same
    observation that decided the verdict. No automatic disposition is applied to
-   those rows.
+   those rows. A release may claim this containment only once both doctor and
+   stale sweep print those counts. Until the doctor and recorded-worker changes
+   land, pull requests and release notes must name the readers actually covered.
 4. At the durable-identity cutover in part 2, a Linux persisted row without a
    complete identity tuple grants no recovery-signal or automatic-cancellation
    authority. The row remains unverifiable for an operator to reconcile. Every
@@ -427,6 +429,9 @@ enforce it. Phase 1 preserves other existing behavior, including the handling of
 missing PID fields and non-degraded or unreadable imported manifests; these cases
 are not covered by the epoch-disagreement guarantee.
 
+Older authoritative clients can still falsely cancel a live Linux execution until
+the part-2 cutover and their exclusion from authoritative use.
+
 ### Limits
 
 With no recorded creation time, the existing session check can identify a process
@@ -434,7 +439,10 @@ from a matching session marker alone. A descendant can inherit that marker, so a
 matching marker is not proof that the process has the recorded birth. The child
 environment is copied in `lionagi/ln/_proc.py:78-85`, and the provider passes it
 to a new-session child in `lionagi/providers/_cli_subprocess.py:1090-1109` at
-the source revision named below. Phase 1 retains this behavior on every platform.
+the source revision named below. A marker-only positive can authorize a recovery
+signal to a descendant carrying the inherited marker instead of the recorded
+process. Phase 1 retains this behavior on every platform and does not close that
+risk.
 
 Hostile same-tick PID reuse and VM snapshot or clone behavior are outside the
 version 1 scope. An identity comparison is not a proof of unique process birth
