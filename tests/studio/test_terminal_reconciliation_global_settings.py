@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Project notification settings must not resolve relative to the daemon cwd."""
+"""Durable replay uses global notification settings, never project settings."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ from lionagi.state.lifecycle.reconciler import TerminalReconciler
 from lionagi.studio.services import terminal_reconciliation as terminal
 
 
-@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute-control"])
+@pytest.mark.parametrize("global_enabled", [False, True], ids=["project-only", "global-control"])
 @pytest.mark.asyncio
-async def test_project_path_must_be_absolute_for_settings(tmp_path, monkeypatch, absolute):
+async def test_replay_uses_global_settings_only(tmp_path, monkeypatch, global_enabled):
     home = tmp_path / "home"
     daemon = tmp_path / "daemon"
     project = daemon / "project"
@@ -30,12 +30,20 @@ async def test_project_path_must_be_absolute_for_settings(tmp_path, monkeypatch,
         directory.mkdir(parents=True)
     global_file = home / ".lionagi" / "settings.yaml"
     project_file = project / ".lionagi" / "settings.yaml"
-    for file, name in ((global_file, "global"), (project_file, "project")):
+    for file, name in ((project_file, "project"),):
         file.write_text(
             "notify:\n  on_terminal:\n    enabled: true\n    adapter:\n"
             f"      kind: python\n      ref: terminal_path_{name}:handle\n",
             encoding="utf-8",
         )
+    if global_enabled:
+        global_file.write_text(
+            "notify:\n  on_terminal:\n    enabled: true\n    adapter:\n"
+            "      kind: python\n      ref: terminal_path_global:handle\n",
+            encoding="utf-8",
+        )
+    else:
+        global_file.write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(daemon)
     seen = []
@@ -51,9 +59,9 @@ async def test_project_path_must_be_absolute_for_settings(tmp_path, monkeypatch,
         return builtins.open(file, *args, **kwargs)
 
     monkeypatch.setattr(settings_module, "open", recording_open, raising=False)
-    consumer = "relative-path-settings-test"
+    consumer = "global-settings-test"
     async with StateDB(tmp_path / "state.db") as db:
-        await db.create_project("alpha", path=str(project) if absolute else "project")
+        await db.create_project("alpha", path=str(project))
         session_id, progression_id = str(uuid.uuid4()), str(uuid.uuid4())
         await db.create_progression(progression_id)
         await db.create_session(
@@ -76,8 +84,9 @@ async def test_project_path_must_be_absolute_for_settings(tmp_path, monkeypatch,
         reconciler = TerminalReconciler(consumer, terminal._prepare_settings_delivery)
         summary = await reconciler.run_pass(db)
         assert summary["attempted"] == summary["acknowledged"] == 1
+        assert summary["not_applicable"] == (0 if global_enabled else 1)
         assert await is_acknowledged(db, row["id"], consumer)
 
     assert global_file in opened
-    assert (project_file in opened) is absolute
-    assert seen == [("project" if absolute else "global", row["id"])]
+    assert project_file not in opened
+    assert seen == ([("global", row["id"])] if global_enabled else [])

@@ -157,7 +157,7 @@ def _settings(path: Path, command: str) -> None:
 
 @pytest.mark.parametrize("path_kind", ["existing", "missing", "null", "no-project"])
 @pytest.mark.asyncio
-async def test_settings_use_project_path_or_global_never_daemon_cwd(
+async def test_settings_use_global_never_project_or_daemon_cwd(
     db, tmp_path, monkeypatch, path_kind
 ):
     home = tmp_path / "home"
@@ -197,12 +197,8 @@ async def test_settings_use_project_path_or_global_never_daemon_cwd(
     monkeypatch.setattr(terminal, "prepare_resolved_delivery", capture)
     outcome = await _deliver(_row("session", sid), db)
     assert outcome is DeliveryOutcome.SUCCESS
-    if path_kind == "existing":
-        assert calls == [{"project_dir": str(project_dir), "include_project": True}]
-        assert selected == [(("project-marker",), sid)]
-    else:
-        assert calls == [{"project_dir": None, "include_project": False}]
-        assert selected == [(("global-marker",), sid)]
+    assert calls == [{"include_project": False}]
+    assert selected == [(("global-marker",), sid)]
 
 
 @pytest.mark.parametrize("filter_key", ["kinds", "ids"])

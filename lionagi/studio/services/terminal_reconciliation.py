@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from lionagi._settings import load_settings
@@ -56,14 +55,12 @@ async def _project_for_transition(
 async def _prepare_settings_delivery(
     row: dict[str, Any], db: StateDB
 ) -> PreparedDelivery | DeliveryOutcome:
-    project_name, reason = await _project_for_transition(row, db)
+    _, reason = await _project_for_transition(row, db)
     if reason == "no_session":
         return DeliveryOutcome.NO_SESSION
     if reason == "ambiguous_project":
         return DeliveryOutcome.AMBIGUOUS_PROJECT
 
-    project = await db.get_project(project_name) if project_name else None
-    path = project.get("path") if project else None
     kind, ident = row["entity_type"], row["entity_id"]
     correlations = {
         "session": Correlation(session_id=ident),
@@ -83,11 +80,8 @@ async def _prepare_settings_delivery(
     def deliver_from_current_settings() -> Any:
         # File access and configured-module imports can block; the reconciler
         # tracks this synchronous work through timeout and late completion.
-        project_dir = path if path and Path(path).is_absolute() and Path(path).is_dir() else None
         try:
-            settings = load_settings(
-                project_dir=project_dir, include_project=project_dir is not None
-            )
+            settings = load_settings(include_project=False)
         except Exception:
             logger.exception("Cannot load terminal notification settings")
             return DeliveryOutcome.FAILURE
