@@ -195,3 +195,117 @@ async def test_pending_stopped_foreign_future_warns_without_watchdog_and_stays_r
     finally:
         if not foreign_loop.is_closed():
             foreign_loop.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", ["attempt_exact", "attempt_replay"])
+async def test_pending_stopped_foreign_future_acknowledges_after_owner_resumes(
+    tmp_path, caplog, adapter
+):
+    foreign_loop = asyncio.new_event_loop()
+    future = foreign_loop.create_future()
+    invoked = threading.Event()
+    completed = threading.Event()
+    future.add_done_callback(lambda _future: completed.set())
+    runner_thread = None
+
+    async def prepare(_row, _db):
+        def deliver():
+            invoked.set()
+            return future
+
+        return PreparedDelivery(deliver)
+
+    try:
+        async with StateDB(tmp_path / "resumed.db") as db:
+            event_id = await _seed(db)
+            await register_consumer(db, "resumed", start="all")
+            key = (reconciliation._store_identity(db), "resumed", event_id)
+            first = TerminalReconciler("resumed", prepare, batch_size=1, timeout=1.0)
+            second = TerminalReconciler("resumed", prepare, batch_size=1, timeout=1.0)
+            try:
+                with caplog.at_level("WARNING", logger=reconciliation.__name__):
+                    result = await asyncio.wait_for(getattr(first, adapter)(db, event_id), 4)
+                    assert result.attempted is True and invoked.is_set()
+
+                    async def wait_for_warning():
+                        while not any(
+                            "stopped loop" in record.getMessage()
+                            for record in caplog.records
+                            if record.name == reconciliation.__name__
+                        ):
+                            await asyncio.sleep(0.005)
+
+                    await asyncio.wait_for(wait_for_warning(), 2)
+                assert not future.done()
+                with reconciliation._workers_lock:
+                    assert key in reconciliation._workers
+                assert (await getattr(second, adapter)(db, event_id)).status == "busy"
+                assert not await is_acknowledged(db, event_id, "resumed")
+
+                runner_thread = threading.Thread(target=foreign_loop.run_forever, daemon=True)
+                runner_thread.start()
+                foreign_loop.call_soon_threadsafe(future.set_result, DeliveryOutcome.SUCCESS)
+                await _wait_thread_event(completed)
+                assert future.done()
+                await _wait_for_attempt_release(key)
+                assert await is_acknowledged(db, event_id, "resumed")
+            finally:
+                with reconciliation._workers_lock:
+                    worker = reconciliation._workers.get(key)
+                if worker is not None:
+                    reconciliation._release_worker(worker)
+    finally:
+        if runner_thread is not None:
+            foreign_loop.call_soon_threadsafe(foreign_loop.stop)
+            runner_thread.join(2)
+            assert not runner_thread.is_alive()
+        if not foreign_loop.is_closed():
+            foreign_loop.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", ["attempt_exact", "attempt_replay"])
+async def test_pending_closed_foreign_future_warns_and_stays_reserved(tmp_path, caplog, adapter):
+    foreign_loop = asyncio.new_event_loop()
+    future = foreign_loop.create_future()
+    foreign_loop.close()
+    invoked = threading.Event()
+
+    async def prepare(_row, _db):
+        def deliver():
+            invoked.set()
+            return future
+
+        return PreparedDelivery(deliver)
+
+    async with StateDB(tmp_path / "closed-pending.db") as db:
+        event_id = await _seed(db)
+        await register_consumer(db, "closed-pending", start="all")
+        key = (reconciliation._store_identity(db), "closed-pending", event_id)
+        first = TerminalReconciler("closed-pending", prepare, batch_size=1, timeout=1.0)
+        second = TerminalReconciler("closed-pending", prepare, batch_size=1, timeout=1.0)
+        try:
+            with caplog.at_level("WARNING", logger=reconciliation.__name__):
+                result = await asyncio.wait_for(getattr(first, adapter)(db, event_id), 4)
+                assert result.attempted is True and invoked.is_set()
+
+                async def wait_for_warning():
+                    while not any(
+                        "cannot observe on a closed loop" in record.getMessage()
+                        for record in caplog.records
+                        if record.name == reconciliation.__name__
+                    ):
+                        await asyncio.sleep(0.005)
+
+                await asyncio.wait_for(wait_for_warning(), 2)
+            assert not future.done()
+            with reconciliation._workers_lock:
+                assert key in reconciliation._workers
+            assert (await getattr(second, adapter)(db, event_id)).status == "busy"
+            assert not await is_acknowledged(db, event_id, "closed-pending")
+        finally:
+            with reconciliation._workers_lock:
+                worker = reconciliation._workers.get(key)
+            if worker is not None:
+                reconciliation._release_worker(worker)

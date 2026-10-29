@@ -628,8 +628,9 @@ _NO_LATE_RESULT = object()
 def _observe_foreign_future(worker: _Worker, future: Any) -> None:
     """Observe completed Futures directly, including when their loop has stopped.
 
-    An unfinished Future on a stopped loop cannot be observed; its reservation
-    is retained and the stuck condition is reported immediately.
+    A pending Future on a stopped, open loop is observed when the loop resumes;
+    its reservation remains held in the meantime. A closed loop cannot resume,
+    so its unfinished Future stays reserved and is reported immediately.
     """
 
     def warn_stuck() -> None:
@@ -685,13 +686,19 @@ def _observe_foreign_future(worker: _Worker, future: Any) -> None:
         if future.done():
             observed(future)
             return
-        if not loop.is_running():
+        if loop.is_closed():
             logger.warning(
-                "Late delivery stuck for %s: cannot observe on a stopped loop; "
+                "Late delivery stuck for %s: cannot observe on a closed loop; "
                 "result remains reserved",
                 worker.key[2],
             )
             return
+        if not loop.is_running():
+            logger.warning(
+                "Late delivery waiting for %s: owner is a stopped loop; "
+                "result stays reserved until that loop runs again",
+                worker.key[2],
+            )
         loop.call_soon_threadsafe(register)
     except BaseException as exc:
         logger.warning(
