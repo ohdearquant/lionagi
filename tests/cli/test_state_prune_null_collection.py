@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 
@@ -32,9 +33,16 @@ async def test_prune_reclaims_orphan_with_empty_or_null_surviving_collection(
 
     async with StateDB(path) as db:
         await db.create_progression(victim_pid)
-        # Exercise the native API's current runtime behavior: it serializes the
-        # supplied collection without validating its annotated element type.
-        await db.create_progression(survivor_pid, survivor_collection)
+        # A legacy store may already contain a null even though new writes
+        # reject it. Keep the prune regression against that historical data.
+        if case == "null_and_shared":
+            await db.create_progression(survivor_pid)
+            await db.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (json.dumps(survivor_collection), survivor_pid),
+            )
+        else:
+            await db.create_progression(survivor_pid, survivor_collection)
         assert await db.get_progression(survivor_pid) == survivor_collection
         for sid, pid in ((victim_sid, victim_pid), (survivor_sid, survivor_pid)):
             await db.create_session({"id": sid, "progression_id": pid, "status": "completed"})
