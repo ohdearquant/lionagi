@@ -876,9 +876,18 @@ has in the selected MCP configuration, and opting in is refused before spawn unl
 grant names that server and the captured parent permits it. The option's server configuration
 names a server in one of two ways. A `{"server": <name>}` reference names it directly, compared
 exactly, case-sensitively and without normalization. An inline transport configuration names the
-entry of the selected configuration whose resolved transport configuration is equal to it key for
-key, keys beginning with `_` excluded, which is the same content identity the MCP connection pool
-keys a client by; an inline configuration equal to more than one entry is refused as ambiguous.
+entry of the selected configuration that is equal to it as a JSON value once both drop their
+top-level keys beginning with `_`. Those keys are lionagi's own annotations on a configuration,
+such as `_original_tool_name`, which the connection pool strips before it builds a client
+(`lionagi/service/connections/mcp_wrapper.py:2042-2044`), so they are no part of the transport.
+Nothing is expanded before the comparison: an entry is compared as the selected configuration
+declares it and an inline configuration as the option gives it, so an environment or secret
+reference and any placeholder are compared as the text they are written as. Two configurations
+that differ only in how they spell a value therefore do not match, and the opt-in is refused
+rather than matched through a resolved value. This is the material the pool fingerprints a
+transport by (`lionagi/service/connections/mcp_wrapper.py:1595`). It is not the pool's
+client-cache key, which for an inline configuration also carries the object's identity
+(`:1818`). An inline configuration equal to more than one entry is refused as ambiguous.
 A `khive_injection` whose configuration matches no named server is permitted only under ambient
 discovery, never under a declared or inherited grant. Every requested
 server name that is unknown or absent must be
