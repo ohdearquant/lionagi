@@ -205,7 +205,7 @@ async def test_later_occurrence_with_changed_content_refuses_before_writes(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_matching_shared_content_does_not_replace_keeper_metadata(tmp_path):
+async def test_matching_content_with_different_role_is_refused(tmp_path):
     run, manifest = _make_run(tmp_path / "runs", "original")
     second = run / "branches" / "1.json"
     data = json.loads(second.read_text())
@@ -214,9 +214,11 @@ async def test_matching_shared_content_does_not_replace_keeper_metadata(tmp_path
     os.utime(second, (1_000_001, 1_000_001))
     async with StateDB(tmp_path / "state.db") as db:
         await _keeper(db, "session")
-        before = await db.get_message("shared")
-        assert await state_mod._import_one_run(db, "run-1", run, manifest) == (1, 2, 2)
-        assert await db.get_message("shared") == before
+        before = await _snapshot(db)
+        with pytest.raises(state_mod.ImportMessageConflictError) as caught:
+            await state_mod._import_one_run(db, "run-1", run, manifest)
+        assert caught.value.columns == ("role",)
+        assert await _snapshot(db) == before
 
 
 @pytest.mark.asyncio
@@ -376,7 +378,9 @@ async def test_postgres_text_cast_returns_json_string_without_double_decode(valu
             statements.append(str(statement))
             if len(statements) == 1:
                 return Result(["shared"])
-            return Result([{"id": "shared", "content": json.dumps(value)}])
+            return Result(
+                [{"id": "shared", "content": json.dumps(value), "node_metadata": json.dumps(value)}]
+            )
 
     class FakeDB:
         dialect = "postgresql"
@@ -386,6 +390,228 @@ async def test_postgres_text_cast_returns_json_string_without_double_decode(valu
             yield Connection()
 
     shared = await state_mod._shared_import_messages(FakeDB(), "run-1", ["shared"])
-    assert shared == {"shared": value}
-    assert type(shared["shared"]) is str
+    assert shared["shared"]["content"] == value
+    assert type(shared["shared"]["content"]) is str
+    assert shared["shared"]["node_metadata"] == value
+    assert type(shared["shared"]["node_metadata"]) is str
     assert "CAST(m.content AS TEXT)" in statements[1]
+    assert "CAST(m.node_metadata AS TEXT)" in statements[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "reported"),
+    [
+        ("content", {"text": "PRIVATE-CONTENT"}, "content"),
+        ("role", "PRIVATE-ROLE", "role"),
+        ("sender", "PRIVATE-SENDER", "sender"),
+        ("recipient", "PRIVATE-RECIPIENT", "recipient"),
+        ("channel", "PRIVATE-CHANNEL", "channel"),
+        ("metadata", {"token": "PRIVATE-METADATA"}, "node_metadata"),
+        ("embedding", [0.125, 0.5], "embedding"),
+    ],
+)
+async def test_shared_upsert_field_difference_refuses_without_disclosing_values(
+    tmp_path, field, value, reported
+):
+    run, manifest = _make_run(tmp_path / "runs", "original")
+    second = run / "branches" / "1.json"
+    data = json.loads(second.read_text())
+    data["messages"]["collections"][0][field] = value
+    second.write_text(json.dumps(data))
+    os.utime(second, (1_000_001, 1_000_001))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _keeper(db, "session")
+        before = await _snapshot(db)
+        with pytest.raises(state_mod.ImportMessageConflictError) as caught:
+            await state_mod._import_one_run(db, "run-1", run, manifest)
+        assert caught.value.message_id == "shared"
+        assert caught.value.columns == (reported,)
+        assert reported in str(caught.value)
+        assert "PRIVATE" not in str(caught.value)
+        assert "original" not in str(caught.value)
+        assert await _snapshot(db) == before
+
+
+@pytest.mark.asyncio
+async def test_multiple_shared_differences_report_only_column_names(tmp_path):
+    run, manifest = _make_run(tmp_path / "runs", "PRIVATE-CONTENT")
+    second = run / "branches" / "1.json"
+    data = json.loads(second.read_text())
+    data["messages"]["collections"][0].update(
+        {"sender": "PRIVATE-SENDER", "metadata": {"secret": "PRIVATE-META"}}
+    )
+    second.write_text(json.dumps(data))
+    os.utime(second, (1_000_001, 1_000_001))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _keeper(db, "session")
+        before = await _snapshot(db)
+        with pytest.raises(state_mod.ImportMessageConflictError) as caught:
+            await state_mod._import_one_run(db, "run-1", run, manifest)
+        assert caught.value.columns == ("content", "node_metadata", "sender")
+        assert "PRIVATE" not in str(caught.value)
+        assert await _snapshot(db) == before
+
+
+@pytest.mark.asyncio
+async def test_same_shared_embedding_uses_stored_float32_precision(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    runs = tmp_path / "runs"
+    run, _ = _make_run(runs, "original")
+    second = run / "branches" / "1.json"
+    data = json.loads(second.read_text())
+    data["messages"]["collections"][0]["embedding"] = [0.1, 0.2]
+    second.write_text(json.dumps(data))
+    os.utime(second, (1_000_001, 1_000_001))
+    monkeypatch.setattr(state_mod, "RUNS_ROOT", runs)
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
+    )
+    async with StateDB(path) as db:
+        await _keeper(db, "session")
+        await db.insert_message({**_message("shared", "original"), "embedding": [0.1, 0.2]})
+        before_shared = await db.get_message("shared")
+    assert (await state_mod._import_runs())["errors"] == 0
+    async with StateDB(path) as db:
+        before_reimport = await _snapshot(db)
+        assert await db.get_message("shared") == before_shared
+    assert (await state_mod._import_runs())["skipped"] == 1
+    async with StateDB(path) as db:
+        assert await _snapshot(db) == before_reimport
+        assert await db.get_message("shared") == before_shared
+
+
+@pytest.mark.asyncio
+async def test_stored_lion_class_difference_is_checked_independently(tmp_path):
+    run, manifest = _make_run(tmp_path / "runs", "original")
+    second = run / "branches" / "1.json"
+    data = json.loads(second.read_text())
+    data["messages"]["collections"][0]["metadata"] = {
+        "lion_class": "lionagi.protocols.messages.system.System"
+    }
+    second.write_text(json.dumps(data))
+    os.utime(second, (1_000_001, 1_000_001))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _keeper(db, "session")
+        await db.insert_message(
+            {
+                **_message("shared", "original"),
+                "node_metadata": {"lion_class": "lionagi.protocols.messages.system.System"},
+            }
+        )
+        await db.execute("UPDATE messages SET lion_class = 0 WHERE id = ?", ("shared",))
+        before = await _snapshot(db)
+        with pytest.raises(state_mod.ImportMessageConflictError) as caught:
+            await state_mod._import_one_run(db, "run-1", run, manifest)
+        assert caught.value.columns == ("lion_class",)
+        assert await _snapshot(db) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old,new", [(False, 0), (True, 1), (0, False), (1, True)])
+async def test_shared_metadata_comparison_preserves_json_boolean_type(tmp_path, old, new):
+    run, manifest = _make_run(tmp_path / "runs", "original")
+    second = run / "branches" / "1.json"
+    data = json.loads(second.read_text())
+    data["messages"]["collections"][0]["metadata"] = {"value": new}
+    second.write_text(json.dumps(data))
+    os.utime(second, (1_000_001, 1_000_001))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _keeper(db, "session")
+        await db.insert_message({**_message("shared", "original"), "node_metadata": {"value": old}})
+        before = await _snapshot(db)
+        with pytest.raises(state_mod.ImportMessageConflictError) as caught:
+            await state_mod._import_one_run(db, "run-1", run, manifest)
+        assert caught.value.columns == ("node_metadata",)
+        assert await _snapshot(db) == before
+
+
+@pytest.mark.asyncio
+async def test_postgres_fake_decodes_both_json_columns_once_and_compares_float32():
+    statements = []
+    packed = db_mod._pack_embedding([0.1, 0.2])
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def scalars(self):
+            return self
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class Connection:
+        async def execute(self, statement, params):
+            statements.append(str(statement))
+            if len(statements) == 1:
+                return Result(["shared"])
+            return Result(
+                [
+                    {
+                        "id": "shared",
+                        "content": json.dumps("true"),
+                        "node_metadata": json.dumps({"flag": False}),
+                        "role": "user",
+                        "sender": None,
+                        "recipient": None,
+                        "channel": None,
+                        "lion_class": "__unknown__",
+                        "lion_class_id": 0,
+                        "embedding": memoryview(packed),
+                    }
+                ]
+            )
+
+    class FakeDB:
+        dialect = "postgresql"
+
+        @asynccontextmanager
+        async def read_snapshot(self):
+            yield Connection()
+
+    shared = await state_mod._shared_import_messages(FakeDB(), "run-1", ["shared"])
+    incoming = {
+        "id": "shared",
+        "created_at": 1.0,
+        "content": "true",
+        "metadata": {"flag": False},
+        "embedding": [0.1, 0.2],
+        "role": "user",
+    }
+    assert state_mod._import_message_differences(shared["shared"], incoming) == ()
+    incoming["metadata"] = {"flag": 0}
+    assert state_mod._import_message_differences(shared["shared"], incoming) == ("node_metadata",)
+    assert "CAST(m.content AS TEXT)" in statements[1]
+    assert "CAST(m.node_metadata AS TEXT)" in statements[1]
+
+
+@pytest.mark.asyncio
+async def test_identical_shared_metadata_with_reordered_keys_and_known_class(tmp_path):
+    run, manifest = _make_run(tmp_path / "runs", "original")
+    second = run / "branches" / "1.json"
+    data = json.loads(second.read_text())
+    data["messages"]["collections"][0]["metadata"] = {
+        "nested": {"b": 2, "a": 1},
+        "lion_class": "lionagi.protocols.messages.system.System",
+    }
+    second.write_text(json.dumps(data))
+    os.utime(second, (1_000_001, 1_000_001))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _keeper(db, "session")
+        await db.insert_message(
+            {
+                **_message("shared", "original"),
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.system.System",
+                    "nested": {"a": 1, "b": 2},
+                },
+            }
+        )
+        before = await db.get_message("shared")
+        assert await state_mod._import_one_run(db, "run-1", run, manifest) == (1, 2, 2)
+        assert await db.get_message("shared") == before
