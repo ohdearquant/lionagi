@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Merged pull-request schedules can persist a page limit from 5 to 100. When
+  repeated scans hit the limit, schedule health explains how to recover.
+
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in
   `metadata["prompt_cache"]`, keyed by a prefix certificate over the request through the marked
@@ -62,6 +65,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `chat_model` (set the option on that model's endpoint instead) and without a model.
 
 ### Changed
+
+- Merged pull-request scans no longer send conditional requests: a first-page
+  cache hit cannot establish that later pages are unchanged.
 
 - `ReviewEngine` with `prompt_caching=True` sends the artifact once, in a turn of
   its own, before the dimension reviewers start; each dimension's request

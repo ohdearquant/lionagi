@@ -551,6 +551,10 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- Settled capped reads that neither dispatched nor retained an engine batch.
   -- A qualified launch or an unheld complete read resets this separate streak.
   poller_consecutive_cap_no_dispatch INTEGER NOT NULL DEFAULT 0,
+  -- Page limit used by the most recent settled capped poll; NULL when unknown or reset.
+  poller_last_capped_page_limit INTEGER,
+  -- Incremented by an authored target change, not by engine cursor advances.
+  poller_target_generation INTEGER NOT NULL DEFAULT 0,
   -- Bounded retry for a github_poll fire that refuses before it dispatches
   -- anything. Such a refusal holds github_cursor back so the event is
   -- re-offered, but the refusal can be a property of that one event's

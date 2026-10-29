@@ -42,12 +42,20 @@ class SchedulerStateService(Protocol):
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: ScheduleAuditContext | None = None,
         reason: ReasonRecord | None = None,
         **fields: Any,
     ) -> bool: ...
 
-    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool: ...
+    async def record_github_poll_stagnation(
+        self,
+        schedule_id: str,
+        *,
+        reset: bool,
+        page_limit: int | None = None,
+        expected_target_generation: int | None = None,
+    ) -> bool: ...
 
     async def count_schedule_runs(
         self,
@@ -74,6 +82,7 @@ class SchedulerStateService(Protocol):
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: ScheduleAuditContext | None = None,
         reason: ReasonRecord | None = None,
     ) -> bool: ...
@@ -195,6 +204,7 @@ class _DBSchedulerStateService:
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: ScheduleAuditContext | None = None,
         reason: ReasonRecord | None = None,
         **fields: Any,
@@ -205,14 +215,31 @@ class _DBSchedulerStateService:
                 guard_cursor_forward=guard_cursor_forward,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                **(
+                    {"expect_target_generation": expect_target_generation}
+                    if expect_target_generation is not None
+                    else {}
+                ),
                 audit_context=audit_context,
                 reason=reason,
                 **fields,
             )
 
-    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool:
+    async def record_github_poll_stagnation(
+        self,
+        schedule_id: str,
+        *,
+        reset: bool,
+        page_limit: int | None = None,
+        expected_target_generation: int | None = None,
+    ) -> bool:
         async with self._db_context() as db:
-            return await db.record_github_poll_stagnation(schedule_id, reset=reset)
+            return await db.record_github_poll_stagnation(
+                schedule_id,
+                reset=reset,
+                page_limit=page_limit,
+                expected_target_generation=expected_target_generation,
+            )
 
     async def count_schedule_runs(
         self,
@@ -254,6 +281,7 @@ class _DBSchedulerStateService:
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: ScheduleAuditContext | None = None,
         reason: ReasonRecord | None = None,
     ) -> bool:
@@ -264,6 +292,11 @@ class _DBSchedulerStateService:
                 schedule_fields=schedule_fields,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                **(
+                    {"expect_target_generation": expect_target_generation}
+                    if expect_target_generation is not None
+                    else {}
+                ),
                 audit_context=audit_context,
                 reason=reason,
             )

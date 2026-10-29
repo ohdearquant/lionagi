@@ -622,6 +622,8 @@ schedules = Table(
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
     # Settled capped reads without dispatch or an engine-held batch; see schema.sql.
     Column("poller_consecutive_cap_no_dispatch", Integer, nullable=False, server_default="0"),
+    Column("poller_last_capped_page_limit", Integer),
+    Column("poller_target_generation", Integer, nullable=False, server_default="0"),
     # Bounded retry for a pre-dispatch refusal; see schema.sql.
     Column("predispatch_refusal_event", Text),
     Column("predispatch_refusal_count", Integer, nullable=False, server_default="0"),
