@@ -382,7 +382,14 @@ async def test_cancel_during_setup_failure_recovery_finishes_turn(tmp_path, monk
         await asyncio.gather(task, return_exceptions=True)
         await asyncio.wait_for(submission, 5)
         frames = await store.list_frames(cid)
-        assert len(_done_for(frames, request_id)) == 1
+        done = _done_for(frames, request_id)
+        assert len(done) == 1 and done[0]["payload"]["outcome"] == "cancelled"
+        errors = [
+            frame["payload"]["error"]
+            for frame in frames
+            if frame["type"] == "error" and frame["requestId"] == request_id
+        ]
+        assert len(errors) == 1 and errors[0]["code"] == "cancelled"
         assert records.count(request_id) == 1
         assert (await store.get_conversation(cid))["activeRequestId"] is None
     finally:
@@ -457,6 +464,82 @@ class _ObservableBlockingEngine:
 
     def stream(self, turn):
         return self._stream(turn)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_does_not_interrupt_engine_cancellation_cleanup(tmp_path, monkeypatch):
+    class CleanupEngine:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.cleanup_entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleanup_interrupted = asyncio.Event()
+            self.cleanup_finished = asyncio.Event()
+
+        async def _stream(self, _turn):
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cleanup_entered.set()
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.cleanup_interrupted.set()
+                    raise
+                self.cleanup_finished.set()
+                raise
+            yield  # pragma: no cover
+
+        def stream(self, turn):
+            return self._stream(turn)
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    engine = CleanupEngine()
+    coordinator = OperatorCoordinator(store=store, engine_factory=lambda: engine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    shutdown_task = None
+    try:
+        accepted = await coordinator.submit(
+            cid, instruction="wait", context=_CONTEXT, expected_last_sequence=0
+        )
+        request_id = accepted["requestId"]
+        await asyncio.wait_for(engine.entered.wait(), 5)
+        assert (await coordinator.cancel(cid, request_id))["cancelRequested"] is True
+        await asyncio.wait_for(engine.cleanup_entered.wait(), 5)
+
+        shutdown_read = asyncio.Event()
+        real_get_turn = store.get_turn
+
+        async def track_shutdown_read(*args, **kwargs):
+            result = await real_get_turn(*args, **kwargs)
+            shutdown_read.set()
+            return result
+
+        monkeypatch.setattr(store, "get_turn", track_shutdown_read)
+        shutdown_task = asyncio.create_task(coordinator.shutdown())
+        await asyncio.wait_for(shutdown_read.wait(), 5)
+        # Allow a cancellation delivered by shutdown to reach the engine.
+        await asyncio.sleep(0)
+        assert not engine.cleanup_interrupted.is_set()
+        assert not shutdown_task.done()
+        engine.release.set()
+        await asyncio.wait_for(shutdown_task, 10)
+        assert engine.cleanup_finished.is_set()
+        assert not engine.cleanup_interrupted.is_set()
+        frames = await store.list_frames(cid)
+        done = _done_for(frames, request_id)
+        assert len(done) == 1 and done[0]["payload"]["outcome"] == "cancelled"
+        assert (await store.get_conversation(cid))["activeRequestId"] is None
+    finally:
+        engine.release.set()
+        if shutdown_task is not None:
+            await asyncio.gather(shutdown_task, return_exceptions=True)
+        else:
+            await asyncio.wait_for(coordinator.shutdown(), 10)
 
 
 @pytest.mark.asyncio
