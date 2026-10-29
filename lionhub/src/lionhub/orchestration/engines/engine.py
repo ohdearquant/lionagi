@@ -747,6 +747,8 @@ class EngineRun:
         khive_injection: Any = None,
         command_env_allowlist: Sequence[str] = (),
         _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
+        _effort_origin: str | None = None,
+        _model_origin: str | None = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
@@ -775,13 +777,22 @@ class EngineRun:
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
         resolved_model = model or self.engine.model or prof_model
+        model_origin = (
+            (_model_origin or "explicit")
+            if model
+            else "explicit"
+            if self.engine.model
+            else "profile"
+        )
         resolved_effort = effort or self.engine.effort
+        effort_origin = _effort_origin if effort and _effort_origin else "explicit"
         resolved_max_tokens = max_tokens if max_tokens is not None else self.engine.max_tokens
         if not resolved_effort and resolved_model:
-            from lionagi.service.providers import parse_model_spec  # noqa: PLC0415
+            from lionagi.agent.factory import _parse_agent_model_spec  # noqa: PLC0415
 
-            if not parse_model_spec(resolved_model).effort:
+            if not _parse_agent_model_spec(resolved_model, origin=model_origin).effort:
                 resolved_effort = prof_effort
+                effort_origin = "profile"
         # Same precedence for khive injection; explicit False stops the profile fallback.
         injection = khive_injection
         if injection is None:
@@ -813,6 +824,8 @@ class EngineRun:
             max_tokens=resolved_max_tokens,
             command_env_allowlist=command_env_allowlist,
         )
+        spec._effort_origin = effort_origin
+        spec._model_origin = model_origin
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
         if mcp_config_path is not None:

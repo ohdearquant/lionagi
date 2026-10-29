@@ -99,6 +99,7 @@ class CreateMessageRequest(BaseModel):
     metadata: dict | None = None
     tools: list[ToolDefinition] | None = None
     tool_choice: ToolChoice | dict | None = None
+    output_config: dict | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1098,6 +1099,23 @@ class AnthropicMessagesEndpoint(Endpoint):
         if "system_blocks" in kwargs:
             system_blocks = kwargs.pop("system_blocks")
         prompt_cache_control = request_dict.get("cache_control")
+        baseline = self.config.kwargs.get("output_config")
+        if isinstance(baseline, dict) and "effort" in baseline:
+            merged = dict(baseline)
+            for layer in (request_dict, kwargs):
+                if "output_config" in layer:
+                    value = layer["output_config"]
+                    if value is None:
+                        continue
+                    if isinstance(value, dict):
+                        merged.update(
+                            {k: v for k, v in value.items() if k != "effort" or v is not None}
+                        )
+                    else:
+                        raise ValueError(
+                            "output_config must be a mapping when effort is configured"
+                        )
+            kwargs["output_config"] = merged
         if self._account_routing_enabled() and request_dict.get("service_tier") not in (
             None,
             "standard_only",
