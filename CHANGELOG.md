@@ -199,6 +199,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `DataLogger` no longer stays alive solely for its exit callback. Pending logs
+  are saved when an unreferenced logger is collected or at normal process exit;
+  if log content refers back to its logger, it remains alive until exit. An
+  automatic save failure is logged and does not clear the snapshot from its pile.
+
 - `is_coro_func` recognizes callable instances whose class defines an async
   `__call__`, including partials of those instances. Synchronous `add_message()`
   now rejects such message hooks; use `a_add_message()` to await them.

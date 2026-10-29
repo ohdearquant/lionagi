@@ -197,12 +197,13 @@ class TestCreatePathSubfolder:
 
 
 class TestSaveAtExit:
-    def test_save_at_exit_with_logs_calls_dump(self, tmp_path):
+    def test_save_at_exit_with_logs_writes_and_clears(self, tmp_path):
         dl = DataLogger(persist_dir=tmp_path, auto_save_on_exit=False)
         dl.log(Log(content={"exit": "data"}))
         dl.save_at_exit()
         files = list(tmp_path.rglob("*.json"))
         assert len(files) == 1
+        assert len(dl.logs) == 0
 
     def test_save_at_exit_no_logs_does_nothing(self, tmp_path):
         dl = DataLogger(persist_dir=tmp_path, auto_save_on_exit=False)
@@ -210,42 +211,26 @@ class TestSaveAtExit:
         assert list(tmp_path.iterdir()) == []
 
     def test_save_at_exit_json_error_logged_not_raised(self, tmp_path, caplog):
-        caplog.set_level(logging.DEBUG, logger="lionagi.protocols.generic.log")
+        caplog.set_level(logging.WARNING, logger="lionagi.protocols.generic.log")
         dl = DataLogger(persist_dir=tmp_path, auto_save_on_exit=False)
-        dl.log(Log(content={"x": 1}))
-
-        with patch.object(
-            dl,
-            "dump",
-            side_effect=TypeError("Object is not JSON serializable"),
-        ):
-            dl.save_at_exit()
-        assert caplog.record_tuples == [
-            (
-                "lionagi.protocols.generic.log",
-                logging.DEBUG,
-                "Could not serialize logs to JSON: Object is not JSON serializable",
-            )
-        ]
-        assert [log.content for log in dl.logs] == [{"x": 1}]
+        dl.log(Log(content={"x": object()}))
+        dl.save_at_exit()
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelno == logging.WARNING
+        assert "1" in caplog.records[0].getMessage()
+        assert str(tmp_path) in caplog.records[0].getMessage()
+        assert len(dl.logs) == 1
 
     def test_save_at_exit_other_error_logged_not_raised(self, tmp_path, caplog):
-        dl = DataLogger(persist_dir=tmp_path, auto_save_on_exit=False)
+        blocked = tmp_path / "not-a-directory"
+        blocked.write_text("file")
+        dl = DataLogger(persist_dir=blocked, auto_save_on_exit=False)
         dl.log(Log(content={"x": 1}))
-
-        with patch.object(
-            dl,
-            "dump",
-            side_effect=OSError("permission denied"),
-        ):
-            dl.save_at_exit()
-        assert caplog.record_tuples == [
-            (
-                "lionagi.protocols.generic.log",
-                logging.ERROR,
-                "Failed to save logs on exit: permission denied",
-            )
-        ]
+        dl.save_at_exit()
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelno == logging.WARNING
+        assert "1" in caplog.records[0].getMessage()
+        assert str(blocked) in caplog.records[0].getMessage()
         assert [log.content for log in dl.logs] == [{"x": 1}]
 
 
