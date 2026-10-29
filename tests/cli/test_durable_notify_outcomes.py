@@ -175,3 +175,28 @@ def test_stderr_fd_is_closed_if_fdopen_fails(run, monkeypatch):
     with pytest.raises(OSError):
         os.fstat(failed_fds[0])
     assert not list(run.state_root.glob(".notify_stderr.global.log.*"))
+
+
+def test_global_configuration_rejection_survives_run_success(run):
+    recorder = DurableRunRecorder(run)
+    recorder.record("run", ok=True, exit_code=0, stderr_text=None, reason=None)
+    recorder.record(
+        "global", ok=False, exit_code=None, stderr_text=None, reason="python_adapter_unresolvable"
+    )
+    payload = json.loads(run.notify_outcome_path.read_text())
+    assert payload["ok"] is False
+    assert payload["exit_code"] is None
+    assert payload["stderr_path"] is None
+    assert payload["reason"] == "python_adapter_unresolvable"
+
+
+def test_run_rejection_takes_precedence_over_global_failure_stderr(run):
+    recorder = DurableRunRecorder(run)
+    recorder.record("global", ok=False, exit_code=9, stderr_text="private", reason="global_failed")
+    recorder.record("run", ok=False, exit_code=None, stderr_text=None, reason="run_rejected")
+    payload = json.loads(run.notify_outcome_path.read_text())
+    assert payload["ok"] is False
+    assert payload["exit_code"] is None
+    assert payload["stderr_path"] is None
+    assert payload["reason"] == "run_rejected"
+    assert payload["subscriptions"]["global"]["stderr_path"] is not None
