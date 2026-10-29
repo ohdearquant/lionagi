@@ -9,6 +9,7 @@ import concurrent.futures
 import inspect
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -17,7 +18,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from sqlalchemy import text
@@ -460,7 +461,11 @@ class TerminalReconciler:
     """A process-local retry cursor; independent processes may deliver the same fact.
 
     The cursor rotates through eligible pending rows. Backoff and attempts are
-    bounded, best effort, and reset on eviction or restart.
+    bounded, best effort, and reset on eviction or restart. ``start`` is the
+    baseline the consumer registers with on first use. A pass reads pages of
+    ``batch_size`` rows until the traversal wraps or ``pass_budget`` seconds have
+    passed; the budget is checked between pages, so the default of zero attempts
+    one page per pass.
     """
 
     def __init__(
@@ -472,11 +477,19 @@ class TerminalReconciler:
         backoff_capacity: int = BACKOFF_CAPACITY,
         timeout: float = HANDLER_BUDGET_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        start: Literal["now", "all"] = "all",
+        pass_budget: float = 0.0,
     ) -> None:
         if batch_size < 1 or backoff_capacity < batch_size or backoff_capacity > BACKOFF_CAPACITY:
             raise ValueError("invalid reconciliation batch or backoff capacity")
+        if start not in ("now", "all"):
+            raise ValueError("start must be 'now' or 'all'")
+        if not math.isfinite(pass_budget) or pass_budget < 0:
+            raise ValueError("pass budget must be a finite, non-negative number of seconds")
         self.consumer = consumer
         self.prepare = prepare
+        self.start = start
+        self.pass_budget = pass_budget
         self.batch_size = batch_size
         self.backoff_capacity = backoff_capacity
         self.timeout = timeout
@@ -535,8 +548,12 @@ class TerminalReconciler:
         return result, worker
 
     async def run_pass(self, db: Any) -> dict[str, int]:
-        """Attempt at most one bounded page; acknowledge only explicit outcomes."""
+        """Attempt bounded pages until the traversal wraps or the pass budget is spent.
+
+        Only explicit outcomes are acknowledged.
+        """
         async with self._lock:
+            started = self.clock()
             store = _store_identity(db)
             if self._store_identity is None:
                 self._store_identity = store
@@ -544,7 +561,7 @@ class TerminalReconciler:
                 raise ValueError("a reconciler instance belongs to one state store")
             await _drain_deferred(db, self.consumer, self._store_identity)
             try:
-                registration = await register_consumer(db, self.consumer, start="all")
+                registration = await register_consumer(db, self.consumer, start=self.start)
                 counts = registration.counts
                 retired = False
             except ConsumerRetiredError:
@@ -558,68 +575,83 @@ class TerminalReconciler:
                 "ambiguous_project": 0,
                 "failed": 0,
                 "saturated": 0,
+                "pages": 0,
                 "past_ten_failures": sum(x.attempts > 10 for x in self._backoff.values()),
                 "unclassified": counts.initial_null_count,
                 "post_migration_null": counts.post_migration_null_count,
             }
             if retired:
                 return result
-            pending_ids, pending_count = self._pending()
-            if pending_count >= self.batch_size:
-                result["saturated"] = 1
-                return result
-            now = self.clock()
-            excluded = {key for key, entry in self._backoff.items() if entry.retry_at > now}
-            excluded.update(pending_ids)
-            rows = await reconcile_unacknowledged(
-                db, self.consumer, after=self._cursor, exclude_ids=excluded, limit=self.batch_size
-            )
-            if not rows:
-                self._cursor = None
-                return result
-            for row in rows:
-                transition_id = row["transition_id"]
+            while True:
                 pending_ids, pending_count = self._pending()
                 if pending_count >= self.batch_size:
                     result["saturated"] = 1
                     break
-                if transition_id in pending_ids:
-                    continue
-                previous_cursor = self._cursor
-                self._cursor = (float(row["occurred_at"]), transition_id)
-                worker = None
-                try:
-                    prepared = await asyncio.wait_for(self.prepare(row, db), timeout=self.timeout)
-                    if not await _consumer_is_active(db, self.consumer):
+                now = self.clock()
+                excluded = {key for key, entry in self._backoff.items() if entry.retry_at > now}
+                excluded.update(pending_ids)
+                rows = await reconcile_unacknowledged(
+                    db,
+                    self.consumer,
+                    after=self._cursor,
+                    exclude_ids=excluded,
+                    limit=self.batch_size,
+                )
+                if not rows:
+                    self._cursor = None
+                    break
+                result["pages"] += 1
+                for row in rows:
+                    transition_id = row["transition_id"]
+                    pending_ids, pending_count = self._pending()
+                    if pending_count >= self.batch_size:
+                        result["saturated"] = 1
+                        break
+                    if transition_id in pending_ids:
+                        continue
+                    previous_cursor = self._cursor
+                    self._cursor = (float(row["occurred_at"]), transition_id)
+                    worker = None
+                    try:
+                        prepared = await asyncio.wait_for(
+                            self.prepare(row, db), timeout=self.timeout
+                        )
+                        if not await _consumer_is_active(db, self.consumer):
+                            self._cursor = previous_cursor
+                            break
+                        result["attempted"] += 1
+                        if isinstance(prepared, PreparedDelivery):
+                            outcome, worker = await self._invoke(prepared, transition_id, db)
+                        else:
+                            outcome = prepared
+                        if outcome in _ACKNOWLEDGE_OUTCOMES:
+                            await ack_delivery(db, transition_id, self.consumer)
+                            self._backoff.pop(transition_id, None)
+                            result["acknowledged"] += 1
+                            if outcome is not DeliveryOutcome.SUCCESS:
+                                result["not_applicable"] += 1
+                            if outcome is DeliveryOutcome.NO_SESSION:
+                                result["no_session"] += 1
+                            elif outcome is DeliveryOutcome.AMBIGUOUS_PROJECT:
+                                result["ambiguous_project"] += 1
+                            continue
+                    except _WorkerBusyError:
+                        result["attempted"] -= 1
+                        result["saturated"] = 1
                         self._cursor = previous_cursor
                         break
-                    result["attempted"] += 1
-                    if isinstance(prepared, PreparedDelivery):
-                        outcome, worker = await self._invoke(prepared, transition_id, db)
-                    else:
-                        outcome = prepared
-                    if outcome in _ACKNOWLEDGE_OUTCOMES:
-                        await ack_delivery(db, transition_id, self.consumer)
-                        self._backoff.pop(transition_id, None)
-                        result["acknowledged"] += 1
-                        if outcome is not DeliveryOutcome.SUCCESS:
-                            result["not_applicable"] += 1
-                        if outcome is DeliveryOutcome.NO_SESSION:
-                            result["no_session"] += 1
-                        elif outcome is DeliveryOutcome.AMBIGUOUS_PROJECT:
-                            result["ambiguous_project"] += 1
+                    except Exception:
+                        logger.exception("Terminal delivery failed for %s", transition_id)
+                    finally:
+                        if worker is not None:
+                            _release_worker(worker)
+                    self._fail(transition_id)
+                    result["failed"] += 1
+                else:
+                    # The page ran to its end without a stop; read the next one while
+                    # the budget lasts.
+                    if self.clock() - started < self.pass_budget:
                         continue
-                except _WorkerBusyError:
-                    result["attempted"] -= 1
-                    result["saturated"] = 1
-                    self._cursor = previous_cursor
-                    break
-                except Exception:
-                    logger.exception("Terminal delivery failed for %s", transition_id)
-                finally:
-                    if worker is not None:
-                        _release_worker(worker)
-                self._fail(transition_id)
-                result["failed"] += 1
+                break
             result["past_ten_failures"] = sum(x.attempts > 10 for x in self._backoff.values())
             return result

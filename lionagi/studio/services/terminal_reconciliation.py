@@ -97,13 +97,22 @@ async def _prepare_settings_delivery(
 
 
 async def run_terminal_reconciliation() -> int:
-    """Run one bounded pass against the daemon's store and log its summary."""
+    """Run one budgeted pass against the daemon's store and log its summary."""
     global _reconciler, _reconciler_url
     if state_db_known_absent():
         return 0
     async with StateDB() as db:
         if _reconciler is None or _reconciler_url != db.url:
-            _reconciler = TerminalReconciler(CONSUMER_NAME, _prepare_settings_delivery)
+            from lionagi.studio.config import TERMINAL_RECONCILE_BUDGET_SECONDS
+
+            # History that predates the consumer is acknowledged at registration,
+            # never replayed into the notifier.
+            _reconciler = TerminalReconciler(
+                CONSUMER_NAME,
+                _prepare_settings_delivery,
+                start="now",
+                pass_budget=TERMINAL_RECONCILE_BUDGET_SECONDS,
+            )
             _reconciler_url = db.url
         summary = await _reconciler.run_pass(db)
     logger.info("Terminal notification reconciliation: %s", summary)

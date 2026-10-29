@@ -111,7 +111,14 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
     monkeypatch.setattr(app_module, "disarm_traceback_dump", lambda: None)
     monkeypatch.setattr(app_module, "_emit_startup_warnings", lambda: None)
 
+    # The first startup registers the consumer; a transition that predates it is
+    # acknowledged as history, never delivered.
     async with StateDB() as db:
+        history_id = await _commit_offline_transition(db)
+    async with app_module.lifespan(app_module.create_app()):
+        assert events == []
+    async with StateDB() as db:
+        assert await is_acknowledged(db, history_id, "notify.settings.on_terminal")
         transition_id = await _commit_offline_transition(db)
     assert events == []
 
@@ -131,7 +138,7 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
             "SELECT transition_id FROM terminal_deliveries WHERE consumer = :consumer",
             {"consumer": "notify.settings.on_terminal"},
         )
-    assert [row["transition_id"] for row in rows] == [transition_id]
+    assert sorted(row["transition_id"] for row in rows) == sorted([history_id, transition_id])
 
 
 @pytest.mark.asyncio

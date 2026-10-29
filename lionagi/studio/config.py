@@ -515,6 +515,13 @@ SCHEDULE_RUN_STALE_HOURS: float = float(
 SHOW_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_SHOW_STALE_HOURS", "6.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
+# Seconds one terminal-notification reconciliation pass keeps reading pages of
+# owed deliveries. Checked between pages, so a pass can run past it by one page.
+# Startup awaits the pass before serving and the periodic pass runs inside the
+# scheduler tick, so this also bounds how long either waits on it.
+TERMINAL_RECONCILE_BUDGET_SECONDS: float = float(
+    os.environ.get("LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS", "10")
+)
 
 # Scheduler cron timezone
 # Cron expressions (trigger_type="cron") are interpreted in this IANA timezone;

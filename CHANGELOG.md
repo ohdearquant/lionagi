@@ -15,7 +15,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   no-session fallback remain push-only. Replay loads global settings only;
   notifiers configured in project settings are push-only, so a missed push
   for one is replayed through the global notifier when one is configured,
-  never through the project's.
+  never through the project's. Studio's consumer registers on its first pass
+  with transitions that predate it acknowledged as history, never delivered.
+  A pass keeps reading pages of owed transitions until it reaches the end or
+  `LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS` (default 10) have passed.
+  Known defect: the push path records nothing, so a transition whose push
+  already ran the notifier is replayed by the next pass and the notifier runs
+  again for the same event. A Python hook can deduplicate by event ID; a shell
+  command notifier runs twice. A pending ADR-0095 amendment defines what the
+  push records.
 
 - State schema version 6 records terminal-delivery eligibility and consumer
   registrations. After upgrading, restart every process that opens the store,

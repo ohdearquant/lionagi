@@ -422,8 +422,16 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   identity in one statement without deleting its acknowledgements. Reactivating
   explicitly resumes the same identity and applies `start` to its unacknowledged
   history; a late acknowledgement after retirement is accepted.
-- Terminal reconciliation — the Studio daemon runs a bounded settings-consumer
-  pass at startup and on its periodic tick. Delivery is at least once, so an
+- Terminal reconciliation — the Studio daemon runs a settings-consumer pass at
+  startup, awaited before it serves, and on its periodic tick, inside the
+  scheduler tick. The consumer registers with `start="now"` on its first pass,
+  so transitions that predate it are acknowledged as history and never
+  delivered. A pass reads pages of four owed rows until the traversal wraps or
+  `LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS` (default 10) have passed.
+  The budget is checked between pages, so a pass can run past it by one page.
+  `TerminalReconciler` itself defaults to `start="all"` and a zero budget, one
+  page per pass. The push path records nothing, so a transition whose push ran
+  the notifier is replayed by the next pass as well. Delivery is at least once, so an
   effect can be repeated after a crash or by concurrent reconcilers. Deduplicate
   standalone v1 deliveries by `event_id`, the transition ID. Explicit success
   or not-applicable outcomes are acknowledged; failures remain pending. An exec
