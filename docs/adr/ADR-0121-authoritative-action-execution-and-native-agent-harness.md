@@ -835,6 +835,20 @@ name listed more than once. When `enabled` is absent, `servers` alone determines
 shown above. A requested name
 must match a server in the selected configuration exactly, case-sensitively and without normalization.
 
+A declaration or an MCP configuration read from a document that repeats a key within one
+mapping is refused before spawn, never resolved by the parser's last-value rule. This covers the
+`mcp` declaration, the selected configuration including its mapping from names to servers, and
+an inline configuration. The JSON and YAML parsers lionagi reads them with (`json`,
+`yaml.safe_load`) keep the last value silently, so `{servers: [a], servers: []}` parses as
+deny-all and two readers of one document could otherwise disagree on the grant or the transport.
+Keys are compared as the parser decodes them, after JSON escapes, so `"\u0073erver"` and
+`"server"` are one key; no Unicode normalization is applied, matching the parsers, which apply
+none and so never merge two spellings that normalize alike. A YAML merge key (`<<`) is refused in
+a declaration or a configuration, because a merge supplies keys that the mapping can override
+without repeating them; an alias used as a value copies its anchor's value and repeats no key.
+The refusal happens while the document is parsed, because the parsed result no longer carries
+the repeat.
+
 A profile supplies a default, not the parent authority. The captured run or engine policy is the
 parent. Resolution takes the first layer that declares an `mcp` key: the call, then the profile,
 then the captured parent. The table above gives the declared value its meaning, and a value the
@@ -862,15 +876,18 @@ explicit-deny precedence and parent-policy constraints apply between the resolve
 captured parent.
 
 An implementation of this amendment ships conformance tests for every row of the table above and
-for each layering case in this section, including the closure cases, a shadowed malformed layer
-and a `khive_injection` opt-in outside the resolved grant.
+for each layering case in this section, including the closure cases, a shadowed malformed layer,
+a repeated key, a call that replaces a profile's `khive_injection` opt-in, and a
+`khive_injection` opt-in outside the resolved grant.
 
 Deny-all covers every model-visible MCP tool regardless of ingress, including servers discovered
 by a provider. The `khive_injection` agent option calls its server through the MCP connection pool
-and places the result in the model's context, so deny-all covers it as well. Explicitly opting in
-to it at any layer of a specification that resolves to deny-all is a contradiction and must be
-refused. `khive_injection` is an agent option, not an `mcp` key, so whichever layer opts in to
-it, the check runs against the resolved grant. Under a resolved grant that names servers, it is
+and places the result in the model's context, so deny-all covers it as well. `khive_injection`
+is an agent option, not an `mcp` key: it takes its value from the first layer that sets it, the
+call and then the profile, and the captured parent supplies none. An opt-in that a call's value
+replaces is therefore not an opt-in, and whichever layer the effective opt-in comes from, the
+check runs against the resolved grant. An effective opt-in under a grant that resolves to
+deny-all is a contradiction and must be refused. Under a resolved grant that names servers, it is
 a request for its server like any other: the server is identified by the name its configuration
 has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
 grant names that server and the captured parent permits it. The option's server configuration
@@ -880,21 +897,21 @@ names a server in one of two ways, told apart by the test the connection pool it
 transport configuration. A reference names its server by the value of `server` alone, compared
 exactly, case-sensitively and without normalization. The pool resolves that name and ignores
 every other key of a reference, so the check ignores them too, and a `server` value that is not
-a string is refused. An inline transport configuration names the entry of the selected
+a string is refused. The check resolves the name against the configuration the pool resolves it
+against, so the two can never name different servers. An inline transport configuration names
+the entry of the selected
 configuration that is equal to it once both drop their top-level keys beginning with `_`; a
 nested key beginning with `_` is part of the transport and is compared. The top-level keys are
 lionagi's own annotations on a configuration, which the connection pool strips before it builds
 a client (`lionagi/service/connections/mcp_wrapper.py:2042-2044`). The one such key read on the
 call path, `_original_tool_name`, picks the tool to call on the server already chosen, never
 the transport (`lionagi/protocols/action/manager.py:154`, `mcp_wrapper.py:2042`), so they are no
-part of the transport. Equal means that the two serialize to the same JSON text with object
-keys sorted, as the pool serializes a transport when it fingerprints it (`:1595-1596`): object
-key order does not matter, array order does, and numbers compare by their JSON form, so `1` and
-`1.0` differ. A configuration holding a value that has no JSON form is refused. A configuration
-read from a document that repeats a key within one object is refused before spawn, never
-resolved by the parser's last-value rule: the JSON and YAML parsers lionagi reads configurations
-with keep the last value silently, so two readers of one document could otherwise disagree on
-its transport.
+part of the transport. Equal means that the two give the same text under `json.dumps` with
+`sort_keys=True` and its default separators and ASCII escaping, as the pool serializes a transport
+when it fingerprints it (`:1595-1596`): object key order does not matter, array order does, and
+a number compares by the JSON form of its parsed value, so `1` and `1.0` differ while `1e2` and
+`100.0` match. A configuration holding a value that has no JSON form is refused, as is one that
+repeats a key (above).
 Nothing is expanded before the comparison: an entry is compared as the selected configuration
 declares it and an inline configuration as the option gives it, so an environment or secret
 reference and any placeholder are compared as the text they are written as. Two configurations
