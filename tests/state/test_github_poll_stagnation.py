@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 
@@ -76,6 +78,20 @@ async def test_last_capped_limit_and_counter_commit_together(tmp_path):
         await first.record_github_poll_stagnation("github", reset=True)
         row = await second.get_schedule("github")
         assert (row[_COUNTER], row[_LIMIT]) == (0, None)
+
+
+async def test_postgres_capped_limit_is_integer_and_reset_clears_it(pg_url):
+    schedule_id = f"github-{uuid.uuid4()}"
+    async with StateDB(url=pg_url) as db:
+        assert db.dialect == "postgresql"
+        await db.create_schedule(_schedule(schedule_id))
+        try:
+            assert await db.record_github_poll_stagnation(schedule_id, reset=False, page_limit=5)
+            assert (await db.get_schedule(schedule_id))[_LIMIT] == 5
+            assert await db.record_github_poll_stagnation(schedule_id, reset=True, page_limit=5)
+            assert (await db.get_schedule(schedule_id))[_LIMIT] is None
+        finally:
+            await db.delete_schedule(schedule_id)
 
 
 async def test_merged_page_limit_is_validated_and_survives_reopen(tmp_path):
