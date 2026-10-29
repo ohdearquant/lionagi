@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 
 from lionagi.state.db import StateDB
+from lionagi.state.lifecycle.deliveries import is_acknowledged
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 from lionagi.studio.services import terminal_reconciliation as terminal
 
@@ -233,7 +234,19 @@ async def test_no_session_and_ambiguous_project_are_acked_and_counted(db):
             source="system",
             actor="test",
         )
-    reconciler = TerminalReconciler("f9-context", terminal._prepare_settings_delivery, batch_size=4)
+    outcomes = {}
+
+    async def observe(row, state):
+        outcome = await terminal._prepare_settings_delivery(row, state)
+        outcomes[row["entity_id"]] = (row["transition_id"], outcome)
+        return outcome
+
+    reconciler = TerminalReconciler("f9-context", observe, batch_size=4)
     result = await reconciler.run_pass(db)
     assert result["acknowledged"] == result["not_applicable"] == 2
     assert result["no_session"] == 1 and result["ambiguous_project"] == 1
+    assert set(outcomes) == {empty, ambiguous}
+    assert outcomes[empty][1] is DeliveryOutcome.NO_SESSION
+    assert outcomes[ambiguous][1] is DeliveryOutcome.AMBIGUOUS_PROJECT
+    assert await is_acknowledged(db, outcomes[empty][0], "f9-context")
+    assert await is_acknowledged(db, outcomes[ambiguous][0], "f9-context")

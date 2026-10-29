@@ -344,6 +344,42 @@ async def test_concurrent_sqlite_opens_classify_once(tmp_path):
         await second.close()
 
 
+async def test_reopen_preserves_v6_writer_eligibility(tmp_path):
+    path = tmp_path / "state.db"
+    make_v5_sqlite(path)
+    db = StateDB(path=path)
+    sid, pid = str(uuid.uuid4()), str(uuid.uuid4())
+    try:
+        await db.open()
+        await db.create_progression(pid)
+        await db.create_session({"id": sid, "progression_id": pid, "status": "running"})
+        await db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
+        assert await db.update_status(
+            "session",
+            sid,
+            new_status="failed",
+            reason_code="session.stale.no_heartbeat",
+            source="system",
+            actor="reaper",
+            expected_statuses={None},
+        )
+        before = await db.fetch_one(
+            "SELECT id, previous_status, delivery_eligible FROM status_transitions "
+            "WHERE entity_id = ? AND status = ?",
+            (sid, "failed"),
+        )
+        assert before["previous_status"] is None and before["delivery_eligible"]
+        await db.close()
+        await db.open()
+        after = await db.fetch_one(
+            "SELECT id, previous_status, delivery_eligible FROM status_transitions WHERE id = ?",
+            (before["id"],),
+        )
+        assert after == before
+    finally:
+        await db.close()
+
+
 @pytest_asyncio.fixture
 async def isolated_migration_postgres(pg_url, monkeypatch):
     # A private schema keeps the session-scoped PG fixture's other tests intact.

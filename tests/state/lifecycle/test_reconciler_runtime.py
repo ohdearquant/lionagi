@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.lifecycle.deliveries import is_acknowledged, retire_consumer
+from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer, retire_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 
 
@@ -48,6 +48,41 @@ async def _wait_for_ack(db: StateDB, transition_id: str, consumer: str):
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError("late acknowledgement was not written")
         await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_retired_consumer_resumes_unattempted_row_before_later_rows(tmp_path):
+    prepared_ids = []
+    retire_once = True
+
+    async def prepare(row, db):
+        nonlocal retire_once
+        prepared_ids.append(row["transition_id"])
+        if retire_once:
+            retire_once = False
+            assert await retire_consumer(db, "retire-cursor")
+        return DeliveryOutcome.SUCCESS
+
+    async with StateDB(tmp_path / "state.db") as db:
+        first, second = await _seed(db), await _seed(db)
+        for timestamp, transition_id in enumerate((first, second), start=1):
+            await db.execute(
+                "UPDATE status_transitions SET created_at = ? WHERE id = ?",
+                (timestamp, transition_id),
+            )
+        reconciler = TerminalReconciler("retire-cursor", prepare, batch_size=2)
+        result = await reconciler.run_pass(db)
+        assert result["attempted"] == 0
+        assert prepared_ids == [first]
+        assert not await is_acknowledged(db, first, "retire-cursor")
+
+        await register_consumer(db, "retire-cursor", start="all", reactivate=True)
+        prepared_ids.clear()
+        result = await reconciler.run_pass(db)
+        assert result["attempted"] == result["acknowledged"] == 2
+        assert prepared_ids == [first, second]
+        assert await is_acknowledged(db, first, "retire-cursor")
+        assert await is_acknowledged(db, second, "retire-cursor")
 
 
 @pytest.mark.asyncio
@@ -787,12 +822,23 @@ async def test_late_ack_does_not_initialize_incomplete_schema(tmp_path, caplog, 
 
 
 @pytest.mark.asyncio
-async def test_shared_memory_late_ack_is_idempotent_and_accepts_retirement():
+async def test_shared_memory_late_ack_is_idempotent_and_accepts_retirement(monkeypatch):
+    from lionagi.state.lifecycle import reconciler as reconciliation
     from lionagi.state.lifecycle.deliveries import ack_delivery
     from lionagi.state.lifecycle.reconciler import _store_identity, _workers, _workers_lock
 
     url = f"sqlite+aiosqlite:///file:retired-{uuid.uuid4().hex}?mode=memory&cache=shared&uri=true"
     started, release = threading.Event(), threading.Event()
+    late_acked = threading.Event()
+    acked_keys = []
+    real_keeper_ack = reconciliation._keeper_ack
+
+    def observe_keeper_ack(worker):
+        real_keeper_ack(worker)
+        acked_keys.append(worker.key)
+        late_acked.set()
+
+    monkeypatch.setattr(reconciliation, "_keeper_ack", observe_keeper_ack)
 
     def work():
         started.set()
@@ -820,6 +866,8 @@ async def test_shared_memory_late_ack_is_idempotent_and_accepts_retirement():
                     return key not in _workers
 
             await _wait_until(no_worker)
+            assert late_acked.is_set()
+            assert acked_keys == [key]
             rows = await db.fetch_all(
                 "SELECT acked_at FROM terminal_deliveries WHERE transition_id = ? AND consumer = ?",
                 (event_id, key[1]),

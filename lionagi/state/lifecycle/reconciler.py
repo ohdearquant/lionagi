@@ -591,6 +591,7 @@ class TerminalReconciler:
                 try:
                     prepared = await asyncio.wait_for(self.prepare(row, db), timeout=self.timeout)
                     if not await _consumer_is_active(db, self.consumer):
+                        self._cursor = previous_cursor
                         break
                     result["attempted"] += 1
                     if isinstance(prepared, PreparedDelivery):

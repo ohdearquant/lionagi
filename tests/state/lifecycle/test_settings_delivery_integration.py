@@ -45,8 +45,8 @@ async def _seed(db):
 def _settings(monkeypatch, adapter):
     calls = []
 
-    def load_settings(*, project_dir, include_project):
-        calls.append((project_dir, include_project))
+    def load_settings(*, include_project):
+        calls.append(include_project)
         return {"notify": {"on_terminal": {"enabled": True, "adapter": adapter}}}
 
     monkeypatch.setattr(terminal_reconciliation, "load_settings", load_settings)
@@ -121,7 +121,7 @@ async def test_exec_failure_is_not_acked_and_successful_retry_is_acked(
         )
         await _failure_then_retry(db, reconciler, transition_id, clock, events)
     assert launches == [("fake-test-adapter",), ("fake-test-adapter",)]
-    assert calls == [(None, False), (None, False)]
+    assert calls == [False, False]
     assert len(terminated) == (1 if failure == "timeout" else 0)
     assert events == ([transition_id] if failure == "spawn" else [transition_id, transition_id])
 
@@ -155,7 +155,7 @@ async def test_python_failure_is_not_acked_and_normal_retry_is_acked(
         )
         await _failure_then_retry(db, reconciler, transition_id, clock, events)
     assert events == [transition_id, transition_id]
-    assert calls == [(None, False), (None, False)]
+    assert calls == [False, False]
 
 
 async def test_python_normal_return_is_acknowledged_on_first_attempt(tmp_path, monkeypatch):
@@ -168,7 +168,7 @@ async def test_python_normal_return_is_acknowledged_on_first_attempt(tmp_path, m
 
     adapter.handle = handle
     monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
-    _settings(monkeypatch, {"kind": "python", "ref": f"{adapter.__name__}:handle"})
+    calls = _settings(monkeypatch, {"kind": "python", "ref": f"{adapter.__name__}:handle"})
     async with StateDB(tmp_path / "state.db") as db:
         transition_id = await _seed(db)
         reconciler = TerminalReconciler(
@@ -180,3 +180,4 @@ async def test_python_normal_return_is_acknowledged_on_first_attempt(tmp_path, m
         assert await is_acknowledged(db, transition_id, CONSUMER)
         assert await reconcile_unacknowledged(db, CONSUMER) == []
         assert events == [transition_id]
+        assert calls == [False]
