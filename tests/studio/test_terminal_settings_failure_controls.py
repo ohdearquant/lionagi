@@ -223,3 +223,46 @@ async def test_global_missing_is_inapplicable_but_dangling_stays_owed(
         assert recorder.records[0][1]["reason"] == "settings_load_failed"
     else:
         assert recorder.records == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_calls_of_same_prepared_delivery_keep_outcomes_separate(monkeypatch):
+    recorder = Recorder()
+    first_recorded = asyncio.Event()
+    release_first = asyncio.Event()
+    attempts = 0
+
+    monkeypatch.setattr(
+        settings_delivery,
+        "load_global_settings_layer",
+        lambda: {"notify": {"on_terminal": {"adapter": {"kind": "exec", "argv": ["fake"]}}}},
+    )
+
+    def fake_build_handler(_resolved, *, outcome_fn, **_kwargs):
+        async def handler(_envelope):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                outcome_fn(ok=True, exit_code=0, stderr_text=None)
+                first_recorded.set()
+                await release_first.wait()
+            else:
+                outcome_fn(ok=False, exit_code=1, stderr_text=None)
+
+        return handler
+
+    monkeypatch.setattr(settings_delivery, "build_handler", fake_build_handler)
+    prepared = await prepare_global_settings_delivery(row(), None, recorder=recorder)
+    first = asyncio.create_task(prepared.call())
+    second = None
+    try:
+        await asyncio.wait_for(first_recorded.wait(), 1)
+        second = asyncio.create_task(prepared.call())
+        assert await asyncio.wait_for(second, 1) is DeliveryOutcome.FAILURE
+        release_first.set()
+        assert await asyncio.wait_for(first, 1) is DeliveryOutcome.SUCCESS
+        assert [data["ok"] for scope, data in recorder.records] == [True, False]
+        assert [scope for scope, _data in recorder.records] == ["global", "global"]
+    finally:
+        release_first.set()
+        await asyncio.gather(first, *(task for task in (second,) if task), return_exceptions=True)
