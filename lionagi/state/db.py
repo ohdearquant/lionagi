@@ -5542,7 +5542,15 @@ class StateDB:
             _validate_reason_code(reason.code)
             if not reason.code.startswith("schedule_definition."):
                 raise ValueError("ScheduleSet reasons must use the schedule_definition namespace")
+        touched = {str(s["id"]) for s in creates if s.get("id")}
+        touched.update(schedule_id for schedule_id, _ in updates)
+        touched.update(disables)
         async with self._tx() as conn:
+            # Two applies touching the same schedules in different plan orders could
+            # deadlock on PostgreSQL, so every definition lock is taken here in one sorted
+            # order before any row lock. The per-row locks below re-enter them.
+            for schedule_id in sorted(touched):
+                await adapter._lock_id(conn, schedule_id)
             for schedule in creates:
                 created_reason = self._schedule_set_reason(
                     schedule, _ScheduleDefinitionReasons.CREATED_OBSERVED, "created", reason
