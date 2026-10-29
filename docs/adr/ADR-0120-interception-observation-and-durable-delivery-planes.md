@@ -713,7 +713,7 @@ confirmed, never the in-memory emit: the log is append-only with a monotonic per
 (`lionagi/state/schema.sql:828-832`), the sink writes it with the sequence the store assigns
 (`lionagi/state/db.py:7767-7777`), and the cursor is a position in that sequence, read forward with
 `after_seq` (`lionagi/state/db.py:7792-7809`), whose forward read defaults to 500 rows
-(`:7789`). Registration requires a bound usable sink and replayable filters, and persists source
+(`:7797`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches

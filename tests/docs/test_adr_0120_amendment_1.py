@@ -190,6 +190,7 @@ def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None
     assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5923)
     assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7767)
     assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7792)
+    assert "limit: int = 500," in _line("lionagi/state/db.py", 7797)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -213,7 +214,7 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "lionagi/state/db.py:7792-7809" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
-    assert "whose forward read defaults to 500 rows" in flat
+    assert "whose forward read defaults to 500 rows (`:7797`)" in flat
     assert "`emitter_role`, versioned payload type" in flat
     assert "filter-required data without destructive truncation; every page is read" in flat
     assert "read through a frozen closure cutoff" in flat
