@@ -710,7 +710,7 @@ reads from. Durable delivery covers committed `session_signals` rows, not every 
 the record says what is lost and when. For a durable subscriber the source fact is a
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
-(`lionagi/state/schema.sql:831-835`), the sink writes it with the sequence the store assigns
+(`lionagi/state/schema.sql:835-839`), the sink writes it with the sequence the store assigns
 (`lionagi/state/db.py:7734-7744`), and the cursor is a position in that sequence, read forward with
 `after_seq` (`lionagi/state/db.py:7759-7776`), whose forward read defaults to 500 rows
 (`:7764`). Registration requires a bound usable sink and replayable filters, and persists source
@@ -823,7 +823,7 @@ everything since; facts past the range belong to the next wake.
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:831-835`; writer `lionagi/state/db.py:7734-7744`; forward reader
+  (`lionagi/state/schema.sql:835-839`; writer `lionagi/state/db.py:7734-7744`; forward reader
   `lionagi/state/db.py:7759-7776`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).

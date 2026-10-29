@@ -208,7 +208,7 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:831-835" in flat
+    assert "lionagi/state/schema.sql:835-839" in flat
     assert "lionagi/state/db.py:7734-7744" in flat
     assert "lionagi/state/db.py:7759-7776" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
