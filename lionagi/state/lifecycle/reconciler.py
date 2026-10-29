@@ -189,7 +189,6 @@ class _AttemptAdmission:
     limit: int
     owner: bool = True
     pending: int = 0
-    tentative: bool = False
 
     def retain(self, task: asyncio.Future[Any], *, label: str = "hook", safe: bool = True) -> None:
         with _workers_lock:
@@ -217,42 +216,21 @@ class _AttemptAdmission:
 
 
 def _reserve_attempt(
-    store: str, consumer: str, transition_id: str, limit: int, *, allow_prepare: bool = False
+    store: str, consumer: str, transition_id: str, limit: int
 ) -> _AttemptAdmission | None:
     key = (store, consumer, transition_id)
     with _workers_lock:
         if key in _attempts or key in _workers:
             return None
         workers = [worker for k, worker in _workers.items() if k[:2] == key[:2]]
-        attempts = [
-            item for k, item in _attempts.items() if k[:2] == key[:2] and not item.tentative
-        ]
+        attempts = [item for k, item in _attempts.items() if k[:2] == key[:2]]
         active_keys = {item.key for item in (*workers, *attempts)}
         capacity = min([limit, *(item.limit for item in (*workers, *attempts))])
-        if len(active_keys) >= capacity and not allow_prepare:
+        if len(active_keys) >= capacity:
             return None
-        admission = _AttemptAdmission(key, limit, tentative=allow_prepare)
+        admission = _AttemptAdmission(key, limit)
         _attempts[key] = admission
         return admission
-
-
-def _attempt_can_start(admission: _AttemptAdmission) -> bool:
-    """Check capacity after effect-free legacy preparation and before any effect."""
-    with _workers_lock:
-        if _attempts.get(admission.key) is not admission:
-            return False
-        workers = [worker for k, worker in _workers.items() if k[:2] == admission.key[:2]]
-        attempts = [
-            item
-            for k, item in _attempts.items()
-            if k[:2] == admission.key[:2] and not item.tentative
-        ]
-        active_keys = {item.key for item in (*workers, *attempts)}
-        capacity = min([admission.limit, *(item.limit for item in (*workers, *attempts))])
-        if admission.key not in active_keys and len(active_keys) >= capacity:
-            return False
-        admission.tentative = False
-        return True
 
 
 def _store_identity(db: Any) -> str:
@@ -297,11 +275,9 @@ def _reserve_worker(
     key = (store, consumer, transition_id)
     with _workers_lock:
         active = [worker for k, worker in _workers.items() if k[:2] == key[:2]]
-        attempts = [
-            item for k, item in _attempts.items() if k[:2] == key[:2] and not item.tentative
-        ]
+        attempts = [item for k, item in _attempts.items() if k[:2] == key[:2]]
         own = _attempts.get(key)
-        if key in _workers or (own is not None and (own is not admission or own.tentative)):
+        if key in _workers or (own is not None and own is not admission):
             return None
         active_keys = {item.key for item in (*active, *attempts)}
         capacity = min([limit, *(item.limit for item in (*active, *attempts))])
@@ -897,35 +873,17 @@ class TerminalReconciler:
                         continue
                     previous_cursor = self._cursor
                     self._cursor = (float(row["occurred_at"]), transition_id)
-                    admission = _reserve_attempt(
-                        store, self.consumer, transition_id, self.batch_size, allow_prepare=True
-                    )
-                    if admission is None:
-                        result["saturated"] = 1
-                        self._cursor = previous_cursor
-                        break
                     worker = None
                     try:
                         prepared = await asyncio.wait_for(
                             self.prepare(row, db), timeout=self.timeout
                         )
-                        if await get_owed_transition(db, self.consumer, transition_id) is None:
-                            if not await _consumer_is_active(db, self.consumer):
-                                self._cursor = previous_cursor
-                                break
-                            continue
-                        if not _attempt_can_start(admission):
-                            result["saturated"] = 1
-                            self._cursor = previous_cursor
-                            break
                         if not await _consumer_is_active(db, self.consumer):
                             self._cursor = previous_cursor
                             break
                         result["attempted"] += 1
                         if isinstance(prepared, PreparedDelivery):
-                            outcome, worker = await self._invoke(
-                                prepared, transition_id, db, admission
-                            )
+                            outcome, worker = await self._invoke(prepared, transition_id, db)
                         else:
                             outcome = prepared
                         if outcome in _ACKNOWLEDGE_OUTCOMES:
@@ -949,7 +907,6 @@ class TerminalReconciler:
                     finally:
                         if worker is not None:
                             _release_worker(worker)
-                        admission.release()
                     self._fail(transition_id)
                     result["failed"] += 1
                 else:
