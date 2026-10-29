@@ -272,10 +272,8 @@ async def deliver_flow_notify_now(
             # offloaded so a sync handler body never blocks the loop; see
             # TerminalCallbackRegistry.emit, which this mirrors.
             await maybe_await(await _run_sync(handler, envelope, abandon_on_cancel=True))
-    except Exception:  # noqa: BLE001 -- a notifier failure must never affect the run
-        logger.warning(
-            "direct-path notify.on_terminal delivery failed for run %s", run.run_id, exc_info=True
-        )
+    except Exception as exc:  # noqa: BLE001 -- a notifier failure must never affect the run
+        logger.warning("direct-path notify.on_terminal delivery failed (%s)", type(exc).__name__)
         # A python adapter's raise otherwise reaches only the log line above,
         # leaving nothing queryable — unlike the exec adapter, which records
         # every failure mode as part of outcome recording. Recorded here too

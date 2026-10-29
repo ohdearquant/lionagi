@@ -13,7 +13,13 @@ queryable for one spec shape and not the other.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import os
+import socket
+import stat
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -126,3 +132,52 @@ async def test_the_exception_text_is_not_placed_in_the_outcome_record(
     assert "sk-not-a-real-secret-abcdef" not in raw, (
         f"exception text was written into the outcome record: {raw}"
     )
+
+
+@pytest.mark.parametrize("adapter_kind", ["sync", "async"])
+async def test_python_adapter_error_only_exposes_type_in_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, adapter_kind
+):
+    secret = "PRIVATE_ADAPTER_EXCEPTION_SENTINEL"
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("test must not invoke processes, signals, or network")
+
+    for name in ("Popen", "run", "call", "check_call", "check_output"):
+        monkeypatch.setattr(subprocess, name, forbid)
+    for name in ("create_subprocess_exec", "create_subprocess_shell"):
+        monkeypatch.setattr(asyncio, name, forbid)
+    for name in ("kill", "killpg", "system"):
+        monkeypatch.setattr(os, name, forbid, raising=False)
+    for name in ("connect", "connect_ex", "sendto"):
+        monkeypatch.setattr(socket.socket, name, forbid)
+    monkeypatch.setattr(socket, "create_connection", forbid)
+
+    def fail(_envelope):
+        raise RuntimeError(secret)
+
+    async def async_fail(envelope):
+        fail(envelope)
+
+    run = _run(tmp_path)
+    adapter = fail if adapter_kind == "sync" else async_fail
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.orchestrate._notify"):
+        await _deliver(run, _install_adapter(monkeypatch, adapter))
+
+    records = [
+        record
+        for record in caplog.records
+        if "direct-path notify.on_terminal delivery failed" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert records[0].getMessage().endswith("(RuntimeError)")
+    assert records[0].exc_info is None and records[0].exc_text is None
+    assert secret not in caplog.text and secret not in repr(records[0].args)
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome["ok"] is False and outcome["stderr_path"] == str(run.notify_stderr_path)
+    assert secret not in run.notify_outcome_path.read_text()
+    traceback_text = run.notify_stderr_path.read_text()
+    assert "Traceback (most recent call last)" in traceback_text
+    assert f"RuntimeError: {secret}" in traceback_text
+    if os.name == "posix":
+        assert stat.S_IMODE(run.notify_stderr_path.stat().st_mode) & 0o077 == 0
