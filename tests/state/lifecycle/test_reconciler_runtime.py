@@ -756,6 +756,8 @@ async def test_late_ack_does_not_initialize_incomplete_schema(tmp_path, caplog, 
         if missing == "consumer-table":
             await observer.execute("DROP TABLE terminal_consumers")
         else:
+            await observer.execute("DROP INDEX idx_status_transitions_unclassified")
+            await observer.execute("DROP INDEX idx_status_transitions_eligible_order")
             await observer.execute("ALTER TABLE status_transitions DROP COLUMN delivery_eligible")
         await first.close()
         release.set()
@@ -944,6 +946,8 @@ async def test_postgres_late_ack_does_not_initialize_incomplete_schema(
         if missing == "consumer-table":
             await state.execute("DROP TABLE terminal_consumers")
         else:
+            await state.execute("DROP INDEX idx_status_transitions_unclassified")
+            await state.execute("DROP INDEX idx_status_transitions_eligible_order")
             await state.execute("ALTER TABLE status_transitions DROP COLUMN delivery_eligible")
         release.set()
 
