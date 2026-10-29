@@ -3948,7 +3948,7 @@ class StateDB:
         reason_code: str,
         reason_summary: str,
         evidence: dict[str, Any],
-    ) -> Literal["applied", "conflict", "missing", "rejected"]:
+    ) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
         """Cancel only the captured running execution, through lifecycle policy."""
         self._refuse_in_compatibility(
             "cancel_session_if_worker_generation", "worker cleanup requires native storage"

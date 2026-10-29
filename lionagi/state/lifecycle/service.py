@@ -80,7 +80,7 @@ def _runner_identity_matches(captured: Mapping[str, Any], stored: Any, *, dialec
             stored = json.loads(stored)
         except (ValueError, RecursionError):
             return False
-    if not isinstance(stored, dict):
+    if not isinstance(stored := {} if stored is None else stored, dict):  # null: no keys
         return False
     for key in _RUNNER_IDENTITY_FIELDS:
         if (key in captured) != (key in stored):
