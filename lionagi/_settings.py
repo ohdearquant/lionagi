@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from stat import S_ISLNK, S_ISREG
 from typing import Any
@@ -43,12 +44,18 @@ def _layer_entry_present(path: Path) -> bool:
 
 def _read_layer(path: Path) -> Any:
     try:
-        with path.open() as stream:
-            source = stream.read()
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except FileNotFoundError:
         if _layer_entry_present(path):
             raise
         return {}
+    try:
+        if not S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("settings layer is not a regular file")
+        with os.fdopen(fd, closefd=False) as stream:
+            source = stream.read()
+    finally:
+        os.close(fd)
     # An empty or comment-only document has no node. An explicit YAML null is
     # a real (invalid for settings) scalar and must not become chosen silence.
     node = yaml.compose(source, Loader=yaml.SafeLoader)
@@ -71,7 +78,7 @@ def load_project_settings_layer(project_dir: str | Path | None = None) -> Any:
     root = Path(project_dir) if project_dir else Path.cwd()
     for parent in (root, *root.parents):
         candidate = parent / ".lionagi" / "settings.yaml"
-        if _layer_entry_present(candidate) and (candidate.is_file() or candidate.is_symlink()):
+        if _layer_entry_present(candidate):
             if is_account_lionagi_dir(candidate.parent):
                 return {}
             return _read_layer(candidate)

@@ -164,6 +164,26 @@ def test_project_partial_with_no_adapter_does_not_filter_or_disable_global(parti
     assert result.global_config.handler.argv == ("global-command",)
 
 
+@pytest.mark.parametrize("enabled", ["false", 0, "true", 1])
+def test_run_override_rejects_nonboolean_enabled_without_changing_legacy(enabled):
+    override = {"enabled": enabled, "adapter": {"kind": "exec", "argv": ["run"]}}
+    result = classify_notify_provenance({}, {}, override=override)
+    assert result.run_declared
+    assert result.run_config.handler is None
+    assert result.run_config.reason == "enabled_not_boolean"
+    assert resolve_notify_config(override=override).handler.argv == ("run",)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_run_override_accepts_boolean_enabled(enabled):
+    override = {"enabled": enabled, "adapter": {"kind": "exec", "argv": ["run"]}}
+    result = classify_notify_provenance({}, {}, override=override)
+    assert result.run_declared and result.run_config.reason is None
+    assert (result.run_config.handler.argv if result.run_config.handler else None) == (
+        ("run",) if enabled else None
+    )
+
+
 def test_raw_layers_find_nearest_without_merging_and_keep_legacy_merge(tmp_path, monkeypatch):
     home = tmp_path / "home"
     project = tmp_path / "project"

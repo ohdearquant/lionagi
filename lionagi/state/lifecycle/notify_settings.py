@@ -223,9 +223,14 @@ def classify_notify_provenance(
         if project_reason is not None:
             logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
     run_declared = override is not None
-    run_config = (
-        _resolve_shape(override, scope="override", safe=True) if run_declared else _NOT_CONFIGURED
-    )
+    if isinstance(override, dict) and type(override.get("enabled", True)) is not bool:
+        run_config = _rejected("enabled_not_boolean")
+    else:
+        run_config = (
+            _resolve_shape(override, scope="override", safe=True)
+            if run_declared
+            else _NOT_CONFIGURED
+        )
     if run_config.reason is not None:
         logger.warning("notify.on_terminal override configuration rejected: %s", run_config.reason)
     return NotifyProvenance(

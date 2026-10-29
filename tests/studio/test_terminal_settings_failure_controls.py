@@ -3,11 +3,14 @@
 """Offline controls for durable settings, scope diagnostics and exec failures."""
 
 import asyncio
+import errno
 import inspect
 import os
 import socket
+import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,6 +89,61 @@ def test_broken_nearest_project_symlink_refuses_fallback(tmp_path, which):
         (directory / "settings.yaml").symlink_to(child / "missing-settings")
     with pytest.raises(FileNotFoundError):
         _settings.load_project_settings_layer(child)
+
+
+def test_nearest_project_settings_directory_refuses_ancestor_fallback(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    child = root / "child"
+    (root / ".lionagi").mkdir(parents=True)
+    (root / ".lionagi" / "settings.yaml").write_text("notify: {}\n")
+    (child / ".lionagi" / "settings.yaml").mkdir(parents=True)
+    monkeypatch.setattr(_settings, "is_account_lionagi_dir", lambda _path: False)
+    with pytest.raises(OSError):
+        _settings.load_project_settings_layer(child)
+
+
+@pytest.mark.parametrize("mode", [stat.S_IFIFO, stat.S_IFSOCK], ids=["fifo", "socket"])
+def test_project_settings_rejects_opened_nonregular_descriptor_before_read(
+    tmp_path, monkeypatch, mode
+):
+    root = tmp_path / "project"
+    child = root / "child"
+    (root / ".lionagi").mkdir(parents=True)
+    (root / ".lionagi" / "settings.yaml").write_text("notify: {}\n")
+    (child / ".lionagi").mkdir(parents=True)
+    candidate = child / ".lionagi" / "settings.yaml"
+    candidate.write_text("should not be read\n")
+    monkeypatch.setattr(_settings, "is_account_lionagi_dir", lambda _path: False)
+    original_open, original_fstat, original_fdopen = os.open, os.fstat, os.fdopen
+    opened = []
+
+    def fake_open(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        if path == candidate:
+            opened.append((fd, flags))
+        return fd
+
+    def fake_fstat(fd):
+        if opened and fd == opened[-1][0]:
+            return SimpleNamespace(st_mode=mode | 0o600)
+        return original_fstat(fd)
+
+    def reject_read(fd, *args, **kwargs):
+        if opened and fd == opened[-1][0]:
+            raise AssertionError("non-regular descriptor reached reader")
+        return original_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fake_open)
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+    monkeypatch.setattr(os, "fdopen", reject_read)
+    with pytest.raises(OSError, match="not a regular file"):
+        _settings.load_project_settings_layer(child)
+    assert len(opened) == 1
+    fd, flags = opened[0]
+    assert flags & os.O_NONBLOCK
+    with pytest.raises(OSError) as closed:
+        original_fstat(fd)
+    assert closed.value.errno == errno.EBADF
 
 
 @pytest.mark.parametrize(
