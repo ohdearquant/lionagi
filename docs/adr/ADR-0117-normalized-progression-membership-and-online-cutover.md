@@ -12,7 +12,7 @@
 ## Context
 
 Line citations in this record are at source baseline
-`c325f4ef138d72b84eea589a6a590d81cc80ecea`.
+`3d7f9e0b15e3c20f4c18986e1a4c3cb807d47b52`.
 
 ADR-0055 D3 stores an ordered collection of message identifiers as one JSON-array text value.
 This gives a simple full reconstruction and idempotent append, but append work grows with the
@@ -29,7 +29,7 @@ deduplicates a batch with a set and rewrites the collection once
 
 Measurements supplied on 2026-10-26 exercised `_persist_live_message`, `insert_messages` and
 `get_progression` against fresh SQLite stores. The measured persistence code is unchanged
-between revision `1717674a` and that baseline.
+between revision `1717674a` and `c325f4ef`.
 
 | Nominal starting IDs | Live p50 / p95, ms | Bulk b=1 p95, ms/call | Bulk b=10 p95, ms/call | Full-list read p95, ms | Compact JSON bytes, both progressions after live phase |
 |---:|---:|---:|---:|---:|---:|
