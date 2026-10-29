@@ -117,11 +117,8 @@ _NOT_STOPPED_SIGNALS = frozenset(_REFUSED_SIGNAL_REASONS)
 _BOOT_TIME_TOLERANCE = BOOT_TIME_TOLERANCE
 
 
-#: Reasons a row is also unfit to sweep. On Linux a boot-time discrepancy cannot
-#: distinguish a reboot from clock drift, so it is a separate unknown reason.
-_NOT_JUDGEABLE_HERE = frozenset(
-    {"host_mismatch", "in_process", "foreign_mode", "boot_unverifiable"}
-)
+#: Reasons a row cannot be judged on this host, regardless of PID liveness.
+_NOT_JUDGEABLE_HERE = frozenset({"host_mismatch", "in_process", "foreign_mode"})
 
 #: Identity modes this CLI can signal. ``in_process`` is excluded on purpose — the run shares
 #: a host process, so no signal reaches it alone.
@@ -144,10 +141,23 @@ def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
         except (TypeError, ValueError):
             return None
         if abs(recorded_boot - psutil.boot_time()) > _BOOT_TIME_TOLERANCE:
-            if getattr(psutil, "LINUX", False):
+            if getattr(psutil, "LINUX", False) is True:
                 return "boot_unverifiable"
             return "boot_mismatch"
     return None
+
+
+def _pid_addressability(meta: dict[str, Any], pid: int | None) -> tuple[str | None, bool | None]:
+    """Resolve a boot disagreement using one liveness probe when needed.
+
+    The second value is the observed liveness, or None if no probe was needed;
+    callers can reuse it without observing a different process at the same PID.
+    """
+    reason = _unaddressable_pid_reason(meta)
+    if reason != "boot_unverifiable":
+        return reason, None
+    alive = pid is not None and _pid_alive(pid)
+    return ("boot_unverifiable" if alive else "boot_mismatch"), alive
 
 
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
@@ -217,7 +227,9 @@ def _check_pid_identity(
       termination, so folding it into "not_ours" loses a cancellation that
       already happened.
 
-    A recorded create_time is checked before the session marker. On Linux, an
+    A recorded create_time is checked before the session marker, and is readable
+    on a zombie. On non-Linux systems a mismatched birth excludes a recycled PID
+    before it can be mistaken for the original process's corpse. On Linux, an
     epoch disagreement is ambiguous because independent readers can use different
     boot-time anchors; even an inherited matching marker cannot resolve it.
     """
@@ -246,7 +258,7 @@ def _check_pid_identity(
         except psutil.AccessDenied:
             return unknown("permission_denied")
         if not create_time_ok:
-            if getattr(psutil, "LINUX", False):
+            if getattr(psutil, "LINUX", False) is True:
                 return unknown("start_mismatch")
             return "not_ours"
 
@@ -557,12 +569,9 @@ async def _kill_one(
         generation = row.get("cli_worker_generation")
     # Asked before the pid is read, not only when one exists — a pid-less row from another
     # host or runtime would otherwise fall through and get cancelled for work still running.
-    unaddressable = _unaddressable_pid_reason(meta)
-    if unaddressable == "boot_unverifiable":
-        recorded_pid = _read_pid_from_entity(row)
-        if recorded_pid is None or not _pid_alive(recorded_pid):
-            unaddressable = "boot_mismatch"
-    if unaddressable in _NOT_JUDGEABLE_HERE:
+    pid = _read_pid_from_entity(row)
+    unaddressable, _ = _pid_addressability(meta, pid)
+    if unaddressable in _NOT_JUDGEABLE_HERE | {"boot_unverifiable"}:
         warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
         return {
             "entity_type": entity_type,
@@ -571,7 +580,6 @@ async def _kill_one(
             "pid": None,
         }
 
-    pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
     # A degraded run that `li state import` gave a row while it still ran: the row has no pid,
     # the run's own run.json does, and that is the process this kill stops (ADR-0104 Amendment 2).
@@ -739,9 +747,7 @@ def _signal_degraded_process(
     if pid <= 0:
         return None, "no_recorded_process"
 
-    signal_used = _unaddressable_pid_reason(manifest)
-    if signal_used == "boot_unverifiable" and not _pid_alive(pid):
-        signal_used = "boot_mismatch"
+    signal_used, _ = _pid_addressability(manifest, pid)
     if signal_used is None:
         try:
             expected_create_time = float(manifest["pid_create_time"])
@@ -772,18 +778,22 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
     status = manifest.get("status")
     if status != "running":
         return "not_ours", None
-    unaddressable = _unaddressable_pid_reason(manifest)
-    if unaddressable is not None and unaddressable != "boot_unverifiable":
-        return "not_ours", None
     try:
         pid = int(manifest["pid"])
         expected_create_time = float(manifest["pid_create_time"])
     except (KeyError, TypeError, ValueError, OverflowError):
         return "not_ours", None
-    if pid <= 0 or not _pid_alive(pid):
+    if pid <= 0:
+        return "not_ours", None
+    unaddressable, alive = _pid_addressability(manifest, pid)
+    if unaddressable is not None and unaddressable != "boot_unverifiable":
+        return "not_ours", None
+    if alive is None:
+        alive = _pid_alive(pid)
+    if not alive:
         return "not_ours", None
     if unaddressable == "boot_unverifiable":
-        return "unverifiable", "boot_mismatch"
+        return "unverifiable", "boot_disagreement"
     reason: list[str] = []
     verdict = _check_pid_identity(
         pid, "lionagi", expected_create_time=expected_create_time, _reason_out=reason
@@ -946,11 +956,11 @@ async def _try_recorded_worker_cleanup(
     if running:
         meta = session.get("node_metadata")
         meta = meta if isinstance(meta, dict) else {}
-        unjudgeable = _unaddressable_pid_reason(meta)
-        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch"}:
+        unjudgeable, _ = _pid_addressability(meta, _read_pid_from_entity(session))
+        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch", "boot_unverifiable"}:
             # A non-Linux boot mismatch retains its existing meaning. Other
             # reasons leave this host unable to stop the recorded workers.
-            if records and unjudgeable in _NOT_JUDGEABLE_HERE:
+            if records and unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_unverifiable"}:
                 warn(
                     f"  session {sid[:12]}: {len(records)} recorded worker group(s) not "
                     f"handled: the runner {_REFUSED_SIGNAL_REASONS[unjudgeable]}"
@@ -1407,7 +1417,7 @@ async def _do_kill_all_stale(
     skipped_unjudgeable = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
-    unknown_reasons = {"start_mismatch": 0, "boot_mismatch": 0, "permission_denied": 0}
+    unknown_reasons = {"start_mismatch": 0, "boot_disagreement": 0, "permission_denied": 0}
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -1476,25 +1486,21 @@ async def _do_kill_all_stale(
                     else {}
                 )
                 pid = _read_pid_from_entity(row_dict)
-                pid_alive_now: bool | None = None
-                unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
+                unjudgeable, pid_alive_now = _pid_addressability(row_meta_for_host, pid)
+                if unjudgeable == "boot_unverifiable":
+                    await keep_unverifiable(
+                        entity_type, entity_id, row_meta_for_host, "boot_disagreement"
+                    )
+                    continue
                 if unjudgeable in _NOT_JUDGEABLE_HERE:
-                    if unjudgeable == "boot_unverifiable":
-                        pid_alive_now = pid is not None and _pid_alive(pid)
-                        if pid_alive_now:
-                            await keep_unverifiable(
-                                entity_type, entity_id, row_meta_for_host, "boot_mismatch"
-                            )
-                            continue
-                    else:
-                        # Another host or unmanaged runtime cannot be judged here.
-                        skipped_unjudgeable += 1
-                        if verbose:
-                            print(
-                                f"  skip {entity_type} {entity_id[:12]}: "
-                                f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
-                            )
-                        continue
+                    # Another host or unmanaged runtime cannot be judged here.
+                    skipped_unjudgeable += 1
+                    if verbose:
+                        print(
+                            f"  skip {entity_type} {entity_id[:12]}: "
+                            f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
+                        )
+                    continue
 
                 if (
                     entity_type == "session"
@@ -1707,7 +1713,7 @@ async def _do_kill_all_stale(
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
         f"skipped_linux_start_mismatch={unknown_reasons['start_mismatch']}, "
-        f"skipped_linux_boot_mismatch={unknown_reasons['boot_mismatch']}, "
+        f"skipped_linux_boot_disagreement={unknown_reasons['boot_disagreement']}, "
         f"skipped_permission_denied={unknown_reasons['permission_denied']}, "
         f"skipped_unjudgeable={skipped_unjudgeable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"

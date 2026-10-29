@@ -7,6 +7,7 @@ import signal
 import time
 import uuid
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import psutil
 import pytest
@@ -40,7 +41,7 @@ class _Process:
         return ["python", "-m", "lionagi.cli"]
 
 
-@pytest.mark.parametrize(("drift", "reason"), [(1.0, "start"), (6.0, "boot")])
+@pytest.mark.parametrize(("drift", "reason"), [(1.0, "start_mismatch"), (6.0, "boot_disagreement")])
 @pytest.mark.asyncio
 async def test_stale_sweep_does_not_cancel_live_linux_process_after_boot_clock_drift(
     tmp_path, monkeypatch, capsys, drift, reason
@@ -116,7 +117,7 @@ async def test_stale_sweep_does_not_cancel_live_linux_process_after_boot_clock_d
             )
             assert not any(t["status"] == "cancelled" for t in transitions)
         out = capsys.readouterr().out
-        assert f"skipped_linux_{reason}_mismatch=1" in out
+        assert f"skipped_linux_{reason}=1" in out
         assert "skipped_permission_denied=0" in out
         assert "cancelled stale session" not in out
 
@@ -196,6 +197,11 @@ async def test_imported_ambiguous_process_is_retained(tmp_path, monkeypatch, cap
             }
         )
     assert kill_mod._imported_degraded_process_is_live(sid)
+    verdict, reason = kill_mod._imported_degraded_process_identity(sid)
+    assert (verdict, reason) == (
+        "unverifiable",
+        "start_mismatch" if kind == "start" else "boot_disagreement",
+    )
     assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
     async with StateDB(path) as db:
         assert (await db.get_session(sid))["status"] == "running"
@@ -205,8 +211,8 @@ async def test_imported_ambiguous_process_is_retained(tmp_path, monkeypatch, cap
         assert not any(t["status"] == "cancelled" for t in transitions)
     out = capsys.readouterr().out
     assert "skipped_unverifiable_pid=1" in out
-    if kind in ("start", "boot"):
-        assert f"skipped_linux_{kind}_mismatch=1" in out
+    reason = "start_mismatch" if kind == "start" else "boot_disagreement"
+    assert f"skipped_linux_{reason}=1" in out
 
 
 def test_permission_denial_has_its_own_observation(monkeypatch):
@@ -264,7 +270,7 @@ async def test_sweep_reports_start_mismatch_and_permission_denial_separately(
     assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
     out = capsys.readouterr().out
     assert "skipped_linux_start_mismatch=1" in out
-    assert "skipped_linux_boot_mismatch=0" in out
+    assert "skipped_linux_boot_disagreement=0" in out
     assert "skipped_permission_denied=1" in out
     assert sorted(probes) == [4242, 4243]
 
@@ -494,3 +500,122 @@ async def test_boot_disagreement_without_live_pid_keeps_legacy_sweep(tmp_path, m
     assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
     async with StateDB(path) as db:
         assert (await db.get_session(sid))["status"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("alive", "expected_status"),
+    [(False, "aborted"), (True, "running")],
+    ids=["dead-pid", "live-pid"],
+)
+@pytest.mark.asyncio
+async def test_doctor_boot_disagreement_checks_pid_liveness(
+    tmp_path, monkeypatch, alive, expected_status
+):
+    from lionagi.cli import _util, state
+
+    path = tmp_path / "state.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
+    )
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
+    monkeypatch.setattr(_util, "pid_alive", lambda pid: alive and pid == 4242)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: object())
+    monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 1006.0)
+    sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
+    async with StateDB(path) as db:
+        await db.create_progression(progression)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": progression,
+                "status": "running",
+                "started_at": time.time() - 7200,
+                "node_metadata": {
+                    "pid": 4242,
+                    "pid_create_time": 1005.0,
+                    "pid_boot_time": 900.0,
+                },
+            }
+        )
+    result = await state._doctor(stale_hours=1, dry_run=False)
+    assert result["swept"] == (0 if alive else 1)
+    async with StateDB(path) as db:
+        assert (await db.get_session(sid))["status"] == expected_status
+
+
+@pytest.mark.asyncio
+async def test_direct_kill_dead_pid_keeps_non_linux_boot_refusal_path(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
+    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        kill_mod, "_terminate_pid", lambda *a, **kw: pytest.fail("unexpected signal")
+    )
+    sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
+    async with StateDB(path) as db:
+        await db.create_progression(progression)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": progression,
+                "status": "running",
+                "node_metadata": {"pid": 4242, "pid_boot_time": 900.0},
+            }
+        )
+        result = await kill_mod._kill_one(
+            db, "session", sid, await db.get_session(sid), user_reason=""
+        )
+        assert result["signal"] == "boot_mismatch"
+        assert (await db.get_session(sid))["status"] == "running"
+
+
+@pytest.mark.parametrize("alive", [False, True], ids=["dead-pid", "live-pid"])
+@pytest.mark.asyncio
+async def test_recorded_worker_cleanup_distinguishes_dead_and_live_boot_disagreement(
+    monkeypatch, alive
+):
+    from tests.cli.test_kill_recorded_workers import _CleanupDB
+
+    db = _CleanupDB(status="running")
+    db.session["node_metadata"]["pid_boot_time"] = 900.0
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
+    probes = []
+
+    def pid_alive(pid):
+        probes.append(pid)
+        return alive
+
+    monkeypatch.setattr(kill_mod, "_pid_alive", pid_alive)
+    monkeypatch.setattr(
+        kill_mod,
+        "_runner_process_create_time",
+        lambda _pid: pytest.fail("unexpected runner identity probe"),
+    )
+    warnings = []
+    monkeypatch.setattr(kill_mod, "warn", warnings.append)
+    monkeypatch.setattr(kill_mod.os, "kill", lambda *args: pytest.fail("unexpected signal"))
+    monkeypatch.setattr(kill_mod.os, "killpg", lambda *args: pytest.fail("unexpected group signal"))
+    result = await kill_mod._try_recorded_worker_cleanup(
+        db, db.session, user_reason="", grace_seconds=0
+    )
+    assert result is None
+    assert db.cancelled == [] and db.settled == []
+    assert probes == [76543]
+    unhandled = [message for message in warnings if "not handled" in message]
+    assert bool(unhandled) is alive
+
+
+def test_unset_magicmock_linux_flag_keeps_non_linux_semantics(monkeypatch):
+    fake_psutil = MagicMock()
+    fake_psutil.boot_time.return_value = 1000.0
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    monkeypatch.setattr(kill_mod, "psutil", fake_psutil)
+    monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 102.0)
+    assert kill_mod._unaddressable_pid_reason({"pid_boot_time": 900.0}) == "boot_mismatch"
+    assert kill_mod._check_pid_identity(4242, "lionagi", expected_create_time=100.0) == "not_ours"
