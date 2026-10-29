@@ -803,3 +803,33 @@ typed capability/degradation report is the portable contract.
 
 Rejected because honest capability reporting permits useful execution now without overstating its
 guarantees, and provides the seam for stronger backends later.
+
+## Proposed amendment — D5 MCP grant declaration and authority
+
+This amendment specifies how an MCP grant declaration is resolved under D5. It remains Proposed
+with this ADR; it does not assert that the grant or its provider enforcement is implemented.
+
+The following table describes each declaration before composition with a parent policy. An
+explicit deny-all never falls back to ambient server discovery.
+
+| Declaration | Meaning |
+|---|---|
+| No `mcp` key | `Unset`; preserve existing behavior when no applicable policy supplies a grant. Ambient behavior is requested by omitting the block. |
+| `mcp: {}` | Explicit deny-all. |
+| `mcp: {enabled: false}` | Explicit deny-all. |
+| `mcp: {servers: []}` | Explicit deny-all. |
+| `mcp: {servers: [name, ...]}` | Request the named servers, subject to the parent policy and name validation. |
+| `mcp: null` or `mcp: {servers: null}` | Malformed; refuse. |
+| `mcp: {enabled: true}` without `servers` | Refuse; omission of the whole block is the ambient form. |
+
+A profile supplies a default, not the parent authority. The captured run or engine policy is the
+parent. A call may select a narrower or wider grant than the profile default, but cannot exceed
+the captured parent. If there is no captured parent, as in a bare SDK `create_agent` call with no
+run or engine, the call is the authority and the resolved snapshot records `source=call`. D5's
+explicit-deny precedence and parent-policy constraints continue to apply.
+
+Deny-all covers every model-visible MCP tool regardless of ingress, including servers discovered
+by a provider. Explicitly opting in to khive injection on a deny-all specification is a
+contradiction and must be refused. A requested server name that is unknown or absent must be
+refused, whether it is marked optional or required. A required control that an adapter cannot
+enforce remains subject to D8's refusal before spawn.
