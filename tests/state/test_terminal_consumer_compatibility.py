@@ -40,6 +40,9 @@ def _manager_state(path):
 async def _foreign_store(path, *, has_column):
     await _managed_store(path)
     with closing(sqlite3.connect(path)) as conn:
+        # The foreign manager has not installed the native consumer indexes.
+        conn.execute("DROP INDEX idx_status_transitions_unclassified")
+        conn.execute("DROP INDEX idx_status_transitions_eligible_order")
         if not has_column:
             conn.execute("ALTER TABLE status_transitions DROP COLUMN delivery_eligible")
         # The manager never installed this consumer feature. A new foreign shape
