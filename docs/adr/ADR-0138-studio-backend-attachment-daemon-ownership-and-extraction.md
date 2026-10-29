@@ -127,7 +127,7 @@ The following table allocates all 29 registered modules. Each source is under `l
 | `lionagi/studio/services/hooks_library.py:190` | Backend | Application hook-library editing. |
 | `lionagi/studio/services/operator_hooks.py:126` | Backend | Operator configuration. |
 | `lionagi/studio/services/approvals.py:546` | Backend | Application approval presentation and decisions. Lower-layer execution guards remain where their callers require them. |
-| `lionagi/studio/services/admin.py:1475`, :1456, :1550 | Daemon | Operational diagnosis, readiness, transitions, and maintenance. Preserve current admission policy. |
+| `lionagi/studio/services/admin.py:1475`, :1488, :1582 | Daemon | Operational diagnosis, readiness, transitions, and maintenance. Preserve current admission policy. |
 | `lionagi/studio/services/schedules.py:1584`, :1724 | Daemon | Schedule CRUD, triggering, status, limits, and history. |
 | `lionagi/studio/services/stats.py:111` | Backend | Application activity and spending summaries. |
 | `lionagi/studio/services/attention.py:377` | Backend | Application attention dispositions and history. |
