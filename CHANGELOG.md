@@ -14,7 +14,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   now notify terminal consumers. Per-run notification overrides and the
   no-session fallback remain push-only. Replay loads global settings only;
   notifiers configured in project settings are push-only, so a missed push
-  for one is not replayed.
+  for one is replayed through the global notifier when one is configured,
+  never through the project's.
 
 - State schema version 6 records terminal-delivery eligibility and consumer
   registrations. After upgrading, restart every process that opens the store,
@@ -22,6 +23,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   already-open processes can write unclassified rows that are excluded from
   replay. Historical terminal rows with a NULL predecessor also remain
   unclassified when initialization and reaper transitions cannot be separated.
+  The first open after the upgrade classifies every existing transition in one
+  transaction; on PostgreSQL it holds a SHARE ROW EXCLUSIVE lock on
+  `status_transitions` until it commits, so writers wait for a time that grows
+  with the table's size.
 
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in

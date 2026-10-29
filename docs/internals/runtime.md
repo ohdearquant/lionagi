@@ -458,11 +458,13 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   non-NULL projects of linked sessions must contain exactly one project; zero
   or several means no session context. Without context, the settings consumer
   acknowledges the event as not applicable and counts no-session and ambiguous
-  project cases separately. With a project whose `projects.path` is an existing
-  directory, settings use that project; otherwise they use global settings only,
-  never the daemon's working directory. A missing or moved project path can make
-  replay use a different notifier from the original process. Kind and ID filters
-  apply after resolution. Per-run `--notify` overrides and the no-session
+  project cases separately. The project decides only that classification: replay
+  always loads global settings (`load_settings(include_project=False)`), never a
+  project's settings file and never the daemon's working directory, so a
+  repository cannot name a command the daemon runs. A notifier configured only in
+  project settings is push-only: a missed push for it is replayed through the
+  global notifier when one is configured, and is otherwise acknowledged as not
+  applicable. Kind and ID filters apply after resolution. Per-run `--notify` overrides and the no-session
   fallback remain push-only; persisting notification intent for later replay is
   a follow-up. Compatibility-mode stores are not migrated, and
   their consumer APIs refuse with a typed error. On a foreign store without the
