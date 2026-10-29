@@ -80,8 +80,8 @@
   ],
   "available_path_count": 77,
   "catalog": {
-    "verb_count": 70,
-    "available_count": 44,
+    "verb_count": 71,
+    "available_count": 45,
     "max_ops": 8,
     "verb_names": [
       "agent.submit",
@@ -146,6 +146,7 @@
       "state.null-content",
       "state.prune",
       "state.stats",
+      "state.terminal-consumer.list",
       "state.vacuum",
       "stats.runs",
       "studio.start",
@@ -194,6 +195,7 @@
       "server.info",
       "state.ls",
       "state.stats",
+      "state.terminal-consumer.list",
       "stats.runs",
       "team.create",
       "team.list",
@@ -253,7 +255,7 @@
           "summary",
           "verb"
         ],
-        16
+        17
       ]
     ]
   },
@@ -2518,7 +2520,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Delete sessions older than `keep_days` (default 30), keeping the most recent `keep_n` (default 100). Foreign key cascades drop branches; messages are dropped if no other session references them via progression. Use `dry_run` to preview.\n\nSESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a surviving progression still names is kept whatever its age, so a run can delete thousands of sessions and free no message rows. Read the message counts, not the session count, to judge whether this reclaimed space; `li state stats` shows both distributions.\n\n`dry_run` is not a read. It runs the real deletes and rolls the transaction back, which is what makes its counts exact rather than estimated, and which means it takes the same write lock for the same duration as the real thing."
+        "description": "Delete sessions older than `keep_days` (default 30), keeping the most recent `keep_n` (default 100). Foreign key cascades drop branches; messages are dropped if no other session references them via progression. Sessions referenced by retained records are skipped and reported by table. Use `dry_run` to preview.\n\nSESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a surviving progression still names is kept whatever its age, so a run can delete thousands of sessions and free no message rows. Read the message counts, not the session count, to judge whether this reclaimed space; `li state stats` shows both distributions.\n\n`dry_run` is not a read. It runs the real deletes and rolls the transaction back, which is what makes its counts exact rather than estimated, and which means it takes the same write lock for the same duration as the real thing."
       }
     },
     "state stats": {

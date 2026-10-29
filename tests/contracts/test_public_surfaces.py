@@ -352,7 +352,7 @@ def test_mcp_catalog_matches_baseline():
 def test_mcp_catalog_entry_shapes_are_locked_by_hand():
     """Second, independent lock on the shape of a catalog entry.
 
-    Every caller reads this listing, so a field added to or dropped from all 70
+    Every caller reads this listing, so a field added to or dropped from all 71
     entries changes what the whole surface says while leaving verb names and
     counts identical. Hand-typed rather than derived from the JSON, so the
     baseline and this test have to be wrong the same way to pass together.
@@ -369,7 +369,7 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
         # a runnable verb with required parameters names them and nothing else
         ("required", "summary", "verb"): 24,
         # a runnable verb with no required parameters carries neither key
-        ("summary", "verb"): 16,
+        ("summary", "verb"): 17,
         # spawn verbs additionally publish what their fingerprint covers
         ("required_unenforced", "schema_fingerprint", "summary", "verb"): 2,
         ("required", "required_unenforced", "schema_fingerprint_varies_with", "summary", "verb"): 1,
@@ -381,7 +381,7 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
             "verb",
         ): 1,
     }
-    assert sum(shapes.values()) == 70
+    assert sum(shapes.values()) == 71
     # No shape pairs cli_path with an inline reason. A verb whose schema failed
     # to build is the one entry that does carry a reason inline, and it has no
     # cli_path — that path reports a defect in this server and must stay
@@ -410,6 +410,7 @@ def test_mcp_terminal_consumer_exposes_only_list():
     paths = {path for path in live["available_paths"] if path.startswith("state terminal-consumer")}
     assert paths == {"state terminal-consumer", "state terminal-consumer list"}
     assert "state terminal-consumer list" in live["projections"]
+    assert "state.terminal-consumer.list" in live["catalog"]["available_verb_names"]
     assert live["projection_errors"]["state terminal-consumer"]["class"] == "unresolved_subcommand"
 
 

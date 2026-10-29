@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import subprocess
@@ -182,3 +183,37 @@ def test_non_sqlite_refusal_is_visible_in_human_and_machine_modes(monkeypatch, c
         state_cli.machine_result(["terminal-consumer", "list"])
     assert caught.value.kind == "unavailable"
     assert "postgresql" in str(caught.value) and "SQLite-only" in str(caught.value)
+
+
+def test_main_emits_one_machine_envelope_for_consumer_list(monkeypatch, capfd):
+    from lionagi.cli.machine import CONTRACT_VERSION
+    from lionagi.cli.main import main
+
+    row = {"name": "fake", "registered_at": 1.0, "retired_at": None, "owed": 2, "candidate": 2}
+    data = {"consumers": {"available": True, "value": [row], "reason_code": None, "detail": None}}
+
+    async def fake_data():
+        return data
+
+    monkeypatch.setattr(state_cli, "_terminal_consumer_list_data", fake_data)
+    assert main(["state", "terminal-consumer", "list", "--machine"]) == 0
+    captured = capfd.readouterr()
+    assert len(captured.out.splitlines()) == 1
+    assert json.loads(captured.out) == {
+        "ok": True,
+        "contract_version": CONTRACT_VERSION,
+        "data": data,
+        "error": None,
+    }
+
+
+def test_consumer_list_mcp_verb_uses_nested_machine_path_without_arguments():
+    from lionhub.serve.mcp import dispatch
+    from lionhub.serve.mcp.verbs import VERBS
+
+    verb = VERBS["state.terminal-consumer.list"]
+    assert verb.executor == "machine"
+    assert verb.cli_path == "state terminal-consumer list" and verb.admits == ()
+    schema = dispatch.verb_schema(verb)
+    assert schema["properties"] == {} and schema["additionalProperties"] is False
+    assert dispatch.render_argv(schema, {}) == []
