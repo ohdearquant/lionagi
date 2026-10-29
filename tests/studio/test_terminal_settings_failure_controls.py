@@ -286,3 +286,53 @@ async def test_non_mapping_global_notify_remains_owed(monkeypatch, caplog, inval
     assert "notify_not_mapping" in caplog.text
     assert "PRIVATE_VALUE" not in caplog.text
     assert "PRIVATE_VALUE" not in repr(recorder.records)
+
+
+@pytest.mark.parametrize("ancestor_layer", [False, True], ids=["absent", "ancestor"])
+def test_regular_file_project_dot_lionagi_is_skipped(tmp_path, monkeypatch, ancestor_layer):
+    root = tmp_path / "project"
+    child = root / "child"
+    child.mkdir(parents=True)
+    (child / ".lionagi").write_text("not a directory")
+    if ancestor_layer:
+        (root / ".lionagi").mkdir()
+        (root / ".lionagi" / "settings.yaml").write_text("notify: {on_terminal: null}\n")
+    monkeypatch.setattr(_settings, "is_account_lionagi_dir", lambda _path: False)
+    result = _settings.load_project_settings_layer(child)
+    assert result == ({"notify": {"on_terminal": None}} if ancestor_layer else {})
+
+
+def test_project_dot_lionagi_symlink_to_file_fails_without_ancestor_fallback(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    child = root / "child"
+    child.mkdir(parents=True)
+    (root / ".lionagi").mkdir()
+    (root / ".lionagi" / "settings.yaml").write_text("notify: {}\n")
+    target = child / "regular-file"
+    target.write_text("not a directory")
+    (child / ".lionagi").symlink_to(target)
+    monkeypatch.setattr(_settings, "is_account_lionagi_dir", lambda _path: False)
+    with pytest.raises(NotADirectoryError):
+        _settings.load_project_settings_layer(child)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["file", "symlink-to-file"])
+async def test_global_dot_lionagi_file_or_file_symlink_keeps_delivery_owed(
+    tmp_path, monkeypatch, entry
+):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_dir = tmp_path / ".lionagi"
+    if entry == "file":
+        settings_dir.write_text("not a directory")
+    else:
+        target = tmp_path / "regular-file"
+        target.write_text("not a directory")
+        settings_dir.symlink_to(target)
+    recorder = Recorder()
+    prepared = await prepare_global_settings_delivery(row(), None, recorder=recorder)
+    assert prepared.call() is DeliveryOutcome.FAILURE
+    assert len(recorder.records) == 1
+    assert recorder.records[0][0] == "global"
+    assert recorder.records[0][1]["ok"] is False
+    assert recorder.records[0][1]["reason"] == "settings_load_failed"

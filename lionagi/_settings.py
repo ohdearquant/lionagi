@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from stat import S_ISLNK
+from stat import S_ISLNK, S_ISREG
 from typing import Any
 
 import yaml
@@ -21,6 +21,13 @@ def _layer_entry_present(path: Path) -> bool:
     """Treat a broken settings symlink as an error, not absent configuration."""
     try:
         path.lstat()
+    except NotADirectoryError:
+        # An ordinary file at this project's .lionagi entry cannot contain a
+        # settings layer. A symlink to a file is an explicit broken directory
+        # reference and remains a read failure instead of selecting an ancestor.
+        if S_ISREG(path.parent.lstat().st_mode):
+            return False
+        raise
     except FileNotFoundError:
         # A broken symlink at the settings directory also makes its child
         # appear absent. Check that entry without resolving any higher ancestor.
