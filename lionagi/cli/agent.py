@@ -80,7 +80,6 @@ from ._providers import (
     build_deadline_preamble,
     load_agent_profile,
     normalize_effort,
-    parse_model_spec,
     resolve_persisted_effort,
 )
 from ._runs import (
@@ -1497,6 +1496,8 @@ async def _run_agent(
             else dict(_injection_totals)
         )
         effort = normalize_effort(effort)
+        effort_origin = "explicit" if effort is not None else "default"
+        model_origin = "explicit" if model_str is not None else "default"
         # Fail fast before any run is allocated: a nonexistent --cwd must not spawn
         # into a provider-created dir. Forward the tilde-expanded path — providers
         # never expand `~`.
@@ -1560,8 +1561,10 @@ async def _run_agent(
             profile = load_agent_profile(agent_name)
             if profile.model and model_str is None:
                 model_str = profile.model
+                model_origin = "profile"
             if profile.effort and effort is None:
                 effort = normalize_effort(profile.effort)
+                effort_origin = "profile"
             if profile.yolo and not yolo:
                 yolo = True
             if profile.bypass and not bypass:
@@ -1690,7 +1693,9 @@ async def _run_agent(
                 )
 
         if model_str is not None:
-            ms = parse_model_spec(model_str)
+            from lionagi.agent.factory import _parse_agent_model_spec
+
+            ms = _parse_agent_model_spec(model_str, origin=model_origin)
             if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
                 # A bare token that isn't a known backend name is almost always a
                 # mangled command (e.g. a --resume id split across two argv tokens).
@@ -1708,6 +1713,7 @@ async def _run_agent(
                 provider, model = ms.model, ms.model
             if ms.effort and not effort:
                 effort = ms.effort
+                effort_origin = "profile" if model_origin == "profile" else "explicit"
         elif branch is not None:
             ep_cfg = branch.chat_model.endpoint.config
             provider = ep_cfg.provider
@@ -1756,6 +1762,7 @@ async def _run_agent(
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
             )
+            requested_effort = effort
             effort = resolve_persisted_effort(provider, chat_model, effort)
             if not isinstance(chat_model, str) and not chat_model.is_cli:
                 # build_chat_model's options are CLI options, and the model it builds
@@ -1770,7 +1777,25 @@ async def _run_agent(
             if not chat_model.is_cli and effort is not None:
                 from lionagi.agent.factory import _set_api_effort
 
-                _set_api_effort(chat_model.endpoint.config.kwargs, canonical, model, effort)
+                if not _set_api_effort(
+                    chat_model.endpoint.config.kwargs,
+                    canonical,
+                    model,
+                    effort,
+                    origin=effort_origin,
+                ):
+                    effort = None
+            elif not chat_model.is_cli and requested_effort is not None:
+                from lionagi.agent.factory import _set_api_effort
+
+                if _set_api_effort(
+                    chat_model.endpoint.config.kwargs,
+                    canonical,
+                    model,
+                    requested_effort,
+                    origin=effort_origin,
+                ):
+                    effort = requested_effort
             # An API model runs lionagi's own tool loop, only for a profile that declares it.
             api_launch = None if chat_model.is_cli else _profile_api_launch(profile)
             if api_launch is not None and preset == "coding":
@@ -1944,13 +1969,35 @@ async def _run_agent(
                     else cfg.get("reasoning_effort")
                 )
                 if effort is not None or stored_effort is not None:
-                    _set_api_effort(
-                        candidate, actual_provider, candidate_model, effort or stored_effort
+                    selected_effort = effort or stored_effort
+                    selected_origin = (
+                        effort_origin
+                        if effort is not None
+                        else "stored"
+                        if actual_provider == "openai"
+                        else "explicit"
                     )
+                    if effort is None and model_str is not None and model != cfg.get("model"):
+                        if actual_provider == "anthropic":
+                            selected_effort = _clamp_claude_effort(stored_effort, model)
+                    applied = _set_api_effort(
+                        candidate,
+                        actual_provider,
+                        candidate_model,
+                        selected_effort,
+                        origin=selected_origin,
+                    )
+                    if not applied:
+                        effort = None
+                        if actual_provider == "openai":
+                            candidate.pop("reasoning_effort", None)
                 if model_str is not None:
                     candidate["model"] = model
+            old_model = cfg.get("model")
+            if candidate is not None:
+                cfg.clear()
+                cfg.update(candidate)
             if model_str is not None:
-                old_model = cfg.get("model")
                 if model != old_model:
                     from lionagi.cli._logging import warn
 
@@ -1966,8 +2013,6 @@ async def _run_agent(
                     kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                     if kwarg and cfg.get(kwarg) is not None:
                         cfg[kwarg] = reclamp_effort_for_model(canonical, cfg[kwarg], model)
-            if candidate is not None:
-                cfg.update(candidate)
             # The display flags are CLI endpoint options; an API model sends its
             # config's kwargs with each request, so a branch on the tool loop is
             # handed neither.

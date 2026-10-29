@@ -1436,3 +1436,121 @@ async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, 
     assert (result, status) == ("done", "completed")
     assert payloads
     assert all(p["reasoning_effort"] == "high" and "tools" not in p for p in payloads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,provider_class",
+    [
+        ("openai/gpt-4.1", "openai"),
+        ("groq/example-model", "groq"),
+    ],
+)
+async def test_unsupported_profile_effort_does_not_break_api_leg(
+    leg, monkeypatch, model, provider_class
+):
+    from lionagi.providers.groq.chat import GroqChatEndpoint
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-key")
+    profile = _profile(api_tools="read")
+    profile.effort = "high"
+    replies = [
+        {
+            "analysis": "done",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "done"},
+        },
+        {"answer": "done"},
+    ]
+    payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payloads.append(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": model.split("/", 1)[1],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": json.dumps(replies.pop(0))},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    cls = OpenaiChatEndpoint if provider_class == "openai" else GroqChatEndpoint
+    monkeypatch.setattr(cls, "call", call)
+    result, _, _, status, _ = await leg.run(profile, model=model)
+    assert (result, status) == ("done", "completed")
+    assert payloads and all("reasoning_effort" not in p for p in payloads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["openai/gpt-4.1", "groq/example-model", "gemini/example-model"])
+async def test_explicit_cli_effort_on_unsupported_api_is_refused(leg, monkeypatch, model):
+    for key in ("OPENAI_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.setenv(key, "synthetic-key")
+    with pytest.raises(ConfigurationError, match="model.*high"):
+        await leg.run(_profile(api_tools="read"), model=model, effort="high")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile_model,profile_effort,positional,expected",
+    [
+        ("openai/gpt-4.1-high", None, None, None),
+        ("openai/gpt-6-luna-xhigh", None, None, "xhigh"),
+        (None, "high", "openai/gpt-6-luna-xhigh", "high"),
+    ],
+)
+async def test_api_model_suffix_origin_and_profile_precedence(
+    leg, monkeypatch, profile_model, profile_effort, positional, expected
+):
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    profile = _profile(api_tools="read")
+    profile.model = profile_model
+    profile.effort = profile_effort
+    replies = [
+        {
+            "analysis": "done",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "done"},
+        },
+        {"answer": "done"},
+    ]
+    payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payloads.append(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": request["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": json.dumps(replies.pop(0))},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "call", call)
+    result, _, _, status, _ = await leg.run(profile, model=positional)
+    assert (result, status) == ("done", "completed")
+    assert payloads and all(p.get("reasoning_effort") == expected for p in payloads)
+    if expected is None:
+        assert all("reasoning_effort" not in p for p in payloads)

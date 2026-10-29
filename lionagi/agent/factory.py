@@ -59,30 +59,72 @@ class _AgentSettingError(ConfigurationError):
     __slots__ = ()
 
 
-def _api_effort_kwargs(provider: str, model: str, effort: str) -> dict:
+def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = "explicit") -> dict:
     """Map an explicitly requested effort to the provider's request fields.
 
-    Model-specific values are validated by the provider. OpenAI Chat native tool
-    calling is restricted by model and effort; for example, GPT-6 Luna accepts
+    Known non-reasoning OpenAI models and providers without an effort field are
+    refused for explicit effort; unlisted model IDs and values are validated by
+    the provider. OpenAI Chat native tool calling is restricted by model and
+    effort; for example, GPT-6 Luna accepts
     it only at none, while GPT-6.1 Terra requires Responses for native tools.
     Lionagi's agent tool loop renders tool descriptions in messages instead.
     Some newer reasoning models also refuse temperature, top_p, or logprobs
     with non-none effort; the provider's error is surfaced to the caller.
     """
+    if origin == "default":
+        return {}
     if provider == "anthropic":
         return {"output_config": {"effort": effort}}
     if provider == "openai":
-        return {"reasoning_effort": effort}
+        from lionagi.providers.openai._chat_schemas import CHAT_MODELS, REASONING_MODELS
+
+        if model not in CHAT_MODELS or model in REASONING_MODELS or model.startswith("gpt-6"):
+            return {"reasoning_effort": effort}
+    if origin in ("profile", "stored"):
+        if origin == "profile":
+            logger.debug(
+                "Ignoring profile effort %r for provider %r model %r", effort, provider, model
+            )
+        return {}
     raise _AgentSettingError(
         f"provider {provider!r}, model {model!r} cannot carry effort {effort!r}"
     )
 
 
-def _set_api_effort(config: dict, provider: str, model: str, effort: str) -> None:
-    update = _api_effort_kwargs(provider, model, effort)
+def _set_api_effort(
+    config: dict, provider: str, model: str, effort: str, *, origin: str = "explicit"
+) -> bool:
+    update = _api_effort_kwargs(provider, model, effort, origin=origin)
     if "output_config" in update and isinstance(config.get("output_config"), dict):
         update["output_config"] = {**config["output_config"], **update["output_config"]}
     config.update(update)
+    return bool(update)
+
+
+def _parse_agent_model_spec(value: str, *, origin: str = "explicit"):
+    """Translate an unsupported API effort suffix into the agent setting error."""
+    from lionagi.service.providers import (
+        PROVIDERS_NO_EFFORT,
+        ModelSpec,
+        normalize_effort,
+        parse_model_spec,
+        split_effort_suffix,
+    )
+
+    try:
+        return parse_model_spec(value)
+    except ValueError:
+        if "/" in value:
+            provider, model = value.split("/", 1)
+            split = split_effort_suffix(model)
+            canonical = _canonical_provider(provider)
+            if split and canonical in PROVIDERS_NO_EFFORT:
+                if origin == "profile":
+                    return ModelSpec(
+                        model=f"{provider}/{split[0]}", effort=normalize_effort(split[1])
+                    )
+                _api_effort_kwargs(canonical, split[0], normalize_effort(split[1]))
+        raise
 
 
 async def create_agent(
@@ -269,10 +311,11 @@ async def create_agent(
             PROVIDER_EFFORT_KWARG,
             PROVIDER_REPO_KWARG,
             PROVIDER_YOLO_KWARGS,
-            parse_model_spec,
         )
 
-        ms = parse_model_spec(spec.model)
+        spec_origin = getattr(spec, "_effort_origin", "explicit")
+        model_origin = getattr(spec, "_model_origin", "explicit")
+        ms = _parse_agent_model_spec(spec.model, origin=model_origin)
         if "/" in ms.model:
             provider, model_name = ms.model.split("/", 1)
         else:
@@ -285,7 +328,15 @@ async def create_agent(
         provider_key = _canonical_provider(provider)
 
         extra = {}
-        effort = spec.effort or ms.effort
+        default_effort = spec_origin == "default"
+        if provider_key not in CLI_PROVIDERS and default_effort:
+            effort = ms.effort
+            if effort:
+                spec_origin = model_origin
+        else:
+            effort = spec.effort or ms.effort
+            if not spec.effort and ms.effort:
+                spec_origin = model_origin
         derived = False
         if not effort and provider_key == "codex":
             # Unset is not "no opinion": codex would read the global config's
@@ -302,7 +353,9 @@ async def create_agent(
                 if derived:
                     derived_effort_kwarg = kwarg
             elif provider_key not in CLI_PROVIDERS:
-                extra.update(_api_effort_kwargs(provider_key, model_name, effort))
+                extra.update(
+                    _api_effort_kwargs(provider_key, model_name, effort, origin=spec_origin)
+                )
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider_key, {}))
         if spec.max_tokens is not None:
