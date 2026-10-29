@@ -420,8 +420,9 @@ async def test_a_run_that_kept_its_session_is_not_reached_by_its_run_id(runs_roo
 
 
 @pytest.mark.asyncio
-async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog):
+async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog, monkeypatch):
     """The run's process is gone and another lionagi-looking process holds its pid."""
+    monkeypatch.setattr(psutil, "LINUX", False)
     path = _write_run(
         runs_root, _degraded(leg.pid, pid_create_time=raw_create_time(psutil.Process(leg.pid)) - 60)
     )
@@ -431,6 +432,51 @@ async def test_a_recycled_pid_is_not_signalled(runs_root, leg, caplog):
 
     assert "did not match the expected lionagi process" in caplog.text
     assert leg.poll() is None
+    assert json.loads(path.read_text())["status"] == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("linux", "expected_message"),
+    [
+        (False, "did not match the expected lionagi process"),
+        (True, "could not be identified reliably"),
+    ],
+)
+async def test_create_time_mismatch_refuses_degraded_kill_on_each_platform(
+    runs_root, monkeypatch, caplog, linux, expected_message
+):
+    from lionagi.cli import kill as kill_mod
+
+    monkeypatch.setattr(psutil, "LINUX", linux)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: object())
+    monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 100.0)
+    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(kill_mod, "_pid_is_zombie", lambda _pid: False)
+    signals = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    path = _write_run(
+        runs_root,
+        {
+            "status": "running",
+            PERSISTENCE_DEGRADED_REASON_FIELD: "OperationalError('database is locked')",
+            "pid": 4242,
+            "pid_create_time": 1.0,
+            "process_identity_mode": "local",
+        },
+    )
+
+    reasons = []
+    verdict = kill_mod._check_pid_identity(
+        4242, "lionagi", expected_create_time=1.0, _reason_out=reasons
+    )
+    assert verdict == ("unverifiable" if linux else "not_ours")
+    assert reasons == (["start_mismatch"] if linux else [])
+    with caplog.at_level(logging.WARNING):
+        assert await _do_kill(RUN_ID, grace_seconds=0) == 1
+
+    assert expected_message in caplog.text
+    assert signals == []
     assert json.loads(path.read_text())["status"] == "running"
 
 

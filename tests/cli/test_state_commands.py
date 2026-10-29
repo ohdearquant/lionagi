@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+import psutil
 import pytest
 
 from lionagi.cli.state import (
@@ -740,10 +741,13 @@ async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_p
     assert row["status"] == "running"
 
 
-async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path):
+async def test_doctor_sweeps_a_session_whose_pid_was_recycled(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """A live PID is not proof on its own. The OS hands a dead session's number
     to an unrelated process eventually, and a sweep that stopped there would
     protect a genuinely stuck row for as long as that process lived."""
+    monkeypatch.setattr(psutil, "LINUX", False)
     old = time.time() - (48 * 3600)
     async with StateDB() as db:
         sid = await _seed_session(db, status="running")
@@ -758,6 +762,34 @@ async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path
 
     async with StateDB() as db:
         assert (await db.get_session(sid))["status"] == "aborted"
+
+
+@pytest.mark.parametrize("linux", [False, True])
+async def test_doctor_create_time_mismatch_is_platform_specific(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, linux: bool
+):
+    from lionagi.cli import _util
+    from lionagi.cli import kill as kill_mod
+
+    monkeypatch.setattr(psutil, "LINUX", linux)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: object())
+    monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 100.0)
+    monkeypatch.setattr(_util, "pid_alive", lambda _pid: True)
+    signals = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.execute(
+            "UPDATE sessions SET started_at = ?, node_metadata = ? WHERE id = ?",
+            (time.time() - 48 * 3600, json.dumps({"pid": 4242, "pid_create_time": 1.0}), sid),
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    assert result == {"running": 1, "swept": 0 if linux else 1, "skipped": 1 if linux else 0}
+    assert signals == []
+    async with StateDB() as db:
+        assert (await db.get_session(sid))["status"] == ("running" if linux else "aborted")
 
 
 async def test_doctor_handles_null_started_at_as_stale(temp_db_path: Path):
