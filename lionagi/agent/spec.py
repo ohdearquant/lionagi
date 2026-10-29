@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
@@ -63,6 +63,9 @@ def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
 class AgentSpec(HooksMixin):
     """Universal runtime spec: Profile (identity) plus model, tools, hooks, and permissions."""
 
+    _effort_origin: ClassVar[str] = "explicit"
+    _model_origin: ClassVar[str] = "explicit"
+
     profile: Profile
     model: str | None = None
     effort: str | None = None
@@ -104,7 +107,7 @@ class AgentSpec(HooksMixin):
             object.__setattr__(self, "_effort_origin", "explicit")
         if name == "model" and hasattr(self, "_model_origin"):
             object.__setattr__(self, "_model_origin", "explicit")
-        object.__setattr__(self, name, value)
+        super().__setattr__(name, value)
 
     def __post_init__(self) -> None:
         # Every way of building a spec (constructor, compose, from_yaml) passes here, so a

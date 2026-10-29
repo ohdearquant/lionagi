@@ -7,8 +7,7 @@ import json
 import pytest
 
 from tests.cli.test_agent_api_provider import _profile
-
-pytest_plugins = ("tests.cli.test_agent_api_provider",)
+from tests.cli.test_agent_api_provider import leg as leg
 
 
 @pytest.mark.asyncio
