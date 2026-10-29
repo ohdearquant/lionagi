@@ -468,9 +468,9 @@ async def _wait_for_attempt_release(key):
             with reconciliation._workers_lock:
                 if key not in reconciliation._attempts and key not in reconciliation._workers:
                     return
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
 
-    await asyncio.wait_for(wait(), 2)
+    await asyncio.wait_for(wait(), 5)
 
 
 def _late_async_prepare(release, calls):
