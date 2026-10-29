@@ -77,8 +77,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - MCP tools registered by server name now bind to the transport selected at
   registration, so later configuration reloads cannot redirect them. Explicit
   server names missing from the selected configuration are refused before any
-  tools are registered. Metadata-free registration also resolves names at
-  registration: registering a name before loading its configuration now fails.
+  tools are registered. Metadata-free registration now resolves names at
+  registration, including from the default configuration file, and rejects
+  unknown names at that point.
 
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared

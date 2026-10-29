@@ -548,7 +548,7 @@ class ActionManager(Manager):
         # An omitted policy is not upgraded to a permissive one: it flows
         # through to the wrapper's fail-closed default. See
         # docs/internals/agent-runtime.md for the full trust model.
-        snapshot = MCPConnectionPool._load_config_snapshot(config_path)
+        snapshot = MCPConnectionPool._load_config_snapshot(config_path, server_names)
         loaded_names = list(snapshot)
 
         if server_names is None:
@@ -599,7 +599,7 @@ async def load_mcp_tools(
 
     snapshot = None
     if config_path:
-        snapshot = MCPConnectionPool._load_config_snapshot(config_path)
+        snapshot = MCPConnectionPool._load_config_snapshot(config_path, server_names)
         loaded_names = list(snapshot)
         if server_names is None:
             # Same default as load_mcp_config: the servers in this file, not

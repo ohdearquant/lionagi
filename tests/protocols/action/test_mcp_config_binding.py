@@ -81,6 +81,105 @@ async def test_missing_requested_name_rejected_before_any_tool_registration(tmp_
     assert not connections
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loader", ["manager", "helper"])
+async def test_refused_file_does_not_change_pool_configuration(
+    tmp_path, monkeypatch, offline_pool, loader
+):
+    connections, _ = offline_pool
+    transport_a = {"url": "https://a.invalid/mcp"}
+    transport_b = {"url": "https://b.invalid/mcp"}
+    old = _config_file(tmp_path / "old.json", {"x": transport_a})
+    selected = _config_file(tmp_path / "selected.json", {"x": transport_b})
+    MCPConnectionPool.load_config(old)
+    manager = ActionManager()
+    if loader == "helper":
+        monkeypatch.setattr("lionagi.protocols.action.manager.ActionManager", lambda: manager)
+    with pytest.raises(ValueError, match="not declared in the selected config"):
+        if loader == "manager":
+            await manager.load_mcp_config(selected, server_names=["x", "y"])
+        else:
+            await load_mcp_tools(selected, server_names=["x", "y"])
+    assert MCPConnectionPool._configs["x"] == transport_a
+    assert not manager.registry
+    assert not connections
+
+
+@pytest.mark.asyncio
+async def test_inline_cache_identity_tracks_transport_content_and_security(monkeypatch):
+    monkeypatch.setattr(MCPConnectionPool, "_clients", {})
+    monkeypatch.setattr(MCPConnectionPool, "_security", None)
+    monkeypatch.setattr(MCPConnectionPool, "_lock", None)
+    monkeypatch.setattr(MCPConnectionPool, "_creation_locks", {})
+    created = []
+
+    class FakeClient:
+        def is_connected(self):
+            return True
+
+    async def create_client(cls, config, security=None):
+        client = FakeClient()
+        created.append((client, dict(config), security))
+        return client
+
+    monkeypatch.setattr(MCPConnectionPool, "_create_client", classmethod(create_client))
+    first = {"command": "synthetic", "args": ["one"], "env": {"TOKEN": "fixture"}}
+    equal = {"command": "synthetic", "args": ["one"], "env": {"TOKEN": "fixture"}}
+    different = {"command": "synthetic", "args": ["two"], "env": {"TOKEN": "fixture"}}
+    policy = MCPSecurityConfig.trusted()
+    client = await MCPConnectionPool._get_bound_client(first, None, policy)
+    assert await MCPConnectionPool._get_bound_client(equal, None, policy) is client
+    assert len(created) == 1
+    assert await MCPConnectionPool.get_client(equal, security=policy) is client
+    assert await MCPConnectionPool._get_bound_client(different, None, policy) is not client
+    assert len(created) == 2
+    assert await MCPConnectionPool._get_bound_client(equal, None, MCPSecurityConfig()) is not client
+    assert len(created) == 3
+    assert all("fixture" not in key for key in MCPConnectionPool._clients)
+
+
+@pytest.mark.asyncio
+async def test_inline_transport_is_copied_before_waiting_for_client(monkeypatch):
+    monkeypatch.setattr(MCPConnectionPool, "_clients", {})
+    monkeypatch.setattr(MCPConnectionPool, "_security", None)
+    monkeypatch.setattr(MCPConnectionPool, "_lock", None)
+    monkeypatch.setattr(MCPConnectionPool, "_creation_locks", {})
+    entered, resume = asyncio.Event(), asyncio.Event()
+    original_cached = MCPConnectionPool._cached_client
+    created = []
+
+    class FakeClient:
+        def is_connected(self):
+            return True
+
+    async def cached(cls, key):
+        if not entered.is_set():
+            entered.set()
+            await resume.wait()
+        return await original_cached(key)
+
+    async def create_client(cls, config, security=None):
+        client = FakeClient()
+        created.append((client, dict(config)))
+        return client
+
+    monkeypatch.setattr(MCPConnectionPool, "_cached_client", classmethod(cached))
+    monkeypatch.setattr(MCPConnectionPool, "_create_client", classmethod(create_client))
+    config = {"command": "synthetic", "args": ["one"], "env": {"MODE": "one"}}
+    original = {"command": "synthetic", "args": ["one"], "env": {"MODE": "one"}}
+    pending = asyncio.create_task(MCPConnectionPool.get_client(config))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        config["args"][0] = "two"
+        config["env"]["MODE"] = "two"
+    finally:
+        resume.set()
+    client = await pending
+    assert created[0][1] == original
+    assert await MCPConnectionPool.get_client(original) is client
+    assert await MCPConnectionPool.get_client(config) is not client
+
+
 @pytest.mark.parametrize(
     ("requested", "expected"),
     [
@@ -288,7 +387,7 @@ async def test_name_only_registration_without_config_fails_closed(
     connections, _ = offline_pool
     monkeypatch.chdir(tmp_path)
     manager = ActionManager()
-    with pytest.raises((FileNotFoundError, ValueError)):
+    with pytest.raises(FileNotFoundError, match=r"MCP config file not found: \.mcp\.json"):
         await manager.register_mcp_server({"server": "missing"}, tool_names=["probe"])
     assert not manager.registry
     assert not connections

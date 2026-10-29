@@ -1780,7 +1780,9 @@ class MCPConnectionPool:
         return list(cls._load_config_snapshot(path))
 
     @classmethod
-    def _load_config_snapshot(cls, path: str) -> dict[str, Any]:
+    def _load_config_snapshot(
+        cls, path: str, server_names: list[str] | None = None
+    ) -> dict[str, Any]:
         """Load a file once and return a copy independent of the shared name registry."""
         from copy import deepcopy
 
@@ -1805,6 +1807,11 @@ class MCPConnectionPool:
         if not isinstance(servers, dict):
             raise ValueError("mcpServers must be a dictionary")
 
+        if server_names is not None:
+            missing = [name for name in server_names if name not in servers]
+            if missing:
+                raise ValueError(f"MCP servers not declared in the selected config: {missing!r}")
+
         # Cache keys include the transport and security fingerprints. Retain
         # old clients: an existing tool may still hold that transport, and
         # cleanup must keep the handle needed to close it.
@@ -1821,6 +1828,8 @@ class MCPConnectionPool:
         folds in both the resolved transport and the effective-security fingerprint,
         so a trusted call and a later omitted-policy call to the same server can never
         share a cache entry. See docs/internals/core.md#mcpconnectionpool-trust-model."""
+        from copy import deepcopy
+
         effective_security = cls._effective_security(security)
         security_fp = cls._security_fingerprint(effective_security)
         if "server" in server_config:
@@ -1829,9 +1838,9 @@ class MCPConnectionPool:
             policy_key = cls._policy_key(config, server_name=server_name)
             cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
         else:
-            config = server_config
+            config = deepcopy(server_config)
             policy_key = cls._policy_key(config)
-            cache_key = f"inline:{config.get('command')}:{id(config)}:sec:{security_fp}"
+            cache_key = f"inline:{policy_key}:sec:{security_fp}"
         return config, policy_key, cache_key
 
     @classmethod
@@ -1896,7 +1905,7 @@ class MCPConnectionPool:
         if server_name is not None:
             cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
         else:
-            cache_key = f"inline:{config.get('command')}:{id(config)}:sec:{security_fp}"
+            cache_key = f"inline:{policy_key}:sec:{security_fp}"
         return await cls._get_or_create_client(deepcopy(config), cache_key, security)
 
     @classmethod
