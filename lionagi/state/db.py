@@ -205,12 +205,13 @@ CursorClaim = float | str | None | NoCursorClaim
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
 # migration changes the shape a reader would see.
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
 _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
 _SESSION_ENDED_AT_BACKFILL_KEY = "migration.session_ended_at_backfill"
+_TERMINAL_ELIGIBILITY_BACKFILL_KEY = "migration.terminal_delivery_eligibility"
 _SESSION_ENDED_AT_BACKFILL_BATCH_SIZE = 500
 # The ``schema_meta.version`` values a lionagi release writes: a whole number, no sign or padding.
 _RECORDED_VERSION = re.compile(r"[1-9][0-9]*")
@@ -1910,6 +1911,7 @@ class StateDB:
         async with self._engine.begin() as conn:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
+            await self._classify_terminal_delivery_history_once(conn)
             # Before _reconcile_indexes, which recreates the unique index on
             # attention_disposition_history.sequence: that would fail against the DEFAULT 0
             # placeholder every pre-existing row shares until this backfill gives each a distinct
@@ -2032,6 +2034,57 @@ class StateDB:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
+
+    async def _classify_terminal_delivery_history_once(self, conn) -> None:
+        """Freeze v5 replay eligibility, the unknown count and marker in one transaction."""
+        columns = await conn.run_sync(
+            lambda c: {col["name"] for col in inspect(c).get_columns("status_transitions")}
+        )
+        if "delivery_eligible" not in columns:
+            await conn.execute(
+                text("ALTER TABLE status_transitions ADD COLUMN delivery_eligible BOOLEAN")
+            )
+        marker = await conn.execute(
+            text("SELECT 1 FROM schema_meta WHERE key = :key"),
+            {"key": _TERMINAL_ELIGIBILITY_BACKFILL_KEY},
+        )
+        if marker.first() is not None:
+            return
+        if self.dialect == "postgresql":
+            # Block old writers until the classification and baseline count both commit.
+            await conn.execute(text("LOCK TABLE status_transitions IN SHARE ROW EXCLUSIVE MODE"))
+
+        # This is the v5 replay predicate, deliberately frozen here rather than imported
+        # from the live registry. A NULL predecessor on a terminal execution row is
+        # ambiguous between initial history and a reaper transition.
+        eligible_kind_status = (
+            "((entity_type IN ('session', 'invocation') AND status IN "
+            "('completed', 'completed_empty', 'failed', 'timed_out', 'aborted', 'cancelled')) "
+            "OR (entity_type = 'play' AND status IN "
+            "('merged', 'escalated', 'gate_failed', 'blocked', 'aborted_after_finish')) "
+            "OR (entity_type = 'schedule_run' AND status IN "
+            "('completed', 'failed', 'timed_out', 'skipped', 'cancelled')))"
+        )
+        await conn.execute(
+            text(
+                "UPDATE status_transitions SET delivery_eligible = CASE "  # noqa: S608
+                f"WHEN NOT {eligible_kind_status} THEN FALSE "
+                "WHEN previous_status IS NULL THEN NULL "
+                "WHEN previous_status = status THEN FALSE ELSE TRUE END"
+            )
+        )
+        count = (
+            await conn.execute(
+                text("SELECT COUNT(*) FROM status_transitions WHERE delivery_eligible IS NULL")
+            )
+        ).scalar_one()
+        await conn.execute(
+            text("INSERT INTO schema_meta (key, value) VALUES (:key, :value)"),
+            {
+                "key": _TERMINAL_ELIGIBILITY_BACKFILL_KEY,
+                "value": json.dumps({"classified_at": time.time(), "initial_null_count": count}),
+            },
+        )
 
     async def _reconcile_constraints(self, conn) -> None:
         """Widen CHECK constraints that ``metadata.create_all`` cannot alter; PostgreSQL only."""
@@ -6026,7 +6079,7 @@ class StateDB:
             ),
         )
         async with self._tx() as conn:
-            transition_id = await lifecycle_service._write(  # noqa: SLF001
+            history_write = await lifecycle_service._write(  # noqa: SLF001
                 conn,
                 "schedule_runs",
                 command,
@@ -6034,7 +6087,7 @@ class StateDB:
                 now=now,
                 extra_guard={"dispatched_at": None},
             )
-            if transition_id is None:
+            if history_write is None:
                 return False
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(
@@ -6047,8 +6100,10 @@ class StateDB:
         await lifecycle_service._emit_terminal_event(  # noqa: SLF001
             command,
             previous_status=expected_orphan_status,
-            transition_id=transition_id,
+            transition_id=history_write.transition_id,
             occurred_at=now,
+            eligibility_stored=history_write.eligibility_stored,
+            eligibility_at_write=history_write.eligibility_at_write,
         )
         return True
 
