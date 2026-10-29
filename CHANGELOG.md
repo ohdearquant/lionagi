@@ -8,9 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- API run manifests now include provider-reported cache read and write token
+- API run manifests now include response-reported cache read and write token
   counts per request when a supported non-streaming response supplies them.
-  Unknown counts remain `null`; cached local responses are not counted again.
+  Unknown counts remain `null`; built-in local cache hits are not counted again.
+
+- OpenAI chat prompt-cache placement keeps the system and tool instructions in
+  a stable prefix. With placement on, the per-request token-usage estimate is
+  no longer appended to the newest message, since it changed cached bytes.
 
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in

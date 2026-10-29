@@ -133,7 +133,11 @@ class APICalling(HookedEvent):
         if self.payload.get("stream") is True:
             self.streaming = True
 
-        if self.include_token_usage_to_model and self.endpoint.config.requires_tokens:
+        if (
+            self.include_token_usage_to_model
+            and self.endpoint.config.requires_tokens
+            and not self.endpoint.places_prompt_cache
+        ):
             if "messages" in self.payload and isinstance(self.payload["messages"][-1], dict):
                 required_tokens = self.required_tokens
                 content = self.payload["messages"][-1]["content"]
