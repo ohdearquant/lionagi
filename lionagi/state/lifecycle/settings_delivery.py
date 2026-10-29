@@ -100,15 +100,21 @@ def prepare_resolved_delivery(
 
     outcomes: list[bool] = []
 
-    def record_exec(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
+    def record_exec(
+        *, ok: bool, exit_code: int | None, stderr_text: str | None, reason: str | None = None
+    ) -> str | None:
         outcomes.append(ok)
         return _record_global(
-            recorder, ok=ok, exit_code=exit_code, stderr_text=stderr_text, reason=None
+            recorder, ok=ok, exit_code=exit_code, stderr_text=stderr_text, reason=reason
         )
 
-    kwargs = {"outcome_fn": record_exec}
+    def record_timeout() -> None:
+        record_exec(ok=False, exit_code=None, stderr_text=None, reason="exec_adapter_timeout")
+
+    kwargs: dict[str, Any] = {"outcome_fn": record_exec}
     if safe_logging:
         kwargs["safe_logging"] = True
+        kwargs["on_timeout"] = record_timeout
     handler = build_handler(resolved, **kwargs)
     if handler is None:
         return DeliveryOutcome.FAILURE

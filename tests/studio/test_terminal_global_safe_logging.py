@@ -254,7 +254,12 @@ async def test_exec_cleanup_error_preserves_primary_and_never_acknowledges(
                     stats = await asyncio.wait_for(task, 1)
                     assert stats["failed"] == 1 and stats["acknowledged"] == 0
                     assert recorder.records == [
-                        {"scope": "global", "ok": False, "exit_code": None, "reason": None}
+                        {
+                            "scope": "global",
+                            "ok": False,
+                            "exit_code": None,
+                            "reason": "exec_adapter_timeout",
+                        }
                     ]
                 assert cleanup_secret not in caplog.text
                 assert "exec_cleanup_unconfirmed" in caplog.text

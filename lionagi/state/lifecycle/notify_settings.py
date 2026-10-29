@@ -601,6 +601,7 @@ def _make_exec_handler(
     env_fn: EnvBuilder | None = None,
     outcome_fn: OutcomeFn = _noop_outcome_fn,
     safe_logging: bool = False,
+    on_timeout: Callable[[], None] | None = None,
 ) -> TerminalCallbackHandler:
     static_argv = tuple(argv)
 
@@ -653,7 +654,10 @@ def _make_exec_handler(
             if isinstance(primary, get_cancelled_exc_class()):
                 raise primary
             logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
-            outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            if on_timeout is not None:
+                on_timeout()
+            else:
+                outcome_fn(ok=False, exit_code=None, stderr_text=None)
             return
         if primary is not None:
             if not isinstance(primary, Exception):
@@ -798,6 +802,7 @@ def build_handler(
     outcome_fn: OutcomeFn | None = None,
     on_build_failure: Callable[[str], None] | None = None,
     safe_logging: bool = False,
+    on_timeout: Callable[[], None] | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
     ``None`` if the spec fails to build (never raises). A python adapter ref
@@ -854,6 +859,8 @@ def build_handler(
         kwargs["outcome_fn"] = outcome_fn
     if safe_logging:
         kwargs["safe_logging"] = True
+    if on_timeout is not None:
+        kwargs["on_timeout"] = on_timeout
     return _make_exec_handler(resolved.argv, **kwargs)
 
 
