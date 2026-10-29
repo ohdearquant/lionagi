@@ -647,11 +647,10 @@ def _bind_mcp_transport(
     server_name: str | None,
 ):
     """Keep the concrete transport in the non-serialized recovery capability."""
-    from copy import deepcopy
-
+    from lionagi.ln import copy
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-    transport = deepcopy(
+    transport = copy(
         bound_transport
         if bound_transport is not None
         else MCPConnectionPool._resolve_config(server_config)

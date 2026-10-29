@@ -153,10 +153,10 @@ class _MCPRecoveryCapability:
         transport: dict[str, Any] | None = None,
         server_name: str | None = None,
     ) -> None:
-        from copy import deepcopy
+        from lionagi.ln import copy
 
         self.security = security
-        self._transport = deepcopy(transport)
+        self._transport = copy(transport)
         self._server_name = server_name
 
 
@@ -1809,7 +1809,7 @@ class MCPConnectionPool:
         cls, path: str, server_names: list[str] | None = None
     ) -> dict[str, Any]:
         """Load a file once and return a copy independent of the shared name registry."""
-        from copy import deepcopy
+        from lionagi.ln import copy
 
         config_path = Path(path)
         if not config_path.exists():
@@ -1840,8 +1840,8 @@ class MCPConnectionPool:
         # Cache keys include the transport and security fingerprints. Retain
         # old clients: an existing tool may still hold that transport, and
         # cleanup must keep the handle needed to close it.
-        cls._configs.update(deepcopy(servers))
-        return deepcopy(servers)
+        cls._configs.update(copy(servers))
+        return copy(servers)
 
     @classmethod
     def _resolve_identity(
@@ -1853,7 +1853,7 @@ class MCPConnectionPool:
         folds in both the resolved transport and the effective-security fingerprint,
         so a trusted call and a later omitted-policy call to the same server can never
         share a cache entry. See docs/internals/core.md#mcpconnectionpool-trust-model."""
-        from copy import deepcopy
+        from lionagi.ln import copy
 
         effective_security = cls._effective_security(security)
         security_fp = cls._security_fingerprint(effective_security)
@@ -1863,7 +1863,7 @@ class MCPConnectionPool:
             policy_key = cls._policy_key(config, server_name=server_name)
             cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
         else:
-            config = deepcopy(server_config)
+            config = copy(server_config)
             policy_key = cls._policy_key(config)
             cache_key = f"inline:{policy_key}:sec:{security_fp}"
         return config, policy_key, cache_key
@@ -1921,7 +1921,7 @@ class MCPConnectionPool:
         cls, config: dict[str, Any], server_name: str | None, security: MCPSecurityConfig | None
     ) -> Any:
         """Connect using the selected transport without resolving its alias again."""
-        from copy import deepcopy
+        from lionagi.ln import copy
 
         if security is not None and not isinstance(security, MCPSecurityConfig):
             raise TypeError("security must be an MCPSecurityConfig or None")
@@ -1931,7 +1931,7 @@ class MCPConnectionPool:
             cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
         else:
             cache_key = f"inline:{policy_key}:sec:{security_fp}"
-        return await cls._get_or_create_client(deepcopy(config), cache_key, security)
+        return await cls._get_or_create_client(copy(config), cache_key, security)
 
     @classmethod
     async def _get_reconnect_client(
