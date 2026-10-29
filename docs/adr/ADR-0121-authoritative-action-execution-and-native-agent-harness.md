@@ -874,12 +874,27 @@ it, the check runs against the resolved grant. Under a resolved grant that names
 a request for its server like any other: the server is identified by the name its configuration
 has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
 grant names that server and the captured parent permits it. The option's server configuration
-names a server in one of two ways. A `{"server": <name>}` reference names it directly, compared
-exactly, case-sensitively and without normalization. An inline transport configuration names the
-entry of the selected configuration that is equal to it as a JSON value once both drop their
-top-level keys beginning with `_`. Those keys are lionagi's own annotations on a configuration,
-such as `_original_tool_name`, which the connection pool strips before it builds a client
-(`lionagi/service/connections/mcp_wrapper.py:2042-2044`), so they are no part of the transport.
+names a server in one of two ways, told apart by the test the connection pool itself applies
+(`lionagi/service/connections/mcp_wrapper.py:1651`, `:1810`): a mapping with a top-level
+`server` key is a reference, whatever else it carries, and any other mapping is an inline
+transport configuration. A reference names its server by the value of `server` alone, compared
+exactly, case-sensitively and without normalization. The pool resolves that name and ignores
+every other key of a reference, so the check ignores them too, and a `server` value that is not
+a string is refused. An inline transport configuration names the entry of the selected
+configuration that is equal to it once both drop their top-level keys beginning with `_`; a
+nested key beginning with `_` is part of the transport and is compared. The top-level keys are
+lionagi's own annotations on a configuration, which the connection pool strips before it builds
+a client (`lionagi/service/connections/mcp_wrapper.py:2042-2044`). The one such key read on the
+call path, `_original_tool_name`, picks the tool to call on the server already chosen, never
+the transport (`lionagi/protocols/action/manager.py:154`, `mcp_wrapper.py:2042`), so they are no
+part of the transport. Equal means that the two serialize to the same JSON text with object
+keys sorted, as the pool serializes a transport when it fingerprints it (`:1595-1596`): object
+key order does not matter, array order does, and numbers compare by their JSON form, so `1` and
+`1.0` differ. A configuration holding a value that has no JSON form is refused. A configuration
+read from a document that repeats a key within one object is refused before spawn, never
+resolved by the parser's last-value rule: the JSON and YAML parsers lionagi reads configurations
+with keep the last value silently, so two readers of one document could otherwise disagree on
+its transport.
 Nothing is expanded before the comparison: an entry is compared as the selected configuration
 declares it and an inline configuration as the option gives it, so an environment or secret
 reference and any placeholder are compared as the text they are written as. Two configurations
