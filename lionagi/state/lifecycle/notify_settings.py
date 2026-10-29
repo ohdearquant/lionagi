@@ -16,7 +16,7 @@ import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from lionagi._settings import load_settings
 from lionagi.ln import (
@@ -42,15 +42,19 @@ logger = logging.getLogger(__name__)
 
 __all__ = (
     "NotifyConfigResolution",
+    "NotifyProvenance",
+    "DurableRunRecorder",
     "PayloadBuilder",
     "ResolvedNotifyHandler",
     "RunNotifyRecord",
     "build_handler",
+    "classify_notify_provenance",
     "record_notify_outcome_to_run",
     "record_notify_rejection_to_run",
     "register_run_notify_outcome_scope",
     "register_settings_terminal_callback",
     "resolve_notify_config",
+    "resolve_durable_global_config",
     "unregister_run_notify_outcome_scope",
 )
 
@@ -65,8 +69,14 @@ def _looks_like_shell(command: str) -> bool:
     return bool(_SHELL_FEATURE_RE.search(unquoted))
 
 
-def _warn_empty_argv(scope: str) -> None:
-    logger.warning(
+def _resolution_warning(safe: bool, message: str, *args: Any) -> None:
+    if not safe:
+        logger.warning(message, *args)
+
+
+def _warn_empty_argv(scope: str, *, safe: bool = False) -> None:
+    _resolution_warning(
+        safe,
         "notify.on_terminal (%s) resolved to an empty command; use the "
         "argv-list mapping form ({adapter: {kind: exec, argv: [...]}}) to "
         "configure a real command. Resolving to disabled.",
@@ -74,8 +84,9 @@ def _warn_empty_argv(scope: str) -> None:
     )
 
 
-def _warn_shell_feature(command: str, scope: str) -> None:
-    logger.warning(
+def _warn_shell_feature(command: str, scope: str, *, safe: bool = False) -> None:
+    _resolution_warning(
+        safe,
         "notify.on_terminal (%s) value %r requires shell features (pipes, "
         "redirection, conjunction, or variable expansion) that are never "
         "honored -- no configuration shape reaches a shell. Use the "
@@ -110,6 +121,36 @@ class NotifyConfigResolution:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class NotifyProvenance:
+    """Separately resolved global, project-owned and explicit run settings.
+
+    ``project_error`` is a diagnostic about the raw layer; it does not by
+    itself declare a subscription or change the independent global outcome.
+    """
+
+    global_config: NotifyConfigResolution
+    project_declared: bool
+    project_config: NotifyConfigResolution
+    project_error: str | None
+    run_declared: bool
+    run_config: NotifyConfigResolution
+
+
+class DurableRunRecorder(Protocol):
+    """A run-bound, serialized sink for independent notification outcomes."""
+
+    def record(
+        self,
+        subscription: Literal["run", "global"],
+        *,
+        ok: bool,
+        exit_code: int | None,
+        stderr_text: str | None,
+        reason: str | None,
+    ) -> str | None: ...
+
+
 # Nothing was configured, so there is nothing to report -- silence by choice.
 _NOT_CONFIGURED = NotifyConfigResolution()
 
@@ -117,6 +158,89 @@ _NOT_CONFIGURED = NotifyConfigResolution()
 def _rejected(reason: str) -> NotifyConfigResolution:
     """A notifier was configured and this resolution refused it."""
     return NotifyConfigResolution(reason=reason)
+
+
+def _raw_terminal_layer(settings: Any) -> tuple[Any, str | None]:
+    if not isinstance(settings, dict):
+        return None, "settings_root_not_mapping"
+    if "notify" not in settings:
+        return None, None
+    notify = settings["notify"]
+    if not isinstance(notify, dict):
+        return None, "notify_not_mapping"
+    return notify.get("on_terminal"), None
+
+
+def _resolve_durable_config(settings: Any, *, scope: str) -> NotifyConfigResolution:
+    source, reason = _raw_terminal_layer(settings)
+    if reason is not None:
+        resolution = _rejected(reason)
+    elif source is None:
+        resolution = _NOT_CONFIGURED
+    elif isinstance(source, dict) and type(source.get("enabled", True)) is not bool:
+        resolution = _rejected("enabled_not_boolean")
+    elif isinstance(source, dict) and source.get("enabled", True) is False:
+        resolution = _NOT_CONFIGURED
+    elif isinstance(source, dict) and not isinstance(source.get("adapter"), dict):
+        resolution = _rejected("enabled_without_adapter")
+    else:
+        resolution = _resolve_shape(source, scope=scope, safe=True)
+    if resolution.reason is not None:
+        logger.warning("notify.on_terminal %s configuration rejected: %s", scope, resolution.reason)
+    return resolution
+
+
+def resolve_durable_global_config(settings: Any) -> NotifyConfigResolution:
+    """Resolve one raw global layer; malformed settings are not chosen silence."""
+    return _resolve_durable_config(settings, scope="global")
+
+
+def classify_notify_provenance(
+    global_settings: Any,
+    project_settings: Any,
+    *,
+    override: str | dict[str, Any] | None = None,
+) -> NotifyProvenance:
+    """Classify layers independently without changing legacy merged resolution."""
+    global_config = resolve_durable_global_config(global_settings)
+    project_source, project_reason = _raw_terminal_layer(project_settings)
+    declared = isinstance(project_source, str)
+    if isinstance(project_source, dict):
+        declared = "adapter" in project_source
+        if "enabled" in project_source and type(project_source["enabled"]) is not bool:
+            project_reason = "enabled_not_boolean"
+    elif project_source is not None and not isinstance(project_source, str):
+        project_reason = "on_terminal_not_string_or_mapping"
+    if declared and project_reason is not None:
+        project_config = _rejected(project_reason)
+        logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
+    elif declared:
+        project_config = _resolve_durable_config(
+            {"notify": {"on_terminal": project_source}}, scope="project"
+        )
+    else:
+        project_config = _NOT_CONFIGURED
+        if project_reason is not None:
+            logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
+    run_declared = override is not None
+    if isinstance(override, dict) and type(override.get("enabled", True)) is not bool:
+        run_config = _rejected("enabled_not_boolean")
+    else:
+        run_config = (
+            _resolve_shape(override, scope="override", safe=True)
+            if run_declared
+            else _NOT_CONFIGURED
+        )
+    if run_config.reason is not None:
+        logger.warning("notify.on_terminal override configuration rejected: %s", run_config.reason)
+    return NotifyProvenance(
+        global_config=global_config,
+        project_declared=declared,
+        project_config=project_config,
+        project_error=project_reason,
+        run_declared=run_declared,
+        run_config=run_config,
+    )
 
 
 def resolve_notify_config(
@@ -148,12 +272,13 @@ def resolve_notify_config(
     return _resolve_shape(source, scope="settings")
 
 
-def _resolve_shape(source: Any, *, scope: str) -> NotifyConfigResolution:
+def _resolve_shape(source: Any, *, scope: str, safe: bool = False) -> NotifyConfigResolution:
     if isinstance(source, str):
-        return _resolve_string(source, scope=scope)
+        return _resolve_string(source, scope=scope, safe=safe)
     if isinstance(source, dict):
-        return _resolve_mapping(source, scope=scope)
-    logger.warning(
+        return _resolve_mapping(source, scope=scope, safe=safe)
+    _resolution_warning(
+        safe,
         "notify.on_terminal (%s) must be a string or mapping, got %s: %r",
         scope,
         type(source).__name__,
@@ -162,17 +287,18 @@ def _resolve_shape(source: Any, *, scope: str) -> NotifyConfigResolution:
     return _rejected("on_terminal_not_string_or_mapping")
 
 
-def _resolve_string(command: str, *, scope: str) -> NotifyConfigResolution:
+def _resolve_string(command: str, *, scope: str, safe: bool = False) -> NotifyConfigResolution:
     if not command.strip():
-        _warn_empty_argv(scope)
+        _warn_empty_argv(scope, safe=safe)
         return _rejected("on_terminal_command_is_empty")
     if _looks_like_shell(command):
-        _warn_shell_feature(command, scope)
+        _warn_shell_feature(command, scope, safe=safe)
         return _rejected("on_terminal_command_requires_shell_features")
     try:
         argv = shlex.split(command)
     except ValueError as exc:
-        logger.warning(
+        _resolution_warning(
+            safe,
             "notify.on_terminal (%s) value %r failed to parse as an argv "
             "command (%s); use the argv-list mapping form instead. "
             "Resolving to disabled.",
@@ -182,12 +308,14 @@ def _resolve_string(command: str, *, scope: str) -> NotifyConfigResolution:
         )
         return _rejected("on_terminal_command_not_parseable")
     if not argv:
-        _warn_empty_argv(scope)
+        _warn_empty_argv(scope, safe=safe)
         return _rejected("on_terminal_command_is_empty")
     return NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=tuple(argv)))
 
 
-def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResolution:
+def _resolve_mapping(
+    cfg: dict[str, Any], *, scope: str, safe: bool = False
+) -> NotifyConfigResolution:
     if cfg.get("enabled") is False:
         # Notification was configured off. Nothing was rejected, so this is the
         # chosen silence, not a failure to report back to the operator.
@@ -198,7 +326,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
     if "filter" in cfg:
         filt = cfg["filter"]
         if not isinstance(filt, Mapping) or not filt:
-            logger.warning(
+            _resolution_warning(
+                safe,
                 "notify.on_terminal (%s) filter must be a non-empty mapping, "
                 "got %r; resolving to disabled.",
                 scope,
@@ -208,7 +337,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
 
         unknown_keys = tuple(key for key in filt if key not in {"kinds", "ids"})
         if unknown_keys:
-            logger.warning(
+            _resolution_warning(
+                safe,
                 "notify.on_terminal (%s) filter keys must be 'kinds' and/or "
                 "'ids', got unknown keys %r; resolving to disabled.",
                 scope,
@@ -223,7 +353,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
                 or not kinds
                 or not all(isinstance(kind, str) for kind in kinds)
             ):
-                logger.warning(
+                _resolution_warning(
+                    safe,
                     "notify.on_terminal (%s) filter.kinds must be a list of "
                     "strings with at least one value, got %r; resolving to disabled.",
                     scope,
@@ -232,7 +363,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
                 return _rejected("filter_kinds_not_a_list_of_strings")
             unsupported_kinds = tuple(kind for kind in kinds if kind not in EXECUTION_ENTITY_KINDS)
             if unsupported_kinds:
-                logger.warning(
+                _resolution_warning(
+                    safe,
                     "notify.on_terminal (%s) filter.kinds contains unsupported "
                     "terminal entity kinds %r; expected only %r; resolving to disabled.",
                     scope,
@@ -249,7 +381,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
                 or not ids
                 or not all(isinstance(entity_id, str) and bool(entity_id) for entity_id in ids)
             ):
-                logger.warning(
+                _resolution_warning(
+                    safe,
                     "notify.on_terminal (%s) filter.ids must be a list of "
                     "strings with at least one value, got %r; resolving to disabled.",
                     scope,
@@ -261,7 +394,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
     adapter = cfg.get("adapter")
     if not isinstance(adapter, dict):
         if cfg.get("enabled"):
-            logger.warning(
+            _resolution_warning(
+                safe,
                 "notify.on_terminal (%s) mapping form is enabled with no "
                 "adapter configured; resolving to disabled.",
                 scope,
@@ -275,7 +409,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
     if kind == "exec":
         argv = adapter.get("argv")
         if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
-            logger.warning(
+            _resolution_warning(
+                safe,
                 "notify.on_terminal (%s) exec adapter requires an argv "
                 "list of strings, got %r; resolving to disabled.",
                 scope,
@@ -283,7 +418,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
             )
             return _rejected("exec_adapter_argv_not_a_list_of_strings")
         if not argv:
-            _warn_empty_argv(scope)
+            _warn_empty_argv(scope, safe=safe)
             return _rejected("on_terminal_command_is_empty")
         return NotifyConfigResolution(
             handler=ResolvedNotifyHandler(
@@ -294,7 +429,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
     if kind == "python":
         ref = adapter.get("ref")
         if not isinstance(ref, str) or ":" not in ref:
-            logger.warning(
+            _resolution_warning(
+                safe,
                 "notify.on_terminal (%s) python adapter requires a "
                 "'module:callable' ref, got %r; resolving to disabled.",
                 scope,
@@ -307,7 +443,8 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
             )
         )
 
-    logger.warning(
+    _resolution_warning(
+        safe,
         "notify.on_terminal (%s) adapter kind must be 'exec' or 'python', "
         "got %r; resolving to disabled.",
         scope,
@@ -438,15 +575,20 @@ def _first_line(text: str, argv: Sequence[str] = ()) -> str | None:
     return line
 
 
-async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
+async def _await_proc_dead(
+    proc: asyncio.subprocess.Process, grace: float = 2.0, *, safe_logging: bool = False
+) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
     except Exception:  # noqa: BLE001 -- best-effort reap, never let this raise
-        logger.debug(
-            "timed out waiting for notify.on_terminal adapter process %s to exit",
-            proc.pid,
-            exc_info=True,
-        )
+        if safe_logging:
+            logger.debug("notify.on_terminal global adapter: exec_reap_unconfirmed")
+        else:
+            logger.debug(
+                "timed out waiting for notify.on_terminal adapter process %s to exit",
+                proc.pid,
+                exc_info=True,
+            )
 
 
 PayloadBuilder = Callable[[RunTerminalEnvelope], dict[str, Any]]
@@ -473,10 +615,95 @@ def _make_exec_handler(
     argv_fn: ArgvBuilder | None = None,
     env_fn: EnvBuilder | None = None,
     outcome_fn: OutcomeFn = _noop_outcome_fn,
+    safe_logging: bool = False,
+    on_timeout: Callable[[], None] | None = None,
+    on_exec_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler:
     static_argv = tuple(argv)
 
+    async def _exec_handler_safe(envelope: RunTerminalEnvelope) -> None:
+        payload = json.dumps(payload_fn(envelope)).encode()
+        launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
+        base_env = env_without_state_db_url()
+        if env_fn is not None:
+            base_env.update(env_fn(envelope))
+        env, group_marker = prepare_process_group_env(base_env)
+        proc = None
+        leader_created = None
+        primary: BaseException | None = None
+        stderr_bytes = b""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *launch_argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                start_new_session=True,
+            )
+            leader_created = observe_process_group_leader(
+                getattr(proc, "pid", None), expected_marker=group_marker
+            )
+            _, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
+            )
+        except BaseException as exc:
+            primary = exc
+
+        # Cleanup runs outside the exception handler: a new cancellation is not
+        # hidden in the context of the timeout or cancellation being handled.
+        if primary is not None and proc is not None:
+            with CancelScope(shield=True):
+                try:
+                    group_witnesses = (
+                        capture_group_witnesses(proc, expected_leader_created=leader_created)
+                        if leader_created is not None
+                        else ()
+                    )
+                except Exception:  # noqa: BLE001 -- fail closed for group signalling
+                    group_witnesses = ()
+                    logger.warning("notify.on_terminal global adapter: exec_cleanup_unconfirmed")
+                try:
+                    await aterminate_process_group(
+                        proc, grace=None, group_witnesses=group_witnesses
+                    )
+                except Exception:  # noqa: BLE001 -- still attempt to reap the child
+                    logger.warning("notify.on_terminal global adapter: exec_cleanup_unconfirmed")
+                await _await_proc_dead(proc, safe_logging=True)
+        if isinstance(primary, (asyncio.TimeoutError, get_cancelled_exc_class())):
+            if isinstance(primary, get_cancelled_exc_class()):
+                raise primary
+            logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
+            if on_timeout is not None:
+                on_timeout()
+            else:
+                outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            return
+        if primary is not None:
+            if not isinstance(primary, Exception):
+                raise primary
+            reason = (
+                "exec_adapter_post_spawn_failed"
+                if proc is not None
+                else "exec_adapter_launch_failed"
+            )
+            logger.warning("notify.on_terminal global adapter: %s", reason)
+            if on_exec_failure is not None:
+                on_exec_failure(reason)
+            else:
+                outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            return
+        assert proc is not None
+        if proc.returncode != 0:
+            stderr_text = stderr_bytes.decode(errors="replace").strip()
+            outcome_fn(ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None)
+            logger.warning("notify.on_terminal global adapter: exec_adapter_nonzero_exit")
+        else:
+            outcome_fn(ok=True, exit_code=0, stderr_text=None)
+
     async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
+        if safe_logging:
+            return await _exec_handler_safe(envelope)
         payload = json.dumps(payload_fn(envelope)).encode()
         launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
         # A notify command never inherits the state-store URL (see env_without_state_db_url);
@@ -602,6 +829,9 @@ def build_handler(
     env_fn: EnvBuilder | None = None,
     outcome_fn: OutcomeFn | None = None,
     on_build_failure: Callable[[str], None] | None = None,
+    safe_logging: bool = False,
+    on_timeout: Callable[[], None] | None = None,
+    on_exec_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
     ``None`` if the spec fails to build (never raises). A python adapter ref
@@ -619,16 +849,22 @@ def build_handler(
     configured notifier that will never fire, and this is the only place that
     knows why; a caller that can record it (one bound to a run) passes this so
     the failure does not reduce to the same ``None`` as nothing configured.
+
+    *on_exec_failure* receives a stable launch or post-spawn failure reason
+    from the safe exec handler; without it, failures use *outcome_fn*.
     """
     if resolved.python_ref is not None:
         try:
             handler = _make_python_handler(resolved.python_ref)
         except Exception as exc:  # noqa: BLE001 -- a bad adapter ref must resolve to disabled
-            logger.warning(
-                "notify.on_terminal python adapter %r failed to import: %s; resolving to disabled.",
-                resolved.python_ref,
-                exc,
-            )
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: python_adapter_unresolvable")
+            else:
+                logger.warning(
+                    "notify.on_terminal python adapter %r failed to import: %s; resolving to disabled.",
+                    resolved.python_ref,
+                    exc,
+                )
             # One identifier covers a missing module and a missing attribute:
             # the reason is the stable contract, and the warning above carries
             # which of the two it was.
@@ -636,12 +872,15 @@ def build_handler(
                 on_build_failure("python_adapter_unresolvable")
             return None
         if not callable(handler):
-            logger.warning(
-                "notify.on_terminal python adapter %r resolved to a non-callable "
-                "%s; resolving to disabled.",
-                resolved.python_ref,
-                type(handler).__name__,
-            )
+            if safe_logging:
+                logger.warning("notify.on_terminal global adapter: python_adapter_not_callable")
+            else:
+                logger.warning(
+                    "notify.on_terminal python adapter %r resolved to a non-callable "
+                    "%s; resolving to disabled.",
+                    resolved.python_ref,
+                    type(handler).__name__,
+                )
             if on_build_failure is not None:
                 on_build_failure("python_adapter_not_callable")
             return None
@@ -650,6 +889,12 @@ def build_handler(
     kwargs: dict[str, Any] = {"payload_fn": payload_fn, "argv_fn": argv_fn, "env_fn": env_fn}
     if outcome_fn is not None:
         kwargs["outcome_fn"] = outcome_fn
+    if safe_logging:
+        kwargs["safe_logging"] = True
+    if on_timeout is not None:
+        kwargs["on_timeout"] = on_timeout
+    if on_exec_failure is not None:
+        kwargs["on_exec_failure"] = on_exec_failure
     return _make_exec_handler(resolved.argv, **kwargs)
 
 
