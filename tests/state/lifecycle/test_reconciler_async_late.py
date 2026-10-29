@@ -128,11 +128,14 @@ async def test_late_success_is_acknowledged_once_even_after_retirement(tmp_path,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["native-async", "sync-returned-awaitable"])
-async def test_late_failure_stays_unacknowledged_with_one_backoff_and_no_overlap(tmp_path, surface):
+@pytest.mark.parametrize("outcome", [DeliveryOutcome.FAILURE, False], ids=["failure", "false"])
+async def test_late_failure_stays_unacknowledged_with_one_backoff_and_no_overlap(
+    tmp_path, surface, outcome
+):
     release, started = asyncio.Event(), asyncio.Event()
     tasks, calls = [], []
     consumer = f"late-failure-{surface}"
-    hook = _make_hook(release, started, tasks, calls, DeliveryOutcome.FAILURE)
+    hook = _make_hook(release, started, tasks, calls, outcome)
     async with StateDB(tmp_path / "state.db") as db:
         transition = await _seed(db)
         prepare = _prepare(hook, surface)
