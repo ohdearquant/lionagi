@@ -11,15 +11,26 @@ import os
 import signal
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import psutil
 
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi.ln._proc import raw_create_time
+from lionagi.ln._proc import (
+    _admit_recorded_worker_group,
+    _recorded_worker_group_matches,
+    _recorded_worker_group_state,
+    _RecordedGroupRefusal,
+    _RecordedGroupWitness,
+    _RecordedWorkerIdentity,
+    raw_create_time,
+)
 from lionagi.ln._proc import start_time_matches as _start_time_matches
+from lionagi.ln.concurrency import current_time, effective_deadline, fail_after, sleep
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
+from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE, BOOT_TIME_TOLERANCE, AmbiguousIdError
@@ -756,6 +767,305 @@ def _kill_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: f
     return 0
 
 
+@dataclass
+class _WorkerCleanup:
+    record: dict[str, Any]
+    identity: _RecordedWorkerIdentity | None
+    witness: _RecordedGroupWitness | None = None
+    refusal: str | None = None
+    signalled: str | None = None
+    empty: bool = False
+    settled: bool = False
+
+
+def _same_cleanup_session(row: dict[str, Any], session: dict[str, Any]) -> bool:
+    """Compare resolved session identity to the worker snapshot, including absence."""
+    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
+
+    absent = object()
+    for field in ("id", "status", "cli_worker_generation"):
+        if field not in row or field not in session or row[field] != session[field]:
+            return False
+    for field in ("artifacts_path", "source_kind"):
+        if row.get(field, absent) != session.get(field, absent):
+            return False
+    left = row.get("node_metadata", absent)
+    right = session.get("node_metadata", absent)
+    if isinstance(left, dict) and isinstance(right, dict):
+        for field in _RUNNER_IDENTITY_FIELDS:
+            if left.get(field, absent) != right.get(field, absent):
+                return False
+    elif left != right:
+        return False
+    return True
+
+
+def _runner_process_create_time(pid: int) -> tuple[str, float | None]:
+    """Read only the session runner identity, independently of other probes."""
+    from lionagi.ln._proc import process_create_time
+
+    return process_create_time(pid)
+
+
+async def _try_recorded_worker_cleanup(
+    db: Any,
+    row: dict[str, Any],
+    *,
+    user_reason: str,
+    grace_seconds: float,
+    snapshot: dict[str, Any] | None = None,
+) -> int | None:
+    """Handle recorded workers, or leave existing running-session handling intact."""
+    from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
+    from lionagi.state.reasons import RunReasons
+
+    sid = row["id"]
+    if not callable(getattr(db, "snapshot_cli_worker_spawns", None)):
+        return None
+    if snapshot is None:
+        try:
+            snapshot = await db.snapshot_cli_worker_spawns(sid)
+        except StateCompatibilityRefused:
+            return None
+        except Exception as exc:
+            warn(f"  session {sid[:12]}: worker records could not be read ({exc})")
+            return 1
+    if snapshot is None:
+        log_error(f"session {sid[:12]} changed during cleanup")
+        return 1
+    session = snapshot["session"]
+    status = session["status"]
+    generation = session["cli_worker_generation"]
+    records = snapshot["spawns"]
+    if not _same_cleanup_session(row, session):
+        log_error(f"session {sid[:12]} changed during cleanup")
+        return 1
+
+    running = status == "running"
+    if running:
+        meta = session.get("node_metadata")
+        meta = meta if isinstance(meta, dict) else {}
+        unjudgeable = _unaddressable_pid_reason(meta)
+        if unjudgeable in _NOT_JUDGEABLE_HERE | {"boot_mismatch"}:
+            # A boot mismatch proves the runner and its workers are gone; the
+            # other reasons leave this host unable to stop the recorded workers.
+            if records and unjudgeable in _NOT_JUDGEABLE_HERE:
+                warn(
+                    f"  session {sid[:12]}: {len(records)} recorded worker group(s) not "
+                    f"handled: the runner {_REFUSED_SIGNAL_REASONS[unjudgeable]}"
+                )
+            return None
+        try:
+            raw_pid = meta["pid"]
+            if isinstance(raw_pid, bool) or not isinstance(raw_pid, (int, float, str)):
+                raise ValueError("invalid runner pid")
+            pid = int(raw_pid)
+            # A float must denote the same integer, not be truncated to a
+            # different process. The supported POSIX pid_t is a signed 32-bit
+            # value; larger values cannot be passed safely to psutil's OS API.
+            if (isinstance(raw_pid, float) and raw_pid != pid) or not 1 < pid <= 2**31 - 1:
+                raise ValueError("invalid runner pid")
+        except (KeyError, ValueError, TypeError, OverflowError):
+            if records:
+                warn(f"worker group for session {sid[:12]} could not be confirmed stopped")
+                return 1
+            return None
+        state, _ = _runner_process_create_time(pid)
+        if state == "unknown" and records:
+            log_error(f"session {sid[:12]}: recorded runner could not be verified")
+            return 1
+        if state != "gone":
+            return None
+        evidence = {
+            "kind": "kill_event",
+            "signal": "already_dead",
+            "pid": pid,
+            "killed_at": time.time(),
+        }
+        if user_reason:
+            evidence["user_reason"] = user_reason
+        try:
+            outcome = await db.cancel_session_if_worker_generation(
+                sid,
+                generation,
+                reason_code=RunReasons.CANCELLED_MANUAL_KILL,
+                reason_summary=f"Manually cancelled via `li kill`. {user_reason}".strip(),
+                evidence=evidence,
+                expected_runner_identity={
+                    key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta
+                },
+            )
+        except Exception as exc:
+            warn(f"  session {sid[:12]}: cancellation could not be confirmed ({exc})")
+            return 1
+        if outcome != "applied":
+            log_error(f"session {sid[:12]} changed during cleanup")
+            return 1
+        status = "cancelled"
+        if not records:
+            print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
+            return 0
+    elif not records:
+        return None
+
+    workers = []
+    for record in records:
+        try:
+            identity = _RecordedWorkerIdentity(
+                pid=record["pid"],
+                pgid=record["pgid"],
+                pid_create_time=record["pid_create_time"],
+                pid_host=record["pid_host"],
+                pid_boot_time=record["pid_boot_time"],
+                process_identity_mode=record["process_identity_mode"],
+            )
+            admission = _admit_recorded_worker_group(
+                identity, boot_time_tolerance=BOOT_TIME_TOLERANCE
+            )
+            worker = _WorkerCleanup(record, identity)
+            if isinstance(admission, _RecordedGroupWitness):
+                worker.witness = admission
+            elif isinstance(admission, _RecordedGroupRefusal):
+                worker.refusal = admission.reason
+                if admission.reason == "leader_not_live":
+                    worker.empty = _recorded_worker_group_state(identity) == "empty"
+            else:
+                worker.refusal = "identity_unverifiable"
+            workers.append(worker)
+        except (KeyError, TypeError, ValueError, OSError):
+            workers.append(_WorkerCleanup(record, None, refusal="identity_unverifiable"))
+
+    changed = False
+    guard_failed = False
+
+    async def signal_one(worker: _WorkerCleanup, sig: signal.Signals) -> None:
+        nonlocal changed, guard_failed
+        try:
+            async with db.guard_cli_worker_signal(
+                sid, status, generation, worker.record["spawn_id"]
+            ) as verdict:
+                if verdict != "unchanged":
+                    changed = True
+                else:
+                    await sleep(0)
+                    if _recorded_worker_group_matches(worker.witness) == "matches":
+                        # The synchronous identity read cannot deliver a cooperative
+                        # timeout; refuse a signal if the guard budget elapsed in it.
+                        deadline = effective_deadline()
+                        if deadline is not None and current_time() >= deadline:
+                            raise TimeoutError("worker signal guard deadline expired")
+                        try:
+                            os.killpg(worker.identity.pgid, sig)
+                        except OSError:
+                            pass
+                        else:
+                            worker.signalled = "sigterm" if sig == signal.SIGTERM else "sigkill"
+        except Exception as exc:
+            guard_failed = True
+            warn(f"  session {sid[:12]}: worker signal guard failed ({exc})")
+
+    for worker in workers:
+        if worker.witness is not None:
+            await signal_one(worker, signal.SIGTERM)
+            if changed or guard_failed:
+                break
+    if not changed and not guard_failed and any(w.signalled for w in workers):
+        await sleep(max(0.0, grace_seconds))
+        for worker in workers:
+            if worker.witness is not None and worker.signalled:
+                # Only a matching frozen witness can authorize a KILL; a missing
+                # witness does not prove the group empty. signal_one repeats the
+                # identity check inside the guard before sending any signal.
+                if _recorded_worker_group_matches(worker.witness) == "matches":
+                    await signal_one(worker, signal.SIGKILL)
+                if changed or guard_failed:
+                    break
+    if not changed and not guard_failed:
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        while True:
+            pending = False
+            for worker in workers:
+                if worker.witness is not None and not worker.empty:
+                    worker.empty = _recorded_worker_group_state(worker.identity) == "empty"
+                    pending |= not worker.empty
+            if not pending or time.monotonic() >= deadline:
+                break
+            await sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        for worker in workers:
+            if worker.empty:
+                try:
+                    worker.settled = await db.settle_cli_worker_spawn(
+                        worker.record["spawn_id"], confirmed_empty_at=time.time()
+                    )
+                except Exception as exc:
+                    warn(f"  session {sid[:12]}: worker settlement failed ({exc})")
+        try:
+            from lionagi.state.db import _CLI_WORKER_OPERATION_TIMEOUT_SECONDS
+
+            with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+                current = await db.get_session(sid)
+            changed = current is None or (
+                current.get("status") != status
+                or "cli_worker_generation" not in current
+                or current["cli_worker_generation"] != generation
+            )
+        except Exception as exc:
+            guard_failed = True
+            warn(f"  session {sid[:12]}: worker session recheck failed ({exc})")
+
+    # The last session read can establish a new status or fail altogether.
+    # Never assert that the previous terminal status remains true in either case.
+    if changed:
+        for worker in workers:
+            if worker.signalled and worker.settled:
+                print(
+                    f"stopped worker for session {sid[:12]} (pid={worker.identity.pid}, "
+                    f"pgid={worker.identity.pgid}, signal={worker.signalled})"
+                )
+        log_error(f"session {sid[:12]} changed during cleanup")
+        return 1
+    if guard_failed:
+        for _worker in workers:
+            warn(f"worker group for session {sid[:12]} could not be confirmed stopped")
+        return 1
+
+    if not running and any(w.refusal and not w.empty for w in workers):
+        log_error(f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill")
+    for worker in workers:
+        if worker.signalled and worker.settled:
+            print(
+                f"stopped worker for session {sid[:12]} (pid={worker.identity.pid}, "
+                f"pgid={worker.identity.pgid}, signal={worker.signalled}); "
+                f"terminal status remains {status!r}"
+            )
+        elif worker.refusal and not worker.empty:
+            detail = (
+                "did not match"
+                if worker.refusal == "identity_mismatch"
+                else "could not be verified"
+            )
+            warn(f"  session {sid[:12]}: recorded worker identity {detail} — kill skipped")
+        elif not worker.settled or guard_failed:
+            warn(
+                f"worker group for session {sid[:12]} could not be confirmed stopped; "
+                f"terminal status remains {status!r}"
+            )
+    if not running and workers and all(w.settled and not w.signalled for w in workers):
+        log_error(f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill")
+    if running:
+        print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
+    signalled = any(w.signalled for w in workers)
+    return (
+        0
+        if not changed
+        and not guard_failed
+        and all(w.settled for w in workers)
+        and (running or signalled)
+        else 1
+    )
+
+
 async def _do_kill(
     id_or_short: str,
     *,
@@ -784,6 +1094,34 @@ async def _do_kill(
 
         table, entity_type, row = resolved
         current_status = row.get("status")
+        if entity_type == "session" and current_status in SESSION_TERMINAL_STATUSES:
+            recorded_result = await _try_recorded_worker_cleanup(
+                db, row, user_reason=user_reason, grace_seconds=grace_seconds
+            )
+            if recorded_result is not None:
+                return recorded_result
+        frozen_snapshot = None
+        worker_records_unread = False
+        if (
+            entity_type == "session"
+            and current_status == "running"
+            and callable(getattr(db, "snapshot_cli_worker_spawns", None))
+        ):
+            from lionagi.state.compat import StateCompatibilityRefused
+
+            try:
+                frozen_snapshot = await db.snapshot_cli_worker_spawns(row["id"])
+            except StateCompatibilityRefused:
+                pass
+            except Exception as exc:
+                warn(f"  session {row['id'][:12]}: worker records could not be read ({exc})")
+                worker_records_unread = True
+            else:
+                if frozen_snapshot is None or not _same_cleanup_session(
+                    row, frozen_snapshot["session"]
+                ):
+                    log_error(f"session {row['id'][:12]} changed during cleanup")
+                    return 1
         # Shows never reach "running" (they persist as 'active' per the
         # shows.status vocabulary in state/db.py); every other entity type
         # uses "running" as its only killable status.
@@ -842,6 +1180,17 @@ async def _do_kill(
                         f"  killed child {child_type} {child_row['id'][:12]} (signal={r['signal']})"
                     )
 
+        if entity_type == "session" and not worker_records_unread:
+            recorded_result = await _try_recorded_worker_cleanup(
+                db,
+                row,
+                user_reason=user_reason,
+                grace_seconds=grace_seconds,
+                snapshot=frozen_snapshot,
+            )
+            if recorded_result is not None:
+                return 1 if blocked else recorded_result
+
         r = await _kill_one(
             db,
             entity_type,
@@ -864,6 +1213,13 @@ async def _do_kill(
                 "any workers it started cannot be resolved from the play id. "
                 "Find the running sessions with `li monitor` and kill those "
                 "ids directly."
+            )
+            return 1
+
+        if worker_records_unread:
+            log_error(
+                f"session {row['id'][:12]}: its recorded worker groups were not handled, "
+                "because the worker records could not be read"
             )
             return 1
 

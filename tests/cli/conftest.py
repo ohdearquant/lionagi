@@ -38,6 +38,23 @@ def _restore_cli_logging():
         logger.handlers[:] = handlers
 
 
+@pytest.fixture(autouse=True)
+def _guard_runner_probes_in_kill_tests(request, monkeypatch):
+    """Kill tests must explicitly supply every runner PID observation."""
+    if request.path.name not in {
+        "test_kill.py",
+        "test_kill_recorded_workers.py",
+        "test_kill_degraded_run.py",
+        "test_smart_staleness.py",
+    }:
+        return
+
+    def unexpected_runner(pid):
+        raise AssertionError(f"unconfigured runner process probe: {pid}")
+
+    monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", unexpected_runner)
+
+
 @dataclass
 class CodexHome:
     """A private ``$CODEX_HOME`` for a test, plus the ambient server table.

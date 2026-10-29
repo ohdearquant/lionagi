@@ -2115,3 +2115,58 @@ async def test_failed_setup_closes_the_admitted_row_so_the_branch_resumes(
     finally:
         if ctx is not None:
             await _teardown_live_persist(ctx, status="completed")
+
+
+async def test_non_continuation_resume_installs_a_fresh_worker_generation(temp_db_path):
+    branch = Branch(name="generation-resume")
+    first = await _setup_live_persist(branch, share_db=False)
+    assert first is not None
+    snapshot = branch.to_dict()
+    session_id = first["session_id"]
+    original_generation = first["worker_spawn_owner"].generation_id
+    await _teardown_live_persist(first, status="completed")
+
+    second = await _setup_live_persist(Branch.from_dict(snapshot), share_db=False)
+    assert second is not None
+    try:
+        assert second["session_id"] == session_id
+        assert second["worker_spawn_owner"].generation_id != original_generation
+        stored = await second["db"].get_session(session_id)
+        assert stored["status"] == "running"
+        assert stored["cli_worker_generation"] == second["worker_spawn_owner"].generation_id
+    finally:
+        await _teardown_live_persist(second, status="completed")
+
+
+async def test_continuation_keeps_worker_generation_and_is_consumed_once(temp_db_path):
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
+
+    branch = Branch(name="generation-continuation")
+    first = await _setup_live_persist(branch, share_db=False)
+    assert first is not None
+    snapshot = branch.to_dict()
+    session_id = first["session_id"]
+    generation = first["worker_spawn_owner"].generation_id
+    assert (
+        await _teardown_live_persist(first, status="timed_out", defer_terminal=True) == "timed_out"
+    )
+    continuation = _prepare_worker_spawn_continuation(
+        first["worker_spawn_owner"], db_close_witness=first["worker_spawn_db_closed"]
+    )
+    second = await _setup_live_persist(
+        Branch.from_dict(snapshot), share_db=False, _worker_spawn_continuation=continuation
+    )
+    assert second is not None
+    try:
+        assert second["session_id"] == session_id
+        assert second["worker_spawn_owner"].generation_id == generation
+        stored = await second["db"].get_session(session_id)
+        assert stored["status"] == "running"
+        assert stored["cli_worker_generation"] == generation
+    finally:
+        await _teardown_live_persist(second, status="completed")
+    with pytest.raises(_WorkerSpawnAdmissionError, match="already consumed"):
+        await _setup_live_persist(
+            Branch.from_dict(snapshot), share_db=False, _worker_spawn_continuation=continuation
+        )

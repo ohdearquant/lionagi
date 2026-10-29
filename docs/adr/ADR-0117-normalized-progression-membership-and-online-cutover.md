@@ -19,7 +19,7 @@ This gives a simple full reconstruction and idempotent append, but append work g
 history already stored. SQLite scans membership and reconstructs the array; PostgreSQL expands
 the text as JSON, checks membership, appends and serializes it again
 (`lionagi/state/db.py:3371`). Live persistence normally updates both a branch progression and
-a session progression in one transaction (`lionagi/state/db.py:4299`).
+a session progression in one transaction (`lionagi/state/db.py:4396`).
 
 Bulk insertion already avoids one rewrite per message: it decodes a string-ID collection,
 deduplicates a batch with a set and rewrites the collection once
@@ -233,7 +233,7 @@ full normalized list to construct a Python set.
 Bulk append preserves incoming order and admits each new ID once, including duplicate IDs within
 the batch. Indexed membership checks and insert work scale with batch size and index access, not
 the entire prior collection. Message upsert, both progression updates, and session-activity
-updates retain their current transaction boundary (`lionagi/state/db.py:3410`, `lionagi/state/db.py:4266`). A
+updates retain their current transaction boundary (`lionagi/state/db.py:3410`, `lionagi/state/db.py:4363`). A
 duplicate membership does not suppress an otherwise valid message-content upsert.
 
 In `json`, preserve legacy append and bulk behavior. Increment the JSON revision only when the
@@ -418,7 +418,7 @@ Keeping that column current would retain the performance defect.
    `lionagi/cli/_context_from.py:193` through complete authority. Replace the last-ID-only load
    at `lionagi/state/_mirror_common.py:315` with an indexed one-item tail. Do not describe
    intentionally complete reconstruction or role aggregation as constant-time work.
-5. **Deletion and shared references.** Adapt `lionagi/state/db.py:4049`, `lionagi/state/db.py:4072`,
+5. **Deletion and shared references.** Adapt `lionagi/state/db.py:4146`, `lionagi/state/db.py:4169`,
    `lionagi/studio/services/db_maintenance.py:393`, `lionagi/studio/services/db_maintenance.py:555` and `lionagi/cli/state.py:901`, `lionagi/cli/state.py:906`
    before any JSON freeze. Candidate and survivor reference checks must include target-only
    tail items, including shared progressions and retained references to absent message rows.

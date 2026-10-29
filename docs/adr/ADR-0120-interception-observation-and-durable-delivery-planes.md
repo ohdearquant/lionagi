@@ -711,9 +711,9 @@ the record says what is lost and when. For a durable subscriber the source fact 
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
 (`lionagi/state/schema.sql:824-828`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:7582-7592`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:7607-7624`), whose forward read defaults to 500 rows
-(`:7612`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionagi/state/db.py:7679-7689`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:7704-7721`), whose forward read defaults to 500 rows
+(`:7709`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -804,7 +804,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:298-322`, `:359-396`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:948-1028`, `lionhub/src/lionhub/orchestration/engines/review.py:636`,
+  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:948-1028`, `lionhub/src/lionhub/orchestration/engines/review.py:711`,
   `lionhub/src/lionhub/orchestration/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1164-1165`, `:1457-1501`), under ADR-0023 D6, which decides that the
@@ -817,14 +817,14 @@ everything since; facts past the range belong to the next wake.
   `lionagi/cli/orchestrate/flow.py:2089-2134`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
-  (`lionagi/state/schema.sql:487`, `:554-562`; `lionagi/state/db.py:5743-5745`, `:5875`;
+  (`lionagi/state/schema.sql:487`, `:554-562`; `lionagi/state/db.py:5840-5842`, `:5972`;
   `lionagi/studio/scheduler/engine.py:2059-2060`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:824-828`; writer `lionagi/state/db.py:7582-7592`; forward reader
-  `lionagi/state/db.py:7607-7624`).
+  (`lionagi/state/schema.sql:824-828`; writer `lionagi/state/db.py:7679-7689`; forward reader
+  `lionagi/state/db.py:7704-7721`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
