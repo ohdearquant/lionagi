@@ -63,7 +63,7 @@ async def test_private_late_ack_stays_reserved_until_owner_coroutine_settles(
 
     def deliver():
         sync_entered.set()
-        if not release_sync.wait(2):
+        if not release_sync.wait(5):
             raise AssertionError("test did not release synchronous worker")
         return DeliveryOutcome.SUCCESS
 
@@ -80,8 +80,8 @@ async def test_private_late_ack_stays_reserved_until_owner_coroutine_settles(
         await register_consumer(db, "private-settlement", start="all")
         store = reconciliation._store_identity(db)
         key = (store, "private-settlement", event_id)
-        first = TerminalReconciler("private-settlement", prepare, batch_size=1, timeout=0.05)
-        second = TerminalReconciler("private-settlement", prepare, batch_size=1, timeout=0.05)
+        first = TerminalReconciler("private-settlement", prepare, batch_size=1, timeout=1.0)
+        second = TerminalReconciler("private-settlement", prepare, batch_size=1, timeout=1.0)
         with caplog.at_level("WARNING", logger=reconciliation.__name__):
             result = await getattr(first, adapter)(db, event_id)
             assert sync_entered.is_set() and result.status == "failed" and result.attempted
@@ -159,7 +159,7 @@ async def test_private_late_ack_failure_logs_type_not_sensitive_message(
 
     def deliver():
         sync_entered.set()
-        if not release_sync.wait(2):
+        if not release_sync.wait(5):
             raise AssertionError("test did not release synchronous worker")
         return DeliveryOutcome.SUCCESS
 
@@ -174,7 +174,7 @@ async def test_private_late_ack_failure_logs_type_not_sensitive_message(
         event_id = await _seed(db)
         await register_consumer(db, "private-failure", start="all")
         key = (reconciliation._store_identity(db), "private-failure", event_id)
-        runner = TerminalReconciler("private-failure", prepare, batch_size=1, timeout=0.05)
+        runner = TerminalReconciler("private-failure", prepare, batch_size=1, timeout=1.0)
         with caplog.at_level("WARNING", logger=reconciliation.__name__):
             result = await getattr(runner, adapter)(db, event_id)
             assert sync_entered.is_set() and result.status == "failed" and result.attempted

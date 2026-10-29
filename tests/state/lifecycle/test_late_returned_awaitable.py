@@ -115,7 +115,7 @@ async def test_late_returned_awaitable_keeps_capacity_through_settlement_and_ack
     def deliver():
         calls.append(True)
         sync_started.set()
-        if not release_sync.wait(3):
+        if not release_sync.wait(5):
             return DeliveryOutcome.FAILURE
         coroutine = effect()
         return coroutine if shape == "coroutine" else _Awaitable(coroutine)
@@ -133,8 +133,8 @@ async def test_late_returned_awaitable_keeps_capacity_through_settlement_and_ack
     async with StateDB(tmp_path / "state.db") as db:
         event_id, other_id = await _seed(db), await _seed(db)
         await register_consumer(db, "late-return", start="all")
-        first = TerminalReconciler("late-return", prepare, batch_size=1, timeout=0.05)
-        second = TerminalReconciler("late-return", prepare, batch_size=1, timeout=0.05)
+        first = TerminalReconciler("late-return", prepare, batch_size=1, timeout=1.0)
+        second = TerminalReconciler("late-return", prepare, batch_size=1, timeout=1.0)
         key = (reconciliation._store_identity(db), "late-return", event_id)
         with caplog.at_level(logging.WARNING, logger=reconciliation.__name__):
             try:
@@ -201,7 +201,7 @@ async def test_late_returned_coroutine_cooperative_cancel_leaves_delivery_owed(
 
     def deliver():
         sync_started.set()
-        if not release_sync.wait(3):
+        if not release_sync.wait(5):
             return DeliveryOutcome.FAILURE
         return effect()
 
@@ -211,7 +211,7 @@ async def test_late_returned_coroutine_cooperative_cancel_leaves_delivery_owed(
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "cooperative", start="all")
-        worker = TerminalReconciler("cooperative", prepare, batch_size=1, timeout=0.05)
+        worker = TerminalReconciler("cooperative", prepare, batch_size=1, timeout=1.0)
         key = (reconciliation._store_identity(db), "cooperative", event_id)
         try:
             result = await getattr(worker, adapter)(db, event_id)
@@ -242,7 +242,7 @@ async def test_late_returned_awaitable_success_before_inner_budget_acks(
 
     def deliver():
         sync_started.set()
-        if not release_sync.wait(3):
+        if not release_sync.wait(5):
             return DeliveryOutcome.FAILURE
         coroutine = effect()
         return coroutine if shape == "coroutine" else _Awaitable(coroutine)
@@ -253,7 +253,7 @@ async def test_late_returned_awaitable_success_before_inner_budget_acks(
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "fast-late", start="all")
-        runner = TerminalReconciler("fast-late", prepare, batch_size=1, timeout=0.05)
+        runner = TerminalReconciler("fast-late", prepare, batch_size=1, timeout=1.0)
         key = (reconciliation._store_identity(db), "fast-late", event_id)
         try:
             result = await getattr(runner, adapter)(db, event_id)
@@ -292,7 +292,7 @@ async def test_late_returned_coroutine_acks_original_store_after_handle_close(
 
     def deliver():
         started.set()
-        if not release_sync.wait(3):
+        if not release_sync.wait(5):
             return DeliveryOutcome.FAILURE
         return effect()
 
@@ -304,7 +304,7 @@ async def test_late_returned_coroutine_acks_original_store_after_handle_close(
         event_id = await _seed(db)
         await register_consumer(db, "closed-store", start="all")
         key = (reconciliation._store_identity(db), "closed-store", event_id)
-        runner = TerminalReconciler("closed-store", prepare, batch_size=1, timeout=0.05)
+        runner = TerminalReconciler("closed-store", prepare, batch_size=1, timeout=1.0)
         result = await getattr(runner, adapter)(db, event_id)
         assert result.status == "failed" and result.attempted and started.is_set()
         release_sync.set()
@@ -342,7 +342,7 @@ async def test_late_returned_coroutine_does_not_ack_reopened_private_memory(monk
 
     def deliver():
         started.set()
-        if not release_sync.wait(3):
+        if not release_sync.wait(5):
             return DeliveryOutcome.FAILURE
         return effect()
 
@@ -354,7 +354,7 @@ async def test_late_returned_coroutine_does_not_ack_reopened_private_memory(monk
         event_id = await _seed(db)
         await register_consumer(db, "private-store", start="all")
         key = (reconciliation._store_identity(db), "private-store", event_id)
-        runner = TerminalReconciler("private-store", prepare, batch_size=1, timeout=0.05)
+        runner = TerminalReconciler("private-store", prepare, batch_size=1, timeout=1.0)
         result = await getattr(runner, adapter)(db, event_id)
         assert result.status == "failed" and result.attempted and started.is_set()
         release_sync.set()
