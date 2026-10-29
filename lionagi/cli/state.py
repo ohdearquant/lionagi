@@ -848,7 +848,8 @@ async def _prune(
                         by_reference[table] = count
                 if by_reference:
                     referenced = " OR ".join(
-                        f"EXISTS (SELECT 1 FROM {table} WHERE {table}.session_id = prune_victims.id)"  # noqa: S608
+                        f"prune_victims.id IN (SELECT session_id FROM {table} "  # noqa: S608
+                        "WHERE session_id IS NOT NULL)"
                         for table in retained_tables
                     )
                     skipped = (

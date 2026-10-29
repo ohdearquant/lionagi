@@ -104,7 +104,7 @@ async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_id", ["", None, 42], ids=["empty", "null", "integer"])
-async def test_unordered_invalid_entry_is_excluded_from_import(tmp_path, invalid_id):
+async def test_ordered_invalid_entry_is_excluded_from_import(tmp_path, invalid_id):
     run_dir = tmp_path / "run-2"
     branches = run_dir / "branches"
     branches.mkdir(parents=True)

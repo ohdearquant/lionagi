@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Native SQLite characterization of progression collection writes.
-
-These desired validation tests are expected to fail on the unmodified writers.
-The compatibility cases exercise its existing ownership and operation guards.
-"""
+"""Validate native progression writes and compatibility operation guards."""
 
 from __future__ import annotations
 
