@@ -1,6 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Legacy checkpoint readers must not silently present a journal base as complete."""
+"""Exercise checkpoint version guards with synthetic journals.
+
+The current writer emits no journal. Legacy fixtures include one only to
+characterize base-only reads; unsupported bases must be refused.
+"""
 
 from __future__ import annotations
 
