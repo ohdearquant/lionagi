@@ -143,6 +143,56 @@ def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
     return evaluate
 
 
+def _session_gate_result(result: Any, tool_name: str = "") -> GateResult:
+    """Preserve typed session verdicts and fail closed on invalid decisions."""
+    if isinstance(result, GateResult):
+        if type(result.allowed) is not bool:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                f"invalid allowed type: {type(result.allowed).__name__}",
+                errored=True,
+            )
+        if type(result.errored) is not bool:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                f"invalid errored type: {type(result.errored).__name__}",
+                errored=True,
+            )
+        if result.allowed and result.errored:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                "contradictory GateResult: allowed and errored are both true",
+                errored=True,
+            )
+        if result.allowed and result.mutated_args is not None:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                "session gate does not apply argument rewrites",
+                errored=True,
+            )
+        return result
+    allowed = bool(result)
+    return GateResult(
+        allowed,
+        "session_gate",
+        tool_name,
+        "authorize",
+        "allowed" if allowed else "denied by session gate",
+    )
+
+
 def adapt_session_gate(
     check: Callable[[Any], Any],
 ) -> Callable[[Any], Awaitable[GateResult]]:
@@ -151,7 +201,7 @@ def adapt_session_gate(
     async def evaluate(action: Any) -> GateResult:
         tool_name = str(getattr(action, "function", "") or "")
         try:
-            allowed = bool(await maybe_await(check(action)))
+            return _session_gate_result(await maybe_await(check(action)), tool_name)
         except Exception as e:  # noqa: BLE001 - fail-closed on any evaluator error
             logger.warning("session gate raised %s; failing closed", type(e).__name__)
             return GateResult(
@@ -162,9 +212,6 @@ def adapt_session_gate(
                 f"evaluator error: {e}",
                 errored=True,
             )
-        if allowed:
-            return GateResult(True, "session_gate", tool_name, "authorize", "allowed")
-        return GateResult(False, "session_gate", tool_name, "authorize", "denied by session gate")
 
     return evaluate
 
