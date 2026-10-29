@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from lionagi.state.db import StateDB
 
 __all__ = (
+    "ConsumerAlreadyActiveError",
+    "ConsumerAlreadyRetiredError",
+    "ConsumerChange",
     "ConsumerCompatibilityError",
     "ConsumerNotRegisteredError",
     "ConsumerRegistration",
@@ -32,7 +35,9 @@ __all__ = (
     "ConsumerSchemaError",
     "EligibilityCounts",
     "ack_delivery",
+    "change_consumer",
     "eligibility_counts",
+    "get_owed_transition",
     "is_acknowledged",
     "reconcile_unacknowledged",
     "register_consumer",
@@ -42,6 +47,14 @@ __all__ = (
 _CLASSIFICATION_KEY = "migration.terminal_delivery_eligibility"
 _MAX_EXCLUSIONS = 4096
 _MAX_EXCLUSIONS_BYTES = 1024 * 1024
+
+
+class ConsumerAlreadyActiveError(ValueError):
+    """An operator requested reactivation of an already active consumer."""
+
+
+class ConsumerAlreadyRetiredError(ValueError):
+    """An operator requested retirement of an already retired consumer."""
 
 
 class ConsumerCompatibilityError(RuntimeError):
@@ -77,6 +90,21 @@ class ConsumerRegistration:
     created: bool
     reactivated: bool
     counts: EligibilityCounts
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumerChange:
+    """One operator mutation and counts from its transaction snapshot."""
+
+    name: str
+    registered_at: float
+    retired_at_before: float | None
+    retired_at_after: float | None
+    owed_before: int
+    owed_after: int
+    candidate_before: int
+    changed: bool
+    baselined: int
 
 
 def _consumer_name(consumer: str) -> None:
@@ -153,6 +181,22 @@ async def _counts(conn: Any, marker: dict[str, Any]) -> EligibilityCounts:
     )
     initial = marker["initial_null_count"]
     return EligibilityCounts(initial, current, current - initial)
+
+
+async def _unacknowledged_count(conn: Any, consumer: str) -> int:
+    return int(
+        (
+            await conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM status_transitions st "
+                    "WHERE st.delivery_eligible IS TRUE AND NOT EXISTS ("
+                    "SELECT 1 FROM terminal_deliveries td "
+                    "WHERE td.transition_id = st.id AND td.consumer = :consumer)"
+                ),
+                {"consumer": consumer},
+            )
+        ).scalar_one()
+    )
 
 
 @asynccontextmanager
@@ -251,6 +295,94 @@ async def register_consumer(
     raise AssertionError("unreachable")
 
 
+async def change_consumer(
+    db: StateDB,
+    consumer: str,
+    *,
+    action: Literal["retire", "reactivate"],
+    start: Literal["now", "all"] | None = None,
+) -> ConsumerChange:
+    """Change an existing registration and report its snapshot counts.
+
+    No missing identity is created. Counts describe the transaction's snapshot,
+    not a reservation against subsequent commits or acknowledgements.
+    """
+    _consumer_name(consumer)
+    _refuse_compatibility(db)
+    if action not in ("retire", "reactivate"):
+        raise ValueError("action must be 'retire' or 'reactivate'")
+    if action == "reactivate" and start not in ("now", "all"):
+        raise ValueError("reactivate requires start='now' or 'all'")
+    if action == "retire" and start is not None:
+        raise ValueError("retire does not accept a start mode")
+    for attempt in range(3):
+        try:
+            async with _registration_transaction(db) as conn:
+                await _check_schema(conn)
+                sql = (
+                    "SELECT name, registered_at, retired_at FROM terminal_consumers "
+                    "WHERE name = :consumer"
+                )
+                if db.dialect == "postgresql":
+                    sql += " FOR UPDATE"
+                row = (await conn.execute(text(sql), {"consumer": consumer})).mappings().first()
+                if row is None:
+                    raise ConsumerNotRegisteredError(f"consumer {consumer!r} is not registered")
+                candidate = await _unacknowledged_count(conn, consumer)
+                before = row["retired_at"]
+                if action == "retire" and before is not None:
+                    raise ConsumerAlreadyRetiredError(f"consumer {consumer!r} is already retired")
+                if action == "reactivate" and before is None:
+                    raise ConsumerAlreadyActiveError(f"consumer {consumer!r} is already active")
+                after = before
+                changed = False
+                baselined = 0
+                if action == "retire" and before is None:
+                    after = time.time()
+                    await conn.execute(
+                        text(
+                            "UPDATE terminal_consumers SET retired_at = :at WHERE name = :consumer"
+                        ),
+                        {"at": after, "consumer": consumer},
+                    )
+                    changed = True
+                elif action == "reactivate" and before is not None:
+                    await conn.execute(
+                        text(
+                            "UPDATE terminal_consumers SET retired_at = NULL WHERE name = :consumer"
+                        ),
+                        {"consumer": consumer},
+                    )
+                    after = None
+                    changed = True
+                    if start == "now":
+                        await conn.execute(
+                            text(
+                                "INSERT INTO terminal_deliveries (transition_id, consumer, acked_at) "
+                                "SELECT st.id, :consumer, :acked_at FROM status_transitions st "
+                                "WHERE st.delivery_eligible IS TRUE "
+                                "ON CONFLICT (transition_id, consumer) DO NOTHING"
+                            ),
+                            {"consumer": consumer, "acked_at": time.time()},
+                        )
+                        baselined = candidate - await _unacknowledged_count(conn, consumer)
+                return ConsumerChange(
+                    name=row["name"],
+                    registered_at=float(row["registered_at"]),
+                    retired_at_before=float(before) if before is not None else None,
+                    retired_at_after=float(after) if after is not None else None,
+                    owed_before=candidate if before is None else 0,
+                    owed_after=(candidate - baselined) if after is None else 0,
+                    candidate_before=candidate,
+                    changed=changed,
+                    baselined=baselined,
+                )
+        except DBAPIError as exc:
+            if db.dialect != "postgresql" or not _serialization_failure(exc) or attempt == 2:
+                raise
+    raise AssertionError("unreachable")
+
+
 async def retire_consumer(db: StateDB, consumer: str) -> bool:
     """Retire in one statement; keep ACKs and permit in-flight late ACKs."""
     _consumer_name(consumer)
@@ -304,6 +436,36 @@ async def is_acknowledged(db: StateDB, transition_id: str, consumer: str) -> boo
             )
         ).first()
         return row is not None
+
+
+async def get_owed_transition(
+    db: StateDB, consumer: str, transition_id: str
+) -> dict[str, Any] | None:
+    """Read one retained eligible event owed to an active consumer, without registration."""
+    _consumer_name(consumer)
+    _refuse_compatibility(db)
+    async with db._read() as conn:
+        await _check_schema(conn)
+        row = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT st.id AS transition_id, st.entity_type, st.entity_id, "
+                        "st.previous_status, st.status AS terminal_status, st.reason_code, "
+                        "st.created_at AS occurred_at FROM status_transitions st "
+                        "JOIN terminal_consumers tc ON tc.name = :consumer AND tc.retired_at IS NULL "
+                        "LEFT JOIN terminal_deliveries td ON td.transition_id = st.id "
+                        "AND td.consumer = :consumer "
+                        "WHERE st.id = :id AND st.delivery_eligible IS TRUE "
+                        "AND td.transition_id IS NULL"
+                    ),
+                    {"consumer": consumer, "id": transition_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row is not None else None
 
 
 async def eligibility_counts(db: StateDB) -> EligibilityCounts:
