@@ -627,7 +627,9 @@ async def _kill_one(
             except Exception as exc:
                 cancel_status = "unavailable"
                 cancel_error = f"guarded cancellation unavailable: {exc}"
-        if cancel_status != "applied" and cancel_error is None:
+        # "already_terminal": the signalled execution recorded its own end during the
+        # grace period, so the kill worked and that record is kept as written.
+        if cancel_status not in ("applied", "already_terminal") and cancel_error is None:
             cancel_error = {
                 "conflict": "session changed before cancellation was recorded",
                 "missing": "session no longer exists",

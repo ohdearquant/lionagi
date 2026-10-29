@@ -101,3 +101,75 @@ async def test_kill_grace_does_not_cancel_reopened_session(
         assert signals == [(4242, 100.0)]
         assert exit_code == 1
         assert "changed" in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_kill_succeeds_when_the_runner_records_its_own_sigterm_end_in_grace(
+    tmp_path, monkeypatch, caplog
+):
+    caplog.set_level(logging.ERROR)
+    path = tmp_path / "state.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
+    )
+    generation = str(uuid.uuid4())
+    identity = {"pid": 4242, "pid_create_time": 100.0}
+    entered = threading.Event()
+    release = threading.Event()
+
+    def wait_in_grace(pid, **kwargs):
+        entered.set()
+        if not release.wait(timeout=10):
+            raise AssertionError("test did not release the fake grace period")
+        return "sigterm"
+
+    # Stub every OS process probe or signal: no process with these PIDs is contacted.
+    monkeypatch.setattr(kill_mod, "_runner_process_create_time", lambda pid: ("found", 100.0))
+    monkeypatch.setattr(kill_mod, "_terminate_pid", wait_in_grace)
+
+    async with StateDB(path) as editor:
+        sid = str(uuid.uuid4())
+        progression = str(uuid.uuid4())
+        await editor.create_progression(progression)
+        await editor.create_session(
+            {
+                "id": sid,
+                "progression_id": progression,
+                "status": "running",
+                "cli_worker_generation": generation,
+                "node_metadata": dict(identity),
+            }
+        )
+        task = asyncio.create_task(asyncio.to_thread(lambda: asyncio.run(kill_mod._do_kill(sid))))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5), "kill did not enter fake grace"
+            # The runner obeys the SIGTERM: its teardown records the end before it exits.
+            await editor.update_status(
+                "session",
+                sid,
+                new_status="cancelled",
+                reason_code=RunReasons.CANCELLED_SIGTERM,
+                source="executor",
+                actor=sid,
+                expected_statuses={"running"},
+            )
+            release.set()
+            exit_code = await asyncio.wait_for(task, timeout=10)
+        finally:
+            release.set()
+            if not task.done():
+                await asyncio.wait_for(task, timeout=10)
+
+        after = await editor.get_session(sid)
+        rows = await editor.fetch_all(
+            "SELECT status, source, reason_code FROM status_transitions WHERE entity_id = ?",
+            (sid,),
+        )
+    assert exit_code == 0
+    assert after["status"] == "cancelled"
+    assert after["cli_worker_generation"] == generation
+    assert [r for r in rows if r["status"] == "cancelled"] == [
+        {"status": "cancelled", "source": "executor", "reason_code": RunReasons.CANCELLED_SIGTERM}
+    ]
+    assert "not recorded" not in caplog.text

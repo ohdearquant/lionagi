@@ -57,7 +57,7 @@ async def test_null_generation_still_cancels_the_unchanged_running_session(tmp_p
 @pytest.mark.asyncio
 @pytest.mark.parametrize("metadata", [{}, {"pid": "not-a-pid"}], ids=["missing", "malformed"])
 @pytest.mark.parametrize("change", ["generation", "status"])
-async def test_no_pid_kill_does_not_cancel_a_changed_execution(
+async def test_no_pid_kill_does_not_cancel_a_changed_or_ended_execution(
     tmp_path, monkeypatch, metadata, change
 ):
     monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
@@ -89,7 +89,14 @@ async def test_no_pid_kill_does_not_cancel_a_changed_execution(
         after = await db.get_session(sid)
         assert calls == [None]
         assert result["signal"] == "no_pid"
-        assert result["cancel_status"] == "conflict"
+        # A replaced generation is a different execution. The same execution ending on its
+        # own is the outcome the kill wanted, and its own record stands.
+        if change == "generation":
+            assert result["cancel_status"] == "conflict"
+            assert result["cancel_error"] == "session changed before cancellation was recorded"
+        else:
+            assert result["cancel_status"] == "already_terminal"
+            assert "cancel_error" not in result
         assert after["status"] == ("running" if change == "generation" else "completed")
         assert after["cli_worker_generation"] == (
             new_generation if change == "generation" else None
@@ -128,6 +135,66 @@ async def test_no_pid_kill_refuses_when_runner_identity_changes_in_same_generati
             "SELECT status FROM status_transitions WHERE entity_id = ? AND source = 'admin'",
             (sid,),
         )
+
+
+@pytest.mark.asyncio
+async def test_ended_execution_with_a_replaced_runner_is_still_a_conflict(tmp_path, monkeypatch):
+    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    async with StateDB(tmp_path / "state.db") as db:
+        generation = str(uuid.uuid4())
+        sid = await _session(db, generation=generation, metadata={"pid": "not-a-pid"})
+        before = await db.get_session(sid)
+        guard = db.cancel_session_if_worker_generation
+
+        async def replace_runner_then_end(session_id, captured_generation, **kwargs):
+            await db.merge_session_node_metadata(sid, {"pid": 4343, "pid_create_time": 200.0})
+            await db.update_status(
+                "session",
+                sid,
+                new_status="completed",
+                reason_code=RunReasons.COMPLETED_OK,
+                source="executor",
+                actor=sid,
+                expected_statuses={"running"},
+            )
+            return await guard(session_id, captured_generation, **kwargs)
+
+        monkeypatch.setattr(db, "cancel_session_if_worker_generation", replace_runner_then_end)
+        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        after = await db.get_session(sid)
+        assert result["cancel_status"] == "conflict"
+        assert after["status"] == "completed"
+        assert after["cli_worker_generation"] == generation
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_leg_that_ended_is_still_a_conflict(tmp_path, monkeypatch):
+    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    async with StateDB(tmp_path / "state.db") as db:
+        generation, resumed = str(uuid.uuid4()), str(uuid.uuid4())
+        sid = await _session(db, generation=generation, metadata={"pid": "not-a-pid"})
+        before = await db.get_session(sid)
+        guard = db.cancel_session_if_worker_generation
+
+        async def resume_then_end(session_id, captured_generation, **kwargs):
+            await db.update_session(sid, cli_worker_generation=resumed)
+            await db.update_status(
+                "session",
+                sid,
+                new_status="completed",
+                reason_code=RunReasons.COMPLETED_OK,
+                source="executor",
+                actor=sid,
+                expected_statuses={"running"},
+            )
+            return await guard(session_id, captured_generation, **kwargs)
+
+        monkeypatch.setattr(db, "cancel_session_if_worker_generation", resume_then_end)
+        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        after = await db.get_session(sid)
+        assert result["cancel_status"] == "conflict"
+        assert after["status"] == "completed"
+        assert after["cli_worker_generation"] == resumed
 
 
 @pytest.mark.asyncio
