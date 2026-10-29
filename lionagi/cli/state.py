@@ -952,6 +952,7 @@ async def _prune(
                             "  SELECT value FROM progressions, json_each(progressions.collection)"
                             "  WHERE progressions.id NOT IN"
                             "    (SELECT id FROM prune_orphan_progressions)"
+                            "    AND json_each.value IS NOT NULL"
                             ") AND id NOT IN ("
                             "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
                             "  UNION"
