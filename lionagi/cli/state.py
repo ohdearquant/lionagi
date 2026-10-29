@@ -161,8 +161,8 @@ async def _import_one_run(
     session_prog_id = str(uuid.uuid4())
     branches_dir = run_dir / "branches"
     branch_files = list(branches_dir.glob("*.json")) if branches_dir.exists() else []
-    prepared_branches: list[tuple[Path, dict[str, Any]]] = []
-    # Read once and validate the entire run before its first database write.
+    prepared_branches: list[tuple[Path, dict[str, Any], list[dict[str, Any]]]] = []
+    # Read once and validate the selected messages before the first database write.
     # Later branch errors must not strand a partially imported session or
     # overwrite a shared message before the invalid entry is discovered.
     for branch_file in sorted(branch_files, key=lambda p: p.stat().st_mtime):
@@ -171,14 +171,22 @@ async def _import_one_run(
         except Exception as exc:
             print(f"    [warn] {branch_file.name}: failed to read — {exc}")
             continue
-        raw_collection = branch_data.get("messages", {}).get("collections", [])
-        for index, raw_msg in enumerate(raw_collection):
+        messages_pile = branch_data.get("messages", {})
+        raw_collection = messages_pile.get("collections", [])
+        order = messages_pile.get("progression", {}).get("order", [])
+        by_id = {m["id"]: (index, m) for index, m in enumerate(raw_collection) if "id" in m}
+        selected = (
+            [by_id[mid] for mid in order if mid in by_id]
+            if order
+            else list(enumerate(raw_collection))
+        )
+        for index, raw_msg in selected:
             message_id = raw_msg.get("id") if isinstance(raw_msg, dict) else None
             try:
                 StateDB._validate_progression_message_id(session_prog_id, message_id)
             except ValueError as exc:
                 raise ValueError(f"{branch_file.name}: message entry {index}: {exc}") from exc
-        prepared_branches.append((branch_file, branch_data))
+        prepared_branches.append((branch_file, branch_data, [message for _, message in selected]))
 
     await db.create_progression(session_prog_id)
 
@@ -225,20 +233,9 @@ async def _import_one_run(
     total_messages = 0
     session_msg_ids: list[str] = []
 
-    for branch_file, branch_data in prepared_branches:
+    for branch_file, branch_data, ordered_msgs in prepared_branches:
         branch_id = branch_data.get("id") or branch_file.stem
         branch_created_at = branch_data.get("created_at") or _mtime_as_float(branch_file)
-
-        messages_pile = branch_data.get("messages", {})
-        raw_collection: list[dict] = messages_pile.get("collections", [])
-        progression_info = messages_pile.get("progression", {})
-        order: list[str] = progression_info.get("order", [])
-
-        by_id: dict[str, dict] = {m["id"]: m for m in raw_collection if "id" in m}
-        if order:
-            ordered_msgs = [by_id[mid] for mid in order if mid in by_id]
-        else:
-            ordered_msgs = raw_collection
 
         system_msg_id: str | None = None
         for raw_msg in ordered_msgs:

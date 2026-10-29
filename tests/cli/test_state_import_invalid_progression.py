@@ -40,8 +40,9 @@ async def _snapshot(db):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_id", ["", None, 42], ids=["empty", "null", "integer"])
+@pytest.mark.parametrize("ordered", [False, True], ids=["all-selected", "selected-by-order"])
 async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
-    tmp_path, monkeypatch, invalid_id
+    tmp_path, monkeypatch, invalid_id, ordered
 ):
     path = tmp_path / "state.db"
     runs = tmp_path / "runs"
@@ -51,7 +52,13 @@ async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
     manifest = {"run_id": "run-1", "kind": "agent", "status": "completed"}
     (run_dir / "run.json").write_text(json.dumps(manifest))
     _branch(branches / "first.json", "branch-1", [_message("shared", "replacement")], stamp=1)
-    _branch(branches / "second.json", "branch-2", [_message(invalid_id, "bad")], stamp=2)
+    _branch(
+        branches / "second.json",
+        "branch-2",
+        [_message(invalid_id, "bad")],
+        order=[invalid_id] if ordered else (),
+        stamp=2,
+    )
     monkeypatch.setattr(state_mod, "RUNS_ROOT", runs)
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(
@@ -97,7 +104,7 @@ async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_id", ["", None, 42], ids=["empty", "null", "integer"])
-async def test_unordered_invalid_entry_is_refused_before_writes(tmp_path, invalid_id):
+async def test_unordered_invalid_entry_is_excluded_from_import(tmp_path, invalid_id):
     run_dir = tmp_path / "run-2"
     branches = run_dir / "branches"
     branches.mkdir(parents=True)
@@ -110,12 +117,13 @@ async def test_unordered_invalid_entry_is_refused_before_writes(tmp_path, invali
         stamp=2,
     )
     async with StateDB(tmp_path / "state.db") as db:
-        before = await _snapshot(db)
-        with pytest.raises(ValueError, match="non-empty string") as caught:
-            await state_mod._import_one_run(db, "run-2", run_dir, {"kind": "agent"})
-        assert "second.json" in str(caught.value)
-        assert re.search(r"\b1\b", str(caught.value))
-        assert await _snapshot(db) == before
+        assert await state_mod._import_one_run(db, "run-2", run_dir, {"kind": "agent"}) == (1, 2, 2)
+        messages = await db.fetch_all("SELECT id FROM messages ORDER BY id")
+        assert [row["id"] for row in messages] == ["valid-1", "valid-2"]
+        progressions = await db.fetch_all("SELECT id FROM progressions ORDER BY id")
+        collections = [await db.get_progression(row["id"]) for row in progressions]
+        assert sorted(collections) == [["valid-1"], ["valid-1", "valid-2"], ["valid-2"]]
+        assert all(invalid_id not in collection for collection in collections)
 
 
 @pytest.mark.asyncio
