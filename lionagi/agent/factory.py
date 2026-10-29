@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Callable, Collection, Mapping
@@ -1139,10 +1140,31 @@ def apply_forwarded_mcp_servers(
     if _canonical_provider(provider) in _CLAUDE_PROVIDER_NAMES:
         if exclusive and "mcp_config" in kwargs:
             dropped_config = kwargs.pop("mcp_config")
-            logger.warning(
-                "Dropping mcp_config %r because an exclusive MCP server set was supplied",
-                dropped_config,
-            )
+            if dropped_config is not None:
+                if isinstance(dropped_config, str):
+                    config_text = dropped_config
+                elif isinstance(dropped_config, os.PathLike):
+                    try:
+                        config_text = os.fsdecode(dropped_config)
+                    except (TypeError, ValueError, OSError):
+                        config_text = None
+                else:
+                    config_text = None
+                if config_text is None:
+                    description = "non-path config"
+                elif config_text.lstrip("\ufeff \t\r\n").startswith(("{", "[", '"')):
+                    description = "inline JSON config"
+                else:
+                    try:
+                        json.loads(config_text)
+                    except (TypeError, ValueError):
+                        description = config_text
+                    else:
+                        description = "inline JSON config"
+                logger.warning(
+                    "Dropping mcp_config %s because an exclusive MCP server set was supplied",
+                    description,
+                )
         kwargs["mcp_servers"] = servers
         if exclusive:
             # Strict mode bounds discovery for the configured set. A caller

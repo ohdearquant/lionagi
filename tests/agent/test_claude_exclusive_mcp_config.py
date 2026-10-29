@@ -28,11 +28,111 @@ def _assert_drop_warning(caplog, *, inherited_file: bool, config_arg: str) -> No
         for record in caplog.records
         if record.name == "lionagi.agent.factory"
         and record.levelno >= logging.WARNING
-        and "mcp_config" in record.getMessage()
+        and record.getMessage().startswith("Dropping mcp_config ")
     ]
     assert len(warnings) == (1 if inherited_file else 0)
     if inherited_file:
         assert config_arg in warnings[0]
+
+
+@pytest.mark.parametrize("as_path", [False, True], ids=["string", "pathlike"])
+def test_dropped_config_path_is_named_once(caplog, as_path):
+    path = Path("agent-config.json") if as_path else "agent-config.json"
+    kwargs = {"mcp_config": path}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    assert kwargs["mcp_servers"] == {}
+    assert kwargs["strict_mcp_config"] is True
+    _assert_drop_warning(caplog, inherited_file=True, config_arg=str(path))
+
+
+@pytest.mark.parametrize("prefix", ["", " \n\t"], ids=["plain", "whitespace"])
+@pytest.mark.parametrize("malformed", [False, True], ids=["valid", "incomplete"])
+def test_dropped_inline_config_never_logs_its_contents(caplog, prefix, malformed):
+    marker = "fixture-value-do-not-log"
+    inline = json.dumps({"mcpServers": {"demo": {"env": {"TOKEN": marker}}}})
+    if malformed:
+        inline = inline[:-1]
+    kwargs = {"mcp_config": prefix + inline}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    assert kwargs["mcp_servers"] == {}
+    assert kwargs["strict_mcp_config"] is True
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory"
+        and record.levelno >= logging.WARNING
+        and record.getMessage().startswith("Dropping mcp_config ")
+    ]
+    assert len(warnings) == 1
+    assert "inline" in warnings[0].lower() and "json" in warnings[0].lower()
+    assert all(marker not in record.getMessage() for record in caplog.records)
+    assert marker not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "inline",
+    [json.dumps("fixture-value-do-not-log"), "null", "true", "123", "1.25"],
+    ids=["string", "null", "boolean", "integer", "decimal"],
+)
+def test_dropped_json_scalar_is_not_logged_as_a_path(caplog, inline):
+    kwargs = {"mcp_config": inline}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory"
+        and record.levelno >= logging.WARNING
+        and record.getMessage().startswith("Dropping mcp_config ")
+    ]
+    assert len(warnings) == 1
+    assert "inline" in warnings[0].lower() and "json" in warnings[0].lower()
+    assert all(inline not in record.getMessage() for record in caplog.records)
+    assert "fixture-value-do-not-log" not in caplog.text
+
+
+def test_incomplete_quoted_config_is_not_logged_as_a_path(caplog):
+    marker = "fixture-value-do-not-log"
+    kwargs = {"mcp_config": ' \n"' + marker}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory"
+        and record.levelno >= logging.WARNING
+        and record.getMessage().startswith("Dropping mcp_config ")
+    ]
+    assert len(warnings) == 1
+    assert "inline" in warnings[0].lower() and "json" in warnings[0].lower()
+    assert all(marker not in record.getMessage() for record in caplog.records)
+    assert marker not in caplog.text
+
+
+def test_none_config_is_removed_without_warning(caplog):
+    kwargs = {"mcp_config": None}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    assert kwargs["mcp_servers"] == {}
+    assert kwargs["strict_mcp_config"] is True
+    _assert_drop_warning(caplog, inherited_file=False, config_arg="unused.json")
 
 
 def _caller_request(model: iModel) -> ClaudeCodeRequest:
