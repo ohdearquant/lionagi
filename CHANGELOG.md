@@ -79,7 +79,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   server names missing from the selected configuration are refused before any
   tools are registered. Metadata-free registration now resolves names at
   registration, including from the default configuration file, and rejects
-  unknown names at that point.
+  unknown names at that point. Existing tools keep their registration-time
+  transport; registering again picks up a changed configuration.
 
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared

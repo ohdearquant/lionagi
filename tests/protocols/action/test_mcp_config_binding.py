@@ -180,6 +180,52 @@ async def test_inline_transport_is_copied_before_waiting_for_client(monkeypatch)
     assert await MCPConnectionPool.get_client(config) is not client
 
 
+@pytest.mark.asyncio
+async def test_reloading_equal_transport_reuses_client_and_changed_transport_adds_one(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(MCPConnectionPool, "_configs", {})
+    monkeypatch.setattr(MCPConnectionPool, "_clients", {})
+    monkeypatch.setattr(MCPConnectionPool, "_security", None)
+    monkeypatch.setattr(MCPConnectionPool, "_lock", None)
+    monkeypatch.setattr(MCPConnectionPool, "_creation_locks", {})
+    created = []
+
+    class FakeClient:
+        def is_connected(self):
+            return True
+
+        async def list_tools(self):
+            return [
+                SimpleNamespace(name="probe", description="fixture", inputSchema={"type": "object"})
+            ]
+
+        async def __aexit__(self, *_args):
+            pass
+
+    async def create_client(cls, config, security=None):
+        client = FakeClient()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(MCPConnectionPool, "_create_client", classmethod(create_client))
+    path = tmp_path / "servers.json"
+    _config_file(path, {"srv": {"url": "https://a.invalid/mcp"}})
+    try:
+        for _ in range(2):
+            manager = ActionManager()
+            assert await manager.load_mcp_config(
+                str(path), mcp_security=MCPSecurityConfig.trusted()
+            )
+        assert len(created) == len(MCPConnectionPool._clients) == 1
+        _config_file(path, {"srv": {"url": "https://b.invalid/mcp"}})
+        manager = ActionManager()
+        assert await manager.load_mcp_config(str(path), mcp_security=MCPSecurityConfig.trusted())
+        assert len(created) == len(MCPConnectionPool._clients) == 2
+    finally:
+        await MCPConnectionPool.cleanup()
+
+
 @pytest.mark.parametrize(
     ("requested", "expected"),
     [
