@@ -76,10 +76,14 @@ async def test_profile_effort_drop_removes_persisted_effort_from_resumed_payload
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("new_model", "expected"),
-    [("claude-sonnet-4-6", "high"), ("claude-haiku-5-5", "xhigh")],
+    ("new_model", "expected", "same_model"),
+    [
+        ("claude-sonnet-4-6", "high", False),
+        ("claude-haiku-5-5", "xhigh", False),
+        ("claude-sonnet-4-6", "high", True),
+    ],
 )
-async def test_anthropic_resume_reclamps_persisted_effort(leg, new_model, expected):
+async def test_anthropic_resume_reclamps_persisted_effort(leg, new_model, expected, same_model):
     from lionagi import Branch
     from lionagi.cli._runs import find_branch
     from tests.cli.test_agent_api_provider import _answer, _last_round
@@ -93,11 +97,17 @@ async def test_anthropic_resume_reclamps_persisted_effort(leg, new_model, expect
     _, branch_path = find_branch(branch_id)
     stored = Branch.from_dict(json.loads(branch_path.read_text()))
     assert stored.chat_model.endpoint.config.kwargs["output_config"]["effort"] == "xhigh"
+    if same_model:
+        stored.chat_model.endpoint.config.kwargs["model"] = new_model
+        branch_path.write_text(json.dumps(stored.to_dict()))
 
     leg.payloads.clear()
     leg.replies = [_last_round(), _answer("second")]
     result, _, resumed_id, status, _ = await leg.run(
-        _profile(api_tools="read"), "continue", model=f"anthropic/{new_model}", resume=branch_id
+        _profile(api_tools="read"),
+        "continue",
+        model=None if same_model else f"anthropic/{new_model}",
+        resume=branch_id,
     )
     assert (result, resumed_id, status) == ("second", branch_id, "completed")
     assert leg.payloads and all(p["model"] == new_model for p in leg.payloads)
@@ -191,3 +201,6 @@ async def test_openai_resume_on_non_reasoning_model_handles_stored_effort(
         assert (result, resumed_id, status) == ("second", branch_id, "completed")
         assert payloads and all(p["model"] == "gpt-4.1" for p in payloads)
         assert all("reasoning_effort" not in p for p in payloads)
+        _, updated_path = find_branch(branch_id)
+        updated = Branch.from_dict(json.loads(updated_path.read_text()))
+        assert "reasoning_effort" not in updated.chat_model.endpoint.config.kwargs

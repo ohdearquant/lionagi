@@ -1977,9 +1977,8 @@ async def _run_agent(
                         if actual_provider == "openai"
                         else "explicit"
                     )
-                    if effort is None and model_str is not None and model != cfg.get("model"):
-                        if actual_provider == "anthropic":
-                            selected_effort = _clamp_claude_effort(stored_effort, model)
+                    if effort is None and actual_provider == "anthropic":
+                        selected_effort = _clamp_claude_effort(stored_effort, candidate_model)
                     applied = _set_api_effort(
                         candidate,
                         actual_provider,
