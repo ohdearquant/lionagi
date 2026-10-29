@@ -11,6 +11,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
   repeated scans hit the limit, schedule health explains how to recover.
 
+- OpenAI chat prompt-cache placement keeps the system and tool instructions in
+  a stable prefix. With placement on, the per-request token-usage estimate is
+  no longer appended to the newest message, since it changed cached bytes.
+
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in
   `metadata["prompt_cache"]`, keyed by a prefix certificate over the request through the marked
