@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from lionagi._checkpoint_v3_reader import CheckpointRecoveryError
+from lionagi._checkpoint_v3_reader import CheckpointMalformedBaseError, CheckpointRecoveryError
 from lionagi._errors import LionError
 from lionagi.cli.orchestrate._checkpoint import (
     FlowCheckpointDecodeError,
@@ -69,3 +69,19 @@ def test_malformed_checkpoint_preserves_json_and_lion_contracts_without_document
     assert secret not in str(error) + repr(error) + repr(error.args)
     assert secret not in json.dumps(error.checkpoint_recovery)
     assert secret not in repr(error.to_dict(include_cause=True))
+    assert isinstance(error.__cause__, CheckpointMalformedBaseError)
+    assert error.__cause__.doc == ""
+    assert error.__cause__.__context__ is None
+    # Follow both links: "raise from" can leave an implicit context as well as
+    # an explicit cause, and neither may retain the checkpoint document.
+    pending, seen = [error], set()
+    while pending:
+        item = pending.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        assert secret not in str(item)
+        assert secret not in repr(item.args)
+        assert secret not in repr(vars(item))
+        assert secret not in getattr(item, "doc", "")
+        pending.extend(link for link in (item.__cause__, item.__context__) if link is not None)

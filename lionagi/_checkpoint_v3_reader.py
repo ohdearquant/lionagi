@@ -8,7 +8,6 @@ from the logical checkpoint and error messages never include checkpoint data.
 
 from __future__ import annotations
 
-import copy
 import json
 import os
 import re
@@ -30,6 +29,7 @@ from lionagi._checkpoint_version import (
     _SUPPORTED_CHECKPOINT_VERSIONS,
     UnsupportedCheckpointVersionError,
 )
+from lionagi.ln import copy
 
 __all__ = (
     "CheckpointInvalidUTF8Error",
@@ -160,7 +160,7 @@ def _refuse(
         "actual_seq": actual_seq,
     }
     report["disposition"] = "refused"
-    raise CheckpointRecoveryError(report, copy.deepcopy(prefix), detail=detail) from None
+    raise CheckpointRecoveryError(report, copy(prefix), detail=detail) from None
 
 
 def _identity(file_stat: os.stat_result) -> tuple[int, int]:
