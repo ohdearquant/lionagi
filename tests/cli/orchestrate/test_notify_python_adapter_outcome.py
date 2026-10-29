@@ -170,7 +170,7 @@ async def test_python_adapter_error_only_exposes_type_in_log(
         if "direct-path notify.on_terminal delivery failed" in record.getMessage()
     ]
     assert len(records) == 1
-    assert records[0].getMessage().endswith("(RuntimeError)")
+    assert records[0].getMessage().endswith(f"for run {run.run_id} (RuntimeError)")
     assert records[0].exc_info is None and records[0].exc_text is None
     assert secret not in caplog.text and secret not in repr(records[0].args)
     outcome = json.loads(run.notify_outcome_path.read_text())
