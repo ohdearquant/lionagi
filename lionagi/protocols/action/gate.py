@@ -74,10 +74,11 @@ class GateDeniedError(PermissionError):
 
 
 def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
-    """Adapt a legacy ``(tool_name, action, args) -> dict | None`` pre-hook.
+    """Adapt a ``(tool_name, action, args) -> GateResult | dict | None`` pre-hook.
 
-    Denial = raise ``PermissionError``; rewrite = return a ``dict``; any
-    other exception fails closed as a deny GateResult. See docs/internals/runtime.md.
+    Legacy denial raises ``PermissionError``; a dict rewrites arguments and
+    None allows them unchanged. A GateResult retains its verdict. Unknown or
+    malformed results and other exceptions fail closed as control faults.
     """
 
     async def evaluate(tool_name: str, action: str, args: dict) -> GateResult:
@@ -101,9 +102,43 @@ def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
                 f"evaluator error: {e}",
                 errored=True,
             )
+        if isinstance(result, GateResult):
+            # Dataclass annotations are not runtime validation: do not treat a
+            # truthy non-boolean decision or an inconsistent fault as approval.
+            try:
+                valid = (
+                    type(result.allowed) is bool
+                    and type(result.errored) is bool
+                    and not (result.allowed and result.errored)
+                    and (result.mutated_args is None or isinstance(result.mutated_args, dict))
+                    and all(
+                        isinstance(value, str)
+                        for value in (
+                            result.control,
+                            result.tool_name,
+                            result.action,
+                            result.reason,
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001 - unreadable verdicts must fail closed
+                valid = False
+            if valid:
+                return result
+            return GateResult(False, control, tool_name, action, "invalid GateResult", errored=True)
         if isinstance(result, dict):
             return GateResult(True, control, tool_name, action, "allow", mutated_args=result)
-        return GateResult(True, control, tool_name, action, "allow")
+        if result is None:
+            return GateResult(True, control, tool_name, action, "allow")
+        # Avoid repr(result): a hook may return sensitive or unprintable data.
+        return GateResult(
+            False,
+            control,
+            tool_name,
+            action,
+            f"unsupported hook result type: {type(result).__name__}",
+            errored=True,
+        )
 
     return evaluate
 

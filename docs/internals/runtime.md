@@ -988,9 +988,10 @@ propertyNames) deny by default for executor-signaling tools instead of admitting
 `GateResult` is the one immutable verdict shape every tool-invocation security control
 produces (ADR-0086 delta row 1); adapters convert PermissionPolicy, guard_destructive/
 guard_paths, and the session-level gate into that shape. Legacy hooks signal denial by raising
-`PermissionError` and an argument rewrite by returning a `dict`; any other exception is
-treated as an evaluator failure and turned into a fail-closed deny rather than propagating
-uncaught.
+`PermissionError`, an argument rewrite by returning a `dict`, and an unchanged allow by
+returning `None`. A hook may also return a well-formed `GateResult`, preserving its decision
+and argument rewrite. Unknown results, malformed or contradictory verdicts, and other
+exceptions are evaluator failures and produce a fail-closed deny.
 
 A control that cannot reach a verdict at all — misconfigured, or its backend unreachable —
 raises `ControlUnavailableError`, which subclasses `PermissionError` so existing callers keep
