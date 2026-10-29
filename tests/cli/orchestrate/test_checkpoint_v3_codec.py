@@ -471,3 +471,19 @@ def test_future_version_does_not_bypass_strict_json_validation(payload):
     with pytest.raises(CodecError) as caught:
         decode_record(payload)
     assert caught.value.reason == "invalid_record"
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        (PatchOp("replace", "/a", 3), [("a", 3), ("b", 2)]),
+        (PatchOp("add", "/c", 3), [("a", 1), ("b", 2), ("c", 3)]),
+        (PatchOp("remove", "/a"), [("b", 2)]),
+    ],
+    ids=["replace-preserves-position", "add-appends", "remove-deletes"],
+)
+def test_patch_preserves_object_member_order(operation, expected):
+    before = freeze_json({"a": 1, "b": 2})
+    after = apply_patch(before, (operation,))
+    assert list(thaw_json(after).items()) == expected
+    assert list(thaw_json(before).items()) == [("a", 1), ("b", 2)]

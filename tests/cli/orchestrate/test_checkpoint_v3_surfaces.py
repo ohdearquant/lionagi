@@ -565,29 +565,31 @@ async def test_mcp_uses_journal_spawn_and_refuses_invalid_record(tmp_path, monke
     assert refused["detail_unavailable"] == "checkpoint_recovery_refused"
     assert refused["checkpoint_recovery_reason"] == "invalid_sequence"
     assert refused["checkpoint_recovery"]["problem"]["code"] == "invalid_sequence"
-    assert all(
-        refused["checkpoint_recovery"][key] is None
-        for key in ("base_sequence", "last_applied_sequence", "valid_prefix_bytes")
-    )
-    assert all(
-        refused["checkpoint_recovery"]["problem"][key] is None
-        for key in ("line", "byte_offset", "expected_seq", "actual_seq")
-    )
+    assert refused["checkpoint_recovery"]["base_sequence"] == 0
+    assert refused["checkpoint_recovery"]["last_applied_sequence"] == 0
+    assert refused["checkpoint_recovery"]["valid_prefix_bytes"] == 0
+    assert refused["checkpoint_recovery"]["problem"] == {
+        "code": "invalid_sequence",
+        "line": 1,
+        "byte_offset": 0,
+        "expected_seq": 1,
+        "actual_seq": 2,
+    }
     assert SECRET not in json.dumps(refused)
     path.write_text('{"version":3,"prompt":"' + SECRET, encoding="utf-8")
     malformed = await build_run_detail(RUN)
     assert malformed["detail_unavailable"] == "checkpoint_recovery_refused"
     assert malformed["checkpoint_recovery_reason"] == "invalid_record"
     assert malformed["checkpoint_recovery"]["problem"]["code"] == "invalid_record"
-    assert malformed["checkpoint_recovery"]["problem"]["line"] is None
-    assert malformed["checkpoint_recovery"]["problem"]["byte_offset"] is None
+    assert malformed["checkpoint_recovery"]["problem"]["line"] == 1
+    assert malformed["checkpoint_recovery"]["problem"]["byte_offset"] is not None
     assert SECRET not in json.dumps(malformed)
     prefix = b'{"version":3,"prompt":"' + SECRET.encode()
     path.write_bytes(prefix + b"\xff")
     invalid_utf8 = await build_run_detail(RUN)
     assert invalid_utf8["detail_unavailable"] == "checkpoint_recovery_refused"
     assert invalid_utf8["checkpoint_recovery_reason"] == "invalid_utf8"
-    assert invalid_utf8["checkpoint_recovery"]["problem"]["byte_offset"] is None
+    assert invalid_utf8["checkpoint_recovery"]["problem"]["byte_offset"] == len(prefix)
     assert invalid_utf8["checkpoint_recovery"]["problem"]["line"] is None
     assert SECRET not in json.dumps(invalid_utf8)
 
@@ -634,7 +636,7 @@ async def test_mcp_no_graph_still_reports_v3_and_keeps_absent_case(tmp_path, mon
 @pytest.mark.parametrize("version", [2, 3])
 @pytest.mark.parametrize("has_graph", [False, True], ids=["empty-session", "graph"])
 @pytest.mark.parametrize("failure", ["json", "utf8"])
-async def test_mcp_unclassifiable_malformed_base_has_reason_without_positions(
+async def test_mcp_unclassifiable_malformed_base_has_reason_and_safe_positions(
     tmp_path, monkeypatch, version, has_graph, failure
 ):
     from lionagi import _paths
@@ -677,11 +679,135 @@ async def test_mcp_unclassifiable_malformed_base_has_reason_without_positions(
         result["checkpoint_recovery"][key] is None
         for key in ("base_sequence", "last_applied_sequence", "valid_prefix_bytes")
     )
-    assert problem == {
+    assert problem["code"] == "invalid_record"
+    assert problem["line"] == (1 if failure == "json" else None)
+    expected_offset = (
+        len(prefix) if failure == "utf8" else len(f'{{"version":{version},"prompt":'.encode())
+    )
+    assert problem["byte_offset"] == expected_offset
+    assert problem["expected_seq"] is None
+    assert problem["actual_seq"] is None
+    assert SECRET not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_journal_report_matches_cli_studio_and_mcp(tmp_path, monkeypatch):
+    from lionagi import _paths
+    from lionagi.cli.orchestrate import _checkpoint
+    from lionagi.state import db as state_db
+    from lionagi.studio.services import run_resume, sessions
+    from lionhub.serve.mcp._run_detail import build_run_detail
+
+    path = _fixture(tmp_path)
+    journal = path.with_name("checkpoint.json.journal")
+    first = journal.read_bytes()
+    duplicate = (
+        f'{{"version":3,"generation":"{GEN}","seq":2,"kind":"op",'
+        f'"entry":{{"agent_id":"worker","agent_id":"duplicate",'
+        f'"status":"completed","response":"{SECRET}"}}}}\n'
+    ).encode()
+    journal.write_bytes(first + duplicate)
+    monkeypatch.setattr(_checkpoint, "RUNS_ROOT", tmp_path)
+    monkeypatch.setattr(_paths, "RUNS_ROOT", tmp_path)
+
+    class FakeStateDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def get_sessions_for_run(self, _run_id):
+            return [{"id": "session", "updated_at": 1}]
+
+    async def fake_session(_session_id):
+        return {"graph": {"nodes": [{"id": "child"}]}, "branches": [], "segments": []}
+
+    monkeypatch.setattr(state_db, "StateDB", FakeStateDB)
+    monkeypatch.setattr(sessions, "get_session", fake_session)
+
+    with pytest.raises(_checkpoint.FlowCheckpointRecoveryError) as cli:
+        _checkpoint.load_checkpoint(path)
+    with pytest.raises(run_resume.RunResumeCheckpointError) as studio:
+        await run_resume._resolve_flow_checkpoint(RUN)
+    mcp = await build_run_detail(RUN)
+
+    expected = cli.value.checkpoint_recovery
+    assert studio.value.reason == "invalid_checkpoint"
+    assert mcp["detail_unavailable"] == "checkpoint_recovery_refused"
+    assert mcp["checkpoint_recovery_reason"] == "invalid_record"
+    assert studio.value.checkpoint_recovery == mcp["checkpoint_recovery"] == expected
+    assert expected["base_sequence"] == 0
+    assert expected["last_applied_sequence"] == 1
+    assert expected["applied_records"] == 1
+    assert expected["valid_prefix_bytes"] == len(first)
+    assert expected["problem"] == {
         "code": "invalid_record",
-        "line": None,
-        "byte_offset": None,
+        "line": 2,
+        "byte_offset": len(first),
         "expected_seq": None,
         "actual_seq": None,
     }
+    assert SECRET not in json.dumps(mcp)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 0), (42, 42), (None, None), (True, None), (-1, None), (1.0, None), (SECRET, None)],
+    ids=["zero", "positive", "null", "bool", "negative", "float", "payload"],
+)
+async def test_mcp_refusal_only_retains_valid_numeric_positions(monkeypatch, value, expected):
+    from lionagi._checkpoint_v3_reader import CheckpointRecoveryError, _report
+    from lionagi.state import db as state_db
+    from lionagi.studio.services import sessions
+    from lionhub.serve.mcp import _run_detail
+
+    report = _report()
+    report.update(
+        source_version=3,
+        disposition="refused",
+        base_sequence=value,
+        last_applied_sequence=value,
+        valid_prefix_bytes=value,
+        problem={
+            "code": "invalid_record",
+            "line": value,
+            "byte_offset": value,
+            "expected_seq": value,
+            "actual_seq": value,
+        },
+    )
+
+    class FakeStateDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def get_sessions_for_run(self, _run_id):
+            return [{"id": "session", "updated_at": 1}]
+
+    async def fake_session(_session_id):
+        return {"graph": {"nodes": [{"id": "child"}]}, "branches": [], "segments": []}
+
+    def refuse(_run_id):
+        raise CheckpointRecoveryError(report)
+
+    monkeypatch.setattr(state_db, "StateDB", FakeStateDB)
+    monkeypatch.setattr(sessions, "get_session", fake_session)
+    monkeypatch.setattr(_run_detail, "_spawned_by_map", refuse)
+    result = await _run_detail.build_run_detail(RUN)
+
+    assert result["detail_unavailable"] == "checkpoint_recovery_refused"
+    safe = result["checkpoint_recovery"]
+    assert all(
+        safe[key] == expected
+        for key in ("base_sequence", "last_applied_sequence", "valid_prefix_bytes")
+    )
+    assert all(
+        safe["problem"][key] == expected
+        for key in ("line", "byte_offset", "expected_seq", "actual_seq")
+    )
     assert SECRET not in json.dumps(result)

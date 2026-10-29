@@ -45,8 +45,8 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     back from node_metadata was not the list-of-dicts this reshape expects),
     ``unsupported_checkpoint_version`` (the version is unsupported), or
     ``checkpoint_recovery_refused`` (a checkpoint cannot be safely read).
-    Refusals include a sanitized reason and recovery report with no
-    positions. Journaled checkpoints include a structured recovery report.
+    Refusals include a sanitized reason and recovery report with valid numeric
+    positions when available. Journaled checkpoints include a structured report.
     """
     try:
         from lionagi.state.db import StateDB
@@ -127,22 +127,26 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
         reason = code
         if isinstance(exc, CheckpointInvalidUTF8Error):
             reason = "invalid_utf8"
+
+        def safe_position(value: Any) -> int | None:
+            return value if type(value) is int and value >= 0 else None
+
         safe_report = {
             "report_version": report.get("report_version"),
             "source_version": report.get("source_version"),
             "generation": report.get("generation"),
-            "base_sequence": None,
-            "last_applied_sequence": None,
+            "base_sequence": safe_position(report.get("base_sequence")),
+            "last_applied_sequence": safe_position(report.get("last_applied_sequence")),
             "applied_records": report.get("applied_records"),
-            "valid_prefix_bytes": None,
+            "valid_prefix_bytes": safe_position(report.get("valid_prefix_bytes")),
             "ignored": report.get("ignored"),
             "disposition": report.get("disposition"),
             "problem": {
                 "code": code,
-                "line": None,
-                "byte_offset": None,
-                "expected_seq": None,
-                "actual_seq": None,
+                "line": safe_position(problem.get("line")),
+                "byte_offset": safe_position(problem.get("byte_offset")),
+                "expected_seq": safe_position(problem.get("expected_seq")),
+                "actual_seq": safe_position(problem.get("actual_seq")),
             },
         }
         return {

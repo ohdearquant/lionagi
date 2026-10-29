@@ -739,3 +739,17 @@ def test_future_journal_version_refuses_with_valid_prefix_and_compatibility_code
     assert error.valid_prefix["ops"]["a"]["status"] == "completed"
     assert error.__context__ is None
     assert error.__cause__ is None
+
+
+def test_replay_remove_then_add_moves_object_member_to_end(tmp_path):
+    snapshot = base()
+    snapshot["flow_context"] = {"a": 1, "b": 2}
+    journal = line(patch=[{"op": "remove", "path": "/a"}, {"op": "add", "path": "/a", "value": 1}])
+    path = write_unit(tmp_path, snapshot=snapshot, journal=journal)
+
+    state, report = reader.load_checkpoint_unit(path)
+
+    assert list(state["flow_context"].items()) == [("b", 2), ("a", 1)]
+    assert report["disposition"] == "clean"
+    assert report["applied_records"] == 1
+    assert report["valid_prefix_bytes"] == len(journal)
