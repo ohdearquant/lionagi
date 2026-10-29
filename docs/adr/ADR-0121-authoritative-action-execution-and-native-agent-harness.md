@@ -832,7 +832,7 @@ must match a server in the selected configuration exactly, case-sensitively and 
 A profile supplies a default, not the parent authority. The captured run or engine policy is the
 parent. A call may select a narrower or wider grant than the profile default. A call or profile
 grant naming a server outside the captured parent's grant is refused before spawn, names the
-outside servers, and is never silently clamped to the parent. For a call grant, the resolved
+outside servers, and is never clamped to the parent. For a call grant, the resolved
 snapshot records the refusal with `source=call` and reason `exceeds-parent`. If there is no
 captured parent, as in a bare SDK `create_agent` call with no run or engine, the call is the
 authority and the resolved snapshot records `source=call`. D5's explicit-deny precedence and
