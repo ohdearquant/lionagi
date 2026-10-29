@@ -164,6 +164,24 @@ def test_cache_placement_rejects_non_text_system_blocks(filtered):
         )
 
 
+@pytest.mark.parametrize("filtered", [True, False])
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "text", "text": "safe", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "safe", "private_marker": "private"},
+        {"type": "text", "text": 123},
+        {"type": "text"},
+    ],
+)
+def test_cache_placement_refuses_invalid_text_blocks(filtered, block):
+    endpoint = _model("gpt-6-luna", True, filtered).endpoint
+    with pytest.raises(ValueError, match="OpenAI system blocks must be text"):
+        endpoint.create_payload(
+            {"messages": [{"role": "user", "content": "go"}], "system_blocks": [block]}
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("model", "role"), [("gpt-5", "developer"), ("gpt-6-luna", "system")])
 async def test_branch_chat_reuses_prefix_across_three_rounds(model, role):

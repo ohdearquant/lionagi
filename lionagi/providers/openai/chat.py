@@ -51,9 +51,14 @@ class OpenaiChatEndpoint(Endpoint):
                 for item in content:
                     if isinstance(item, str):
                         item = {"type": "text", "text": item}
-                    if not isinstance(item, dict) or item.get("type") != "text":
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("type") != "text"
+                        or set(item) != {"type", "text"}
+                        or not isinstance(item.get("text"), str)
+                    ):
                         raise ValueError("OpenAI system blocks must be text")
-                    if isinstance(item.get("text"), str) and item["text"].strip():
+                    if item["text"].strip():
                         result.append(dict(item))
                 return result
 
