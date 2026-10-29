@@ -206,7 +206,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   requires Responses. The agent tool loop uses prompt-rendered tools.
   Some newer reasoning models reject `temperature`, `top_p`, or `logprobs` with a
   non-`none` effort; those provider errors are surfaced to the caller.
-  Repeated checks of known reasoning models keep their classification.
+  Repeated checks of known reasoning models keep their classification. A chat request
+  for a listed non-reasoning model still drops `reasoning_effort`; a model ID lionagi
+  does not list keeps it for the provider to validate, and the accepted values now
+  include `none`, `minimal`, `xhigh` and `max`.
 
 - `li team receive` reads a stored message whose recipient is a single name written as a
   string, not a list, as that whole name, as the other team commands already did. It used

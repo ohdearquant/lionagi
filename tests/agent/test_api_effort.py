@@ -60,6 +60,19 @@ def test_known_reasoning_model_remains_reasoning_across_repeated_requests():
         assert payload.reasoning_effort == "high"
 
 
+def test_chat_request_drops_effort_only_for_listed_non_reasoning_models():
+    from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
+
+    def dumped(model):
+        return OpenAIChatCompletionsRequest(
+            model=model, messages=[{"role": "user", "content": "hi"}], reasoning_effort="low"
+        ).model_dump(exclude_none=True)
+
+    assert "reasoning_effort" not in dumped("gpt-4.1")
+    assert dumped("gpt-5")["reasoning_effort"] == "low"
+    assert dumped("gpt-6-luna")["reasoning_effort"] == "low"
+
+
 def test_responses_preserves_reasoning_siblings(monkeypatch):
     from lionagi.service.imodel import iModel
 
@@ -115,15 +128,6 @@ def test_responses_maps_flat_effort_to_reasoning(monkeypatch):
     payload, _ = endpoint.create_payload({"input": "hello", "reasoning": {"summary": "auto"}})
     assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
     assert "reasoning_effort" not in payload
-
-
-def test_explicit_effort_is_forwarded_for_provider_validation():
-    from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
-
-    payload = OpenAIChatCompletionsRequest(
-        model="gpt-4.1", messages=[{"role": "user", "content": "hi"}], reasoning_effort="high"
-    )
-    assert payload.reasoning_effort == "high"
 
 
 @pytest.mark.asyncio

@@ -78,7 +78,7 @@ def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = 
     if provider == "openai":
         from lionagi.providers.openai._chat_schemas import CHAT_MODELS, REASONING_MODELS
 
-        if model not in CHAT_MODELS or model in REASONING_MODELS or model.startswith("gpt-6"):
+        if model not in CHAT_MODELS or model in REASONING_MODELS:
             return {"reasoning_effort": effort}
     if origin in ("profile", "stored"):
         if origin == "profile":

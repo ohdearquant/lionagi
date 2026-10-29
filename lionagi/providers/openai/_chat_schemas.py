@@ -400,11 +400,13 @@ class OpenAIChatCompletionsRequest(BaseModel):
                 self.logprobs = None
                 self.top_logprobs = None
                 self.logit_bias = None
+            else:
+                self.reasoning_effort = None
         return self
 
     @property
     def is_reasoning_model(self) -> bool:
-        return self.model in REASONING_MODELS or self.model.startswith("gpt-6")
+        return self.model in REASONING_MODELS
 
     @property
     def is_openai_model(self) -> bool:
