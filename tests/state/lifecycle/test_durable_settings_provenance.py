@@ -87,10 +87,11 @@ def test_disabled_precedes_unused_malformed_fields(unused):
     assert result.handler is None and result.reason is None
 
 
-def test_legacy_merged_resolution_remains_unchanged_for_bad_notify_container():
+@pytest.mark.parametrize("invalid_notify", ["bad", ["bad"], 7])
+def test_legacy_merged_resolution_remains_unchanged_for_bad_notify_container(invalid_notify):
     # The inert strict resolver must not change the existing legacy resolver.
-    assert resolve_notify_config(settings={"notify": "bad"}).reason is None
-    assert resolve_durable_global_config({"notify": "bad"}).reason == "notify_not_mapping"
+    assert resolve_notify_config(settings={"notify": invalid_notify}).reason is None
+    assert resolve_durable_global_config({"notify": invalid_notify}).reason == "notify_not_mapping"
 
 
 @pytest.mark.parametrize("settings", [{}, {"notify": {}}, _layer(None)])

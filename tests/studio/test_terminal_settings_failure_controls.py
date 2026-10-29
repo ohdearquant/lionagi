@@ -266,3 +266,23 @@ async def test_concurrent_calls_of_same_prepared_delivery_keep_outcomes_separate
     finally:
         release_first.set()
         await asyncio.gather(first, *(task for task in (second,) if task), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_notify", ["PRIVATE_VALUE", ["PRIVATE_VALUE"], 7])
+async def test_non_mapping_global_notify_remains_owed(monkeypatch, caplog, invalid_notify):
+    monkeypatch.setattr(
+        settings_delivery, "load_global_settings_layer", lambda: {"notify": invalid_notify}
+    )
+    recorder = Recorder()
+    prepared = await prepare_global_settings_delivery(row(), None, recorder=recorder)
+    with caplog.at_level("WARNING"):
+        result = prepared.call()
+    assert result is DeliveryOutcome.FAILURE
+    assert len(recorder.records) == 1
+    scope, outcome = recorder.records[0]
+    assert scope == "global"
+    assert outcome["ok"] is False and outcome["reason"] == "notify_not_mapping"
+    assert "notify_not_mapping" in caplog.text
+    assert "PRIVATE_VALUE" not in caplog.text
+    assert "PRIVATE_VALUE" not in repr(recorder.records)
