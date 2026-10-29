@@ -49,6 +49,11 @@ async def _act(
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
 
+    if isinstance(_request["arguments"], BaseModel):
+        # Authorize the same values the action manager will invoke, without
+        # replacing the arguments in a caller-owned request dictionary.
+        _request = {**_request, "arguments": _request["arguments"].model_dump(exclude_unset=True)}
+
     if _request["function"] is None or (
         isinstance(_request["function"], str) and not _request["function"].strip()
     ):
