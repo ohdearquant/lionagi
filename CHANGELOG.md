@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Provider exception types are available from `lionagi.providers.errors`, so
+  applications can catch them without importing a private module.
+
 - OpenAI chat prompt-cache placement keeps the system and tool instructions in
   a stable prefix. With placement on, the per-request token-usage estimate is
   no longer appended to the newest message, since it changed cached bytes.
