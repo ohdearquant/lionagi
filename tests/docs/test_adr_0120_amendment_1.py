@@ -83,7 +83,10 @@ def _amendment_flat() -> str:
 
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
-    assert "run.spawn" in _span("lionhub/src/lionhub/orchestration/engines/hypothesis.py", 890, 961)
+    hypothesis = "lionhub/src/lionhub/orchestration/engines/hypothesis.py"
+    assert "run.spawn" in _line(hypothesis, 977)
+    assert "run.spawn" in _line(hypothesis, 1057)
+    assert f"{hypothesis}:977-1057" in _amendment()
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 711)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
@@ -187,9 +190,11 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5893)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7734)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7759)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5921)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7762)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7787)
+    assert "limit: int = 500" in _line("lionagi/state/db.py", 7792)
+    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6053)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -209,8 +214,9 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:835-839" in flat
-    assert "lionagi/state/db.py:7734-7744" in flat
-    assert "lionagi/state/db.py:7759-7776" in flat
+    assert "lionagi/state/db.py:7762-7772" in flat
+    assert "lionagi/state/db.py:7787-7804" in flat
+    assert "(`:7792`)" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -346,7 +352,8 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
     assert "lionagi/state/schema.sql:487" in flat
-    assert "lionagi/state/db.py:5893-5895" in flat
+    assert "lionagi/state/db.py:5921-5923" in flat
+    assert "`:6053`" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
