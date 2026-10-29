@@ -20,8 +20,9 @@ from tests.studio.test_github_poll_stagnation import (
     _schedule,
     _Service,
 )
-
-pytest_plugins = ("tests.studio.test_github_poll_stagnation",)
+from tests.studio.test_github_poll_stagnation import client as client
+from tests.studio.test_github_poll_stagnation import process as process
+from tests.studio.test_github_poll_stagnation import stores as stores
 
 
 @pytest.mark.asyncio
