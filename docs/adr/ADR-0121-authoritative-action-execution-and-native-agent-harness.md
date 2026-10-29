@@ -853,7 +853,11 @@ inherited grants only. A call or profile grant naming a server outside the captu
 before spawn, names the outside servers, and is never clamped to the parent. The resolved snapshot
 records the refusal with the layer that declared the grant, `source=call` or `source=profile`, and
 reason `exceeds-parent`. If there is no captured parent, as in a bare SDK `create_agent` call with
-no run or engine, the call is the authority and the resolved snapshot records `source=call`. D5's
+no run or engine, there is no exceeds-parent check: the layer that resolved the grant is the
+authority, and the snapshot records that layer, `source=call` or `source=profile`. A captured
+parent that itself resolved to ambient discovery declares no grant, so a child that declares one
+is resolved as if no parent were captured, and a child that declares nothing keeps ambient
+discovery. D5's
 explicit-deny precedence and parent-policy constraints apply between the resolved grant and the
 captured parent.
 
@@ -869,8 +873,14 @@ refused. `khive_injection` is an agent option, not an `mcp` key, so whichever la
 it, the check runs against the resolved grant. Under a resolved grant that names servers, it is
 a request for its server like any other: the server is identified by the name its configuration
 has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
-grant names that server and the captured parent permits it. A `khive_injection` whose
-configuration matches no named server is permitted only under ambient discovery. Every requested
+grant names that server and the captured parent permits it. The option's server configuration
+names a server in one of two ways. A `{"server": <name>}` reference names it directly, compared
+exactly, case-sensitively and without normalization. An inline transport configuration names the
+entry of the selected configuration whose resolved transport configuration is equal to it key for
+key, keys beginning with `_` excluded, which is the same content identity the MCP connection pool
+keys a client by; an inline configuration equal to more than one entry is refused as ambiguous.
+A `khive_injection` whose configuration matches no named server is permitted only under ambient
+discovery, never under a declared or inherited grant. Every requested
 server name that is unknown or absent must be
 refused. A required control that an adapter cannot enforce remains subject to D8's refusal before
 spawn.
