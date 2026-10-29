@@ -234,6 +234,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
+  A caller-supplied chat model keeps its own settings.
+  OpenAI native tool calling remains subject to model restrictions: [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+  requires `none` in Chat Completions, while [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+  requires Responses. The agent tool loop uses prompt-rendered tools.
+  Some newer reasoning models reject `temperature`, `top_p`, or `logprobs` with a
+  non-`none` effort; those provider errors are surfaced to the caller.
+  Repeated checks of known reasoning models keep their classification. A chat request
+  for a listed non-reasoning model still drops `reasoning_effort`; a model ID lionagi
+  does not list keeps it for the provider to validate, and the accepted values now
+  include `none`, `minimal`, `xhigh` and `max`.
+
 - `is_coro_func` recognizes callable instances whose class defines an async
   `__call__`, including partials of those instances. Synchronous `add_message()`
   now rejects such message hooks; use `a_add_message()` to await them.
