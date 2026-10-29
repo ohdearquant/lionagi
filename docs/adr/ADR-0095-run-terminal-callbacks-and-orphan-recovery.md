@@ -632,7 +632,6 @@ that push is best-effort and has no replay guarantee. Consumer APIs also refuse 
 read-only store with a typed error naming its schema version. Owner-scoped compatibility
 consumers and persisted notification intent are separate follow-ups.
 
-
 ## Proposed amendment: immediate named-consumer delivery for standalone v1
 
 - **Status**: Proposed — pending architectural approval; no implementation sign-off.
