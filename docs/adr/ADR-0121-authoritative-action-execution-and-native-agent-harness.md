@@ -825,20 +825,31 @@ explicit deny-all never falls back to ambient server discovery.
 | `mcp: {enabled: true, servers: []}` | Explicit deny-all; the server list governs. |
 | `mcp: null` or `mcp: {servers: null}` | Malformed; refuse. |
 | `mcp: {enabled: true}` without `servers` | Refuse. |
+| Any other value | Malformed; refuse. |
 
-When `enabled` is absent, `servers` alone determines the meaning shown above. A requested name
+The table is closed: a declaration that matches none of its rows is malformed and refused with
+an error naming the layer and the value. That covers an `mcp` value that is not a mapping, a key
+other than `enabled` and `servers`, an `enabled` that is not `true` or `false` (including
+`null`), a `servers` value that is not a list, an entry that is not a non-empty string, and a
+name listed more than once. When `enabled` is absent, `servers` alone determines the meaning
+shown above. A requested name
 must match a server in the selected configuration exactly, case-sensitively and without normalization.
 
 A profile supplies a default, not the parent authority. The captured run or engine policy is the
 parent. Resolution takes the first layer that declares an `mcp` key: the call, then the profile,
 then the captured parent. The table above gives the declared value its meaning, and a value the
-table refuses is refused at that layer; it never falls through to the next layer. Because the
+table refuses is refused at that layer; it never falls through to the next layer. Every layer
+that declares an `mcp` key is checked against the table, including a layer that an earlier one
+shadows, so a malformed profile value is refused even when the call declares a valid grant. Only
+the resolved grant is checked against the captured parent: a profile grant that a call replaces
+never reaches the exceeds-parent check. Because the
 profile is a default, a call's grant replaces a profile's deny-all, and a call's deny-all replaces
 a profile's grant; a call may select a narrower or wider grant than the profile default. A
 profile's explicit deny-all overrides the parent. If neither the call nor the profile declares an
 `mcp` key, inherit the captured parent's grant; with no captured parent, preserve today's ambient
 discovery, meaning the MCP servers the agent's provider or runtime finds today when nothing is
-declared, unchanged by this amendment. A call or profile grant naming a server outside the captured parent's grant is refused
+declared, unchanged by this amendment. Deny-by-default therefore applies to declared and
+inherited grants only. A call or profile grant naming a server outside the captured parent's grant is refused
 before spawn, names the outside servers, and is never clamped to the parent. The resolved snapshot
 records the refusal with the layer that declared the grant, `source=call` or `source=profile`, and
 reason `exceeds-parent`. If there is no captured parent, as in a bare SDK `create_agent` call with
@@ -847,12 +858,19 @@ explicit-deny precedence and parent-policy constraints apply between the resolve
 captured parent.
 
 An implementation of this amendment ships conformance tests for every row of the table above and
-for each layering case in this section.
+for each layering case in this section, including the closure cases, a shadowed malformed layer
+and a `khive_injection` opt-in outside the resolved grant.
 
 Deny-all covers every model-visible MCP tool regardless of ingress, including servers discovered
 by a provider. The `khive_injection` agent option calls its server through the MCP connection pool
 and places the result in the model's context, so deny-all covers it as well. Explicitly opting in
 to it at any layer of a specification that resolves to deny-all is a contradiction and must be
-refused. Every requested server name that is unknown or absent must be
+refused. `khive_injection` is an agent option, not an `mcp` key, so whichever layer opts in to
+it, the check runs against the resolved grant. Under a resolved grant that names servers, it is
+a request for its server like any other: the server is identified by the name its configuration
+has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
+grant names that server and the captured parent permits it. A `khive_injection` whose
+configuration matches no named server is permitted only under ambient discovery. Every requested
+server name that is unknown or absent must be
 refused. A required control that an adapter cannot enforce remains subject to D8's refusal before
 spawn.
