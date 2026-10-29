@@ -11,7 +11,11 @@
   two-stage orphan design are replaced by D1/D3/D4 here); builds on ADR-0057 (lifecycle
   transitions), ADR-0035 (terminal-status integrity floor), ADR-0059 (dispatch outbox),
   ADR-0064 (run outcome records), ADR-0071 (task-worker leases); prospectively amended by
-  ADR-0123 (canonical Run identity)
+  ADR-0123 (canonical Run identity); proposed Linux identity correction coordinated with
+  ADR-0104 Amendment 5
+
+> **Proposed correction:** The Linux identity changes to D4 and D5 in this document
+> remain subject to sign-off. The rest of this accepted ADR remains standing.
 
 ## Proposed ADR-0123 boundary
 
@@ -56,8 +60,9 @@ Terms used below:
 - A **callback** is a best-effort push of that fact to a registered in-process handler after
   the transaction commits.
 - An **orphan** is a persisted nonterminal execution whose executor identity is positively
-  dead, or whose ownership marker never appeared and whose startup/activity grace has
-  expired. Unknown liveness is not positive evidence of death.
+  dead, or a verified spawn attempt whose identity acquisition was not recorded and whose
+  spawn grace has expired. The latter describes a spawn-protocol loss, not proof of death.
+  Unknown liveness is not positive evidence of death.
 - A **resume** creates or claims a new attempt. It never reopens a terminal row.
 
 ## Decision
@@ -295,11 +300,12 @@ identity, ack state, retention, and security policy — a separate decision if e
 No persisted `orphaned` status is added. Canonical reasons carry the fact on the sanctioned
 vocabularies: execution entities ending in `failed` use `run.failed.orphaned_parent`; plays
 ending in `blocked` use `play.blocked.runner_orphaned`; task-worker lease recovery keeps
-`run.queued.lease_expired` and `run.failed.lease_attempts_exhausted`; a spawn whose executor
-identity was never durably acquired terminalizes after spawn grace with
-`run.failed.spawn_identity_lost`. Studio and CLI project `display_status="orphaned"` (and
-health `ORPHANED`) when a row is nonterminal with positive orphan evidence or terminal with a
-canonical orphan reason. Downstream state machines stop waiting on `failed`/`blocked`;
+`run.queued.lease_expired` and `run.failed.lease_attempts_exhausted`; a verified spawn
+attempt whose identity acquisition was never durably recorded terminalizes after spawn grace
+with `run.failed.spawn_identity_lost` under the handshake below. This records a protocol loss,
+not positive evidence that the process died. Studio and CLI project
+`display_status="orphaned"` (and health `ORPHANED`) when a row is nonterminal with positive
+orphan evidence or terminal with a canonical orphan reason. Downstream state machines stop waiting on `failed`/`blocked`;
 operators still see "orphaned".
 
 `display_status` for a **nonterminal** row is a live, non-replayable advisory projection and
@@ -325,14 +331,14 @@ schema supplies it, `expected_updated_at`.
 The classifier consumes a normalized descriptor: entity kind/ID; `started_at` and
 `updated_at`/last-activity; executor PID and process-creation time; expected
 invocation/session marker when available; owner/lease identity and lease expiry when
-applicable; linked child-session status/activity. Positive-evidence rules apply: PID reuse is
-excluded by create-time comparison; unknown or inaccessible identity is never classified dead
-solely because a wall-clock threshold elapsed.
+applicable; linked child-session status/activity. Positive-evidence rules apply: unknown or
+inaccessible identity is never classified dead solely because a wall-clock threshold elapsed.
+The proposed Linux correction below governs identity comparisons and legacy rows.
 
 Identity coverage is completed without a new PID column on every table: CLI sessions keep
 writing `pid`/`pid_create_time` into `sessions.node_metadata`; `spawn_and_wait()` gains an
 `on_spawn` identity callback so Studio on-demand launches and scheduler fires persist child
-PID/create-time into their linked invocation's `node_metadata`; direct engine runs write
+process identity into their linked invocation's `node_metadata`; direct engine runs write
 current identity into the signal session's `node_metadata`, and reconciliation folds a
 terminal signal session onto the same-ID engine-run row. Task-worker executions retain lease
 identity as their ownership proof.
@@ -344,22 +350,53 @@ callback:
    record (attempt ID, argv summary, log path) on the linked invocation and commits it. A
    spawn with no committed intent must not proceed.
 2. *Identity acquisition*: immediately after process creation returns — before any await
-   point in the supervisor — the child's PID and process-creation time are written to the
-   intent record and committed. This commit is the identity point.
+   point in the supervisor — the child's PID and process identity are written to the intent
+   record and committed. This commit is the identity point. On Linux the identity must meet
+   the durable-identity cutover requirements below; creation time alone is insufficient.
 3. *Child registration*: on surfaces whose child runs LionAGI bootstrap code, the child
    additionally writes its own marker row carrying the attempt ID, durably linking marker to
    invocation. Marker-less surfaces (bare `command` children) rely solely on step 2.
 
 Restart behavior is defined per incomplete phase: intent committed but no identity and the
-surface is marker-capable — look up the child's marker by attempt ID and adopt its identity;
-intent committed, no identity, no marker — the row waits out the spawn grace and then
-terminalizes with `run.failed.spawn_identity_lost`, with the intent's log path preserved for
-manual audit. The residual window is the gap between process creation and the step-2 commit;
-it is milliseconds wide by construction (no intervening awaits), and a child lost in it on a
-marker-less surface is an accepted, documented loss: its row terminalizes honestly rather
-than hanging, and the OS process, if alive, is discoverable through the logged intent. PID
-reuse is excluded at every use of a recorded identity by comparing process-creation time,
-both when adopting a marker and when classifying liveness.
+surface is marker-capable — look up the child's marker by attempt ID and adopt its identity
+only when the applicable identity requirements are met. A verified committed intent with no
+identity acquisition record, and no marker where one is applicable, waits out the spawn
+grace and then terminalizes with `run.failed.spawn_identity_lost`, preserving the intent
+log path for manual audit. This is an attempt-specific spawn-protocol outcome, not a finding
+that the child died: a child lost between process creation and the step-2 commit may still
+be alive and discoverable through the intent. Absence of a complete identity on an imported
+or legacy row does not establish the committed intent or the incomplete phase and cannot by
+itself invoke this rule. Linux identity at adoption and liveness classification must satisfy
+the correction below; creation-time comparison alone does not exclude PID reuse.
+
+**Proposed Linux identity correction (ADR-0104 Amendment 5 part 1).** A process-creation
+epoch comparison alone does not exclude Linux PID reuse, and an epoch-start or epoch-boot
+disagreement alone does not establish that the recorded execution died. The classifier and
+every consumer preserve an explicit unknown for a live PID with that disagreement. A session
+marker, command-line shape, a live numeric PID or current boot observation alone does not
+prove process birth; at the part-2 cutover none alone authorizes a recovery signal.
+
+Phase 1 retains existing positive legacy matches, including a marker-only match when creation
+time is missing, and does not rescue an epoch mismatch with a marker. Other existing behavior,
+including handling of missing PID fields and non-degraded or unreadable imported manifests, is
+unchanged in this phase. Each doctor and stale-sweep pass prints counts by reason for Linux
+rows held unknown on epoch-start or epoch-boot disagreement, using the observation that
+decided the verdict, and applies no automatic disposition to those rows.
+
+At the part-2 durable-identity cutover, a persisted legacy Linux row lacking a complete
+identity tuple is unverifiable: it grants no recovery-signal or automatic-cancellation
+authority. Each doctor and stale-sweep pass lists such rows and prints their count. Explicit
+operator reconciliation and a process completing its own run remain separate actions. These
+provisions do not change the macOS or Windows identity rules. The missing identity of a legacy
+row is not the independent committed spawn-intent and incomplete-phase evidence required by
+the spawn handshake above, and must not be treated as such.
+
+This correction replaces D4's Linux creation-time-only claims for the classifier and spawn
+handshake. The first release's bounded guarantee is containment of the demonstrated
+epoch-disagreement false cancellation in updated readers, with stored epoch units unchanged.
+The stricter cutover policy is not claimed until its authoritative readers and reporting
+passes enforce it. This amendment does not assert that D4's unified classifier or coordinator
+has shipped. ADR-0104 Amendment 5 part 2 will specify the durable identity object.
 
 ### D5 — Orphan detection ships now; resume stays explicit and per-surface
 
@@ -376,7 +413,7 @@ resume. The status/monitor response for an orphan names one recovery capability:
 | Studio compiled workflow | `rerun_only` | StateDB persistence but no checkpoint/replay contract |
 | Direct schedule fire / schedule-run wrapper | `child_dependent` | If the child resolves to a supported flow checkpoint, expose the child recovery; otherwise rerun as a new schedule attempt |
 | Studio on-demand launch: `agent`, `flow`, `fanout`, `play`, `flow_yaml`, `engine` | Same as the equivalent CLI surface above | The launch's invocation carries the child identity from the spawn handshake; recovery is the child surface's row (flow checkpoint, agent branch continuation, rerun) |
-| Studio on-demand launch: `command` (no LionAGI child root) | `pid_liveness_only` | Liveness from the recorded PID/create-time only; no marker, no resume; dead or identity-lost rows terminalize and the action is rerun |
+| Studio on-demand launch: `command` (no LionAGI child root) | `pid_liveness_only` | No marker or resume; liveness uses the platform identity requirements, and a verified incomplete spawn follows the handshake; a dead or protocol-lost action can be rerun |
 | Invocation umbrella | `children_only` | Recover eligible child roots; fold the new attempt separately |
 
 The launch kinds named here are the closed set accepted by the Studio launches service;
@@ -472,10 +509,11 @@ decisions must never appear in reconciliation.
    disabled with the diagnostic before any launch.
 1d. Spawn handshake per incomplete phase: crash before intent commit (no row, no leak
    beyond the OS process); crash between spawn and identity commit on a marker-capable
-   surface (restart adopts identity from the child marker); same on a marker-less surface
+   surface (restart adopts identity from the child marker only if the applicable identity
+   requirements are satisfied); same on a marker-less surface
    (row terminalizes with `run.failed.spawn_identity_lost` only after spawn grace, log path
-   retained); PID reuse injected at adoption and at classification (create-time mismatch
-   rejects).
+   retained); PID reuse injected at adoption and at classification (identity requirements
+   checked, with Linux epoch disagreements held unknown as specified in D4).
 2. Concurrent terminal transitions plus a same-status reason append: only the winning
    transition emits; no handler runs under the transaction.
 3. One hanging async, one hanging sync, one failing, and one successful handler registered: the
@@ -489,11 +527,13 @@ decisions must never appear in reconciliation.
 5. Flow `--notify` compatibility: legacy env payload unchanged; the old direct call does not
    also fire.
 6. PID reuse (same PID, different create time), access denied, missing marker, live marker,
-   clock skew both directions, heartbeat racing the reaper: unknown/live rows are never
-   terminalized; CAS losers never stamp `ended_at`.
+   clock skew both directions, heartbeat racing the reaper: unknown/live observations do not
+   establish death or by themselves authorize terminalization; the independently evidenced
+   incomplete-spawn protocol outcome in D4 remains distinct. CAS losers never stamp `ended_at`.
 7. Studio killed after child spawn, before and after marker persistence: on restart, live
-   linked work does not fail; dead/no-marker work transitions only after grace with canonical
-   evidence.
+   linked work does not fail solely because identity is unknown; a verified incomplete spawn
+   transitions only after grace with canonical protocol evidence. An incomplete legacy identity
+   alone never supplies that evidence.
 8. Recovery projection per surface: resume always creates a new attempt and retains the
    source terminal row; reactive-spawned checkpoints remain refused.
 
