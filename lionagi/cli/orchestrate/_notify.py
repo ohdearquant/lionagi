@@ -287,6 +287,6 @@ async def deliver_flow_notify_now(
         # carry a credential), referenced by path, never inlined.
         stderr_text = traceback.format_exc()
     if stderr_text is not None:
-        # Record after leaving the handler's exception context, so a separate
-        # file-write failure cannot chain the handler's traceback into logs.
+        # Record after leaving the handler's exception context. The recorder
+        # also avoids logging chains when an outer context is still active.
         record_notify_outcome_to_run(run, ok=False, exit_code=None, stderr_text=stderr_text)
