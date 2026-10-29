@@ -432,6 +432,33 @@ def _diff(old: Any, new: Any, path: str, operations: list[PatchOp]) -> None:
                 _diff(before[key], value, child_path, operations)
         return
     if isinstance(old, FrozenArray) and isinstance(new, FrozenArray):
+        old_length, new_length = len(old), len(new)
+        common_length = min(old_length, new_length)
+        prefix = 0
+        while prefix < common_length:
+            left, right = old[prefix], new[prefix]
+            if left is not right and not _frozen_equal(left, right):
+                break
+            prefix += 1
+        suffix = 0
+        while suffix < common_length - prefix:
+            left, right = old[old_length - suffix - 1], new[new_length - suffix - 1]
+            if left is not right and not _frozen_equal(left, right):
+                break
+            suffix += 1
+        old_middle = old_length - prefix - suffix
+        new_middle = new_length - prefix - suffix
+        if not old_middle and not new_middle:
+            return
+        if not old_middle:
+            for index in range(prefix, prefix + new_middle):
+                token = "-" if prefix == old_length else str(index)
+                operations.append(PatchOp("add", f"{path}/{token}", new[index]))
+            return
+        if not new_middle:
+            for index in range(prefix + old_middle - 1, prefix - 1, -1):
+                operations.append(PatchOp("remove", f"{path}/{index}"))
+            return
         for index in range(min(len(old), len(new))):
             _diff(old[index], new[index], f"{path}/{index}", operations)
         for index in range(len(old) - 1, len(new) - 1, -1):

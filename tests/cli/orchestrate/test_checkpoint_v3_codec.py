@@ -77,6 +77,119 @@ def test_tail_shrink_replays_without_rebuilding_arrays(monkeypatch):
     assert len(before["items"]) == 1000
 
 
+@pytest.mark.parametrize("count", [1_000, 10_000, 100_000])
+@pytest.mark.parametrize("position", ["front", "middle"])
+def test_single_array_insertion_has_one_bounded_record(count, position):
+    values = list(range(count))
+    before = freeze_json({"nested": {"items": values}})
+    index = 0 if position == "front" else count // 2
+    values.insert(index, "inserted")
+    target = freeze_json({"nested": {"items": values}})
+    patch = diff_context(before, target)
+    path = f"/nested/items/{index}"
+    assert patch == (PatchOp("add", path, "inserted"),)
+    entry = {"agent_id": "op", "status": "completed", "response": "ok"}
+    line = encode_record(GENERATION, 1, "op", freeze_json(entry), patch)
+    assert len(line) <= len(compact(entry)) + len(compact("inserted")) + len(compact(path)) + 256
+    assert thaw_json(apply_patch(before, patch)) == {"nested": {"items": values}}
+
+
+@pytest.mark.parametrize("position", ["front", "middle"])
+def test_single_array_deletion_replays_as_one_remove(position):
+    values = list(range(1_000))
+    before = freeze_json({"items": values})
+    index = 0 if position == "front" else len(values) // 2
+    values.pop(index)
+    target = freeze_json({"items": values})
+    patch = diff_context(before, target)
+    assert patch == (PatchOp("remove", f"/items/{index}"),)
+    assert thaw_json(apply_patch(before, patch)) == {"items": values}
+
+
+def test_duplicate_array_insert_replays_exactly():
+    before = freeze_json({"items": ["x", "x", "x"]})
+    target = freeze_json({"items": ["x", "x", "x", "x"]})
+    patch = diff_context(before, target)
+    assert len(patch) == 1 and patch[0].op == "add"
+    assert thaw_json(apply_patch(before, patch)) == thaw_json(target)
+
+
+@pytest.mark.parametrize(
+    "old, new, types", [([1], [True, 1], [bool, int]), ([1.0], [1, 1.0], [int, float])]
+)
+def test_array_insertion_preserves_distinct_scalar_types(old, new, types):
+    assert not codec._same_scalar(old[0], new[0])
+    before, target = freeze_json({"items": old}), freeze_json({"items": new})
+    patch = diff_context(before, target)
+    assert len(patch) == 1 and patch[0].op == "add"
+    recovered = thaw_json(apply_patch(before, patch))["items"]
+    assert recovered == new
+    assert [type(value) for value in recovered] == types
+
+
+def test_array_insertion_compares_equal_but_distinct_frozen_elements():
+    before = freeze_json({"items": [{"value": [1]}, {"value": [2]}]})
+    values = thaw_json(before)["items"]
+    values.insert(1, {"new": True})
+    target = freeze_json({"items": values})
+    assert before["items"][0] is not target["items"][0]
+    assert before["items"][1] is not target["items"][2]
+    patch = diff_context(before, target)
+    assert patch == (PatchOp("add", "/items/1", freeze_json({"new": True})),)
+    assert thaw_json(apply_patch(before, patch)) == thaw_json(target)
+
+
+def test_array_multiple_insertions_and_deletions_have_valid_order():
+    before = freeze_json({"items": [0, 3]})
+    expanded = freeze_json({"items": [0, 1, 2, 3]})
+    additions = diff_context(before, expanded)
+    assert additions == (PatchOp("add", "/items/1", 1), PatchOp("add", "/items/2", 2))
+    assert thaw_json(apply_patch(before, additions)) == thaw_json(expanded)
+    removals = diff_context(expanded, before)
+    assert removals == (PatchOp("remove", "/items/2"), PatchOp("remove", "/items/1"))
+    assert thaw_json(apply_patch(expanded, removals)) == thaw_json(before)
+
+
+def test_array_multi_site_edits_keep_previous_per_index_diff():
+    before = freeze_json({"items": [1, 2, 3, 4]})
+    target = freeze_json({"items": [0, 1, 2, 4, 5]})
+    patch = diff_context(before, target)
+    assert patch == (
+        PatchOp("replace", "/items/0", 0),
+        PatchOp("replace", "/items/1", 1),
+        PatchOp("replace", "/items/2", 2),
+        PatchOp("add", "/items/-", 5),
+    )
+    assert thaw_json(apply_patch(before, patch)) == thaw_json(target)
+
+
+@pytest.mark.parametrize(
+    "old, new, operations",
+    [
+        ([1, 2], [1, 2, 3], [{"op": "add", "path": "/items/-", "value": 3}]),
+        (
+            [1, 2, 3, 4],
+            [1, 2],
+            [{"op": "remove", "path": "/items/3"}, {"op": "remove", "path": "/items/2"}],
+        ),
+    ],
+)
+def test_append_and_tail_remove_records_are_byte_identical(old, new, operations):
+    before, target = freeze_json({"items": old}), freeze_json({"items": new})
+    entry = {"agent_id": "op", "status": "completed", "response": "ok"}
+    expected = {
+        "version": 3,
+        "generation": GENERATION,
+        "seq": 1,
+        "kind": "op",
+        "entry": entry,
+        "flow_context": {"patch": operations},
+    }
+    assert encode_record(GENERATION, 1, "op", freeze_json(entry), diff_context(before, target)) == (
+        compact(expected) + b"\n"
+    )
+
+
 def test_middle_remove_still_rebuilds_array(monkeypatch):
     before = freeze_json({"items": [0, 1, 2, 3]})
     rebuild = codec._array_from_values
