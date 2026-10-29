@@ -237,3 +237,31 @@ async def test_branch_chat_reuses_prefix_across_three_rounds(model, role):
         assert len(after) > len(before)
         assert _bytes(after[: len(before)]) == _bytes(before)
     assert all("Find an order by its id." in str(payload["messages"][0]) for payload in sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caching", [True, False])
+async def test_token_usage_estimate_preserves_cached_conversation_prefix(caching):
+    imodel = _model("gpt-6-luna", caching, True)
+    branch = Branch(system=SYSTEM, chat_model=imodel)
+    sent = []
+
+    async def call(*args, **kwargs):
+        sent.append(copy.deepcopy(kwargs["request"]))
+        return {"choices": [{"message": {"role": "assistant", "content": "An answer."}}]}
+
+    with patch.object(imodel.endpoint, "call", side_effect=call):
+        await branch.chat_and_record("First question", include_token_usage_to_model=True)
+        await branch.chat_and_record("Second question", include_token_usage_to_model=True)
+
+    first_user = sent[0]["messages"][-1]
+    history_user = next(m for m in sent[1]["messages"] if m["role"] == "user")
+    marker = "Estimated Current Token Usage:"
+    if caching:
+        assert _bytes(first_user) == _bytes(history_user)
+        assert marker not in str(first_user)
+        assert marker not in str(history_user)
+    else:
+        assert marker in str(first_user)
+        assert marker in str(sent[1]["messages"][-1])
+        assert marker not in str(history_user)
