@@ -1966,7 +1966,14 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Budget exhaustion stops; any other error fails open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal on the error's chain of causes and contexts, within the first 100 links read, nearest first; and, when the engine contains account integrations, every other error, because no error can show that a contained judge ran, so none can be read as a pass."""
+        """Return whether to expand an item, or raise when the judge cannot be trusted.
+
+        With no judge configured this returns True; budget exhaustion returns False.
+        Judge failures fail open except for settings errors, a containment refusal on
+        the bounded exception chain, and failures under account containment. An
+        ordinary error reporting a denial does not change that denial; an unreadable
+        callback error chain or a containment or settings refusal still raises.
+        """
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
@@ -1990,13 +1997,11 @@ class Engine:
                     )
             for v in verdicts:
                 if v.subject == eid:
-                    if not v.allow:
-                        run.notify("gated", eid=eid, reason=v.reason)
-                    return v.allow
-            allow = isinstance(res, str) and res.strip().lower() == "pass"
-            if not allow:
-                run.notify("gated", eid=eid, reason="text-reject")
-            return allow
+                    allow, reason = v.allow, v.reason
+                    break
+            else:
+                allow = isinstance(res, str) and res.strip().lower() == "pass"
+                reason = "text-reject"
         except EngineBudgetError:
             return False
         except _AgentSettingError:
@@ -2034,6 +2039,45 @@ class Engine:
             if self.contain_account_integrations:
                 raise
             return True
+
+        if not allow:
+            try:
+                run.notify("gated", eid=eid, reason=reason)
+            except Exception as exc:
+                # A reporting error cannot reverse a decision, but a containment or
+                # configuration refusal still stops the caller. Read both links,
+                # including hidden contexts and exception-group members.
+                pending = deque([exc])
+                seen = {}
+                group_members = 0
+                while pending:
+                    cause = pending.popleft()
+                    if cause is None or id(cause) in seen:
+                        continue
+                    if len(seen) >= _JUDGE_CHAIN_LIMIT:
+                        # An unread chain cannot establish that it contains no refusal.
+                        raise
+                    seen[id(cause)] = cause
+                    if issubclass(type(cause), (ContainmentRefusedError, _AgentSettingError)):
+                        raise cause  # noqa: B904 — retain the refusal's own cause
+                    incomplete = False
+                    try:
+                        if is_exception_group(cause):
+                            for member in get_exception_group_exceptions(cause):
+                                group_members += 1
+                                if group_members > _JUDGE_CHAIN_LIMIT:
+                                    incomplete = True
+                                    break
+                                pending.append(member)
+                        for name in ("__context__", "__cause__"):
+                            pending.append(getattr(cause, name, None))
+                    except Exception:  # noqa: BLE001 — fail closed when a link is unreadable
+                        incomplete = True
+                    if incomplete:
+                        raise
+                # Exception text and traceback may carry secrets of an event sink.
+                logger.error("gated callback failed (%s): [redacted]", type(exc).__name__)
+        return allow
 
     def new_run(
         self,
