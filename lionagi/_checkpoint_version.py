@@ -7,7 +7,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-__all__ = ("UnsupportedCheckpointVersionError", "load_legacy_checkpoint_json")
+__all__ = ("CHECKPOINT_VERSION", "UnsupportedCheckpointVersionError", "load_legacy_checkpoint_json")
+
+CHECKPOINT_VERSION = 2
+_SUPPORTED_CHECKPOINT_VERSIONS = frozenset({1, 2})
+if CHECKPOINT_VERSION not in _SUPPORTED_CHECKPOINT_VERSIONS:
+    raise RuntimeError("The current checkpoint writer version is not supported by the reader.")
 
 
 class UnsupportedCheckpointVersionError(ValueError):
@@ -35,6 +40,6 @@ def load_legacy_checkpoint_json(text: str) -> Any:
             raise UnsupportedCheckpointVersionError("Checkpoint version is ambiguous.")
         if "version" in checkpoint:
             version = checkpoint["version"]
-            if type(version) is not int or version not in (1, 2):
+            if type(version) is not int or version not in _SUPPORTED_CHECKPOINT_VERSIONS:
                 raise UnsupportedCheckpointVersionError("Checkpoint version is not supported.")
     return checkpoint

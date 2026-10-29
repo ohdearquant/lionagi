@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._checkpoint_version import (
+    CHECKPOINT_VERSION,
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )
@@ -30,8 +31,6 @@ __all__ = (
     "load_checkpoint",
     "resolve_checkpoint_target",
 )
-
-CHECKPOINT_VERSION = 2
 
 
 class FlowResumeError(LionError):

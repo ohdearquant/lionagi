@@ -61,6 +61,14 @@ def test_loader_rejects_unsupported_base_with_journal(tmp_path, version):
         load_checkpoint(path)
 
 
+def test_writer_version_uses_shared_reader_contract():
+    import lionagi._checkpoint_version as checkpoint_version
+    from lionagi.cli.orchestrate._checkpoint import CHECKPOINT_VERSION
+
+    assert CHECKPOINT_VERSION == checkpoint_version.CHECKPOINT_VERSION == 2
+    assert CHECKPOINT_VERSION in checkpoint_version._SUPPORTED_CHECKPOINT_VERSIONS
+
+
 @pytest.mark.parametrize("version", ["null", "true", '"2"', "2.0", "0", "-1"])
 def test_loader_rejects_nonstandard_version_values(tmp_path, version):
     path = _write_fixture(tmp_path, '{"version":' + version + "}")
