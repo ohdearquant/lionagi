@@ -31,14 +31,16 @@ def no_external_effects(monkeypatch):
 @pytest.mark.asyncio
 async def test_cutoff_fences_late_group_signal_and_retains_worker(monkeypatch):
     started, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    actions, owned = [], []
+    actions, owned, gates = [], [], []
     proc = SimpleNamespace(pid=4242)
     spawned = cli.SpawnedProcess(4242, 4242, 1.0)
     retain = cli._retain_cli_task
 
-    async def group(_proc, **_kwargs):
-        _, witnesses, gate = cli._CLEANUP_EVIDENCE.get()
+    async def group(_proc, *, spawned, witnesses, signal_gate, **_kwargs):
+        assert spawned.pid == 4242
         assert witnesses == ((4242, 1.0),)
+        gate = signal_gate
+        gates.append(gate)
         started.set()
         try:
             await release.wait()
@@ -50,6 +52,7 @@ async def test_cutoff_fences_late_group_signal_and_retains_worker(monkeypatch):
 
     def backstop(_proc, witnesses, *, signal_gate):
         assert witnesses == ((4242, 1.0),)
+        assert gates == [signal_gate]
         signal_gate.run(lambda: actions.append("backstop"), skipped=None)
 
     def record(task, *args, **kwargs):

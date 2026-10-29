@@ -186,11 +186,18 @@ async def test_a_group_signal_that_raises_still_ends_the_stand_in_and_is_logged(
     from lionagi.providers import _cli_subprocess
     from lionagi.providers.openai import codex as codex_mod
 
-    def raising(pgid, witnesses, sig):
+    calls = []
+
+    def raising_grace(pgid, witnesses, sig):
+        calls.append("grace")
         raise ValueError("identity read failed")
 
-    monkeypatch.setattr(_proc, "signal_group_if_witnessed", raising)
-    monkeypatch.setattr(_cli_subprocess, "signal_group_if_witnessed", raising)
+    def raising_backstop(pgid, witnesses, sig):
+        calls.append("backstop")
+        raise ValueError("identity read failed")
+
+    monkeypatch.setattr(_proc, "_signal_group_outcome", raising_grace)
+    monkeypatch.setattr(_cli_subprocess, "signal_group_if_witnessed", raising_backstop)
     pidfile = tmp_path / "pids.json"
     fake_cli = tmp_path / "fake-codex"
     fake_cli.write_text(_stand_in(pidfile, ignore_term=True))
@@ -213,9 +220,11 @@ async def test_a_group_signal_that_raises_still_ends_the_stand_in_and_is_logged(
         pids = json.loads(pidfile.read_text())
         assert await _wait_until_gone(pids["leader"]), "the codex stand-in outlived the run"
         messages = [record.getMessage() for record in caplog.records]
-        assert any("teardown raised ValueError('identity read failed')" in m for m in messages), (
+        assert "grace" in calls, "the intended graceful group signal must have been attempted"
+        assert sum("CLI child group teardown raised ValueError" in m for m in messages) == 1, (
             messages
         )
+        assert all("identity read failed" not in m for m in messages)
         assert any("cleanup remains unconfirmed" in m for m in messages), messages
     finally:
         if not pids and pidfile.exists():
