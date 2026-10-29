@@ -12,10 +12,11 @@ import os
 import secrets
 import signal
 import socket
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from anyio.lowlevel import checkpoint_if_cancelled
 
@@ -27,6 +28,36 @@ from .concurrency import move_on_after, shield, sleep
 CREATE_TIME_TOLERANCE = 0.1
 _PROCESS_GROUP_MARKER = "LIONAGI_INTERNAL_PROCESS_GROUP_TOKEN"
 logger = logging.getLogger(__name__)
+
+_SignalResult = TypeVar("_SignalResult")
+
+
+class SignalGate:
+    """Serialize release with synchronous identity checks and signal attempts.
+
+    Never await or re-enter this gate from an action. A blocking identity check
+    or signal can delay release; this gate provides ordering, not a deadline.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._released = False
+
+    def run(self, action: Callable[[], _SignalResult], *, skipped: _SignalResult) -> _SignalResult:
+        with self._lock:
+            if self._released:
+                return skipped
+            return action()
+
+    def release(self) -> None:
+        with self._lock:
+            self._released = True
+
+
+def _guard_signal(
+    gate: SignalGate | None, action: Callable[[], _SignalResult], *, skipped: _SignalResult
+) -> _SignalResult:
+    return action() if gate is None else gate.run(action, skipped=skipped)
 
 
 @dataclass(frozen=True)
@@ -1114,6 +1145,7 @@ async def aterminate_process_group(
     sig_first: signal.Signals = signal.SIGTERM,
     group_witnesses: tuple[tuple[int, float], ...] | None = None,
     expected_marker: str | None = None,
+    signal_gate: SignalGate | None = None,
 ) -> None:
     """End a child and, with spawn-bound witnesses, its process group.
 
@@ -1125,6 +1157,10 @@ async def aterminate_process_group(
     read. The marker is verified where the witnesses are captured, so by the
     time it reaches here the witness set either proves the group is ours or
     nothing does; re-checking a name at signal time would add no authority.
+
+    When supplied, ``signal_gate`` serializes every group and direct-child
+    signal with release. It does not authorize a group without witnesses, and
+    it cannot bound blocking synchronous identity checks or signal calls.
     """
     pgid = _safe_pgid(proc)
     witnesses = group_witnesses or ()
@@ -1133,17 +1169,25 @@ async def aterminate_process_group(
         # child's own signal does not depend on the group signal succeeding.
         try:
             if pgid is not None:
-                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+                _guard_signal(
+                    signal_gate,
+                    lambda: signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL),
+                    skipped=False,
+                )
         finally:
             with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
+                _guard_signal(signal_gate, proc.kill, skipped=None)
         return
     # A failed initial group signal does not remove the spawn-bound witnesses.
     # Keep the child cleanup independent and retry an unexpected failure only
     # after grace, with the same witnesses checked again at the signal boundary.
     group_error: Exception | None = None
     try:
-        outcome = _signal_group_outcome(pgid, witnesses, sig_first)
+        outcome = _guard_signal(
+            signal_gate,
+            lambda: _signal_group_outcome(pgid, witnesses, sig_first),
+            skipped="unverifiable",
+        )
     except Exception as exc:
         group_error = exc
         outcome = "error"
@@ -1151,7 +1195,7 @@ async def aterminate_process_group(
         # A terminate that fails leaves the forced kill below to end the child.
         try:
             with contextlib.suppress(ProcessLookupError, OSError):
-                proc.terminate()
+                _guard_signal(signal_gate, proc.terminate, skipped=None)
         except BaseException as exc:
             if group_error is not None:
                 _attach_prior_group_error(exc, group_error)
@@ -1174,7 +1218,11 @@ async def aterminate_process_group(
                     # The original witnesses are rechecked before escalation.
                     # The remaining check-to-signal race is documented in
                     # docs/internals/ln-primitives.md#signalling-a-group.
-                    retry = _signal_group_outcome(group, witnesses, signal.SIGKILL)
+                    retry = _guard_signal(
+                        signal_gate,
+                        lambda: _signal_group_outcome(group, witnesses, signal.SIGKILL),
+                        skipped="unverifiable",
+                    )
                     if retry == "denied":
                         logger.warning("permission denied signalling process group %s", group)
             except Exception as exc:
@@ -1183,7 +1231,7 @@ async def aterminate_process_group(
                 group_error = exc
             finally:
                 with contextlib.suppress(ProcessLookupError, OSError):
-                    proc.kill()
+                    _guard_signal(signal_gate, proc.kill, skipped=None)
             with move_on_after(grace), contextlib.suppress(Exception):
                 await _await_child_exit(proc)
     except BaseException as exc:
