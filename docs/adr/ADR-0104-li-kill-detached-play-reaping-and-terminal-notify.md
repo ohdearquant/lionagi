@@ -1,6 +1,7 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
 - **Status**: Accepted (2026-07-15), amended 2026-07-27, 2026-10-11, 2026-10-20 and 2026-10-27 — see Amendments 1 to 4
+- **Proposed amendment**: Amendment 5, part 1 (2026-10-29)
 - **Kind**: Aspirational (records the target state)
 - **Implementation-status**: partial — D3/D5 (terminal-notify on kill) are on main;
   D1/D2 (play-worker reaping) shipped code that cannot reach a worker; that code is
@@ -366,6 +367,114 @@ inspection retains its no-migration behavior. Workers of unpersisted SDK or engi
 **Rollout.** Three changes, in order: the schema and its readers contract; producer registration
 with generation admission; the terminal arm with the running-row handoff. The arm does not ship
 before its producers and its refusal tests.
+
+## Amendment 5, part 1 (2026-10-29) — Linux identity uncertainty
+
+**Status:** Proposed. This part specifies the containment contract and the legacy
+policy; it does not claim that all readers implement them. Part 2 will specify the
+durable identity object.
+
+### Context and scope
+
+Linux process start and boot times are recorded as epoch values. Independent
+interpreters can observe different boot-time anchors after a clock adjustment, so
+the same live process can appear to have a different start time. A stale-sweep
+regression reproduced a false cancellation using a real SQLite store and simulated
+process observations; it did not measure how often clock adjustments occur in
+production. The ambiguity also affects degraded-run manifest readers, doctor,
+Studio and recorded-worker checks. Preserving an unknown result at one reader is
+insufficient if an adapter turns it into a dead verdict.
+
+This amendment narrowly extends the Linux identity and stale-sweep scope. It does
+not alter play/show reaping, notification behavior, or the group-settlement and
+generation guards of Amendment 4.
+
+### Decisions
+
+1. On Linux an epoch-start or epoch-boot disagreement for a live PID is neither
+   disproof of process identity nor evidence that a recorded execution has died.
+   Every adapter must retain the explicit unknown outcome for that disagreement.
+   A marker must not rescue a mismatched birth to a match. Separate process-absence
+   evidence and worker-group emptiness evidence remain distinct from an inability
+   to establish identity.
+2. A session marker, command-line shape, numeric PID liveness, or current boot
+   observation alone does not prove process birth. At the part-2 cutover none
+   independently authorizes a recovery signal. Phase 1 retains the existing legacy
+   positive decisions, including marker-only matches when creation time is absent.
+3. The first release contains the demonstrated false cancellation from an
+   epoch-only disagreement without changing stored epoch units. A positive
+   legacy match keeps its existing behavior. The release's guarantee is limited
+   to that containment in updated readers: it does not certify legacy positive
+   identity matches or protection from old authoritative clients. Every doctor
+   and stale-sweep pass prints counts by reason for Linux rows held unknown on
+   an epoch-start or epoch-boot disagreement; each reason comes from the same
+   observation that decided the verdict. No automatic disposition is applied to
+   those rows.
+4. At the durable-identity cutover in part 2, a Linux persisted row without a
+   complete identity tuple grants no recovery-signal or automatic-cancellation
+   authority. The row remains unverifiable for an operator to reconcile. Every
+   doctor pass and every stale-sweep pass lists these legacy Linux rows and prints
+   their count; silent persistence is not accepted. This does not prevent a
+   process from completing its own run, or an operator from explicitly
+   reconciling it.
+5. macOS and Windows retain their existing identity semantics. No platform is
+   assigned a fabricated boot identifier.
+
+The first containment release does not implement the stricter cutover policy
+merely by preserving an epoch disagreement as unknown. The stricter policy must
+not be claimed until its authoritative readers and the two pass-level reports
+enforce it. Phase 1 preserves other existing behavior, including the handling of
+missing PID fields and non-degraded or unreadable imported manifests; these cases
+are not covered by the epoch-disagreement guarantee.
+
+### Limits
+
+With no recorded creation time, the existing session check can identify a process
+from a matching session marker alone. A descendant can inherit that marker, so a
+matching marker is not proof that the process has the recorded birth. The child
+environment is copied in `lionagi/ln/_proc.py:78-85`, and the provider passes it
+to a new-session child in `lionagi/providers/_cli_subprocess.py:1090-1109` at
+the source revision named below. Phase 1 retains this behavior on every platform.
+
+Hostile same-tick PID reuse and VM snapshot or clone behavior are outside the
+version 1 scope. An identity comparison is not a proof of unique process birth
+against these cases; the phase-1 legacy checks do not establish a verified
+observation scope. The gap between an identity read and a subsequent numeric
+process-group signal also remains. These limits do not weaken the existing
+separate requirement for kernel evidence before a recorded worker group is
+settled.
+
+### Relationship to earlier decisions
+
+The following quotations and line numbers refer to development commit
+`a27c4ec89325674f3bba10d08260744a55e543c6`:
+
+- `docs/adr/ADR-0104-li-kill-detached-play-reaping-and-terminal-notify.md:89-91`
+  requires checks including "the recorded start time and a lionagi command line";
+  on Linux those observations do not independently establish signal authority;
+  the first release retains the existing treatment of positive legacy matches.
+- The same file at `:109-115` says a PID held by nothing or an unreaped exited
+  process "means the run has ended". A missing PID field is not an observation
+  that a process is absent; phase 1 retains its existing handling of that case.
+  At the part-2 cutover, incomplete legacy Linux identity grants no automatic
+  cancellation authority.
+- The same file at `:300-302` requires a leader live under its recorded start
+  time, and at `:310-315` separately requires kernel group-absence evidence for
+  settlement. An ambiguous Linux epoch comparison cannot supply either identity
+  disproof or group-absence evidence; the settlement requirement is unchanged.
+- The same file at `:360-362` says a different interpreter can make a live
+  worker's start time fall outside tolerance and cause a refusal. That remains a
+  legacy limitation; refusal must not be converted into a death verdict.
+- The same file at `:460-465` says `_check_pid_identity` and `--all-stale`
+  semantics are "unchanged". This amendment supersedes that exclusion only for
+  the Linux identity and stale-sweep rules above.
+- `docs/adr/ADR-0095-run-terminal-callbacks-and-orphan-recovery.md:328-330`
+  says "PID reuse is excluded by create-time comparison", and `:360-362`
+  repeats that claim. Those Linux claims require correction: an epoch comparison
+  alone cannot provide that proof. The normative D4 companion correction is
+  pending; D4's unified classifier remains an open implementation target.
+- `docs/adr/ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md:3`
+  states "Superseded by ADR-0095". Its historical design is not revived.
 
 ## Depth contract
 
