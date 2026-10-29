@@ -188,7 +188,8 @@ async def test_cancellation_owns_one_transition_and_one_terminal_event(store):
     assert {row["id"] for row in after["history"]} - {row["id"] for row in before["history"]} == {
         received[0].event_id
     }
-    assert await _cancel(store, sid, generation, _identity(markers)) == "conflict"
+    # The same execution is already recorded as ended: nothing is written a second time.
+    assert await _cancel(store, sid, generation, _identity(markers)) == "already_terminal"
     assert await _state(store, sid) == after
     assert len(received) == 1
 
@@ -303,6 +304,16 @@ async def test_runner_guard_respects_driver_json_decoding(dialect, stored, match
     from lionagi.state.lifecycle.service import _runner_identity_matches
 
     assert _runner_identity_matches({"pid": 123}, stored, dialect=dialect) is matches
+
+
+@pytest.mark.parametrize(("dialect", "stored"), [("sqlite", "null"), ("postgresql", None)])
+@pytest.mark.parametrize(("captured", "matches"), [({}, True), ({"pid": 123}, False)])
+async def test_null_metadata_is_a_record_with_no_runner_identity(
+    dialect, stored, captured, matches
+):
+    from lionagi.state.lifecycle.service import _runner_identity_matches
+
+    assert _runner_identity_matches(captured, stored, dialect=dialect) is matches
 
 
 async def test_json_scalar_containing_marker_object_never_authorizes_cancellation(store):

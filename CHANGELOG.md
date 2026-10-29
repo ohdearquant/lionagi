@@ -11,6 +11,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
   repeated scans hit the limit, schedule health explains how to recover.
 
+- API run manifests now include response-reported cache read and write token
+  counts per request when a supported non-streaming response supplies them.
+  Unknown counts remain `null`; built-in local cache hits are not counted again.
+
+- With `LIONAGI_STUDIO_TERMINAL_RECONCILE` on (default off), Studio reconciles
+  eligible terminal transitions for a registered settings consumer at startup
+  and on its periodic tick. Delivery is at least once;
+  consumers can deduplicate by transition event ID. Operator force-transitions
+  now notify terminal consumers. Per-run notification overrides and the
+  no-session fallback remain push-only. Replay loads global settings only;
+  notifiers configured in project settings are push-only, so a missed push
+  for one is replayed through the global notifier when one is configured,
+  never through the project's. Studio's consumer registers on its first pass
+  with transitions that predate it acknowledged as history, never delivered.
+  A pass keeps reading pages of owed transitions until it reaches the end or
+  `LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS` (default 10) have passed.
+  The setting is off by default because the push path records nothing yet:
+  with it on, a transition whose push already ran the notifier is replayed by
+  the next pass and the notifier runs again for the same event. A Python hook
+  can deduplicate by event ID; a shell command notifier runs twice. A pending
+  ADR-0095 amendment defines what the push records. With the setting off, no
+  pass runs, no consumer is registered and push delivery is unchanged.
+
+- State schema version 6 records terminal-delivery eligibility and consumer
+  registrations. After upgrading, restart every process that opens the store,
+  including Studio daemons, schedulers and long-running CLI processes. Old
+  already-open processes can write unclassified rows that are excluded from
+  replay. Historical terminal rows with a NULL predecessor also remain
+  unclassified when initialization and reaper transitions cannot be separated.
+  The first open after the upgrade classifies every existing transition in one
+  transaction; on PostgreSQL it holds a SHARE ROW EXCLUSIVE lock on
+  `status_transitions` until it commits, so writers wait for a time that grows
+  with the table's size. On SQLite the same transaction holds the database's
+  single write lock for that time, so every other writer waits on it too.
+
 - OpenAI chat prompt-cache placement keeps the system and tool instructions in
   a stable prefix. With placement on, the per-request token-usage estimate is
   no longer appended to the newest message, since it changed cached bytes.
@@ -204,6 +239,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   drop their `synonyms_removed_after` field.
 
 ### Fixed
+
+- Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
+  A caller-supplied chat model keeps its own settings.
+  OpenAI native tool calling remains subject to model restrictions: [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+  requires `none` in Chat Completions, while [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+  requires Responses. The agent tool loop uses prompt-rendered tools.
+  Some newer reasoning models reject `temperature`, `top_p`, or `logprobs` with a
+  non-`none` effort; those provider errors are surfaced to the caller.
+  Repeated checks of known reasoning models keep their classification. A chat request
+  for a listed non-reasoning model still drops `reasoning_effort`; a model ID lionagi
+  does not list keeps it for the provider to validate, and the accepted values now
+  include `none`, `minimal`, `xhigh` and `max`.
+
+- `is_coro_func` recognizes callable instances whose class defines an async
+  `__call__`, including partials of those instances. Synchronous `add_message()`
+  now rejects such message hooks; use `a_add_message()` to await them.
 
 - `li team receive` reads a stored message whose recipient is a single name written as a
   string, not a list, as that whole name, as the other team commands already did. It used
