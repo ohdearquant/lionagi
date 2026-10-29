@@ -1,5 +1,7 @@
 # ADR-0095: Run-terminal callbacks and orphan recovery
 
+> **Proposed amendment:** The immediate named-consumer delivery changes in this document remain subject to sign-off and are not implemented by this decision. The pre-existing ADR and its separately proposed Linux correction retain their own statuses.
+
 - **Status**: Accepted
 - **Kind**: Aspirational
 - **Implementation-status**: partial — the v1 callback envelope, post-commit registry,
@@ -100,18 +102,20 @@ ten-second deadline. The shipped compatibility behavior is intentionally precise
 - a handler cancellation is re-raised inside the AnyIO task group and is not logged as an ordinary
   exception; it follows task-group cancellation semantics rather than an isolation guarantee;
 - cancellation of the task emitting the event propagates to its caller;
-- budget expiry silently cancels remaining async handler work and returns, with no timeout log;
+- budget expiry silently requests cancellation of remaining async handler work, with no timeout
+  log; a handler that does not yield can delay cancellation and return beyond the budget;
 - synchronous handlers are offloaded with `abandon_on_cancel=True`, so expiry/cancellation may
   return while their worker thread continues; its later result is unobserved and cannot be claimed
   as delivered, failed, or torn down.
 
-Awaiting the registry may delay the transition caller's return by at most that budget; abandoned
-sync work may outlive that return but cannot delay, roll back, overwrite, or recategorize the
-terminal write. ADR-0120 names this exact compatibility profile before any behavior change.
+The shared budget bounds waiting for yielding handlers, but a non-yielding async handler can
+delay the transition caller's return beyond it. Synchronous handlers abandoned at expiry may
+outlive return; their later work cannot roll back, overwrite, or recategorize the terminal write.
+This corrects D1's earlier hard wall-time claim. ADR-0120 names the compatibility profile;
+the proposed immediate-consumer operation likewise has a cooperative deadline and cancellation
+cleanup may extend beyond it.
 
-The push contract is **best effort**. LionAGI claims neither exactly-once nor at-least-once
-callback delivery. The committed transition audit is the durable reconciliation source, and
-its consumption contract is **set-based, not cursor-based**. A positional cursor over
+Legacy process-local callback push is best effort and has no at-least-once guarantee. An opted-in named consumer retains eligible owed events and offers at-least-once attempts under the registered-consumer contract below, subject to a running consumer and available capacity; it does not promise exactly-once effects. The committed transition audit is the durable reconciliation source, and its consumption contract is **set-based, not cursor-based**. A positional cursor over
 `(created_at, id)` cannot be made safe here: the transition timestamp is captured before the
 transaction begins while commit happens at context exit, so a slow transaction can commit a
 row whose `created_at` sorts *behind* a cursor another consumer already acknowledged, and the
@@ -119,14 +123,7 @@ audit ID is a random UUID with no commit ordering. A strict greater-than cursor 
 that row permanently — losing exactly the commit-then-crash window reconciliation exists to
 cover.
 
-Instead, delivery acknowledgment is durable state: a `terminal_deliveries` table with
-composite primary key `(transition_id, consumer)` records that a named reconciliation
-consumer has processed a terminal event, written by the consumer (never by the push path —
-the in-process push stays fire-and-forget and records nothing). Acknowledgment writes are
-idempotent by construction: `INSERT ... ON CONFLICT DO NOTHING` on the composite key, so
-concurrent or repeated acks of the same event by the same consumer are single-row no-ops.
-The reconciliation query is a read-only anti-join: terminal transitions on execution
-entities with no delivery row for the requesting consumer.
+Delivery acknowledgement is durable state in `terminal_deliveries`, keyed by `(transition_id, consumer)`. The named consumer writes it after an observed successful or explicitly not-applicable attempt, whether triggered immediately after commit or by reconciliation. Registration may insert the baselines specified below; those rows are not evidence of delivery. Legacy callback push writes no acknowledgement. ACK insertion remains idempotent through `INSERT ... ON CONFLICT DO NOTHING`. Reconciliation selects committed eligible transitions without an acknowledgement for the active consumer. Neither ACK uniqueness nor an ACK-state check exclusively claims an external effect.
 
 **ADR-0123 target acknowledgement amendment.** Source selection introduces a logical
 `terminal_fact_id` distinct from a wire version and, for bound Runs, potentially distinct from the
@@ -173,8 +170,9 @@ operator, never a side effect of inactivity. A registered consumer that merely s
 querying remains active and its unacknowledged set is retained indefinitely, regardless of
 how far past any horizon its silence extends. Releasing a retired consumer's outstanding
 unacked set happens atomically with the retirement itself (one transaction), so there is no
-window in which the registration is gone while its set is still owed, or retained while
-unowned. Registering as a reconciliation consumer is what creates the retention obligation;
+window in which the identity is retired while its set is still owed, or remains active after
+its obligation is released. The retired registration row and acknowledgements remain subject
+to the retention and explicit-reactivation rules below. Registering as a reconciliation consumer is what creates the retention obligation;
 an anonymous ad-hoc query gets the plain audit history with no completeness guarantee.
 
 Because membership in the unacknowledged set does not depend on any ordering, a
@@ -182,15 +180,18 @@ late-committing older row is simply still in the set the next time the consumer 
 For standalone v1, consumers deduplicate on `event_id` because it is the implicit fact ID. Bound
 v1 and v2 consumers deduplicate on `terminal_fact_id`; a legacy bound client may present only its
 `event_id`, and the server resolves it through the immutable staged decision before writing the
-fact-keyed acknowledgement. Push and reconciliation can both deliver the same fact, including the
-push-then-crash-before-ack case. The audit row itself is never mutated; acknowledgment lives
-entirely in the deliveries table, preserving audit immutability.
+fact-keyed acknowledgement. Independent attempts by a named consumer may deliver the same fact, including an immediate attempt followed by a crash before acknowledgement. For a committed `durable=true` eligible event owed to an opted-in identity, legacy global push is not a second delivery route. The audit row is never mutated; acknowledgement lives entirely in the deliveries table, preserving audit immutability.
 
 `SESSION_END` remains supported but is not bridged into the registry; a bridge would create a
 loop and a second authority. Persistent direct engine runs are covered through their
-signal-session terminal transition. The `--no-persist` engine case is the sole explicit
-adapter: it may publish an envelope marked `durable=false` with no reconciliation guarantee.
-No other surface gets a teardown-time callback call.
+signal-session terminal transition. The `--no-persist` engine may publish an envelope marked
+`durable=false` with no reconciliation guarantee. Existing flow invocation-finalization error
+handling can also emit a synthetic non-durable envelope, and an explicitly requested `--notify`
+can use its no-session direct fallback. `durable=false` envelopes dispatch through the existing
+legacy emit unchanged, even when the named consumer is active: global best effort applies unless
+a matching scoped override replaces it. Suppressing inherited-global wrappers for committed
+`durable=true` events must not change non-durable registrations. These envelopes are not
+committed transition facts and do not acknowledge or replay through the durable subscription.
 
 ### D2 — A minimal versioned envelope owned by LionAGI; transport policy stays outside
 
@@ -250,14 +251,9 @@ normative in ADR-0124.
 
 ### D3 — Direct in-process delivery; two bootstrap points; `--notify` becomes scoped sugar
 
-The core mechanism is a direct in-process handler call through the registry, post-commit and
-bounded per D1. A handler is a Python callable; a process bootstrap may also install an
-external-executable adapter, where LionAGI passes the v1 JSON envelope and interprets only
-process launch, timeout, and exit code, while the executable owns the transport.
+For committed lifecycle transitions, legacy delivery invokes Python or external-executable handlers through the process-local registry after commit, bounded per D1. Non-durable envelopes need not have a committed transition. Executable adapters receive the v1 JSON envelope and own their transport; LionAGI observes launch, timeout, and exit outcome.
 
-There are two bootstrap points rather than N command flags: common CLI startup and Studio
-service startup. Both resolve the handler configuration from settings, so an external
-adapter is installable from user configuration alone:
+Common CLI startup and Studio startup continue to register legacy candidates without requiring an asynchronous store read at registration. After a committed `durable=true` eligible event exists, the producer reads the store's named-consumer registration asynchronously before selecting its route. For an active identity, the committing process offers the exact event to the shared consumer operation immediately after commit, outside the legacy registry's override selection, subject to mode read, admission and the shared budget. It does not require a running Studio daemon or an interprocess wake transport. An inactive or absent identity selects the legacy route. If that durable event's mode read fails, its state is unknown: do not assume inactivity or invoke the inherited-global legacy candidate; report the uncertainty, preserve independent scoped and programmatic callbacks, and leave an eligible event owed only if an active registration actually exists. Configuration for legacy handlers is:
 
 - **Settings key**: `notify.on_terminal` (the key the current flow-only prototype already
   resolves). Accepted shapes: a string (compatibility form) or a mapping `{enabled: bool,
@@ -267,33 +263,20 @@ adapter is installable from user configuration alone:
   argv array by POSIX word-splitting (`shlex.split`) with no shell interpretation of any
   kind; a string that fails to split, or whose intent requires shell features (pipes,
   redirection, `&&`, variable expansion), warns with a migration diagnostic naming the
-  argv form and resolves to disabled. A resolution producing an empty argv — an empty or
-  whitespace-only string, an explicit empty `argv` array in the mapping form, or the same
-  through a per-run override or `--notify` — is invalid by the same rule: it logs the same
-  key-naming diagnostic and resolves to disabled before any launch is attempted. No
+  argv form and resolves to disabled for legacy push. A resolution producing an empty argv — an empty or whitespace-only string, an explicit empty `argv` array, or the same through a per-run override or `--notify` — is invalid by the same rule. Legacy push logs the key-naming diagnostic and resolves to disabled before launch; when enabled is true or absent, the durable global subscription records invalid configuration as failure and leaves the event owed; a valid explicit `enabled: false` wins over unused malformed fields. No
   configuration shape reaches a shell.
-- **Precedence**: per-run override > project `.lionagi/settings.yaml` > global
-  `~/.lionagi/settings.yaml` > disabled. The per-run override surface is the existing
-  `--notify` flag where it exists (flow/play) and the programmatic registration API
-  everywhere; an override replaces the settings-resolved handler for that run's scope only.
-- **Resolution and validation**: settings are resolved once per process at bootstrap
-  (snapshot semantics; a settings edit takes effect on the next process). An invalid value
-  logs a warning naming the key and falls back to disabled — configuration errors never
-  fail or delay a run.
+- **Legacy precedence**: per-run override > project `.lionagi/settings.yaml` > global `~/.lionagi/settings.yaml` > disabled. Existing `--notify` and programmatic overrides replace the legacy settings handler in their run scope. They do not replace, suppress, or acknowledge an opted-in durable global subscription.
+- **Resolution and validation**: legacy handlers retain bootstrap snapshot resolution and warning/disabled behavior for invalid configuration. The durable subscription reads current global settings on every immediate or replay attempt, rather than the bootstrap handler snapshot. This changes long-running CLI behavior: a later explicit disable or filter mismatch acknowledges the event as not applicable, even if the notifier was configured when the process started; re-enabling it does not revive that ACK. A load/YAML error or malformed configured global structure is failure and leaves the event owed. Validate the raw settings root, `notify` and `on_terminal` containers before interpreting missing values: a genuinely absent or explicitly null `on_terminal` is deliberate silence. A valid boolean `enabled: false` takes precedence over malformed unused adapter/filter fields and is not applicable, with an irreversible ACK. A non-boolean `enabled` is invalid and remains owed; with `enabled: true` or absent, malformed adapter/filter fields are invalid and remain owed. A malformed present `notify` container is invalid. Current resolver behavior is not sufficient for every malformed container and must be repaired in implementation. Configuration or delivery failure never changes source lifecycle status or history.
 - **Exec adapter safety**: `argv` is an array executed without a shell; the envelope is
   passed on stdin; LionAGI interprets only launch, the shared timeout budget, and exit code.
 
-Programmatic users register handlers explicitly. Flow/play `--notify` remains as scoped
-compatibility sugar: after the flow session ID is known, it registers the legacy-payload
-exec adapter (same no-shell argv rules as every executable adapter) for the target
-invocation (if present) or session, and unregisters it in a `finally` block. The current direct teardown notify call is removed to prevent double delivery. No new
-`--notify`-style flag is added to agent, fanout, engine, scheduler, or Studio APIs — those
-surfaces are covered by the settings-level handler.
+Programmatic handlers remain explicit. Flow/play `--notify` retains its scoped legacy payload, no-shell adapter, target invocation-or-session selection, `finally` unregistration, and existing explicitly requested no-session direct fallback. No new per-command notification flag is required. A legacy scoped override continues to select among legacy registry callbacks; it does not suppress the independent named-consumer call, which is not inserted into that override-filtered registry.
 
-The dispatch outbox is not used by v1: its delivery loop is daemon-tick-driven, and a
-callback enqueued by a dying CLI process would deliver only when a Studio daemon runs. A
-LionAGI-native reliable-delivery tier would need a daemon-independent drainer, subscriber
-identity, ack state, retention, and security policy — a separate decision if ever needed.
+In durable mode, classify notification provenance from the raw global and nearest project files, not the merged settings object. The global subscription resolves only current global settings at each attempt. An explicit `--notify` or programmatic per-run notifier is a separate best-effort subscription. A project `notify.on_terminal` string or mapping containing its own `adapter` key declares a separate project subscription; resolve that project declaration on its own, without borrowing missing adapter fields from global settings. A malformed or incomplete declared adapter is a project configuration rejection, not evidence of an inherited-global subscription and not permission to send the global adapter as a second legacy push. An explicit project `enabled: false` disables that separate project subscription; it cannot silence the durable global subscription. To limit global deliveries use the global kind/ID filters, or explicitly retire the global consumer. A project declaration containing only `enabled` and/or `filter`, but no adapter, creates no independent subscription; it neither disables nor filters the global subscription, and does not cause a second inherited-global push. An absent project declaration likewise creates none. This is a deliberate change from the legacy deep-merge behavior in durable mode: partial project adapter or filter inheritance no longer modifies the global subscription. In unenrolled legacy mode the existing merge and precedence remain unchanged.
+
+The independent project and per-run subscriptions cannot suppress or acknowledge global work. Where an explicit per-run override and a project notifier both apply to the same legacy run scope, existing per-run-over-project precedence still selects the legacy notifier; this does not affect the global subscription. For a committed `durable=true` event owed to the active consumer, an inherited-global scoped wrapper is not a second subscription and must not invoke the same global notifier through legacy push; its non-durable registration remains unchanged. Two separately configured subscriptions may notify the same destination; no cross-subscription deduplication is promised.
+
+The dispatch outbox is not used by this v1 contract. The committed eligible transition plus active registration and acknowledgement anti-join retain the outstanding obligation. The producer offers an immediate attempt subject to mode read, admission and the shared budget; Studio performs bounded recovery passes. Recovery after the producer exits requires a subsequent consumer execution. Persisted intent, durable retry schedules, persisted or version-snapshot filters and destinations, and owner-scoped delivery remain separate decisions.
 
 ### D4 — No `orphaned` status; canonical orphan reasons, one classifier, one coordinator
 
@@ -448,7 +431,9 @@ wrapper makes the resume decision against the recovery projection.
 
 - Best-effort push: a process that dies between commit and emission delivers no callback;
   consumers that need certainty must reconcile from the audit projection.
-- A transition caller can be delayed up to the shared ten-second handler budget.
+- The shared ten-second budget bounds waiting for yielding handlers; a non-yielding async
+  handler may delay the transition caller beyond it, and abandoned synchronous work may outlive
+  the return.
 - `display_status="orphaned"` is a projection, not a persisted status; raw-SQL consumers see
   `failed`/`blocked` plus reason codes.
 - Resume remains manual for every surface except task-worker lease requeue.
@@ -460,7 +445,7 @@ wrapper makes the resume decision against the recovery projection.
 |---|---|---|---:|
 | Terminal source | Flow direct notify plus partial `SESSION_END`; other surfaces none | Post-commit registry driven by applied lifecycle terminal transitions | M |
 | Durable callback fact | Status audit exists, no terminal-event reader | Anti-join reconciliation over `status_transitions` plus `terminal_deliveries` ack table | M |
-| Settings-level handler | Flow-only `notify.on_terminal` string command | Same key, generic: exec/python adapter shapes, precedence, snapshot resolution, explicit disabled state | S |
+| Settings-level handler | Flow-only `notify.on_terminal` string command | Same key, generic: exec/python adapter shapes, precedence, legacy snapshot resolution, explicit disabled state; durable global attempts resolve current settings | S |
 | Payload | Flow-specific environment payload | Versioned minimal terminal envelope; legacy adapter preserves old payload | S |
 | Delivery | Flow shell hook, 10 s, swallowed failures | Direct bounded registry; executable/python adapter only, no shell; external retry | M |
 | Flow `--notify` | Direct teardown call | Scoped sugar over the registry, same legacy payload/timeout | S |
@@ -480,9 +465,7 @@ wrapper makes the resume decision against the recovery projection.
    a later timestamp, commits, and is reconciled and acknowledged; A then commits. A's event
    MUST appear in the consumer's next unacknowledged set (this is the case a positional
    cursor loses).
-1b. Push-then-crash duplicate: a handler receives the push, the consumer crashes before
-   writing its delivery acknowledgment; reconciliation redelivers the same `event_id` and
-   consumer-side dedup makes processing idempotent.
+1b. Immediate-attempt-then-crash: after enrollment, the committing process performs the notification effect and exits before consumer acknowledgement. A fresh consumer process redelivers the same `event_id`. A durable sink that atomically deduplicates with its effect applies one effect; a non-idempotent sink may apply two. Assert raw attempts, sink effects, and acknowledgement rows separately.
 1b-i. Offline-longer-than-horizon: a registered consumer stops querying for longer than the
    retention horizon while terminal events accumulate; on return, every unacknowledged
    event is still in its reconciliation set (retention expires acks only alongside their
@@ -495,23 +478,16 @@ wrapper makes the resume decision against the recovery projection.
    run reconciliation for that consumer, and assert zero redelivered events — pruning
    eligibility must have excluded every ack whose transition row remains in the
    reconciliation-queryable set.
-1b-iv. Consumer retirement atomicity: retire a registered consumer holding a nonempty
-unacknowledged set; assert registration removal and unacknowledged-set disposition occur
-in one transaction, with neither intermediate state observable (registration absent while
-the set remains owed, or registration present after the set is released).
+1b-iv. Consumer retirement atomicity: retire an active consumer holding a nonempty
+unacknowledged set; assert its registration changes from active to retired and its retention
+obligation ends atomically, with neither intermediate state observable. The registration row
+and existing acknowledgements remain for explicit reactivation and subsequent pruning policy.
 1b-v. Fact-ID migration: backfill existing `(transition_id, consumer)` acknowledgements, dual-read
 and dual-write one standalone v1, bound v1, and canonical v2 fact, retry each wire delivery, and
 prove one `(terminal_fact_id, consumer)` row per logical fact with no resurrection after pruning.
 Acking a bound v1 `event_id` must resolve through its staged decision; suppressed/attention
 decisions must never appear in reconciliation.
-1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
-   unaffected), per-run override replacing the settings handler for its scope only, and the
-   explicit `enabled: false` state. No-shell path: assert no executable adapter invocation
-   (string form, mapping form, or `--notify`) ever constructs a shell; a shell-feature
-   string (pipe, redirection, conjunction) resolves to disabled with the migration
-   diagnostic, and every empty-argv resolution (empty string, whitespace-only string,
-   empty argv array, and the same via per-run override and `--notify`) resolves to
-   disabled with the diagnostic before any launch.
+1c. Settings contract: string form, mapping form, invalid legacy value (warns, disabled, run unaffected), per-run override replacing the legacy settings handler in its scope, and explicit `enabled: false`. Durable invalid configuration leaves the event owed; explicit disabled is acknowledged not applicable. No-shell path: string, mapping and `--notify` never construct a shell. Shell-feature strings and every empty argv form produce a key-naming diagnostic before launch; legacy push resolves them disabled and durable mode treats them as invalid when enabled is true or absent. Explicit `enabled: false` takes precedence over unused malformed fields.
 1d. Spawn handshake per incomplete phase: crash before intent commit (no row, no leak
    beyond the OS process); crash between spawn and identity commit on a marker-capable
    surface (restart adopts identity from the child marker only if the applicable identity
@@ -521,11 +497,13 @@ decisions must never appear in reconciliation.
    checked, with Linux epoch disagreements held unknown as specified in D4).
 2. Concurrent terminal transitions plus a same-status reason append: only the winning
    transition emits; no handler runs under the transaction.
-3. One hanging async, one hanging sync, one failing, and one successful handler registered: the
-   successful handler is not starved, caller delay is bounded, async work is cancelled silently,
-   sync work is recorded as abandoned/unknown and may continue, only the ordinary failure logs,
-   and persisted status remains unchanged. Separate fixtures cover handler cancellation and
-   emitter cancellation propagation.
+3. One hanging async handler that yields (for example, awaiting an infinite AnyIO sleep), one
+   hanging sync, one failing, and one successful handler registered: the successful handler is
+   not starved, waiting for yielding handlers follows the shared budget, async work is cancelled
+   silently, sync work is recorded as abandoned/unknown and may continue, only the ordinary
+   failure logs, and persisted status remains unchanged. A separate controlled non-yielding
+   coroutine overruns the budget before yielding, demonstrating that caller return may be delayed
+   beyond it. Separate fixtures cover handler cancellation and emitter cancellation propagation.
 4. Every surface's terminal path (agent, flow/play, fanout, engine, Studio launch, compiled
    workflow, scheduler fire, worker lease) with Studio present and absent: expected entity
    event and correlation fields.
@@ -547,12 +525,7 @@ decisions must never appear in reconciliation.
 - **Status**: Accepted
 - **Date**: 2026-10-28
 
-This amendment adds a shipped reconciliation consumer to the standalone v1 contract in D1 and
-D3. It does not change the existing accepted text above or implement ADR-0124 fact-ID source
-selection and v2 dual-read. The process-local callback push remains best-effort; the durable
-consumer provides at-least-once attempts for eligible facts, not exactly-once effects.
-Independent reconcilers may both deliver one fact. A consumer deduplicates standalone v1 on
-`event_id`, the transition ID; `(transition_id, consumer)` keeps acknowledgements idempotent.
+This original accepted amendment adds a reconciliation consumer to standalone v1. The proposed immediate-consumer amendment below qualifies D1 and D3 while retaining ADR-0124 fact-ID source selection and v2 dual-read as separate work. For the v1 named consumer, immediate and reconciliation triggers offer at-least-once attempts for eligible owed events while a consumer runs with available capacity, not exactly-once effects. Independent processes may attempt the same fact. Standalone v1 deduplicates on `event_id=transition_id`; `(transition_id, consumer)` makes ACKs idempotent. Live settings and process-local retries do not implement ADR-0120 D5's persisted intent, durable retries and backoff, or filters and destinations persisted or resolved from a versioned snapshot.
 
 ### Stored eligibility and upgrade
 
@@ -588,6 +561,8 @@ transaction, `start="now"` registers the identity and acknowledges the eligible 
 its registration snapshot, while `start="all"` registers without acknowledging that history.
 A transition not visible in the registration snapshot remains owed even if its timestamp was
 captured earlier. Registering an already active identity returns the existing registration.
+
+Enrollment must commit before execution advertised as covered begins, including Studio startup reapers and scheduler activity. A post-commit notification must never first register `start="now"` for its own event. Attaching to an active identity does not create a new cutoff. Baseline acknowledgements are not delivery evidence; no notification guarantee is implied for pre-enrollment events. Upgrade and restart every producer before enrolling the consumer: an old producer can still send legacy push and cannot participate in the single-route contract. If an old producer runs after enrollment, its legacy push plus later replay can duplicate the same notification; an already-enrolled, retained TRUE-eligible, unacknowledged event remains owed, so this mixed-version case does not lose that obligation. This claim does not cover an event committed before enrollment: `start="now"` can baseline it without delivery. Nor does it cover an old pre-v6 writer's NULL-eligibility rows, which the stored-eligibility rules above exclude.
 Retirement is explicit and changes `retired_at` in one statement, atomically ending service
 and its retention obligation; it does not delete acknowledgement rows. Retired-consumer
 acknowledgements become eligible for pruning under the retention rule; actual pruning is a
@@ -606,17 +581,17 @@ workers described below.
 
 ### Daemon delivery and bounded traversal
 
-The Studio daemon runs a named settings consumer at startup and on its existing periodic
-reconciliation tick, with a bounded batch, when `LIONAGI_STUDIO_TERMINAL_RECONCILE` is on. It
-ships off: until the push path records what it delivered, an enabled pass replays every pushed
-event and its notifier runs a second time. With it off, no pass runs and no consumer is
-registered. A handler returns an explicit outcome; only success
-or an explicitly not-applicable outcome is acknowledged. An exec adapter succeeds on exit 0;
-nonzero exit, timeout and spawn failure fail. A Python hook succeeds on normal return other
-than explicit `False`; an exception, timeout or `False` fails. Disabled notifications and a
-nonmatching kind or ID filter are not applicable and are acknowledged and counted. Registry
-plumbing returning is not evidence of handler success. The push path remains unchanged in its
-best-effort treatment of handler results.
+`LIONAGI_STUDIO_TERMINAL_RECONCILE` remains off by default. Enabling it enrolls an absent `notify.settings.on_terminal` identity before covered startup work, attaches to an existing active identity, and runs bounded startup and periodic recovery passes. A retired identity is not reactivated by the switch; explicit operator reactivation chooses its baseline. An active registration selects durable routing in every participating producer, regardless of that producer's Studio environment flag. A disabled switch does not retire an existing registration or restore legacy global push; retirement and reactivation remain explicit.
+
+When the consumer is active, each participating CLI or Studio producer submits the exact `durable=true` committed eligible event to the shared consumer operation immediately after commit. Such events use the consumer only; `durable=false` fallback, `--no-persist`, and other non-durable envelopes use unchanged legacy emit without ACK or replay: global best effort unless a matching scoped override replaces it. This bypasses older traversal ordering, not eligibility, active-consumer, ACK or capacity checks. Immediate and replay attempts share process-local admission keyed by store, consumer and event, outcome handling, stored-eligibility and ACK checks before effects, and abandoned-worker bounds. Unavailable capacity or a failed attempt leaves an eligible event owed while the registration is active. For a `durable=true` event, no admission, preparation, store-read or ACK failure falls back to inherited-global legacy push; an unknown mode is not evidence of an active registration, so only an actually active registration creates an obligation. Post-commit read failure leaves delivery unresolved and cannot rewrite the transition. For these durable committed events owed to the active identity, legacy global settings delivery, including inherited-global scoped wrappers, is suppressed for this identity; independent project/per-run and programmatic callbacks retain their own dispatch rules. Upgrade all producers before enrollment.
+
+In durable mode, create a run-bound recorder unconditionally at run start when a run directory exists, even if notifications are disabled at bootstrap; create no outcome file until an attempt is actually recorded. Pass the recorder to an immediate global attempt only for that run's own terminal entity. One serialized recorder owns the per-run `notify_outcome.json` and records separate `run` and `global` subscription results, including observed exec success, failure and configuration rejection, while keeping backward-compatible top-level fields for existing readers. The selected project-own-adapter subscription is recorded as `run`. Aggregate `ok` is false if any recorded subscription fails. Aggregate `exit_code`, stderr and reason come from the first failure in fixed `run`, then `global` order, independent of completion order. Global stderr uses `notify_stderr.global.log` with mode 0600. A run subscription's result cannot acknowledge the global subscription. Replay has no run handle and writes no per-run outcome; legacy-mode recorder behavior remains unchanged. Python handlers retain existing outcome-file behavior unless separately specified.
+
+Only observed adapter success or explicit not-applicability acknowledges an attempt. Exec success requires exit zero; nonzero exit, timeout and spawn failure fail. Python normal return succeeds except explicit `False`; exception, cancellation, timeout and `False` fail, subject to the tracked synchronous late-completion rule below. Invalid configured settings fail. Explicit disabled settings and nonmatching filters are not applicable and are counted separately. Registry return is never success evidence.
+
+Immediate dispatch shares one existing ten-second post-commit caller budget with other callback work; preparation, admission, adapter and ACK do not each receive a new serial ten-second allowance. This is a cooperative deadline, not a hard wall-time guarantee for synchronous work or cancellation cleanup. Cancellation during an ACK may occur before commit or after an ambiguous commit: never infer either outcome from the cancellation alone. Preserve the original caller cancellation, track any still-running operation under bounded ownership, and resolve the durable ledger before deciding that the event is owed or starting a retry. If the ACK did not commit, a subsequent attempt may repeat an already completed effect; if it did commit, the ACK check suppresses an ordinary retry. Notification I/O and ACK writes occur after the source transaction and cannot change source status or history. A committed, retained TRUE-eligible event without an ACK remains owed while its registration remains active; baseline or not-applicable ACKs and NULL-eligibility rows are not owed. Effect-before-ACK death may repeat an effect. There is no delivery-time guarantee while no consumer runs.
+
+An existing flow invocation-finalization exception may produce a synthetic `durable=false` envelope without a committed transition ID. It uses unchanged legacy emit even with active enrollment: global best effort unless a matching scoped override replaces it; it cannot be ACKed or replayed. Do not manufacture a durable ID or claim that this fallback satisfies the global subscription. An exception is not itself proof the transaction did not commit: if commit outcome is ambiguous, inspect persisted state and eligibility where possible and reconcile a real committed event; otherwise report the uncertainty. The best-effort synthetic notice may duplicate a later recovered committed event.
 
 A rotating `(created_at, transition_id)` keyset traverses the
 unacknowledged set, wrapping to discover late commits; the cursor is process-local scheduling
@@ -634,7 +609,7 @@ strict global oldest-first order, exact doubling, or progress under unbounded ar
 
 A timed-out synchronous Python hook fails without an immediate acknowledgement. While its
 abandoned worker remains active, another attempt for the same consumer and transition is not
-started in that process. A later normal completion is acknowledged; an exception or explicit
+started in that process. A later normal completion other than explicit `False` is acknowledged; an exception or explicit
 `False` records failure. Outstanding abandoned workers are bounded per consumer by the batch
 size; at the bound, a pass starts no further attempts for that consumer and reports saturation.
 Replacing the SQLite store file while the daemon runs is unsupported; late acknowledgements may
@@ -645,20 +620,138 @@ the connection is not reused across event loops.
 
 ### Scope and configuration
 
-Replay resolves session context at delivery time. A session transition uses that session;
-a play uses its linked session, if present. For an invocation or schedule run, collect its
-linked sessions' distinct non-NULL project values: exactly one supplies the project; zero or
-several means no session context. Do not select the first session. Replay loads global settings
-only, never a project's settings, so a notifier configured in a project's settings is push-only.
-An eligible transition without session context is not applicable and is acknowledged; the
-pass summary counts absent context and ambiguous projects separately. Kind and ID filters
-apply after resolution.
+Immediate and replay paths consider committed, retained TRUE-eligible events owed to the active global subscription regardless of whether any session, project, or unambiguous context exists; actual delivery remains subject to configuration, admission and observed handler outcome. Session and play links and invocation/schedule-run sessions may be inspected only to attach optional context and diagnostic counts. Separately count missing session, unavailable or NULL project, ambiguous project, and context-read failure; do not select an arbitrary project. None of those labels is a not-applicable outcome, an ACK, or a reason to suppress the global attempt. A context-only read failure is reported but does not by itself block global delivery; actual eligibility, registration, configuration and ACK failures retain their separate handling. Apply configured global kind and ID filters to the event itself.
 
-Per-run scoped `--notify` overrides and the no-session fallback remain push-only; notification
-intent is not persisted for replay.
+The durable global subscription is independent of project-only and per-run best-effort subscriptions. Their overrides cannot suppress or satisfy it. The explicitly requested no-session `--notify` direct fallback remains best effort and cannot establish or acknowledge a durable global delivery. Two explicitly configured subscriptions may notify the same destination; there is no cross-subscription deduplication guarantee.
+
+Notification destinations and filters are read from current global settings at each attempt, not frozen at source commit. A settings change may redirect or disable a later retry. Disabled settings ACK the owed event as not-applicable: this is an intentional drop, not deferred delivery. Re-enabling settings does not revive an already ACKed event. Persisted intent, durable retries and backoff, and filters and destinations persisted or resolved from a versioned snapshot, as specified by ADR-0120 D5, remain outside this v1 slice. All processes serving one identity must share the same logical global configuration and security domain.
 Compatibility-mode stores are never migrated by this feature and durable consumer APIs refuse
 them with a typed mode error. Their transition writers use stored eligibility if the foreign
 schema and profile admit it, or compute the push decision in memory if the column is absent;
 that push is best-effort and has no replay guarantee. Consumer APIs also refuse an unmigrated
 read-only store with a typed error naming its schema version. Owner-scoped compatibility
 consumers and persisted notification intent are separate follow-ups.
+
+
+## Proposed amendment: immediate named-consumer delivery for standalone v1
+
+- **Status**: Proposed — pending architectural approval; no implementation sign-off.
+- **Date**: 2026-10-29
+
+When accepted, this amendment qualifies D1/D3 and the registered-consumer text for the
+standalone v1 settings subscription; all other decisions remain standing under their existing
+statuses. The named consumer owns both post-commit exact-event attempts in the
+committing process and bounded recovery attempts. Legacy registry push remains best effort for
+other subscriptions. This proposal does not implement ADR-0124 or ADR-0120 D5.
+
+### Planned operator interface and configuration
+
+> Durable terminal reconciliation is off by default. Enabling the Studio switch enrolls an
+> absent global subscription or attaches to an active one and runs recovery passes. It does
+> not reactivate a retired subscription; use explicit reactivation below. An already active
+> subscription continues to select durable producer routing after the switch is turned off until
+> explicitly retired.
+> Inspect consumers with `li state terminal-consumer list` (or `list --machine`); the
+> listing includes name, registered_at, retired_at, and owed count. Command help names `list`
+> so operators can inspect before making changes. `li state terminal-consumer retire <name>`
+> retires the named consumer and ends its retention obligation; existing acknowledgements are
+> retained and later producers can use legacy routing. Reactivate with
+> `li state terminal-consumer reactivate <name> --start now` or `--start all`; `--start` is
+> required, `now` baselines currently owed history, and `all` leaves it owed. Both mutations
+> show the owed count and the changes; either accepts `--dry-run`, which performs no writes.
+> These commands and their help are planned implementation, not currently shipped.
+> The global subscription is independent of project or per-run notifications. Project
+> `enabled: false` and `--notify` cannot suppress or satisfy the global subscription. Use
+> global kind/ID filters to limit global deliveries, or retire the consumer explicitly. If two
+> subscriptions target the same destination, that destination may receive both notifications.
+> While global notifications are explicitly disabled, processing an owed event acknowledges it
+> as not applicable even if unused adapter/filter fields are malformed; that ACK is irreversible,
+> and re-enabling notifications does not replay the acknowledged event. Upgrade all producers before
+> enrollment. Delivery can repeat after a crash or mixed-version rollout; use an idempotent
+> receiver keyed by event ID where duplicate effects matter.
+
+This is proposed user-facing configuration/help text for implementation, not a claim that
+the help or product behavior has already changed. The off-by-default switch controls new
+enrollment and daemon passes; disabling a switch alone does not retire an existing subscription.
+
+### Verification required with implementation
+
+The following six fixture families are required with the implementation, not a claim that any
+was run for this draft. Use actual routing and composition roots and real temporary stores;
+substitute only the notifier and explicit fault seams. Real-process and backend tests require
+their own authorized environment. Update the comment beside
+`lionagi/studio/config.py`'s `LIONAGI_STUDIO_TERMINAL_RECONCILE` switch and the user-facing
+command/help surfaces when the implementation lands; the current comment describes the old
+push/replay duplication and is not evidence that this amendment is already implemented.
+
+1. **Routing and latency:** CLI and Studio, enrolled and unenrolled, actual settings bootstrap,
+   inherited-global wrapper and operator force-transition; producer exact-event dispatch without
+   waiting for a backlog, no second ordinary replay, and old behavior when not enrolled. Measure
+   warm no-op p95 commit-to-handler entry overhead against legacy, proposed <=50 ms on local
+   SQLite and PostgreSQL; report actual results.
+2. **Enrollment and commit boundaries:** `now` baselines without effects, `all` leaves owed,
+   active reattachment never re-baselines, and an older-timestamp late commit remains owed.
+   Before-source-commit failure leaves no event; a producer crash after covered commit recovers
+   through actual Studio startup. Include startup-reaper ordering, mixed old/new producers,
+   and independently exercise transactional schedules on SQLite and PostgreSQL.
+3. **Outcomes and policy:** Python return/False/error/cancellation, exec zero/nonzero/spawn
+   failure/timeout, invalid versus disabled and filtered settings, absent/ambiguous context,
+   live settings changes between immediate attempt and replay, and exact ACK/reason counts.
+   Independent project/per-run subscriptions cannot suppress or satisfy durable global work;
+   inherited-global wrappers must not send twice. Verify same-destination distinct subscriptions,
+   intentional disabled ACK/drop and no revival on re-enable, source state integrity, and typed
+   refusal for compatibility and unmigrated stores. Cover a session-less invocation, play with
+   no linked session, schedule run with no invocation, a linked session with NULL project, and
+   an invocation with ambiguous projects: for each eligible case, with an active consumer,
+   enabled and matching valid global configuration, available capacity and a successful fake
+   sink, global delivery occurs; absent/unknown/ambiguous context increments diagnostics and
+   never itself ACKs. Test raw
+   project declarations: absent, filter-only, disabled-only, full adapter, partial/invalid
+   adapter and explicit per-run override; global, legacy precedence, destination count and
+   serialized run/global outcomes must match the classifier above; a selected project-own-adapter
+   subscription occupies the `run` result. For `durable=false` fallback
+   before source commit, with no scoped override, assert one legacy global attempt and no ACK;
+   for `--no-persist` with no override, one legacy global attempt and no ACK. Using identical
+   registrations in legacy and durable modes, verify non-durable events: no scope gives one
+   global attempt; `--notify` gives one scoped attempt and zero global; an inherited-global
+   wrapper gives one wrapper attempt, zero bare-global attempts and its run outcome; a project
+   override gives one project attempt and zero global. Contrast committed `durable=true`
+   eligible events with active enrollment: global consumer delivery remains independent of
+   explicit scoped/project subscriptions, and inherited-global wrappers do not send a second
+   global notification. An ambiguous commit may produce up to two attempts and
+   one durable ACK; no synthetic event may ACK a committed identity. Exercise the five global
+   settings controls: false plus malformed adapter, false plus malformed filter, non-boolean
+   enabled, true plus malformed adapter, and absent enabled plus malformed filter; the first two
+   ACK not applicable, and the remaining three stay owed. Test both subscription completion
+   orders and each mixed success/failure combination, deterministic run-first failure fields,
+   0600 global stderr, and legacy/MCP consumers of backward-compatible top-level fields.
+   Bootstrap disabled then enable exec and test success and failure; in a separate run,
+   bootstrap enabled then disable before an attempt and assert not-applicable with no outcome file. Create the recorder at run start, write no file
+   without an attempt, and never attach it to another run's terminal entity or a replay.
+4. **Effect and ACK failure:** an actual producer exits after effect and before ACK, then actual
+   recovery retries the same event ID. A durable idempotent sink applies one effect while a
+   non-idempotent control may apply two. Verify ACK transaction failure leaves debt owed and
+   an ambiguous response after committed ACK is resolved by rereading the ledger. Cancel the
+   immediate attempt while ACK is blocked before and after database commit: re-raise caller
+   cancellation, preserve source status, settle/observe any still-running operation under its
+   admission owner, and use the ledger to decide whether a retry is owed. Assert deadline and
+   cancellation behavior rather than claiming an unconditional hard wall-time bound.
+5. **Concurrency and retirement:** race exact-event and replay admission in one process and
+   in independent processes. Same-process admission rechecks ACK and prevents avoidable
+   overlap; cross-process repeats are permitted. Retirement before admission blocks a new
+   attempt; retirement after admission permits completion/late ACK. Switch-off does not
+   silently retire or restore legacy routing; reactivation honors its explicit baseline choice.
+   Exercise proposed `li state terminal-consumer list` and `list --machine`, validating name,
+   registered_at, retired_at and owed count; help must point to list for inspection. Exercise
+   `retire <name>` and `reactivate <name> --start now` / `--start all`, with and without
+   `--dry-run`: verify both mutations show owed count and changes, dry-run performs no writes,
+   and reactivation rejects missing `--start`. At bootstrap, allow synchronous legacy
+   registration but select active/inactive/unknown routing for committed `durable=true` events
+   only after the async store check; verify the switch enrolls absent, attaches active, and does
+   not reactivate retired. Prove an override-filtered legacy callback cannot suppress the global
+   consumer, and a mode read failure never invents an active enrollment or invokes inherited-global
+   fallback for that durable event; non-durable emit keeps its existing routing.
+6. **Bounds and fairness:** timed-out sync work has no immediate ACK or same-process duplicate;
+   late success ACKs and late failure remains owed. At abandoned-worker capacity both triggers
+   report saturation; release restores progress. Check cooling fairness, cursor wrap, older
+   late commits, restart/backoff reset without erasing debt, and one shared post-commit budget.
