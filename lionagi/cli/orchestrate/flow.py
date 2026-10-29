@@ -38,12 +38,7 @@ from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import _is_light_codex, parse_model_spec
 from .._util import classify_exception
-from ._checkpoint import (
-    CheckpointWriter,
-    FlowResumeError,
-    require_checkpoint_writer,
-    resolve_checkpoint_target,
-)
+from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
     _build_worker_operate_node,
     _create_fanout_team,
@@ -3116,6 +3111,8 @@ async def _run_flow(
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
+    from ._checkpoint import require_checkpoint_writer
+
     if resume_checkpoint is not None:
         require_checkpoint_writer(resume_checkpoint)
     from lionagi._cli_worker_context import _bind_cli_worker_recorder
@@ -3884,6 +3881,8 @@ async def _resume_flow(
     """Resolve a checkpointed run/session id and replay it through _run_flow.
     dry_run/show_graph/notify come from the CURRENT invocation (presentation
     overrides); every other _run_flow kwarg replays the persisted config."""
+    from ._checkpoint import require_checkpoint_writer
+
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     recovery = getattr(checkpoint, "checkpoint_recovery", None)
     if recovery is not None:
