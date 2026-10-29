@@ -1299,6 +1299,15 @@ label or one overlapping the resolved credential is omitted. Keys, headers, cred
 references and prompt text are excluded from this section. The model is the requested
 model, not a claim about the model the provider served.
 
+Each request also records `cache_read_tokens` and `cache_write_tokens` from the final
+successful non-streaming response, when supplied by OpenAI or Anthropic. `null` means
+unknown; zero means the response reported zero. Hits in the built-in local response cache,
+incomplete, failed or cancelled calls, and calls whose endpoint overrides the cache dispatch
+method remain unknown. A custom transport or proxy can return a cached response that this
+observer cannot distinguish from a fresh one. These values describe the final observed
+response, not a sum of retry attempts or a statement of billed usage. Counts outside the
+non-negative signed 64-bit range are unknown.
+
 `guard_refusal_count`, with coverage `act_policy_denial_v1`, counts explicit session
 authorization refusals and direct typed governance errors caught by action execution.
 These include tool-pre-hook `deny` and `ask` decisions, unsupported decisions or return

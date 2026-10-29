@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- API run manifests now include response-reported cache read and write token
+  counts per request when a supported non-streaming response supplies them.
+  Unknown counts remain `null`; built-in local cache hits are not counted again.
+
 - With `LIONAGI_STUDIO_TERMINAL_RECONCILE` on (default off), Studio reconciles
   eligible terminal transitions for a registered settings consumer at startup
   and on its periodic tick. Delivery is at least once;
