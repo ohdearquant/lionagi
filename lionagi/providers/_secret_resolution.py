@@ -241,7 +241,8 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
         )
     except asyncio.TimeoutError:
         if proc is not None:
-            await _terminate(proc, leader_created)
+            with CancelScope(shield=True):
+                await _terminate(proc, leader_created)
         logger.warning("secret lookup %s for %s timed out", program, name)
         return None
     except get_cancelled_exc_class():
@@ -312,15 +313,22 @@ async def lookup_one_name(
 
     async def read_bounded(proc: asyncio.subprocess.Process) -> bytes | None:
         out = bytearray()
-        while len(out) <= max_bytes:
-            chunk = await proc.stdout.read(max_bytes + 1 - len(out))
-            if not chunk:
-                break
-            out += chunk
-        if len(out) > max_bytes:
-            return None
-        await proc.wait()
-        return bytes(out)
+        chunk = b""
+        try:
+            while len(out) <= max_bytes:
+                chunk = await proc.stdout.read(max_bytes + 1 - len(out))
+                if not chunk:
+                    break
+                out += chunk
+            if len(out) > max_bytes:
+                return None
+            await proc.wait()
+            return bytes(out)
+        finally:
+            # A cancel or a timeout keeps this frame in the traceback it raises, so the
+            # output read so far must not stay in its locals.
+            out.clear()
+            del chunk
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -338,7 +346,8 @@ async def lookup_one_name(
         out = await asyncio.wait_for(read_bounded(proc), timeout=_LOOKUP_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         if proc is not None:
-            await _terminate_draining(proc, leader_created)
+            with CancelScope(shield=True):
+                await _terminate_draining(proc, leader_created)
         return OneNameLookup(failure="timeout")
     except get_cancelled_exc_class():
         if proc is not None:

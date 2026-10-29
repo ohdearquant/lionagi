@@ -22,7 +22,7 @@ written down in these hand-maintained forms:
 1. `lionagi/state/schema_meta.py` (1,224 lines): a SQLAlchemy `MetaData` declaring 32 tables,
    380 columns and 83 `Index(...)` objects. Its own docstring calls it the "single source of
    truth for schema DDL". It is what production actually creates from:
-   `await conn.run_sync(metadata.create_all)` at `state/db.py:1912`.
+   `await conn.run_sync(metadata.create_all)` at `state/db.py:1913`.
 2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 87 `CREATE INDEX`
    statements declaring the same schema in DDL text. Its header line reads
    `-- lionagi state schema v1` while line 22 seeds `version` `'3'`. It is bound to
@@ -103,17 +103,17 @@ was found: every site is guarded by a nearby allow-list, fixed tuple, or enum ch
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
 (`state/lifecycle/models.py:108-120`), the registry does not validate them as identifiers, and
-they are interpolated into SQL at `state/lifecycle/service.py:147-152` and elsewhere.
+they are interpolated into SQL at `state/lifecycle/service.py:212-217` and elsewhere.
 
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds
 for changes SQLite's `ALTER TABLE` cannot express. `_reconcile_columns` inspects table and
-column presence and raises on inspection failures (`state/db.py:1986-2006`); the open
+column presence and raises on inspection failures (`state/db.py:1988-2008`); the open
 sequence runs that reconciliation before writing `SCHEMA_VERSION`
-(`state/db.py:1887-1889,1936-1942`). This hardening does not make the version integer
+(`state/db.py:1888-1890,1938-1944`). This hardening does not make the version integer
 a fingerprint of the complete physical catalog. The schedules rebuilds already derive their
 target table from `schema_meta.py` via `to_metadata`
-(`state/db.py:2500,2588,2672`), and so does the definitions rebuild (`:3086`), so that generated
+(`state/db.py:2553,2641,2725`), and so does the definitions rebuild (`:3139`), so that generated
 path already exists on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
@@ -386,7 +386,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`state/db.py:2331-2343`, `:2424-2438`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`state/db.py:2384-2396`, `:2477-2491`, and the same shape in the six other rebuild paths).
 That faithfully preserves whatever the database happens to contain, including objects nothing
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
 old DDL path keeps its 15 descending indexes through every future migration. It is also the one

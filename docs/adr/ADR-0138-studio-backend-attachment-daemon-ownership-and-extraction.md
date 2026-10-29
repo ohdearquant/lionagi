@@ -90,7 +90,7 @@ On a normal stop, withdraw the host from serving new requests and preserve the c
 
 The new attachment seam must unwind each resource that successfully started if a later startup stage fails or is cancelled. Shutdown must attempt remaining cleanup even when an earlier hook raises; the current lifespan does: its cleanup runs in a `finally` around the yield, shielded from cancellation, and records each step's failure and raises them together after the last step (`lionagi/studio/app.py:393-426`). Startup is not covered: a stage that fails before the yield leaves the resources started before it running. Implement and verify that startup correction as a separate preparatory change. A selected backend startup failure ends this launch after cleanup. Backend absence is a configured mode, not an error recovery policy.
 
-Do not describe scheduler startup as waiting for reconciliation. `start()` creates a running task before the next lifespan statement, and the loop performs recovery and then ticks. The reconciliation docstring's stronger sequencing claim is not enforced by this call order. Introducing a scheduler admission barrier or moving reconciliation earlier is a separate behavior change and is not bundled with relocation (`lionagi/studio/scheduler/engine.py:537-557`, :1092-1097; `lionagi/studio/services/lifecycle.py:827-832`).
+Do not describe scheduler startup as waiting for reconciliation. `start()` creates a running task before the next lifespan statement, and the loop performs recovery and then ticks. The reconciliation docstring's stronger sequencing claim is not enforced by this call order. Introducing a scheduler admission barrier or moving reconciliation earlier is a separate behavior change and is not bundled with relocation (`lionagi/studio/scheduler/engine.py:537-557`, :1092-1097; `lionagi/studio/services/lifecycle.py:810-815`).
 
 Starting a scheduler, reapers, or mirror on each side is rejected because it duplicates ownership. Moving the whole lifespan into the application is rejected because it makes scheduling and run repair depend on installing Studio. The daemon-only requirement and the existing scheduler maintenance calls decide this allocation (`lionagi/studio/scheduler/engine.py:1538-1561`).
 
@@ -121,7 +121,7 @@ The following table allocates all 29 registered modules. Each source is under `l
 | `lionagi/studio/services/pairing.py:43`, :63, :117 | Daemon | Redeem codes, revoke capabilities, and preserve the retired issuance endpoint. |
 | `lionagi/studio/services/engine_defs.py:232` | Backend | Application definition editing. Launch-time definition lookup is F5. |
 | `lionagi/studio/services/workflow_defs.py:219`, :301 | Backend | Application workflow editing and its execution adapter. |
-| `lionagi/studio/services/sessions.py:1792`, :1795, :1891 | Daemon | Session records and execution streams. Preserve labeling behavior. |
+| `lionagi/studio/services/sessions.py:1722`, :1725, :1821 | Daemon | Session records and execution streams. Preserve labeling behavior. |
 | `lionagi/studio/services/run_tags.py:133` | Backend | Application tagging actions. Shared read and storage helpers are F5. |
 | `lionagi/studio/services/operator.py:94` | Backend | Conversations, proposals, decisions, and application effects. |
 | `lionagi/studio/services/hooks_library.py:190` | Backend | Application hook-library editing. |

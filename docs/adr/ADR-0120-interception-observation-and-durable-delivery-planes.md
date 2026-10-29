@@ -650,10 +650,10 @@ idempotency identity `(attempt, boundary, subject, subscriber, fact range)`: rep
 execution attempt reuses its run identity, and retrying a known failed execution creates the next
 attempt under the same wake identity, so deduplication spans the attempts even though delivery may
 repeat. That is the practice `enqueue_dispatch` already uses for its `dedup_key`, extended from one
-dispatch to one wake (`lionhub/src/lionhub/orchestration/dispatch/outbox.py:159-205`). The outbox row's persistence is not what
+dispatch to one wake (`lionhub/src/lionhub/orchestration/dispatch/outbox.py:163-209`). The outbox row's persistence is not what
 `retryable` copies: `enqueue_dispatch` inserts a row unconditionally
-(`lionhub/src/lionhub/orchestration/dispatch/outbox.py:207`), acknowledgement is the opt-in (`:166`), and the only per-call
-bound is `max_attempts` (`:167`).
+(`lionhub/src/lionhub/orchestration/dispatch/outbox.py:211`), acknowledgement is the opt-in (`:170`), and the only per-call
+bound is `max_attempts` (`:171`).
 
 A failed execution is not terminal delivery. `state/` owns subscription/source scope, cursor,
 frozen batch membership and payload, filter version, execution attempts, claim lease, next retry,
@@ -662,7 +662,7 @@ the first. Failure retains the batch and cursor until retry succeeds or the boun
 guarded transaction records success or durable dead-letter and advances the cursor. Each batch is
 persisted on its own, and a dead-letter row is re-queueable regardless of cursor position: the
 shape the outbox already uses for an exhausted row, retained and re-queued by an operator override
-(`lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, `:506-523`, `:579-609`). Recovery scans unfinished batch rows as
+(`lionhub/src/lionhub/orchestration/dispatch/outbox.py:52`, `:520-537`, `:593-623`). Recovery scans unfinished batch rows as
 well as the source log.
 
 Queue depth per observing subscriber is declared and bounded. A full queue drops a `best_effort`
@@ -710,10 +710,10 @@ reads from. Durable delivery covers committed `session_signals` rows, not every 
 the record says what is lost and when. For a durable subscriber the source fact is a
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
-(`lionagi/state/schema.sql:824-828`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:7582-7592`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:7607-7624`), whose forward read defaults to 500 rows
-(`:7612`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionagi/state/schema.sql:835-839`), the sink writes it with the sequence the store assigns
+(`lionagi/state/db.py:7762-7772`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:7787-7804`), whose forward read defaults to 500 rows
+(`:7792`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -790,9 +790,9 @@ bound it cannot enforce. Omitted, `delivery` selects `retryable`, and registrati
 it cannot use fails explicitly rather than being silently downgraded to `best_effort`.
 `max_attempts` is the bound on the total automatic execution attempts of a failed woken run,
 including the first: the same kind of per-row attempt bound the dispatch outbox declares for its
-own row (`lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, whose default is 8), enforced the same way the outbox
+own row (`lionhub/src/lionhub/orchestration/dispatch/outbox.py:52`, whose default is 8), enforced the same way the outbox
 enforces its bound, by dead-lettering the row once it is spent and retaining it for an operator
-re-queue (`:506-523`, `:579-609`).
+re-queue (`:520-537`, `:593-623`).
 A wake carries its own identity, `(attempt, boundary, subject, subscriber, fact
 range)`, so the delivery a retry repeats is the delivery that was minted and not a fresh read of
 everything since; facts past the range belong to the next wake.
@@ -804,7 +804,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:298-322`, `:359-396`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:948-1028`, `lionhub/src/lionhub/orchestration/engines/review.py:636`,
+  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:977-1057`, `lionhub/src/lionhub/orchestration/engines/review.py:711`,
   `lionhub/src/lionhub/orchestration/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1164-1165`, `:1457-1501`), under ADR-0023 D6, which decides that the
@@ -817,14 +817,14 @@ everything since; facts past the range belong to the next wake.
   `lionagi/cli/orchestrate/flow.py:2089-2134`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
-  (`lionagi/state/schema.sql:487`, `:554-562`; `lionagi/state/db.py:5743-5745`, `:5875`;
+  (`lionagi/state/schema.sql:487`, `:554-562`; `lionagi/state/db.py:5921-5923`, `:6053`;
   `lionagi/studio/scheduler/engine.py:2059-2060`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:824-828`; writer `lionagi/state/db.py:7582-7592`; forward reader
-  `lionagi/state/db.py:7607-7624`).
+  (`lionagi/state/schema.sql:835-839`; writer `lionagi/state/db.py:7762-7772`; forward reader
+  `lionagi/state/db.py:7787-7804`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast

@@ -35,6 +35,7 @@ from lionagi.cli.kill import (
     _resolve_entity,
     _terminate_pid,
 )
+from lionagi.ln._proc import process_create_time as _real_process_create_time
 from lionagi.ln._proc import raw_create_time
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
@@ -54,6 +55,37 @@ def _script_create_time(fake_proc: MagicMock, value: float) -> None:
     """
     fake_proc.create_time.return_value = value
     fake_proc._proc = fake_proc
+
+
+def _mock_runner_probe(monkeypatch: pytest.MonkeyPatch, pid: int, state: str) -> None:
+    """Give the running-session cleanup path an explicit observation."""
+
+    def probe(actual_pid: int) -> tuple[str, float | None]:
+        assert actual_pid == pid, f"unexpected runner pid: {actual_pid}"
+        return state, None
+
+    monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", probe)
+
+
+def test_runner_probe_guard_rejects_unconfigured_pid():
+    from lionagi.cli.kill import _runner_process_create_time
+
+    with pytest.raises(AssertionError, match="unconfigured runner process probe: 4242"):
+        _runner_process_create_time(4242)
+
+
+def test_runner_probe_guard_does_not_replace_shared_process_probe(monkeypatch):
+    from lionagi.ln import _proc
+
+    fake_process = MagicMock()
+    fake_process.status.return_value = psutil.STATUS_RUNNING
+    _script_create_time(fake_process, 100.0)
+    # This test exercises the shared probe, not psutil reader selection. Pin
+    # the reader so a first call cannot inspect the Process double as a class.
+    monkeypatch.setattr(_proc, "_read_raw_create_time", lambda proc: proc.create_time())
+    monkeypatch.setattr(psutil, "Process", lambda pid: fake_process)
+
+    assert _proc.process_create_time(4242) == ("found", 100.0)
 
 
 # Fixtures
@@ -347,6 +379,7 @@ def _is_zombie(pid: int) -> bool:
 @pytest.mark.skipif(os.name != "posix", reason="zombies are a POSIX process state")
 async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
     temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """`li kill` against a SIGTERMed-but-unreaped child must persist the cancel.
 
@@ -412,6 +445,11 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
             == "zombie"
         )
 
+        def probe_owned_child(pid: int) -> tuple[str, float | None]:
+            assert pid == child.pid, f"unexpected runner pid: {pid}"
+            return _real_process_create_time(pid)
+
+        monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", probe_owned_child)
         rc = await _do_kill(sid, grace_seconds=0.5)
         assert rc == 0, "a run that has already stopped is not a blocked kill"
 
@@ -467,6 +505,7 @@ def _mock_psutil(
     cmdline: list[str],
     environ: dict[str, str] | None = None,
     create_time: float = 100.0,
+    runner_pid: int | None = None,
 ) -> list[tuple[int, int]]:
     """Install a fake psutil + capture os.kill calls. Returns the calls list."""
     kill_calls: list[tuple[int, int]] = []
@@ -485,6 +524,13 @@ def _mock_psutil(
     # that omits it lets the code under test claim a distinction it never made.
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    if runner_pid is not None:
+
+        def probe(pid: int) -> tuple[str, float | None]:
+            assert pid == runner_pid, f"unexpected runner pid: {pid}"
+            return "found", raw_create_time(fake_psutil.Process(pid))
+
+        monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", probe)
     return kill_calls
 
 
@@ -654,6 +700,7 @@ async def test_do_kill_identity_mismatch_reports_failure(
         monkeypatch,
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         create_time=999.0,
+        runner_pid=4242,
     )
 
     rc = await _do_kill(sid)
@@ -1123,6 +1170,7 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
 
 async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "sigterm")
+    _mock_runner_probe(monkeypatch, 12345, "found")
 
     async with StateDB() as db:
         sid = await _seed_session(db, status="running", pid=12345)
