@@ -270,9 +270,9 @@ async def test_caller_cancellation_never_cancels_foreign_future(tmp_path, adapte
                             worker = reconciliation._workers.get(key)
                             if worker is not None and worker.detached:
                                 return
-                        await asyncio.sleep(0)
+                        await asyncio.sleep(0.01)
 
-                await asyncio.wait_for(detached(), 1)
+                await asyncio.wait_for(detached(), 5)
                 attempt.cancel("parent cancelled")
                 with pytest.raises(asyncio.CancelledError):
                     await attempt

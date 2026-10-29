@@ -626,7 +626,11 @@ _NO_LATE_RESULT = object()
 
 
 def _observe_foreign_future(worker: _Worker, future: Any) -> None:
-    """Observe a foreign Future on its loop; keep unobservable work reserved."""
+    """Observe completed Futures directly, including when their loop has stopped.
+
+    An unfinished Future on a stopped loop cannot be observed; its reservation
+    is retained and the stuck condition is reported immediately.
+    """
 
     def warn_stuck() -> None:
         with _workers_lock:
@@ -678,7 +682,15 @@ def _observe_foreign_future(worker: _Worker, future: Any) -> None:
 
     try:
         loop = future.get_loop()
+        if future.done():
+            observed(future)
+            return
         if not loop.is_running():
+            logger.warning(
+                "Late delivery stuck for %s: cannot observe on a stopped loop; "
+                "result remains reserved",
+                worker.key[2],
+            )
             return
         loop.call_soon_threadsafe(register)
     except BaseException as exc:
