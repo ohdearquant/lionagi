@@ -210,7 +210,7 @@ class TestMcpDescriptorAdmission:
         (tmp_path / ".mcp.json").write_text('{"mcpServers":{}}', encoding="utf-8")
         manager = ActionManager()
 
-        with pytest.raises(ValueError, match="Unknown MCP server: srv"):
+        with pytest.raises(ValueError, match="not declared in the selected config.*srv"):
             await manager.register_mcp_server({"server": _SERVER}, tool_names=["request"])
         assert manager.registry == {}
 

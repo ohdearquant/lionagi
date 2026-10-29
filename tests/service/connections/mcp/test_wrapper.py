@@ -138,8 +138,8 @@ class TestMCPConnectionPoolGetClient:
     async def test_get_client_with_server_reference_not_found(self):
         server_config = {"server": "unknown_server"}
 
-        with patch.object(MCPConnectionPool, "load_config") as mock_load:
-            mock_load.return_value = None  # Config still empty after load
+        with patch.object(MCPConnectionPool, "_load_config_snapshot") as mock_load:
+            mock_load.return_value = {}  # Config still empty after load
 
             with pytest.raises(ValueError, match="Unknown MCP server"):
                 await MCPConnectionPool.get_client(server_config)

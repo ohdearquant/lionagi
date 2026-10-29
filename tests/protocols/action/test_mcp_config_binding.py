@@ -106,6 +106,106 @@ async def test_refused_file_does_not_change_pool_configuration(
 
 
 @pytest.mark.asyncio
+async def test_refused_default_lookup_does_not_change_pool_configuration(
+    tmp_path, monkeypatch, offline_pool
+):
+    connections, _ = offline_pool
+    transport_a = {"url": "https://a.invalid/mcp"}
+    transport_b = {"url": "https://b.invalid/mcp"}
+    previous = _config_file(tmp_path / "previous.json", {"x": transport_a})
+    MCPConnectionPool.load_config(previous)
+    _config_file(tmp_path / ".mcp.json", {"x": transport_b})
+    monkeypatch.chdir(tmp_path)
+    manager = ActionManager()
+    with pytest.raises(ValueError, match="y"):
+        await manager.register_mcp_server({"server": "y"}, tool_names=["probe"])
+    assert MCPConnectionPool._configs == {"x": transport_a}
+    assert not manager.registry
+    assert not connections
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["public", "bound"])
+@pytest.mark.parametrize("case", ["args", "env"])
+async def test_cached_inline_client_cannot_bypass_transport_shape_validation(
+    monkeypatch, path, case
+):
+    import fastmcp
+    import fastmcp.client.transports
+
+    import lionagi.service.connections.mcp_wrapper as wrapper
+
+    monkeypatch.setattr(MCPConnectionPool, "_configs", {})
+    monkeypatch.setattr(MCPConnectionPool, "_clients", {})
+    monkeypatch.setattr(MCPConnectionPool, "_security", None)
+    monkeypatch.setattr(MCPConnectionPool, "_lock", None)
+    monkeypatch.setattr(MCPConnectionPool, "_creation_locks", {})
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def is_connected(self):
+            return True
+
+    class FakeTransport:
+        def __init__(self, **_kwargs):
+            pass
+
+    async def enter(cls, client, transport, config, mode):
+        pass
+
+    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr(fastmcp.client.transports, "StdioTransport", FakeTransport)
+    monkeypatch.setattr(wrapper, "env_without_state_db_url", lambda: {})
+    monkeypatch.setattr(MCPConnectionPool, "_enter_bounded", classmethod(enter))
+    valid = {"command": "synthetic", "args": ["one"], "env": {"1": "value"}}
+    invalid = {"command": "synthetic", "args": ["one"], "env": {"1": "value"}}
+    if case == "args":
+        invalid["args"] = ("one",)
+    else:
+        invalid["env"] = {1: "value"}
+    security = MCPSecurityConfig.trusted()
+    with pytest.raises((ValueError, AttributeError)) as cold:
+        await MCPConnectionPool._create_client(invalid, security=security)
+    if case == "args":
+        assert str(cold.value) == "Config 'args' must be a list"
+    else:
+        assert "upper" in str(cold.value)
+    await MCPConnectionPool.get_client(valid, security=security)
+    with pytest.raises(type(cold.value)) as warm:
+        if path == "public":
+            await MCPConnectionPool.get_client(invalid, security=security)
+        else:
+            await MCPConnectionPool._get_bound_client(invalid, None, security)
+    assert str(warm.value) == str(cold.value)
+
+
+def test_transport_fingerprint_preserves_nested_types_and_key_order_independence():
+    key = MCPConnectionPool._policy_key
+    assert key({"command": "x", "args": ["a"], "env": {"A": "b"}}) == key(
+        {"env": {"A": "b"}, "args": ["a"], "command": "x"}
+    )
+    pairs = [
+        (["a"], ("a",)),
+        ({1: "x"}, {"1": "x"}),
+        ({True: "x"}, {"true": "x"}),
+        ({None: "x"}, {"null": "x"}),
+        (1, 1.0),
+        (-0.0, 0.0),
+    ]
+    for left, right in pairs:
+        assert key({"command": "x", "nested": left}) != key({"command": "x", "nested": right})
+    opaque = object()
+    with pytest.raises(ValueError, match="unsupported or cyclic"):
+        key({"command": "x", "opaque": opaque})
+    cyclic = []
+    cyclic.append(cyclic)
+    with pytest.raises(ValueError, match="unsupported or cyclic"):
+        key({"command": "x", "args": cyclic})
+
+
+@pytest.mark.asyncio
 async def test_inline_cache_identity_tracks_transport_content_and_security(monkeypatch):
     monkeypatch.setattr(MCPConnectionPool, "_clients", {})
     monkeypatch.setattr(MCPConnectionPool, "_security", None)

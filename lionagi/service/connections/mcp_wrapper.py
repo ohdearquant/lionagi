@@ -1602,8 +1602,29 @@ class MCPConnectionPool:
         (forgeable, serializable) config, so it must never gate recovery --
         see `_MCPRecoveryCapability` for the actual recovery authority.
         """
+
+        def typed(value, active):
+            kind = type(value)
+            if value is None:
+                return ["none"]
+            if kind in (bool, int, str):
+                return [kind.__name__, value]
+            if kind is float:
+                return ["float", value.hex()]
+            if kind not in (dict, list, tuple) or id(value) in active:
+                raise ValueError("MCP transport config contains an unsupported or cyclic value")
+            active.add(id(value))
+            try:
+                if kind is dict:
+                    pairs = [(typed(k, active), typed(v, active)) for k, v in value.items()]
+                    pairs.sort(key=lambda pair: json.dumps(pair[0], ensure_ascii=True))
+                    return ["dict", pairs]
+                return [kind.__name__, [typed(item, active) for item in value]]
+            finally:
+                active.remove(id(value))
+
         material = {k: v for k, v in config.items() if not k.startswith("_")}
-        blob = json.dumps(material, sort_keys=True, default=str)
+        blob = json.dumps(typed(material, set()), ensure_ascii=True, separators=(",", ":"))
         content_hash = compute_hash(blob)
         if server_name is not None:
             return f"{server_name}:{content_hash}"
@@ -1669,7 +1690,7 @@ class MCPConnectionPool:
         if "server" in server_config:
             server_name = server_config["server"]
             if server_name not in cls._configs:
-                cls.load_config()
+                cls._load_config_snapshot(".mcp.json", [server_name])
             if server_name not in cls._configs:
                 raise ValueError(f"Unknown MCP server: {server_name}")
             return cls._configs[server_name]
