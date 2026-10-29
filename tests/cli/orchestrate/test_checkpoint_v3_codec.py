@@ -18,6 +18,7 @@ from lionagi._checkpoint_v3_codec import (
     capture_context,
     decode_json,
     decode_record,
+    diff_context,
     encode_record,
     freeze_json,
     thaw_json,
@@ -487,3 +488,13 @@ def test_patch_preserves_object_member_order(operation, expected):
     after = apply_patch(before, (operation,))
     assert list(thaw_json(after).items()) == expected
     assert list(thaw_json(before).items()) == [("a", 1), ("b", 2)]
+
+
+def test_pure_reorder_is_not_replayed():
+    base = freeze_json({"a": 1, "b": 2})
+    target = freeze_json({"b": 2, "a": 1})
+    ops = diff_context(base, target)
+    replayed = apply_patch(base, ops)
+    assert ops == ()
+    assert list(thaw_json(replayed)) == ["a", "b"]
+    assert list(thaw_json(target)) == ["b", "a"]

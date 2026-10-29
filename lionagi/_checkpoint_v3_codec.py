@@ -128,7 +128,10 @@ class FrozenArray:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class FrozenObject:
-    """An immutable JSON object preserving captured key order."""
+    """Hold JSON members in captured order.
+
+    A pure member reorder emits no patch, so replay retains the base order.
+    """
 
     _items: tuple[tuple[str, Any], ...]
 
