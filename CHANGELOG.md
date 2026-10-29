@@ -12,9 +12,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   consumer at startup and on its periodic tick. Delivery is at least once;
   consumers can deduplicate by transition event ID. Operator force-transitions
   now notify terminal consumers. Per-run notification overrides and the
-  no-session fallback remain push-only; replay uses delivery-time project or
-  global settings. An unknown or moved project path can make replay choose a
-  different notifier from the original process.
+  no-session fallback remain push-only. Replay loads global settings only;
+  notifiers configured in project settings are push-only, so a missed push
+  for one is not replayed.
 
 - State schema version 6 records terminal-delivery eligibility and consumer
   registrations. After upgrading, restart every process that opens the store,
