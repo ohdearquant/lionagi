@@ -582,8 +582,10 @@ failed attempts; this is not a durable count. A traversal ends when the cursor w
 due when reached is attempted in that traversal; a cooling row is skipped and attempted in
 the first traversal reaching it after backoff expires. Backoff is capped at one hour, so under
 a running process and finite backlog every pending eligible row is attempted again within one
-cap plus one traversal. There is no claim of strict global oldest-first order, exact doubling,
-or progress under unbounded arrivals.
+cap plus one traversal, as long as its consumer is not saturated. A consumer whose abandoned
+workers stay at the bound described below attempts nothing until one of them ends, and no path
+reaps a worker that never ends: it holds its slot until the process exits. There is no claim of
+strict global oldest-first order, exact doubling, or progress under unbounded arrivals.
 
 A timed-out synchronous Python hook fails without an immediate acknowledgement. While its
 abandoned worker remains active, another attempt for the same consumer and transition is not

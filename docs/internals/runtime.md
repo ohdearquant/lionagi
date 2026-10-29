@@ -449,8 +449,11 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   traversal ends at cursor wrap: a due row is attempted when reached, while a
   cooling row waits until the first traversal after its backoff expires. With a
   running process and finite backlog, each pending eligible row is attempted
-  again within the one-hour backoff cap plus one traversal. There is no guarantee
-  of progress under unbounded arrivals. The cursor is not a durable watermark.
+  again within the one-hour backoff cap plus one traversal, as long as its
+  consumer is not saturated: a consumer whose abandoned workers stay at the
+  bound attempts nothing until one ends, and a worker that never ends holds its
+  slot until the process exits. There is no guarantee of progress under
+  unbounded arrivals. The cursor is not a durable watermark.
   A timed-out synchronous hook is not
   immediately acknowledged; while its abandoned worker runs, another local
   attempt for the same key is suppressed. Late successful completion is
