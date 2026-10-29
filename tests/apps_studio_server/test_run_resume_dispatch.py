@@ -457,6 +457,44 @@ def test_invalid_checkpoint_json_is_a_distinct_state(flow_resume_harness):
     assert launched == []
 
 
+@pytest.mark.parametrize(
+    "version_members",
+    ['"version":3', '"version":999', '"version":3,"vers\\u0069on":2'],
+)
+def test_unsupported_checkpoint_version_is_refused_by_preflight_and_launch(
+    flow_resume_harness, version_members
+):
+    _svc, db_path, runs_root, client, launched = flow_resume_harness
+    session_id = str(uuid.uuid4())
+    cli_run_id = f"cli-run-{uuid.uuid4()}"
+    _run(
+        _seed_session(
+            db_path,
+            session_id=session_id,
+            invocation_kind="flow",
+            node_metadata={"run_id": cli_run_id},
+        )
+    )
+    run_dir = runs_root / cli_run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "checkpoint.json").write_text(
+        "{" + version_members + ',"plan":[{"agent_id":"worker"}],"prompt":"private payload"}'
+    )
+    (run_dir / "checkpoint.json.journal").write_text('{"seq":1}\n')
+
+    preflight = client.get(f"/api/runs/{session_id}/resume")
+    assert preflight.status_code == 200, preflight.text
+    assert preflight.json()["resumable"] is False
+    assert preflight.json()["reason"] == "unsupported_checkpoint_version"
+    assert "private payload" not in preflight.text
+
+    response = client.post(f"/api/runs/{session_id}/resume", json={})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["reason"] == "unsupported_checkpoint_version"
+    assert "private payload" not in response.text
+    assert launched == []
+
+
 # ── Resumability precheck: GET /runs/{run_id}/resume ─────────────────────────
 
 
