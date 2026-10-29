@@ -1117,9 +1117,11 @@ def apply_forwarded_mcp_servers(
     Returns whether *servers* reached the request (False: provider has no
     transport for a caller-resolved set). See
     docs/internals/agent-runtime.md#mcp-server-forwarding for what
-    *exclusive*/*allowed_names* mean. *env* is the environment the child will
-    run under when the model holds one outside *kwargs*; without it, an `env`
-    in *kwargs* is read, and without that, this process's.
+    *exclusive*/*allowed_names* mean. An exclusive set bounds the agent's
+    configuration; an explicit per-call option can replace it for that call.
+    *env* is the environment the child will run under when the model holds one
+    outside *kwargs*; without it, an `env` in *kwargs* is read, and without
+    that, this process's.
     """
     if servers is None and not exclusive:
         # No set and no claim to the whole set: the request is left as it was.
@@ -1136,12 +1138,15 @@ def apply_forwarded_mcp_servers(
     # Claude CLI must not fall through to the codex override form.
     if _canonical_provider(provider) in _CLAUDE_PROVIDER_NAMES:
         if exclusive and "mcp_config" in kwargs:
-            kwargs.pop("mcp_config")
-            logger.warning("Dropping mcp_config because an exclusive MCP server set was supplied")
+            dropped_config = kwargs.pop("mcp_config")
+            logger.warning(
+                "Dropping mcp_config %r because an exclusive MCP server set was supplied",
+                dropped_config,
+            )
         kwargs["mcp_servers"] = servers
         if exclusive:
-            # The handed set alone is merged with whatever the CLI discovers
-            # for itself. The strict flag is what makes it the entire set.
+            # Strict mode bounds discovery for the configured set. A caller
+            # may still explicitly replace MCP options for an individual call.
             kwargs["strict_mcp_config"] = True
         return True
 

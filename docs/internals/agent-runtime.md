@@ -64,8 +64,9 @@ and one implementation.
   takes it as `-c mcp_servers.<name>.<field>` overrides) — not whether a
   given spawn actually handed anything over. For that, read
   `request_carries_forwarded_mcp` off the request the spawn produced.
-- `exclusive` is the caller stating that the servers dict is the whole set
-  rather than an addition to whatever the provider finds for itself. It
+- `exclusive` bounds the server set configured for the agent rather than
+  adding to whatever the provider finds for itself. An explicit per-call MCP
+  option replaces that configuration for that call. It
   makes an empty set mean "no servers", and so does no set at all
   (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
@@ -142,9 +143,10 @@ and one implementation.
   for is a table with no server in it, and codex refuses to start with one.
   An exclusive set also replaces whatever set the
   request already carries — a resumed leg's request is the persisted one —
-  so the Claude `mcp_servers` map, codex `mcp_servers.*` overrides (a whole
+  so the Claude `mcp_servers` map and `mcp_config` file, codex `mcp_servers.*` overrides (a whole
   `mcp_servers` table included) and a generated codex profile are dropped
   first; a profile the caller named is not dropped, and is refused as above.
+  Dropping a Claude `mcp_config` emits a warning naming the option and its value.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters
