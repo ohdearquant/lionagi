@@ -11,6 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lionagi._checkpoint_version import (
+    UnsupportedCheckpointVersionError,
+    load_legacy_checkpoint_json,
+)
 from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
 from lionagi.ln._json_dump import raise_if_non_finite
@@ -22,6 +26,7 @@ __all__ = (
     "CHECKPOINT_VERSION",
     "CheckpointWriter",
     "FlowResumeError",
+    "UnsupportedFlowCheckpointVersionError",
     "load_checkpoint",
     "resolve_checkpoint_target",
 )
@@ -31,6 +36,10 @@ CHECKPOINT_VERSION = 2
 
 class FlowResumeError(LionError):
     """Raised when a checkpoint cannot be resolved, loaded, or safely resumed."""
+
+
+class UnsupportedFlowCheckpointVersionError(FlowResumeError):
+    """A checkpoint has a version this reader cannot safely resume."""
 
 
 @dataclass
@@ -168,7 +177,10 @@ class CheckpointWriter:
 
 
 def load_checkpoint(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+    try:
+        return load_legacy_checkpoint_json(path.read_text())
+    except UnsupportedCheckpointVersionError as exc:
+        raise UnsupportedFlowCheckpointVersionError(str(exc)) from exc
 
 
 def _find_run_dir_by_id(run_id: str) -> RunDir | None:
