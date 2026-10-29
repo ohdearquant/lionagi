@@ -199,6 +199,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
+  A caller-supplied chat model keeps its own settings.
+  OpenAI native tool calling remains subject to model restrictions: [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+  requires `none` in Chat Completions, while [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+  requires Responses. The agent tool loop uses prompt-rendered tools.
+  Some newer reasoning models reject `temperature`, `top_p`, or `logprobs` with a
+  non-`none` effort; those provider errors are surfaced to the caller.
+
 - `li team receive` reads a stored message whose recipient is a single name written as a
   string, not a list, as that whole name, as the other team commands already did. It used
   to deliver it to any member whose name was part of the string, so `bob` received a

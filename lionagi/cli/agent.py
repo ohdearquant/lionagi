@@ -1767,6 +1767,10 @@ async def _run_agent(
                 from lionagi.service.imodel import iModel
 
                 chat_model = iModel(model=chat_model)
+            if not chat_model.is_cli and effort is not None:
+                from lionagi.agent.factory import _set_api_effort
+
+                _set_api_effort(chat_model.endpoint.config.kwargs, canonical, model, effort)
             # An API model runs lionagi's own tool loop, only for a profile that declares it.
             api_launch = None if chat_model.is_cli else _profile_api_launch(profile)
             if api_launch is not None and preset == "coding":
@@ -1918,6 +1922,33 @@ async def _run_agent(
                 )
         else:
             cfg = branch.chat_model.endpoint.config.kwargs
+            on_tool_loop = (
+                not getattr(branch.chat_model, "is_cli", False)
+                and _API_LAUNCH_KEY in branch.metadata
+            )
+            candidate = None
+            if on_tool_loop:
+                from lionagi.agent.factory import _set_api_effort
+
+                actual_provider = _canonical_provider(branch.chat_model.endpoint.config.provider)
+                if model_str is not None and canonical != actual_provider:
+                    raise ConfigurationError(
+                        f"cannot resume {actual_provider!r} API endpoint as {canonical!r}; "
+                        "start a new branch to change providers."
+                    )
+                candidate = dict(cfg)
+                candidate_model = model if model_str is not None else cfg.get("model")
+                stored_effort = (
+                    (cfg.get("output_config") or {}).get("effort")
+                    if actual_provider == "anthropic"
+                    else cfg.get("reasoning_effort")
+                )
+                if effort is not None or stored_effort is not None:
+                    _set_api_effort(
+                        candidate, actual_provider, candidate_model, effort or stored_effort
+                    )
+                if model_str is not None:
+                    candidate["model"] = model
             if model_str is not None:
                 old_model = cfg.get("model")
                 if model != old_model:
@@ -1935,20 +1966,20 @@ async def _run_agent(
                     kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                     if kwarg and cfg.get(kwarg) is not None:
                         cfg[kwarg] = reclamp_effort_for_model(canonical, cfg[kwarg], model)
+            if candidate is not None:
+                cfg.update(candidate)
             # The display flags are CLI endpoint options; an API model sends its
             # config's kwargs with each request, so a branch on the tool loop is
             # handed neither.
-            on_tool_loop = (
-                not getattr(branch.chat_model, "is_cli", False)
-                and _API_LAUNCH_KEY in branch.metadata
-            )
             if verbose and not on_tool_loop:
                 cfg["verbose_output"] = True
             if theme is not None and not on_tool_loop:
                 cfg["cli_display_theme"] = theme
             if effort is not None:
                 kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
-                if kwarg:
+                if on_tool_loop:
+                    pass  # The candidate above has already validated and applied it.
+                elif kwarg:
                     if canonical == "codex":
                         effort = _clamp_codex_effort(effort, cfg.get("model"))
                     elif canonical in _CLAUDE_PROVIDER_NAMES:

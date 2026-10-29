@@ -1352,3 +1352,87 @@ def test_a_response_cut_off_with_nothing_is_read_in_each_provider_shape(response
     import lionagi.cli.agent as agent_mod
 
     assert agent_mod._stopped_at_output_limit_with_nothing(response) is expected
+
+
+@pytest.mark.asyncio
+async def test_profile_effort_reaches_anthropic_wire_payload(leg, monkeypatch):
+    profile = _profile(api_tools="read")
+    profile.effort = "max"
+    seen_payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payload, _ = self.create_payload(request, **kwargs)
+        seen_payloads.append(payload)
+        return leg.replies.pop(0)
+
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "call", call)
+    leg.replies = [_last_round(), _answer("done")]
+    _, _, _, status, _ = await leg.run(profile)
+    assert status == "completed"
+    assert seen_payloads
+    assert all(payload["output_config"]["effort"] == "max" for payload in seen_payloads)
+
+
+@pytest.mark.asyncio
+async def test_profile_effort_persists_and_can_be_overridden_on_resume(leg):
+    profile = _profile(api_tools="read")
+    profile.effort = "max"
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, status, _ = await leg.run(profile)
+    assert status == "completed"
+    assert all(p["output_config"]["effort"] == "max" for p in leg.payloads)
+
+    leg.payloads.clear()
+    leg.replies = [_last_round(), _answer("second")]
+    _, _, _, status, _ = await leg.run(_profile(api_tools="read"), resume=branch_id)
+    assert status == "completed"
+    assert all(p["output_config"]["effort"] == "max" for p in leg.payloads)
+
+    leg.payloads.clear()
+    leg.replies = [_last_round(), _answer("third")]
+    _, _, _, status, _ = await leg.run(_profile(api_tools="read"), resume=branch_id, effort="low")
+    assert status == "completed"
+    assert all(p["output_config"]["effort"] == "low" for p in leg.payloads)
+
+
+@pytest.mark.asyncio
+async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, monkeypatch):
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    profile = _profile(api_tools="read")
+    profile.effort = "high"
+    replies = [
+        {
+            "analysis": "done",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "done"},
+        },
+        {"answer": "done"},
+    ]
+    payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payloads.append(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-6-luna",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": json.dumps(replies.pop(0))},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "call", call)
+    result, _, _, status, _ = await leg.run(profile, model="openai/gpt-6-luna")
+    assert (result, status) == ("done", "completed")
+    assert payloads
+    assert all(p["reasoning_effort"] == "high" and "tools" not in p for p in payloads)
