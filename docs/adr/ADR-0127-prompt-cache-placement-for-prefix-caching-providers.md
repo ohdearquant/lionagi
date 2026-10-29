@@ -394,6 +394,13 @@ must come before five-minute marks; a mark whose prefix is shorter than the mode
 cacheable length (512 tokens on the current models, up to 4,096 on older ones) is not cached: the
 request is processed without caching and without an error.
 
+OpenAI's [prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching),
+read on 2026-10-29, describes implicit caching for GPT-5.6 and later: an eligible prefix is written
+at the end of the "latest eligible message" at 1.25 times the uncached input price. A later request
+can read a matching rendered prefix at its implicit breakpoint or up to 20 earlier eligible message
+endings, subject to the model's minimum cacheable length and an available entry. The OpenAI chat
+adapter places no explicit marks.
+
 Two records use "run" for different things, so this record names both senses. ADR-0126 D3 defines a
 **run**, for this router, as the lifetime of one Branch conversation identity; ADR-0123 D1 defines a
 **Run** as exactly one admitted execution attempt. This record uses **conversation** for the first
