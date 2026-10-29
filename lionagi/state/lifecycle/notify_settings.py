@@ -171,25 +171,28 @@ def _raw_terminal_layer(settings: Any) -> tuple[Any, str | None]:
     return notify.get("on_terminal"), None
 
 
-def resolve_durable_global_config(settings: Any) -> NotifyConfigResolution:
-    """Resolve one raw global layer; malformed settings are not chosen silence."""
+def _resolve_durable_config(settings: Any, *, scope: str) -> NotifyConfigResolution:
     source, reason = _raw_terminal_layer(settings)
     if reason is not None:
-        return _rejected(reason)
-    if source is None:
-        return _NOT_CONFIGURED
-    if isinstance(source, dict):
-        enabled = source.get("enabled", True)
-        if type(enabled) is not bool:
-            return _rejected("enabled_not_boolean")
-        if enabled is False:
-            return _NOT_CONFIGURED
-        if not isinstance(source.get("adapter"), dict):
-            return _rejected("enabled_without_adapter")
-    resolution = _resolve_shape(source, scope="global", safe=True)
+        resolution = _rejected(reason)
+    elif source is None:
+        resolution = _NOT_CONFIGURED
+    elif isinstance(source, dict) and type(source.get("enabled", True)) is not bool:
+        resolution = _rejected("enabled_not_boolean")
+    elif isinstance(source, dict) and source.get("enabled", True) is False:
+        resolution = _NOT_CONFIGURED
+    elif isinstance(source, dict) and not isinstance(source.get("adapter"), dict):
+        resolution = _rejected("enabled_without_adapter")
+    else:
+        resolution = _resolve_shape(source, scope=scope, safe=True)
     if resolution.reason is not None:
-        logger.warning("notify.on_terminal global configuration rejected: %s", resolution.reason)
+        logger.warning("notify.on_terminal %s configuration rejected: %s", scope, resolution.reason)
     return resolution
+
+
+def resolve_durable_global_config(settings: Any) -> NotifyConfigResolution:
+    """Resolve one raw global layer; malformed settings are not chosen silence."""
+    return _resolve_durable_config(settings, scope="global")
 
 
 def classify_notify_provenance(
@@ -210,14 +213,21 @@ def classify_notify_provenance(
         project_reason = "on_terminal_not_string_or_mapping"
     if declared and project_reason is not None:
         project_config = _rejected(project_reason)
+        logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
     elif declared:
-        project_config = resolve_durable_global_config({"notify": {"on_terminal": project_source}})
+        project_config = _resolve_durable_config(
+            {"notify": {"on_terminal": project_source}}, scope="project"
+        )
     else:
         project_config = _NOT_CONFIGURED
+        if project_reason is not None:
+            logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
     run_declared = override is not None
     run_config = (
         _resolve_shape(override, scope="override", safe=True) if run_declared else _NOT_CONFIGURED
     )
+    if run_config.reason is not None:
+        logger.warning("notify.on_terminal override configuration rejected: %s", run_config.reason)
     return NotifyProvenance(
         global_config=global_config,
         project_declared=declared,
@@ -602,6 +612,7 @@ def _make_exec_handler(
     outcome_fn: OutcomeFn = _noop_outcome_fn,
     safe_logging: bool = False,
     on_timeout: Callable[[], None] | None = None,
+    on_exec_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler:
     static_argv = tuple(argv)
 
@@ -636,21 +647,25 @@ def _make_exec_handler(
 
         # Cleanup runs outside the exception handler: a new cancellation is not
         # hidden in the context of the timeout or cancellation being handled.
-        if isinstance(primary, (asyncio.TimeoutError, get_cancelled_exc_class())):
-            if proc is not None:
+        if primary is not None and proc is not None:
+            with CancelScope(shield=True):
                 try:
-                    with CancelScope(shield=True):
-                        group_witnesses = (
-                            capture_group_witnesses(proc, expected_leader_created=leader_created)
-                            if leader_created is not None
-                            else ()
-                        )
-                        await aterminate_process_group(
-                            proc, grace=None, group_witnesses=group_witnesses
-                        )
-                        await _await_proc_dead(proc, safe_logging=True)
-                except Exception:  # noqa: BLE001 -- do not replace cancellation or timeout
+                    group_witnesses = (
+                        capture_group_witnesses(proc, expected_leader_created=leader_created)
+                        if leader_created is not None
+                        else ()
+                    )
+                except Exception:  # noqa: BLE001 -- fail closed for group signalling
+                    group_witnesses = ()
                     logger.warning("notify.on_terminal global adapter: exec_cleanup_unconfirmed")
+                try:
+                    await aterminate_process_group(
+                        proc, grace=None, group_witnesses=group_witnesses
+                    )
+                except Exception:  # noqa: BLE001 -- still attempt to reap the child
+                    logger.warning("notify.on_terminal global adapter: exec_cleanup_unconfirmed")
+                await _await_proc_dead(proc, safe_logging=True)
+        if isinstance(primary, (asyncio.TimeoutError, get_cancelled_exc_class())):
             if isinstance(primary, get_cancelled_exc_class()):
                 raise primary
             logger.warning("notify.on_terminal global adapter: exec_adapter_timeout")
@@ -662,8 +677,16 @@ def _make_exec_handler(
         if primary is not None:
             if not isinstance(primary, Exception):
                 raise primary
-            logger.warning("notify.on_terminal global adapter: exec_adapter_launch_failed")
-            outcome_fn(ok=False, exit_code=None, stderr_text=None)
+            reason = (
+                "exec_adapter_post_spawn_failed"
+                if proc is not None
+                else "exec_adapter_launch_failed"
+            )
+            logger.warning("notify.on_terminal global adapter: %s", reason)
+            if on_exec_failure is not None:
+                on_exec_failure(reason)
+            else:
+                outcome_fn(ok=False, exit_code=None, stderr_text=None)
             return
         assert proc is not None
         if proc.returncode != 0:
@@ -803,6 +826,7 @@ def build_handler(
     on_build_failure: Callable[[str], None] | None = None,
     safe_logging: bool = False,
     on_timeout: Callable[[], None] | None = None,
+    on_exec_failure: Callable[[str], None] | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
     ``None`` if the spec fails to build (never raises). A python adapter ref
@@ -820,6 +844,9 @@ def build_handler(
     configured notifier that will never fire, and this is the only place that
     knows why; a caller that can record it (one bound to a run) passes this so
     the failure does not reduce to the same ``None`` as nothing configured.
+
+    *on_exec_failure* receives a stable launch or post-spawn failure reason
+    from the safe exec handler; without it, failures use *outcome_fn*.
     """
     if resolved.python_ref is not None:
         try:
@@ -861,6 +888,8 @@ def build_handler(
         kwargs["safe_logging"] = True
     if on_timeout is not None:
         kwargs["on_timeout"] = on_timeout
+    if on_exec_failure is not None:
+        kwargs["on_exec_failure"] = on_exec_failure
     return _make_exec_handler(resolved.argv, **kwargs)
 
 

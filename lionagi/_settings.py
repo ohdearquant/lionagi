@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from stat import S_ISLNK
 from typing import Any
 
 import yaml
@@ -16,11 +17,30 @@ from lionagi.libs.nested import deep_merge as _deep_merge_impl
 __all__ = ("load_global_settings_layer", "load_project_settings_layer", "load_settings")
 
 
+def _layer_entry_present(path: Path) -> bool:
+    """Treat a broken settings symlink as an error, not absent configuration."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        # A broken symlink at the settings directory also makes its child
+        # appear absent. Check that entry without resolving any higher ancestor.
+        try:
+            parent = path.parent.lstat()
+        except FileNotFoundError:
+            return False
+        if S_ISLNK(parent.st_mode):
+            path.parent.stat()  # A dangling target must remain a read failure.
+        return False
+    return True
+
+
 def _read_layer(path: Path) -> Any:
     try:
         with path.open() as stream:
             source = stream.read()
     except FileNotFoundError:
+        if _layer_entry_present(path):
+            raise
         return {}
     # An empty or comment-only document has no node. An explicit YAML null is
     # a real (invalid for settings) scalar and must not become chosen silence.
@@ -44,7 +64,7 @@ def load_project_settings_layer(project_dir: str | Path | None = None) -> Any:
     root = Path(project_dir) if project_dir else Path.cwd()
     for parent in (root, *root.parents):
         candidate = parent / ".lionagi" / "settings.yaml"
-        if candidate.is_file():
+        if _layer_entry_present(candidate) and (candidate.is_file() or candidate.is_symlink()):
             if is_account_lionagi_dir(candidate.parent):
                 return {}
             return _read_layer(candidate)

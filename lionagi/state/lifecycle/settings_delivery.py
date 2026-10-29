@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 from lionagi._settings import load_global_settings_layer
@@ -98,12 +99,14 @@ def prepare_resolved_delivery(
 
         return PreparedDelivery(invoke_python)
 
-    outcomes: list[bool] = []
+    outcomes: ContextVar[list[bool] | None] = ContextVar("exec_delivery_outcomes", default=None)
 
     def record_exec(
         *, ok: bool, exit_code: int | None, stderr_text: str | None, reason: str | None = None
     ) -> str | None:
-        outcomes.append(ok)
+        current = outcomes.get()
+        if current is not None:
+            current.append(ok)
         return _record_global(
             recorder, ok=ok, exit_code=exit_code, stderr_text=stderr_text, reason=reason
         )
@@ -111,25 +114,36 @@ def prepare_resolved_delivery(
     def record_timeout() -> None:
         record_exec(ok=False, exit_code=None, stderr_text=None, reason="exec_adapter_timeout")
 
+    def record_exec_failure(reason: str) -> None:
+        record_exec(ok=False, exit_code=None, stderr_text=None, reason=reason)
+
     kwargs: dict[str, Any] = {"outcome_fn": record_exec}
     if safe_logging:
         kwargs["safe_logging"] = True
         kwargs["on_timeout"] = record_timeout
+        kwargs["on_exec_failure"] = record_exec_failure
     handler = build_handler(resolved, **kwargs)
     if handler is None:
         return DeliveryOutcome.FAILURE
 
     async def invoke_exec() -> DeliveryOutcome:
+        attempt_outcomes: list[bool] = []
+        token = outcomes.set(attempt_outcomes)
         try:
-            await handler(envelope)
-        except Exception:
-            if not safe_logging:
-                raise
-            logger.warning("notify.on_terminal global adapter: exec_adapter_execution_failed")
+            try:
+                await handler(envelope)
+            except Exception:
+                if not safe_logging:
+                    raise
+                logger.warning("notify.on_terminal global adapter: exec_adapter_execution_failed")
+                if not attempt_outcomes:
+                    record_exec_failure("exec_adapter_execution_failed")
+                return DeliveryOutcome.FAILURE
+            if attempt_outcomes and attempt_outcomes[-1] is True:
+                return DeliveryOutcome.SUCCESS
             return DeliveryOutcome.FAILURE
-        if outcomes and outcomes[-1] is True:
-            return DeliveryOutcome.SUCCESS
-        return DeliveryOutcome.FAILURE
+        finally:
+            outcomes.reset(token)
 
     return PreparedDelivery(invoke_exec)
 
@@ -152,6 +166,7 @@ def prepare_current_global_delivery(
         try:
             settings = load_global_settings_layer()
         except Exception:  # noqa: BLE001 -- settings failures leave delivery owed
+            logger.warning("notify.on_terminal global configuration: settings_load_failed")
             _record_global(
                 recorder, ok=False, exit_code=None, stderr_text=None, reason="settings_load_failed"
             )

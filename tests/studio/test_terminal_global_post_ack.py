@@ -84,7 +84,7 @@ class ContextDB:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["never", "error", "fast"])
-async def test_context_lookup_occurs_only_after_delivery_and_ack_decision(monkeypatch, mode):
+async def test_context_lookup_occurs_only_after_delivery(monkeypatch, mode):
     db, seen, labels = ContextDB(mode), [], []
     monkeypatch.setattr(
         settings_delivery,
@@ -99,12 +99,11 @@ async def test_context_lookup_occurs_only_after_delivery_and_ack_decision(monkey
     outcome = prepared.call()
     outcome = await outcome if inspect.isawaitable(outcome) else outcome
     assert outcome is DeliveryOutcome.SUCCESS and seen == ["event-1"] and db.calls == 0
-    # Integrator decides ACK before calling the diagnostic seam.
-    ack_decision = "acknowledged"
+    # The integrator calls this diagnostic seam after deciding the ACK.
     await service.observe_global_context_after_ack(
         _row(), db, labels.append, remaining_seconds=0.03
     )
-    assert ack_decision == "acknowledged" and db.calls == 1
+    assert db.calls == 1
     assert (
         labels
         == {
