@@ -474,7 +474,7 @@ CREATE INDEX idx_sessions_listing_cost_unknown
 
 They are absent at the source baseline. Current time/status indexes omit the id tie-break,
 and current session index declarations contain no equivalent cost path
-(`lionagi/state/schema.sql:203`, `lionagi/state/schema_meta.py:238`,
+(`lionagi/state/schema.sql:203`, `lionagi/state/schema_meta.py:239`,
 `lionagi/state/schema_migrations.py:281`). An index's presence alone does not prove that
 the chosen seek query avoids a prefix scan, tie-group sort or full-store sort. Test every
 NULL/equality/cost-partition boundary with the actual route SQL and supported SQLite runtime.
@@ -496,7 +496,7 @@ Add indexes and the singleton identity through the canonical schema/version/migr
 lifecycle, including fresh schema, upgrade and repeated-open parity. Runtime MetaData is
 the authority, and compatibility DDL must agree. Existing-table index additions need the
 explicit migration path because create_all does not repair them
-(`lionagi/state/schema_migrations.py:270`, `lionagi/state/db.py:2031`). Listing reads must
+(`lionagi/state/schema_migrations.py:270`, `lionagi/state/db.py:2033`). Listing reads must
 not run a migration or fabricate an incarnation on an old read-only store.
 
 Missing required index, identity or keyring capability returns HTTP 503:

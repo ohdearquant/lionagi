@@ -11,6 +11,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Provider exception types are available from `lionagi.providers.errors`, so
   applications can catch them without importing a private module.
 
+- With `LIONAGI_STUDIO_TERMINAL_RECONCILE` on (default off), Studio reconciles
+  eligible terminal transitions for a registered settings consumer at startup
+  and on its periodic tick. Delivery is at least once;
+  consumers can deduplicate by transition event ID. Operator force-transitions
+  now notify terminal consumers. Per-run notification overrides and the
+  no-session fallback remain push-only. Replay loads global settings only;
+  notifiers configured in project settings are push-only, so a missed push
+  for one is replayed through the global notifier when one is configured,
+  never through the project's. Studio's consumer registers on its first pass
+  with transitions that predate it acknowledged as history, never delivered.
+  A pass keeps reading pages of owed transitions until it reaches the end or
+  `LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS` (default 10) have passed.
+  The setting is off by default because the push path records nothing yet:
+  with it on, a transition whose push already ran the notifier is replayed by
+  the next pass and the notifier runs again for the same event. A Python hook
+  can deduplicate by event ID; a shell command notifier runs twice. A pending
+  ADR-0095 amendment defines what the push records. With the setting off, no
+  pass runs, no consumer is registered and push delivery is unchanged.
+
+- State schema version 6 records terminal-delivery eligibility and consumer
+  registrations. After upgrading, restart every process that opens the store,
+  including Studio daemons, schedulers and long-running CLI processes. Old
+  already-open processes can write unclassified rows that are excluded from
+  replay. Historical terminal rows with a NULL predecessor also remain
+  unclassified when initialization and reaper transitions cannot be separated.
+  The first open after the upgrade classifies every existing transition in one
+  transaction; on PostgreSQL it holds a SHARE ROW EXCLUSIVE lock on
+  `status_transitions` until it commits, so writers wait for a time that grows
+  with the table's size. On SQLite the same transaction holds the database's
+  single write lock for that time, so every other writer waits on it too.
+
 - OpenAI chat prompt-cache placement keeps the system and tool instructions in
   a stable prefix. With placement on, the per-request token-usage estimate is
   no longer appended to the newest message, since it changed cached bytes.
