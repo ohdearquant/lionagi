@@ -13,7 +13,42 @@ import yaml
 from lionagi._paths import is_account_lionagi_dir
 from lionagi.libs.nested import deep_merge as _deep_merge_impl
 
-__all__ = ("load_settings",)
+__all__ = ("load_global_settings_layer", "load_project_settings_layer", "load_settings")
+
+
+def _read_layer(path: Path) -> Any:
+    try:
+        with path.open() as stream:
+            source = stream.read()
+    except FileNotFoundError:
+        return {}
+    # An empty or comment-only document has no node. An explicit YAML null is
+    # a real (invalid for settings) scalar and must not become chosen silence.
+    node = yaml.compose(source, Loader=yaml.SafeLoader)
+    if node is None or (
+        node.tag == "tag:yaml.org,2002:null"
+        and node.value == ""
+        and node.start_mark.index == node.end_mark.index
+    ):
+        return {}
+    return yaml.safe_load(source)
+
+
+def load_global_settings_layer() -> Any:
+    """Read the raw global layer without merging or hiding malformed roots."""
+    return _read_layer(Path.home() / ".lionagi" / "settings.yaml")
+
+
+def load_project_settings_layer(project_dir: str | Path | None = None) -> Any:
+    """Read the nearest project layer without merging it with global settings."""
+    root = Path(project_dir) if project_dir else Path.cwd()
+    for parent in (root, *root.parents):
+        candidate = parent / ".lionagi" / "settings.yaml"
+        if candidate.is_file():
+            if is_account_lionagi_dir(candidate.parent):
+                return {}
+            return _read_layer(candidate)
+    return {}
 
 
 def load_settings(
