@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from lionagi import _checkpoint_v3_codec as codec
 from lionagi._checkpoint_v3_codec import (
     CodecError,
     FrozenArray,
@@ -58,6 +59,38 @@ def test_single_nested_append_is_bounded_and_shares_unchanged_nodes(count):
         {"op": "add", "path": "/nested/items/-", "value": "x"}
     ]
     assert decode_record(encoded).patch == patch
+
+
+def test_tail_shrink_replays_without_rebuilding_arrays(monkeypatch):
+    before = freeze_json({"items": list(range(1000))})
+    target = freeze_json({"items": list(range(10))})
+    patch = diff_context(before, target)
+
+    def forbid_rebuild(_values):
+        raise AssertionError("tail removal should not rebuild the array")
+
+    monkeypatch.setattr(codec, "_array_from_values", forbid_rebuild)
+    replayed = apply_patch(before, patch)
+    assert len(patch) == 990
+    assert replayed == target
+    assert thaw_json(replayed) == {"items": list(range(10))}
+    assert len(before["items"]) == 1000
+
+
+def test_middle_remove_still_rebuilds_array(monkeypatch):
+    before = freeze_json({"items": [0, 1, 2, 3]})
+    rebuild = codec._array_from_values
+    calls = []
+
+    def observe_rebuild(values):
+        calls.append(list(values))
+        return rebuild(values)
+
+    monkeypatch.setattr(codec, "_array_from_values", observe_rebuild)
+    replayed = apply_patch(before, (PatchOp("remove", "/items/1"),))
+    assert calls == [[0, 2, 3]]
+    assert thaw_json(replayed) == {"items": [0, 2, 3]}
+    assert thaw_json(before) == {"items": [0, 1, 2, 3]}
 
 
 def test_context_capture_is_frozen_and_aliases_update_both_paths():
@@ -495,6 +528,7 @@ def test_pure_reorder_is_not_replayed():
     target = freeze_json({"b": 2, "a": 1})
     ops = diff_context(base, target)
     replayed = apply_patch(base, ops)
+    assert base == target
     assert ops == ()
     assert list(thaw_json(replayed)) == ["a", "b"]
     assert list(thaw_json(target)) == ["b", "a"]

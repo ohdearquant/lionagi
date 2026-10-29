@@ -130,7 +130,7 @@ class FrozenArray:
 class FrozenObject:
     """Hold JSON members in captured order.
 
-    A pure member reorder emits no patch, so replay retains the base order.
+    Equality ignores member order; thawing exposes the captured order.
     """
 
     _items: tuple[tuple[str, Any], ...]
@@ -445,6 +445,7 @@ def _diff(old: Any, new: Any, path: str, operations: list[PatchOp]) -> None:
 
 
 def diff_context(old: FrozenObject, new: FrozenObject) -> tuple[PatchOp, ...]:
+    """Diff contexts; pure object-member reordering produces no operations."""
     if not isinstance(old, FrozenObject) or not isinstance(new, FrozenObject):
         raise CodecError()
     operations: list[PatchOp] = []
@@ -546,6 +547,8 @@ def _apply(value: Any, tokens: tuple[str, ...], op: PatchOp) -> Any:
             return _array_put(value, index, op.value)
         if op.op == "add" and index == len(value):
             return _array_put(value, index, op.value)
+        if op.op == "remove" and index == len(value) - 1:
+            return _array_take(value, index)
         values = list(value)
         if op.op == "add":
             values.insert(index, op.value)
