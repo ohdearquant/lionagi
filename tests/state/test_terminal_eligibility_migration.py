@@ -18,6 +18,9 @@ from sqlalchemy import event, inspect, text
 import lionagi.state.db as db_module
 from lionagi.state.db import StateDB
 from lionagi.state.engine import make_engine
+from lionagi.state.lifecycle.callbacks import EXECUTION_ENTITY_KINDS
+from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+from lionagi.state.terminal_eligibility import is_delivery_eligible
 
 pytestmark = pytest.mark.unit
 V5_SCHEMA = Path(__file__).resolve().parents[1] / "fixtures" / "state_schema_v5.sql"
@@ -108,6 +111,76 @@ async def test_v5_sqlite_classification_and_reopen(tmp_path):
     db = StateDB(path=path)
     try:
         await assert_migration(db)
+    finally:
+        await db.close()
+
+
+async def test_v5_frozen_predicate_matches_registry_terminal_transitions(tmp_path):
+    # These are the historical v5 terminal statuses. If the registry changes,
+    # update this test's expected sets, never the predicate used for old stores.
+    frozen = {
+        "session": {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"},
+        "invocation": {
+            "completed",
+            "completed_empty",
+            "failed",
+            "timed_out",
+            "aborted",
+            "cancelled",
+        },
+        "play": {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"},
+        "schedule_run": {"completed", "failed", "timed_out", "skipped", "cancelled"},
+    }
+    assert set(frozen) == EXECUTION_ENTITY_KINDS
+    candidates = []
+    for kind in sorted(EXECUTION_ENTITY_KINDS):
+        terminals = frozen[kind] | set(DEFAULT_REGISTRY.get(kind).terminal_statuses)
+        for status in sorted(terminals):
+            candidates.append((kind, "__different__", status))
+        terminal = sorted(frozen[kind])[0]
+        candidates.extend(
+            [
+                (kind, terminal, terminal),
+                (kind, None, terminal),
+                (kind, "__different__", "__nonterminal__"),
+            ]
+        )
+    candidates.append(("show", "active", "completed"))
+
+    path = tmp_path / "state.db"
+    make_v5_sqlite(path)
+    with sqlite3.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO status_transitions "
+            "(id, entity_type, entity_id, previous_status, status, reason_code, source, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'fixture', 'system', 1)",
+            [
+                (f"guard-{i}", kind, f"guard-{i}", previous, status)
+                for i, (kind, previous, status) in enumerate(candidates)
+            ],
+        )
+
+    db = StateDB(path=path)
+    try:
+        await db.open()
+        async with db._read() as conn:
+            rows = (
+                await conn.execute(text("SELECT id, delivery_eligible FROM status_transitions"))
+            ).all()
+        actual = {
+            row.id: None if row.delivery_eligible is None else bool(row.delivery_eligible)
+            for row in rows
+        }
+        for i, (kind, previous, status) in enumerate(candidates):
+            expected = (
+                None
+                if previous is None and status in frozen.get(kind, set())
+                else is_delivery_eligible(kind, previous, status, write_kind="transition")
+            )
+            assert actual[f"guard-{i}"] == expected, (
+                f"Frozen v5 predicate and live registry disagree for {kind}/{previous}/{status}; "
+                "when the registry changes, retain the frozen predicate and update the test's expected sets."
+            )
     finally:
         await db.close()
 
