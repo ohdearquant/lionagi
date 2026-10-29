@@ -5623,7 +5623,15 @@ class StateDB:
             _validate_reason_code(reason.code)
             if not reason.code.startswith("schedule_definition."):
                 raise ValueError("ScheduleSet reasons must use the schedule_definition namespace")
+        touched = {str(s["id"]) for s in creates if s.get("id")}
+        touched.update(schedule_id for schedule_id, _ in updates)
+        touched.update(disables)
         async with self._tx() as conn:
+            # Two applies touching the same schedules in different plan orders could
+            # deadlock on PostgreSQL, so every definition lock is taken here in one sorted
+            # order before any row lock. The per-row locks below re-enter them.
+            for schedule_id in sorted(touched):
+                await adapter._lock_id(conn, schedule_id)
             for schedule in creates:
                 created_reason = self._schedule_set_reason(
                     schedule, _ScheduleDefinitionReasons.CREATED_OBSERVED, "created", reason
@@ -5637,7 +5645,8 @@ class StateDB:
                 )
             for schedule_id, fields in updates:
                 claimed = schedule_id in claims
-                stmt, params = self._build_update_schedule_stmt(
+                stmt, params = await self._build_target_aware_schedule_update_in_tx(
+                    conn,
                     schedule_id,
                     fields,
                     expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
@@ -5829,6 +5838,7 @@ class StateDB:
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: _ScheduleAuditContext | None = None,
         reason: _ReasonRecord | None = None,
         **fields: Any,
@@ -5843,31 +5853,94 @@ class StateDB:
         claim on that value matches twice and separates nothing; github_cursor advances per event
         and is the only value in the row that distinguishes one event of a batch from the next.
         """
-        stmt, params = self._build_update_schedule_stmt(
-            schedule_id,
-            fields,
-            guard_cursor_forward=guard_cursor_forward,
-            expect_next_fire_at=expect_next_fire_at,
-            expect_github_cursor=expect_github_cursor,
-            expect_owner_key=expect_owner_key,
-        )
         async with self._tx() as conn:
+            stmt, params = await self._build_target_aware_schedule_update_in_tx(
+                conn,
+                schedule_id,
+                fields,
+                guard_cursor_forward=guard_cursor_forward,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
+                expect_owner_key=expect_owner_key,
+                expect_target_generation=expect_target_generation,
+            )
             return await self._update_schedule_in_tx(
                 conn, schedule_id, fields, stmt, params, audit_context=audit_context, reason=reason
             )
 
-    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool:
+    async def _build_target_aware_schedule_update_in_tx(
+        self, conn: AsyncConnection, schedule_id: str, fields: dict[str, Any], **claims: Any
+    ):
+        """Build an update against its locked target; engine cursor progress is runtime state."""
+        target_fields = {"trigger_type", "github_repo", "github_filter", "github_cursor"}
+        if claims.get("guard_cursor_forward"):
+            target_fields.remove("github_cursor")
+        changed = False
+        if target_fields & fields.keys():
+            # Match the lifecycle adapter's transaction-lock-before-row-lock order on PostgreSQL.
+            # SQLite's BEGIN IMMEDIATE has already serialized writers in this transaction.
+            adapter = self._lifecycle_service().schedule_adapter
+            await adapter._lock_id(conn, schedule_id)
+            sql = (
+                "SELECT trigger_type, github_repo, github_filter, github_cursor "
+                "FROM schedules WHERE id = :id"
+            )
+            if self.dialect != "sqlite":
+                sql += " FOR UPDATE"
+            result = (await conn.execute(text(sql), {"id": schedule_id})).mappings().first()
+            if result is not None:
+                before = self._row_to_dict(result)
+                after = {**before, **{key: fields[key] for key in target_fields & fields.keys()}}
+
+                def target(row):
+                    github_filter = row.get("github_filter")
+                    if isinstance(github_filter, dict):
+                        github_filter = {
+                            key: value
+                            for key, value in github_filter.items()
+                            if key != "merged_page_limit"
+                        }
+                    return (
+                        row.get("trigger_type"),
+                        row.get("github_repo"),
+                        github_filter,
+                        row.get("github_cursor"),
+                    )
+
+                changed = target(before) != target(after)
+        return self._build_update_schedule_stmt(
+            schedule_id, fields, reset_github_poll_target=changed, **claims
+        )
+
+    async def record_github_poll_stagnation(
+        self,
+        schedule_id: str,
+        *,
+        reset: bool,
+        page_limit: int | None = None,
+        expected_target_generation: int | None = None,
+    ) -> bool:
         """Account for one settled observation against the current GitHub schedule.
 
         The transaction's commit orders independent observations. A late increment after
         a reset starts at one instead of restoring a caller's earlier snapshot.
         """
+        where = " WHERE id = :id AND trigger_type = 'github_poll'"
+        if expected_target_generation is not None:
+            where += " AND poller_target_generation = :expected_target_generation"
         stmt = text(
-            "UPDATE schedules SET poller_consecutive_cap_no_dispatch = "
+            "UPDATE schedules SET poller_consecutive_cap_no_dispatch = "  # noqa: S608
             "CASE WHEN :reset THEN 0 ELSE poller_consecutive_cap_no_dispatch + 1 END, "
-            "updated_at = :updated_at WHERE id = :id AND trigger_type = 'github_poll'"
+            "poller_last_capped_page_limit = CASE WHEN :reset THEN NULL "
+            "ELSE CAST(:page_limit AS INTEGER) END, updated_at = :updated_at" + where
         )
-        params = {"id": schedule_id, "reset": reset, "updated_at": time.time()}
+        params = {
+            "id": schedule_id,
+            "reset": reset,
+            "page_limit": page_limit,
+            "expected_target_generation": expected_target_generation,
+            "updated_at": time.time(),
+        }
         context = _ScheduleAuditContext(origin="scheduler", source="scheduler", assurance="system")
         async with self._tx() as conn:
             return await self._update_schedule_in_tx(
@@ -5885,6 +5958,8 @@ class StateDB:
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
         expect_updated_at: float | None | NoCursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
+        reset_github_poll_target: bool = False,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -5910,6 +5985,14 @@ class StateDB:
             and fields["github_cursor"] is not None
         )
         sets_parts = []
+        if reset_github_poll_target:
+            sets_parts.extend(
+                (
+                    "poller_consecutive_cap_no_dispatch = 0",
+                    "poller_last_capped_page_limit = NULL",
+                    "poller_target_generation = poller_target_generation + 1",
+                )
+            )
         bind_params = []
         for k in fields:
             if k == "github_cursor" and guarded_cursor:
@@ -5929,6 +6012,9 @@ class StateDB:
         params = dict(fields)
         params["_id"] = schedule_id
         where = "id = :_id"
+        if expect_target_generation is not None:
+            where += " AND poller_target_generation = :_expect_target_generation"
+            params["_expect_target_generation"] = expect_target_generation
         # One loop rather than a block per column, so a second claim cannot be given subtly
         # different NULL handling from the first. Branching on the Python value rather than
         # emitting a NULL-safe operator: sqlite spells one `IS`, postgres rejects `IS` with a
@@ -6034,6 +6120,7 @@ class StateDB:
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: _ScheduleAuditContext | None = None,
         reason: _ReasonRecord | None = None,
     ) -> bool:
@@ -6053,6 +6140,7 @@ class StateDB:
             guard_cursor_forward=True,
             expect_next_fire_at=expect_next_fire_at,
             expect_github_cursor=expect_github_cursor,
+            expect_target_generation=expect_target_generation,
         )
         async with self._tx() as conn:
             # The cursor claim goes FIRST so a lost race writes no occurrence at all. Selecting a

@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Merged pull-request schedules can persist a page limit from 5 to 100. When
+  repeated scans hit the limit, schedule health explains how to recover.
+
 - API run manifests now include response-reported cache read and write token
   counts per request when a supported non-streaming response supplies them.
   Unknown counts remain `null`; built-in local cache hits are not counted again.
@@ -101,6 +104,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `chat_model` (set the option on that model's endpoint instead) and without a model.
 
 ### Changed
+
+- Merged pull-request scans no longer send conditional requests: a first-page
+  cache hit cannot establish that later pages are unchanged.
 
 - `ReviewEngine` with `prompt_caching=True` sends the artifact once, in a turn of
   its own, before the dimension reviewers start; each dimension's request
