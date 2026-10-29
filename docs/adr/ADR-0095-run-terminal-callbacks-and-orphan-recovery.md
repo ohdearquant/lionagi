@@ -351,8 +351,10 @@ callback:
    spawn with no committed intent must not proceed.
 2. *Identity acquisition*: immediately after process creation returns — before any await
    point in the supervisor — the child's PID and process identity are written to the intent
-   record and committed. This commit is the identity point. On Linux the identity must meet
-   the durable-identity cutover requirements below; creation time alone is insufficient.
+   record and committed. This commit is the identity point. From the part-2 cutover, the Linux
+   identity must meet the durable-identity requirements below. In phase 1 the recorded identity
+   is PID plus creation time, compared under the Linux correction (epoch disagreement held
+   unknown); creation time alone does not exclude PID reuse.
 3. *Child registration*: on surfaces whose child runs LionAGI bootstrap code, the child
    additionally writes its own marker row carrying the attempt ID, durably linking marker to
    invocation. Marker-less surfaces (bare `command` children) rely solely on step 2.
@@ -381,7 +383,10 @@ time is missing, and does not rescue an epoch mismatch with a marker. Other exis
 including handling of missing PID fields and non-degraded or unreadable imported manifests, is
 unchanged in this phase. Each doctor and stale-sweep pass prints counts by reason for Linux
 rows held unknown on epoch-start or epoch-boot disagreement, using the observation that
-decided the verdict, and applies no automatic disposition to those rows.
+decided the verdict, and applies no automatic disposition to those rows. A release may claim
+containment only once both doctor and stale sweep print these counts. The pending stale-sweep
+change supplies its counts; doctor reporting is pending its phase-1 change and is not yet
+enforced.
 
 At the part-2 durable-identity cutover, a persisted legacy Linux row lacking a complete
 identity tuple is unverifiable: it grants no recovery-signal or automatic-cancellation
