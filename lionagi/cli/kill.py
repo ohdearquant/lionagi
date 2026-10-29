@@ -942,13 +942,36 @@ async def _try_recorded_worker_cleanup(
         except Exception as exc:
             warn(f"  session {sid[:12]}: cancellation could not be confirmed ({exc})")
             return 1
-        if outcome != "applied":
+        if outcome == "already_terminal":
+            # The runner's own end was recorded after the snapshot and is kept as written;
+            # the session is handled from here as one that had already ended.
+            try:
+                current = await db.get_session(sid)
+            except Exception as exc:
+                warn(f"  session {sid[:12]}: session could not be re-read ({exc})")
+                return 1
+            if (
+                current is None
+                or current.get("status") not in SESSION_TERMINAL_STATUSES
+                or current.get("cli_worker_generation") != generation
+            ):
+                log_error(f"session {sid[:12]} changed during cleanup")
+                return 1
+            running = False
+            status = current["status"]
+            if not records:
+                log_error(
+                    f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill"
+                )
+                return 1
+        elif outcome != "applied":
             log_error(f"session {sid[:12]} changed during cleanup")
             return 1
-        status = "cancelled"
-        if not records:
-            print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
-            return 0
+        else:
+            status = "cancelled"
+            if not records:
+                print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
+                return 0
     elif not records:
         return None
 
