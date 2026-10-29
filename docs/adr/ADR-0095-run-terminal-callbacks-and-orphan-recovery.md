@@ -496,3 +496,124 @@ decisions must never appear in reconciliation.
    evidence.
 8. Recovery projection per surface: resume always creates a new attempt and retains the
    source terminal row; reactive-spawned checkpoints remain refused.
+
+## Amendment: registered terminal reconciliation consumers
+
+- **Status**: Accepted
+- **Date**: 2026-10-28
+
+This amendment adds a shipped reconciliation consumer to the standalone v1 contract in D1 and
+D3. It does not change the existing accepted text above or implement ADR-0124 fact-ID source
+selection and v2 dual-read. The process-local callback push remains best-effort; the durable
+consumer provides at-least-once attempts for eligible facts, not exactly-once effects.
+Independent reconcilers may both deliver one fact. A consumer deduplicates standalone v1 on
+`event_id`, the transition ID; `(transition_id, consumer)` keeps acknowledgements idempotent.
+
+### Stored eligibility and upgrade
+
+State schema version 6 adds nullable `status_transitions.delivery_eligible` and
+`terminal_consumers(name, registered_at, retired_at)`. An execution entity's applied write is
+eligible when its target is terminal under its policy, its previous status differs from that
+target, and the write is a transition rather than initial history. Initialization and
+same-status writes are ineligible. Each history writer computes the same decision at write
+time; native push reads the committed value, and replay selects only TRUE. An operator's
+force-transition from running to terminal is eligible and emits after commit using that same
+transition ID. A NULL-to-failed reaper transition is eligible, unlike an initial terminal row.
+No handler runs inside the status transaction.
+
+The v5-to-v6 migration uses the frozen v5 execution-kind and terminal-status mapping. It marks
+TRUE where the predecessor is non-NULL and differs from the terminal target, including old
+operator transitions; it marks FALSE for non-execution rows, nonterminal targets and equal
+predecessor/target rows. Terminal execution rows with NULL predecessor remain NULL because
+initialization and reaper history cannot be distinguished. Replay excludes NULL, so this
+under-delivers old ambiguous reaper rows that the original push already attempted. No later
+heuristic classifies them. Classification, its completion marker, migration time, and the
+initial NULL count commit atomically with the v6 schema version. Reopening never reclassifies.
+
+An old process that was already open may write another NULL after the migration; it is not
+reclassified or owed. Registration and reconciliation report the initial NULL count and the
+current count, and the difference reports post-migration NULL rows exactly only while no
+`status_transitions` rows have been deleted. After upgrade, restart every lionagi process that
+opens the store, including Studio daemons, schedulers, and long-running CLI processes.
+
+### Registration and retention
+
+Registration creates the retention obligation; inactivity does not retire a consumer. In one
+transaction, `start="now"` registers the identity and acknowledges the eligible history in
+its registration snapshot, while `start="all"` registers without acknowledging that history.
+A transition not visible in the registration snapshot remains owed even if its timestamp was
+captured earlier. Registering an already active identity returns the existing registration.
+Retirement is explicit and changes `retired_at` in one statement, atomically ending service
+and its retention obligation; it does not delete acknowledgement rows. Retired-consumer
+acknowledgements become eligible for pruning under the retention rule; actual pruning is a
+separate decision.
+
+Explicit reactivation resumes the same identity and retains
+its acknowledgements; `start="now"` baselines currently unacknowledged eligible history and
+`start="all"` leaves it owed. A late acknowledgement after retirement is accepted
+idempotently because it records an already completed delivery. Immediately before calling a
+handler, a reconciler re-reads the consumer's active status in its own short statement; that
+check is the attempt's start. Retirement stops new attempts whose checks occur after it commits
+and does not cancel attempts already started. An attempt that passed its check may finish and
+acknowledge after retirement. No lock is held across the handler and no exclusive claim is
+created; each reconciler has at most one batch of in-flight attempts plus the bounded abandoned
+workers described below.
+
+### Daemon delivery and bounded traversal
+
+The Studio daemon runs a named settings consumer at startup and on its existing periodic
+reconciliation tick, with a bounded batch, when `LIONAGI_STUDIO_TERMINAL_RECONCILE` is on. It
+ships off: until the push path records what it delivered, an enabled pass replays every pushed
+event and its notifier runs a second time. With it off, no pass runs and no consumer is
+registered. A handler returns an explicit outcome; only success
+or an explicitly not-applicable outcome is acknowledged. An exec adapter succeeds on exit 0;
+nonzero exit, timeout and spawn failure fail. A Python hook succeeds on normal return other
+than explicit `False`; an exception, timeout or `False` fails. Disabled notifications and a
+nonmatching kind or ID filter are not applicable and are acknowledged and counted. Registry
+plumbing returning is not evidence of handler success. The push path remains unchanged in its
+best-effort treatment of handler results.
+
+A rotating `(created_at, transition_id)` keyset traverses the
+unacknowledged set, wrapping to discover late commits; the cursor is process-local scheduling
+state, never a durable acknowledgement or a watermark. A bounded process-local retry map is a
+best-effort brake, evicting the least recently attempted entry when full. Retry delays and
+attempt counts are lost on restart or eviction. A pass reports locally observed rows past ten
+failed attempts; this is not a durable count. A traversal ends when the cursor wraps. A row
+due when reached is attempted in that traversal; a cooling row is skipped and attempted in
+the first traversal reaching it after backoff expires. Backoff is capped at one hour, so under
+a running process and finite backlog every pending eligible row is attempted again within one
+cap plus one traversal, as long as its consumer is not saturated. A consumer whose abandoned
+workers stay at the bound described below attempts nothing until one of them ends, and no path
+reaps a worker that never ends: it holds its slot until the process exits. There is no claim of
+strict global oldest-first order, exact doubling, or progress under unbounded arrivals.
+
+A timed-out synchronous Python hook fails without an immediate acknowledgement. While its
+abandoned worker remains active, another attempt for the same consumer and transition is not
+started in that process. A later normal completion is acknowledged; an exception or explicit
+`False` records failure. Outstanding abandoned workers are bounded per consumer by the batch
+size; at the bound, a pass starts no further attempts for that consumer and reports saturation.
+Replacing the SQLite store file while the daemon runs is unsupported; late acknowledgements may
+be lost or refused.
+For a private in-memory SQLite store whose owning event loop has stopped, a later successful
+result is retained in process and acknowledged on that store's next pass on the original loop;
+the connection is not reused across event loops.
+
+### Scope and configuration
+
+Replay resolves session context at delivery time. A session transition uses that session;
+a play uses its linked session, if present. For an invocation or schedule run, collect its
+linked sessions' distinct non-NULL project values: exactly one supplies the project; zero or
+several means no session context. Do not select the first session. Replay loads global settings
+only, never a project's settings, so a notifier configured in a project's settings is push-only.
+An eligible transition without session context is not applicable and is acknowledged; the
+pass summary counts absent context and ambiguous projects separately. Kind and ID filters
+apply after resolution.
+
+Per-run scoped `--notify` overrides and the no-session fallback remain push-only; notification
+intent is not persisted for replay.
+Compatibility-mode stores are never migrated by this feature and durable consumer APIs refuse
+them with a typed mode error. Their transition writers use stored eligibility if the foreign
+schema and profile admit it, or compute the push decision in memory if the column is absent;
+that push is best-effort and has no replay guarantee. Consumer APIs also refuse an unmigrated
+read-only store with a typed error naming its schema version. Owner-scoped compatibility
+consumers and persisted notification intent are separate follow-ups.

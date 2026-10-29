@@ -1,6 +1,6 @@
 # ADR-0034: Domain-engine coordination and autonomy safeguards
 
-- **Status**: Accepted, amended 2026-10-24 (see Amendments 1-2)
+- **Status**: Accepted, amended 2026-10-24 and 2026-10-28 (see Amendments 1-3)
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
@@ -94,6 +94,25 @@ The compatibility cost is intentional: weak judges that returned prose or no
 verdict previously allowed expansion; they now stop that item. Callers can
 use a matching typed verdict, return the explicit text token, or leave
 `judge_model` unset when judging is optional.
+
+## Amendment 3 (2026-10-28) — preserve a reported gate decision
+
+- **Status**: Accepted 2026-10-28; replaces Amendment 2's statement that a
+  callback failure on the gated notice enters the fail-open path (#3744).
+- **Scope**: A callback failure while reporting a completed `gated` decision.
+  Amendment 2's text is kept as it was accepted; where it describes that
+  failure, this amendment decides.
+
+An ordinary `gated` callback exception cannot turn a typed or untyped denial
+into an expansion. The engine logs its exception type with a redacted message,
+without a traceback, and returns the denial. A `ContainmentRefusedError` or
+`_AgentSettingError`, whether direct or found through an exception's cause,
+context, or exception-group members, is raised instead. The search is bounded
+to 100 distinct nodes and 100 group-member entries; if it cannot finish or a
+link is unreadable, the original callback exception is raised rather than
+treating an unread chain as ordinary. Interrupts and cancellations continue
+to propagate. This rule does not change how failures in the judge itself are
+handled, or promise delivery of a failed notification.
 
 ## Context
 

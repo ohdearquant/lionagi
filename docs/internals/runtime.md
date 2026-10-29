@@ -413,11 +413,89 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
 - `deliveries.py` — acknowledgment is durable state written only by a named
   reconciliation consumer, never by the in-process push path
   (`TerminalCallbackRegistry` stays fire-and-forget and records nothing
-  here). The reconciliation query is a read-only anti-join: terminal
-  transitions on execution entities with no delivery row yet for the
-  requesting consumer, with no age filter on either side — a late-committing
-  older row, or an event from a long-offline consumer, stays unacknowledged
-  indefinitely (this module never expires an unacked event on its own).
+  here). `status_transitions.delivery_eligible` records the push/replay decision
+  when history is written. The reconciliation query anti-joins eligible rows
+  against acknowledgements for an active registered consumer, without an age
+  filter. Registration with `start="now"` acknowledges eligible rows in its
+  transaction snapshot; `start="all"` leaves them owed. A later commit stays
+  owed even if its transition timestamp is older. Retirement stops serving the
+  identity in one statement without deleting its acknowledgements. Reactivating
+  explicitly resumes the same identity and applies `start` to its unacknowledged
+  history; a late acknowledgement after retirement is accepted.
+- Terminal reconciliation — with `LIONAGI_STUDIO_TERMINAL_RECONCILE` on (it is
+  off by default), the Studio daemon runs a settings-consumer pass at startup,
+  awaited before it serves, and on its periodic tick, inside the scheduler tick. The consumer registers with `start="now"` on its first pass,
+  so transitions that predate it are acknowledged as history and never
+  delivered. A pass reads pages of four owed rows until the traversal wraps or
+  `LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS` (default 10) have passed.
+  The budget is checked between pages, so a pass can run past it by up to one
+  page of four deliveries. Each delivery is allowed the prepare timeout plus the
+  handler timeout (10 s each), and one more handler timeout when a synchronous
+  hook returns an awaitable; startup waits for that overrun too.
+  `TerminalReconciler` itself defaults to `start="all"` and a zero budget, one
+  page per pass. The push path records nothing, so a transition whose push ran
+  the notifier is replayed by the next pass as well, which is why Studio ships
+  the pass off. Delivery is at least once, so an
+  effect can be repeated after a crash or by concurrent reconcilers. Deduplicate
+  standalone v1 deliveries by `event_id`, the transition ID. Explicit success
+  or not-applicable outcomes are acknowledged; failures remain pending. An exec
+  adapter succeeds on exit 0, while nonzero exit, timeout and spawn failure do
+  not. A Python hook succeeds on normal return other than explicit `False`;
+  exceptions, timeouts and `False` fail. Disabled or filtered notifications are
+  not applicable and are counted and acknowledged.
+
+  A rotating in-memory keyset and bounded best-effort backoff revisit the durable
+  anti-join, with retries and attempt counts lost on restart or eviction. A
+  traversal ends at cursor wrap: a due row is attempted when reached, while a
+  cooling row waits until the first traversal after its backoff expires. With a
+  running process and finite backlog, each pending eligible row is attempted
+  again within the one-hour backoff cap plus one traversal, as long as its
+  consumer is not saturated: a consumer whose abandoned workers stay at the
+  bound attempts nothing until one ends, and a worker that never ends holds its
+  slot until the process exits. There is no guarantee of progress under
+  unbounded arrivals. The cursor is not a durable watermark.
+  A timed-out synchronous hook is not
+  immediately acknowledged; while its abandoned worker runs, another local
+  attempt for the same key is suppressed. Late successful completion is
+  acknowledged and abandoned workers are bounded per consumer by the batch size.
+  Replacing the SQLite store file while the daemon runs is unsupported; late
+  acknowledgements may be lost or refused.
+  For a private in-memory SQLite store whose owning event loop has stopped, a
+  later successful result is retained in process and acknowledged on that store's
+  next pass on the original loop; its connection is not reused across event loops.
+  Immediately before each handler call, the reconciler rechecks that the consumer
+  is active. Retirement stops attempts whose check occurs after it commits; it
+  does not cancel attempts that have already passed the check. No lock is held
+  over the handler and there is no exclusive delivery claim.
+
+  At delivery time, a session transition uses that session and a play uses its
+  linked session. For invocation and schedule-run transitions, the distinct
+  non-NULL projects of linked sessions must contain exactly one project; zero
+  or several means no session context. Without context, the settings consumer
+  acknowledges the event as not applicable and counts no-session and ambiguous
+  project cases separately. The project decides only that classification: replay
+  always loads global settings (`load_settings(include_project=False)`), never a
+  project's settings file and never the daemon's working directory, so a
+  repository cannot name a command the daemon runs. A notifier configured only in
+  project settings is push-only: a missed push for it is replayed through the
+  global notifier when one is configured, and is otherwise acknowledged as not
+  applicable. Kind and ID filters apply after resolution. Per-run `--notify` overrides and the no-session
+  fallback remain push-only; persisting notification intent for later replay is
+  a follow-up. Compatibility-mode stores are not migrated, and
+  their consumer APIs refuse with a typed error. On a foreign store without the
+  eligibility column the push decision is computed in memory and remains
+  best-effort. Consumer APIs also refuse an unmigrated read-only store with its
+  schema version in the error.
+
+  Schema version 6 classifies existing history once. Terminal execution rows
+  whose previous status is NULL remain unclassified and are excluded from
+  replay, because old reaper transitions cannot be distinguished from initial
+  history. The migration records its initial NULL count; the current count minus
+  that baseline reports NULL rows written after migration exactly only while no
+  transition rows have been deleted. After upgrading, restart every lionagi
+  process that opens the store, including Studio daemons, schedulers and
+  long-running CLI processes: an older already-open process can otherwise write
+  new unclassified rows that are not replayed.
 - `schema_meta.py`'s `session_controls` table — apply/stamp ordering is
   verb-classed: `pause`/`resume` are idempotent (apply, then stamp — safe to
   re-apply on a poller crash); `message` is not (stamp `'applying'`, then

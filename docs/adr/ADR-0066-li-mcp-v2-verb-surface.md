@@ -452,7 +452,7 @@ so delegation adds no new dependency.
 
 **Known gap, inherited deliberately:** show-level reaping is deferred — `li kill <show_id>`
 marks the show row terminal and does not reap its plays or their workers
-(`_do_kill`, `cli/kill.py:1142-1151`). The MCP surface therefore does **not** expose a show-level kill. A
+(`_do_kill`, `cli/kill.py:1208-1217`). The MCP surface therefore does **not** expose a show-level kill. A
 verb that silently half-stops a tree is worse than no verb; if a show-level operation is
 added later, it must either recurse properly or fail explicitly.
 
