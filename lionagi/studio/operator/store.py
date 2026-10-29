@@ -1992,7 +1992,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT status FROM studio_operator_turns "
+                    "SELECT status, cancel_requested_at FROM studio_operator_turns "
                     "WHERE request_id=? AND conversation_id=?",
                     (request_id, conversation_id),
                 )
@@ -2001,7 +2001,8 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator request '{request_id}' not found")
             terminal = row["status"] in {"completed", "failed", "cancelled"}
-            if not terminal:
+            requested = not terminal and row["cancel_requested_at"] is None
+            if requested:
                 await db.execute(
                     "UPDATE studio_operator_turns SET cancel_requested_at=COALESCE("
                     "cancel_requested_at, ?) WHERE request_id=?",
@@ -2012,7 +2013,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             "conversationId": conversation_id,
             "requestId": request_id,
             "status": row["status"],
-            "cancelRequested": not terminal,
+            "cancelRequested": requested,
         }
 
     async def create_proposal(
