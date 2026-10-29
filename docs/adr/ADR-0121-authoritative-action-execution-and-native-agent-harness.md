@@ -902,9 +902,13 @@ against, so the two can never name different servers. An inline transport config
 the entry of the selected
 configuration that is equal to it once both drop their top-level keys beginning with `_`; a
 nested key beginning with `_` is part of the transport and is compared. The top-level keys are
-lionagi's own annotations on a configuration, which the connection pool strips before it builds
-a client (`lionagi/service/connections/mcp_wrapper.py:2042-2044`). The one such key read on the
-call path, `_original_tool_name`, picks the tool to call on the server already chosen, never
+lionagi's own annotations on a configuration, and the connection pool drops every one of them,
+whatever its name, both when it builds a client and when it fingerprints a transport:
+`config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}`
+(`lionagi/service/connections/mcp_wrapper.py:2044`) and
+`material = {k: v for k, v in config.items() if not k.startswith("_")}` (`:1595`).
+The one such key read on the call path, `_original_tool_name`, picks the tool to call on the
+server already chosen, never
 the transport (`lionagi/protocols/action/manager.py:154`, `mcp_wrapper.py:2042`), so they are no
 part of the transport. Equal means that the two give the same text under `json.dumps` with
 `sort_keys=True` and its default separators and ASCII escaping, as the pool serializes a transport
