@@ -278,6 +278,13 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
     "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
 )
 
+_TERMINAL_DELIVERY_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_status_transitions_unclassified "
+    "ON status_transitions(id) WHERE delivery_eligible IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
+    "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
+)
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
@@ -307,6 +314,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_invocations_reaper ON invocations(status, started_at, id)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
+        *_TERMINAL_DELIVERY_INDEXES,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
@@ -336,6 +344,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_invocations_reaper ON invocations(status, started_at, id)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
+        *_TERMINAL_DELIVERY_INDEXES,
     ),
 }
 

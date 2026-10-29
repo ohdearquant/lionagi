@@ -75,6 +75,13 @@ async def assert_migration(db: StateDB) -> None:
         assert isinstance(marker["classified_at"], (float, int))
         assert marker["initial_null_count"] == 2
         assert await conn.run_sync(lambda c: inspect(c).has_table("terminal_consumers"))
+        indexes = await conn.run_sync(
+            lambda c: {item["name"] for item in inspect(c).get_indexes("status_transitions")}
+        )
+        assert {
+            "idx_status_transitions_unclassified",
+            "idx_status_transitions_eligible_order",
+        } <= indexes
     assert actual == {i: expected for i, _, _, _, expected in ROWS}
 
     # Simulate an old process committing after migration with a timestamp from
@@ -218,6 +225,63 @@ async def test_fresh_database_has_zero_baseline(tmp_path):
             assert await conn.run_sync(lambda c: inspect(c).has_table("terminal_consumers"))
     finally:
         await db.close()
+
+
+async def test_existing_v6_store_reconciles_terminal_indexes(tmp_path):
+    db = StateDB(path=tmp_path / "state.db")
+    try:
+        await db.open()
+        async with db._tx() as conn:
+            await conn.execute(text("DROP INDEX idx_status_transitions_unclassified"))
+            await conn.execute(text("DROP INDEX idx_status_transitions_eligible_order"))
+        await db.close()
+        readonly = StateDB(path=tmp_path / "state.db", readonly=True)
+        try:
+            await readonly.open()
+            async with readonly._read() as conn:
+                indexes = await conn.run_sync(
+                    lambda c: {
+                        item["name"] for item in inspect(c).get_indexes("status_transitions")
+                    }
+                )
+            assert "idx_status_transitions_unclassified" not in indexes
+            assert "idx_status_transitions_eligible_order" not in indexes
+        finally:
+            await readonly.close()
+        await db.open()
+        async with db._read() as conn:
+            indexes = await conn.run_sync(
+                lambda c: {item["name"] for item in inspect(c).get_indexes("status_transitions")}
+            )
+        assert {
+            "idx_status_transitions_unclassified",
+            "idx_status_transitions_eligible_order",
+        } <= indexes
+    finally:
+        await db.close()
+
+
+async def test_terminal_index_definitions_on_fresh_sqlite_store(tmp_path):
+    path = tmp_path / "state.db"
+    db = StateDB(path=path)
+    try:
+        await db.open()
+    finally:
+        await db.close()
+    with sqlite3.connect(path) as conn:
+        for name, columns, predicate in (
+            ("idx_status_transitions_unclassified", ["id"], "DELIVERY_ELIGIBLE IS NULL"),
+            (
+                "idx_status_transitions_eligible_order",
+                ["created_at", "id"],
+                "DELIVERY_ELIGIBLE IS TRUE",
+            ),
+        ):
+            definition = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)
+            ).fetchone()[0]
+            assert predicate in definition.upper()
+            assert [row[2] for row in conn.execute(f"PRAGMA index_info('{name}')")] == columns
 
 
 async def test_failed_classification_rolls_back_column_marker_and_version(tmp_path, monkeypatch):

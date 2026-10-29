@@ -797,6 +797,10 @@ CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
   ON status_transitions(reason_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_status_transitions_created
   ON status_transitions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_transitions_unclassified
+  ON status_transitions(id) WHERE delivery_eligible IS NULL;
+CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order
+  ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE;
 
 -- ── Terminal deliveries (run-terminal callbacks) ────────────────────────────
 -- Durable reconciliation-consumer acknowledgment ledger for post-commit

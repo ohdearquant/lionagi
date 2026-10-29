@@ -918,6 +918,19 @@ Index(
     status_transitions.c.created_at,
 )
 Index("idx_status_transitions_created", status_transitions.c.created_at)
+Index(
+    "idx_status_transitions_unclassified",
+    status_transitions.c.id,
+    sqlite_where=text("delivery_eligible IS NULL"),
+    postgresql_where=text("delivery_eligible IS NULL"),
+)
+Index(
+    "idx_status_transitions_eligible_order",
+    status_transitions.c.created_at,
+    status_transitions.c.id,
+    sqlite_where=text("delivery_eligible IS TRUE"),
+    postgresql_where=text("delivery_eligible IS TRUE"),
+)
 
 # terminal_consumers
 
