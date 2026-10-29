@@ -1135,6 +1135,9 @@ def apply_forwarded_mcp_servers(
     # Folded like the capability check above: a spelling that resolves to the
     # Claude CLI must not fall through to the codex override form.
     if _canonical_provider(provider) in _CLAUDE_PROVIDER_NAMES:
+        if exclusive and "mcp_config" in kwargs:
+            kwargs.pop("mcp_config")
+            logger.warning("Dropping mcp_config because an exclusive MCP server set was supplied")
         kwargs["mcp_servers"] = servers
         if exclusive:
             # The handed set alone is merged with whatever the CLI discovers
