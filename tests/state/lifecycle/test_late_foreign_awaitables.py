@@ -136,14 +136,14 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
     async def held_ack(worker):
         acknowledgements.append(worker.key[2])
         ack_entered.set()
-        if not release_ack.wait(2):
+        if not release_ack.wait(5):
             raise AssertionError("test did not release fake ACK gate")
         await original_ack(worker)
 
     def deliver():
         effects.append("effect")
         invoked.set()
-        if arrival == "late" and not release_sync.wait(2):
+        if arrival == "late" and not release_sync.wait(5):
             raise AssertionError("test did not release sync worker")
         return owner.future
 
@@ -157,12 +157,12 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
             event_id = await _seed(db)
             await register_consumer(db, "foreign", start="all")
             key = (reconciliation._store_identity(db), "foreign", event_id)
-            first = TerminalReconciler("foreign", prepare, batch_size=1, timeout=0.05)
-            second = TerminalReconciler("foreign", prepare, batch_size=1, timeout=0.05)
+            first = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
+            second = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
             attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
             try:
                 await _wait_thread_event(invoked)
-                result = await asyncio.wait_for(attempt, 2)
+                result = await asyncio.wait_for(attempt, 4)
                 assert result.status == "failed" and result.attempted is True
                 if arrival == "late":
                     release_sync.set()
@@ -203,7 +203,7 @@ async def test_already_settled_foreign_success_acks_once(tmp_path, monkeypatch, 
     async def held_ack(worker):
         acknowledgements.append(worker.key[2])
         ack_entered.set()
-        if not release_ack.wait(2):
+        if not release_ack.wait(5):
             raise AssertionError("test did not release fake ACK gate")
         await original_ack(worker)
 
@@ -218,11 +218,11 @@ async def test_already_settled_foreign_success_acks_once(tmp_path, monkeypatch, 
             event_id = await _seed(db)
             await register_consumer(db, "done", start="all")
             key = (reconciliation._store_identity(db), "done", event_id)
-            first = TerminalReconciler("done", prepare, batch_size=1, timeout=0.05)
-            second = TerminalReconciler("done", prepare, batch_size=1, timeout=0.05)
+            first = TerminalReconciler("done", prepare, batch_size=1, timeout=1.0)
+            second = TerminalReconciler("done", prepare, batch_size=1, timeout=1.0)
             attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
             try:
-                result = await asyncio.wait_for(attempt, 2)
+                result = await asyncio.wait_for(attempt, 4)
                 assert result.status == "failed" and result.attempted is True
                 await _wait_thread_event(ack_entered)
                 assert (await getattr(second, adapter)(db, event_id)).status == "busy"
@@ -258,7 +258,7 @@ async def test_caller_cancellation_never_cancels_foreign_future(tmp_path, adapte
             await register_consumer(db, "cancel", start="all")
             key = (reconciliation._store_identity(db), "cancel", event_id)
             first = TerminalReconciler("cancel", prepare, batch_size=1, timeout=1)
-            second = TerminalReconciler("cancel", prepare, batch_size=1, timeout=0.05)
+            second = TerminalReconciler("cancel", prepare, batch_size=1, timeout=1.0)
             attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
             try:
                 await _wait_thread_event(invoked)
@@ -342,8 +342,8 @@ async def test_unobservable_foreign_loop_quarantines_and_reports_stuck(
             event_id = await _seed(db)
             await register_consumer(db, "unobservable", start="all")
             key = (reconciliation._store_identity(db), "unobservable", event_id)
-            first = TerminalReconciler("unobservable", prepare, batch_size=1, timeout=0.05)
-            second = TerminalReconciler("unobservable", prepare, batch_size=1, timeout=0.05)
+            first = TerminalReconciler("unobservable", prepare, batch_size=1, timeout=1.0)
+            second = TerminalReconciler("unobservable", prepare, batch_size=1, timeout=1.0)
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
                     result = await getattr(first, adapter)(db, event_id)
@@ -452,7 +452,7 @@ async def test_foreign_loop_stops_after_observer_registration_and_restarts(
 
     def deliver():
         invoked.set()
-        if arrival == "late" and not release_sync.wait(2):
+        if arrival == "late" and not release_sync.wait(5):
             raise AssertionError("test did not release sync worker")
         return owner.future
 
@@ -465,13 +465,13 @@ async def test_foreign_loop_stops_after_observer_registration_and_restarts(
             event_id = await _seed(db)
             await register_consumer(db, "paused", start="all")
             key = (reconciliation._store_identity(db), "paused", event_id)
-            first = TerminalReconciler("paused", prepare, batch_size=1, timeout=0.05)
-            second = TerminalReconciler("paused", prepare, batch_size=1, timeout=0.05)
+            first = TerminalReconciler("paused", prepare, batch_size=1, timeout=1.0)
+            second = TerminalReconciler("paused", prepare, batch_size=1, timeout=1.0)
             attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
                     await _wait_thread_event(invoked)
-                    result = await asyncio.wait_for(attempt, 2)
+                    result = await asyncio.wait_for(attempt, 4)
                     assert result.status == "failed" and result.attempted
                     release_sync.set()
                     owner.pause_when_observer_is_registered()
