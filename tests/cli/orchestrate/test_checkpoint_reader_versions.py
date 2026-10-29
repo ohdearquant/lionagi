@@ -98,6 +98,24 @@ def test_legacy_missing_version_and_nested_duplicate_version_remain_accepted(tmp
     assert load_checkpoint(path) == {"nested": {"version": 2}, "prompt": "ok"}
 
 
+def test_nested_duplicate_version_does_not_make_the_root_ambiguous(tmp_path):
+    path = _write_fixture(
+        tmp_path,
+        '{"version":2,"nested":{"version":3,"version":2},"items":[{"version":4,"version":1}]}',
+    )
+    assert load_checkpoint(path) == {
+        "version": 2,
+        "nested": {"version": 2},
+        "items": [{"version": 1}],
+    }
+
+
+def test_nested_unambiguous_version_does_not_hide_ambiguous_root(tmp_path):
+    path = _write_fixture(tmp_path, '{"version":3,"vers\\u0069on":2,"nested":{"version":1}}')
+    with pytest.raises(FlowResumeError, match="ambiguous"):
+        load_checkpoint(path)
+
+
 def test_malformed_json_remains_a_decode_error(tmp_path):
     path = _write_fixture(tmp_path, '{"version":2,')
     with pytest.raises(json.JSONDecodeError):
