@@ -22,6 +22,13 @@ Stateless event-driven engine base.
 | `judge_role` | `"critic"` | Casts role for the judge agent. |
 | `cancel_timeout_s` | `30.0` | Seconds to wait for spawned tasks to settle after cancellation. Tasks still pending at the deadline are warned about and abandoned after one final cancellation request. CLI process-group cleanup starts immediately after task cancellation and has its own bounded TERM-to-KILL grace. |
 
+When a judge denies an expansion, an ordinary failure of the `gated` event callback
+is logged by type with its message redacted, and the denial still stands. A
+containment refusal or an agent-configuration error in the callback's exception
+chain is raised. If the chain is unreadable or exceeds 100 distinct nodes or
+100 exception-group members, the original callback exception is raised.
+Interrupts and cancellations are not suppressed.
+
 Emission events carry these fields. `emission_repair` has `repair_index`, the number of repair prompts sent to the leg so far (its operate call number is `repair_index + 1`), and `emission_recovered` has `operate_call`, the operate call number within the fallback leg that produced the emission. `emission_missing` has `attempts`, the operate calls made across both legs, a call cut short by `fallback_deadline_s` included. `emission_fallback_timeout` has `limit_s`, the deadline that ended the fallback leg. If the emission had already arrived when that deadline fired, `emission_recovered` follows the timeout event. `emission_repair` and `emission_recovered` also keep `attempt`, with the same value as `repair_index` and `operate_call`.
 
 On budget exhaustion `Engine.run()` calls `_partial_export()` (override in subclasses to return a partial result) instead of raising. Caller-initiated cancellation still propagates as `CancelledError`.

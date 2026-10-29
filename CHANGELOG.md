@@ -39,6 +39,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   with the table's size. On SQLite the same transaction holds the database's
   single write lock for that time, so every other writer waits on it too.
 
+- OpenAI chat prompt-cache placement keeps the system and tool instructions in
+  a stable prefix. With placement on, the per-request token-usage estimate is
+  no longer appended to the newest message, since it changed cached bytes.
+
 - With `prompt_caching` on, an Anthropic request places its cache marks from the entries the
   branch's earlier requests wrote, instead of at fixed places. The branch keeps one row per entry in
   `metadata["prompt_cache"]`, keyed by a prefix certificate over the request through the marked
@@ -94,6 +98,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `ReviewEngine` with `prompt_caching=True` sends the artifact once, in a turn of
+  its own, before the dimension reviewers start; each dimension's request
+  begins with a copy of that turn and adds its own task after it, so the
+  dimensions read one cached copy of the artifact instead of each writing it.
+  A dimension's cognitive mode now follows its task in that request rather than
+  sitting in the system prompt, so every dimension shares one system prompt.
+  Without the cache, each dimension still sends one message, now with the
+  artifact before the task. If the artifact turn fails or its reply is not the
+  requested word, each dimension sends the artifact with its own task, and the
+  run reports `artifact_turn_failed` or `artifact_turn_unused`.
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
@@ -215,6 +229,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   drop their `synonyms_removed_after` field.
 
 ### Fixed
+
+- `is_coro_func` recognizes callable instances whose class defines an async
+  `__call__`, including partials of those instances. Synchronous `add_message()`
+  now rejects such message hooks; use `a_add_message()` to await them.
 
 - `li team receive` reads a stored message whose recipient is a single name written as a
   string, not a list, as that whole name, as the other team commands already did. It used
