@@ -15,7 +15,7 @@ from lionagi.session.signal import GateDenied
 
 class PathArguments(BaseModel):
     path: str
-    mode: str = "read"
+    mode: str = "write"
 
 
 class ModelRequest(BaseModel):
@@ -27,9 +27,12 @@ class ModelRequest(BaseModel):
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("model_request", [False, True], ids=["dict-request", "model-request"])
 @pytest.mark.parametrize("permitted", [False, True], ids=["denied", "allowed"])
-async def test_gate_authorizes_actual_model_arguments(is_async, model_request, permitted):
+async def test_gate_authorizes_actual_model_arguments(
+    is_async, model_request, permitted, monkeypatch
+):
     calls = []
     seen = []
+    manager_arguments = []
     path = "/safe/report" if permitted else "/restricted/secret"
 
     def read_path(path: str, mode: str = "read") -> str:
@@ -48,6 +51,14 @@ async def test_gate_authorizes_actual_model_arguments(is_async, model_request, p
 
     branch = Branch()
     branch.register_tools([read_path])
+    manager_type = type(branch._action_manager)
+    original_invoke = manager_type.invoke
+
+    async def record_invoke(manager, request):
+        manager_arguments.append(request["arguments"])
+        return await original_invoke(manager, request)
+
+    monkeypatch.setattr(manager_type, "invoke", record_invoke)
     session = Session(default_branch=branch)
     session.gate(async_gate if is_async else gate)
     args = PathArguments(path=path)
@@ -62,6 +73,9 @@ async def test_gate_authorizes_actual_model_arguments(is_async, model_request, p
 
     assert len(seen) == 1
     assert seen[0].arguments == {"path": path}
+    assert manager_arguments == ([{"path": path}] if permitted else [])
+    if permitted:
+        assert manager_arguments[0] is seen[0].arguments
     assert calls == ([(path, "read")] if permitted else [])
     assert result.output == (
         path if permitted else {"error": "denied by governance gate", "function": "read_path"}
@@ -70,3 +84,62 @@ async def test_gate_authorizes_actual_model_arguments(is_async, model_request, p
     assert len(denials) == (0 if permitted else 1)
     if denials:
         assert denials[0].data is seen[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("model_request", [False, True], ids=["dict-request", "model-request"])
+async def test_nested_model_dump_cannot_bypass_restricted_path_gate(is_async, model_request):
+    class OuterArguments(BaseModel):
+        def model_dump(self, *args, **kwargs):
+            return PathArguments(path="/restricted/secret")
+
+    class OuterRequest(BaseModel):
+        function: str
+        arguments: OuterArguments
+
+    tool_calls, gate_calls = [], []
+
+    def read_path(path: str, mode: str = "read") -> str:
+        """Record the exact arguments reaching the tool."""
+        tool_calls.append((path, mode))
+        return path
+
+    def gate(payload):
+        if not isinstance(payload, ToolInvocation):
+            return True
+        gate_calls.append(payload)
+        # A policy that rejects this particular restricted path can appear to
+        # allow an empty view even though the tool later receives the path.
+        return payload.arguments.get("path") != "/restricted/secret"
+
+    async def async_gate(payload):
+        return gate(payload)
+
+    branch = Branch()
+    branch.register_tools([read_path])
+    session = Session(default_branch=branch)
+    session.gate(async_gate if is_async else gate)
+    arguments = OuterArguments()
+    request = (
+        OuterRequest(function="read_path", arguments=arguments)
+        if model_request
+        else {"function": "read_path", "arguments": arguments}
+    )
+
+    # Rejecting an invalid model dump before authorization is also fail-closed;
+    # an implementation that admits the request must provide the true arguments
+    # to the policy and return its ordinary governance denial.
+    try:
+        result = await _act(branch, request)
+    except (TypeError, ValueError):
+        result = None
+    finally:
+        await branch.drain_signals()
+
+    assert tool_calls == []
+    if result is not None:
+        assert len(gate_calls) == 1
+        assert gate_calls[0].arguments["path"] == "/restricted/secret"
+        assert result.output == {"error": "denied by governance gate", "function": "read_path"}
+        assert [item.data for item in session.observer.by_type(GateDenied)] == gate_calls

@@ -5,7 +5,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from lionagi._errors import ConfigurationError
 from lionagi.ln import AlcallParams
@@ -49,11 +49,6 @@ async def _act(
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
 
-    if isinstance(_request["arguments"], BaseModel):
-        # Authorize the same values the action manager will invoke, without
-        # replacing the arguments in a caller-owned request dictionary.
-        _request = {**_request, "arguments": _request["arguments"].model_dump(exclude_unset=True)}
-
     if _request["function"] is None or (
         isinstance(_request["function"], str) and not _request["function"].strip()
     ):
@@ -81,12 +76,43 @@ async def _act(
             raise ValueError(error)
         return ActionResponseModel(function="", arguments=_args, output={"error": error})
 
+    normalization_error = None
+    if isinstance(_request["arguments"], BaseModel):
+        # FunctionCalling uses the same dump. Unset model fields reach neither
+        # the gate nor the manager; the tool's defaults apply on invocation.
+        try:
+            arguments = _request["arguments"].model_dump(exclude_unset=True)
+            if not isinstance(arguments, dict):
+                raise TypeError("model arguments must serialize to a dictionary")
+        except Exception as e:
+            # Match FunctionCalling's validation error without retrying the
+            # serializer before authorization; error recording keeps its
+            # existing behavior and may serialize the original request again.
+            if isinstance(e, (ValueError, AssertionError)):
+                normalization_error = ValidationError.from_exception_data(
+                    "FunctionCalling",
+                    [
+                        {
+                            "type": "assertion_error"
+                            if isinstance(e, AssertionError)
+                            else "value_error",
+                            "loc": ("arguments",),
+                            "input": _request["arguments"],
+                            "ctx": {"error": e},
+                        }
+                    ],
+                )
+            else:
+                normalization_error = e
+        else:
+            _request = {**_request, "arguments": arguments}
+
     # ADR-0047: governance gate — denied calls surface as tool results (not exceptions) so ReAct loops can adapt.
     from lionagi.session.control import ToolInvocation
 
     _call_id = str(uuid.uuid4())
     _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
-    if not await branch.authorize(
+    if normalization_error is None and not await branch.authorize(
         ToolInvocation(function=_request["function"], arguments=_args, branch_id=str(branch.id))
     ):
         record_guard_refusal(call_id=_call_id)
@@ -119,6 +145,8 @@ async def _act(
 
     func_call = None
     try:
+        if normalization_error is not None:
+            raise normalization_error
         if verbose_action:
             args_ = str(_request["arguments"])
             args_ = args_[:50] + "..." if len(args_) > 50 else args_
