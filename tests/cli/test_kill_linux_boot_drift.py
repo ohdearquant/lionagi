@@ -631,6 +631,35 @@ async def test_recorded_worker_cleanup_distinguishes_dead_and_live_boot_disagree
     assert bool(unhandled) is alive
 
 
+@pytest.mark.parametrize("pid", [float("inf"), 0, "invalid"], ids=["inf", "zero", "non-int"])
+@pytest.mark.asyncio
+async def test_recorded_workers_invalid_pid_and_boot_disagreement_keep_legacy_refusal(
+    monkeypatch, pid
+):
+    from tests.cli.test_kill_recorded_workers import _CleanupDB
+
+    db = _CleanupDB(status="running")
+    db.session["node_metadata"] = {"pid": pid, "pid_boot_time": 900.0}
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
+    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: pytest.fail("unexpected pid probe"))
+    monkeypatch.setattr(
+        kill_mod,
+        "_runner_process_create_time",
+        lambda _pid: pytest.fail("unexpected runner identity probe"),
+    )
+    monkeypatch.setattr(kill_mod.os, "kill", lambda *args: pytest.fail("unexpected signal"))
+    monkeypatch.setattr(kill_mod.os, "killpg", lambda *args: pytest.fail("unexpected group signal"))
+    warnings = []
+    monkeypatch.setattr(kill_mod, "warn", warnings.append)
+    result = await kill_mod._try_recorded_worker_cleanup(
+        db, db.session, user_reason="", grace_seconds=0
+    )
+    assert result is None
+    assert db.cancelled == [] and db.settled == []
+    assert not any("could not be confirmed stopped" in message for message in warnings)
+
+
 def test_unset_magicmock_linux_flag_keeps_non_linux_semantics(monkeypatch):
     fake_psutil = MagicMock()
     fake_psutil.boot_time.return_value = 1000.0
