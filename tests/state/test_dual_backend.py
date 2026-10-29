@@ -2164,7 +2164,7 @@ async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
 # async driver connections must not be shared across unrelated pytest loops.
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="function")
 async def isolated_consumer_postgres(pg_url, monkeypatch):
     from sqlalchemy import event, text
 
@@ -2276,10 +2276,12 @@ async def test_sqlite_consumer_replay_contract(sqlite_db):
     await _consumer_replay_contract(sqlite_db)
 
 
+@pytest.mark.asyncio(loop_scope="function")
 async def test_postgres_consumer_replay_contract(isolated_consumer_postgres):
     await _consumer_replay_contract(isolated_consumer_postgres)
 
 
+@pytest.mark.asyncio(loop_scope="function")
 async def test_postgres_registration_now_excludes_an_uncommitted_older_transition(
     isolated_consumer_postgres,
 ):
@@ -2316,6 +2318,7 @@ async def test_postgres_registration_now_excludes_an_uncommitted_older_transitio
 
 
 @pytest.mark.parametrize("starts", [("now", "now"), ("all", "all"), ("now", "all")])
+@pytest.mark.asyncio(loop_scope="function")
 async def test_postgres_concurrent_same_consumer_registration_and_ack(
     isolated_consumer_postgres, monkeypatch, starts
 ):
