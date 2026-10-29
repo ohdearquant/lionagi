@@ -292,6 +292,7 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
 
     # Mock psutil with a process whose cmdline does NOT contain "lionagi".
     fake_psutil = MagicMock()
+    fake_psutil.LINUX = False
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "unrelated_script.py"]
     _script_create_time(fake_proc, 100.0)
@@ -513,6 +514,7 @@ def _mock_psutil(
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
     fake_psutil = MagicMock()
+    fake_psutil.LINUX = False
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = cmdline
     fake_proc.environ.return_value = environ or {}
@@ -1340,6 +1342,7 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
 
     fake_psutil = MagicMock()
+    fake_psutil.LINUX = False
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
     fake_proc.environ.return_value = {}
@@ -1387,6 +1390,7 @@ async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
 
     fake_psutil = MagicMock()
+    fake_psutil.LINUX = False
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
     fake_proc.environ.return_value = {}
@@ -2575,6 +2579,7 @@ async def test_kill_refuses_a_pid_recorded_before_this_machine_rebooted(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Same host, earlier boot: the pid numbers were reissued from scratch."""
+    monkeypatch.setattr(psutil, "LINUX", False)
     signalled: list[int] = []
 
     def _fake_terminate(pid, **kw):
@@ -3022,9 +3027,12 @@ def test_every_refusal_reason_is_a_not_stopped_signal():
     assert _NOT_STOPPED_SIGNALS == frozenset(_REFUSED_SIGNAL_REASONS)
     assert _NOT_STOPPED_SIGNALS == {
         "identity_mismatch",
+        "identity_unverifiable",
+        "identity_unverifiable_after_sigterm",
         "in_process",
         "host_mismatch",
         "boot_mismatch",
+        "boot_unverifiable",
         "foreign_mode",
         "permission_denied",
         "no_recorded_process",
