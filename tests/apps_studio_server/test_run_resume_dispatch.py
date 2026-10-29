@@ -485,12 +485,24 @@ def test_unsupported_checkpoint_version_is_refused_by_preflight_and_launch(
     preflight = client.get(f"/api/runs/{session_id}/resume")
     assert preflight.status_code == 200, preflight.text
     assert preflight.json()["resumable"] is False
-    assert preflight.json()["reason"] == "unsupported_checkpoint_version"
+    expected_reason = (
+        "invalid_checkpoint"
+        if version_members == '"version":3'
+        else "unsupported_checkpoint_version"
+    )
+    assert preflight.json()["reason"] == expected_reason
+    if version_members == '"version":3':
+        report = preflight.json()["checkpoint_recovery"]
+        assert report["source_version"] == 3
+        assert report["disposition"] == "refused"
+        assert report["problem"]["code"] == "invalid_record"
     assert "private payload" not in preflight.text
 
     response = client.post(f"/api/runs/{session_id}/resume", json={})
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["reason"] == "unsupported_checkpoint_version"
+    assert response.json()["detail"]["reason"] == expected_reason
+    if version_members == '"version":3':
+        assert response.json()["detail"]["checkpoint_recovery"] == report
     assert "private payload" not in response.text
     assert launched == []
 

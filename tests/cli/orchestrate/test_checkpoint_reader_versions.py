@@ -58,11 +58,17 @@ def test_loader_preserves_legacy_base_with_an_unrelated_journal(tmp_path, versio
     assert load_checkpoint(path) == base
 
 
-@pytest.mark.parametrize("version", [3, 999])
-def test_loader_rejects_unsupported_base_with_journal(tmp_path, version):
-    path = _write_fixture(tmp_path, json.dumps(_base(version)))
+def test_loader_rejects_unsupported_base_with_journal(tmp_path):
+    path = _write_fixture(tmp_path, json.dumps(_base(999)))
     with pytest.raises(FlowResumeError, match="not supported"):
         load_checkpoint(path)
+
+
+def test_loader_refuses_malformed_v3_journal(tmp_path):
+    path = _write_fixture(tmp_path, json.dumps(_base(3)))
+    with pytest.raises(FlowResumeError) as exc:
+        load_checkpoint(path)
+    assert exc.value.checkpoint_recovery["disposition"] == "refused"
 
 
 def test_writer_version_uses_shared_reader_contract():
@@ -245,7 +251,10 @@ async def test_mcp_detail_reports_unsupported_checkpoint(tmp_path, monkeypatch, 
     monkeypatch.setattr(state_db, "StateDB", FakeStateDB)
     monkeypatch.setattr(sessions_svc, "get_session", get_session)
     detail = await build_run_detail(_RUN_ID)
-    if version != 2:
+    if version == 3:
+        assert detail["detail_unavailable"] == "checkpoint_recovery_refused"
+        assert detail["checkpoint_recovery"]["disposition"] == "refused"
+    elif version != 2:
         assert detail == {"detail_unavailable": "unsupported_checkpoint_version"}
     else:
         assert {node["id"]: node["spawned_by"] for node in detail["nodes"]} == {

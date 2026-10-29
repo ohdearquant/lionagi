@@ -65,9 +65,12 @@ class RunResumeCheckpointError(RuntimeError):
     "resume was attempted and failed".
     """
 
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(
+        self, reason: str, message: str, checkpoint_recovery: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.checkpoint_recovery = checkpoint_recovery
 
 
 class RunResumeRequest(BaseModel):
@@ -398,17 +401,34 @@ async def _resolve_flow_checkpoint(target: str) -> tuple[Any, dict[str, Any]]:
     checkpoint" answer and a CLI "no checkpoint" answer can never disagree
     about the same target. Raises RunResumeCheckpointError, never launches.
     """
+    from lionagi._checkpoint_v3_reader import CheckpointRecoveryError
     from lionagi.cli._util import AmbiguousIdError
     from lionagi.cli.orchestrate._checkpoint import (
+        FlowCheckpointRecoveryError,
         FlowResumeError,
+        FlowV3WriterUnavailableError,
         UnsupportedFlowCheckpointVersionError,
+        require_checkpoint_writer,
         resolve_checkpoint_target,
     )
 
     try:
         run_dir, checkpoint = await resolve_checkpoint_target(target)
+        require_checkpoint_writer(checkpoint)
+    except FlowV3WriterUnavailableError as exc:
+        raise RunResumeCheckpointError(exc.reason, str(exc), exc.checkpoint_recovery) from exc
     except UnsupportedFlowCheckpointVersionError as exc:
-        raise RunResumeCheckpointError("unsupported_checkpoint_version", str(exc)) from exc
+        raise RunResumeCheckpointError(
+            "unsupported_checkpoint_version", str(exc), getattr(exc, "checkpoint_recovery", None)
+        ) from exc
+    except FlowCheckpointRecoveryError as exc:
+        raise RunResumeCheckpointError(
+            "invalid_checkpoint", str(exc), exc.checkpoint_recovery
+        ) from exc
+    except CheckpointRecoveryError as exc:
+        raise RunResumeCheckpointError(
+            "invalid_checkpoint", str(exc), exc.checkpoint_recovery
+        ) from exc
     except FlowResumeError as exc:
         message = str(exc)
         if "No checkpoint.json found" in message:
@@ -441,6 +461,7 @@ async def _resolve_flow_checkpoint(target: str) -> tuple[Any, dict[str, Any]]:
         raise RunResumeCheckpointError(
             "empty_checkpoint",
             f"Checkpoint for {target!r} has an empty plan — nothing to resume.",
+            getattr(checkpoint, "checkpoint_recovery", None),
         )
     return run_dir, checkpoint
 
@@ -494,7 +515,8 @@ async def _resume_flow_run(
     # the executable lookup so the persisted checkpoint fact — which the UI
     # can determine independent of the daemon's own launch environment —
     # always wins over a launch-environment error like a missing `li`.
-    run_dir, _checkpoint = await _resolve_flow_checkpoint(run_id)
+    run_dir, checkpoint = await _resolve_flow_checkpoint(run_id)
+    checkpoint_recovery = getattr(checkpoint, "checkpoint_recovery", None)
 
     executable_prefix, resolve_error = _subprocess.resolve_li_executable()
     if executable_prefix is None:
@@ -513,12 +535,15 @@ async def _resume_flow_run(
                 metadata.get("allow_degraded_context") == allow_degraded_context
                 and bool(metadata.get("retry_failed")) == retry_failed
             ):
-                return {
+                result = {
                     "run_id": run_id,
                     "invocation_kind": invocation_kind,
                     "invocation_id": active["id"],
                     "checkpoint_run_id": run_dir.run_id,
                 }
+                if metadata.get("checkpoint_recovery") is not None:
+                    result["checkpoint_recovery"] = metadata["checkpoint_recovery"]
+                return result
             raise RunResumeInProgressError(f"Run {run_id!r} already has a flow resume in progress")
 
         argv = _build_flow_resume_argv(
@@ -541,14 +566,22 @@ async def _resume_flow_run(
                 "allow_degraded_context": allow_degraded_context,
                 "retry_failed": retry_failed,
                 "checkpoint_run_id": run_dir.run_id,
+                **(
+                    {"checkpoint_recovery": checkpoint_recovery}
+                    if checkpoint_recovery is not None
+                    else {}
+                ),
             },
         )
-    return {
+    result = {
         "run_id": run_id,
         "invocation_kind": invocation_kind,
         "invocation_id": invocation_id,
         "checkpoint_run_id": run_dir.run_id,
     }
+    if checkpoint_recovery is not None:
+        result["checkpoint_recovery"] = checkpoint_recovery
+    return result
 
 
 async def _dispatch_resume_by_kind(
@@ -658,21 +691,28 @@ async def resume_availability(run_id: str) -> dict[str, Any]:
 
     if kind in FLOW_RESUME_KINDS:
         try:
-            run_dir, _checkpoint = await _resolve_flow_checkpoint(run_id)
+            run_dir, checkpoint = await _resolve_flow_checkpoint(run_id)
         except RunResumeCheckpointError as exc:
-            return {
+            result = {
                 "run_id": run_id,
                 "invocation_kind": kind,
                 "resumable": False,
                 "reason": exc.reason,
                 "message": str(exc),
             }
-        return {
+            if exc.checkpoint_recovery is not None:
+                result["checkpoint_recovery"] = exc.checkpoint_recovery
+            return result
+        result = {
             "run_id": run_id,
             "invocation_kind": kind,
             "resumable": True,
             "checkpoint_run_id": run_dir.run_id,
         }
+        checkpoint_recovery = getattr(checkpoint, "checkpoint_recovery", None)
+        if checkpoint_recovery is not None:
+            result["checkpoint_recovery"] = checkpoint_recovery
+        return result
 
     return {
         "run_id": run_id,
@@ -761,9 +801,10 @@ async def resume_run_route(run_id: str, body: RunResumeRequest) -> dict[str, Any
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RunResumeCheckpointError as exc:
-        raise HTTPException(
-            status_code=409, detail={"reason": exc.reason, "message": str(exc)}
-        ) from exc
+        detail = {"reason": exc.reason, "message": str(exc)}
+        if exc.checkpoint_recovery is not None:
+            detail["checkpoint_recovery"] = exc.checkpoint_recovery
+        raise HTTPException(status_code=409, detail=detail) from exc
     except (
         RunBranchConflictError,
         RunResumeInProgressError,

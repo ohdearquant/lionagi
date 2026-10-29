@@ -21,9 +21,13 @@ import json
 import time
 from typing import Any
 
+from lionagi._checkpoint_v3_reader import (
+    CheckpointInvalidUTF8Error,
+    CheckpointRecoveryError,
+    load_checkpoint_unit,
+)
 from lionagi._checkpoint_version import (
     UnsupportedCheckpointVersionError,
-    load_legacy_checkpoint_json,
 )
 
 __all__ = ("build_run_detail",)
@@ -39,8 +43,10 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     (no graph, no branches, and no recorded node_metadata — nothing to build a
     detail view from), ``malformed_session_detail`` (the graph shape read
     back from node_metadata was not the list-of-dicts this reshape expects),
-    or ``unsupported_checkpoint_version`` (the checkpoint cannot be read
-    safely by this version).
+    ``unsupported_checkpoint_version`` (the version is unsupported), or
+    ``checkpoint_recovery_refused`` (a checkpoint cannot be safely read).
+    Refusals include a sanitized reason and recovery report with no
+    positions. Journaled checkpoints include a structured recovery report.
     """
     try:
         from lionagi.state.db import StateDB
@@ -74,27 +80,80 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     if session is None:
         return {"detail_unavailable": "session_not_found"}
 
-    if _session_has_no_detail_material(session):
-        # No graph, no branches, no node_metadata, and no artifact contract —
-        # nothing was ever recorded for this session to build a detail view
-        # from. Falling through would build a technically-successful but
-        # fabricated empty detail, indistinguishable from a session that
-        # genuinely finished with zero nodes and zero artifacts.
-        return {"detail_unavailable": "no_session_detail"}
-
     # A session's graph/segments come from node_metadata, a caller-adjacent
     # JSON blob this reads but never wrote — a shape it doesn't expect (e.g. a
     # node id that isn't hashable) must not turn an opt-in detail request into
     # an error on the base job.status call, so the whole reshape is guarded.
     try:
-        nodes = _build_nodes(session, run_id)
-        return {
+        if _session_has_no_detail_material(session):
+            # The graph is unavailable, but a journaled checkpoint can still
+            # carry actionable recovery and resume information.
+            try:
+                _, recovery = _spawned_by_map(run_id)
+            except UnsupportedCheckpointVersionError:
+                return {"detail_unavailable": "unsupported_checkpoint_version"}
+            result = {"detail_unavailable": "no_session_detail"}
+            if recovery is not None:
+                result["checkpoint_recovery"] = recovery
+                result["resume_unavailable_reason"] = "v3_writer_unavailable"
+            return result
+        spawned_by, recovery = _spawned_by_map(run_id)
+        nodes = _build_nodes(session, spawned_by)
+        result = {
             "nodes": nodes,
             "artifact_contract": _build_artifact_contract(session),
             "stalls": _build_stalls(nodes, session),
         }
+        if recovery is not None:
+            result["checkpoint_recovery"] = recovery
+            result["resume_unavailable_reason"] = "v3_writer_unavailable"
+        return result
     except UnsupportedCheckpointVersionError:
         return {"detail_unavailable": "unsupported_checkpoint_version"}
+    except CheckpointRecoveryError as exc:
+        report = exc.checkpoint_recovery
+        problem = report.get("problem") or {}
+        code = problem.get("code")
+        allowed_codes = (
+            "invalid_record",
+            "invalid_sequence",
+            "unsupported_version",
+            "unsupported_kind",
+            "missing_journal",
+            "identity_mismatch",
+            "incoherent_view",
+        )
+        code = code if isinstance(code, str) and code in allowed_codes else "invalid_record"
+        reason = code
+        if isinstance(exc, CheckpointInvalidUTF8Error):
+            reason = "invalid_utf8"
+        safe_report = {
+            "report_version": report.get("report_version"),
+            "source_version": report.get("source_version"),
+            "generation": report.get("generation"),
+            "base_sequence": None,
+            "last_applied_sequence": None,
+            "applied_records": report.get("applied_records"),
+            "valid_prefix_bytes": None,
+            "ignored": report.get("ignored"),
+            "disposition": report.get("disposition"),
+            "problem": {
+                "code": code,
+                "line": None,
+                "byte_offset": None,
+                "expected_seq": None,
+                "actual_seq": None,
+            },
+        }
+        return {
+            "detail_unavailable": (
+                "unsupported_checkpoint_version"
+                if reason == "unsupported_version"
+                else "checkpoint_recovery_refused"
+            ),
+            "checkpoint_recovery_reason": reason,
+            "checkpoint_recovery": safe_report,
+        }
     except Exception:
         return {"detail_unavailable": "malformed_session_detail"}
 
@@ -110,32 +169,32 @@ def _segments_by_op_id(session: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return by_op
 
 
-def _spawned_by_map(run_id: str) -> dict[str, str]:
+def _spawned_by_map(run_id: str) -> tuple[dict[str, str], dict[str, Any] | None]:
     """Reactive-spawn parents, read from this run's own checkpoint file.
 
-    Best effort only: an absent or unreadable checkpoint (most runs finish
-    with none once the DAG completes, and non-flow kinds never write one)
-    just means no parent is reported, never a failure of the detail view.
+    An absent checkpoint means no parent is reported. Recovery refusals are
+    surfaced so the caller does not mistake incomplete data for a valid view.
     """
     try:
         from lionagi._paths import RUNS_ROOT
 
         checkpoint_path = RUNS_ROOT / run_id / "checkpoint.json"
         if not checkpoint_path.is_file():
-            return {}
-        checkpoint = load_legacy_checkpoint_json(checkpoint_path.read_text())
+            return {}, None
+        checkpoint, report = load_checkpoint_unit(checkpoint_path)
         spawned = checkpoint.get("spawned")
         if not isinstance(spawned, list):
-            return {}
-        return {
+            return {}, report if report.get("source_version") == 3 else None
+        parents = {
             e["node_id"]: e["parent_id"]
             for e in spawned
             if isinstance(e, dict) and e.get("node_id") and e.get("parent_id")
         }
-    except UnsupportedCheckpointVersionError:
+        return parents, report if report.get("source_version") == 3 else None
+    except (UnsupportedCheckpointVersionError, CheckpointRecoveryError):
         raise
     except Exception:
-        return {}
+        return {}, None
 
 
 def _node_from_branch(
@@ -206,10 +265,9 @@ def _session_has_no_detail_material(session: dict[str, Any]) -> bool:
     return not _node_metadata_recorded(session)
 
 
-def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+def _build_nodes(session: dict[str, Any], spawned_by_map: dict[str, str]) -> list[dict[str, Any]]:
     branches = session.get("branches") or []
     branch_by_name = _branch_by_name(session)
-    spawned_by_map = _spawned_by_map(run_id)
     graph = session.get("graph")
 
     if graph is None:

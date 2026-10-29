@@ -18,6 +18,7 @@ un-pausing a paused or cancelled run, and accepts a run in any status.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -119,20 +120,85 @@ def _identity() -> tuple[OperatorStore, str, str]:
     return _common._identity(OperatorStore)
 
 
+def _safe_checkpoint_recovery(value: Any) -> dict[str, Any] | None:
+    """Copy only the structured, non-payload fields of a valid recovery report."""
+    if not isinstance(value, dict) or type(value.get("report_version")) is not int:
+        return None
+    if value["report_version"] != 1:
+        return None
+    source = value.get("source_version")
+    if source is not None and (type(source) is not int or not 0 <= source <= 2**63 - 1):
+        return None
+    generation = value.get("generation")
+    if generation is not None and (
+        not isinstance(generation, str) or re.fullmatch(r"[0-9a-f]{32}", generation) is None
+    ):
+        return None
+    disposition = value.get("disposition")
+    if disposition not in ("clean", "recovered_prefix", "refused"):
+        return None
+    numbers = ("base_sequence", "last_applied_sequence", "applied_records", "valid_prefix_bytes")
+    for name in numbers:
+        item = value.get(name)
+        if item is not None and (type(item) is not int or item < 0):
+            return None
+    ignored = value.get("ignored")
+    if not isinstance(ignored, dict):
+        return None
+    ignored_fields = ("torn_final_record", "stale_generation_record")
+    if any(type(ignored.get(name)) is not int or ignored[name] < 0 for name in ignored_fields):
+        return None
+    problem = value.get("problem")
+    safe_problem = None
+    if problem is not None:
+        if not isinstance(problem, dict) or type(problem.get("code")) is not str:
+            return None
+        if problem["code"] not in {
+            "torn_final_record",
+            "invalid_record",
+            "invalid_sequence",
+            "unsupported_version",
+            "unsupported_kind",
+            "missing_journal",
+            "identity_mismatch",
+            "incoherent_view",
+        }:
+            return None
+        fields = ("line", "byte_offset", "expected_seq", "actual_seq")
+        for name in fields:
+            item = problem.get(name)
+            if item is not None and (type(item) is not int or item < 0):
+                return None
+        safe_problem = {"code": problem["code"], **{name: problem.get(name) for name in fields}}
+    return {
+        "report_version": 1,
+        "source_version": source,
+        "generation": generation,
+        **{name: value.get(name) for name in numbers},
+        "ignored": {name: ignored[name] for name in ignored_fields},
+        "problem": safe_problem,
+        "disposition": disposition,
+    }
+
+
 def _redacted_resume_result(proposal: dict[str, Any], run_id: str) -> dict[str, Any]:
     if proposal["status"] != "succeeded":
         reason = "denied" if proposal["status"] == "cancelled" else proposal["status"]
         return {"resumed": False, "reason": reason, "id": run_id}
     raw = proposal.get("result")
     result = raw if isinstance(raw, dict) else {}
+    recovery = _safe_checkpoint_recovery(result.get("checkpoint_recovery"))
     error = result.get("error")
     if error:
-        return {
+        response = {
             "resumed": False,
             "reason": error,
             "id": run_id,
             "message": scrub_text(str(result.get("message", ""))),
         }
+        if recovery is not None:
+            response["checkpoint_recovery"] = recovery
+        return response
     # An agent-kind resume returns branch_id; a checkpoint-replay resume
     # (play/flow/show-play) returns invocation_kind + checkpoint_run_id
     # instead -- include only whichever the service actually reported.
@@ -147,6 +213,8 @@ def _redacted_resume_result(proposal: dict[str, Any], run_id: str) -> dict[str, 
         response["invocationKind"] = result["invocation_kind"]
     if "checkpoint_run_id" in result:
         response["checkpointRunId"] = result["checkpoint_run_id"]
+    if recovery is not None:
+        response["checkpoint_recovery"] = recovery
     return response
 
 
@@ -280,7 +348,10 @@ async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:
     except RunNotFoundError as exc:
         return {"error": "not_found", "message": scrub_text(str(exc))}
     except RunResumeCheckpointError as exc:
-        return {"error": exc.reason, "message": scrub_text(str(exc))}
+        result = {"error": exc.reason, "message": scrub_text(str(exc))}
+        if exc.checkpoint_recovery is not None:
+            result["checkpoint_recovery"] = exc.checkpoint_recovery
+        return result
     except (
         RunBranchConflictError,
         RunResumeInProgressError,

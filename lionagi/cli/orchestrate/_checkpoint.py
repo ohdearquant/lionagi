@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lionagi._checkpoint_v3_reader import CheckpointRecoveryError, load_checkpoint_unit
 from lionagi._checkpoint_version import (
     CHECKPOINT_VERSION,
     UnsupportedCheckpointVersionError,
-    load_legacy_checkpoint_json,
 )
 from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
@@ -27,6 +27,9 @@ __all__ = (
     "CHECKPOINT_VERSION",
     "CheckpointWriter",
     "FlowResumeError",
+    "FlowCheckpointRecoveryError",
+    "FlowCheckpointDecodeError",
+    "FlowV3WriterUnavailableError",
     "UnsupportedFlowCheckpointVersionError",
     "load_checkpoint",
     "resolve_checkpoint_target",
@@ -39,6 +42,64 @@ class FlowResumeError(LionError):
 
 class UnsupportedFlowCheckpointVersionError(FlowResumeError):
     """A checkpoint has a version this reader cannot safely resume."""
+
+
+class FlowCheckpointRecoveryError(FlowResumeError):
+    """A checkpoint recovery refusal and its sanitized diagnostic report."""
+
+    def __init__(self, message: str, report: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.checkpoint_recovery = report
+
+
+class FlowCheckpointDecodeError(FlowCheckpointRecoveryError, json.JSONDecodeError):
+    """Malformed checkpoint refusal compatible with legacy JSON error handling."""
+
+    def __init__(self, cause: json.JSONDecodeError, report: dict[str, Any]) -> None:
+        json.JSONDecodeError.__init__(self, "Checkpoint could not be parsed", "", 0)
+        self.pos = cause.pos
+        self.lineno = cause.lineno
+        self.colno = cause.colno
+        self.args = (
+            f"Checkpoint could not be parsed: line {self.lineno} column {self.colno} "
+            f"(char {self.pos})",
+        )
+        self.checkpoint_recovery = report
+        self.message = str(self)
+        self.details = {}
+        self.status_code = type(self).default_status_code
+
+
+class FlowV3WriterUnavailableError(FlowResumeError, CheckpointRecoveryError):
+    """Inspection is available, but a v3-preserving writer is not yet available."""
+
+    reason = "v3_writer_unavailable"
+
+    def __init__(self, report: dict[str, Any] | None) -> None:
+        message = "v3_writer_unavailable: cannot resume a v3 checkpoint yet"
+        # LionError's cooperative initializer would call the recovery-error
+        # initializer with a string instead of its required report object.
+        Exception.__init__(self, message)
+        self.message = message
+        self.details = {}
+        self.status_code = type(self).default_status_code
+        self.checkpoint_recovery = report
+        self.valid_prefix = None
+
+
+def require_checkpoint_writer(checkpoint: dict[str, Any]) -> None:
+    """Refuse v3 execution while the only available writer emits v2."""
+    version = checkpoint.get("version")
+    if type(version) is int and version == 3:
+        raise FlowV3WriterUnavailableError(getattr(checkpoint, "checkpoint_recovery", None))
+
+
+class _CheckpointWithRecovery(dict):
+    """Keep recovery diagnostics outside the checkpoint's serialized state."""
+
+    def __init__(self, state: dict[str, Any], report: dict[str, Any]) -> None:
+        super().__init__(state)
+        self.checkpoint_recovery = report
 
 
 @dataclass
@@ -177,9 +238,25 @@ class CheckpointWriter:
 
 def load_checkpoint(path: Path) -> dict[str, Any]:
     try:
-        return load_legacy_checkpoint_json(path.read_text())
+        state, report = load_checkpoint_unit(path)
     except UnsupportedCheckpointVersionError as exc:
         raise UnsupportedFlowCheckpointVersionError(str(exc)) from exc
+    except CheckpointRecoveryError as exc:
+        report = exc.checkpoint_recovery
+        if isinstance(exc, UnicodeDecodeError):
+            # The reader's sanitized error preserves UnicodeDecodeError itself;
+            # LionError's layout cannot be multiply inherited with that type.
+            raise
+        if isinstance(exc, json.JSONDecodeError):
+            raise FlowCheckpointDecodeError(exc, report) from exc
+        if report.get("problem", {}).get("code") == "unsupported_version":
+            error = UnsupportedFlowCheckpointVersionError(str(exc))
+            error.checkpoint_recovery = report
+            raise error from exc
+        raise FlowCheckpointRecoveryError(str(exc), report) from exc
+    if report.get("source_version") == 3:
+        return _CheckpointWithRecovery(state, report)
+    return state
 
 
 def _find_run_dir_by_id(run_id: str) -> RunDir | None:

@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi._checkpoint_v3_reader import CheckpointRecoveryError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._flow_spec import (
     FLOW_SPEC_FIELDS,
@@ -1056,19 +1058,50 @@ def run_orchestrate(args: argparse.Namespace) -> int:
     if args.orch_command == "flow":
         resume_target = getattr(args, "resume", None)
         if resume_target:
+            resume_errors = []
+
+            async def _capture_resume_error():
+                try:
+                    return await _resume_flow(
+                        resume_target,
+                        allow_degraded_context=getattr(args, "allow_degraded_context", False),
+                        retry_failed=getattr(args, "retry_failed", False),
+                        dry_run=args.dry_run,
+                        show_graph=getattr(args, "show_graph", False),
+                        notify=getattr(args, "notify", None),
+                        output_format="json" if getattr(args, "output", None) == "json" else None,
+                    )
+                except (FlowResumeError, CheckpointRecoveryError) as exc:
+                    resume_errors.append(exc)
+                    raise
+
             flow_result, rc = _run_orch_command(
-                _resume_flow(
-                    resume_target,
-                    allow_degraded_context=getattr(args, "allow_degraded_context", False),
-                    retry_failed=getattr(args, "retry_failed", False),
-                    dry_run=args.dry_run,
-                    show_graph=getattr(args, "show_graph", False),
-                    notify=getattr(args, "notify", None),
-                ),
+                _capture_resume_error(),
                 verbose=args.verbose,
-                extra_handlers=((FlowResumeError, EXIT_CODE_BY_STATUS["failed"]),),
+                extra_handlers=(
+                    (FlowResumeError, EXIT_CODE_BY_STATUS["failed"]),
+                    (CheckpointRecoveryError, EXIT_CODE_BY_STATUS["failed"]),
+                ),
             )
             if rc != 0:
+                if getattr(args, "output", None) == "json" and resume_errors:
+                    error = resume_errors[0]
+                    report = getattr(error, "checkpoint_recovery", None)
+                    if isinstance(report, dict):
+                        reason = (
+                            "v3_writer_unavailable"
+                            if getattr(error, "reason", None) == "v3_writer_unavailable"
+                            else "checkpoint_recovery_refused"
+                        )
+                        print(
+                            json.dumps(
+                                {
+                                    "error": reason,
+                                    "message": str(error),
+                                    "checkpoint_recovery": report,
+                                }
+                            )
+                        )
                 return rc
             output, terminal_status = flow_result
             if not args.verbose:

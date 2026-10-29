@@ -38,7 +38,12 @@ from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import _is_light_codex, parse_model_spec
 from .._util import classify_exception
-from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
+from ._checkpoint import (
+    CheckpointWriter,
+    FlowResumeError,
+    require_checkpoint_writer,
+    resolve_checkpoint_target,
+)
 from ._common import (
     _build_worker_operate_node,
     _create_fanout_team,
@@ -3101,6 +3106,7 @@ async def _run_flow(
     project: str | None = None,
     pack: str | None = None,
     resume_checkpoint: dict | None = None,
+    checkpoint_recovery: dict | None = None,
     allow_degraded_context: bool = False,
     retry_failed: bool = False,
     notify: str | None = None,
@@ -3110,6 +3116,8 @@ async def _run_flow(
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
+    if resume_checkpoint is not None:
+        require_checkpoint_writer(resume_checkpoint)
     from lionagi._cli_worker_context import _bind_cli_worker_recorder
     from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
@@ -3268,6 +3276,8 @@ async def _run_flow(
         }
         if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
             _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
+        if checkpoint_recovery is not None:
+            _extra_node_metadata["checkpoint_recovery"] = checkpoint_recovery
 
         # start_live_persist resolves `project` (explicit arg, or detect_project()
         # fallback) and stashes the RESOLVED value on env._project — what the
@@ -3543,6 +3553,15 @@ async def _run_flow(
                 if _pending_worker_cancel is not None:
                     raise _pending_worker_cancel
 
+        if checkpoint_recovery is not None and output_format == "json":
+            if dry_run:
+                result = json.dumps({"plan": result, "checkpoint_recovery": checkpoint_recovery})
+            else:
+                result_data = json.loads(result)
+                if not isinstance(result_data, dict):
+                    raise FlowResumeError("Flow JSON result is not an object.")
+                result_data["checkpoint_recovery"] = checkpoint_recovery
+                result = json.dumps(result_data)
         return result, _terminal_status
 
 
@@ -3860,12 +3879,31 @@ async def _resume_flow(
     dry_run: bool = False,
     show_graph: bool = False,
     notify: str | None = None,
+    output_format: str | None = None,
 ) -> tuple[str, str]:
     """Resolve a checkpointed run/session id and replay it through _run_flow.
     dry_run/show_graph/notify come from the CURRENT invocation (presentation
     overrides); every other _run_flow kwarg replays the persisted config."""
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
+    recovery = getattr(checkpoint, "checkpoint_recovery", None)
+    if recovery is not None:
+        if not isinstance(recovery, dict) or recovery.get("disposition") not in (
+            "clean",
+            "recovered_prefix",
+        ):
+            raise FlowResumeError("Checkpoint recovery report is invalid.")
+    if recovery is not None and recovery["disposition"] == "recovered_prefix":
+        problem = recovery.get("problem")
+        code = problem.get("code") if isinstance(problem, dict) else None
+        if code not in ("torn_final_record", "stale_generation_record"):
+            code = "recovered_prefix"
+        _warn(
+            f"checkpoint recovery used a valid prefix ({code}); see checkpoint_recovery for details"
+        )
+    require_checkpoint_writer(checkpoint)
     config = dict(checkpoint.get("config") or {})
+    # Recovery metadata is produced by the reader, never by saved run config.
+    config.pop("checkpoint_recovery", None)
     if "no_mcp_config" not in config:
         # A checkpoint written before MCP containment was tracked carries no
         # record of the run's original --no-mcp-config decision. Replaying it
@@ -3883,6 +3921,10 @@ async def _resume_flow(
     config["show_graph"] = show_graph
     if notify is not None:
         config["notify"] = notify
+    if recovery is not None:
+        config["checkpoint_recovery"] = recovery
+        if output_format == "json":
+            config["output_format"] = output_format
     return await _run_flow(
         prompt=checkpoint.get("prompt", ""),
         resume_checkpoint=checkpoint,

@@ -2734,7 +2734,7 @@ async def test_resolve_checkpoint_target_falls_back_to_session_run_id(
 
 def _mcp_checkpoint(config: dict) -> dict:
     return {
-        "version": 3,
+        "version": 2,
         "session_id": "prior-session",
         "prompt": "write the brief",
         "plan": [],
