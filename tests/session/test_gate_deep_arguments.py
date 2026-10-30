@@ -5,9 +5,11 @@
 
 import importlib
 import logging
+import sys
 
 import pytest
 
+from lionagi.operations.act._gate_arguments import gate_arguments
 from lionagi.operations.act.act import _act
 from lionagi.protocols.messages import ActionRequest, ActionResponse
 from lionagi.session.branch import Branch
@@ -44,11 +46,13 @@ async def test_deep_gate_snapshot_failure_refuses_without_disclosing_arguments(m
     act_module = importlib.import_module("lionagi.operations.act.act")
     monkeypatch.setattr(act_module, "record_guard_refusal", lambda **kw: refusals.append(kw))
 
+    arguments = {"payload": _nested_value(sys.getrecursionlimit() + 100, secret)}
+    # Prove that this environment's snapshot actually reaches the refusal path.
+    with pytest.raises(RecursionError):
+        gate_arguments(branch._action_manager, "tool", arguments)
+
     with caplog.at_level(logging.DEBUG):
-        result = await _act(
-            branch,
-            {"function": "tool", "arguments": {"payload": _nested_value(900, secret)}},
-        )
+        result = await _act(branch, {"function": "tool", "arguments": arguments})
         await branch.drain_signals()
 
     assert result.output == {"error": "denied by governance gate", "function": "tool"}
@@ -70,8 +74,13 @@ async def test_deep_argument_without_gate_still_reaches_manager_unchanged(monkey
     class ReachedManager(BaseException):
         pass
 
+    class SummarySafeArguments(dict):
+        def __str__(self):
+            return "<deep arguments>"
+
     branch = Branch()
-    arguments = {"payload": _nested_value(900, "leaf")}
+    # Avoid the existing argument-summary repr limit while checking gate-free identity.
+    arguments = SummarySafeArguments(payload=_nested_value(sys.getrecursionlimit() + 100, "leaf"))
     seen = []
 
     async def invoke(_manager, request):
