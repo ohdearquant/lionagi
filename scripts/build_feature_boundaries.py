@@ -122,6 +122,7 @@ TARGET_RULES = {
     "lionagi.cli._engine_definitions": "lionhub.orchestration.engine_definitions",
     "lionagi.cli._inspection": "lionhub.orchestration.inspection",
     "lionagi.cli._mcp_resolve": "lionhub.orchestration.mcp_config",
+    "lionagi.cli._orchestrate_parsing": "lionhub.orchestration.flow.parsing",
     "lionagi.cli._project": "lionhub.orchestration.project",
     "lionagi.cli._providers": "lionhub.orchestration.spawn",
     "lionagi.cli._runs": "lionhub.orchestration.runs",

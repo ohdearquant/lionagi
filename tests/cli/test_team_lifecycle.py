@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.cli import team
+from tests.cli._import_guard import COMMAND_IMPORT_PROBES, source_with_line
 
 
 @pytest.fixture(autouse=True)
@@ -418,6 +419,17 @@ class TestReadTeamJson:
                 imported.update(alias.name for alias in node.names)
         assert imported, "expected the module to import something"
         assert not any(name.split(".")[0] == "lionagi" for name in imported), imported
+
+    @pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+    def test_reader_guard_rejects_a_command_import(self, probe, tmp_path, monkeypatch):
+        """The layering guard fails when the team-service module imports a command module,
+        whether the import is absolute, relative or by name."""
+        from lionagi.cli import _team_service
+
+        patched = source_with_line(_team_service.__file__, probe, tmp_path)
+        monkeypatch.setattr(_team_service, "__file__", str(patched))
+        with pytest.raises(AssertionError):
+            self.test_reader_lives_in_the_team_service_module()
 
     def test_cmd_list_skips_corrupt_files_without_crashing(self, capsys):
         _make_team("r3", ["orchestrator", "alice"])

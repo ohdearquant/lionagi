@@ -534,6 +534,11 @@
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
+    "lionagi.cli._orchestrate_parsing": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.flow.parsing"
+    },
     "lionagi.cli._project": {
       "layer": "root",
       "owner": "cli",

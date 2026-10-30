@@ -37,6 +37,12 @@ from lionagi.cli.status import (
 )
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+from tests.cli._import_guard import (
+    COMMAND_IMPORT_PROBES,
+    command_module_imports,
+    resolved_imports,
+    source_with_line,
+)
 
 # Fixtures
 
@@ -1068,19 +1074,23 @@ def test_resolution_helpers_live_in_inspection_not_status() -> None:
 def test_inspection_imports_no_command_module() -> None:
     """`_inspection` is the shared layer under the commands, so it must not
     import any of them."""
-    import ast
-
     from lionagi.cli import _inspection
 
-    tree = ast.parse(Path(_inspection.__file__).read_text())
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            imported.add((node.module or "").split(".")[0])
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-    assert imported.isdisjoint({"status", "wait", "monitor", "orchestrate"})
+    assert command_module_imports(resolved_imports(_inspection.__file__, "lionagi.cli")) == set()
+
+
+@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+def test_inspection_guard_rejects_a_command_import(
+    probe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The layering guard fails when `_inspection` imports a command module, whether the import
+    is absolute, relative or by name."""
+    from lionagi.cli import _inspection
+
+    patched = source_with_line(_inspection.__file__, probe, tmp_path)
+    monkeypatch.setattr(_inspection, "__file__", str(patched))
+    with pytest.raises(AssertionError):
+        test_inspection_imports_no_command_module()
 
 
 @pytest.mark.parametrize("command", ["agent", "play", "ctl"])

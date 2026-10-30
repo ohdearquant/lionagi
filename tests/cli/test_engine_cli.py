@@ -16,6 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.cli._import_guard import (
+    COMMAND_IMPORT_PROBES,
+    command_module_imports,
+    resolved_imports,
+    source_with_line,
+)
+
 # Fixtures
 
 
@@ -1102,9 +1109,6 @@ def test_engine_definitions_live_in_a_private_module_without_command_imports() -
     """The engine kind registry and class loader live in `_engine_definitions`,
     which sits under the engine command and Studio, so it must not import any
     command module."""
-    import ast
-    from pathlib import Path
-
     definitions = importlib.import_module("lionagi.cli._engine_definitions")
     engine_module = importlib.import_module("lionagi.cli.engine")
 
@@ -1113,20 +1117,18 @@ def test_engine_definitions_live_in_a_private_module_without_command_imports() -
     assert not hasattr(engine_module, "_KIND_META")
     assert not hasattr(engine_module, "_import_engine_class")
 
-    tree = ast.parse(Path(definitions.__file__).read_text())
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            base = "lionagi.cli" if node.level == 1 else ""
-            if node.module:
-                base = f"{base}.{node.module}" if base else node.module
-            imported.add(base)
-            imported.update(f"{base}.{alias.name}" for alias in node.names)
-        elif isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-    command_modules = {
-        name
-        for name in imported
-        if name.startswith("lionagi.cli.") and not name.split(".")[2].startswith("_")
-    }
-    assert command_modules == set()
+    assert command_module_imports(resolved_imports(definitions.__file__, "lionagi.cli")) == set()
+
+
+@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+def test_engine_definitions_guard_rejects_a_command_import(
+    probe: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The layering guard fails when `_engine_definitions` imports a command module, whether the
+    import is absolute, relative or by name."""
+    definitions = importlib.import_module("lionagi.cli._engine_definitions")
+
+    patched = source_with_line(definitions.__file__, probe, tmp_path)
+    monkeypatch.setattr(definitions, "__file__", str(patched))
+    with pytest.raises(AssertionError):
+        test_engine_definitions_live_in_a_private_module_without_command_imports()
