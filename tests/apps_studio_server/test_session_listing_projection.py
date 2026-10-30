@@ -324,7 +324,9 @@ async def test_recent_projection_streams_pages_without_a_temporary_order_sort(
     work = [record["progress_ticks"] for record in records]
     assert min(work) > 0, records
     assert work[0] < work[1] < work[2], work
-    assert all(any("idx_sessions_updated" in step for step in r["plan"]) for r in records), records
+    assert all(any("idx_sessions_recent_visible" in step for step in r["plan"]) for r in records), (
+        records
+    )
     assert not any(
         "TEMP B-TREE" in step and "ORDER BY" in step
         for record in records
