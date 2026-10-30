@@ -162,10 +162,16 @@ async def test_resolved_identity_equals_bound_client_cache_key(pool, monkeypatch
 
     # Both paths must follow a future change to the shared key builder.
     monkeypatch.setattr(pool, "_cache_key", staticmethod(marked_key))
-    resolved, _, identity_key = pool._resolve_identity(identity_input, policy)
+    resolved, policy_key, identity_key = pool._resolve_identity(identity_input, policy)
     client = await pool._get_bound_client(transport, server_name, policy)
 
     assert resolved == transport
+    security_fp = pool._security_fingerprint(policy)
+    if server_name is None:
+        expected = f"inline:{policy_key}:sec:{security_fp}:marker"
+    else:
+        expected = f"server:{server_name}:{policy_key}:sec:{security_fp}:marker"
+    assert identity_key == expected
     assert list(pool._clients) == [identity_key]
     assert pool._clients[identity_key] is client
     assert await pool.get_client(identity_input, security=policy) is client
