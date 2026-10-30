@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28 and 2026-10-30 (see Amendments 1 to 5)
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28 and 2026-10-30 (see Amendments 1 to 6)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -762,6 +762,51 @@ from 46 and 55 toward the concurrent cold starts (at most 5 and 17); the cost ra
 cleared row, a bound trip, a blocked or out-of-room warm account, a concurrent cold start, or a
 retried first request.
 
+## Amendment 6 (2026-10-30) — bound the ledger's thread-limiter admission wait
+
+Purpose: bound the wait for a worker thread that every ledger call takes before its SQLite work starts, so a shielded ledger call cannot wait without limit.
+
+### Context
+
+D6 says stream close and finalization shield an available settlement from caller cancellation, bounded by the ledger's five-second wait. That bound covers only the SQLite lock wait. Each ledger call runs its SQLite work through `CredentialLedger._run` in `lionagi/service/accounts/_ledger.py`. `_run` calls `run_sync` with no limiter, so the call first waits for a token from AnyIO's process-wide default thread limiter, which every other thread-offloaded call that names no limiter also shares. `busy_timeout_s` (default 5.0) is the sqlite3 connect timeout and `PRAGMA busy_timeout`, and it starts only once the worker thread runs. Nothing bounds the token wait. Inside `anyio.CancelScope(shield=True)`, the caller's deadline cannot reach that wait, so a shielded ledger write can wait without limit. Amendment 5, Decision 8 discloses this for the existing shields and for the three it adds. This amendment supplies the bound.
+
+### Decision
+
+1. Every ledger call bounds its admission wait with its own five-second bound, separate from `busy_timeout_s`. The worst case for one call is five seconds waiting for a token plus five seconds waiting for the SQLite lock.
+2. When the admission bound trips, the call raises `AccountRoutingError` with code `ledger_busy` (`RouterErrorCode.LEDGER_BUSY`), the outcome a SQLite lock timeout produces today. It never surfaces as a bare `TimeoutError`. The default retry exceptions in `lionagi/service/resilience.py` include `TimeoutError`, so a bare timeout would be retried as if the request had failed in transit. `AccountRoutingError` is not in that default set, so it is not retried.
+3. A caller of a routed request receives that `AccountRoutingError(ledger_busy)` unchanged and is not retried. The `begin` call in `_request_attempt` (`lionagi/providers/anthropic/messages.py`) sits after the try block that converts routing errors, and the handlers in `lionagi/service/connections/endpoint.py` convert only the internal routed-attempt classes, so the error passes through.
+4. The bound covers admission only. Once the worker thread has started the operation, the admission bound no longer applies, and the SQLite wait stays bounded by `busy_timeout_s`. A bound that also spanned the worker wait could expire after the write committed, and the caller would then be told the call failed while its ledger row exists. A test pins this rule.
+5. The same change adds an admission-wait timing record. For each ledger call, it records the time from requesting a token to the operation's first line in the worker, kept apart from the SQLite wait. The record is one structured log event per ledger call, described under Timing record. It adds no database column, because a schema change needs its own decision.
+6. Not decided here: a dedicated thread limiter for the ledger. It is new structure with no measurement behind it. It returns as its own amendment only if admission-wait numbers from real runs (p50 and p99, with the population named) show that the shared pool is the cause.
+
+### What it guarantees and what it does not
+
+- A shielded ledger call that cannot obtain a token raises `ledger_busy` within the admission bound plus a small margin. It never raises a bare timeout.
+- A call whose worker starts before the bound expires runs to its own SQLite bound and is reported by its actual outcome.
+- It does not change the native `task.cancel()` behavior that Amendment 5 describes.
+- It does not change the existing busy-timeout arm, which still raises `ledger_busy` when the SQLite lock is held past `busy_timeout_s`.
+- The admission bound is not a retry. The caller decides whether to retry.
+
+### Verification
+
+Each item is a test that fails without this change:
+
+- A shielded ledger call whose limiter is saturated raises `AccountRoutingError(ledger_busy)` within the admission bound plus a small margin, and never `TimeoutError`.
+- The caller of a routed request whose `begin` trips the admission bound receives `AccountRoutingError(ledger_busy)`, and the request is not retried.
+- A call admitted just before the bound whose operation commits is reported as committed. The bound never fires after the worker started, and the ledger row and the return value agree.
+- A SQLite lock held past the busy timeout still raises `ledger_busy`, as today.
+- Each ledger call emits exactly one DEBUG event carrying `admission_wait_s`, `sqlite_wait_s` and the outcome, including a call whose admission bound trips (with `sqlite_wait_s` absent) and a call whose SQLite lock times out.
+
+### Timing record
+
+Each ledger call emits one structured log event at DEBUG level, with three fields:
+
+- `admission_wait_s`: the time from requesting a worker thread token to the operation's first line in the worker. When the admission bound trips, it is the time waited until the trip.
+- `sqlite_wait_s`: the time from that first line to the operation's return, which includes any wait for the SQLite lock. It is absent when the operation never started.
+- the outcome: committed, `ledger_busy` from the admission bound, `ledger_busy` from the SQLite lock, or the class name of any other error.
+
+The event is the whole record. The change adds no state to `CredentialLedger` and no field to `RouterAttempt`, and nothing in the process reads the event back. Numbers across runs (p50 and p99, Decision 6) come from collecting these events from a run's logs. A run that does not keep DEBUG logs keeps no timing.
+
 ## Requirements
 
 The request this record answers, and where each part is carried:
@@ -1185,7 +1230,10 @@ complete terminal evidence. HTTP usage is intercepted before generic stream
 projection and before yielding to consumers; the current generic projection keeps
 raw events (`lionagi/service/connections/endpoint.py:1143`). No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
-from caller cancellation, bounded by the ledger's five-second wait. If commit
+from caller cancellation; the shield waits at most five seconds for a worker thread
+token (admission) and at most five seconds for the SQLite lock (`busy_timeout_s`), a
+worst case of ten seconds, and a timeout in either wait raises `ledger_busy`
+(Amendment 6). If commit
 fails or the process dies, the durable ceiling remains. It must never report the
 accounting operation as committed when it was not.
 
