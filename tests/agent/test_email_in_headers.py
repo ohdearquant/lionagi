@@ -151,3 +151,146 @@ async def test_security_recheck_catches_a_user_hook_rewrite(tmp_path):
     with pytest.raises(GateDeniedError) as error:
         await branch.acts.registry["bash"].preprocessor({"action": "run", "command": "echo safe"})
     assert error.value.result.control == "guard_email_in_headers"
+
+
+async def test_global_settings_allow_one_address_and_append_note(tmp_path, monkeypatch):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.gate import GateDeniedError
+
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    (home / ".lionagi" / "settings.yaml").write_text(
+        "guards:\n  email_in_headers:\n    allow:\n      - sample-person@project.example\n"
+        "    note: Deployment policy\n"
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    branch = await create_agent(AgentSpec.coding(cwd=str(project)), load_settings=False)
+    bash = branch.acts.registry["bash"]
+    allowed = {"action": "run", "command": LEAKS[0]}
+    assert await bash.preprocessor(allowed) == allowed
+    with pytest.raises(GateDeniedError) as error:
+        await bash.preprocessor({"action": "run", "command": f'curl -H "X-Contact: {OTHER}"'})
+    assert "Deployment policy" in error.value.result.reason
+    assert OTHER not in error.value.result.reason
+
+
+async def test_project_settings_cannot_add_allowed_addresses(tmp_path, monkeypatch):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.gate import GateDeniedError
+
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    (project / ".lionagi").mkdir(parents=True)
+    (project / ".lionagi" / "settings.yaml").write_text(
+        "guards:\n  email_in_headers:\n    allow:\n      - sample-person@project.example\n"
+        "    note: Project policy\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    branch = await create_agent(AgentSpec.coding(cwd=str(project)), load_settings=False)
+    with pytest.raises(GateDeniedError) as error:
+        await branch.acts.registry["bash"].preprocessor({"action": "run", "command": LEAKS[0]})
+    assert "Project policy" not in error.value.result.reason
+
+
+async def test_global_allowlist_does_not_hide_later_disallowed_carrier(tmp_path, monkeypatch):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.gate import GateDeniedError
+
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    (home / ".lionagi" / "settings.yaml").write_text(
+        "guards:\n  email_in_headers:\n    allow:\n      - sample-person@project.example\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    branch = await create_agent(AgentSpec.coding(cwd=str(tmp_path)), load_settings=False)
+    command = f'UA="{OTHER}"\ncurl -H "X-Contact: {ADDRESS} $UA" https://service.example/'
+    with pytest.raises(GateDeniedError) as error:
+        await branch.acts.registry["bash"].preprocessor({"action": "run", "command": command})
+    assert "ano…@project.example" in error.value.result.reason
+
+
+async def test_configured_agents_keep_independent_allowlists(tmp_path, monkeypatch):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.gate import GateDeniedError
+
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    settings = home / ".lionagi" / "settings.yaml"
+    monkeypatch.setenv("HOME", str(home))
+    settings.write_text(
+        "guards:\n  email_in_headers:\n    allow:\n      - SAMPLE-PERSON@PROJECT.EXAMPLE\n"
+    )
+    allowed_spec = AgentSpec.coding(cwd=str(tmp_path))
+    settings.write_text("guards:\n  email_in_headers:\n    allow: []\n")
+    denied_spec = AgentSpec.coding(cwd=str(tmp_path))
+    first = await create_agent(allowed_spec, load_settings=False)
+    second = await create_agent(denied_spec, load_settings=False)
+    args = {"action": "run", "command": LEAKS[0]}
+    assert await first.acts.registry["bash"].preprocessor(args) == args
+    with pytest.raises(GateDeniedError):
+        await second.acts.registry["bash"].preprocessor(args)
+    assert await first.acts.registry["bash"].preprocessor(args) == args
+
+
+async def test_engine_agent_uses_global_guard_settings(tmp_path, monkeypatch):
+    from lionagi.agent.gate import GateDeniedError
+    from lionhub.orchestration.engines import Engine
+
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    (home / ".lionagi" / "settings.yaml").write_text(
+        "guards:\n  email_in_headers:\n    allow:\n      - sample-person@project.example\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    branch = (
+        await Engine()
+        .new_run()
+        .make_agent("implementer", tools=("coding",), cwd=str(tmp_path), secure=True)
+    )
+    args = {"action": "run", "command": LEAKS[0]}
+    assert await branch.acts.registry["bash"].preprocessor(args) == args
+    with pytest.raises(GateDeniedError):
+        await branch.acts.registry["bash"].preprocessor(
+            {"action": "run", "command": f'curl -H "X-Contact: {OTHER}"'}
+        )
+
+
+def test_cli_api_preset_uses_global_guard_settings(tmp_path, monkeypatch):
+    from lionagi.cli.agent import _make_api_agent_spec
+
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    (home / ".lionagi" / "settings.yaml").write_text(
+        "guards:\n  email_in_headers:\n    allow:\n      - sample-person@project.example\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    spec = _make_api_agent_spec(
+        cwd=str(tmp_path), effort=None, system_prompt=None, role="implementer", tools="read"
+    )
+    guard = next(
+        h for h in spec.hook_handlers["security_pre:bash"] if h.__name__ == "guard_email_in_headers"
+    )
+    assert asyncio.run(guard("bash", "run", {"command": LEAKS[0]})) is None
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "allow: not-a-list",
+        "allow: [7]",
+        "allow: [invalid]",
+        "note: 7",
+    ],
+)
+def test_invalid_global_guard_settings_fail_closed(tmp_path, monkeypatch, policy):
+    home = tmp_path / "home"
+    (home / ".lionagi").mkdir(parents=True)
+    (home / ".lionagi" / "settings.yaml").write_text(
+        f"guards:\n  email_in_headers:\n    {policy}\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    with pytest.raises(ValueError, match="guards.email_in_headers"):
+        AgentSpec.coding(cwd=str(tmp_path))

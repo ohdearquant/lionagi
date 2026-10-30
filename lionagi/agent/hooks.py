@@ -9,6 +9,7 @@ import logging
 import re
 import warnings
 from collections.abc import Mapping
+from functools import wraps
 from pathlib import Path
 
 from lionagi.libs.path_safety import is_protected_name, resolve_workspace_path
@@ -79,6 +80,35 @@ async def guard_email_in_headers(
             message += f" {note}"
         raise PermissionError(message)
     return None
+
+
+def _email_header_guard_from_settings(settings: Mapping):
+    """Bind the global email-header policy to one agent's guard."""
+    from ._email_in_headers import EMAIL_RE
+
+    guards = settings.get("guards", {})
+    if not isinstance(guards, Mapping):
+        raise ValueError("guards must be a mapping")
+    policy = guards.get("email_in_headers", {})
+    if not isinstance(policy, Mapping):
+        raise ValueError("guards.email_in_headers must be a mapping")
+    addresses = policy.get("allow", [])
+    if not isinstance(addresses, list) or any(
+        not isinstance(address, str) or EMAIL_RE.fullmatch(address) is None for address in addresses
+    ):
+        raise ValueError("guards.email_in_headers.allow must be a list of email addresses")
+    note = policy.get("note")
+    if note is not None and not isinstance(note, str):
+        raise ValueError("guards.email_in_headers.note must be text")
+    allowed = frozenset(address.lower() for address in addresses)
+    if not allowed and not note:
+        return guard_email_in_headers
+
+    @wraps(guard_email_in_headers)
+    async def configured_guard(tool_name: str, action: str, args: dict) -> dict | None:
+        return await guard_email_in_headers(tool_name, action, args, allow=allowed, note=note)
+
+    return configured_guard
 
 
 def _is_hard_floor_error(exc: PermissionError) -> bool:

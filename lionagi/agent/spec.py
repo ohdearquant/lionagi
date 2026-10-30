@@ -50,11 +50,17 @@ def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
     Uses the security_pre bucket (not user pre) so these guards participate
     in the security -> user -> security recheck (ADR-0086 delta row 1).
     """
-    from lionagi.agent.hooks import guard_destructive, guard_email_in_headers, guard_paths
+    from lionagi.agent.hooks import (
+        _email_header_guard_from_settings,
+        guard_destructive,
+        guard_paths,
+    )
+    from lionagi.agent.settings import load_settings
 
     obj.security_pre("bash", guard_destructive)
-    obj.security_pre("bash", guard_email_in_headers)
-    obj.security_pre("editor", guard_email_in_headers)
+    email_guard = _email_header_guard_from_settings(load_settings(include_project=False))
+    obj.security_pre("bash", email_guard)
+    obj.security_pre("editor", email_guard)
     workspace_root = str(Path(cwd) if cwd else Path.cwd())
     path_guard = guard_paths(allowed_paths=[workspace_root])
     obj.security_pre("reader", path_guard)

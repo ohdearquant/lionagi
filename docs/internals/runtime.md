@@ -1017,6 +1017,16 @@ actions for an email address in an outbound HTTP header. Documentation-domain ex
 default. It examines raw text, so a quoted example may be refused, and dynamically assembled
 headers may not be detected. CLI-backed providers such as Claude Code, Codex, Gemini and
 Antigravity execute their own tools; their tool calls do not pass through this guard.
+Additional allowed addresses and an optional refusal note come from the global settings file:
+
+```yaml
+guards:
+  email_in_headers:
+    allow: [contact@project.example]
+    note: Use the approved contact only when necessary.
+```
+
+Project settings cannot add allowed addresses or change this note.
 
 ### `agent/nudge.py`
 
