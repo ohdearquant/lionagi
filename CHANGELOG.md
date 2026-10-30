@@ -105,6 +105,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Session gate denials now store a redacted `GateDenied` signal and deliver it
+  to a bound persistence subscriber before observation callbacks; the proposed
+  action is no longer retained in the denial's Flow copy.
+
 - A session tool gate sees arguments bound to a registered callable's
   signature with defaults applied when inspection and binding succeed; otherwise
   it sees the supplied arguments. Supplied arguments passed to the tool are
@@ -234,6 +238,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   registered again. Pass `server_names` to choose servers explicitly.
 
 ### Deprecated
+
+- Filtering emitted events through a Session gate is deprecated. Use route
+  predicates or subscribers to filter observations, and `authorize` for
+  decisions before an operation runs.
 
 - `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
   `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when

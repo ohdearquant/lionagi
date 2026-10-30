@@ -8,9 +8,10 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lionagi.ln.concurrency import Lock, maybe_await
 from lionagi.ln.types import Filter, RoleFilter, TypeFilter, all_of
@@ -19,6 +20,9 @@ from lionagi.protocols._concepts import Observable, Observer
 from ..protocols.generic.flow import Flow
 from ..protocols.generic.progression import Progression
 from .signal import Signal
+
+if TYPE_CHECKING:
+    from lionagi.protocols.action.gate import GateResult
 
 __all__ = ("SessionObserver", "RoleFilter", "_sanitize_signal_payload")
 
@@ -332,7 +336,10 @@ class SessionObserver(Observer):
         return self
 
     def gate(self, check: Gate | None) -> SessionObserver:
-        """Set the governance gate for event dispatch and pre-invoke authorization."""
+        """Set the pre-invoke gate; event filtering by this gate is deprecated.
+
+        Use route predicates or subscribers to filter observations instead.
+        """
         if check is None:
             raise TypeError("gate() requires a callable; use clear_gate() to remove the gate")
         self._gate = check
@@ -343,21 +350,43 @@ class SessionObserver(Observer):
         self._gate = None
         return self
 
+    async def _evaluate_gate(self, *, action: Any) -> GateResult:
+        """Evaluate one proposed action without recording or publishing it."""
+        from lionagi.protocols.action.gate import GateResult, adapt_session_gate
+
+        gate = self._gate
+        if gate is None:
+            return GateResult(True, "session_gate", "", "authorize", "allowed")
+        return await adapt_session_gate(gate)(action)
+
+    async def _publish_gate_denial(self, *, result: GateResult) -> None:
+        """Record and publish a denial without exposing the proposal or its reason."""
+        from .signal import GateDenied
+
+        event = GateDenied(data=None)
+        self.flow.add_item(event)
+        subscribers = tuple(self._subs)
+        persist = getattr(self, "_db_persist_handler", None)
+        if persist is not None and any(handler is persist for _, handler in subscribers):
+            ctx = self.session if self.session is not None else self
+            await maybe_await(persist(event, ctx))
+        else:
+            persist = None
+
+        try:
+            await self._dispatch(event, _payload(event), subscribers=subscribers, skip=persist)
+        except Exception as exc:  # noqa: BLE001 -- observation cannot change a denial
+            logger.warning("denial observation failed (%s)", type(exc).__name__)
+
     async def authorize(self, action: Any) -> bool:
-        """Pre-invoke gate. Returns True when no gate set; denials recorded as GateDenied."""
-        if self._gate is None:
-            return True
-        from lionagi.protocols.action.gate import adapt_session_gate
-
-        result = await adapt_session_gate(self._gate)(action)
+        """Pre-invoke gate. Returns True when no gate is set; denials are redacted."""
+        result = await self._evaluate_gate(action=action)
         if not result.allowed:
-            from .signal import GateDenied
-
-            self.flow.add_item(GateDenied(data=action))
+            await self._publish_gate_denial(result=result)
         return result.allowed
 
     async def emit(self, event: Any) -> list[Any]:
-        """Gate -> store -> route -> dispatch. Returns handler results."""
+        """Gate -> store -> route -> dispatch. Event filtering by the gate is deprecated."""
         if not isinstance(event, Observable):
             event = Signal(data=event)
         payload = _payload(event)
@@ -373,7 +402,25 @@ class SessionObserver(Observer):
 
         self.flow.add_item(event)
         if not allowed:
+            warnings.warn(
+                "Filtering emitted events through a Session gate is deprecated; "
+                "use route predicates or subscribers to filter observations.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             return []
+
+        return await self._dispatch(event, payload, subscribers=self._subs)
+
+    async def _dispatch(
+        self,
+        event: Any,
+        payload: Any,
+        *,
+        subscribers: Sequence[tuple[Filter, Handler]],
+        skip: Handler | None = None,
+    ) -> list[Any]:
+        """Route and dispatch an event after it has been admitted and stored."""
 
         for condition, name in self._routes:
             if condition(payload):
@@ -382,7 +429,9 @@ class SessionObserver(Observer):
         ctx = self.session if self.session is not None else self
         sync_results: list[Any] = []
         coros: list[Any] = []
-        for flt, handler in self._subs:
+        for flt, handler in subscribers:
+            if handler is skip:
+                continue
             for matched in self._match(flt, event, payload):
                 out = handler(matched, ctx)
                 if inspect.isawaitable(out):
