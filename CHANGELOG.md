@@ -258,6 +258,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Restored API models retain their registered request schema when a snapshot omits it.
+
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
   A caller-supplied chat model keeps its own settings.
   OpenAI native tool calling remains subject to model restrictions: [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
