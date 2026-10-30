@@ -1202,22 +1202,17 @@ def apply_forwarded_mcp_servers(
         except ValidationError:
             pass
 
-    # Discovered once: the allowlist check below and the by-name disables share it.
-    configured: set[str] | None = None
     flag = kwargs.get("ignore_user_config")
-    if exclusive and not servers and (flag is None or flag is False):
+    if exclusive and not servers and not allowed_names and (flag is None or flag is False):
         # The empty set is the hermetic codex run: the user config, and every server,
         # hook and profile it declares, is not loaded at all. Codex keeps its own
-        # authentication store under the flag. An allowlist naming a server codex's
-        # own config declares keeps that server, served from that config, so it is
-        # not this case; an allowlist naming none of them leaves nothing to serve.
+        # authentication store under the flag. An allowlist can name a server
+        # from any later-loaded config layer, so only an empty allowlist takes
+        # this path.
         # A profile the caller named is user config too, so under the flag the codex
         # provider refuses that request. A flag value the request refuses is not
         # replaced here: it is left for the request to refuse.
-        if allowed_names:
-            configured = _discover_ambient_codex_mcp_server_names(child_env)
-        if not allowed_names or not configured & set(allowed_names):
-            kwargs["ignore_user_config"] = True
+        kwargs["ignore_user_config"] = True
 
     # A generated profile was dropped above, so a profile still here is the caller's: on the
     # request, or selected by an override (`-c profile=...`), whose key codex trims and
@@ -1242,9 +1237,8 @@ def apply_forwarded_mcp_servers(
             try:
                 named_profile = configured_codex_profile(child_env)
             except ValueError:
-                # A file this parser cannot read is left to the discovery below, as before,
-                # which reads its server list with its own parser or, when that one cannot read
-                # it either, from `codex mcp list --json`; a root key in it is not seen here.
+                # A file this parser cannot read is left to the launch-time census,
+                # which refuses it before starting the process.
                 named_profile = None
             if named_profile is not None:
                 remedy = (
@@ -1298,20 +1292,10 @@ def apply_forwarded_mcp_servers(
                 overrides[f"mcp_servers.{server_name}.{field_key}"] = value
 
     if exclusive:
-        # codex has no wholesale "clear mcp_servers" override, so every
-        # server left out of the caller's set that codex would load on its own
-        # is disabled by name instead. Only names codex's own config declares:
-        # `mcp_servers.<name>.enabled=false` for any other name is a table with
-        # no server in it, and codex refuses to start with one.
-        # A run that ignores the user config loads none of its servers, and an
-        # `enabled=false` for one of them is then such a table too.
-        allowed = set(servers) if allowed_names is None else set(allowed_names)
-        if kwargs.get("ignore_user_config"):
-            configured = set()
-        elif configured is None:
-            configured = _discover_ambient_codex_mcp_server_names(child_env)
-        for excluded_name in sorted(configured - allowed):
-            overrides[f"mcp_servers.{excluded_name}.enabled"] = False
+        # Carry the set to each launch, where config is read afresh and only
+        # proven existing excluded servers are disabled by name.
+        allowed = set(servers) | set(allowed_names or ())
+        kwargs["exclusive_mcp_names"] = sorted(allowed)
 
     if secret_fields and kwargs.get("ignore_user_config"):
         # The secret fields travel in a generated `-p` profile, and `--ignore-user-config`
@@ -1355,6 +1339,7 @@ def _drop_forwarded_mcp_servers(kwargs: dict[str, Any]) -> None:
     """
     kwargs.pop("mcp_servers", None)
     kwargs.pop("strict_mcp_config", None)
+    kwargs.pop("exclusive_mcp_names", None)
     overrides = kwargs.get("config_overrides")
     if overrides:
         kept = {

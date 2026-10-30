@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- `CodexCodeRequest.exclusive_mcp_names` carries the names retained from the
+  readable user, system and project MCP configuration across request serialization.
+  Servers enabled by managed or cloud configuration are outside this selection.
+
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
   repeated scans hit the limit, schedule health explains how to recover.
 
@@ -245,6 +249,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   drop their `synonyms_removed_after` field.
 
 ### Fixed
+
+- Codex exclusive MCP selections recheck readable user, system and project layers at
+  launch and refuse configurations they cannot safely account for. Existing
+  agents retain their built selection; rebuild them to get launch-time
+  enforcement. A Codex request passed to endpoint payload construction also
+  retains its workspace when that request is rebuilt.
 
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
   A caller-supplied chat model keeps its own settings.

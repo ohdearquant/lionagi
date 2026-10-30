@@ -256,6 +256,240 @@ async def collect(state):
 
 
 @pytest.mark.asyncio(loop_scope="function")
+async def test_pre_spawn_argv_uses_filled_frozen_environment(scripted, monkeypatch, tmp_path):
+    state = scripted
+    seen = {}
+    monkeypatch.setenv("SNAPSHOT_PROBE", "before")
+
+    async def fill(env):
+        assert env is not None
+        monkeypatch.setenv("SNAPSHOT_PROBE", "after")
+        await asyncio.sleep(0)
+        return {**env, "CODEX_HOME": str(tmp_path)}, ()
+
+    original_spawn = state.cs.asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        seen["argv"] = args
+        seen["spawn_env"] = kwargs["env"]
+        return await original_spawn(*args, **kwargs)
+
+    def prepare(env):
+        seen["prepare_env"] = env
+        return [state.program, "--prepared"]
+
+    monkeypatch.setattr(state.cs, "fill_declared_secrets_and_names", fill)
+    monkeypatch.setattr(state.cs.asyncio, "create_subprocess_exec", spawn)
+    stream = state.cs.ndjson_from_cli([state.program], _prepare_argv=prepare)
+    async with contextlib.aclosing(stream):
+        assert [item async for item in stream] == [{"ok": True}]
+    assert seen["prepare_env"] is seen["spawn_env"]
+    assert seen["spawn_env"]["SNAPSHOT_PROBE"] == "before"
+    assert seen["spawn_env"]["CODEX_HOME"] == str(tmp_path)
+    assert seen["argv"] == (state.program, "--prepared")
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_pre_spawn_refusal_releases_admission_without_starting(scripted):
+    state = scripted
+    owned = state.owner()
+
+    def refuse(_env):
+        raise ValueError("refused")
+
+    with owned.bind():
+        stream = state.cs.ndjson_from_cli([state.program], env={}, _prepare_argv=refuse)
+        async with contextlib.aclosing(stream):
+            with pytest.raises(ValueError, match="refused"):
+                _ = [item async for item in stream]
+    assert not state.spawn_entered.is_set()
+    assert state.released == 1
+    assert state.records == []
+    assert state.admissions
+    await asyncio.wait_for(owned.aclose(), timeout=1)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_pre_spawn_callback_runs_after_admission_wait(scripted, monkeypatch, tmp_path):
+    state = scripted
+    entered, resume = asyncio.Event(), asyncio.Event()
+    config = tmp_path / "config"
+    config.write_text("before")
+    seen = {}
+
+    async def admit(**_kwargs):
+        entered.set()
+        await resume.wait()
+        return state.lease
+
+    def prepare(_env):
+        seen["config"] = config.read_text()
+        return [state.program]
+
+    async def consume():
+        stream = state.cs.ndjson_from_cli([state.program], env={}, _prepare_argv=prepare)
+        async with contextlib.aclosing(stream):
+            return [item async for item in stream]
+
+    monkeypatch.setattr(state.cs, "admit_subagent", admit)
+    task = state.task(consume())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    config.write_text("after")
+    resume.set()
+    assert await task == [{"ok": True}]
+    assert seen["config"] == "after"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_codex_census_reads_secret_filled_codex_home(scripted, monkeypatch, tmp_path):
+    from lionagi.providers.openai import _codex_project_layers, codex
+
+    state = scripted
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    (alternate / "config.toml").write_text('[mcp_servers.extra]\ncommand = "server"\n')
+    seen = {}
+
+    async def fill(env):
+        return {**env, "CODEX_HOME": str(alternate)}, ()
+
+    original_spawn = state.cs.asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        seen["argv"] = args
+        seen["home"] = kwargs["env"]["CODEX_HOME"]
+        return await original_spawn(*args, **kwargs)
+
+    monkeypatch.setattr(_codex_project_layers, "_SYSTEM_CONFIG", tmp_path / "system.toml")
+    monkeypatch.setattr(codex, "CODEX_CLI", state.program)
+    monkeypatch.setattr(codex, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(state.cs, "fill_declared_secrets_and_names", fill)
+    monkeypatch.setattr(state.cs.asyncio, "create_subprocess_exec", spawn)
+    request = codex.CodexCodeRequest(
+        prompt="input", repo=tmp_path, env={"HOME": str(tmp_path)}, exclusive_mcp_names=["selected"]
+    )
+    stream = codex._ndjson_from_cli(request)
+    async with contextlib.aclosing(stream):
+        assert [item async for item in stream] == [{"ok": True}]
+    assert seen["home"] == str(alternate)
+    assert "mcp_servers.extra.enabled=false" in seen["argv"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_ignore_user_config_checks_project_after_secret_fill(scripted, monkeypatch, tmp_path):
+    from lionagi._errors import ConfigurationError
+    from lionagi.providers.openai import codex
+
+    state = scripted
+    project = tmp_path / "repo"
+    project.mkdir()
+    config = project / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('[mcp_servers.extra]\ncommand = "server"\n')
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+
+    async def fill(env):
+        return {**env, "CODEX_HOME": str(alternate)}, ()
+
+    monkeypatch.setattr(codex, "CODEX_CLI", state.program)
+    monkeypatch.setattr(codex, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(state.cs, "fill_declared_secrets_and_names", fill)
+    request = codex.CodexCodeRequest(
+        prompt="input", repo=project, env={"HOME": str(project)}, ignore_user_config=True
+    )
+    stream = codex._ndjson_from_cli(request)
+    async with contextlib.aclosing(stream):
+        with pytest.raises(ConfigurationError, match="project config"):
+            _ = [item async for item in stream]
+    assert not state.spawn_entered.is_set()
+    assert state.released == 1
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_ignore_user_config_skips_final_secret_filled_home(scripted, monkeypatch, tmp_path):
+    from lionagi.providers.openai import codex
+
+    state = scripted
+    project = tmp_path / "repo"
+    project.mkdir()
+    config = project / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('[mcp_servers.extra]\ncommand = "server"\n')
+
+    async def fill(env):
+        return {**env, "HOME": str(project)}, ()
+
+    monkeypatch.setattr(codex, "CODEX_CLI", state.program)
+    monkeypatch.setattr(codex, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(state.cs, "fill_declared_secrets_and_names", fill)
+    request = codex.CodexCodeRequest(prompt="input", repo=project, env={}, ignore_user_config=True)
+    stream = codex._ndjson_from_cli(request)
+    async with contextlib.aclosing(stream):
+        assert [item async for item in stream] == [{"ok": True}]
+    assert state.spawn_entered.is_set()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("variable", ["CODEX_HOME", "HOME"])
+async def test_secret_filled_relative_codex_home_is_refused_without_value(
+    scripted, monkeypatch, tmp_path, variable
+):
+    from lionagi._errors import ConfigurationError
+    from lionagi.providers.openai import codex
+
+    state = scripted
+    marker = "synthetic-relative-value"
+
+    async def fill(env):
+        return {**env, variable: marker}, ()
+
+    monkeypatch.setattr(codex, "CODEX_CLI", state.program)
+    monkeypatch.setattr(state.cs, "fill_declared_secrets_and_names", fill)
+    request = codex.CodexCodeRequest(
+        prompt="input", repo=tmp_path, env={"HOME": ""}, exclusive_mcp_names=["kept"]
+    )
+    stream = codex._ndjson_from_cli(request)
+    async with contextlib.aclosing(stream):
+        with pytest.raises(ConfigurationError) as error:
+            _ = [item async for item in stream]
+    assert variable in str(error.value)
+    assert marker not in str(error.value)
+    assert not state.spawn_entered.is_set()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_callback_refusal_redacts_declared_home_and_exception_chain(
+    scripted, monkeypatch, tmp_path
+):
+    from lionagi._errors import ConfigurationError
+    from lionagi.providers.openai import _codex_project_layers, codex
+
+    state = scripted
+    secret_home = tmp_path / "synthetic-secret-home"
+    secret_home.mkdir()
+    (secret_home / "config.toml").write_text('profile = "blocked"\n')
+
+    async def fill(env):
+        return {**env, "CODEX_HOME": str(secret_home)}, ("CODEX_HOME",)
+
+    monkeypatch.setattr(_codex_project_layers, "_SYSTEM_CONFIG", tmp_path / "system.toml")
+    monkeypatch.setattr(codex, "CODEX_CLI", state.program)
+    monkeypatch.setattr(state.cs, "fill_declared_secrets_and_names", fill)
+    request = codex.CodexCodeRequest(
+        prompt="input", repo=tmp_path, env={"HOME": str(tmp_path)}, exclusive_mcp_names=["kept"]
+    )
+    stream = codex._ndjson_from_cli(request)
+    async with contextlib.aclosing(stream):
+        with pytest.raises(ConfigurationError) as error:
+            _ = [item async for item in stream]
+    assert str(secret_home) not in str(error.value)
+    assert error.value.__context__ is None
+    assert error.value.__cause__ is None
+    assert not state.spawn_entered.is_set()
+
+
+@pytest.mark.asyncio(loop_scope="function")
 async def test_durable_registration_commits_before_callbacks_or_any_transport_read(scripted):
     state = scripted
     owned = state.owner()

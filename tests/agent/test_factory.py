@@ -1267,15 +1267,10 @@ async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_u
     assert not [arg for arg in args if "ambient-" in arg]
 
 
-async def test_forward_mcp_codex_allowlist_enforcement_fails_closed_on_double_discovery_failure(
+async def test_forward_mcp_codex_allowlist_does_not_list_servers_during_factory_build(
     tmp_path, monkeypatch
 ):
-    """If both discovery paths fail (no readable/parseable CODEX_HOME
-    config.toml, and `codex mcp list --json` also fails), an explicit
-    allowlist that can no longer be verified must raise rather than silently
-    leave whatever ambient servers exist enabled. A non-empty allowlist is the
-    one that needs discovery: an empty one ignores the user config instead."""
-    from lionagi._errors import ConfigurationError
+    """An absent config is checked at launch without invoking a CLI to list servers."""
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home_missing"))  # no config.toml
@@ -1289,8 +1284,8 @@ async def test_forward_mcp_codex_allowlist_enforcement_fails_closed_on_double_di
     config.mcp_config_path = _write_mcp_config(tmp_path, {"docs": {"command": "docs-mcp"}})
     config.mcp_servers = ["docs"]
 
-    with pytest.raises(ConfigurationError, match="allowlist"):
-        await create_agent(config, load_settings=False)
+    branch = await create_agent(config, load_settings=False)
+    assert branch.chat_model.endpoint.config.kwargs["exclusive_mcp_names"] == ["docs"]
 
 
 async def test_forward_mcp_codex_empty_allowlist_needs_no_ambient_discovery(tmp_path, monkeypatch):
@@ -1764,14 +1759,7 @@ async def test_forward_mcp_codex_profile_created_0600_without_chmod_window(tmp_p
 async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_as_unreadable(
     tmp_path, monkeypatch
 ):
-    """A config.toml nested past the parser's limit must fall through to the
-    `codex mcp list --json` fallback, not raise RecursionError out of the
-    discovery: an explicit allowlist that cannot be verified fails closed by
-    raising, and a parser error is not that. A non-empty allowlist is the one
-    that reads the ambient config; an empty one ignores the user config.
-
-    The subprocess is stubbed so no `codex` process can start; the call it
-    would have made is asserted instead."""
+    """A deeply nested config is left to the launch-time census, without a CLI fallback."""
     import subprocess
 
     codex_home = tmp_path / "codex_home"
@@ -1797,17 +1785,19 @@ async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_
     config.mcp_servers = ["docs"]
     branch = await create_agent(config, load_settings=False)
 
-    assert [argv for argv, _ in calls] == [["/opt/bin/codex", "mcp", "list", "--json"]]
+    assert calls == []
     overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
     assert overrides == {"mcp_servers.docs.command": "docs-mcp"}
+    from lionagi.providers.openai._codex_project_layers import project_mcp_server_names
+
+    with pytest.raises(ConfigurationError, match="cannot be read or parsed"):
+        project_mcp_server_names(tmp_path, {"CODEX_HOME": str(codex_home)}, {"docs"})
 
 
-async def test_forward_mcp_codex_allowlist_with_no_codex_binary_is_refused_without_listing(
+async def test_forward_mcp_codex_allowlist_builds_without_codex_binary_or_listing(
     tmp_path, monkeypatch
 ):
-    """With the config unreadable and no codex binary found, the discovery refuses the
-    allowlist rather than run a bare `codex`, which would resolve on the child's PATH to a
-    binary the run never starts."""
+    """The factory does not run discovery, even when the binary is unavailable."""
     import subprocess
 
     codex_home = tmp_path / "codex_home"
@@ -1830,17 +1820,15 @@ async def test_forward_mcp_codex_allowlist_with_no_codex_binary_is_refused_witho
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
     config.mcp_config_path = _write_mcp_config(tmp_path, {"docs": {"command": "docs-mcp"}})
     config.mcp_servers = ["docs"]
-    with pytest.raises(ConfigurationError, match="Codex CLI was not found"):
-        await create_agent(config, load_settings=False)
+    branch = await create_agent(config, load_settings=False)
+    assert branch.chat_model.endpoint.config.kwargs["exclusive_mcp_names"] == ["docs"]
     assert calls == []
 
 
-def test_forward_mcp_codex_allowlist_with_no_codex_binary_and_a_child_env_is_refused(
+def test_forward_mcp_codex_allowlist_reads_child_env_at_launch_without_cli_fallback(
     tmp_path, monkeypatch
 ):
-    """The same refusal when the child's environment is handed over: its CODEX_HOME names
-    the unreadable config, which the message names, and its PATH holds a `codex`, which the
-    discovery does not run."""
+    """The launch census names the child config and never runs a fallback CLI."""
     import subprocess
 
     import lionagi.providers.openai.codex as codex_mod
@@ -1867,12 +1855,17 @@ def test_forward_mcp_codex_allowlist_with_no_codex_binary_and_a_child_env_is_ref
     process_home = tmp_path / "process-home"
     process_home.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(process_home))
-    with pytest.raises(ConfigurationError, match="Codex CLI was not found") as refusal:
-        apply_forwarded_mcp_servers(
-            {}, {}, provider="codex", exclusive=True, allowed_names=["docs"], env=env
-        )
-    assert repr(str(codex_home / "config.toml")) in str(refusal.value)
-    assert repr(str(process_home / "config.toml")) not in str(refusal.value)
+    kwargs = {}
+    apply_forwarded_mcp_servers(
+        kwargs, {}, provider="codex", exclusive=True, allowed_names=["docs"], env=env
+    )
+    assert kwargs["exclusive_mcp_names"] == ["docs"]
+    from lionagi.providers.openai._codex_project_layers import project_mcp_server_names
+
+    with pytest.raises(ConfigurationError, match="cannot be read or parsed") as refusal:
+        project_mcp_server_names(tmp_path, env, {"docs"})
+    assert str(codex_home / "config.toml") in str(refusal.value)
+    assert str(process_home / "config.toml") not in str(refusal.value)
     assert calls == []
 
 
@@ -1980,10 +1973,7 @@ def test_forward_mcp_codex_exclusive_set_refuses_a_bad_process_home_before_the_p
 async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_unreadable(
     tmp_path, monkeypatch
 ):
-    """A config.toml that is not UTF-8 is as unreadable as an unparseable one:
-    read_text() decodes it, and the UnicodeDecodeError must reach the fallback
-    rather than escape the discovery. The allowlist is non-empty, the one that
-    reads the ambient config."""
+    """A non-UTF-8 config is refused by the launch census, without a CLI fallback."""
     codex_home = tmp_path / "codex_home"
     codex_home.mkdir()
     (codex_home / "config.toml").write_bytes(b"mcp_servers = 1\n\xff\xfe\n")
@@ -1998,8 +1988,12 @@ async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_un
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
     config.mcp_config_path = _write_mcp_config(tmp_path, {"docs": {"command": "docs-mcp"}})
     config.mcp_servers = ["docs"]
-    with pytest.raises(ConfigurationError, match="allowlist"):
-        await create_agent(config, load_settings=False)
+    branch = await create_agent(config, load_settings=False)
+    assert branch.chat_model.endpoint.config.kwargs["exclusive_mcp_names"] == ["docs"]
+    from lionagi.providers.openai._codex_project_layers import project_mcp_server_names
+
+    with pytest.raises(ConfigurationError, match="cannot be read or parsed"):
+        project_mcp_server_names(tmp_path, {"CODEX_HOME": str(codex_home)}, {"docs"})
 
 
 @pytest.mark.parametrize("effort", ["high", None])
