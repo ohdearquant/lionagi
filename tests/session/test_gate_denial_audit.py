@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import sqlite3
 import warnings
 
 import pytest
+import pytest_asyncio
 
 from lionagi.session.control import ToolInvocation
 from lionagi.session.observer import SessionObserver
@@ -18,7 +20,7 @@ from lionagi.session.signal import GateDenied, Signal
 from lionagi.state.db import StateDB
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def audit_store(tmp_path):
     path = tmp_path / "state.db"
     db = StateDB(path)
@@ -202,6 +204,36 @@ async def test_cancelled_audit_propagates_cancellation():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=5)
+
+
+async def test_async_subscriber_then_failing_sync_subscriber_closes_coroutine(audit_store):
+    path, db = audit_store
+    observer = SessionObserver()
+    created = []
+
+    async def body():
+        pass
+
+    def first(_event, _ctx):
+        result = body()
+        created.append(result)
+        return result
+
+    def broken(_event, _ctx):
+        raise RuntimeError("observer failed")
+
+    observer.observe(GateDenied, handler=first)
+    observer.observe(GateDenied, handler=broken)
+    observer.bind_db_persistence("audit-session", db=db)
+    observer.gate(lambda _action: False)
+    try:
+        assert await observer.authorize(object()) is False
+        assert [kind for kind, _payload in _rows(path)] == ["GateDenied"]
+        assert len(created) == 1
+        assert inspect.getcoroutinestate(created[0]) == inspect.CORO_CLOSED
+    finally:
+        for coro in created:
+            coro.close()
 
 
 async def test_emit_gate_suppression_warns_but_authorize_alone_does_not():
