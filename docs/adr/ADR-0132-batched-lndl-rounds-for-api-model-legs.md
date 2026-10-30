@@ -157,7 +157,7 @@ Middle's own rule, such a round would run only the calls its `OUT{}` binds and d
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
-return mappings (`lionagi/tools/coding.py:530-755`, `lionagi/tools/context/context.py:257-573`),
+return mappings (`lionagi/tools/coding.py:547-772`, `lionagi/tools/context/context.py:257-573`),
 so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
