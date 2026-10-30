@@ -519,6 +519,11 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.mcp_config"
     },
+    "lionagi.cli._notify_outcomes": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
     "lionagi.cli._project": {
       "layer": "root",
       "owner": "cli",
