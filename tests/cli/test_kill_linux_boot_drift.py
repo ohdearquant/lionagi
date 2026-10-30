@@ -215,6 +215,78 @@ async def test_imported_ambiguous_process_is_retained(tmp_path, monkeypatch, cap
     assert f"skipped_linux_{reason}=1" in out
 
 
+@pytest.mark.parametrize("reason", ["permission_denied", "identity_unknown"])
+@pytest.mark.asyncio
+async def test_imported_process_whose_identity_cannot_be_checked_is_retained(
+    tmp_path, monkeypatch, capsys, reason
+):
+    """A live recorded process that cannot be inspected is neither ours nor a stranger's:
+    the sweep keeps the session running and unsettled."""
+    from lionagi.cli import _runs
+
+    path, runs_root = tmp_path / "state.db", tmp_path / "runs"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
+    )
+    monkeypatch.setattr(_runs, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
+    monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(
+        kill_mod, "_terminate_pid", lambda *args, **kwargs: pytest.fail("unexpected signal")
+    )
+    if reason == "permission_denied":
+
+        def deny(_pid):
+            raise psutil.AccessDenied(pid=4242)
+
+        monkeypatch.setattr(psutil, "Process", deny)
+    else:
+
+        def unknown(*args, _reason_out=None, **kwargs):
+            _reason_out.append("identity_unknown")
+            return "unverifiable"
+
+        monkeypatch.setattr(kill_mod, "_check_pid_identity", unknown)
+    sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
+    manifest = {
+        "status": "running",
+        _runs.PERSISTENCE_DEGRADED_REASON_FIELD: "database locked",
+        "pid": 4242,
+        "pid_create_time": 1005.0,
+        "pid_boot_time": 1000.0,
+    }
+    run_dir = runs_root / sid
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps(manifest))
+    async with StateDB(path) as db:
+        await db.create_progression(progression)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": progression,
+                "status": "running",
+                "source_kind": "imported_fs",
+                "started_at": time.time() - 7200,
+            }
+        )
+    assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
+    async with StateDB(path) as db:
+        row = await db.get_session(sid)
+        assert row["status"] == "running"
+        assert row["node_metadata"]["unverifiable_count"] == 1
+        transitions = await db.fetch_all(
+            "SELECT status FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        assert not any(t["status"] == "cancelled" for t in transitions)
+    out = capsys.readouterr().out
+    assert "skipped_unverifiable_pid=1" in out
+    assert "cancelled stale session" not in out
+    assert kill_mod._imported_degraded_process_identity(sid) == ("unverifiable", reason)
+    assert kill_mod._imported_degraded_process_is_live(sid)
+
+
 def test_permission_denial_has_its_own_observation(monkeypatch):
     monkeypatch.setattr(psutil, "LINUX", True)
     monkeypatch.setattr(psutil, "Process", lambda _pid: object())

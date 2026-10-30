@@ -775,7 +775,12 @@ def _signal_degraded_process(
 
 
 def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, str | None]:
-    """Classify a degraded imported run, retaining Linux epoch disagreement as unknown."""
+    """Classify a degraded imported run's recorded process.
+
+    A live process whose identity cannot be checked (Linux epoch disagreement, start-time
+    mismatch, permission denied, unknown identity) is `unverifiable` with its reason, never
+    `not_ours`: it is kept, not swept as a stranger.
+    """
     run = _degraded_run(run_id)
     if run is None:
         return "not_ours", None
@@ -803,8 +808,6 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
     verdict = _check_pid_identity(
         pid, "lionagi", expected_create_time=expected_create_time, _reason_out=reason
     )
-    if verdict == "unverifiable" and reason != ["start_mismatch"]:
-        return "not_ours", None
     return verdict, reason[0] if reason else None
 
 
