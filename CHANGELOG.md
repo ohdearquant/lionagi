@@ -266,7 +266,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   launch and refuse configurations they cannot safely account for. Existing
   agents retain their built selection; rebuild them to get launch-time
   enforcement. A Codex request passed to endpoint payload construction also
-  retains its workspace when that request is rebuilt.
+  retains its workspace when that request is rebuilt. If the Codex CLI was not
+  discovered, the call reports that before resolving secrets or checking launch-time configuration.
+  A judge raises when an exclusive MCP selection cannot be enforced. Configuration may
+  still change between the check and Codex reading it: a removed system server can cause
+  startup to fail, while a newly added one can load. Managed and cloud configuration is
+  not visible to the selection check.
 
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
   A caller-supplied chat model keeps its own settings.

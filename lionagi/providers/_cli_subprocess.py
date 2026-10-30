@@ -24,7 +24,12 @@ from typing import Any
 from urllib.parse import unquote
 
 from lionagi._cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
-from lionagi._errors import CLIInputRefusedError, ConfigurationError, ContainmentRefusedError
+from lionagi._errors import (
+    CLIInputRefusedError,
+    ConfigurationError,
+    ContainmentRefusedError,
+    _ExclusiveMcpSelectionError,
+)
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
@@ -1381,11 +1386,14 @@ async def ndjson_from_cli(
                         CLIInputRefusedError,
                         ConfigurationError,
                         ContainmentRefusedError,
+                        _ExclusiveMcpSelectionError,
                         TypeError,
                         ValueError,
                     )
                     error_type = type(exc) if type(exc) in safe_types else RuntimeError
-                    refusal = error_type(_redact_secrets_for_log(str(exc), redaction_env))
+                    refusal = error_type(
+                        _redact_secrets_for_log(str(exc), redaction_env, opaque_env, bounded_env)
+                    )
                 if refusal is not None:
                     # Raise outside the handler so the original exception and any
                     # secret-bearing context do not escape on the exception chain.

@@ -462,7 +462,7 @@ async def test_secret_filled_relative_codex_home_is_refused_without_value(
 async def test_callback_refusal_redacts_declared_home_and_exception_chain(
     scripted, monkeypatch, tmp_path
 ):
-    from lionagi._errors import ConfigurationError
+    from lionagi._errors import _ExclusiveMcpSelectionError
     from lionagi.providers.openai import _codex_project_layers, codex
 
     state = scripted
@@ -481,9 +481,63 @@ async def test_callback_refusal_redacts_declared_home_and_exception_chain(
     )
     stream = codex._ndjson_from_cli(request)
     async with contextlib.aclosing(stream):
-        with pytest.raises(ConfigurationError) as error:
+        with pytest.raises(_ExclusiveMcpSelectionError) as error:
             _ = [item async for item in stream]
     assert str(secret_home) not in str(error.value)
+    assert error.value.__context__ is None
+    assert error.value.__cause__ is None
+    assert not state.spawn_entered.is_set()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("variable", "secret"),
+    [("API_KEY", "abc"), ("UNCLASSIFIED", "unclassified-long-value")],
+)
+async def test_callback_refusal_redacts_short_and_opaque_environment_values(
+    scripted, variable, secret
+):
+    from lionagi._errors import _ExclusiveMcpSelectionError
+
+    state = scripted
+
+    def refuse(_env):
+        raise _ExclusiveMcpSelectionError(f"server or path: {secret}")
+
+    stream = state.cs.ndjson_from_cli([state.program], env={variable: secret}, _prepare_argv=refuse)
+    async with contextlib.aclosing(stream):
+        with pytest.raises(_ExclusiveMcpSelectionError) as error:
+            _ = [item async for item in stream]
+    assert secret not in str(error.value)
+    assert error.value.__context__ is None
+    assert error.value.__cause__ is None
+    assert not state.spawn_entered.is_set()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_invalid_server_name_does_not_disclose_short_credential(
+    scripted, monkeypatch, tmp_path
+):
+    from lionagi._errors import _ExclusiveMcpSelectionError
+    from lionagi.providers.openai import _codex_project_layers, codex
+
+    state = scripted
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text('[mcp_servers."abc.invalid"]\ncommand = "server"\n')
+    monkeypatch.setattr(_codex_project_layers, "_SYSTEM_CONFIG", tmp_path / "system.toml")
+    monkeypatch.setattr(codex, "CODEX_CLI", state.program)
+    request = codex.CodexCodeRequest(
+        prompt="input",
+        repo=tmp_path,
+        env={"HOME": str(tmp_path), "CODEX_HOME": str(home), "API_KEY": "abc"},
+        exclusive_mcp_names=["kept"],
+    )
+    stream = codex._ndjson_from_cli(request)
+    async with contextlib.aclosing(stream):
+        with pytest.raises(_ExclusiveMcpSelectionError) as error:
+            _ = [item async for item in stream]
+    assert "abc" not in str(error.value)
     assert error.value.__context__ is None
     assert error.value.__cause__ is None
     assert not state.spawn_entered.is_set()

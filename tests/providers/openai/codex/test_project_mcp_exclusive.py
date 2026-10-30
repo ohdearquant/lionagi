@@ -109,9 +109,44 @@ async def _run(request):
     return [item async for item in codex_mod._ndjson_from_cli(request)]
 
 
+@pytest.mark.asyncio
+async def test_missing_cli_refuses_before_secret_fill_or_census(tmp_path, monkeypatch):
+    import lionagi.providers._cli_subprocess as cli_sub
+
+    seen = []
+
+    async def fill(*args, **kwargs):
+        seen.append("secret fill")
+        raise AssertionError("secret fill must not run")
+
+    def census(*args, **kwargs):
+        seen.append("census")
+        raise AssertionError("census must not run")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
+    monkeypatch.setattr(cli_sub, "fill_declared_secrets_and_names", fill)
+    monkeypatch.setattr(codex_mod, "_exclusive_cmd_args", census)
+    request = CodexCodeRequest(prompt="x", repo=tmp_path, exclusive_mcp_names=["selected"])
+    with pytest.raises(RuntimeError, match="Codex CLI not found"):
+        await _run(request)
+    assert seen == []
+
+
 def _config_args(call):
     args = call[0]
     return [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-c"]
+
+
+@pytest.mark.asyncio
+async def test_exclusive_project_trust_override_has_selection_refusal_type(fixture):
+    from lionagi._errors import _ExclusiveMcpSelectionError
+
+    project, env, calls = fixture
+    request = _request(project, env)
+    request.config_overrides["project_root_markers"] = ["marker"]
+    with pytest.raises(_ExclusiveMcpSelectionError, match="project trust or root markers"):
+        await _run(request)
+    assert not calls
 
 
 def test_exclusive_names_field_is_sorted_unique_and_serializable(fixture):
@@ -379,7 +414,13 @@ async def test_empty_exclusive_set_keeps_existing_ignore_user_config_guard(fixtu
 
 
 @pytest.mark.asyncio
-async def test_empty_exclusive_disables_system_server(fixture):
+async def test_empty_exclusive_renders_system_disable_override(fixture):
+    """Check argv only; no Codex process starts here.
+
+    Codex rust-v0.162.1 loads the system layer even when exec ignores user config:
+    https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/config/src/loader/mod.rs#L256-L274
+    https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/config/src/loader/mod.rs#L485-L501
+    """
     project, env, calls = fixture
     project_layers._SYSTEM_CONFIG.write_text('[mcp_servers.system]\ncommand = "system"\n')
     request = _request(project, env, servers={})

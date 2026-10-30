@@ -33,7 +33,7 @@ import stat
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
-from lionagi._errors import ConfigurationError
+from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
 from lionagi.providers.openai._codex_profile import refuse_non_absolute_codex_home
 
 try:
@@ -139,7 +139,7 @@ def project_mcp_server_names(
 
     def refuse(path: Path, names: set[str], reason: str) -> None:
         suffix = f"; server names: {sorted(names)!r}" if names else ""
-        raise ConfigurationError(
+        raise _ExclusiveMcpSelectionError(
             f"Cannot enforce an exclusive Codex MCP selection: {path}: {reason}{suffix}."
         )
 
@@ -299,7 +299,7 @@ def refuse_unsafe_exclusive_profile(
             if data is None and (required or path.exists()):
                 raise ValueError
         except ValueError:
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 f"Cannot enforce an exclusive Codex MCP selection: profile config {path} "
                 "cannot be read or parsed."
             ) from None
@@ -312,20 +312,20 @@ def refuse_unsafe_exclusive_profile(
         try:
             layers.append((path, _tomllib.loads(text)))
         except (_tomllib.TOMLDecodeError, RecursionError):
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 f"Cannot enforce an exclusive Codex MCP selection: project config {path} "
                 "cannot be parsed."
             ) from None
     for path, data in layers:
         if "profile" in data:
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 f"Cannot enforce an exclusive Codex MCP selection: {path} selects a root profile."
             )
 
     if profile is None:
         return
     if re.fullmatch(r"[A-Za-z0-9_-]+", profile) is None:
-        raise ConfigurationError(
+        raise _ExclusiveMcpSelectionError(
             "Cannot enforce an exclusive Codex MCP selection: the selected profile name "
             "cannot be read safely."
         )
@@ -337,7 +337,7 @@ def refuse_unsafe_exclusive_profile(
         for source, table in layers:
             profiles = table.get("profiles", {})
             if not isinstance(profiles, dict) or profile in profiles:
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
                     f"may also be defined in {source}."
                 )
@@ -345,11 +345,11 @@ def refuse_unsafe_exclusive_profile(
         try:
             defined = codex_config_defining_profile(profile, env, cwd)
         except ValueError:
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 "Cannot enforce an exclusive Codex MCP selection: a profile table cannot be read."
             ) from None
         if defined is not None:
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
                 f"is also defined in {defined}."
             )
@@ -358,25 +358,25 @@ def refuse_unsafe_exclusive_profile(
     if generated:
         unexpected = set(data) - {"mcp_servers"}
         if unexpected:
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 f"Cannot enforce an exclusive Codex MCP selection: profile {path} "
                 f"has unexpected keys {sorted(unexpected)!r}."
             )
         names = data.get("mcp_servers", {})
         if not isinstance(names, dict) or set(names) - allowed:
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
                 f"at {path} names servers outside the selected set."
             )
         for name, fields in names.items():
             if not isinstance(fields, dict):
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     f"Cannot enforce an exclusive Codex MCP selection: "
                     f"profile {path} has invalid mcp_servers.{name}."
                 )
             unexpected_fields = set(fields) - {"env", "http_headers"}
             if unexpected_fields:
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     f"Cannot enforce an exclusive Codex MCP selection: profile {path} "
                     f"has unexpected keys mcp_servers.{name}.{sorted(unexpected_fields)!r}."
                 )
@@ -384,7 +384,7 @@ def refuse_unsafe_exclusive_profile(
         for source, table in [(path, data), *layers]:
             profiles = table.get("profiles", {})
             if source != path and not isinstance(profiles, dict):
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     f"Cannot enforce an exclusive Codex MCP selection: profiles in {source} "
                     "are not a table."
                 )
@@ -392,7 +392,7 @@ def refuse_unsafe_exclusive_profile(
             if not isinstance(profile_table, dict) or any(
                 key in profile_table for key in ("mcp_servers", "projects", "project_root_markers")
             ):
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
                     f"at {source} changes MCP servers, project trust or root markers."
                 )
@@ -407,18 +407,18 @@ def system_mcp_server_names(allowed: set[str]) -> set[str]:
         if data is None and _SYSTEM_CONFIG.exists():
             raise ValueError
     except ValueError:
-        raise ConfigurationError(
+        raise _ExclusiveMcpSelectionError(
             f"Cannot enforce an exclusive Codex MCP selection: system config {_SYSTEM_CONFIG} "
             "cannot be read or parsed."
         ) from None
     data = data or {}
     if "profile" in data:
-        raise ConfigurationError(
+        raise _ExclusiveMcpSelectionError(
             f"Cannot enforce an exclusive Codex MCP selection: {_SYSTEM_CONFIG} selects a root profile."
         )
     servers = data.get("mcp_servers", {})
     if not isinstance(servers, dict):
-        raise ConfigurationError(
+        raise _ExclusiveMcpSelectionError(
             f"Cannot enforce an exclusive Codex MCP selection: {_SYSTEM_CONFIG} mcp_servers "
             "is not a table."
         )
@@ -429,7 +429,7 @@ def system_mcp_server_names(allowed: set[str]) -> set[str]:
         or not ({"command", "url"} & servers[name].keys())
         for name in extra
     ):
-        raise ConfigurationError(
+        raise _ExclusiveMcpSelectionError(
             f"Cannot enforce an exclusive Codex MCP selection: server names or definitions "
             f"in {_SYSTEM_CONFIG} cannot be proven: {sorted(extra)!r}."
         )

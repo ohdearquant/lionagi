@@ -31,7 +31,12 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from lionagi._errors import CLIInputRefusedError, ConfigurationError, ContainmentRefusedError
+from lionagi._errors import (
+    CLIInputRefusedError,
+    ConfigurationError,
+    ContainmentRefusedError,
+    _ExclusiveMcpSelectionError,
+)
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -2616,6 +2621,16 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
 # --------------------------------------------------------------------------- NDJSON stream
 
 
+def _exclusive_check(fn, *args, **kwargs):
+    """Translate shared layer-read failures only while enforcing an exclusive selection."""
+    try:
+        return fn(*args, **kwargs)
+    except (_ExclusiveMcpSelectionError, ContainmentRefusedError):
+        raise
+    except ConfigurationError as exc:
+        raise _ExclusiveMcpSelectionError(str(exc)) from exc
+
+
 def _exclusive_cmd_args(
     request: CodexCodeRequest, plain: _PlainRequest, cwd: Path, child_env: dict[str, str]
 ) -> list[str]:
@@ -2623,32 +2638,35 @@ def _exclusive_cmd_args(
     plain = replace(plain, env=child_env)
     codex_home = child_env.get("CODEX_HOME")
     home = child_env.get("HOME")
+    error_type = (
+        _ExclusiveMcpSelectionError if plain.exclusive_mcp_names is not None else ConfigurationError
+    )
     if codex_home and not os.path.isabs(codex_home):
-        raise ConfigurationError("CODEX_HOME must be an absolute path for this Codex launch.")
+        raise error_type("CODEX_HOME must be an absolute path for this Codex launch.")
     if not codex_home and home and not os.path.isabs(home):
-        raise ConfigurationError("HOME must be an absolute path for this Codex launch.")
+        raise error_type("HOME must be an absolute path for this Codex launch.")
     if plain.exclusive_mcp_names is not None and not plain.ignore_user_config:
         for key, _ in plain.overrides:
             if key.strip(_TRIMMED).split(".")[0] in ("projects", "project_root_markers"):
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     "Cannot enforce an exclusive Codex MCP selection: a config override "
                     "changes project trust or root markers."
                 )
         flags = _command_line_layer(plain)
         override_profile = flags.get("profile")
         if override_profile is not None and not isinstance(override_profile, str):
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 "Cannot enforce an exclusive Codex MCP selection: the profile override "
                 "is not a name."
             )
         if plain.profile is not None and override_profile not in (None, plain.profile):
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 "Cannot enforce an exclusive Codex MCP selection: conflicting profile selectors."
             )
         selected_profile = plain.profile or override_profile
         profiles = flags.get("profiles", {})
         if not isinstance(profiles, dict):
-            raise ConfigurationError(
+            raise _ExclusiveMcpSelectionError(
                 "Cannot enforce an exclusive Codex MCP selection: profiles override is not a table."
             )
         if selected_profile is not None and selected_profile in profiles:
@@ -2661,17 +2679,19 @@ def _exclusive_cmd_args(
                     for key in ("mcp_servers", "projects", "project_root_markers")
                 )
             ):
-                raise ConfigurationError(
+                raise _ExclusiveMcpSelectionError(
                     "Cannot enforce an exclusive Codex MCP selection: selected profile "
                     "override changes MCP servers, project trust or root markers."
                 )
-        refuse_unsafe_exclusive_profile(
+        _exclusive_check(
+            refuse_unsafe_exclusive_profile,
             cwd,
             child_env,
             set(plain.exclusive_mcp_names),
             selected_profile,
         )
-        project_names = project_mcp_server_names(
+        project_names = _exclusive_check(
+            project_mcp_server_names,
             cwd,
             child_env,
             set(plain.exclusive_mcp_names),
@@ -2686,7 +2706,7 @@ def _exclusive_cmd_args(
             ],
         )
     elif plain.exclusive_mcp_names is not None:
-        system_names = system_mcp_server_names(set(plain.exclusive_mcp_names))
+        system_names = _exclusive_check(system_mcp_server_names, set(plain.exclusive_mcp_names))
         plain = replace(
             plain,
             overrides=[
@@ -2704,7 +2724,10 @@ def _exclusive_cmd_args(
         contained=plain.contains_account_integrations(),
     )
     if plain.ignore_user_config:
-        refuse_declaring_project_layer(plain, cwd)
+        if plain.exclusive_mcp_names is not None:
+            _exclusive_check(refuse_declaring_project_layer, plain, cwd)
+        else:
+            refuse_declaring_project_layer(plain, cwd)
     cmd = [CODEX_CLI, *request._cmd_args(plain, cwd)]
     _refuse_oversized_command(cmd)
     return cmd
