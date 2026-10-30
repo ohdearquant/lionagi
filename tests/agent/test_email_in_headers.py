@@ -42,6 +42,29 @@ def test_assignment_matching_handles_long_blank_lines_promptly():
     assert time.perf_counter() - started < 0.5
 
 
+@pytest.mark.parametrize(
+    "name", ["X-Contact", "X-" + "a" * 128, "X-" + "a" * 129, "X-" + "a" * 5000, "Foo-X-Contact"]
+)
+def test_x_header_names_still_refuse_addresses(name):
+    address = "sample.person" + chr(64) + "corp.co"
+    result = predicate.find_leak(f"{name}: {address}")
+    assert result is not None
+    assert result[0] == address
+
+
+def test_long_name_after_user_agent_token_is_checked():
+    address = "sample.person" + chr(64) + "corp.co"
+    name = "user-agent" + "-a" * 300 + "-X-Foo"
+    result = predicate.find_leak(f"{name}: {address}")
+    assert result is not None
+    assert result[0] == address
+
+
+def test_x_header_with_allowed_domain_remains_allowed():
+    address = "sample.person" + chr(64) + "example.com"
+    assert predicate.find_leak(f"X-Contact: {address}") is None
+
+
 ADDRESS = "sample-person@project.example"
 OTHER = "another-person@project.example"
 
