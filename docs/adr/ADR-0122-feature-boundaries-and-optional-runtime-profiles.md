@@ -462,7 +462,7 @@ be a minor release, but it is still a deliberate compatibility change.
 
 ## Implementation plan
 
-Implementation remains blocked while this ADR is Proposed.
+The Implementation-status line in the header records which items have landed.
 
 ### Phase 0 — Characterize without moving behavior
 
@@ -476,7 +476,10 @@ Implementation remains blocked while this ADR is Proposed.
 5. Enumerate direct cross-root and sibling-adapter imports with a target owner for every shared
    symbol.
 6. Add the static checker in report-only mode; every existing exception gets a concrete follow-up
-   issue rather than a package-wide allowlist.
+   issue rather than a package-wide allowlist. The checker accepts a module's recorded destination
+   only when the destination exists, is named in ADR-0138 or ADR-0139 (the records that decide the
+   Studio backend and CLI destinations ADR-0136 D7 deferred), or is marked as not yet decided; it
+   stops with an error unless both documents are present.
 
 No production package moves, dependency removals, public-export deletions, or registry rewrites
 occur in this phase.
