@@ -107,7 +107,7 @@ def _redact_value(key: str, value: Any) -> Any:
     # projections withhold is withheld on this error path too.
     if key_lower in _SENSITIVE_KEYS or is_secret_field_name(key):
         if isinstance(value, str):
-            return _redact_url(value) if "://" in value else "***"
+            return _redact_url(value) if "://" in value and not is_secret_field_name(key) else "***"
         if isinstance(value, dict):
             # The entire dict is under a sensitive key — blank all leaf values.
             return {k: "***" for k in value}
