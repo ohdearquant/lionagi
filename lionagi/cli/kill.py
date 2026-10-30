@@ -152,14 +152,10 @@ def _pid_addressability(reason: str | None, pid: int | None) -> tuple[str | None
 
     The second value is the observed liveness, or None if no probe was needed;
     callers can reuse it without observing a different process at the same PID.
-    A missing pid leaves a Linux boot ambiguity unresolved: with nothing to probe,
-    the run is never read as gone.
     """
     if reason != "boot_unverifiable":
         return reason, None
-    if pid is None:
-        return "boot_unverifiable", None
-    alive = _pid_alive(pid)
+    alive = pid is not None and _pid_alive(pid)
     return ("boot_unverifiable" if alive else "boot_mismatch"), alive
 
 

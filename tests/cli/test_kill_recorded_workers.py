@@ -819,7 +819,7 @@ async def _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid):
 
 
 @pytest.mark.asyncio
-async def test_direct_kill_of_a_live_runner_with_ambiguous_boot_cancels_and_signals_nothing(
+async def test_direct_kill_of_a_live_runner_with_ambiguous_boot_cancels_nothing_and_signals_nothing(
     monkeypatch,
 ):
     db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, 76543)
@@ -831,11 +831,10 @@ async def test_direct_kill_of_a_live_runner_with_ambiguous_boot_cancels_and_sign
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner_pid", ["not-a-pid", 1], ids=["unreadable", "reserved"])
-async def test_direct_kill_with_unusable_runner_pid_and_ambiguous_boot_cancels_and_signals_nothing(
-    monkeypatch, runner_pid
+async def test_direct_kill_with_a_reserved_runner_pid_and_ambiguous_boot_cancels_nothing_and_signals_nothing(
+    monkeypatch,
 ):
-    db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid)
+    db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, 1)
     assert code == 1
     assert db.session["status"] == "running"
     assert db.cancelled == []

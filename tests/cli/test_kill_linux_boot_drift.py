@@ -462,42 +462,6 @@ async def test_direct_kill_refuses_ambiguous_linux_identity_without_signal_or_te
 
 
 @pytest.mark.asyncio
-async def test_direct_kill_retains_pidless_session_with_ambiguous_linux_boot(tmp_path, monkeypatch):
-    from lionagi.cli import _runs
-
-    monkeypatch.setattr(_runs, "RUNS_ROOT", tmp_path / "runs")
-    monkeypatch.setattr(psutil, "LINUX", True)
-    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
-    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: pytest.fail("unexpected pid probe"))
-    monkeypatch.setattr(
-        kill_mod, "_terminate_pid", lambda *a, **kw: pytest.fail("unexpected signal")
-    )
-    warnings = []
-    monkeypatch.setattr(kill_mod, "warn", warnings.append)
-    sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
-    async with StateDB(tmp_path / "state.db") as db:
-        await db.create_progression(progression)
-        await db.create_session(
-            {
-                "id": sid,
-                "progression_id": progression,
-                "status": "running",
-                "node_metadata": {"pid_boot_time": 900.0},
-            }
-        )
-        result = await kill_mod._kill_one(
-            db, "session", sid, await db.get_session(sid), user_reason=""
-        )
-        assert result["signal"] == "boot_unverifiable"
-        assert (await db.get_session(sid))["status"] == "running"
-        transitions = await db.fetch_all(
-            "SELECT status FROM status_transitions WHERE entity_id = ?", (sid,)
-        )
-        assert not any(t["status"] == "cancelled" for t in transitions)
-    assert any("boot time" in text for text in warnings)
-
-
-@pytest.mark.asyncio
 async def test_unknown_on_escalation_reports_sent_sigterm_without_a_terminal_write(
     tmp_path, monkeypatch
 ):
@@ -621,7 +585,7 @@ async def test_imported_non_epoch_gaps_keep_legacy_sweep_behavior(tmp_path, monk
         assert (await db.get_session(sid))["status"] == "cancelled"
 
 
-@pytest.mark.parametrize("pid", [4242])
+@pytest.mark.parametrize("pid", [None, 4242])
 @pytest.mark.asyncio
 async def test_boot_disagreement_without_live_pid_keeps_legacy_sweep(tmp_path, monkeypatch, pid):
     path = tmp_path / "state.db"
@@ -647,53 +611,6 @@ async def test_boot_disagreement_without_live_pid_keeps_legacy_sweep(tmp_path, m
     assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
     async with StateDB(path) as db:
         assert (await db.get_session(sid))["status"] == "cancelled"
-
-
-def test_missing_pid_leaves_a_linux_boot_ambiguity_unresolved(monkeypatch):
-    """With no pid there is nothing to probe: the ambiguity stays unresolved for every
-    caller, and is never read as a process that is gone."""
-    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: pytest.fail("unexpected pid probe"))
-    assert kill_mod._pid_addressability("boot_unverifiable", None) == ("boot_unverifiable", None)
-    assert kill_mod._pid_addressability("boot_mismatch", None) == ("boot_mismatch", None)
-    assert kill_mod._pid_addressability(None, None) == (None, None)
-
-
-@pytest.mark.asyncio
-async def test_stale_sweep_retains_pidless_session_with_ambiguous_linux_boot(
-    tmp_path, monkeypatch, capsys
-):
-    """A running row with no readable pid and a Linux boot-clock disagreement cannot be
-    shown to be gone: the sweep keeps it running and counts it as unverifiable."""
-    path = tmp_path / "state.db"
-    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
-    monkeypatch.setattr(
-        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
-    )
-    monkeypatch.setattr(psutil, "LINUX", True)
-    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
-    monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: pytest.fail("unexpected pid probe"))
-    sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
-    async with StateDB(path) as db:
-        await db.create_progression(progression)
-        await db.create_session(
-            {
-                "id": sid,
-                "progression_id": progression,
-                "status": "running",
-                "started_at": time.time() - 7200,
-                "node_metadata": {"pid_boot_time": 900.0},
-            }
-        )
-    assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
-    async with StateDB(path) as db:
-        assert (await db.get_session(sid))["status"] == "running"
-        transitions = await db.fetch_all(
-            "SELECT status FROM status_transitions WHERE entity_id = ?", (sid,)
-        )
-        assert not any(t["status"] == "cancelled" for t in transitions)
-    out = capsys.readouterr().out
-    assert "skipped_unverifiable_pid=1" in out
-    assert "skipped_linux_boot_disagreement=1" in out
 
 
 @pytest.mark.parametrize(
