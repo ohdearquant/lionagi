@@ -544,15 +544,22 @@ def test_a_stored_setting_whose_name_reads_as_no_credential_is_kept():
         "token_limit": 5,
         "custom_key": "c-1",
         "user": "u-1",
-        "response_format": {"type": "json_schema", "json_schema": {"schema": schema}},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "result", "schema": schema},
+        },
     }
     data = _stored(requires_tokens=True)
     data["endpoint"]["config"].setdefault("kwargs", {}).update(kept)
     model = iModel.from_dict(data)
     assert model.endpoint.config.requires_tokens is True
-    payload, _ = model.endpoint.create_payload({"messages": []})
     for name, value in kept.items():
-        assert payload[name] == value
+        assert model.endpoint.config.kwargs[name] == value
+    payload, _ = model.endpoint.create_payload({"messages": []})
+    accepted = set(kept) & set(model.request_options.model_fields)
+    assert set(payload) & set(kept) == accepted
+    for name in accepted:
+        assert payload[name] == kept[name]
 
 
 @pytest.mark.parametrize("where", ["kwargs", "config"])

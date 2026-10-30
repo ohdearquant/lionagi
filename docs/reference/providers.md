@@ -81,9 +81,7 @@ A reply's leading `<think>...</think>` block is moved from `content` to `reasoni
 output parses the answer after it; a block with no closing tag, from a reply cut off while it was
 still reasoning, stays in `content`, and streamed replies keep the block where it arrives. A
 generation that fails after its stream has started arrives as a chunk with `is_error` set, and the
-call then fails: `iModel.stream` yields that chunk and raises once the stream ends. A model
-restored with `iModel.from_dict` does not keep its request model, as for every provider today, so
-it forwards its payload unvalidated.
+call then fails: `iModel.stream` yields that chunk and raises once the stream ends.
 Embeddings need `lattice serve` started on a vision-language checkpoint; a checkpoint without one
 gets `400 vision_unsupported`.
 
