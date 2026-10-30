@@ -1601,7 +1601,8 @@ class CodexCodeRequest(BaseModel):
         description=(
             "When set, Codex keeps only these MCP server names from its user, system and project "
             "configuration. Every other name those layers declare is disabled at launch, and "
-            "a layer that cannot be checked refuses the run. None leaves Codex's own "
+            "an MCP override naming an unselected server is refused. A layer that cannot "
+            "be checked refuses the run. None leaves Codex's own "
             "loading unchanged."
         ),
     )
@@ -2645,6 +2646,25 @@ def _exclusive_cmd_args(
 ) -> list[str]:
     """Check the final child environment and render argv immediately before spawn."""
     plain = replace(plain, env=child_env)
+    if plain.exclusive_mcp_names is not None:
+        selected = set(plain.exclusive_mcp_names)
+        for key, value in plain.overrides:
+            raw_path = key.strip(_TRIMMED).split(".")
+            try:
+                decoded_path = _override_key_path(key, "config override")
+            except ValueError:
+                decoded_path = []
+            for path in (raw_path, decoded_path):
+                if not path or path[0] != "mcp_servers":
+                    continue
+                names = path[1:2] if len(path) > 1 else value
+                if (len(path) == 1 and not isinstance(names, Mapping)) or any(
+                    name not in selected for name in names
+                ):
+                    raise _ExclusiveMcpSelectionError(
+                        "Cannot enforce an exclusive Codex MCP selection: an override names "
+                        "an unselected server or does not provide a server table."
+                    )
     codex_home = child_env.get("CODEX_HOME")
     home = child_env.get("HOME")
     error_type = (

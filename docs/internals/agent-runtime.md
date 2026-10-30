@@ -137,6 +137,8 @@ and one implementation.
   call; servers declared only in project configuration stay disabled unless
   that override names them. Selected servers can still merge fields from a
   same-name project definition.
+  A request carrying an exclusive selection may configure only selected servers;
+  an MCP override naming another server is refused at launch.
   An exclusive selection also replaces the MCP configuration already carried
   by the agent — a resumed leg's configuration is the persisted one — so the
   Claude `mcp_servers` map and `mcp_config` option, codex `mcp_servers.*`

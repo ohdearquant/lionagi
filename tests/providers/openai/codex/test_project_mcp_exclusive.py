@@ -756,16 +756,80 @@ async def test_nonexclusive_request_does_not_apply_profile_check(fixture):
 
 
 @pytest.mark.asyncio
-async def test_explicit_per_call_enabled_override_keeps_precedence(fixture):
+async def test_request_override_cannot_reenable_unselected_server(fixture):
     project, env, calls = fixture
     _project_config(project.parent, '[mcp_servers.extra]\ncommand = "extra"\n')
     request = _request(project, env)
     request.config_overrides["mcp_servers.extra.enabled"] = True
+    with pytest.raises(_ExclusiveMcpSelectionError, match="unselected"):
+        await _run(request)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["mapping", "request"])
+@pytest.mark.parametrize("ignore_user_config", [False, True])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mcp_servers.extra.enabled": True},
+        {"mcp_servers": {"extra": {"command": "other"}}},
+        {'mcp_servers."extra".enabled': True},
+        {'mcp_servers."ex\\u0074ra".enabled': True},
+    ],
+)
+async def test_request_selection_refuses_unselected_mcp_override(
+    fixture, shape, overrides, ignore_user_config
+):
+    project, env, calls = fixture
+    values = {
+        "prompt": "synthetic",
+        "repo": project,
+        "env": env,
+        "exclusive_mcp_names": ["allowed"],
+        "config_overrides": overrides,
+        "ignore_user_config": ignore_user_config,
+    }
+    request = values if shape == "mapping" else CodexCodeRequest(**values)
+    payload, _ = codex_mod.CodexCLIEndpoint().create_payload(request)
+    with pytest.raises(_ExclusiveMcpSelectionError, match="unselected"):
+        await _run(payload["request"])
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_selection_allows_selected_mcp_override(fixture):
+    project, env, calls = fixture
+    request = CodexCodeRequest(
+        prompt="synthetic",
+        repo=project,
+        env=env,
+        exclusive_mcp_names=["allowed"],
+        config_overrides={"mcp_servers.allowed.command": "allowed-mcp"},
+    )
     await _run(request)
     args = _config_args(calls[-1])
-    assert args.index("mcp_servers.extra.enabled=false") < args.index(
-        "mcp_servers.extra.enabled=true"
+    assert 'mcp_servers.allowed.command="allowed-mcp"' in args
+    assert "mcp_servers.allowed.enabled=false" not in args
+
+
+@pytest.mark.asyncio
+async def test_request_selection_allows_selected_whole_table_and_other_overrides(fixture):
+    project, env, calls = fixture
+    request = CodexCodeRequest(
+        prompt="synthetic",
+        repo=project,
+        env=env,
+        exclusive_mcp_names=["allowed"],
+        config_overrides={
+            "mcp_servers": {"allowed": {"command": "allowed-mcp"}},
+            "features.test": True,
+        },
     )
+    await _run(request)
+    args = _config_args(calls[-1])
+    assert any(arg.startswith("mcp_servers=") and "allowed-mcp" in arg for arg in args)
+    assert "features.test=true" in args
 
 
 @pytest.mark.asyncio
