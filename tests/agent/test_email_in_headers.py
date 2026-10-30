@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import signal
 import time
 
 import pytest
@@ -12,6 +13,26 @@ import pytest
 from lionagi.agent import _email_in_headers as predicate
 from lionagi.agent.hooks import guard_email_in_headers
 from lionagi.agent.spec import AgentSpec
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="requires a real-time signal timer")
+def test_repeated_header_prefixes_are_scanned_promptly():
+    # Include the address delimiter so find_leak takes its scanning path.
+    text = "x-" * 100_000 + chr(64)
+
+    def timed_out(_signum, _frame):
+        raise AssertionError("header scan exceeded five seconds")
+
+    previous_handler = signal.signal(signal.SIGALRM, timed_out)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 5)
+    try:
+        started = time.perf_counter()
+        assert predicate.find_leak(text) is None
+        assert time.perf_counter() - started < 5
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def test_assignment_matching_handles_long_blank_lines_promptly():
