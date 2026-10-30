@@ -27,7 +27,7 @@ never calls is `authorize`. So the three routes carry three different control se
 one route carrying controls and the others carrying none, and the missing control on the manager
 route is Session authorization specifically. Session authorization is reached only through the
 `_act` operation, whose sole operational caller in the package is
-`lionagi/operations/act/act.py:126-130`, while Agent factory paths attach tool preprocessors one
+`lionagi/operations/act/act.py:135-139`, while Agent factory paths attach tool preprocessors one
 registration at a time. A caller that holds an `ActionManager`, a fresh plugin Tool, or a callable
 can therefore select a path that does not pass every intended control.
 
