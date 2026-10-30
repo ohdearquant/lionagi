@@ -295,6 +295,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Importing the Claude Code, Codex, and Pi providers no longer configures the
+  application's root logger.
+
 - Successful structured-response repairs on API models now replace the invalid
   assistant text in later conversation history and run-level live persistence.
   The original text remains available in the message metadata. A branch using

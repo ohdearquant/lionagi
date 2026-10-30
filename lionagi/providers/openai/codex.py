@@ -88,7 +88,6 @@ except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4
 
 HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("codex-cli")
 
 _BOOL_ADAPTER = TypeAdapter(bool)
