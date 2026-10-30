@@ -3,12 +3,17 @@
 import asyncio
 import importlib.machinery
 import importlib.util
+import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
@@ -16,6 +21,100 @@ spec = importlib.util.spec_from_file_location(
 )
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
+
+
+def test_main_rejects_false_or_unsafe_home(tmp_path, monkeypatch):
+    account = tmp_path / "account"
+    account.mkdir()
+    nested = account / "nested"
+    nested.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    alias = tmp_path / "home-link"
+    alias.symlink_to(nested, target_is_directory=True)
+    monkeypatch.setattr(
+        probe, "pwd", SimpleNamespace(getpwuid=lambda uid: SimpleNamespace(pw_dir=str(account)))
+    )
+    base = [
+        "probe",
+        "--modules",
+        "unused",
+        "--index",
+        "0",
+        "--output",
+        str(scratch / "out"),
+        "--source-root",
+        str(scratch),
+        "--external-sandbox",
+    ]
+    for home, temp, claimed in (
+        (str(scratch), str(scratch), str(scratch)),
+        (str(account), str(scratch), str(account)),
+        (str(alias), str(scratch), str(account)),
+        (str(scratch), str(nested), str(account)),
+        (str(tmp_path), str(scratch), str(account)),
+        (str(scratch), str(tmp_path), str(account)),
+    ):
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("TMPDIR", temp)
+        monkeypatch.setattr(sys, "argv", base + ["--real-home", claimed])
+        with pytest.raises(SystemExit) as caught:
+            probe.main()
+        assert caught.value.code == 2
+        assert not (scratch / "out").exists()
+    monkeypatch.setattr(
+        probe, "pwd", SimpleNamespace(getpwuid=lambda uid: SimpleNamespace(pw_dir=None))
+    )
+    monkeypatch.setattr(sys, "argv", base)
+    with pytest.raises(SystemExit) as caught:
+        probe.main()
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_main_reports_import_failure_in_record_and_exit_status(tmp_path, monkeypatch, fails):
+    account = tmp_path / "account"
+    account.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    modules = tmp_path / "modules.txt"
+    modules.write_text("sample_module\n", encoding="utf-8")
+    output = scratch / "result.jsonl"
+    monkeypatch.setattr(
+        probe, "pwd", SimpleNamespace(getpwuid=lambda uid: SimpleNamespace(pw_dir=str(account)))
+    )
+    monkeypatch.setenv("HOME", str(scratch))
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "probe",
+            "--modules",
+            str(modules),
+            "--index",
+            "0",
+            "--output",
+            str(output),
+            "--source-root",
+            str(scratch),
+            "--external-sandbox",
+        ],
+    )
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "addaudithook", lambda hook: None)
+    monkeypatch.setattr(probe, "install_guards", lambda observer: None)
+    monkeypatch.setattr(probe, "snapshot", lambda: {})
+    monkeypatch.setattr(probe, "changes", lambda before, after: [])
+
+    def import_target(name):
+        if fails:
+            raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(probe.importlib, "import_module", import_target)
+    assert probe.main() == int(fails)
+    record = json.loads(output.read_text(encoding="utf-8"))
+    assert record["status"] == ("import_error" if fails else "complete")
 
 
 class ObserverTests(unittest.TestCase):

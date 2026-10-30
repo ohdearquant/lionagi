@@ -4,6 +4,7 @@ The generated file is reviewed data, not a runtime registry. New top-level
 packages and new requirements need an explicit ownership rule.
 """
 
+import argparse
 import json
 from pathlib import Path
 
@@ -115,7 +116,7 @@ TARGET_RULES = {
     "lionagi.operations.lndl_middle": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
     "lionagi.providers": "lionhub (destination not yet recorded)",
-    "lionagi.cli": "lionhub.cli",
+    "lionagi.cli": "pending the CLI location decision (ADR-0139 D1)",
     "lionagi.cli._argtypes": "lionhub.orchestration.arguments",
     "lionagi.cli._code_identity": "lionhub.serve.diagnostics",
     "lionagi.cli._mcp_resolve": "lionhub.orchestration.mcp_config",
@@ -136,7 +137,7 @@ TARGET_RULES = {
     "lionagi.studio.services.schedule_declaration": "lionhub.orchestration.schedule",
     "lionagi.studio.services.schedule_export": "lionhub.orchestration.schedule",
     "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
-    "lionagi.studio.cli": "lionhub.cli",
+    "lionagi.studio.cli": "pending the CLI location decision (ADR-0139 D1)",
     "lionagi.studio.services.runs": "lionhub.serve",
     "lionagi.studio.services.run_resume": "lionhub.serve",
     "lionagi.studio.services.engine_runs": "lionhub.serve",
@@ -167,7 +168,6 @@ TARGET_RULES = {
 # Mixed modules retain their existing owner while multiple portions move.
 ADDITIONAL_TARGETS = {
     "lionagi.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
-    "lionagi.studio.cli": ["lionhub.cli.schedule", "lionhub.cli.studio"],
     "lionagi.studio.services.schedules": ["lionhub.serve"],
 }
 for name in ("openrouter", "exa", "perplexity", "groq", "lattice", "ollama", "nvidia_nim"):
@@ -221,7 +221,10 @@ def module_name(path):
     return ".".join(parts)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=ROOT / "scripts/feature_boundaries.json")
+    args = parser.parse_args(argv)
     modules = {}
     for path in sorted((ROOT / "lionagi").rglob("*.py")):
         name = module_name(path)
@@ -242,9 +245,11 @@ def main():
             if name in requirements:
                 raise ValueError(f"duplicate requirement ownership: {name}")
             requirements[name] = {"layer": layer, "owner": owner}
-    requirements["tqdm"]["secondary_users"] = ["development"]
-    requirements["starlette"]["secondary_users"] = ["mcp"]
-    destination = ROOT / "scripts/feature_boundaries.json"
+    for name, users in {"tqdm": ["development"], "starlette": ["mcp"]}.items():
+        if name not in requirements:
+            raise ValueError(f"missing requirement ownership for secondary users: {name}")
+        requirements[name]["secondary_users"] = users
+    destination = args.output
     exceptions = (
         json.loads(destination.read_text(encoding="utf-8"))["exceptions"]
         if destination.exists()

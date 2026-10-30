@@ -11,6 +11,11 @@ import re
 import sys
 import threading
 
+try:
+    import pwd
+except ImportError:  # Platforms without an account database cannot establish the boundary.
+    pwd = None
+
 
 def within(path, root):
     try:
@@ -288,7 +293,7 @@ def main():
     )
     parser.add_argument("--output", required=True, help="append one result as JSONL")
     parser.add_argument("--source-root", required=True, help="root placed first on sys.path")
-    parser.add_argument("--real-home", required=True, help="real account home to protect")
+    parser.add_argument("--real-home", help="verify the account home derived from the OS")
     parser.add_argument(
         "--read-root",
         action="append",
@@ -303,18 +308,36 @@ def main():
     args = parser.parse_args()
     if not args.external_sandbox:
         parser.error("an externally enforced kernel sandbox is required")
-    home = os.path.realpath(args.real_home)
+    try:
+        if pwd is None or not hasattr(os, "getuid"):
+            raise OSError("account lookup unavailable")
+        account_home = pwd.getpwuid(os.getuid()).pw_dir
+        if not account_home or not os.path.isabs(account_home):
+            raise ValueError("invalid account home")
+        home = os.path.realpath(account_home)
+    except (OSError, KeyError, TypeError, ValueError):
+        parser.error("cannot determine the real account home")
     scratch = os.path.realpath(os.environ.get("HOME", ""))
     root = os.path.realpath(args.source_root)
     roots = [root, *(os.path.realpath(p) for p in args.read_root)]
-    if not os.path.isabs(args.real_home) or home == os.path.sep or not os.path.isdir(home):
+    if home == os.path.sep or not os.path.isdir(home):
         parser.error("real account home must be an absolute existing directory")
-    if not os.environ.get("HOME") or not os.path.isdir(scratch) or scratch == home:
-        parser.error("HOME must be a scratch directory distinct from the account home")
+    if args.real_home is not None and (
+        not os.path.isabs(args.real_home) or os.path.realpath(args.real_home) != home
+    ):
+        parser.error("--real-home does not match the account home")
+    if (
+        not os.environ.get("HOME")
+        or not os.path.isdir(scratch)
+        or within(scratch, home)
+        or within(home, scratch)
+    ):
+        parser.error("HOME must be disjoint from the account home")
     if (
         not os.environ.get("TMPDIR")
         or not os.path.isdir(os.environ["TMPDIR"])
-        or os.path.realpath(os.environ["TMPDIR"]) == home
+        or within(os.path.realpath(os.environ["TMPDIR"]), home)
+        or within(home, os.path.realpath(os.environ["TMPDIR"]))
     ):
         parser.error("TMPDIR must be a scratch directory")
     if any(not os.path.isdir(r) or within(home, r) for r in roots):
@@ -378,7 +401,7 @@ def main():
     }
     output.write(json.dumps(result, sort_keys=True) + "\n")
     output.close()
-    return 0
+    return 1 if exception is not None else 0
 
 
 if __name__ == "__main__":

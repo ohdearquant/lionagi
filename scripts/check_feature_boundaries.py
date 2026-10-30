@@ -243,6 +243,8 @@ def load_manifest(
             raise ManifestError(f"exception must name exact modules: {entry}")
         if not re.fullmatch(r"#[1-9][0-9]*", entry["issue"]):
             raise ManifestError(f"invalid exception issue: {entry}")
+        if entry["phase"] not in {"P1", "P2", "P3", "P4", "P5"}:
+            raise ManifestError(f"invalid exception removal phase: {entry['phase']}")
         pair = (entry["source"], entry["target"])
         if pair in seen:
             raise ManifestError(f"duplicate exception: {pair}")
@@ -261,8 +263,17 @@ def validate_target_notes(root: Path, manifest: dict[str, Any], targets: set[str
             "additional_targets", []
         )
         for target in notes:
-            if target == "lionhub (destination not yet recorded)" or target in targets:
+            if (
+                target
+                in {
+                    "lionhub (destination not yet recorded)",
+                    "pending the CLI location decision (ADR-0139 D1)",
+                }
+                or target in targets
+            ):
                 continue
+            if target == "lionhub.cli" or target.startswith("lionhub.cli."):
+                raise ManifestError(f"pending CLI destination for {name}: {target}")
             if not NAME.fullmatch(target) or not re.search(
                 rf"(?<![\w.]){re.escape(target)}(?![\w.])", allocations
             ):
@@ -574,12 +585,12 @@ def classify(
     return findings
 
 
-def validate_exception_edges(edges: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
-    pairs = {(edge["source"], edge["target"]) for edge in edges}
+def validate_exception_edges(findings: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    pairs = {(edge["source"], edge["target"]) for edge in findings}
     for entry in manifest["exceptions"]:
         if (entry["source"], entry["target"]) not in pairs:
             raise ManifestError(
-                f"exception does not name a graph edge: {entry['source']} -> {entry['target']}"
+                f"exception does not name a current boundary finding: {entry['source']} -> {entry['target']}"
             )
 
 
@@ -598,8 +609,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_target_notes(args.root, manifest, targets)
         edges = scan(files, targets)
-        validate_exception_edges(edges, manifest)
         findings = classify(edges, manifest, targets)
+        validate_exception_edges(findings, manifest)
     except (ManifestError, OSError) as exc:
         print(f"feature boundary error: {exc}", file=sys.stderr)
         return 1

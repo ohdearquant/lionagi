@@ -111,8 +111,12 @@ def test_exception_exactness_and_evidence(tmp_path):
     checked = checker.load_manifest(manifest, modules, declared)
     findings = checker.classify(checker.scan(modules), checked)
     assert any(f["exception"] == entry for f in findings)
-    checker.validate_exception_edges(checker.scan(modules), checked)
-    with pytest.raises(checker.ManifestError, match="does not name a graph edge"):
+    checker.validate_exception_edges(findings, checked)
+    for phase in ("P1", "P2", "P3", "P4", "P5"):
+        data["exceptions"] = [{**entry, "phase": phase}]
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        checker.load_manifest(manifest, modules, declared)
+    with pytest.raises(checker.ManifestError, match="does not name a current boundary finding"):
         checker.validate_exception_edges([], checked)
     for change in (
         {"source": "lionagi.*"},
@@ -120,6 +124,7 @@ def test_exception_exactness_and_evidence(tmp_path):
         {"issue": ""},
         {"owner": ""},
         {"phase": "*"},
+        {"phase": "later"},
         {"issue": "3278"},
     ):
         data["exceptions"] = [{**entry, **change}]
@@ -258,7 +263,9 @@ def test_secondary_users_and_module_coverage_fail_closed(tmp_path):
 
 def test_target_notes_use_recorded_destinations_only():
     fallback = "lionhub (destination not yet recorded)"
-    assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == "lionhub.cli"
+    assert builder.match(builder.TARGET_RULES, "lionagi.cli.agent") == (
+        "pending the CLI location decision (ADR-0139 D1)"
+    )
     assert builder.match(builder.TARGET_RULES, "lionagi.studio.scheduler.engine") == (
         "lionhub.orchestration.scheduler"
     )
@@ -270,6 +277,37 @@ def test_target_notes_use_recorded_destinations_only():
     assert builder.ADDITIONAL_TARGETS["lionagi.cli.orchestrate"] == [
         "lionhub.orchestration.flow.parsing"
     ]
+
+
+def test_committed_inventory_matches_generator_and_rejects_hand_edit(tmp_path):
+    committed = Path(builder.ROOT) / "scripts/feature_boundaries.json"
+    candidate = tmp_path / "candidate.json"
+    generated = tmp_path / "generated.json"
+    candidate.write_bytes(committed.read_bytes())
+
+    def assert_matches():
+        # Seed the output with the candidate so its exact exceptions are preserved.
+        generated.write_bytes(candidate.read_bytes())
+        builder.main(["--output", str(generated)])
+        assert candidate.read_bytes() == generated.read_bytes()
+
+    assert_matches()
+    mutated = json.loads(candidate.read_text(encoding="utf-8"))
+    mutated["exceptions"] = [
+        {
+            "source": "lionagi",
+            "target": "lionagi.config",
+            "issue": "#1",
+            "owner": "configuration",
+            "phase": "P1",
+        }
+    ]
+    candidate.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert_matches()
+    mutated["modules"]["lionagi"]["owner"] = "unreviewed-owner"
+    candidate.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        assert_matches()
 
 
 def test_quoted_extra_names_and_missing_target_tree(tmp_path):
@@ -292,3 +330,43 @@ def test_target_notes_require_public_evidence(tmp_path):
     data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.unrecorded"
     with pytest.raises(checker.ManifestError, match="unrecorded destination"):
         checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.cli"
+    with pytest.raises(checker.ManifestError, match="pending CLI destination"):
+        checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["stale_module", "stale_requirement", "missing_field", "extra_field", "phase", "nonfinding"],
+)
+def test_invalid_inventory_exits_nonzero(tmp_path, capsys, case):
+    root, _, data, manifest = fixture_project(tmp_path)
+    entry = {
+        "source": "lionagi.foundation",
+        "target": "lionagi.adapter",
+        "issue": "#3278",
+        "owner": "a",
+        "phase": "P1",
+    }
+    if case == "stale_module":
+        data["modules"]["lionagi.removed"] = {"layer": "sdk", "owner": "old"}
+    elif case == "stale_requirement":
+        data["requirements"]["removed-distribution"] = {"layer": "sdk", "owner": "old"}
+    elif case == "missing_field":
+        entry.pop("phase")
+        data["exceptions"] = [entry]
+    elif case == "extra_field":
+        data["exceptions"] = [{**entry, "reason": "temporary"}]
+    elif case == "phase":
+        data["exceptions"] = [{**entry, "phase": "later"}]
+    else:
+        data["exceptions"] = [{**entry, "target": "lionagi"}]
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    assert checker.main(["--root", str(root), "--manifest", str(manifest)]) == 1
+    error = capsys.readouterr().err
+    if case == "nonfinding":
+        assert "lionagi.foundation -> lionagi" in error
+    elif case == "phase":
+        assert "phase" in error
+    else:
+        assert "coverage" in error or "exactly" in error
