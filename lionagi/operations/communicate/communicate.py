@@ -127,9 +127,13 @@ async def communicate(
         try:
             out, res2 = await parse(branch, res.response, parse_param, return_res_message=True)
             if res2 and isinstance(res2, AssistantResponse):
+                res.metadata["original_text"] = res.response
                 res.metadata["original_model_response"] = res.model_response
                 # model_response is read-only property - update metadata instead
                 res.metadata["model_response"] = res2.model_response
+                res.content.assistant_response = res2.response
+                if branch._persist_message_update is not None:
+                    await branch._persist_message_update(res)
             return out
         except ValueError as e:
             raise ValueError(

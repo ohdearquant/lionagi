@@ -153,9 +153,9 @@ async def test_same_snapshot_marks_and_backdated_handoff(live_backend, monkeypat
     original = sessions._fetch_message_bounds
     inserted = False
 
-    async def interleave(db, ids):
+    async def interleave(db, ids, **kwargs):
         nonlocal inserted
-        result = await original(db, ids)
+        result = await original(db, ids, **kwargs)
         if not inserted:
             inserted = True
             await append(live_backend, ["late-lower-id"], timestamp=1.0)

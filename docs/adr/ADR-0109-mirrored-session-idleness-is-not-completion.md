@@ -27,7 +27,7 @@ meanings, which is the same failure ADR-0105 fixed one column over.
 ### Three consequences
 
 **1. Consumers read a live agent as finished.** Verified at
-`lionagi/studio/services/sessions.py:1705-1713`: `is_session_stream_done` closes a
+`lionagi/studio/services/sessions.py:1844-1852`: `is_session_stream_done` closes a
 session's live stream once the status is terminal and has been stable for
 `SESSION_DONE_STABLE_SECS`. A mirrored session that goes quiet for five minutes
 is marked `completed`, and sixty seconds later the Studio stops following it.
@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:4971-4982`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:5020-5031`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -342,11 +342,11 @@ about, so it is the subject of the change rather than a downstream reader of
 it. That leaves the **11 downstream consumer files** enumerated below. Read
 "11" as a description of the table and not as a count of everything in the tree
 that reads the constant: the reconciler reads it, and `state/db.py` derives a
-second name from it at `lionagi/state/db.py:460`.
+second name from it at `lionagi/state/db.py:461`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
-| `studio/services/sessions.py:1705` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
+| `studio/services/sessions.py:1844` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `studio/services/run_resume.py:245` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
 | `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:74` | Unverified | not driven |

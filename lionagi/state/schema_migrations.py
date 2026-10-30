@@ -130,6 +130,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("poller_consecutive_401", "INTEGER NOT NULL DEFAULT 0"),
         # New accounting starts at zero; prior HTTP/dispatch history is not inferred.
         ("poller_consecutive_cap_no_dispatch", "INTEGER NOT NULL DEFAULT 0"),
+        ("poller_last_capped_page_limit", "INTEGER"),
+        ("poller_target_generation", "INTEGER NOT NULL DEFAULT 0"),
         # Bounded retry for a fire that refuses before dispatching: which
         # event the streak applies to, and how many times it has refused.
         ("predispatch_refusal_event", "TEXT"),
@@ -277,6 +279,16 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
     "CREATE INDEX IF NOT EXISTS idx_sessions_invocation_status_created "
     "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
 )
+
+RECENT_VISIBLE_INDEXES = {
+    direction: (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_recent_visible "
+        f"ON sessions(updated_at {direction}) "
+        "WHERE node_metadata IS NULL OR NOT json_valid(node_metadata) "
+        "OR json_extract(node_metadata, '$.engine_parent_run_id') IS NULL"
+    )
+    for direction in ("ASC", "DESC")
+}
 
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (

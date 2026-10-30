@@ -393,6 +393,104 @@ class _FakePaginatedClient:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("full_pages", "requests"), [(6, 7), (50, 51)])
+async def test_raised_merged_page_limit_scans_backlog(monkeypatch, full_pages, requests):
+    async def token():
+        return "synthetic"
+
+    pages = [_closed_page(12, 1000 + 100 * i) for i in range(full_pages)]
+    pages.append([_pr(99999, "2026-07-06T01:00:00Z", state="closed")])
+    client = _FakePaginatedClient(pages)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    schedule = _minimal_schedule(github_filter={"event": "pr_merged", "merged_page_limit": 100})
+    result = await gh_mod.github_poll(schedule)
+    assert result.scan_complete is True
+    assert result.items == []
+    assert len(client.requests) == requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("event", "expected"), [("pr_merged", None), ("pr_opened", '"tag"')])
+async def test_merged_mode_never_uses_first_page_etag(monkeypatch, event, expected):
+    async def token():
+        return "synthetic"
+
+    seen = []
+
+    class Client:
+        async def get(self, url, headers=None, params=None):
+            seen.append(dict(headers))
+            return _FakeResp([])
+
+    monkeypatch.setattr(gh_mod, "_get_gh_token", token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: Client())
+    result = await gh_mod.github_poll(
+        _minimal_schedule(github_filter={"event": event}, node_metadata={"github_etag": '"tag"'})
+    )
+    assert result.scan_complete is True
+    assert seen[0].get("If-None-Match") == expected
+
+
+@pytest.mark.asyncio
+async def test_limit_change_during_poll_applies_to_next_poll(monkeypatch):
+    async def token():
+        return "synthetic"
+
+    schedule = _minimal_schedule(github_filter={"event": "pr_merged", "merged_page_limit": 5})
+    pages = [_closed_page(12, 1000 + 100 * i) for i in range(6)]
+    pages.append([_pr(99999, "2026-07-06T01:00:00Z", state="closed")])
+
+    class ChangingClient(_FakePaginatedClient):
+        async def get(self, *args, **kwargs):
+            response = await super().get(*args, **kwargs)
+            schedule["github_filter"]["merged_page_limit"] = 10
+            schedule["github_cursor"] = None
+            return response
+
+    first = ChangingClient(pages)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: first)
+    assert not (await gh_mod.github_poll(schedule)).scan_complete
+    assert len(first.requests) == 5
+    second = _FakePaginatedClient(pages)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: second)
+    assert (await gh_mod.github_poll(schedule)).scan_complete
+    assert len(second.requests) == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 500])
+async def test_late_page_failure_never_releases_events_or_retries(monkeypatch, status):
+    async def token():
+        return "synthetic"
+
+    pages = [_closed_page(12, 1000 + 100 * i) for i in range(7)]
+    pages[0][0]["merged_at"] = "2026-07-05T00:00:00Z"
+
+    class FailingClient(_FakePaginatedClient):
+        async def get(self, *args, **kwargs):
+            response = await super().get(*args, **kwargs)
+            if len(self.requests) == 7:
+                response.status_code = status
+                response.headers["retry-after"] = "60"
+            return response
+
+    client = FailingClient(pages)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    cursor = _cursor_for("2026-07-01T00:00:00Z", 1)
+    schedule = _minimal_schedule(
+        github_cursor=cursor, github_filter={"event": "pr_merged", "merged_page_limit": 10}
+    )
+    result = await gh_mod.github_poll(schedule)
+    assert result.scan_complete is False and result.items == []
+    assert result.poll_status == "error"
+    assert schedule["github_cursor"] == cursor
+    assert len(client.requests) == 7
+
+
+@pytest.mark.asyncio
 async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
     """End-to-end across the github_poll/_tick_github boundary: a poll that
     finds two new PRs but can only afford to dispatch one persists a cursor

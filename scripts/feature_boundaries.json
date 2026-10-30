@@ -1,0 +1,2981 @@
+{
+  "version": 1,
+  "modules": {
+    "lionagi": {
+      "layer": "sdk",
+      "owner": "public_api"
+    },
+    "lionagi._auto": {
+      "layer": "root",
+      "owner": "application_discovery"
+    },
+    "lionagi._checkpoint_v3_codec": {
+      "layer": "contracts",
+      "owner": "checkpoint_contracts"
+    },
+    "lionagi._checkpoint_version": {
+      "layer": "contracts",
+      "owner": "checkpoint_contracts"
+    },
+    "lionagi._class_registry": {
+      "layer": "foundation",
+      "owner": "class_registry"
+    },
+    "lionagi._cli_worker_context": {
+      "layer": "adapter",
+      "owner": "worker_context"
+    },
+    "lionagi._command_env": {
+      "layer": "adapter",
+      "owner": "command_environment"
+    },
+    "lionagi._command_env_metadata": {
+      "layer": "contracts",
+      "owner": "command_environment"
+    },
+    "lionagi._errors": {
+      "layer": "contracts",
+      "owner": "errors"
+    },
+    "lionagi._flow_spec": {
+      "layer": "contracts",
+      "owner": "flow_contracts"
+    },
+    "lionagi._log_channels": {
+      "layer": "foundation",
+      "owner": "logging_channels"
+    },
+    "lionagi._moved": {
+      "layer": "foundation",
+      "owner": "compatibility"
+    },
+    "lionagi._paths": {
+      "layer": "foundation",
+      "owner": "path_configuration"
+    },
+    "lionagi._settings": {
+      "layer": "sdk",
+      "owner": "configuration"
+    },
+    "lionagi._spec_limits": {
+      "layer": "contracts",
+      "owner": "specification_limits"
+    },
+    "lionagi._types": {
+      "layer": "foundation",
+      "owner": "types"
+    },
+    "lionagi.adapters": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters._base": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters._utils": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.async_postgres_adapter": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.csv_": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.json_": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.pandas_": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.spec_adapters": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.spec_adapters._protocol": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.spec_adapters.pydantic_field": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.adapters.toml_": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "lionagi.agent": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent._email_in_headers": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.context_fold": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.factory": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.gate": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.hooks": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.nudge": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.permissions": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.settings": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.agent.spec": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.catalog": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.emission": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.pack": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.pattern": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.profile": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.analyst": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.arbitrator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.architect": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.assessor": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.auditor": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.commentator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.contrarian": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.coordinator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.critic": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.curator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.deployer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.entrepreneur": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.evaluator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.explorer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.facilitator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.implementer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.innovator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.investigator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.mentor": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.migrator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modeler": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.adversarial": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.associative": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.constraint_solving": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.empathetic": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.evidential": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.fast": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.framing": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.metacognitive": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.premortem": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.probabilistic": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.slow": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.socratic": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.systematic": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.modes.visual_spatial": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.negotiator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.operator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.orchestrator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.persona": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.planner": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.postmortem_lead": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.prototyper": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.refactorer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.researcher": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.responder": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.reviewer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.scribe": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.strategist": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.suggester": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.synthesizer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.tester": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.translator": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.troubleshooter": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.roles.writer": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.casts.surfaces": {
+      "layer": "adapter",
+      "owner": "casts",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.cli": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.__main__": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli._agent_depth": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli._api_usage": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli._argtypes": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.arguments"
+    },
+    "lionagi.cli._code_identity": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.serve.diagnostics"
+    },
+    "lionagi.cli._context_from": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli._logging": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli._mcp_resolve": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.mcp_config"
+    },
+    "lionagi.cli._notify_outcomes": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli._project": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.project"
+    },
+    "lionagi.cli._providers": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.spawn"
+    },
+    "lionagi.cli._runs": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.runs"
+    },
+    "lionagi.cli._util": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.job"
+    },
+    "lionagi.cli.agent": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.dispatch": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.doctor": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.engine": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.engine_definitions"
+    },
+    "lionagi.cli.hooks": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.invoke": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.kill": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.kill"
+    },
+    "lionagi.cli.machine": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.machine_schedule": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.main": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.mcp": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.mirror": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.serve.mirror"
+    },
+    "lionagi.cli.monitor": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)",
+      "additional_targets": [
+        "lionhub.orchestration.flow.parsing"
+      ]
+    },
+    "lionagi.cli.orchestrate._checkpoint": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.flow.checkpoint"
+    },
+    "lionagi.cli.orchestrate._common": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._control": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._finalize": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._harvest": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._manifest": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._notify": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._orchestration": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.runs"
+    },
+    "lionagi.cli.orchestrate._quiescence": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate._round_records": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate.fanout": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.orchestrate.flow": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.plugin": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.skill": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.state": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.stats": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.cli.status": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.inspection"
+    },
+    "lionagi.cli.team": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.team"
+    },
+    "lionagi.cli.wait": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.config": {
+      "layer": "sdk",
+      "owner": "configuration"
+    },
+    "lionagi.hooks": {
+      "layer": "adapter",
+      "owner": "hooks"
+    },
+    "lionagi.hooks._message_retry": {
+      "layer": "adapter",
+      "owner": "hooks"
+    },
+    "lionagi.hooks.builtins": {
+      "layer": "adapter",
+      "owner": "hooks"
+    },
+    "lionagi.hooks.bus": {
+      "layer": "adapter",
+      "owner": "hooks"
+    },
+    "lionagi.hooks.external": {
+      "layer": "adapter",
+      "owner": "hooks",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.hooks.loader": {
+      "layer": "adapter",
+      "owner": "hooks"
+    },
+    "lionagi.hooks.persist": {
+      "layer": "adapter",
+      "owner": "hooks"
+    },
+    "lionagi.integrations": {
+      "layer": "adapter",
+      "owner": "integrations",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.integrations.ruvector": {
+      "layer": "adapter",
+      "owner": "ruvector",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.integrations.ruvector.memory": {
+      "layer": "adapter",
+      "owner": "ruvector",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.integrations.ruvector.store": {
+      "layer": "adapter",
+      "owner": "ruvector",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.libs": {
+      "layer": "foundation",
+      "owner": "utilities"
+    },
+    "lionagi.libs.credential_fields": {
+      "layer": "foundation",
+      "owner": "credential_fields"
+    },
+    "lionagi.libs.file": {
+      "layer": "foundation",
+      "owner": "utilities"
+    },
+    "lionagi.libs.file.chunk": {
+      "layer": "foundation",
+      "owner": "utilities"
+    },
+    "lionagi.libs.file.process": {
+      "layer": "foundation",
+      "owner": "utilities"
+    },
+    "lionagi.libs.frontmatter": {
+      "layer": "foundation",
+      "owner": "utilities"
+    },
+    "lionagi.libs.nested": {
+      "layer": "foundation",
+      "owner": "utilities"
+    },
+    "lionagi.libs.path_safety": {
+      "layer": "foundation",
+      "owner": "path_safety"
+    },
+    "lionagi.libs.schema": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.as_readable": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.breakdown_pydantic_annotation": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.extract_code_block": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.extract_docstring": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.function_to_schema": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.load_pydantic_model_from_schema": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.schema.minimal_yaml": {
+      "layer": "foundation",
+      "owner": "schema"
+    },
+    "lionagi.libs.validate": {
+      "layer": "foundation",
+      "owner": "validation"
+    },
+    "lionagi.libs.validate.common_field_validators": {
+      "layer": "foundation",
+      "owner": "validation"
+    },
+    "lionagi.libs.validate.to_num": {
+      "layer": "foundation",
+      "owner": "validation"
+    },
+    "lionagi.libs.validate.validate_boolean": {
+      "layer": "foundation",
+      "owner": "validation"
+    },
+    "lionagi.ln": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._async_call": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._cache": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._hash": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._json_dump": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._json_load": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._lazy_init": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._list_call": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._paths": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._proc": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._ssrf": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._structural": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._to_list": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln._utils": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency._compat": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.cancel": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.errors": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.patterns": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.primitives": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.resource_tracker": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.task": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.concurrency.utils": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy._extract_json": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy._fuzzy_json": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy._fuzzy_match": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy._fuzzy_validate": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy._string_similarity": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.fuzzy._to_dict": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types._annotation": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types._sentinel": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types.base": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types.filters": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types.operable": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types.registry": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.ln.types.spec": {
+      "layer": "foundation",
+      "owner": "primitives"
+    },
+    "lionagi.lndl": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl._parse_function_call": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.assembler": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.ast": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.diagnostics": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.errors": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.extract": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.lexer": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.normalize": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.parser": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.prompt": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.round_outcome": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.lndl.types": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.models": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.models._build_model": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.models.field_model": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.models.hashable_model": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.models.note": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.models.operable_model": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.models.schema_model": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "lionagi.operations.ReAct.ReAct": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.ReAct": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.ReAct.utils": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations._api_hooks": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations._defaults": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations._guards": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations._observe": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations._turn_origin": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations._visualize_graph": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.act": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.act._gate_arguments": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.act.act": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.builder": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.chat": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.chat._prepare": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.chat.chat": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.communicate": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.communicate.communicate": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.fields": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.flow": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.interpret": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.interpret.interpret": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.lndl_middle": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.operations.lndl_middle.lndl_middle": {
+      "layer": "adapter",
+      "owner": "lndl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.operations.manager": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.node": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.operate": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.operate.operate": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.operate.operative": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.operate.step": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.parse": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.parse.parse": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.run": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.run.run": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.schema": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.schema.json_structure": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.schema.structure": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.select": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.select.select": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.select.utils": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.operations.types": {
+      "layer": "sdk",
+      "owner": "operations"
+    },
+    "lionagi.plugins": {
+      "layer": "adapter",
+      "owner": "plugins"
+    },
+    "lionagi.plugins._user_settings": {
+      "layer": "adapter",
+      "owner": "plugins"
+    },
+    "lionagi.plugins.discovery": {
+      "layer": "adapter",
+      "owner": "plugins"
+    },
+    "lionagi.plugins.manifest": {
+      "layer": "adapter",
+      "owner": "plugins"
+    },
+    "lionagi.plugins.registry": {
+      "layer": "adapter",
+      "owner": "plugins"
+    },
+    "lionagi.plugins.trust": {
+      "layer": "adapter",
+      "owner": "plugins"
+    },
+    "lionagi.protocols": {
+      "layer": "sdk",
+      "owner": "protocols"
+    },
+    "lionagi.protocols._concepts": {
+      "layer": "contracts",
+      "owner": "protocol_contracts"
+    },
+    "lionagi.protocols.action": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.action.function_calling": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.action.gate": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.action.lion_tool": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.action.manager": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.action.tool": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.action.tool_hooks": {
+      "layer": "sdk",
+      "owner": "tools"
+    },
+    "lionagi.protocols.context_providers": {
+      "layer": "contracts",
+      "owner": "context_contracts"
+    },
+    "lionagi.protocols.flow_requests": {
+      "layer": "contracts",
+      "owner": "flow_contracts"
+    },
+    "lionagi.protocols.generic": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.generic.element": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.generic.event": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.generic.flow": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.generic.log": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.generic.pile": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.generic.processor": {
+      "layer": "sdk",
+      "owner": "event_processing"
+    },
+    "lionagi.protocols.generic.progression": {
+      "layer": "foundation",
+      "owner": "collections"
+    },
+    "lionagi.protocols.graph": {
+      "layer": "sdk",
+      "owner": "graph"
+    },
+    "lionagi.protocols.graph.edge": {
+      "layer": "sdk",
+      "owner": "graph"
+    },
+    "lionagi.protocols.graph.graph": {
+      "layer": "sdk",
+      "owner": "graph"
+    },
+    "lionagi.protocols.graph.node": {
+      "layer": "sdk",
+      "owner": "graph"
+    },
+    "lionagi.protocols.graph.node_factory": {
+      "layer": "sdk",
+      "owner": "graph"
+    },
+    "lionagi.protocols.ids": {
+      "layer": "foundation",
+      "owner": "identity"
+    },
+    "lionagi.protocols.memory": {
+      "layer": "contracts",
+      "owner": "memory_contracts"
+    },
+    "lionagi.protocols.messages": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages._result_projection": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.action_request": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.action_response": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.assistant_response": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.base": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.instruction": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.manager": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.message": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.prepare": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.rendering": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.system": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.messages.validators": {
+      "layer": "sdk",
+      "owner": "messages"
+    },
+    "lionagi.protocols.types": {
+      "layer": "contracts",
+      "owner": "protocol_contracts"
+    },
+    "lionagi.providers": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers._agentic_handlers": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers._cli_subprocess": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers._multipart": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers._provider_errors": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers._secret_resolution": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers._subagent_admission": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ag2": {
+      "layer": "adapter",
+      "owner": "provider_ag2",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ag2._config": {
+      "layer": "adapter",
+      "owner": "provider_ag2",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ag2.agent": {
+      "layer": "adapter",
+      "owner": "provider_ag2",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ag2.groupchat": {
+      "layer": "adapter",
+      "owner": "provider_ag2",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ag2.nlip": {
+      "layer": "adapter",
+      "owner": "provider_ag2",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.anthropic": {
+      "layer": "adapter",
+      "owner": "provider_anthropic",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.anthropic._config": {
+      "layer": "adapter",
+      "owner": "provider_anthropic",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.anthropic._prompt_cache": {
+      "layer": "adapter",
+      "owner": "provider_anthropic",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.anthropic.claude_code": {
+      "layer": "adapter",
+      "owner": "provider_anthropic",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.anthropic.messages": {
+      "layer": "adapter",
+      "owner": "provider_anthropic",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.deepseek": {
+      "layer": "adapter",
+      "owner": "provider_deepseek",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.deepseek._config": {
+      "layer": "adapter",
+      "owner": "provider_deepseek",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.deepseek.chat": {
+      "layer": "adapter",
+      "owner": "provider_deepseek",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.errors": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.exa": {
+      "layer": "adapter",
+      "owner": "provider_exa",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.exa._config": {
+      "layer": "adapter",
+      "owner": "provider_exa",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.exa._schemas": {
+      "layer": "adapter",
+      "owner": "provider_exa",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.exa.contents": {
+      "layer": "adapter",
+      "owner": "provider_exa",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.exa.find_similar": {
+      "layer": "adapter",
+      "owner": "provider_exa",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.exa.search": {
+      "layer": "adapter",
+      "owner": "provider_exa",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.firecrawl": {
+      "layer": "adapter",
+      "owner": "provider_firecrawl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.firecrawl._config": {
+      "layer": "adapter",
+      "owner": "provider_firecrawl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.firecrawl._schemas": {
+      "layer": "adapter",
+      "owner": "provider_firecrawl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.firecrawl.crawl": {
+      "layer": "adapter",
+      "owner": "provider_firecrawl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.firecrawl.map": {
+      "layer": "adapter",
+      "owner": "provider_firecrawl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.firecrawl.scrape": {
+      "layer": "adapter",
+      "owner": "provider_firecrawl",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.google": {
+      "layer": "adapter",
+      "owner": "provider_google",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.google._config": {
+      "layer": "adapter",
+      "owner": "provider_google",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.google.chat": {
+      "layer": "adapter",
+      "owner": "provider_google",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.google.gemini_code": {
+      "layer": "adapter",
+      "owner": "provider_google",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.groq": {
+      "layer": "adapter",
+      "owner": "provider_groq",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.groq._config": {
+      "layer": "adapter",
+      "owner": "provider_groq",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.groq.audio_transcription": {
+      "layer": "adapter",
+      "owner": "provider_groq",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.groq.chat": {
+      "layer": "adapter",
+      "owner": "provider_groq",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.lattice": {
+      "layer": "adapter",
+      "owner": "provider_lattice",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.lattice._config": {
+      "layer": "adapter",
+      "owner": "provider_lattice",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.lattice.chat": {
+      "layer": "adapter",
+      "owner": "provider_lattice",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.lattice.embed": {
+      "layer": "adapter",
+      "owner": "provider_lattice",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.nvidia_nim": {
+      "layer": "adapter",
+      "owner": "provider_nvidia_nim",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.nvidia_nim._config": {
+      "layer": "adapter",
+      "owner": "provider_nvidia_nim",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.nvidia_nim.chat": {
+      "layer": "adapter",
+      "owner": "provider_nvidia_nim",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.nvidia_nim.embed": {
+      "layer": "adapter",
+      "owner": "provider_nvidia_nim",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ollama": {
+      "layer": "adapter",
+      "owner": "provider_ollama",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ollama._config": {
+      "layer": "adapter",
+      "owner": "provider_ollama",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ollama.chat": {
+      "layer": "adapter",
+      "owner": "provider_ollama",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ollama.embed": {
+      "layer": "adapter",
+      "owner": "provider_ollama",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.ollama.generate": {
+      "layer": "adapter",
+      "owner": "provider_ollama",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai._audio_schemas": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai._chat_schemas": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai._codex_profile": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai._codex_project_layers": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai._config": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.audio": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.batch": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.chat": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.codex": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.embed": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.images": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openai.response": {
+      "layer": "adapter",
+      "owner": "provider_openai",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openrouter": {
+      "layer": "adapter",
+      "owner": "provider_openrouter",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openrouter._config": {
+      "layer": "adapter",
+      "owner": "provider_openrouter",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.openrouter.chat": {
+      "layer": "adapter",
+      "owner": "provider_openrouter",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.perplexity": {
+      "layer": "adapter",
+      "owner": "provider_perplexity",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.perplexity._config": {
+      "layer": "adapter",
+      "owner": "provider_perplexity",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.perplexity.chat": {
+      "layer": "adapter",
+      "owner": "provider_perplexity",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.pi": {
+      "layer": "adapter",
+      "owner": "provider_pi",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.pi._config": {
+      "layer": "adapter",
+      "owner": "provider_pi",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.pi.cli": {
+      "layer": "adapter",
+      "owner": "provider_pi",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.tavily": {
+      "layer": "adapter",
+      "owner": "provider_tavily",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.tavily._config": {
+      "layer": "adapter",
+      "owner": "provider_tavily",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.tavily.search": {
+      "layer": "adapter",
+      "owner": "provider_tavily",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.service": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service._api_telemetry": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service._prompt_cache": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.accounts": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._credentials": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._ledger": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._pricing": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._router": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._scope": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._types": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.broadcaster": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.connections": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.agentic_endpoint": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.api_calling": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.cli_endpoint": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.endpoint": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.endpoint_config": {
+      "layer": "contracts",
+      "owner": "provider_contracts"
+    },
+    "lionagi.service.connections.header_factory": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.match_endpoint": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.mcp_wrapper": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.provider_config": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections.registry": {
+      "layer": "sdk",
+      "owner": "provider_registry"
+    },
+    "lionagi.service.hooks": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.hooks._types": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.hooks._utils": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.hooks.hook_event": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.hooks.hook_registry": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.hooks.hooked_event": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.imodel": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.manager": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.providers": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.rate_limited_processor": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.resilience": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.token_budget": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.token_calculator": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service.types": {
+      "layer": "contracts",
+      "owner": "provider_contracts"
+    },
+    "lionagi.service.types.cli_session": {
+      "layer": "contracts",
+      "owner": "provider_contracts"
+    },
+    "lionagi.service.types.stream_chunk": {
+      "layer": "contracts",
+      "owner": "provider_contracts"
+    },
+    "lionagi.session": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session._lifecycle_ctx": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.branch": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.capabilities": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.control": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.exchange": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.observer": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.prompts": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.session": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.session.signal": {
+      "layer": "sdk",
+      "owner": "session"
+    },
+    "lionagi.state": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state._mirror_common": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.artifact_verifier": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.claude_mirror": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.cli_workers": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.codex_mirror": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.compat": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.completion_evidence": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.content_pruned": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.db": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.engine": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.health": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.adapters": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.callbacks": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.consumer_inspection": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.deliveries": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.models": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.notify_settings": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.policy": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.reconciler": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.schedules": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.service": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.lifecycle.settings_delivery": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.provenance": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.reasons": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.schema_meta": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.schema_migrations": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.session_naming": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.staleness": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.terminal_eligibility": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.state.transitions": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "lionagi.studio": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.__main__": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio._host": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio._timezone_rules": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio._traceback_dump": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.app": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.cli": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
+    "lionagi.studio.config": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.daemon_log": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.launch_access": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator._common": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.application_mcp": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.cancel_run": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.catalog": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.conversation_metadata": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.coordinator": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.engine": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.permission_mcp": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.redact": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.rename_session": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.resume_run": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.run_control": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.run_detail": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.run_findings": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.run_progress": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.store": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.operator.types": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.reconnect": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.registry": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.scheduler": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.admit": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.capabilities": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.coordination": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.engine": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.github": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.signals": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.subprocess": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.threshold": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.scheduler.worker": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.services": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services._db": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services._io": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services._path_safety": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services._session_tail": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services._sse": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.admin": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.agents": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.approvals": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.artifact_verification": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.attention": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.casts": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.db_maintenance": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.definitions": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.engine_defs": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.engine_runs": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.hooks_library": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.identity": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.invocations": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.launches": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.leo": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.lifecycle": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.mcp_servers": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.operator": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.operator_hooks": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.pairing": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.playbooks": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.plugins": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.projects": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.redaction": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.retention_archive": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.run_resume": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.run_resume_worker": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.run_tags": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.run_view": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.runs": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.schedule_declaration": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.schedule"
+    },
+    "lionagi.studio.services.schedule_export": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.schedule"
+    },
+    "lionagi.studio.services.scheduler_state": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.scheduler"
+    },
+    "lionagi.studio.services.schedules": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.orchestration.schedule",
+      "additional_targets": [
+        "lionhub.serve"
+      ]
+    },
+    "lionagi.studio.services.sessions": {
+      "layer": "root",
+      "owner": "studio",
+      "target_owner": "lionhub.serve"
+    },
+    "lionagi.studio.services.shows": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.signals": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.skills": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.stats": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.task_applications": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.teams": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.terminal_reconciliation": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.workflow_compile": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.workflow_defs": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.studio.services.workflow_run": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "lionagi.testing": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing._branch": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing._endpoint": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing._env": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing._legacy": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing._script": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing._types": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing.helpers": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing.loaders": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.testing.pytest_plugin": {
+      "layer": "adapter",
+      "owner": "testing"
+    },
+    "lionagi.tools": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools._seatbelt": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools._subprocess": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.base": {
+      "layer": "sdk",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.code": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.code.ast_search": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.code.bash": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.code.check": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.code.nav": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.code.search": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.coding": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.communication": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.communication.messenger": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.context": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.context.context": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.daytona": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.file": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.file.editor": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.file.reader": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.khive_injection": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.sandbox": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.sandbox_backend": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.tools.types": {
+      "layer": "adapter",
+      "owner": "tools",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.utils": {
+      "layer": "foundation",
+      "owner": "serialization"
+    },
+    "lionagi.version": {
+      "layer": "foundation",
+      "owner": "version"
+    }
+  },
+  "requirements": {
+    "ag2": {
+      "layer": "adapter",
+      "owner": "provider_ag2"
+    },
+    "aiocache": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "aiosqlite": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "anyio": {
+      "layer": "foundation",
+      "owner": "concurrency"
+    },
+    "asyncpg": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "authlib": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "croniter": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "cryptography": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "fastapi": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "fastmcp": {
+      "layer": "root",
+      "owner": "mcp"
+    },
+    "hatchling": {
+      "layer": "root",
+      "owner": "build"
+    },
+    "httpx": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "hypothesis": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "ipython": {
+      "layer": "root",
+      "owner": "development"
+    },
+    "json-repair": {
+      "layer": "foundation",
+      "owner": "serialization"
+    },
+    "markdown-it-py": {
+      "layer": "adapter",
+      "owner": "provider_openai"
+    },
+    "mcp": {
+      "layer": "root",
+      "owner": "mcp"
+    },
+    "mkdocs": {
+      "layer": "root",
+      "owner": "documentation"
+    },
+    "mkdocs-material": {
+      "layer": "root",
+      "owner": "documentation"
+    },
+    "mkdocs-minify-plugin": {
+      "layer": "root",
+      "owner": "documentation"
+    },
+    "mkdocstrings": {
+      "layer": "root",
+      "owner": "documentation"
+    },
+    "mkdocstrings-python": {
+      "layer": "root",
+      "owner": "documentation"
+    },
+    "msgspec": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "networkx": {
+      "layer": "sdk",
+      "owner": "graph"
+    },
+    "numpy": {
+      "layer": "adapter",
+      "owner": "ruvector"
+    },
+    "ollama": {
+      "layer": "adapter",
+      "owner": "provider_ollama"
+    },
+    "opentelemetry-api": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "orjson": {
+      "layer": "foundation",
+      "owner": "serialization"
+    },
+    "packaging": {
+      "layer": "foundation",
+      "owner": "version"
+    },
+    "pandas": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    },
+    "psutil": {
+      "layer": "adapter",
+      "owner": "process_inspection"
+    },
+    "pyarrow": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "pydantic": {
+      "layer": "foundation",
+      "owner": "models"
+    },
+    "pydantic-settings": {
+      "layer": "sdk",
+      "owner": "configuration"
+    },
+    "pydapter": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "pygments": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "pyjwt": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "pymdown-extensions": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "pytest": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "pytest-asyncio": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "pytest-cov": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "pytest-timeout": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "pytest-xdist": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "python-dotenv": {
+      "layer": "sdk",
+      "owner": "configuration"
+    },
+    "python-multipart": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "pyyaml": {
+      "layer": "foundation",
+      "owner": "serialization"
+    },
+    "requests": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "rich": {
+      "layer": "root",
+      "owner": "cli"
+    },
+    "ruff": {
+      "layer": "root",
+      "owner": "development"
+    },
+    "ruvector": {
+      "layer": "adapter",
+      "owner": "ruvector"
+    },
+    "sniffio": {
+      "layer": "foundation",
+      "owner": "concurrency"
+    },
+    "sqlalchemy": {
+      "layer": "adapter",
+      "owner": "state"
+    },
+    "starlette": {
+      "layer": "root",
+      "owner": "studio",
+      "secondary_users": [
+        "mcp"
+      ]
+    },
+    "testcontainers": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "tiktoken": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "toml": {
+      "layer": "foundation",
+      "owner": "serialization"
+    },
+    "tomli": {
+      "layer": "foundation",
+      "owner": "serialization"
+    },
+    "tqdm": {
+      "layer": "adapter",
+      "owner": "provider_ollama",
+      "secondary_users": [
+        "development"
+      ]
+    },
+    "trio": {
+      "layer": "root",
+      "owner": "testing"
+    },
+    "urllib3": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
+    "uvicorn": {
+      "layer": "root",
+      "owner": "studio"
+    },
+    "xmltodict": {
+      "layer": "adapter",
+      "owner": "data_adapters"
+    }
+  },
+  "external_targets": {
+    "lionhub": {
+      "layer": "root",
+      "owner": "lionhub (downstream package)"
+    }
+  },
+  "exceptions": []
+}

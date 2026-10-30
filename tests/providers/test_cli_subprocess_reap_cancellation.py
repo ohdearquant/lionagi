@@ -14,6 +14,18 @@ import pytest_asyncio
 from lionagi.providers import _cli_subprocess as cs
 
 
+def _context_contains(error: BaseException, target: BaseException) -> bool:
+    """Follow task cancellation wrappers without looping on cyclic contexts."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if current is target:
+            return True
+        seen.add(id(current))
+        current = current.__context__
+    return False
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def held_helpers(monkeypatch):
     names = ("stdout", "stderr", "stdin", "wait")
@@ -29,6 +41,7 @@ async def held_helpers(monkeypatch):
         stdout_error=None,
         end_error=None,
         cancel_at_end=False,
+        cancel_at_drain=False,
         after_end=False,
         pending_at_end=set(),
         reap_cancelled=None,
@@ -104,8 +117,9 @@ async def held_helpers(monkeypatch):
     async def spawn(*_args, **_kwargs):
         return proc
 
-    async def end(child, *, spawned):
+    async def end(child, *, spawned, witnesses, signal_gate):
         assert child is proc and spawned.pid == proc.pid
+        assert isinstance(witnesses, tuple) and isinstance(signal_gate, cs.SignalGate)
         state.order.append("end group")
         state.after_end = True
         state.pending_at_end = {name for name, task in state.tasks.items() if not task.done()}
@@ -135,19 +149,22 @@ async def held_helpers(monkeypatch):
         return task
 
     async def wait(tasks, *args, **kwargs):
+        on_drain = (
+            asyncio.current_task() is state.runner
+            and state.after_end
+            and tasks == {state.tasks["stderr"]}
+        )
+        if on_drain and state.cancel_at_drain:
+            state.cancel_at_drain = False
+            asyncio.get_running_loop().call_soon(state.runner.cancel)
         try:
             return await real_wait(tasks, *args, **kwargs)
         except asyncio.CancelledError as error:
             if asyncio.current_task() is state.runner and state.after_end:
-                state.reap_cancelled = error
-            raise
-
-    async def wait_for(awaitable, *args, **kwargs):
-        try:
-            return await real_wait_for(awaitable, *args, **kwargs)
-        except asyncio.CancelledError as error:
-            if asyncio.current_task() is state.runner and state.after_end:
-                state.drain_cancelled = error
+                if on_drain:
+                    state.drain_cancelled = error
+                else:
+                    state.reap_cancelled = error
             raise
 
     original_warning = cs.log.warning
@@ -170,7 +187,6 @@ async def held_helpers(monkeypatch):
     monkeypatch.setattr(cs.asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(cs.asyncio, "create_task", create_task)
     monkeypatch.setattr(cs.asyncio, "wait", wait)
-    monkeypatch.setattr(cs.asyncio, "wait_for", wait_for)
 
     async def consume():
         async for _item in cs.ndjson_from_cli([sys.executable], env={}, stdin_data=b"input"):
@@ -241,7 +257,7 @@ async def test_cancel_during_helper_reap_reaches_the_consumer(held_helpers):
 async def test_cancel_during_abandoned_drain_is_warned_then_propagated(held_helpers):
     state = held_helpers
     state.stdout_error = ValueError("stdout read failed")
-    state.cancel_at_end = True
+    state.cancel_at_drain = True
     state.gates["stdout"].set()
     await _finished(state)
     assert state.runner.cancelled(), "consumer cancellation during the abandoned drain must survive"
@@ -272,7 +288,11 @@ async def test_unconfirmed_group_end_keeps_the_slots_and_the_teardown_exception(
         assert state.runner.cancelled(), "slot retention must not replace teardown cancellation"
         with pytest.raises(asyncio.CancelledError) as raised:
             await state.runner
-        assert raised.value is primary or raised.value.__context__ is primary
+        if sys.version_info < (3, 11):
+            # bpo-45390: nested tasks may wrap the original cancellation.
+            assert _context_contains(raised.value, primary)
+        else:
+            assert raised.value is primary or raised.value.__context__ is primary
     else:
         assert state.runner.exception() is primary, "the original teardown error must stay primary"
     assert state.kept == 0 and state.released == 0, "an unconfirmed group keeps its holder locks"
