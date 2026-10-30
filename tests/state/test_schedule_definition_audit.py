@@ -502,3 +502,28 @@ async def test_valid_provenance_cases_preserve_independent_availability(
             "cwd_status": context.cwd_status,
             "failure_category": failure,
         }
+
+
+async def test_apply_takes_every_definition_lock_in_sorted_order_first(tmp_path, monkeypatch):
+    from lionagi.state.lifecycle.schedules import ScheduleLifecycleAdapter
+
+    locked = []
+    original = ScheduleLifecycleAdapter._lock_id
+
+    async def recording(self, conn, schedule_id):
+        locked.append(schedule_id)
+        await original(self, conn, schedule_id)
+
+    async with StateDB(tmp_path / "state.db") as db:
+        for member in ("a", "b", "c", "d"):
+            await db.create_schedule({**schedule(member), "owner_key": "set-a"})
+        monkeypatch.setattr(ScheduleLifecycleAdapter, "_lock_id", recording)
+        # Plan order runs against id order in every phase, so an apply that locked as it
+        # went would take e, d, b, c, a.
+        await db.apply_schedule_set(
+            creates=[{**schedule("e"), "owner_key": "set-a"}],
+            updates=[("d", {"enabled": 0}), ("b", {"enabled": 0})],
+            disables=["c", "a"],
+            expect_owner_keys={member: "set-a" for member in ("a", "b", "c", "d")},
+        )
+    assert locked[:5] == ["a", "b", "c", "d", "e"]

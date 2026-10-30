@@ -118,7 +118,7 @@ async def test_observer_denial_becomes_an_action_response(label, gate):
     assert _log_status(branch) == []
     denials = session.observer.by_type(GateDenied)
     assert len(denials) == 1
-    assert denials[0].data.function == "add"
+    assert denials[0].data is None
 
 
 async def test_observer_denial_never_raises_even_without_error_suppression():
