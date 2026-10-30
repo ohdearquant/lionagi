@@ -258,6 +258,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A failed or cancelled Operator setup now makes a bounded attempt to close a
+  session created before admission and logs when cleanup did not complete.
+  A failed Operator turn reports an incomplete recovery lookup in its error.
+  The attempt requires a recorded worker generation and a timestamp fence;
+  compatibility stores without that generation cannot close this pre-admission
+  candidate. A concurrent replacement or update that preserves the same timestamp
+  can defeat the fence.
+
 - ReAct no longer sends an internal display setting in API requests.
 
 - Restored API models use their registered request schema when a snapshot omits it, validating
