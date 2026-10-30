@@ -16,15 +16,15 @@ import asyncio
 import json
 from typing import Any
 
+from .._inspection import (
+    EXIT_UNKNOWN,
+    RUN_ID_THROUGH_T,
+    resolve_any_target,
+    resolve_primary_session,
+    run_id_candidates,
+)
 from .._logging import log_error
 from .._util import AmbiguousIdError
-from ..status import (
-    _RUN_ID_THROUGH_T,
-    EXIT_UNKNOWN,
-    _resolve_any_target,
-    _resolve_primary_session,
-    _run_id_candidates,
-)
 
 __all__ = (
     "run_ctl_pause",
@@ -33,7 +33,7 @@ __all__ = (
     "run_ctl_resolve",
 )
 
-# Mirrors status.py's _DB_BUSY_TIMEOUT_S — bounds a single enqueue's total DB
+# Mirrors _inspection.py's _DB_BUSY_TIMEOUT_S — bounds a single enqueue's total DB
 # time so a stuck write fails fast instead of hanging indefinitely.
 _DB_BUSY_TIMEOUT_S = 10.0
 
@@ -72,14 +72,14 @@ async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
         if (
             not exact
             and not await db.get_sessions_for_run(entity_id)
-            and not (_RUN_ID_THROUGH_T.match(entity_id) and await _run_id_candidates(db, entity_id))
+            and not (RUN_ID_THROUGH_T.match(entity_id) and await run_id_candidates(db, entity_id))
         ):
             return None
-    target = await _resolve_any_target(db, entity_id, run_prefix_through_t=True)
+    target = await resolve_any_target(db, entity_id, run_prefix_through_t=True)
     if target is None:
         return None
     entity_type, row = target
-    return await _resolve_primary_session(db, entity_type, row)
+    return await resolve_primary_session(db, entity_type, row)
 
 
 def _runner_drains_controls(session: dict[str, Any]) -> bool:
