@@ -181,8 +181,10 @@ async def scripted(monkeypatch):
         state.observations.append(created)
         return cs.SpawnedProcess(pid, pid, created)
 
-    async def end(child, *, spawned):
+    async def end(child, *, spawned, witnesses=None, signal_gate=None):
         assert child is state.child
+        if signal_gate is not None:
+            assert isinstance(witnesses, tuple) and isinstance(signal_gate, cs.SignalGate)
         state.events.append("cleanup")
         state.cleanup_entered.set()
         await state.cleanup_allowed.wait()

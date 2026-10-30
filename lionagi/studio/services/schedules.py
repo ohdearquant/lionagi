@@ -286,7 +286,7 @@ def _svc_validate_github_repo(repo: str | None) -> None:
 # github_poll() today; "pr_opened"/"pr_updated"/"pr_closed" are accepted (the
 # frontend ships all four) but currently inert server-side.
 _GITHUB_FILTER_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"state", "base", "draft", "event", "same_repo_only"}
+    {"state", "base", "draft", "event", "same_repo_only", "merged_page_limit"}
 )
 _GITHUB_FILTER_ALLOWED_EVENTS: frozenset[str] = frozenset(
     {"pr_merged", "pr_opened", "pr_updated", "pr_closed"}
@@ -307,6 +307,10 @@ def _svc_validate_github_filter(github_filter: Any) -> None:
             f"github_filter has unknown key(s) {sorted(unknown)}; allowed keys are "
             f"{sorted(_GITHUB_FILTER_ALLOWED_KEYS)}"
         )
+    if "merged_page_limit" in github_filter:
+        from lionagi.studio.scheduler.github import merged_page_limit
+
+        merged_page_limit(github_filter["merged_page_limit"])
     event = github_filter.get("event")
     if event is not None and event not in _GITHUB_FILTER_ALLOWED_EVENTS:
         raise ValueError(
@@ -500,13 +504,15 @@ def compute_schedule_health(
         if timestamp is not None
     ]
 
-    if not row.get("enabled"):
-        state = "disabled"
-    elif (
-        row.get("trigger_type") == "github_poll"
+    cap_stalled = (
+        row.get("enabled")
+        and row.get("trigger_type") == "github_poll"
         and (row.get("poller_consecutive_cap_no_dispatch") or 0)
         >= _HEALTH_GITHUB_CAP_NO_DISPATCH_THRESHOLD
-    ):
+    )
+    if not row.get("enabled"):
+        state = "disabled"
+    elif cap_stalled:
         state = "overdue"
     elif not liveness:
         state = (
@@ -533,12 +539,23 @@ def compute_schedule_health(
         else:
             state = "healthy"
 
-    return {
+    result = {
         "health_state": state,
         "health_last_outcome": last_executed_status,
         "health_last_outcome_at": last_executed_at,
         "health_since": row.get("created_at"),
     }
+    if cap_stalled and (row.get("github_filter") or {}).get("event") == "pr_merged":
+        limit = row.get("poller_last_capped_page_limit")
+        result["health_cause"] = "page_limit_reached"
+        result["health_recovery"] = (
+            "The page limit is 100; bounded recovery is insufficient. Reconcile the backlog manually."
+            if limit == 100
+            else f"The page limit was {limit}; raise it and retry."
+            if type(limit) is int and 5 <= limit < 100
+            else "The last capped page limit is unknown; review the limit and retry."
+        )
+    return result
 
 
 async def list_schedules(
@@ -1082,6 +1099,8 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "consecutive_failures",
     "last_status",
     "health_state",
+    "health_cause",
+    "health_recovery",
     "health_last_outcome",
     "health_last_outcome_at",
     "health_since",

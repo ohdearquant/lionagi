@@ -219,7 +219,7 @@ def qualified_mcp_name(server_name: str, tool_name: str) -> str:
 The name matters and is not `mcp_tool_name`. That identifier is already bound to a `str`
 on this exact path — a local in `_validate_prebuilt_mcp_tool_admission`
 (`manager.py:153`, read at `:156` and `:171`) and a parameter of
-`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1473`). A module-level function of that
+`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1483`). A module-level function of that
 name would be shadowed inside the one function that most needs it, and a later call from
 there would raise `TypeError: 'str' object is not callable` at runtime and only at
 runtime, on the admission path. Rename the helper rather than the locals: the locals are
@@ -314,12 +314,14 @@ actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 
 **Exact semantics.**
 
-- `_original_tool_name` is set on both construction paths today, unconditionally
-  (`manager.py:433`, `:491`). It is currently a no-op because it is always equal to the
-  registry key.
-- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:2042`) is the
-  routing reader. The second is `_validate_prebuilt_mcp_tool_admission`
-  (`manager.py:154`), on the security path, with its own fallback to the config key.
+- `_original_tool_name` is set on both construction paths, unconditionally
+  (`manager.py:430`, `:491`). Under D1 the registry key is the qualified name and this field
+  carries the wire name.
+- Before D1 (this item's line numbers are at `0b6cabda`), the same assignment was a no-op,
+  because the field always equaled the registry key (`manager.py:361`, `:399`).
+- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:2119`) is the routing
+  reader. The second is `_validate_prebuilt_mcp_tool_admission` (`manager.py:154`), on the
+  security path, with its own fallback to the config key.
   Its behavior under D1 is already correct — it prefers the wire name, which is what
   admission should be checking — but a reader auditing that path should not have to
   discover the field's second site for themselves.
@@ -554,11 +556,11 @@ ADR is **narrowed, not discharged**:
 - The request-options clause is discharged by D5, at the registry layer.
 - The **dependency-direction clause is untouched and remains open in full**, and it is
   larger than a single site. `manager.py` imports from
-  `lionagi.service.connections.mcp_wrapper` at **eight** places (`:12`, `:132`, `:148`,
-  `:372`, `:399`, `:446`, `:546`, `:582`) — one under `TYPE_CHECKING` and seven lazily
+  `lionagi.service.connections.mcp_wrapper` at **nine** places (`:12`, `:132`, `:148`,
+  `:374`, `:395`, `:443`, `:546`, `:590`, `:651`) — one under `TYPE_CHECKING` and eight lazily
   inside function bodies. The lazy form defers the import; it does not remove the
   dependency, which is what 0011's clause is about. The service-factory design remains
-  the standing answer for that clause, and its cost is eight call sites rather than the
+  the standing answer for that clause, and its cost is nine call sites rather than the
   one this document's own reasoning would have suggested.
 
 D1 and D5 are not placeholders and should not be re-implemented in a service factory
