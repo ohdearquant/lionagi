@@ -173,8 +173,9 @@ _API_FOLD_RESUME_PROMPT = (
     "and how to list or restore it. Continue the task from where you stopped."
 )
 # How many times one turn continues after a pass of the ReAct loop ended on a failed round: a
-# response cut off at its output limit before it wrote any text or tool call, or a reply that did
-# not parse. An LNDL turn repairs such a round inside its own round budget.
+# response cut off at its output limit before it wrote any text or tool call, a response the
+# provider refused, or a reply that did not parse. An LNDL turn repairs such a round inside its
+# own round budget.
 _API_ROUND_RESUMES = 2
 _API_CAPPED_RESUME_PROMPT = (
     "Your last response reached its output token limit before it wrote any text or tool call, "
@@ -189,6 +190,10 @@ _API_UNPARSED_RESUME_PROMPT = (
     "Your last reply could not be read in the required response format ({reason}), so none of "
     "the actions in it ran. The task instruction above is unchanged. Continue the task from "
     "where you stopped, and send the actions again in the required format."
+)
+_API_REFUSED_RESUME_PROMPT = (
+    "Your last response was stopped by the provider before it finished, so nothing in it was "
+    "used. The task instruction above is unchanged. Continue the task from where you stopped."
 )
 # The output limit, thinking included, an Anthropic API leg's requests send when its model names
 # none; the provider's own default is 8,192. Claude Haiku 5.5 thinks by default, and at 8,192 a
@@ -812,10 +817,14 @@ async def _run_api_turn(
     if refusal is not None:
         raise refusal
     if failed is not None:
+        details: dict[str, Any] = {"continued": round_resumes}
+        refused = _first_refusal(_pass_responses(branch, before))
+        if refused is not None:
+            details["stop_reason"] = refused[0]
         raise FailedRoundError(
             f"{round_resumes + 1} passes of the tool loop in a row ended on a failed round: "
             f"{failed[1]}",
-            details={"continued": round_resumes},
+            details=details,
         )
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
@@ -827,15 +836,27 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
 
     ``before`` holds the ids of the branch's messages before the pass, and ``rounds`` is what the
     pass returned with ``return_analysis=True``: each round's analysis, then the answer. The
-    responses checked against the output limit are the pass's last two, the round that ended the
-    loop and the answer turn after it; an answer with no text fails the pass whatever its stop.
+    responses checked for a refusal and then against the output limit are the pass's last two,
+    the round that ended the loop and the answer turn after it. A refused response (see
+    ``_provider_refusal``) wins over an output-limit stop in that window and prints one
+    ``[api] refused`` line; an answer with no text fails the pass whatever its stop.
     """
     from lionagi.operations.types import UnparsedResponse
 
-    added = [
-        m for m in branch.msgs.messages if m.id not in before and isinstance(m, AssistantResponse)
-    ]
-    if any(_stopped_at_output_limit_with_nothing(m.model_response) for m in added[-2:]):
+    window = _pass_responses(branch, before)
+    refused = _first_refusal(window)
+    if refused is not None:
+        marker, response = refused
+        tokens = _output_tokens(response)
+        hint(
+            f"[api] refused: stop reason {marker}"
+            + ("" if tokens is None else f", {tokens} output token(s)")
+        )
+        return (
+            _API_REFUSED_RESUME_PROMPT,
+            f"the provider refused the response (stop reason: {marker})",
+        )
+    if any(_stopped_at_output_limit_with_nothing(response) for response in window):
         return (
             _API_CAPPED_RESUME_PROMPT,
             "a response stopped at its output token limit with no text and no tool call",
@@ -896,6 +917,68 @@ def _stopped_at_output_limit_with_nothing(response: Any) -> bool:
                 return False
         return True
     return False
+
+
+def _pass_responses(branch, before: set) -> list:
+    """The raw provider responses a pass ended on: the last two it added, the round that ended
+    the loop and the answer turn after it. ``before`` holds the ids of the branch's messages
+    before the pass."""
+    added = [
+        m for m in branch.msgs.messages if m.id not in before and isinstance(m, AssistantResponse)
+    ]
+    return [m.model_response for m in added[-2:]]
+
+
+def _first_refusal(responses: list) -> tuple[str, Any] | None:
+    """The refusal marker and the raw response of the first refused response in ``responses``,
+    or None when none was refused."""
+    for response in responses:
+        marker = _provider_refusal(response)
+        if marker is not None:
+            return marker, response
+    return None
+
+
+def _provider_refusal(response: Any) -> str | None:
+    """The provider's refusal marker of a raw response, or None when it was not refused. Reads
+    the Anthropic Messages (``stop_reason`` ``refusal``), OpenAI chat completions
+    (``finish_reason`` ``content_filter``, or a non-empty ``message.refusal``) and OpenAI
+    Responses (a ``message`` output item with a ``refusal`` content part) shapes; any other
+    shape, a list of responses included, reads None."""
+    if not isinstance(response, dict):
+        return None
+    if "stop_reason" in response:
+        return "refusal" if response["stop_reason"] == "refusal" else None
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        if choices[0].get("finish_reason") == "content_filter":
+            return "content_filter"
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return "refusal" if isinstance(refusal, str) and refusal else None
+    for item in response.get("output") or []:
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "message"
+            and any(
+                isinstance(part, dict) and part.get("type") == "refusal"
+                for part in item.get("content") or []
+            )
+        ):
+            return "refusal"
+    return None
+
+
+def _output_tokens(response: Any) -> int | None:
+    """The output token count a raw provider response carries in its ``usage``, or None."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    for key in ("output_tokens", "completion_tokens"):
+        count = usage.get(key)
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    return None
 
 
 async def _api_loop_pass(
@@ -2728,6 +2811,10 @@ async def _run_agent(
                     run_manifest["error"] = (
                         _error or "The run failed; no reason was recorded for it."
                     )
+                    if isinstance(_terminal_exc, FailedRoundError):
+                        _stop_reason = _terminal_exc.details.get("stop_reason")
+                        if _stop_reason:
+                            run_manifest["stop_reason"] = _stop_reason
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
                 # Only when an exception is on its way out, because then this is

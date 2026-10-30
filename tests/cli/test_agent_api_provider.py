@@ -1354,6 +1354,237 @@ def test_a_response_cut_off_with_nothing_is_read_in_each_provider_shape(response
     assert agent_mod._stopped_at_output_limit_with_nothing(response) is expected
 
 
+# ── a response the provider refused ──────────────────────────────────────
+
+
+def _refused(*blocks: dict, output_tokens: int = 0) -> dict:
+    """A response the provider stopped as a refusal, carrying only ``blocks`` (none: empty)."""
+    reply = _reply({})
+    reply["content"] = list(blocks)
+    reply["stop_reason"] = "refusal"
+    reply["usage"] = {"input_tokens": 1, "output_tokens": output_tokens}
+    return reply
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_refused(), "refusal"),
+        (_refused({"type": "text", "text": "I can"}, output_tokens=3), "refusal"),
+        ({**_refused(), "stop_reason": "end_turn"}, None),
+        (_cut_off(_THINKING), None),
+        (
+            {"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]},
+            "content_filter",
+        ),
+        (
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": None, "refusal": "I cannot help with that."},
+                    }
+                ]
+            },
+            "refusal",
+        ),
+        (
+            {"choices": [{"finish_reason": "stop", "message": {"content": "ok", "refusal": ""}}]},
+            None,
+        ),
+        (
+            {"choices": [{"finish_reason": "stop", "message": {"content": "ok", "refusal": None}}]},
+            None,
+        ),
+        ({"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}, None),
+        ({"choices": [{"finish_reason": "length", "message": {"content": ""}}]}, None),
+        (
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "refusal", "refusal": "I cannot help with that."}],
+                    }
+                ],
+            },
+            "refusal",
+        ),
+        (
+            {
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "fine"}]}
+                ],
+            },
+            None,
+        ),
+        ([_refused()], None),
+        ("not a response", None),
+    ],
+)
+def test_a_refused_response_is_read_in_each_provider_shape(response, expected):
+    import lionagi.cli.agent as agent_mod
+
+    assert agent_mod._provider_refusal(response) == expected
+
+
+class _Reply:
+    """Stands in for an assistant message: an id and the raw provider response."""
+
+    def __init__(self, response):
+        self.id = object()
+        self.model_response = response
+
+
+def _window(monkeypatch, *responses):
+    """A branch whose messages are ``responses``, as the failed-round check reads them."""
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "AssistantResponse", _Reply)
+    return SimpleNamespace(msgs=SimpleNamespace(messages=[_Reply(r) for r in responses]))
+
+
+_REFUSED_REASON = "the provider refused the response (stop reason: refusal)"
+
+
+def test_the_refusal_prompt_says_the_provider_stopped_the_response():
+    import lionagi.cli.agent as agent_mod
+
+    prompt = agent_mod._API_REFUSED_RESUME_PROMPT
+    assert "stopped by the provider before it finished" in prompt
+    assert "Continue the task from where" in prompt
+    assert "could not be read" not in prompt
+    assert "format" not in prompt
+
+
+@pytest.mark.parametrize(
+    "refused", [_refused(), _refused({"type": "text", "text": "I can"}, output_tokens=3)]
+)
+def test_a_refused_response_ends_the_round_with_the_refusal_prompt(refused, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    branch = _window(monkeypatch, _last_round(), refused)
+
+    assert agent_mod._failed_round(branch, set(), []) == (
+        agent_mod._API_REFUSED_RESUME_PROMPT,
+        _REFUSED_REASON,
+    )
+
+
+@pytest.mark.parametrize("capped_last", [True, False])
+def test_a_refusal_beside_an_output_limit_stop_is_reported_as_the_refusal(capped_last, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    pair = [_refused(), _cut_off()]
+    branch = _window(monkeypatch, *(pair if capped_last else reversed(pair)))
+
+    assert agent_mod._failed_round(branch, set(), []) == (
+        agent_mod._API_REFUSED_RESUME_PROMPT,
+        _REFUSED_REASON,
+    )
+
+
+def test_a_refusal_prints_its_stop_reason_and_output_tokens(monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    hints = _capture_hints(monkeypatch)
+    agent_mod._failed_round(_window(monkeypatch, _last_round(), _refused()), set(), [])
+    assert hints == ["[api] refused: stop reason refusal, 0 output token(s)"]
+
+    hints.clear()
+    filtered = {"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]}
+    agent_mod._failed_round(_window(monkeypatch, _last_round(), filtered), set(), [])
+    assert hints == ["[api] refused: stop reason content_filter"]
+
+    hints.clear()
+    agent_mod._failed_round(_window(monkeypatch, _last_round(), _cut_off()), set(), [])
+    assert hints == []
+
+    # A refusal earlier than the pass's last two responses is not the one that ended it.
+    hints.clear()
+    older = _window(monkeypatch, _refused(), _last_round(), _answer("x"))
+    agent_mod._failed_round(older, set(), [])
+    assert hints == []
+
+
+_REFUSED_PASSES = [
+    pytest.param(lambda: [_last_round(), _refused()], id="answer-turn"),
+    pytest.param(lambda: [_refused(), _answer("half an answer")], id="round"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("one_pass", _REFUSED_PASSES)
+async def test_a_provider_that_keeps_refusing_fails_the_turn_as_a_refusal(
+    one_pass, leg, monkeypatch
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    hints = _capture_hints(monkeypatch)
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend(one_pass())
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert "did not parse" not in str(raised.value)
+    assert raised.value.details == {
+        "continued": agent_mod._API_ROUND_RESUMES,
+        "stop_reason": "refusal",
+    }
+    assert leg.replies == []
+    assert leg.status == "failed"
+    resumed = _last_user_text(leg.payloads[2])
+    assert "stopped by the provider before it finished" in resumed
+    assert "could not be read" not in resumed
+    assert not any(
+        agent_mod._API_UNPARSED_RESUME_PROMPT.split("{")[0] in _last_user_text(p)
+        for p in leg.payloads
+    )
+    assert [h for h in hints if h.startswith("[api] refused:")] == [
+        "[api] refused: stop reason refusal, 0 output token(s)"
+    ] * (agent_mod._API_ROUND_RESUMES + 1)
+
+
+def _run_record(tmp_path) -> dict:
+    [path] = list((tmp_path / "runs").glob("*/run.json"))
+    return json.loads(path.read_text())
+
+
+@pytest.mark.asyncio
+async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _refused()])
+
+    with pytest.raises(FailedRoundError):
+        await leg.run(_profile(api_tools="read"))
+
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == "refusal"
+    assert "the provider refused the response" in manifest["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_run_record_of_another_failed_round_has_no_stop_reason(leg, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _text("")])
+
+    with pytest.raises(FailedRoundError, match="the answer had no text"):
+        await leg.run(_profile(api_tools="read"))
+
+    manifest = _run_record(tmp_path)
+    assert "stop_reason" not in manifest
+    assert "the answer had no text" in manifest["error"]
+
+
 @pytest.mark.asyncio
 async def test_profile_effort_reaches_anthropic_wire_payload(leg, monkeypatch):
     profile = _profile(api_tools="read")
