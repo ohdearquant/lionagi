@@ -269,6 +269,8 @@ before a call, then call again after to isolate chunks from that call only.
 `{operation, service?, arguments}`. When a service prefix is present
 (`svc.tool(...)`), `qualified_name` returns `"svc.tool"` — the name used for
 tool-registry lookup so namespaced tools resolve correctly.
+Reserved keyword argument names such as `from=` are exposed as `from_`.
+String literal contents are preserved when they contain text such as `from=1`.
 
 **`normalize.py`** — auto-fixes common model-invented LNDL syntax drift
 (models trained on XML/HTML/JSON) before the parser runs, ported from

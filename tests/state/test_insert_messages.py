@@ -188,8 +188,15 @@ async def test_a_non_string_id_ends_as_appending_one_at_a_time(db: StateDB, seed
     await db.create_progression(one, seed)
     await db.create_progression(batched, seed)
 
-    for _ in range(2):
+    with pytest.raises(ValueError, match=one):
         await db.append_to_progression(one, 5)
+    assert await db.get_progression(one) == seed
+
+    # Batch inserts retain the legacy SQL append behavior for non-string IDs;
+    # the public single-ID append now rejects such input before writing.
+    for _ in range(2):
+        async with db._tx() as conn:
+            await conn.execute(text(db._progression_append_sql(db.dialect)), {"v": 5, "id": one})
         await db.insert_messages([_msg(5)], progression_ids=(batched,))
 
     assert await _stored(db, batched) == await _stored(db, one)

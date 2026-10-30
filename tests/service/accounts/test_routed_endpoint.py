@@ -958,6 +958,9 @@ async def test_a_key_refusal_names_the_bound_account_and_its_unsent_attempt(
     assert all(isinstance(each, AccountRoutingError) for each in linked)
     if value is not None:
         assert not any(value in repr(each.args) for each in linked)
+        # Nor does any library frame those errors keep alive: a refusal's traceback holds
+        # the locals of the frames that raised it.
+        assert not any(value in repr(local) for local in _library_frame_locals(linked))
     assert transport.calls == []
     rows = _attempts(path)
     assert [(row[0], row[1], row[4]) for row in rows] == [
@@ -3387,6 +3390,18 @@ def _every_linked_error(error: BaseException) -> list[BaseException]:
             continue
         found.append(current)
         todo += [current.__cause__, current.__context__]
+    return found
+
+
+def _library_frame_locals(errors: list[BaseException]) -> list[object]:
+    found: list[object] = []
+    for error in errors:
+        tb = error.__traceback__
+        while tb is not None:
+            frame = tb.tb_frame
+            if frame.f_globals.get("__name__", "").startswith("lionagi."):
+                found += list(frame.f_locals.values())
+            tb = tb.tb_next
     return found
 
 

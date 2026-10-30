@@ -298,6 +298,36 @@ class ReviewVerdict(Verdict):
 _SESSION_RUNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
+class _ArtifactTurn:
+    """The artifact sent once, in a turn of its own, ahead of every dimension's task.
+
+    A prompt-cache entry covers a request's prefix up to a marked block, so text that
+    differs per dimension has to come after the artifact for the dimensions to share
+    one entry. The first dimension sends the artifact alone; its request writes the
+    entry, and every other dimension waits for it and then starts from a copy of that
+    turn, so their requests read the artifact instead of each writing it again.
+    """
+
+    def __init__(self) -> None:
+        self._claimed = False
+        self.ready = anyio.Event()
+        # The (Instruction, AssistantResponse) pair a dimension's history starts with,
+        # or None once the leader found the turn unusable: then each dimension sends
+        # the artifact with its own task.
+        self.messages: tuple[Any, Any] | None = None
+
+    def claim(self) -> bool:
+        """True for the first caller only: that dimension sends the turn."""
+        if self._claimed:
+            return False
+        self._claimed = True
+        return True
+
+    def share(self, messages: tuple[Any, Any] | None) -> None:
+        self.messages = messages
+        self.ready.set()
+
+
 class ReviewRun(EngineRun):
     """Evidence scoped to this run; ``shares_session`` flags a Session this scoping cannot divide."""
 
@@ -313,6 +343,7 @@ class ReviewRun(EngineRun):
         # only ever be right about the emissions that had already happened.
         self.shares_session: bool = False
         self._dimension_failures: dict[str, str] = {}
+        self._artifact_turn: _ArtifactTurn | None = None
         peers = _SESSION_RUNS.setdefault(self.session, [])
         live = []
         for ref in peers:
@@ -427,16 +458,58 @@ def _clean_ref(dimensions: tuple[str, ...]) -> str:
     return f"V-{compute_hash(key)[:8]}"
 
 
-def _dimension_instruction(artifact: str, dimension: str) -> str:
+_ARTIFACT_TURN_REPLY = "ready"
+
+
+@lru_cache(maxsize=32)
+def _mode_behaviors(mode: str | None) -> str:
+    if not mode:
+        return ""
+    from lionagi.casts import Mode
+
+    return Mode.load(mode).behaviors or ""
+
+
+def _artifact_turn_instruction(artifact: str) -> str:
     return (
-        f"Review the artifact below for **{dimension}** only. For each concrete "
+        "The artifact below is under review. Your review task follows in the next "
+        f"message. For now reply with the single word {_ARTIFACT_TURN_REPLY}: do not "
+        "review it yet and do not emit anything.\n\n"
+        f"# Artifact\n{artifact}"
+    )
+
+
+def _dimension_task(dimension: str, mode: str | None = None) -> str:
+    """The per-dimension text; it follows the artifact, so dimensions share everything before it."""
+    task = (
+        f"Review the artifact above for **{dimension}** only. For each concrete "
         "problem, emit an issue_found with: dimension, description, severity "
         "(critical|major|minor), location, confidence (0-1). If you find no "
         f"concrete problem, emit a dimension_clean with dimension='{dimension}' "
         "and a one-sentence rationale — never finish without emitting. Do not "
-        "comment on other dimensions; do not pad with praise.\n\n"
-        f"# Artifact\n{artifact}"
+        "comment on other dimensions; do not pad with praise."
     )
+    behaviors = _mode_behaviors(mode)
+    return f"{task}\n\n# Approach\n{behaviors}" if behaviors else task
+
+
+def _dimension_instruction(artifact: str, dimension: str, mode: str | None = None) -> str:
+    """The artifact and the dimension's task in one message, the artifact first."""
+    return f"# Artifact\n{artifact}\n\n{_dimension_task(dimension, mode)}"
+
+
+def _is_artifact_turn_reply(text: Any) -> bool:
+    return (
+        isinstance(text, str)
+        and text.strip().rstrip(".!").strip().casefold() == _ARTIFACT_TURN_REPLY
+    )
+
+
+async def _seed_artifact_turn(agent: Any, messages: tuple[Any, Any]) -> None:
+    """Start *agent*'s history with copies of the artifact turn, so its request reads that entry."""
+    instruction, reply = messages
+    await agent.msgs.a_add_message(instruction=instruction.clone())
+    await agent.msgs.a_add_message(assistant_response=reply.clone())
 
 
 def _verify_instruction(issue: IssueFound, ref: str) -> str:
@@ -594,6 +667,8 @@ class ReviewEngine(Engine):
         dims = tuple(dimensions) if dimensions else self.dimensions
         run.root = artifact
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
+        if isinstance(run, ReviewRun) and self.prompt_caching and len(dims) > 1:
+            run._artifact_turn = _ArtifactTurn()
 
         # Fan out one reviewer per dimension. Ordinary provider/transport
         # failures are isolated per dimension so completed sibling evidence is
@@ -700,16 +775,48 @@ class ReviewEngine(Engine):
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
         emits = (IssueFound, DimensionClean)
+        turn: _ArtifactTurn | None = getattr(run, "_artifact_turn", None)
+        leading = turn is not None and turn.claim()
+        try:
+            if turn is not None and not leading:
+                # Waited for outside the semaphore: the leader holds a slot while its
+                # turn is in flight, and waiters holding the others could starve it.
+                await turn.ready.wait()
+            await self._review_dimension_turn(run, artifact, dimension, emits, turn, leading)
+        finally:
+            # However the leader ends, nobody is left waiting for its turn.
+            if leading and not turn.ready.is_set():
+                turn.share(None)
+
+    async def _review_dimension_turn(
+        self,
+        run: EngineRun,
+        artifact: str,
+        dimension: str,
+        emits: tuple[type, ...],
+        turn: _ArtifactTurn | None,
+        leading: bool,
+    ) -> None:
+        # The mode is part of the dimension's task, not of the system prompt, so
+        # every dimension's agent has the same system prompt and their requests can
+        # share a cached prefix.
+        mode = _DIM_MODE.get(dimension)
         async with run._sem:
-            mode = _DIM_MODE.get(dimension)
             agent = await run.make_agent(
                 self.reviewer_role,
                 name=f"review-{dimension}",
-                modes=[mode] if mode else None,
                 model=self.model_for("review"),
                 max_tokens=self.max_tokens_for("review"),
                 emits=emits,
             )
+            # The artifact turn this dimension's history starts with, if any.
+            held: tuple[Any, Any] | None = None
+            if leading:
+                held = await self._send_artifact_turn(run, agent, artifact)
+                turn.share(held)
+            elif turn is not None and turn.messages is not None:
+                held = turn.messages
+                await _seed_artifact_turn(agent, held)
             # `models["review_fallback"]` names ONE more attempt on a different model
             # for a dimension whose reviewer stayed silent through its repairs. Read
             # with optional_model_for(), not model_for(): that falls back to the
@@ -719,28 +826,67 @@ class ReviewEngine(Engine):
             async def _fallback_agent() -> Any:
                 # A fresh leg: repair replays the whole conversation onto the same
                 # branch, so asking that branch again only grows its context.
-                return await run.make_agent(
+                leg = await run.make_agent(
                     self.reviewer_role,
                     name=f"review-{dimension}-fallback",
-                    modes=[mode] if mode else None,
                     model=fallback_model,
                     max_tokens=self.max_tokens_for("review_fallback"),
                     emits=emits,
                 )
+                # The fallback is handed the first leg's instruction, which names
+                # the artifact only when no artifact turn precedes it.
+                if held is not None:
+                    await _seed_artifact_turn(leg, held)
+                return leg
 
+            if held is not None:
+                instruction = _dimension_task(dimension, mode)
+            else:
+                instruction = _dimension_instruction(artifact, dimension, mode)
             # Repair re-prompts a reviewer that emitted prose instead of a
             # fenced emission. A clean dimension arrives as an affirmative
             # dimension_clean, so reaching the repair path means transport
             # failed — not that the dimension was clean.
             await run.operate_with_repair(
                 agent,
-                _dimension_instruction(artifact, dimension),
+                instruction,
                 arrived=lambda: dimension in self._reported_dimensions(run),
                 emits=emits,
                 retries=self.repair_retries,
                 fallback=_fallback_agent if fallback_model else None,
                 fallback_model=fallback_model,
             )
+
+    async def _send_artifact_turn(
+        self, run: EngineRun, agent: Any, artifact: str
+    ) -> tuple[Any, Any] | None:
+        """Send the artifact alone on *agent*; the turn the other dimensions start from, or None.
+
+        None when the agent's endpoint places no prompt cache (nothing to share), when
+        the request fails, or when the reply is anything but the requested word: a
+        reply that reviewed or emitted is not copied into other agents' histories.
+        Each dimension then sends the artifact with its own task, the leader too, at
+        the cost of the artifact twice in its context when its turn did complete.
+
+        A failure here never decides the review: the turn only saves cost, and each
+        dimension's own request meets whatever caused it under the stage's usual
+        isolation rules. Cancellation is not caught.
+        """
+        endpoint = getattr(getattr(agent, "chat_model", None), "endpoint", None)
+        if not getattr(endpoint, "places_prompt_cache", False):
+            return None
+        name = getattr(agent, "name", "") or ""
+        try:
+            await agent.operate(instruction=_artifact_turn_instruction(artifact))
+        except Exception as exc:
+            run.notify("artifact_turn_failed", agent=name, error_type=_failure_label(exc))
+            return None
+        instruction = agent.msgs.last_instruction
+        reply = agent.msgs.last_response
+        if instruction is None or reply is None or not _is_artifact_turn_reply(reply.response):
+            run.notify("artifact_turn_unused", agent=name, reason="unexpected_reply")
+            return None
+        return instruction, reply
 
     async def _verify(self, run: EngineRun, issue: IssueFound) -> None:
         emits = (VerifyResult,)

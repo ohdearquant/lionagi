@@ -5,10 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from lionagi import Branch
+from lionagi._errors import ContainmentRefusedError
+from lionagi.agent.factory import _AgentSettingError
 from lionagi.casts.emission import build_emission_operable
+from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.session.signal import StructuredOutput
 from lionhub.orchestration.engines.engine import Engine, EngineBudgetError, JudgeVerdict
 from lionhub.orchestration.engines.hypothesis import (
@@ -161,6 +166,222 @@ async def test_judge_text_fallback_for_weak_judges():
 
     run.make_agent = fake_make
     assert await eng.judge(run, "Q-2", "dup question") is False
+
+
+@pytest.mark.parametrize("typed", [True, False], ids=["typed-deny", "text-deny"])
+@pytest.mark.parametrize("contained", [True, False], ids=["contained", "uncontained"])
+@pytest.mark.parametrize("error_type", [RuntimeError, EngineBudgetError])
+async def test_judge_notice_failure_does_not_reverse_a_deny(typed, contained, error_type, caplog):
+    eng = _StubEngine(judge_model="scripted/judge", contain_account_integrations=contained)
+    run = eng.new_run()
+    events = []
+    failure = error_type("notice sink failed password=synthetic-secret")
+
+    def on_event(event):
+        events.append(event)
+        if event["type"] == "gated":
+            raise failure
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        verdict = JudgeVerdict(subject="Q-1", allow=False, reason="off-topic") if typed else None
+        return _FakeJudge(run, verdict, text="REJECT")
+
+    run.make_agent = fake_make
+    assert await eng.judge(run, "Q-1", "tangent question") is False
+    gated = [e for e in events if e["type"] == "gated"]
+    assert len(gated) == 1
+    assert gated[0]["reason"] == ("off-topic" if typed else "text-reject")
+    assert not [e for e in events if e["type"] == "judge_error"]
+    records = [r for r in caplog.records if "gated" in r.getMessage()]
+    assert len(records) == 1
+    assert error_type.__name__ in records[0].getMessage()
+    assert "[redacted]" in records[0].getMessage()
+    assert "synthetic-secret" not in records[0].getMessage()
+    assert records[0].exc_info is None
+
+
+@pytest.mark.parametrize("typed", [True, False], ids=["typed-deny", "text-deny"])
+@pytest.mark.parametrize("error_type", [ContainmentRefusedError, _AgentSettingError])
+@pytest.mark.parametrize("wrapping", ["direct", "cause", "context", "hidden", "group"])
+async def test_judge_notice_propagates_strong_refusals(typed, error_type, wrapping):
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+    refusal = error_type("refused")
+    error = refusal
+    if wrapping != "direct":
+        if wrapping == "group":
+            error = ExceptionGroup("group", [RuntimeError("other"), refusal])
+        else:
+            error = RuntimeError("wrapper")
+            if wrapping == "cause":
+                error.__cause__ = refusal
+            else:
+                error.__context__ = refusal
+                error.__suppress_context__ = wrapping == "hidden"
+
+    def on_event(event):
+        if event["type"] == "gated":
+            raise error
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        verdict = JudgeVerdict(subject="Q-1", allow=False) if typed else None
+        return _FakeJudge(run, verdict, text="REJECT")
+
+    run.make_agent = fake_make
+    with pytest.raises(error_type) as caught:
+        await eng.judge(run, "Q-1", "question")
+    assert caught.value is refusal
+
+
+@pytest.mark.parametrize("chain", ["cycle", "exact-limit", "cycle-at-limit", "over-limit"])
+async def test_judge_notice_exception_chain_is_bounded(chain, caplog):
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+    error = RuntimeError("sink failed")
+    if chain == "cycle":
+        error.__cause__ = error
+    elif chain != "cycle":
+        cursor = error
+        for _ in range(99 if chain != "over-limit" else 100):
+            cursor.__cause__ = RuntimeError("wrapper")
+            cursor = cursor.__cause__
+        if chain == "cycle-at-limit":
+            cursor.__cause__ = error
+
+    def on_event(event):
+        if event["type"] == "gated":
+            raise error
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        return _FakeJudge(run, None, text="REJECT")
+
+    run.make_agent = fake_make
+    if chain == "over-limit":
+        with pytest.raises(RuntimeError) as caught:
+            await eng.judge(run, "Q-1", "question")
+        assert caught.value is error
+    else:
+        assert await eng.judge(run, "Q-1", "question") is False
+        assert "[redacted]" in caplog.text
+
+
+@pytest.mark.parametrize("unreadable", ["__cause__", "__context__"])
+async def test_judge_notice_unreadable_exception_link_propagates_original(unreadable):
+    class BrokenLink(RuntimeError):
+        def __getattribute__(self, name):
+            if name == unreadable:
+                raise OSError("cannot inspect exception chain")
+            return super().__getattribute__(name)
+
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+    error = BrokenLink("sink failed")
+
+    def on_event(event):
+        if event["type"] == "gated":
+            raise error
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        return _FakeJudge(run, None, text="REJECT")
+
+    run.make_agent = fake_make
+    with pytest.raises(BrokenLink) as caught:
+        await eng.judge(run, "Q-1", "question")
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("shape", ["unreadable", "iteration", "wide"])
+async def test_judge_notice_unreadable_or_wide_exception_group_propagates_original(shape):
+    class BrokenGroup(ExceptionGroup):
+        def __getattribute__(self, name):
+            if name == "exceptions":
+                if shape == "unreadable":
+                    raise OSError("cannot read members")
+
+                def broken_members():
+                    yield RuntimeError("one member")
+                    raise OSError("cannot read another member")
+
+                return broken_members()
+            return super().__getattribute__(name)
+
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+    member = RuntimeError("member")
+    error = (
+        ExceptionGroup("group", [member] * 101)
+        if shape == "wide"
+        else BrokenGroup("group", [member])
+    )
+
+    def on_event(event):
+        if event["type"] == "gated":
+            raise error
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        return _FakeJudge(run, None, text="REJECT")
+
+    run.make_agent = fake_make
+    caught = None
+    try:
+        await eng.judge(run, "Q-1", "question")
+    except BaseException as exc:
+        caught = exc
+    assert caught is error
+
+
+@pytest.mark.parametrize("typed", [True, False], ids=["typed-deny", "text-deny"])
+async def test_judge_notice_cancellation_propagates(typed):
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+    cancelled = asyncio.CancelledError("cancel notice")
+
+    def on_event(event):
+        if event["type"] == "gated":
+            raise cancelled
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        verdict = JudgeVerdict(subject="Q-1", allow=False) if typed else None
+        return _FakeJudge(run, verdict, text="REJECT")
+
+    run.make_agent = fake_make
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await eng.judge(run, "Q-1", "question")
+    assert caught.value is cancelled
+
+
+@pytest.mark.parametrize("typed", [True, False], ids=["typed-allow", "text-allow"])
+async def test_judge_allow_does_not_send_a_gated_notice(typed):
+    eng = _StubEngine(judge_model="scripted/judge")
+    run = eng.new_run()
+    events = []
+
+    def on_event(event):
+        events.append(event)
+        if event["type"] == "gated":
+            raise RuntimeError("unexpected gated notice")
+
+    run.on_event = on_event
+
+    async def fake_make(role, **kw):
+        verdict = JudgeVerdict(subject="Q-1", allow=True) if typed else None
+        return _FakeJudge(run, verdict, text="PASS")
+
+    run.make_agent = fake_make
+    assert await eng.judge(run, "Q-1", "question") is True
+    assert not [e for e in events if e["type"] == "gated"]
 
 
 @pytest.mark.asyncio

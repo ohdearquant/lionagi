@@ -82,7 +82,7 @@ CHAT_MODELS = (
     "o3-pro-2025-06-10",
 )
 
-REASONING_MODELS = (
+REASONING_MODELS = tuple(
     model
     for model in CHAT_MODELS
     if model.startswith(("o1", "o1-", "o3", "o3-", "o4", "o4-", "gpt-5"))
@@ -384,9 +384,11 @@ class OpenAIChatCompletionsRequest(BaseModel):
         description="Whether to store the response server-side (model-dependent).",
     )
     metadata: dict[str, Any] | None = None
-    reasoning_effort: Literal["low", "medium", "high"] | None = Field(
-        default=None,
-        description="For reasoning models: trade-off between speed and accuracy.",
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None = (
+        Field(
+            default=None,
+            description="For reasoning models: trade-off between speed and accuracy.",
+        )
     )
 
     @model_validator(mode="after")

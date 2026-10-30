@@ -116,8 +116,12 @@ limits cleanup to the direct child. Passing `grace=None` skips the polite signal
 and sends SIGKILL immediately. With a grace period, the async version waits up
 to `grace` seconds (via an `anyio`
 cancel scope, not `asyncio.wait_for` — `wait_for` raises "no running event
-loop" on a non-asyncio `anyio` backend before its timeout can apply) and
-escalates to SIGKILL if the process hasn't exited by then.
+loop" on a non-asyncio `anyio` backend before its timeout can apply). The
+child's exit does not end the group's grace period while members remain. An
+unexpected first group-signal error is retained and the async path retries
+SIGKILL after grace with the original witnesses checked again. A missing group
+or permission refusal does not authorize a retry; a permission refusal is
+logged. The child's own cleanup remains independent of the group result.
 
 Group-wide signals have a stricter identity rule than a liveness probe can
 provide. Before spawn, `prepare_process_group_env()` gives the caller an

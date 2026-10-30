@@ -32,6 +32,7 @@ from lionagi.state.lifecycle.deliveries import (
     ack_delivery,
     is_acknowledged,
     reconcile_unacknowledged,
+    register_consumer,
 )
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
 
@@ -685,6 +686,7 @@ async def test_no_registered_handler_is_a_noop(db: StateDB):
 
 @pytest.mark.asyncio
 async def test_reconcile_unacknowledged_returns_unacked_terminal_events(db: StateDB):
+    await register_consumer(db, "consumer-x", start="all")
     service = SQLAlchemyLifecycleService(db, terminal_callbacks=TerminalCallbackRegistry())
     sid = await _make_session(db, status="running")
     outcome = await service.transition(_command(entity_id=sid, to_status="completed"))
@@ -703,6 +705,7 @@ async def test_reconcile_unacknowledged_returns_unacked_terminal_events(db: Stat
 
 @pytest.mark.asyncio
 async def test_orphan_replacement_emits_terminal_event_after_commit(db: StateDB):
+    await register_consumer(db, "consumer-x", start="all")
     orphan_id = await _make_schedule_run(db, status="running")
     orphan = await db.get_schedule_run(orphan_id)
     replacement_id = _uid()
@@ -743,6 +746,8 @@ async def test_orphan_replacement_emits_terminal_event_after_commit(db: StateDB)
 
 @pytest.mark.asyncio
 async def test_reconcile_is_per_consumer(db: StateDB):
+    await register_consumer(db, "consumer-a", start="all")
+    await register_consumer(db, "consumer-b", start="all")
     service = SQLAlchemyLifecycleService(db, terminal_callbacks=TerminalCallbackRegistry())
     sid = await _make_session(db, status="running")
     outcome = await service.transition(_command(entity_id=sid, to_status="completed"))
@@ -757,6 +762,7 @@ async def test_reconcile_is_per_consumer(db: StateDB):
 
 @pytest.mark.asyncio
 async def test_late_older_commit_still_reconciles_after_newer_commit_acked(db: StateDB):
+    await register_consumer(db, "consumer-interleave", start="all")
     # Verification item 1a: transaction A captures an earlier timestamp but
     # stalls and commits after B, which captures a later timestamp, commits
     # first, and is reconciled and acknowledged. A's event -- despite its
@@ -765,8 +771,8 @@ async def test_late_older_commit_still_reconciles_after_newer_commit_acked(db: S
     # B's timestamp would have skipped it permanently. Real interleaving
     # requires two concurrent stalled transactions; simulated here by
     # backdating A's committed row to sort before the already-acked B, since
-    # the reconciliation query is a pure anti-join with no ordering cursor
-    # and therefore cannot distinguish the two cases.
+    # this query uses the anti-join without a cursor and therefore cannot
+    # distinguish the two cases.
     service = SQLAlchemyLifecycleService(db, terminal_callbacks=TerminalCallbackRegistry())
 
     sid_b = await _make_session(db, status="running")
@@ -794,6 +800,7 @@ async def test_late_older_commit_still_reconciles_after_newer_commit_acked(db: S
 
 @pytest.mark.asyncio
 async def test_offline_longer_than_any_horizon_still_reconciles(db: StateDB):
+    await register_consumer(db, "long-offline-consumer", start="all")
     # Verification item 1b-i: a registered consumer that simply never
     # queries carries no retention cutoff on its unacknowledged set -- an
     # old terminal event, however old, is still returned. Simulated here by
@@ -816,6 +823,7 @@ async def test_offline_longer_than_any_horizon_still_reconciles(db: StateDB):
 
 @pytest.mark.asyncio
 async def test_parallel_ack_by_same_consumer_is_single_row_and_errorless(db: StateDB):
+    await register_consumer(db, "consumer-race", start="all")
     # Verification item 1b-ii.
     service = SQLAlchemyLifecycleService(db, terminal_callbacks=TerminalCallbackRegistry())
     sid = await _make_session(db, status="running")

@@ -5195,12 +5195,72 @@
                 "null-content",
                 "prune",
                 "stats",
+                "terminal-consumer",
                 "vacuum"
               ],
               "help": null
             }
           ],
           "subparsers": {
+            "terminal-consumer": {
+              "prog": "li state terminal-consumer",
+              "actions": [
+                {
+                  "option_strings": [
+                    "-h",
+                    "--help"
+                  ],
+                  "dest": "help",
+                  "required": false,
+                  "nargs": 0,
+                  "default": "==SUPPRESS==",
+                  "choices": null,
+                  "help": "show this help message and exit"
+                },
+                {
+                  "option_strings": [],
+                  "dest": "terminal_consumer_command",
+                  "required": true,
+                  "nargs": "A...",
+                  "default": null,
+                  "choices": [
+                    "list"
+                  ],
+                  "help": null
+                }
+              ],
+              "subparsers": {
+                "list": {
+                  "prog": "li state terminal-consumer list",
+                  "actions": [
+                    {
+                      "option_strings": [
+                        "-h",
+                        "--help"
+                      ],
+                      "dest": "help",
+                      "required": false,
+                      "nargs": 0,
+                      "default": "==SUPPRESS==",
+                      "choices": null,
+                      "help": "show this help message and exit"
+                    },
+                    {
+                      "option_strings": [
+                        "--machine"
+                      ],
+                      "dest": "machine",
+                      "required": false,
+                      "nargs": 0,
+                      "default": false,
+                      "choices": null,
+                      "help": "Emit the versioned machine-readable result."
+                    }
+                  ],
+                  "subparsers": {}
+                }
+              }
+            },
             "import": {
               "prog": "li state import",
               "actions": [

@@ -259,6 +259,21 @@ an unfetched merge can precede a merge that was already fetched.
 Updates increment or reset atomically in database commit order, so concurrent
 schedulers record each pass separately.
 
+**Merged-mode page limit.** A merged pull-request schedule reads at most five pages of closed pull requests per poll
+unless it stores a page limit, an integer from five through one hundred; booleans are refused and null restores five.
+A poll reads the limit once when it starts, so a change applies from the next poll and survives restart. Raising the
+limit allows bounded recovery of a backlog the default cannot cross. While no merge moves the cursor, every later
+poll may pay the deeper traversal, including polls that find no merges. No separate scan watermark is kept: a
+complete scan does not by itself move the scan's lower bound. Incomplete scans release no events and leave the cursor
+unchanged. Merge-time and pull-request-number ordering and the atomic occurrence claim are unchanged. Merged-mode
+scans send no conditional request, because a not-modified first page cannot vouch for the pages after it. Moving the
+cursor forward deliberately skips the backlog and is not recovery.
+
+**Overdue cause.** When the settled capped-poll count reaches three, health stays `overdue` and adds the cause and
+the recovery step: the page limit and a recommendation to raise it. At one hundred it reports that bounded recovery is
+insufficient and calls for operator reconciliation. It never reports success and never recommends skipping. Existing
+health, outcome and HTTP/authentication fields keep their meaning.
+
 ## D8 — Same-repo diffs are still untrusted data
 
 Fork exclusion does not make same-repo content trustworthy: a leaked token or

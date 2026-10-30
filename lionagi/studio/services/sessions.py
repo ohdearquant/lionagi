@@ -523,10 +523,24 @@ async def list_sessions(
         clause, params = (where or SessionFilter()).where(
             user_label_available=user_label != "NULL AS user_label"
         )
-        # CROSS JOIN keeps the limited page in the outer loop, rather than
-        # allowing an outer sessions scan to satisfy the final ORDER BY.
-        cur = await db.execute(
-            f"""
+        recent_unfiltered = sort == "recent" and (
+            where is None
+            or (
+                type(where) is SessionFilter
+                and not any(
+                    (
+                        where.playbook,
+                        where.statuses,
+                        where.project,
+                        where.project_null,
+                        where.tags,
+                        where.search,
+                        where.kinds,
+                    )
+                )
+            )
+        )
+        page_cte = f"""
             WITH page AS (
                 SELECT s.id AS page_id
                 FROM sessions s
@@ -534,6 +548,30 @@ async def list_sessions(
                 ORDER BY {order_by}
                 LIMIT ? OFFSET ?
             )
+        """  # noqa: S608 -- fixed filter/sort SQL; values remain bound
+        page_source = "page CROSS JOIN sessions s ON s.id = page.page_id"
+        page_where = ""
+        page_limit = ""
+        if recent_unfiltered:
+            # Pin schema and data while deciding whether the direct projection
+            # can use this index without evaluating aggregates before a sort.
+            await db.execute("BEGIN")
+            cursor = await db.execute("PRAGMA index_list(sessions)")
+            indexes = await cursor.fetchall()
+            await cursor.close()
+            recent_unfiltered = any(
+                row["name"] == "idx_sessions_updated" and not row["partial"] for row in indexes
+            )
+        fallback = (page_cte, page_source, page_where, page_limit)
+        if recent_unfiltered:
+            page_cte = ""
+            page_source = "sessions s INDEXED BY idx_sessions_updated"
+            page_where = clause
+            page_limit = "LIMIT ? OFFSET ?"
+
+        def listing_sql() -> str:
+            return f"""
+            {page_cte}
             SELECT
                 s.id,
                 s.run_id,
@@ -579,12 +617,25 @@ async def list_sessions(
                     JOIN progressions p ON p.id = b.progression_id
                     WHERE b.session_id = s.id
                 ), 0) AS message_count
-            FROM page
-            CROSS JOIN sessions s ON s.id = page.page_id
+            FROM {page_source}
+            {page_where}
             ORDER BY {order_by}
-            """,  # noqa: S608
-            [*params, limit, offset],
-        )
+            {page_limit}
+            """  # noqa: S608 -- SQL fragments are fixed and filter values are bound
+
+        query_params = [*params, limit, offset]
+        sql = listing_sql()
+        if recent_unfiltered:
+            cursor = await db.cursor()
+            await cursor.execute("EXPLAIN QUERY PLAN " + sql, query_params)
+            plan = await cursor.fetchall()
+            await cursor.close()
+            if any(
+                "TEMP B-TREE" in row[3].upper() and "ORDER BY" in row[3].upper() for row in plan
+            ):
+                page_cte, page_source, page_where, page_limit = fallback
+                sql = listing_sql()
+        cur = await db.execute(sql, query_params)
         rows = await cur.fetchall()
 
     return [
@@ -934,7 +985,9 @@ async def _fetch_messages_by_ids(
     return ordered
 
 
-async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> dict[str, int]:
+async def _fetch_role_counts(
+    db: aiosqlite.Connection, msg_ids: list[str], *, collection_json: str | None = None
+) -> dict[str, int]:
     """Role histogram over msg_ids via SQL GROUP BY — no message content is hydrated."""
     counts: dict[str, int] = {}
     if not msg_ids:
@@ -945,7 +998,7 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
            FROM json_each(?) AS ids
            JOIN messages m ON m.id = ids.value
            GROUP BY m.role""",
-        (json.dumps(msg_ids),),
+        (json.dumps(msg_ids) if collection_json is None else collection_json,),
     )
     for row in await cur.fetchall():
         role = row["role"] or ""
@@ -955,7 +1008,7 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
 
 
 async def _fetch_message_bounds(
-    db: aiosqlite.Connection, msg_ids: list[str]
+    db: aiosqlite.Connection, msg_ids: list[str], *, collection_json: str | None = None
 ) -> tuple[float | None, float | None]:
     """Return persisted timestamp bounds without hydrating message content."""
     if not msg_ids:
@@ -965,7 +1018,7 @@ async def _fetch_message_bounds(
                   MAX(m.created_at) AS last_message_at
            FROM json_each(?) AS ids
            JOIN messages m ON m.id = ids.value""",
-        (json.dumps(msg_ids),),
+        (json.dumps(msg_ids) if collection_json is None else collection_json,),
     )
     row = await cur.fetchone()
     if row is None:
@@ -1339,6 +1392,7 @@ async def get_session(
         next_branch_anchors: dict[str, str] = {}
 
         progression_ids: dict[str, list[str]] = {}
+        stats_collection_json: str | None = None
         for br in branch_rows:
             ids: list[str] = []
             prog_id = br["progression_id"]
@@ -1354,6 +1408,18 @@ async def get_session(
                     except (json.JSONDecodeError, TypeError):
                         ids = []
             progression_ids[br["id"]] = ids
+            # The single row is already retained here. Reuse its captured JSON only when
+            # decoding cannot change member values, and whitespace cannot inflate the bind.
+            if (
+                len(branch_rows) == 1
+                and isinstance(ids, list)
+                and ids
+                and all(isinstance(mid, str) and mid.isascii() for mid in ids)
+                and isinstance(prog_row["collection"], str)
+                and "\\" not in prog_row["collection"]
+                and len(prog_row["collection"]) <= sum(len(mid) + 4 for mid in ids)
+            ):
+                stats_collection_json = prog_row["collection"]
 
         # One budget for the whole read, so it isn't multiplied by branch count;
         # display windows spend first and the action aggregate takes what's left.
@@ -1403,8 +1469,12 @@ async def get_session(
             message_total = len(full_msg_ids)
             messages, has_older = window_by_branch[branch_id]
 
-            role_counts = await _fetch_role_counts(db, full_msg_ids)
-            first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
+            role_counts = await _fetch_role_counts(
+                db, full_msg_ids, collection_json=stats_collection_json
+            )
+            first_message_at, last_message_at = await _fetch_message_bounds(
+                db, full_msg_ids, collection_json=stats_collection_json
+            )
             action_messages = action_by_branch[branch_id]
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.

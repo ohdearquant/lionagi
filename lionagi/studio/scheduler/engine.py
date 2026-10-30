@@ -235,8 +235,11 @@ class _GithubPollObservation:
     from_batch: bool = False
     poll_status: str | None = None
     scan_complete: bool = False
+    page_limit: int | None = None
     held: bool = False
     launched: bool = False
+    claim_lost: bool = False
+    stale_logged: bool = False
 
     def reset_after(self, *, settled: bool) -> bool | None:
         if self.poll_status in {"error", "auth_error"}:
@@ -255,6 +258,7 @@ class _GithubBatch:
     The next turn dispatches them as found, without polling, at the due instant of the poll that
     found them. ``row_cursor``, ``repo`` and ``github_filter`` are the schedule's values once that
     poll ended; a schedule that no longer holds them has moved on, and the batch is dropped.
+    A page-limit change alone does not change the matching event filter.
     """
 
     due_at: float
@@ -264,12 +268,19 @@ class _GithubBatch:
     github_filter: Any
     cycle_claimed: bool
     slot_claim: _GlobalSlotClaim | None = None
+    target_generation: int | None = None
 
     def matches(self, schedule: dict) -> bool:
+        def event_filter(value):
+            if not isinstance(value, dict):
+                return value
+            return {k: v for k, v in value.items() if k != "merged_page_limit"}
+
         return (
             schedule.get("github_cursor") == self.row_cursor
             and schedule.get("github_repo") == self.repo
-            and schedule.get("github_filter") == self.github_filter
+            and event_filter(schedule.get("github_filter")) == event_filter(self.github_filter)
+            and schedule.get("poller_target_generation") == self.target_generation
         )
 
 
@@ -1646,6 +1657,15 @@ class SchedulerEngine:
         active = self._github_tick_tasks.get(sid)
         if batch is not None and (active is None or active.done()):
             if not batch.matches(schedule):
+                if batch.target_generation != schedule.get("poller_target_generation"):
+                    _log.debug(
+                        "Schedule %s (%s): dropping GitHub batch target generation %s; "
+                        "current generation %s",
+                        schedule.get("name"),
+                        sid,
+                        batch.target_generation,
+                        schedule.get("poller_target_generation"),
+                    )
                 self._drop_github_batch(sid)
                 # The poll cycle that found the dropped events was never served, so the cadence
                 # counts from the last fire alone and the schedule re-lists from where it stands.
@@ -1787,12 +1807,17 @@ class SchedulerEngine:
     ) -> bool:
         """Account for one settled poll pass without changing its dispatch result."""
         observation = _GithubPollObservation()
+        expected_target_generation = schedule.get("poller_target_generation")
         try:
             deferred = await self._github_due_pass_observed(schedule, now, batch, observation)
         except BaseException:
             if observation.reset_after(settled=False) is True:
                 try:
-                    await self._svc.record_github_poll_stagnation(schedule["id"], reset=True)
+                    await self._svc.record_github_poll_stagnation(
+                        schedule["id"],
+                        reset=True,
+                        expected_target_generation=expected_target_generation,
+                    )
                 except BaseException:
                     # Progress accounting cannot replace the error or cancellation being unwound.
                     _log.exception(
@@ -1801,8 +1826,41 @@ class SchedulerEngine:
             raise
         reset = observation.reset_after(settled=True)
         if reset is not None:
-            await self._svc.record_github_poll_stagnation(schedule["id"], reset=reset)
+            if reset:
+                await self._svc.record_github_poll_stagnation(
+                    schedule["id"],
+                    reset=True,
+                    expected_target_generation=expected_target_generation,
+                )
+            else:
+                await self._svc.record_github_poll_stagnation(
+                    schedule["id"],
+                    reset=False,
+                    page_limit=observation.page_limit,
+                    expected_target_generation=expected_target_generation,
+                )
         return deferred
+
+    async def _github_target_current(
+        self, schedule: dict, observation: _GithubPollObservation
+    ) -> bool:
+        expected = schedule.get("poller_target_generation")
+        if expected is None:
+            return True
+        current = await self._svc.get_schedule(schedule["id"])
+        actual = current.get("poller_target_generation") if current is not None else None
+        if actual == expected:
+            return True
+        if not observation.stale_logged:
+            _log.debug(
+                "Schedule %s (%s): dropping GitHub poll target generation %s; current generation %s",
+                schedule.get("name"),
+                schedule["id"],
+                expected,
+                actual,
+            )
+            observation.stale_logged = True
+        return False
 
     async def _github_due_pass_observed(
         self,
@@ -1822,6 +1880,15 @@ class SchedulerEngine:
             if batch.slot_claim is not None:
                 batch.slot_claim.release()
                 batch.slot_claim = None
+            if batch.target_generation != schedule.get("poller_target_generation"):
+                _log.debug(
+                    "Schedule %s (%s): dropping GitHub batch target generation %s; "
+                    "current generation %s",
+                    schedule.get("name"),
+                    schedule["id"],
+                    batch.target_generation,
+                    schedule.get("poller_target_generation"),
+                )
             batch = None
         observation.from_batch = batch is not None
         due_at = batch.due_at if batch is not None else self._github_due_at(schedule)
@@ -1851,6 +1918,16 @@ class SchedulerEngine:
                 polled = batch.items
             else:
                 self._github_polled_at[sid] = now
+                from .github import merged_page_limit
+
+                poll_filter = schedule.get("github_filter") or {}
+                if poll_filter.get("event") == "pr_merged":
+                    try:
+                        observation.page_limit = merged_page_limit(
+                            poll_filter.get("merged_page_limit")
+                        )
+                    except ValueError:
+                        pass  # The poll reports invalid configuration as an error.
                 poll_result = await github_poll(schedule)
                 observation.poll_status = poll_result.poll_status
                 observation.scan_complete = poll_result.scan_complete
@@ -1878,6 +1955,8 @@ class SchedulerEngine:
                         sid,
                         poller_consecutive_401=(schedule.get("poller_consecutive_401") or 0) + 1,
                     )
+                if not await self._github_target_current(schedule, observation):
+                    return False
 
             if not polled:
                 return False
@@ -1980,6 +2059,11 @@ class SchedulerEngine:
                             else NO_CURSOR_CLAIM
                         ),
                         expect_github_cursor=claimed_cursor,
+                        **(
+                            {"expect_target_generation": schedule["poller_target_generation"]}
+                            if schedule.get("poller_target_generation") is not None
+                            else {}
+                        ),
                         github_poll_observation=observation,
                     )
                     if fired:
@@ -1989,11 +2073,17 @@ class SchedulerEngine:
                         # claim a value no transaction ever put in the row.
                         claimed_cursor = item.cursor
                     if not fired:
+                        if observation.claim_lost:
+                            await self._github_target_current(schedule, observation)
+                            return False
                         # A refusal before a process started means nothing ran, so re-offering the
                         # event is not a re-execution. Bounded, because a refusal can be a property
                         # of this one event rather than the schedule, and holding the cursor forever
                         # would block every later event.
                         refusals = await self._record_predispatch_refusal(schedule, item.cursor)
+                        if refusals is None:
+                            await self._github_target_current(schedule, observation)
+                            return False
                         if refusals < _MAX_PREDISPATCH_REFUSALS:
                             # Stop rather than trying the rest: if the cause is the schedule, later
                             # events refuse identically and each burns a budget unit doing so.
@@ -2017,12 +2107,16 @@ class SchedulerEngine:
                             refusals,
                         )
                         cursor = item.cursor
-                        await self._clear_predispatch_refusals(schedule)
+                        if not await self._clear_predispatch_refusals(schedule):
+                            await self._github_target_current(schedule, observation)
+                            return False
                         # The advance rides the trailing batched write below, since the refusing
                         # fire wrote its failed run row without a cursor advance; a crash here just
                         # re-offers the event.
                         continue
-                    await self._clear_predispatch_refusals(schedule)
+                    if not await self._clear_predispatch_refusals(schedule):
+                        await self._github_target_current(schedule, observation)
+                        return False
                     # Tracked locally for the batched trailing write below, and idempotent if this
                     # event's own fire already persisted the same cursor value.
                     cursor = item.cursor
@@ -2056,10 +2150,23 @@ class SchedulerEngine:
             if cursor != schedule.get("github_cursor"):
                 # guard_cursor_forward: this value derives from the snapshot read at tick start, so
                 # it must not undo a cursor an operator moved forward while the poll was in flight.
-                await self._svc.update_schedule(
-                    sid, github_cursor=cursor, guard_cursor_forward=True
+                updated = await self._svc.update_schedule(
+                    sid,
+                    github_cursor=cursor,
+                    guard_cursor_forward=True,
+                    **(
+                        {"expect_target_generation": schedule["poller_target_generation"]}
+                        if schedule.get("poller_target_generation") is not None
+                        else {}
+                    ),
                 )
+                if updated is False and not await self._github_target_current(
+                    schedule, observation
+                ):
+                    return False
             if held_back is not None:
+                if not await self._github_target_current(schedule, observation):
+                    return False
                 # The events the cap held back compete again at this poll's own due instant, ahead
                 # of every younger row, without a second poll.
                 self._github_batches[sid] = _GithubBatch(
@@ -2069,6 +2176,7 @@ class SchedulerEngine:
                     repo=schedule.get("github_repo"),
                     github_filter=schedule.get("github_filter"),
                     cycle_claimed=not unclaimed_poll_cycle,
+                    target_generation=schedule.get("poller_target_generation"),
                 )
                 observation.held = True
             if cap_deferred:
@@ -2079,36 +2187,51 @@ class SchedulerEngine:
                 pre_rate_claim.release()
         return False
 
-    async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
+    async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int | None:
         """Count one pre-dispatch refusal of the event at *event_cursor*; returns the new total."""
         prior = schedule.get("predispatch_refusal_count") or 0
         if schedule.get("predispatch_refusal_event") != event_cursor:
             prior = 0
         count = prior + 1
-        await self._svc.update_schedule(
+        updated = await self._svc.update_schedule(
             schedule["id"],
             predispatch_refusal_event=event_cursor,
             predispatch_refusal_count=count,
+            **(
+                {"expect_target_generation": schedule["poller_target_generation"]}
+                if schedule.get("poller_target_generation") is not None
+                else {}
+            ),
         )
+        if updated is False:
+            return None
         # Keep this tick's snapshot in step, so a second refusal within the
         # same poll counts from the value just written.
         schedule["predispatch_refusal_event"] = event_cursor
         schedule["predispatch_refusal_count"] = count
         return count
 
-    async def _clear_predispatch_refusals(self, schedule: dict) -> None:
+    async def _clear_predispatch_refusals(self, schedule: dict) -> bool:
         """Drop the pre-dispatch refusal streak once the cursor moves past the event."""
         if not schedule.get("predispatch_refusal_count") and not schedule.get(
             "predispatch_refusal_event"
         ):
-            return
-        await self._svc.update_schedule(
+            return True
+        updated = await self._svc.update_schedule(
             schedule["id"],
             predispatch_refusal_event=None,
             predispatch_refusal_count=0,
+            **(
+                {"expect_target_generation": schedule["poller_target_generation"]}
+                if schedule.get("poller_target_generation") is not None
+                else {}
+            ),
         )
+        if updated is False:
+            return False
         schedule["predispatch_refusal_event"] = None
         schedule["predispatch_refusal_count"] = 0
+        return True
 
     async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against ``max_runs``; returns (allowed, claim)."""
@@ -2663,6 +2786,7 @@ class SchedulerEngine:
         supersedes_run_id: str | None = None,
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         github_poll_observation: _GithubPollObservation | None = None,
     ) -> bool:
         """Thin wrapper that releases every admission claim on all exit paths.
@@ -2685,6 +2809,11 @@ class SchedulerEngine:
                 supersedes_run_id=supersedes_run_id,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                **(
+                    {"expect_target_generation": expect_target_generation}
+                    if expect_target_generation is not None
+                    else {}
+                ),
                 github_poll_observation=github_poll_observation,
             )
         finally:
@@ -2714,6 +2843,7 @@ class SchedulerEngine:
         supersedes_run_id: str | None,
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
     ) -> bool:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
@@ -2736,14 +2866,31 @@ class SchedulerEngine:
             schedule_fields=schedule_fields,
             expect_next_fire_at=expect_next_fire_at,
             expect_github_cursor=expect_github_cursor,
+            **(
+                {"expect_target_generation": expect_target_generation}
+                if expect_target_generation is not None
+                else {}
+            ),
         )
 
     async def _abandon_refused_fire(
-        self, inv_id: str, schedule_id: str, *, orphan_id: str | None
+        self, inv_id: str, schedule_id: str, *, orphan_id: str | None, target_changed: bool = False
     ) -> None:
         """Route a refused occurrence write to the reason that actually refused it."""
         if orphan_id is not None:
             await self._abandon_superseded_recovery_fire(inv_id, orphan_id=orphan_id)
+        elif target_changed:
+            await self._guarded_terminal_status(
+                "invocation",
+                inv_id,
+                new_status="cancelled",
+                reason_code=RunReasons.CANCELLED_STALE_AUTO,
+                reason_summary=f"Fire abandoned: schedule {schedule_id} changed its GitHub target.",
+                evidence_refs=[{"kind": "schedule", "id": schedule_id}],
+                source="system",
+                actor="scheduler_target_claim",
+                extra_fields={"ended_at": time.time()},
+            )
         else:
             await self._abandon_lost_cursor_claim(inv_id, schedule_id=schedule_id)
 
@@ -2809,6 +2956,7 @@ class SchedulerEngine:
         supersedes_run_id: str | None = None,
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         github_poll_observation: _GithubPollObservation | None = None,
     ) -> bool:
         """Fire one occurrence of *schedule*; False only if it refused before anything committed."""
@@ -2927,11 +3075,24 @@ class SchedulerEngine:
                     supersedes_run_id=supersedes_run_id,
                     expect_next_fire_at=expect_next_fire_at,
                     expect_github_cursor=expect_github_cursor,
+                    **(
+                        {"expect_target_generation": expect_target_generation}
+                        if expect_target_generation is not None
+                        else {}
+                    ),
                 )
                 if not written_occurrence:
+                    target_changed = False
+                    if github_poll_observation is not None:
+                        github_poll_observation.claim_lost = True
+                        target_changed = not await self._github_target_current(
+                            schedule, github_poll_observation
+                        )
                     # Abandon writes the invocation's cancelled terminal status, and the finally
                     # unregisters only after it, so a declared notify still fires.
-                    await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)
+                    await self._abandon_refused_fire(
+                        inv_id, sid, orphan_id=supersedes_run_id, target_changed=target_changed
+                    )
                     return False
                 if rate_limit_claim is not None:
                     # The durable row now accounts for this fire across process
@@ -3039,9 +3200,22 @@ class SchedulerEngine:
                 supersedes_run_id=supersedes_run_id,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                **(
+                    {"expect_target_generation": expect_target_generation}
+                    if expect_target_generation is not None
+                    else {}
+                ),
             )
             if not written_occurrence:
-                await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)
+                target_changed = False
+                if github_poll_observation is not None:
+                    github_poll_observation.claim_lost = True
+                    target_changed = not await self._github_target_current(
+                        schedule, github_poll_observation
+                    )
+                await self._abandon_refused_fire(
+                    inv_id, sid, orphan_id=supersedes_run_id, target_changed=target_changed
+                )
                 return False
             occurrence_committed = True
             if rate_limit_claim is not None:

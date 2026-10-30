@@ -34,6 +34,10 @@ class APIUsageSink(Protocol):
 
     def mark_dispatch(self, request_index: int) -> None: ...
 
+    def record_cache_usage(
+        self, request_index: int, *, read: int | None, write: int | None
+    ) -> None: ...
+
     def record_selected_attempt(
         self,
         request_index: int,
@@ -56,6 +60,29 @@ _turn: ContextVar[tuple[weakref.ReferenceType[APIUsageSink], int] | None] = Cont
     "api_usage_turn", default=None
 )
 _request: ContextVar[RequestFrame | None] = ContextVar("api_usage_request", default=None)
+_cache_source: ContextVar[list[bool] | None] = ContextVar("api_usage_cache_source", default=None)
+
+
+@contextmanager
+def observe_cache_source() -> Iterator[list[bool]]:
+    source = [False]
+    token = _cache_source.set(source)
+    try:
+        yield source
+    finally:
+        _cache_source.reset(token)
+
+
+def claim_cache_source() -> list[bool] | None:
+    source = _cache_source.get()
+    if source is not None:
+        _cache_source.set(None)
+    return source
+
+
+def mark_uncached_response(source: list[bool] | None) -> None:
+    if source is not None:
+        source[0] = True
 
 
 def _live(owner: weakref.ReferenceType[APIUsageSink]) -> APIUsageSink | None:
@@ -112,6 +139,15 @@ def mark_dispatch(frame: RequestFrame | None) -> None:
         try:
             if collector := _live(frame.owner):
                 collector.mark_dispatch(frame.request_index)
+        except Exception:
+            return
+
+
+def record_cache_usage(frame: RequestFrame | None, *, read: int | None, write: int | None) -> None:
+    if frame is not None:
+        try:
+            if collector := _live(frame.owner):
+                collector.record_cache_usage(frame.request_index, read=read, write=write)
         except Exception:
             return
 

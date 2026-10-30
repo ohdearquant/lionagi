@@ -265,6 +265,7 @@ async def deliver_flow_notify_now(
         reason_code=reason_code,
         occurred_at=occurred_at,
     )
+    stderr_text: str | None = None
     try:
         if is_coro_func(handler):
             await maybe_await(handler(envelope))
@@ -272,9 +273,11 @@ async def deliver_flow_notify_now(
             # offloaded so a sync handler body never blocks the loop; see
             # TerminalCallbackRegistry.emit, which this mirrors.
             await maybe_await(await _run_sync(handler, envelope, abandon_on_cancel=True))
-    except Exception:  # noqa: BLE001 -- a notifier failure must never affect the run
+    except Exception as exc:  # noqa: BLE001 -- a notifier failure must never affect the run
         logger.warning(
-            "direct-path notify.on_terminal delivery failed for run %s", run.run_id, exc_info=True
+            "direct-path notify.on_terminal delivery failed for run %s (%s)",
+            run.run_id,
+            type(exc).__name__,
         )
         # A python adapter's raise otherwise reaches only the log line above,
         # leaving nothing queryable — unlike the exec adapter, which records
@@ -282,6 +285,8 @@ async def deliver_flow_notify_now(
         # so durability doesn't depend on adapter type. Traceback goes to the
         # same owner-only file the exec adapter's stderr does (free text can
         # carry a credential), referenced by path, never inlined.
-        record_notify_outcome_to_run(
-            run, ok=False, exit_code=None, stderr_text=traceback.format_exc()
-        )
+        stderr_text = traceback.format_exc()
+    if stderr_text is not None:
+        # Record after leaving the handler's exception context. The recorder
+        # also avoids logging chains when an outer context is still active.
+        record_notify_outcome_to_run(run, ok=False, exit_code=None, stderr_text=stderr_text)

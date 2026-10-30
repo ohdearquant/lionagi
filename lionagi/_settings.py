@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from stat import S_ISLNK, S_ISREG
 from typing import Any
 
 import yaml
@@ -13,7 +15,74 @@ import yaml
 from lionagi._paths import is_account_lionagi_dir
 from lionagi.libs.nested import deep_merge as _deep_merge_impl
 
-__all__ = ("load_settings",)
+__all__ = ("load_global_settings_layer", "load_project_settings_layer", "load_settings")
+
+
+def _layer_entry_present(path: Path) -> bool:
+    """Treat a broken settings symlink as an error, not absent configuration."""
+    try:
+        path.lstat()
+    except NotADirectoryError:
+        # An ordinary file at this project's .lionagi entry cannot contain a
+        # settings layer. A symlink to a file is an explicit broken directory
+        # reference and remains a read failure instead of selecting an ancestor.
+        if S_ISREG(path.parent.lstat().st_mode):
+            return False
+        raise
+    except FileNotFoundError:
+        # A broken symlink at the settings directory also makes its child
+        # appear absent. Check that entry without resolving any higher ancestor.
+        try:
+            parent = path.parent.lstat()
+        except FileNotFoundError:
+            return False
+        if S_ISLNK(parent.st_mode):
+            path.parent.stat()  # A dangling target must remain a read failure.
+        return False
+    return True
+
+
+def _read_layer(path: Path) -> Any:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if _layer_entry_present(path):
+            raise
+        return {}
+    try:
+        if not S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("settings layer is not a regular file")
+        with os.fdopen(fd, closefd=False) as stream:
+            source = stream.read()
+    finally:
+        os.close(fd)
+    # An empty or comment-only document has no node. An explicit YAML null is
+    # a real (invalid for settings) scalar and must not become chosen silence.
+    node = yaml.compose(source, Loader=yaml.SafeLoader)
+    if node is None or (
+        node.tag == "tag:yaml.org,2002:null"
+        and node.value == ""
+        and node.start_mark.index == node.end_mark.index
+    ):
+        return {}
+    return yaml.safe_load(source)
+
+
+def load_global_settings_layer() -> Any:
+    """Read the raw global layer without merging or hiding malformed roots."""
+    return _read_layer(Path.home() / ".lionagi" / "settings.yaml")
+
+
+def load_project_settings_layer(project_dir: str | Path | None = None) -> Any:
+    """Read the nearest project layer without merging it with global settings."""
+    root = Path(project_dir) if project_dir else Path.cwd()
+    for parent in (root, *root.parents):
+        candidate = parent / ".lionagi" / "settings.yaml"
+        if _layer_entry_present(candidate):
+            if is_account_lionagi_dir(candidate.parent):
+                return {}
+            return _read_layer(candidate)
+    return {}
 
 
 def load_settings(

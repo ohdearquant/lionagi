@@ -60,3 +60,33 @@ class OpenaiResponseEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)
+
+    def create_payload(
+        self, request: dict | BaseModel, extra_headers: dict | None = None, **kwargs
+    ):
+        baseline = self.config.kwargs.get("reasoning")
+        request_dict = (
+            request if isinstance(request, dict) else request.model_dump(exclude_none=True)
+        )
+        layers = (self.config.kwargs, request_dict, kwargs)
+        flat_effort = any(layer.get("reasoning_effort") is not None for layer in layers)
+        if flat_effort or (isinstance(baseline, dict) and "effort" in baseline):
+            merged = {}
+            for layer in layers:
+                if layer.get("reasoning_effort") is not None:
+                    merged["effort"] = layer["reasoning_effort"]
+                if "reasoning" in layer:
+                    value = layer["reasoning"]
+                    if value is None:
+                        continue
+                    if isinstance(value, dict):
+                        merged.update(
+                            {k: v for k, v in value.items() if k != "effort" or v is not None}
+                        )
+                    else:
+                        raise ValueError("reasoning must be a mapping when effort is configured")
+            kwargs["reasoning"] = merged
+        payload, headers = super().create_payload(request, extra_headers=extra_headers, **kwargs)
+        if flat_effort:
+            payload.pop("reasoning_effort", None)
+        return payload, headers

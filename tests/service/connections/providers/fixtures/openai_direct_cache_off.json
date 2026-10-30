@@ -1,0 +1,6 @@
+{
+  "gpt-5-filtered": "{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"developer\",\"name\":\"policy\",\"content\":\"existing\"},{\"role\":\"user\",\"content\":\"hello\"}]}",
+  "gpt-5-unfiltered": "{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"developer\",\"name\":\"policy\",\"content\":\"existing\"},{\"role\":\"user\",\"content\":\"hello\"}],\"vendor_extension\":\"preserve-only-if-unfiltered\"}",
+  "gpt-6-luna-filtered": "{\"model\":\"gpt-6-luna\",\"messages\":[{\"role\":\"system\",\"name\":\"policy\",\"content\":\"existing\"},{\"role\":\"user\",\"content\":\"hello\"}]}",
+  "gpt-6-luna-unfiltered": "{\"model\":\"gpt-6-luna\",\"messages\":[{\"role\":\"system\",\"name\":\"policy\",\"content\":\"existing\"},{\"role\":\"user\",\"content\":\"hello\"}],\"vendor_extension\":\"preserve-only-if-unfiltered\"}"
+}

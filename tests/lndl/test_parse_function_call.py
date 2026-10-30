@@ -36,7 +36,45 @@ class TestArgumentValueTypes:
         assert result["service"] == "b"
 
 
+@pytest.mark.parametrize("batch", [False, True], ids=["single", "batch"])
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        ('fn(x="from=1")', {"x": "from=1"}),
+        ("fn(x='class=1, def = 2')", {"x": "class=1, def = 2"}),
+        ('''fn(x="""from=1\nclass = 2""")''', {"x": "from=1\nclass = 2"}),
+        (r'fn(x=r"from=1\\path")', {"x": r"from=1\\path"}),
+        (r"""fn(x="escaped \" from=1")""", {"x": 'escaped " from=1'}),
+        ('fn(x={"from=1": ["class=2", "await=3"]})', {"x": {"from=1": ["class=2", "await=3"]}}),
+        ('fn(from="from=1", class = "class=2")', {"from_": "from=1", "class_": "class=2"}),
+        ('fn(x="é from=1", from="from=2")', {"x": "é from=1", "from_": "from=2"}),
+        ('fn(x="from=1" " class=2")', {"x": "from=1 class=2"}),
+        ('fn(x=b"from=1")', {"x": b"from=1"}),
+        ('fn(\nfrom\n= "from=1",\n)', {"from_": "from=1"}),
+        ('fn(\nx="""line\rbreak""",\nfrom="from=1")', {"x": "line\nbreak", "from_": "from=1"}),
+        ('fn(\n x="雪",\n from="class=2"\n)', {"x": "雪", "from_": "class=2"}),
+    ],
+)
+def test_reserved_keyword_escaping_preserves_string_literals(batch, call, expected):
+    if batch:
+        result = parse_batch_function_calls(f"[{call}]")[0]
+    else:
+        result = parse_function_call(call)
+    assert result["arguments"] == expected
+
+
 class TestParseFunctionCallErrors:
+    @pytest.mark.parametrize(
+        ("parse", "text"),
+        [
+            (parse_function_call, 'fn(x="""unterminated)'),
+            (parse_batch_function_calls, '[fn(x="""unterminated)]'),
+        ],
+    )
+    def test_unterminated_string_keeps_public_error_type(self, parse, text):
+        with pytest.raises(ValueError, match="Invalid .*function call syntax"):
+            parse(text)
+
     def test_unsupported_function_type_raises(self):
         with pytest.raises(ValueError, match="Unsupported function type"):
             parse_function_call("x[0](y=1)")

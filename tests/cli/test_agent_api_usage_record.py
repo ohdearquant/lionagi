@@ -42,6 +42,46 @@ def _chars(payload):
 
 
 @pytest.mark.asyncio
+async def test_openai_cache_counts_reach_real_run_manifest(leg, monkeypatch, tmp_path):
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    replies = []
+    for body, usage in (
+        (provider._last_round(), {"cached_tokens": 17}),
+        (provider._answer("done"), {"cached_tokens": 0, "cache_write_tokens": 23}),
+    ):
+        replies.append(
+            {
+                "choices": [
+                    {"message": {"role": "assistant", "content": body["content"][0]["text"]}}
+                ],
+                "usage": {"prompt_tokens_details": usage},
+            }
+        )
+    sent = []
+
+    async def call(self, request, headers, **kwargs):
+        sent.append(copy.deepcopy(request))
+        return replies.pop(0)
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "_call", call)
+    result = await leg.run(provider._profile(api_tools="read"), model="openai/gpt-5")
+    _, manifest = _only_record(tmp_path)
+    usage = manifest["api_usage"]
+    assert result[3] == manifest["status"] == "completed"
+    assert len(sent) == len(usage["requests"]) == 2
+    assert usage["schema_version"] == 1
+    assert [(r["cache_read_tokens"], r["cache_write_tokens"]) for r in usage["requests"]] == [
+        (17, None),
+        (0, 23),
+    ]
+    assert usage["account_labels"] == []
+    assert all(row["selected_attempts"] == [] for row in usage["requests"])
+    assert "test-openai-key" not in json.dumps(usage)
+
+
+@pytest.mark.asyncio
 async def test_real_manifest_retains_all_usage_fields_and_actual_selected_account(
     leg, monkeypatch, tmp_path
 ):

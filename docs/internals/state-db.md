@@ -488,7 +488,16 @@ further restricted to `EXECUTED_RUN_STATUSES`, because `skipped`, `queued`,
 GitHub poll progress is tracked separately in
 `schedules.poller_consecutive_cap_no_dispatch`, an integer defaulting to zero
 on fresh and additively migrated stores, without historical backfill. The
-existing `last_healthy_poll_at` and `poller_consecutive_401` retain their HTTP
+nullable `schedules.poller_last_capped_page_limit` records the limit used by the
+last settled capped poll; older rows remain unknown. It is written with the
+counter and cleared by the same reset, and is not authored schedule configuration.
+`schedules.poller_target_generation` is an internal version of the poll target.
+An update or ScheduleSet apply that changes the repository, trigger, event filter,
+or operator-set cursor atomically increments it and clears both progress fields;
+changing only `merged_page_limit` does not. A poll settles its progress only if
+its starting generation is still current, even if a target changed and was later
+changed back. Engine cursor advances do not increment this version.
+The existing `last_healthy_poll_at` and `poller_consecutive_401` retain their HTTP
 health and authentication-recovery meanings. A successful HTTP read can
 therefore refresh liveness while capped scanning makes no dispatch progress.
 
@@ -497,7 +506,8 @@ therefore refresh liveness while capped scanning makes no dispatch progress.
 it to zero, returning false for a deleted row or changed trigger type. It uses
 the existing runtime-write transaction convention, advancing `updated_at`
 without adding a definition audit event or changing authored fields.
-ScheduleSet adoption and reapply preserve this runtime column.
+ScheduleSet adoption and reapply preserve these runtime columns when the poll
+target is unchanged, including when only the page limit changes.
 
 Accounting settles once per due pass. Fresh `error`/`auth_error` results take
 precedence and leave the counter unchanged, even with a safe-prefix launch,
@@ -506,7 +516,7 @@ confirmed launch resets it, as does a no-poll matched-batch pass that launches.
 A fresh OK pass ending with a held batch and no launch is neutral, including
 a complete scan. A matched-batch pass without a poll or launch, including a
 re-hold, is neutral. Complete OK with neither hold nor launch resets, including
-empty 200/304 reads. Capped OK with neither hold nor launch increments once;
+empty 200 reads and conditional non-merged 304 reads. Capped OK with neither hold nor launch increments once;
 filtered-only or producer-withheld scans can qualify. A stale batch uses the
 actual fresh poll outcome. Cadence, admission, budget and pre-rate exits that
 perform no poll are neutral.

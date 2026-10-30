@@ -21,6 +21,11 @@ import json
 import time
 from typing import Any
 
+from lionagi._checkpoint_version import (
+    UnsupportedCheckpointVersionError,
+    load_legacy_checkpoint_json,
+)
+
 __all__ = ("build_run_detail",)
 
 
@@ -32,8 +37,10 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     ``no_session_recorded_for_run``, ``studio_extra_not_installed``,
     ``session_detail_unreadable``, ``session_not_found``, ``no_session_detail``
     (no graph, no branches, and no recorded node_metadata — nothing to build a
-    detail view from), or ``malformed_session_detail`` (the graph shape read
-    back from node_metadata was not the list-of-dicts this reshape expects).
+    detail view from), ``malformed_session_detail`` (the graph shape read
+    back from node_metadata was not the list-of-dicts this reshape expects),
+    or ``unsupported_checkpoint_version`` (the checkpoint cannot be read
+    safely by this version).
     """
     try:
         from lionagi.state.db import StateDB
@@ -86,6 +93,8 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
             "artifact_contract": _build_artifact_contract(session),
             "stalls": _build_stalls(nodes, session),
         }
+    except UnsupportedCheckpointVersionError:
+        return {"detail_unavailable": "unsupported_checkpoint_version"}
     except Exception:
         return {"detail_unavailable": "malformed_session_detail"}
 
@@ -114,7 +123,7 @@ def _spawned_by_map(run_id: str) -> dict[str, str]:
         checkpoint_path = RUNS_ROOT / run_id / "checkpoint.json"
         if not checkpoint_path.is_file():
             return {}
-        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint = load_legacy_checkpoint_json(checkpoint_path.read_text())
         spawned = checkpoint.get("spawned")
         if not isinstance(spawned, list):
             return {}
@@ -123,6 +132,8 @@ def _spawned_by_map(run_id: str) -> dict[str, str]:
             for e in spawned
             if isinstance(e, dict) and e.get("node_id") and e.get("parent_id")
         }
+    except UnsupportedCheckpointVersionError:
+        raise
     except Exception:
         return {}
 

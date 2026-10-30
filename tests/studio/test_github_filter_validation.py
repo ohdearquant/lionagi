@@ -49,6 +49,21 @@ def test_validate_github_filter_known_keys_ok():
     _svc_validate_github_filter({"event": "pr_merged"})
 
 
+@pytest.mark.parametrize("limit", [4, 101, True, "10", 10.0])
+def test_invalid_merged_page_limit_is_refused(limit):
+    with pytest.raises(ValueError, match="merged_page_limit.*5.*100"):
+        _svc_validate_github_filter({"event": "pr_merged", "merged_page_limit": limit})
+
+
+@pytest.mark.parametrize("limit", [5, 100, None])
+def test_merged_page_limit_accepts_bounds_and_default(limit):
+    _svc_validate_github_filter({"event": "pr_merged", "merged_page_limit": limit})
+
+
+def test_merged_page_limit_is_accepted_in_other_event_modes():
+    _svc_validate_github_filter({"event": "pr_opened", "merged_page_limit": 20})
+
+
 def test_validate_github_filter_all_frontend_event_values_ok():
     """The Studio create-schedule form ships four event choices (pr_merged,
     pr_opened, pr_updated, pr_closed) and defaults new schedules to

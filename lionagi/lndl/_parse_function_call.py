@@ -7,7 +7,8 @@ into a dict of action/service/arguments, plus batch and reserved-keyword handlin
 from __future__ import annotations
 
 import ast
-import re
+import io
+import tokenize
 from typing import Any
 
 # Python reserved keywords that might be used as field names
@@ -22,10 +23,6 @@ RESERVED_KEYWORDS = {
     "async",
     "await",
 }
-
-# Regex to match keyword arguments with reserved names
-# Matches: from="value" or from='value' at word boundary
-_RESERVED_KWARG_PATTERN = re.compile(r"\b(" + "|".join(RESERVED_KEYWORDS) + r")\s*=", re.MULTILINE)
 
 __all__ = (
     "parse_batch_function_calls",
@@ -45,7 +42,50 @@ def qualified_name(parsed: dict[str, Any]) -> str:
 def _escape_reserved_keywords(call_str: str) -> str:
     """Convert ``from=`` to ``from_=`` (etc.) so ``ast.parse`` can handle
     Python reserved keywords used as argument names."""
-    return _RESERVED_KWARG_PATTERN.sub(r"\1_=", call_str)
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(call_str).readline))
+    except (tokenize.TokenError, IndentationError):
+        # Let ast.parse report malformed input through the existing error path.
+        return call_str
+
+    offsets = [0]
+    for index, character in enumerate(call_str):
+        if character == "\n":
+            offsets.append(index + 1)
+
+    def offset(position: tuple[int, int]) -> int:
+        row, column = position
+        return offsets[row - 1] + column
+
+    insertions = []
+    for index, token in enumerate(tokens):
+        if token.type != tokenize.NAME or token.string not in RESERVED_KEYWORDS:
+            continue
+        next_index = index + 1
+        while next_index < len(tokens) and (
+            tokens[next_index].type == tokenize.NL
+            or (
+                tokens[next_index].type == tokenize.ERRORTOKEN
+                and tokens[next_index].string.isspace()
+            )
+        ):
+            next_index += 1
+        if next_index < len(tokens):
+            following = tokens[next_index]
+            if following.type == tokenize.OP and following.string == "=":
+                end = offset(token.end)
+                if not call_str[end : offset(following.start)].strip():
+                    insertions.append(end)
+
+    if not insertions:
+        return call_str
+    parts = []
+    start = 0
+    for position in insertions:
+        parts.extend((call_str[start:position], "_"))
+        start = position
+    parts.append(call_str[start:])
+    return "".join(parts)
 
 
 def _ast_to_value(node: ast.AST) -> Any:

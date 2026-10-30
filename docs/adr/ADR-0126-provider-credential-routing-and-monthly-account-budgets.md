@@ -175,7 +175,7 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
 (`lionagi/operations/chat/chat.py:103`, `lionagi/service/imodel.py:709`,
-`lionagi/service/connections/api_calling.py:285-292`). HTTP retry happens inside the
+`lionagi/service/connections/api_calling.py:329-338`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
 `lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
@@ -303,8 +303,8 @@ the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
 (`lionagi/providers/_secret_resolution.py:88`,
 `lionagi/providers/_secret_resolution.py:213`,
-`lionagi/providers/_secret_resolution.py:380`,
-`lionagi/providers/_secret_resolution.py:454`). Reusing the
+`lionagi/providers/_secret_resolution.py:389`,
+`lionagi/providers/_secret_resolution.py:463`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes

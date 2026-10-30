@@ -14,7 +14,6 @@ import re
 import shutil
 import signal
 import socket
-import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -28,9 +27,7 @@ from lionagi._cli_worker_context import _CliWorkerAdmission, _get_cli_worker_rec
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
-    _await_child_exit as _wait_owned_child_exit,
-)
-from lionagi.ln._proc import (
+    SignalGate,
     _group_has_members,
     aterminate_process_group,
     capture_group_witnesses,
@@ -39,7 +36,10 @@ from lionagi.ln._proc import (
     raw_create_time,
     signal_group_if_witnessed,
 )
-from lionagi.ln.concurrency.cancel import move_on_after
+from lionagi.ln._proc import (
+    _await_child_exit as _wait_owned_child_exit,
+)
+from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
 from lionagi.ln.concurrency.utils import maybe_await
 
 from ._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
@@ -148,8 +148,13 @@ def _group_cleanup_outcome(proc: Any, spawned: SpawnedProcess | None = None) -> 
 
 
 def _finish_child_lease(
-    lease: Any, outcome: _ChildGroupCleanup, *, launch_outcome: bool = False
+    lease: Any,
+    outcome: _ChildGroupCleanup,
+    *,
+    launch_outcome: bool = False,
+    witnesses: tuple[tuple[int, float], ...] | None = None,
 ) -> None:
+    witness_note = f"; frozen witnesses: {witnesses!r}" if witnesses is not None else ""
     if outcome is _ChildGroupCleanup.CONFIRMED_EMPTY:
         lease.release()
     elif lease.slots:
@@ -163,7 +168,10 @@ def _finish_child_lease(
             else "CLI child group cleanup remains unconfirmed"
         )
         log.warning(
-            "%s; its subagent slots stay held until this process exits (pools: %s)", label, pools
+            "%s; its subagent slots stay held until this process exits (pools: %s)%s",
+            label,
+            pools,
+            witness_note,
         )
     else:
         label = (
@@ -171,7 +179,7 @@ def _finish_child_lease(
             if launch_outcome
             else "CLI child group cleanup remains unconfirmed"
         )
-        log.warning("%s; no capped pools are held", label)
+        log.warning("%s; no capped pools are held%s", label, witness_note)
 
 
 def _require_cli_executable(cmd: list[str], *, cwd: Path | None, env: Mapping[str, str]) -> None:
@@ -576,6 +584,7 @@ def _end_group_with_evidence(
     witnesses: tuple[tuple[int, float], ...] = (),
     *,
     expected_marker: str | None = None,
+    signal_gate: SignalGate | None = None,
 ) -> str:
     """Synchronously end a group only through frozen spawn-time evidence.
 
@@ -594,11 +603,19 @@ def _end_group_with_evidence(
     signalled = False
     try:
         if sigkill is not None:
-            signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
+            if signal_gate is None:
+                signalled = signal_group_if_witnessed(pgid, witnesses, sigkill)
+            else:
+                signalled = signal_gate.run(
+                    lambda: signal_group_if_witnessed(pgid, witnesses, sigkill), skipped=False
+                )
     finally:
         # The child's own kill does not depend on the group signal succeeding.
         with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+            if signal_gate is None:
+                proc.kill()
+            else:
+                signal_gate.run(proc.kill, skipped=None)
     return "killed-witnessed" if signalled else "unproven"
 
 
@@ -610,6 +627,8 @@ async def end_child_group(
     *,
     grace: float = 5.0,
     spawned: SpawnedProcess | None = None,
+    witnesses: tuple[tuple[int, float], ...] | None = None,
+    signal_gate: SignalGate | None = None,
 ) -> _ChildGroupCleanup:
     """End every member of the child's group, and survive being cancelled.
 
@@ -621,7 +640,8 @@ async def end_child_group(
     backstop when a second cancellation interposes.
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
-    witnesses = _witnesses_for_spawn(proc, spawned) if spawned is not None else ()
+    if witnesses is None:
+        witnesses = _witnesses_for_spawn(proc, spawned) if spawned is not None else ()
     # The paired branches below look like duplication -- every callee here
     # IGNORES ``expected_marker``, since the marker is verified where the
     # witnesses are captured -- but omitting the keyword and passing it as None
@@ -634,6 +654,11 @@ async def end_child_group(
     # each definition rather than removed, which is the wider change.
     expected_marker = spawned._group_marker if spawned is not None else None
     swept = False
+    async_kwargs: dict[str, Any] = {}
+    sync_kwargs: dict[str, Any] = {}
+    if signal_gate is not None:
+        async_kwargs["signal_gate"] = signal_gate
+        sync_kwargs["signal_gate"] = signal_gate
     try:
         if getattr(proc, "returncode", None) is None:
             if not witnesses:
@@ -653,6 +678,7 @@ async def end_child_group(
                     proc,
                     grace=grace,
                     group_witnesses=witnesses,
+                    **async_kwargs,
                 )
             else:
                 await aterminate_process_group(
@@ -660,6 +686,7 @@ async def end_child_group(
                     grace=grace,
                     group_witnesses=witnesses,
                     expected_marker=expected_marker,
+                    **async_kwargs,
                 )
             if witnesses:
                 # The forced kill waits for the child alone. A member it killed
@@ -674,12 +701,13 @@ async def end_child_group(
             # descendant kept stdout open. The leader is already reaped here,
             # so the marker-backed witness is the only safe group authority.
             if expected_marker is None:
-                ended = _end_group_with_evidence(proc, witnesses)
+                ended = _end_group_with_evidence(proc, witnesses, **sync_kwargs)
             else:
                 ended = _end_group_with_evidence(
                     proc,
                     witnesses,
                     expected_marker=expected_marker,
+                    **sync_kwargs,
                 )
             if ended == "killed-witnessed":
                 # A member SIGKILL reached still answers the group probe until
@@ -695,14 +723,216 @@ async def end_child_group(
         # on anything about the direct child.
         if not swept:
             if expected_marker is None:
-                _end_group_with_evidence(proc, witnesses)
+                _end_group_with_evidence(proc, witnesses, **sync_kwargs)
             else:
                 _end_group_with_evidence(
                     proc,
                     witnesses,
                     expected_marker=expected_marker,
+                    **sync_kwargs,
                 )
     return _group_cleanup_outcome(proc, spawned)
+
+
+@dataclass
+class _BoundedCleanupResult:
+    witnesses: tuple[tuple[int, float], ...] = ()
+    outcome: _ChildGroupCleanup = _ChildGroupCleanup.UNCONFIRMED
+    cancellation: asyncio.CancelledError | None = None
+    error: BaseException | None = None
+    drain_incomplete: bool = False
+
+
+async def _bounded_cli_cleanup(
+    proc: Any,
+    spawned: SpawnedProcess,
+    *,
+    helpers: tuple[tuple[str, asyncio.Task | None], ...] = (),
+    stderr_task: asyncio.Task | None = None,
+    drain_stderr: bool = False,
+    after_stderr_drain: Callable[[bool], None] | None = None,
+    grace: float = 5.0,
+) -> _BoundedCleanupResult:
+    """Own cooperative teardown under one budget and fence late signals.
+
+    The deadline bounds asynchronous waits, not synchronous identity checks or
+    an already-running signal syscall. Only spawn-bound witnesses authorize the
+    final synchronous backstop; no fresh scan is used on the cutoff path.
+    """
+    result = _BoundedCleanupResult()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 3 * grace + 1.0
+    group_deadline = deadline - 1.0  # diagnostic and collective join reservations
+    gate = SignalGate()
+    witness_error = None
+    try:
+        witnesses = _witnesses_for_spawn(proc, spawned)
+    except BaseException as exc:
+        # No group authority can be derived after a failed observation, but the
+        # direct child and helper tasks still need bounded, gated cleanup.
+        witness_error = exc
+        witnesses = ()
+        result.error = exc
+        if isinstance(exc, asyncio.CancelledError):
+            result.cancellation = exc
+        log.warning("CLI cleanup witness capture failed (%s)", type(exc).__name__)
+    result.witnesses = witnesses
+    log.debug("CLI cleanup starting (pid %s, frozen witnesses: %s)", proc.pid, witnesses)
+    group = None
+    group_coro = None
+    try:
+        if grace == 5.0:
+            group_coro = end_child_group(
+                proc, spawned=spawned, witnesses=witnesses, signal_gate=gate
+            )
+        else:
+            group_coro = end_child_group(
+                proc, grace=grace, spawned=spawned, witnesses=witnesses, signal_gate=gate
+            )
+        group = asyncio.create_task(group_coro)
+    except BaseException as exc:
+        if result.error is None:
+            result.error = exc
+        else:
+            log.warning("CLI group cleanup task creation failed (%s)", type(exc).__name__)
+        if isinstance(exc, asyncio.CancelledError) and result.cancellation is None:
+            result.cancellation = exc
+        if group_coro is not None:
+            group_coro.close()
+    cancellations = int(result.cancellation is not None)
+
+    async def wait_until(tasks: set[asyncio.Task], until: float) -> None:
+        nonlocal cancellations
+        while tasks and cancellations < 2:
+            remaining = max(0.0, until - loop.time())
+            if not remaining:
+                return
+            try:
+                done, _ = await asyncio.wait(tasks, timeout=remaining)
+            except asyncio.CancelledError as exc:
+                cancellations += 1
+                if result.cancellation is None:
+                    result.cancellation = exc
+                continue
+            tasks.difference_update(done)
+            if not done:
+                return
+
+    # A shield prevents the inherited AnyIO deadline from repeatedly cancelling
+    # this cleanup. Direct Task.cancel still reaches wait_until and is recorded.
+    with CancelScope(shield=True):
+        if group is not None:
+            await wait_until({group}, group_deadline)
+        if group is not None and group.done() and cancellations < 2:
+            try:
+                result.outcome = group.result()
+            except BaseException as exc:
+                if result.error is None:
+                    result.error = exc
+                else:
+                    log.warning("CLI group cleanup failed (%s)", type(exc).__name__)
+                if isinstance(exc, asyncio.CancelledError) and result.cancellation is None:
+                    result.cancellation = exc
+        else:
+            # The backstop and the worker share one gate. Once released, a
+            # resistant worker cannot later signal a recycled group or child.
+            try:
+                _end_group_with_evidence(proc, witnesses, signal_gate=gate)
+            except BaseException as exc:
+                if isinstance(exc, asyncio.CancelledError) and result.cancellation is None:
+                    result.cancellation = exc
+                if result.error is None:
+                    result.error = exc
+                else:
+                    log.warning("CLI synchronous cleanup backstop raised %s", type(exc).__name__)
+        gate.release()
+        if group is not None and not group.done():
+            group.cancel()
+            _retain_cli_task(group, None)
+            log.warning("CLI group cleanup task remains owned after cutoff (pid %s)", proc.pid)
+        elif group is not None and cancellations >= 2:
+            # Consume its result even though repeated cancellation is unconfirmed.
+            with contextlib.suppress(BaseException):
+                group.result()
+
+        if drain_stderr and stderr_task is not None and cancellations < 2:
+            await wait_until(
+                {stderr_task}, min(deadline - 0.5, loop.time() + _ABANDONED_STDERR_DRAIN_TIMEOUT)
+            )
+            result.drain_incomplete = not stderr_task.done()
+        elif drain_stderr:
+            result.drain_incomplete = True
+
+        if after_stderr_drain is not None:
+            try:
+                after_stderr_drain(result.drain_incomplete)
+            except BaseException as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    cancellations += 1
+                    if result.cancellation is None:
+                        result.cancellation = exc
+                if result.error is None:
+                    result.error = exc
+                else:
+                    log.warning("CLI abandoned diagnostic failed (%s)", type(exc).__name__)
+
+        outstanding = {task for _, task in helpers if task is not None and not task.done()}
+        for task in outstanding:
+            task.cancel()
+        await wait_until(set(outstanding), min(deadline, loop.time() + 0.5))
+        for name, task in helpers:
+            if task is None:
+                continue
+            if not task.done():
+                _retain_cli_task(task, None)
+                log.warning("CLI %s helper remains owned after cutoff (pid %s)", name, proc.pid)
+            elif not task.cancelled():
+                task.exception()
+    if cancellations >= 2 or witness_error is not None:
+        result.outcome = _ChildGroupCleanup.UNCONFIRMED
+    if result.outcome is _ChildGroupCleanup.CONFIRMED_EMPTY:
+        log.debug(
+            "CLI cleanup finished (pid %s, outcome %s, frozen witnesses: %s)",
+            proc.pid,
+            result.outcome.value,
+            result.witnesses,
+        )
+    # The caller logs the unconfirmed outcome once while retaining the lease.
+    return result
+
+
+def _finish_bounded_lease(lease: Any, cleanup: _BoundedCleanupResult | None) -> _ChildGroupCleanup:
+    outcome = cleanup.outcome if cleanup is not None else _ChildGroupCleanup.UNCONFIRMED
+    _finish_child_lease(
+        lease, outcome, witnesses=cleanup.witnesses if cleanup is not None else None
+    )
+    return outcome
+
+
+def _raise_bounded_cleanup_result(
+    cleanup: _BoundedCleanupResult | None,
+    cleanup_error: BaseException | None,
+    primary: BaseException | None,
+    outcome: _ChildGroupCleanup,
+    admission: _CliWorkerAdmission | None,
+    *,
+    label: str,
+) -> None:
+    secondary = cleanup_error or (cleanup.error if cleanup is not None else None)
+    if secondary is not None:
+        log.warning("%s raised %s", label, type(secondary).__name__)
+    if cleanup is not None and cleanup.cancellation is not None:
+        raise cleanup.cancellation
+    if isinstance(cleanup_error, asyncio.CancelledError):
+        raise cleanup_error
+    if primary is not None and not isinstance(primary, GeneratorExit):
+        raise primary.with_traceback(primary.__traceback__)
+    if secondary is not None:
+        raise secondary
+    if outcome is not _ChildGroupCleanup.CONFIRMED_EMPTY and admission is not None:
+        raise ProviderTeardownError("CLI child group cleanup remains unconfirmed")
+    if primary is not None:
+        raise primary.with_traceback(primary.__traceback__)
 
 
 # How long the stream keeps draining after the CLI child itself has exited.
@@ -1273,14 +1503,22 @@ async def ndjson_from_cli(
 
         if proc.stdout is None:
             raise RuntimeError("Failed to capture stdout from subprocess")
-    except BaseException:
-        outcome = _ChildGroupCleanup.UNCONFIRMED
+    except BaseException as exc:
+        observer_error = exc
+    else:
+        observer_error = None
+    if observer_error is not None:
+        log.warning("CLI spawn observer failed (%s)", type(observer_error).__name__)
+        cleanup = None
+        cleanup_error = None
         try:
-            outcome = await end_child_group(proc, spawned=spawned)
-        except BaseException:
-            log.warning("CLI callback failure cleanup remains unconfirmed")
-        _finish_child_lease(lease, outcome)
-        raise
+            cleanup = await _bounded_cli_cleanup(proc, spawned)
+        except BaseException as exc:
+            cleanup_error = exc
+        outcome = _finish_bounded_lease(lease, cleanup)
+        _raise_bounded_cleanup_result(
+            cleanup, cleanup_error, observer_error, outcome, admission, label="CLI callback cleanup"
+        )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -1474,84 +1712,62 @@ async def ndjson_from_cli(
             stderr_already_surfaced = True
             raise RuntimeError(err)
 
-    finally:
-        # Neither stderr-quoting path covers this, and it is decided before any
-        # await, since awaiting in a finally can change sys.exc_info().
-        primary_error = sys.exc_info()[1]
-        abandoned_silently = (
-            primary_error is not None and not produced_output and not stderr_already_surfaced
+    except BaseException as exc:
+        primary_error = exc
+    else:
+        primary_error = None
+
+    # Exit the handler before awaiting: an active cancellation exception can
+    # otherwise make an enclosing AnyIO deadline consume a later direct cancel.
+    abandoned_silently = (
+        primary_error is not None and not produced_output and not stderr_already_surfaced
+    )
+    if primary_error is not None:
+        log.debug("CLI stream cleanup follows %s", type(primary_error).__name__)
+    diagnostic_attempted = False
+
+    def report_abandoned(drain_incomplete: bool) -> None:
+        nonlocal diagnostic_attempted
+        diagnostic_attempted = True
+        log.warning(
+            "CLI subprocess produced no output before it was abandoned; %s",
+            _abandoned_without_output_note(
+                captured_stderr(), stderr_unavailable, stderr_drain_error, drain_incomplete
+            ),
         )
 
+    cleanup = None
+    cleanup_error = None
+    try:
+        cleanup = await _bounded_cli_cleanup(
+            proc,
+            spawned,
+            helpers=(
+                ("stderr", stderr_task),
+                ("stdin", stdin_task),
+                ("exit", exit_task),
+                ("stdout", read_task),
+            ),
+            stderr_task=stderr_task,
+            drain_stderr=abandoned_silently,
+            after_stderr_drain=report_abandoned if abandoned_silently else None,
+        )
+    except BaseException as exc:
+        cleanup_error = exc
+    outcome = _finish_bounded_lease(lease, cleanup)
+    if abandoned_silently and not diagnostic_attempted:
         try:
-            try:
-                outcome = await end_child_group(proc, spawned=spawned)
-            except BaseException as teardown_error:
-                # The consumer's own error is the one raised below, so the teardown
-                # error is logged here or nowhere.
-                log.warning("CLI child group teardown raised %r", teardown_error)
-                _finish_child_lease(lease, _ChildGroupCleanup.UNCONFIRMED)
-                if primary_error is not None and not isinstance(primary_error, GeneratorExit):
-                    raise primary_error  # noqa: B904 -- preserve the consumer error's own cause
-                raise
-            _finish_child_lease(lease, outcome)
-            # Only a recorded launch claims its group was ended; an unrecorded one
-            # keeps the warning and the held slots, so a platform without killpg
-            # still completes a run that succeeded.
-            if (
-                outcome is not _ChildGroupCleanup.CONFIRMED_EMPTY
-                and admission is not None
-                and (primary_error is None or isinstance(primary_error, GeneratorExit))
-            ):
-                raise ProviderTeardownError("CLI child group cleanup remains unconfirmed")
-
-            if abandoned_silently:
-                # Drain first, or the warning reports "said nothing" about a child
-                # that spoke; shielded so a timeout cannot cancel it mid-buffer.
-                abandon_drain_incomplete = False
-                abandon_cancelled: asyncio.CancelledError | None = None
-                if stderr_task is not None:
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
-                        )
-                    except asyncio.CancelledError as exc:
-                        abandon_cancelled = exc
-                        abandon_drain_incomplete = True
-                    except Exception:  # noqa: BLE001
-                        # Whatever it captured stays in the buffer, but the drain
-                        # did not finish, so an empty buffer is unknown rather than
-                        # evidence the child was quiet.
-                        abandon_drain_incomplete = True
-                log.warning(
-                    "CLI subprocess produced no output before it was abandoned; %s",
-                    _abandoned_without_output_note(
-                        captured_stderr(),
-                        stderr_unavailable,
-                        stderr_drain_error,
-                        abandon_drain_incomplete,
-                    ),
-                )
-                if abandon_cancelled is not None:
-                    raise abandon_cancelled
-
-        finally:
-            # wait() does not raise a helper's cancellation. A cancellation here
-            # belongs to this consumer: join every helper before propagating it.
-            reap_cancelled: asyncio.CancelledError | None = None
-            for task in (stderr_task, stdin_task, exit_task, read_task):
-                if task is None:
-                    continue
-                task.cancel()
-                while not task.done():
-                    try:
-                        await asyncio.wait({task})
-                    except asyncio.CancelledError as exc:
-                        if reap_cancelled is None:
-                            reap_cancelled = exc
-                if not task.cancelled():
-                    task.exception()
-            if reap_cancelled is not None:
-                raise reap_cancelled
+            report_abandoned(cleanup is None or cleanup.drain_incomplete)
+        except BaseException as exc:
+            if cleanup_error is not None:
+                log.warning("CLI abandoned diagnostic failed (%s)", type(exc).__name__)
+                if isinstance(exc, asyncio.CancelledError):
+                    log.warning("CLI child group teardown raised %s", type(cleanup_error).__name__)
+            if cleanup_error is None or isinstance(exc, asyncio.CancelledError):
+                cleanup_error = exc
+    _raise_bounded_cleanup_result(
+        cleanup, cleanup_error, primary_error, outcome, admission, label="CLI child group teardown"
+    )
 
 
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:

@@ -196,6 +196,7 @@ export type ResumeUnavailableReason =
   | "target_not_found"
   | "ambiguous_target"
   | "invalid_checkpoint"
+  | "unsupported_checkpoint_version"
   | "unsupported_kind";
 
 export interface ResumeAvailability {

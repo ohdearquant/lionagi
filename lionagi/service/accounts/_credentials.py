@@ -103,6 +103,16 @@ def _dotenv(key_env: str, sources: CredentialSources) -> tuple[bool, str | None]
 
 async def resolve_account_key(key_env: str, sources: CredentialSources) -> SecretStr:
     """The key named by ``key_env``, or an ``AccountRoutingError`` carrying only a code."""
+    try:
+        return await _resolve_account_key(key_env, sources)
+    except AccountRoutingError as exc:
+        code = exc.code
+    # A fresh refusal raised outside the handler: the one caught above keeps the frames
+    # that raised it, and their locals hold the value that was refused.
+    raise _refuse(code)
+
+
+async def _resolve_account_key(key_env: str, sources: CredentialSources) -> SecretStr:
     if key_env in os.environ:
         return _accept(os.environ[key_env], key_env)
 

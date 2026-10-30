@@ -181,8 +181,10 @@ async def scripted(monkeypatch):
         state.observations.append(created)
         return cs.SpawnedProcess(pid, pid, created)
 
-    async def end(child, *, spawned):
+    async def end(child, *, spawned, witnesses=None, signal_gate=None):
         assert child is state.child
+        if signal_gate is not None:
+            assert isinstance(witnesses, tuple) and isinstance(signal_gate, cs.SignalGate)
         state.events.append("cleanup")
         state.cleanup_entered.set()
         await state.cleanup_allowed.wait()
@@ -910,6 +912,9 @@ async def test_real_python_child_commits_its_identity_before_callback_and_first_
                     "id": session_id,
                     "status": "running",
                     "cli_worker_generation": _GENERATION,
+                    "node_metadata": None,
+                    "artifacts_path": None,
+                    "source_kind": "live",
                 }
                 row = snapshot["spawns"][0]
                 assert set(row) == {

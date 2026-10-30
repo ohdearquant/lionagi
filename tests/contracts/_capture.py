@@ -624,7 +624,7 @@ def capture_mcp() -> dict[str, Any]:
             ),
             # Which keys an entry carries is the contract every caller reads, and
             # names and counts alone are blind to it: fields can be added to or
-            # dropped from all 70 entries without moving anything above. Held as
+            # dropped from all 71 entries without moving anything above. Held as
             # the distinct key sets with their frequency, so the baseline moves on
             # a shape change without carrying a row per verb.
             # lists rather than tuples: this is compared against the JSON

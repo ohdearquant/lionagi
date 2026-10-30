@@ -606,3 +606,46 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
     assert _secret_resolution.asyncio.create_subprocess_exec.await_args.kwargs["env"] == {
         "MARKED": "secret"
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run", "cleanup"),
+    [
+        (
+            lambda lookup: _secret_resolution.lookup_one_name(lookup, NAME, env={}, max_bytes=64),
+            "_terminate_draining",
+        ),
+        (lambda lookup: _secret_resolution._run_lookup(lookup, NAME), "_terminate"),
+    ],
+    ids=["one-name", "cli-fill"],
+)
+async def test_a_cancel_during_the_timeout_cleanup_waits_for_the_child_to_stop(
+    monkeypatch, run, cleanup
+):
+    import asyncio
+
+    import anyio
+
+    monkeypatch.setattr(_secret_resolution, "_LOOKUP_TIMEOUT_SECONDS", 0.2)
+    started, release = asyncio.Event(), asyncio.Event()
+    stopped = []
+    real = getattr(_secret_resolution, cleanup)
+
+    async def held_open(proc, leader_created):
+        started.set()
+        await release.wait()
+        await real(proc, leader_created)
+        stopped.append(proc.returncode)
+
+    monkeypatch.setattr(_secret_resolution, cleanup, held_open)
+    lookup = resolve_secret_lookup_config(
+        settings=_block([sys.executable, "-c", "import time; time.sleep(5)", "{name}"])
+    ).lookup
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run, lookup)
+        await started.wait()
+        # Let the cleanup go on only after the cancel is already pending against it.
+        asyncio.get_running_loop().call_later(0.1, release.set)
+        tg.cancel_scope.cancel()
+    assert len(stopped) == 1 and stopped[0] is not None

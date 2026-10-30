@@ -367,6 +367,9 @@ Exact semantics:
 
 - **Sync preflight:** if any snapshot member is a coroutine function, `add_message()` raises a
   `RuntimeError` before construction or pile mutation and directs the caller to `a_add_message()`.
+  This includes callable instances with `async def __call__` and partials of those instances;
+  the async add path awaits them. Synchronous callbacks that return awaitables remain synchronous:
+  their returned awaitables are discarded on both add paths.
 - **Snapshot isolation:** adding or removing callbacks during a callback does not change the
   callbacks for that add operation. The changed list applies to the next addition.
 - **Failure continuation:** one callback failure does not prevent later callbacks in the snapshot

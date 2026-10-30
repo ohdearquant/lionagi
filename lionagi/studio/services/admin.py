@@ -20,7 +20,7 @@ from typing import Any, Literal, NamedTuple
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import JSON, bindparam, text
+from sqlalchemy import JSON, Boolean, bindparam, text
 from sqlalchemy.exc import OperationalError as _SAOperationalError
 
 from lionagi.cli._util import (
@@ -35,8 +35,13 @@ from lionagi.ln import now_utc
 from lionagi.ln.concurrency import run_sync as _run_sync
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
+from lionagi.state.lifecycle.models import ActorRecord, ReasonRecord, TransitionCommand
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
 from lionagi.state.session_naming import resolve_display_name
+from lionagi.state.terminal_eligibility import (
+    has_delivery_eligibility_column,
+    is_delivery_eligible,
+)
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
@@ -1315,17 +1320,29 @@ async def transition_sessions(
                 )
                 cas_hit = result.rowcount != 0
                 if cas_hit:
+                    transition_id = uuid.uuid4().hex
+                    has_column = await has_delivery_eligibility_column(db, conn)
+                    eligibility_column = ", delivery_eligible" if has_column else ""
+                    eligibility_param = ", :delivery_eligible" if has_column else ""
+                    eligible = is_delivery_eligible(
+                        "session", "running", target_status, write_kind="transition"
+                    )
+                    statement = text(
+                        "INSERT INTO status_transitions "  # noqa: S608 -- fixed column fragment
+                        "(id, entity_type, entity_id, previous_status, status, "
+                        " reason_code, reason_summary, evidence_refs, "
+                        f" source, actor, created_at, metadata{eligibility_column}) "
+                        "VALUES (:id, :etype, :eid, :prev, :status, "
+                        f" :rcode, :rsummary, :erefs, :source, :actor, :now, :meta{eligibility_param})"
+                    ).bindparams(bindparam("erefs", type_=JSON), bindparam("meta", type_=JSON))
+                    if has_column:
+                        statement = statement.bindparams(
+                            bindparam("delivery_eligible", type_=Boolean)
+                        )
                     await conn.execute(
-                        text(
-                            "INSERT INTO status_transitions "
-                            "(id, entity_type, entity_id, previous_status, status, "
-                            " reason_code, reason_summary, evidence_refs, "
-                            " source, actor, created_at, metadata) "
-                            "VALUES (:id, :etype, :eid, :prev, :status, "
-                            " :rcode, :rsummary, :erefs, :source, :actor, :now, :meta)"
-                        ).bindparams(bindparam("erefs", type_=JSON), bindparam("meta", type_=JSON)),
+                        statement,
                         {
-                            "id": uuid.uuid4().hex,
+                            "id": transition_id,
                             "etype": "session",
                             "eid": sid,
                             "prev": "running",
@@ -1341,6 +1358,7 @@ async def transition_sessions(
                                 "health": health.value,
                                 "process_alive": process_alive,
                             },
+                            **({"delivery_eligible": eligible} if has_column else {}),
                         },
                     )
             if not cas_hit:
@@ -1354,6 +1372,20 @@ async def transition_sessions(
                         {"session_id": sid, "reason": f"not_running:{existing.get('status')}"}
                     )
                 continue
+            await db._lifecycle_service()._emit_terminal_event(  # noqa: SLF001
+                TransitionCommand(
+                    entity_type="session",
+                    entity_id=sid,
+                    to_status=target_status,
+                    reason=ReasonRecord(code=effective_reason_code),
+                    actor=ActorRecord(type="admin", id=actor),
+                ),
+                previous_status="running",
+                transition_id=transition_id,
+                occurred_at=now,
+                eligibility_stored=has_column,
+                eligibility_at_write=eligible,
+            )
             transitioned.append(sid)
 
         event_id = await db.insert_admin_event(

@@ -399,10 +399,16 @@ async def _resolve_flow_checkpoint(target: str) -> tuple[Any, dict[str, Any]]:
     about the same target. Raises RunResumeCheckpointError, never launches.
     """
     from lionagi.cli._util import AmbiguousIdError
-    from lionagi.cli.orchestrate._checkpoint import FlowResumeError, resolve_checkpoint_target
+    from lionagi.cli.orchestrate._checkpoint import (
+        FlowResumeError,
+        UnsupportedFlowCheckpointVersionError,
+        resolve_checkpoint_target,
+    )
 
     try:
         run_dir, checkpoint = await resolve_checkpoint_target(target)
+    except UnsupportedFlowCheckpointVersionError as exc:
+        raise RunResumeCheckpointError("unsupported_checkpoint_version", str(exc)) from exc
     except FlowResumeError as exc:
         message = str(exc)
         if "No checkpoint.json found" in message:

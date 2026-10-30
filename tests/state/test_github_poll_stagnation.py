@@ -4,14 +4,18 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
 from lionagi.studio.services.scheduler_state import _DBSchedulerStateService
+from lionagi.studio.services.schedules import compute_schedule_health
 
 _COUNTER = "poller_consecutive_cap_no_dispatch"
+_LIMIT = "poller_last_capped_page_limit"
 
 
 def _schedule(schedule_id="github", *, trigger_type="github_poll"):
@@ -42,6 +46,72 @@ async def test_stagnation_defaults_to_zero_and_survives_reopen(tmp_path):
     async with StateDB(path) as reopened:
         assert (await reopened.get_schedule("github"))[_COUNTER] == 2
         assert (await reopened.get_schedule("interval"))[_COUNTER] == 0
+
+
+async def test_old_schedule_store_migrates_with_unknown_last_capped_limit(tmp_path):
+    path = tmp_path / "state.db"
+    async with StateDB(path) as db:
+        await db.create_schedule({**_schedule(), "github_filter": {"event": "pr_merged"}})
+        for _ in range(3):
+            await db.record_github_poll_stagnation("github", reset=False)
+        before = compute_schedule_health(await db.get_schedule("github"), {}, now=100.0)
+        version = await db.schema_version()
+        await db.execute(f"ALTER TABLE schedules DROP COLUMN {_LIMIT}")
+        await db.execute("ALTER TABLE schedules DROP COLUMN poller_target_generation")
+    async with StateDB(path) as reopened:
+        row = await reopened.get_schedule("github")
+        assert await reopened.schema_version() == version
+        assert row[_COUNTER] == 3 and row[_LIMIT] is None
+        assert row["poller_target_generation"] == 0
+        assert compute_schedule_health(row, {}, now=100.0) == before
+
+
+async def test_last_capped_limit_and_counter_commit_together(tmp_path):
+    async with StateDB(tmp_path / "state.db") as first, StateDB(tmp_path / "state.db") as second:
+        await first.create_schedule(_schedule())
+        await first.record_github_poll_stagnation("github", reset=False, page_limit=5)
+        row = await second.get_schedule("github")
+        assert (row[_COUNTER], row[_LIMIT]) == (1, 5)
+        await second.record_github_poll_stagnation("github", reset=False, page_limit=100)
+        row = await first.get_schedule("github")
+        assert (row[_COUNTER], row[_LIMIT]) == (2, 100)
+        await first.record_github_poll_stagnation("github", reset=True)
+        row = await second.get_schedule("github")
+        assert (row[_COUNTER], row[_LIMIT]) == (0, None)
+
+
+async def test_postgres_capped_limit_is_integer_and_reset_clears_it(pg_url):
+    schedule_id = f"github-{uuid.uuid4()}"
+    async with StateDB(url=pg_url) as db:
+        assert db.dialect == "postgresql"
+        await db.create_schedule(_schedule(schedule_id))
+        try:
+            assert await db.record_github_poll_stagnation(schedule_id, reset=False, page_limit=5)
+            assert (await db.get_schedule(schedule_id))[_LIMIT] == 5
+            assert await db.record_github_poll_stagnation(schedule_id, reset=True, page_limit=5)
+            assert (await db.get_schedule(schedule_id))[_LIMIT] is None
+        finally:
+            await db.delete_schedule(schedule_id)
+
+
+async def test_merged_page_limit_is_validated_and_survives_reopen(tmp_path):
+    from lionagi.studio.scheduler.github import merged_page_limit
+    from lionagi.studio.services.schedules import _svc_validate_github_filter
+
+    config = {"event": "pr_merged", "merged_page_limit": 20}
+    _svc_validate_github_filter(config)
+    path = tmp_path / "state.db"
+    async with StateDB(path) as db:
+        await db.create_schedule({**_schedule(), "github_filter": config})
+    async with StateDB(path) as db:
+        assert (await db.get_schedule("github"))["github_filter"] == config
+        reset = {"event": "pr_merged", "merged_page_limit": None}
+        _svc_validate_github_filter(reset)
+        await db.update_schedule("github", github_filter=reset)
+    async with StateDB(path) as db:
+        saved = (await db.get_schedule("github"))["github_filter"]
+        assert saved == reset
+        assert merged_page_limit(saved["merged_page_limit"]) == 5
 
 
 async def test_stagnation_uses_current_committed_value_across_connections(tmp_path):
@@ -95,13 +165,19 @@ async def test_accounting_refuses_deleted_and_changed_type_rows(tmp_path, reset)
     async with StateDB(tmp_path / "state.db") as db:
         await db.create_schedule(_schedule("interval", trigger_type="interval"))
         await db.create_schedule(_schedule("changed"))
-        assert await db.record_github_poll_stagnation("changed", reset=False)
+        assert await db.record_github_poll_stagnation("changed", reset=False, page_limit=5)
+        before_change = await db.get_schedule("changed")
+        assert (before_change[_COUNTER], before_change[_LIMIT]) == (1, 5)
         assert await db.update_schedule("changed", trigger_type="interval", interval_sec=60)
         await db.create_schedule(_schedule("deleted"))
         assert await db.delete_schedule("deleted")
         interval = await db.get_schedule("interval")
         changed = await db.get_schedule("changed")
-        assert changed[_COUNTER] == 1
+        assert (changed[_COUNTER], changed[_LIMIT], changed["poller_target_generation"]) == (
+            0,
+            None,
+            1,
+        )
         for schedule_id in ("interval", "changed", "deleted", "missing"):
             assert await db.record_github_poll_stagnation(schedule_id, reset=reset) is False
         assert await db.get_schedule("interval") == interval
@@ -133,8 +209,9 @@ async def test_stagnation_is_not_an_authored_schedule_update(tmp_path):
     async with StateDB(tmp_path / "state.db") as db:
         await db.create_schedule(_schedule())
         before = await db.get_schedule("github")
-        with pytest.raises(ValueError, match="Invalid schedule field"):
-            await db.update_schedule("github", poller_consecutive_cap_no_dispatch=99)
+        for field in (_COUNTER, _LIMIT):
+            with pytest.raises(ValueError, match="Invalid schedule field"):
+                await db.update_schedule("github", **{field: 99})
         assert await db.get_schedule("github") == before
 
 

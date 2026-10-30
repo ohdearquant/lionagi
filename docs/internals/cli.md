@@ -1299,6 +1299,15 @@ label or one overlapping the resolved credential is omitted. Keys, headers, cred
 references and prompt text are excluded from this section. The model is the requested
 model, not a claim about the model the provider served.
 
+Each request also records `cache_read_tokens` and `cache_write_tokens` from the final
+successful non-streaming response, when supplied by OpenAI or Anthropic. `null` means
+unknown; zero means the response reported zero. Hits in the built-in local response cache,
+incomplete, failed or cancelled calls, and calls whose endpoint overrides the cache dispatch
+method remain unknown. A custom transport or proxy can return a cached response that this
+observer cannot distinguish from a fresh one. These values describe the final observed
+response, not a sum of retry attempts or a statement of billed usage. Counts outside the
+non-negative signed 64-bit range are unknown.
+
 `guard_refusal_count`, with coverage `act_policy_denial_v1`, counts explicit session
 authorization refusals and direct typed governance errors caught by action execution.
 These include tool-pre-hook `deny` and `ask` decisions, unsupported decisions or return
@@ -1366,6 +1375,21 @@ the actual teardown result, including a persisted nonterminal status or failure;
 cancellation intent does not erase a store refusal or a lost terminal-write
 marker. A database-close witness is published only after the exact bound handle
 successfully closes. Ordinary drain failure blocks terminalization and close.
+
+For a terminal session, `li kill <session>` can also stop its unresolved
+recorded worker groups. It verifies the recorded host, boot and process birth,
+freezes the live leader and group members, and checks the session generation
+before each signal. It waits once for graceful exit and escalates only while a
+frozen member still matches. A record is marked empty only after the original
+leader has exited and the kernel reports the process group absent. Workers that
+cannot be verified are left in place and reported; the terminal session and its
+transition history are not rewritten by this cleanup.
+
+When the session is still running but its recorded runner has died, the command
+first guards and records cancellation for that execution, then cleans the
+unresolved worker records captured in its snapshot, across generations. A concurrent resume or a
+failed guard prevents signalling a newer execution. A cancellation received while
+waiting stops cleanup without further signals or uncommitted settlement writes.
 
 **`_linked_engine_session`** — linking a profile-typed session to its engine-typed mirror twin.
 `engine_session_uid` is the provider-native session id (e.g. a Claude Code session uuid or a
@@ -1623,9 +1647,10 @@ actually touches those rows reports their size directly instead.
 
 **`_prune_candidates` / `_null_content_candidates`** — both re-run their operation's own
 selection predicate outside the operation's transaction, and print the recount beside the
-result as a cross-check: after a real run it must read zero, after a `--dry-run` preview it
-must match what the preview reported. Running inside the same transaction would read the
-operation's own uncommitted rows and agree by construction, so it deliberately runs outside it.
+result as a cross-check. After a prune, sessions still referenced by retained records remain
+selected and are reported as skipped; after a `--dry-run` preview, both the would-delete and
+skipped sessions remain selected. Running inside the same transaction would read the operation's
+own uncommitted rows and agree by construction, so it deliberately runs outside it.
 
 **`_null_content`** — replaces old message *bodies* with a size-preserving marker; it exists
 because `li state prune` can't reach this content. Prune selects and deletes **sessions**, but

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -23,7 +24,6 @@ async def suspended_cli(monkeypatch):
         tasks={},
         order=[],
         error=None,
-        primary_error=None,
         kept=0,
         released=0,
         stderr=[],
@@ -102,9 +102,9 @@ async def suspended_cli(monkeypatch):
     async def spawn(*_args, **_kwargs):
         return proc
 
-    async def end(child, *, spawned):
+    async def end(child, *, spawned, witnesses, signal_gate):
         assert child is proc and spawned.pid == proc.pid
-        state.primary_error = sys.exc_info()[1]
+        assert isinstance(witnesses, tuple) and isinstance(signal_gate, cs.SignalGate)
         state.order.append("end group")
         if state.error is not None:
             raise state.error
@@ -165,17 +165,17 @@ async def suspended_cli(monkeypatch):
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_helper_tasks_are_reaped_when_group_teardown_is_cancelled(suspended_cli):
+async def test_helper_tasks_are_reaped_when_group_teardown_is_cancelled(suspended_cli, caplog):
     state = suspended_cli
     state.error = asyncio.CancelledError("child group teardown cancelled")
-    state.runner.cancel()
-    with pytest.raises(asyncio.CancelledError) as raised:
-        await asyncio.wait_for(state.runner, 5.0)
-    # Python 3.10 may wrap the cancellation observed by the coroutine once.
-    primary = state.primary_error
-    assert isinstance(primary, asyncio.CancelledError) and primary is not state.error
-    assert raised.value is primary or raised.value.__context__ is primary
+    with caplog.at_level(logging.DEBUG, logger=cs.log.name):
+        state.runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(state.runner, 5.0)
     assert state.runner.cancelled()
+    assert "CLI stream cleanup follows CancelledError" in caplog.text
+    assert "CLI child group teardown raised CancelledError" in caplog.text
+    assert "child group teardown cancelled" not in caplog.text
 
     assert state.kept == 0, "unconfirmed cleanup must not unlock into a child-only record"
     assert state.released == 0

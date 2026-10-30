@@ -94,6 +94,11 @@ Flow resume replays the persisted plan and ignores new model, prompt, and
 playbook flags. It is different from `li o ctl resume`, which only releases a
 pause gate in a process that is still running.
 
+This version reads version 1 and 2 checkpoints. Resume refuses a checkpoint
+with an unsupported or ambiguous version instead of treating an incomplete
+snapshot as the full run. Studio reports the same condition during preflight;
+MCP run detail reports that detail is unavailable.
+
 Version 1 recovery cannot reconstruct a predecessor's full conversation for a
 pending operation that requested inherited context. LionAGI refuses that case
 by default. `--allow-degraded-context` opts into running such an operation with

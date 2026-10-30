@@ -20,12 +20,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import Boolean, bindparam, text
 from sqlalchemy.types import JSON
 
 from lionagi.ln._proc import communicate_in_process_group
 from lionagi.session.signal import DispatchSignal
 from lionagi.state.reasons import DispatchReasons
+from lionagi.state.terminal_eligibility import (
+    has_delivery_eligibility_column,
+    is_delivery_eligible,
+)
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
 __all__ = (
@@ -231,17 +235,26 @@ async def enqueue_dispatch(
                 "updated_at": now,
             },
         )
+        has_column = await has_delivery_eligibility_column(db, conn)
+        eligibility_column = ", delivery_eligible" if has_column else ""
+        eligibility_param = ", :delivery_eligible" if has_column else ""
+        eligible = is_delivery_eligible("dispatch", None, "pending", write_kind="initialization")
+        history_insert = text(
+            "INSERT INTO status_transitions "  # noqa: S608 -- fixed column fragment
+            "(id, entity_type, entity_id, previous_status, status, "
+            f" reason_code, reason_summary, evidence_refs, source, actor, created_at, metadata{eligibility_column}) "
+            "VALUES (:id, 'dispatch', :entity_id, NULL, 'pending', "
+            f" :reason_code, :reason_summary, :evidence_refs, 'system', :actor, :created_at, :metadata{eligibility_param})"
+        ).bindparams(
+            bindparam("evidence_refs", type_=JSON),
+            bindparam("metadata", type_=JSON),
+        )
+        if has_column:
+            history_insert = history_insert.bindparams(
+                bindparam("delivery_eligible", type_=Boolean)
+            )
         await conn.execute(
-            text(
-                "INSERT INTO status_transitions "
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, source, actor, created_at, metadata) "
-                "VALUES (:id, 'dispatch', :entity_id, NULL, 'pending', "
-                " :reason_code, :reason_summary, :evidence_refs, 'system', :actor, :created_at, :metadata)"
-            ).bindparams(
-                bindparam("evidence_refs", type_=JSON),
-                bindparam("metadata", type_=JSON),
-            ),
+            history_insert,
             {
                 "id": uuid.uuid4().hex,
                 "entity_id": dispatch_id,
@@ -251,6 +264,7 @@ async def enqueue_dispatch(
                 "actor": "enqueue_dispatch",
                 "created_at": now,
                 "metadata": {},
+                **({"delivery_eligible": eligible} if has_column else {}),
             },
         )
 

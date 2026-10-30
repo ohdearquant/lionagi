@@ -37,10 +37,15 @@ __all__ = (
 
 
 def is_coro_func(func: Callable[..., Any]) -> bool:
+    """Recognize coroutine functions, methods and async callable instances."""
     # Not cached: a cache keyed on a bound method or a closure keeps its owner alive.
     while isinstance(func, partial):
         func = func.func
-    return inspect.iscoroutinefunction(func)
+    if inspect.iscoroutinefunction(func):
+        return True
+    return callable(func) and inspect.iscoroutinefunction(
+        getattr(type(func), "__call__", None)  # noqa: B004 - inspect the call slot after callable().
+    )
 
 
 async def run_sync(

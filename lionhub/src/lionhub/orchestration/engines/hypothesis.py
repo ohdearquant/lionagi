@@ -842,6 +842,35 @@ class HypothesisEngine(Engine):
         _, prof_effort = role_profile_route(self._stage_role(stage))
         return prof_effort or self.STAGE_EFFORT_DEFAULTS.get(stage)
 
+    def _stage_agent_settings(self, stage: str) -> dict[str, Any]:
+        """Preserve explicit routing while carrying role and stage defaults as defaults."""
+        model = self.model_for(stage)
+        effort = self.effort_for(stage)
+        profile_model, profile_effort = role_profile_route(self._stage_role(stage))
+        fallback_model = profile_model or self.STAGE_MODEL_DEFAULTS.get(stage)
+        model_origin = (
+            "explicit"
+            if self.models.get(stage) or self.model or model != fallback_model
+            else "profile"
+        )
+        fallback_effort = profile_effort or self.STAGE_EFFORT_DEFAULTS.get(stage)
+        if model:
+            from lionagi.service.providers import _EFFORT_SUFFIX_RE  # noqa: PLC0415
+
+            if _EFFORT_SUFFIX_RE.match(model.split("/", 1)[-1]):
+                fallback_effort = None
+        effort_origin = (
+            "explicit"
+            if self.efforts.get(stage) or self.effort or effort != fallback_effort
+            else "profile"
+        )
+        return {
+            "model": model,
+            "effort": effort,
+            "_model_origin": model_origin,
+            "_effort_origin": effort_origin,
+        }
+
     def question_cap(self, gen: int) -> int:
         """Breadth halves each cycle: gen 0 gets ``max_questions``, gen 1 half, and so on, floored at 1 — recursion narrows instead of exploding."""
         return max(1, self.max_questions >> gen)
@@ -1077,8 +1106,7 @@ class HypothesisEngine(Engine):
             agent = await run.make_agent(
                 self.dedup_role,
                 name=f"dedup-{f.eid}",
-                model=self.model_for("dedup"),
-                effort=self.effort_for("dedup"),
+                **self._stage_agent_settings("dedup"),
                 tools=self.dedup_tools,
                 permissions="safe" if self.dedup_tools else None,
                 cwd=cwd,
@@ -1127,8 +1155,7 @@ class HypothesisEngine(Engine):
             agent = await run.make_agent(
                 self.question_role,
                 name=f"extract-{f.eid}",
-                model=self.model_for("extract"),
-                effort=self.effort_for("extract"),
+                **self._stage_agent_settings("extract"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -1152,8 +1179,7 @@ class HypothesisEngine(Engine):
             researcher = await run.make_agent(
                 self.research_role,
                 name=f"research-{q.eid}",
-                model=self.model_for("research"),
-                effort=self.effort_for("research"),
+                **self._stage_agent_settings("research"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -1171,8 +1197,7 @@ class HypothesisEngine(Engine):
             hypothesizer = await run.make_agent(
                 self.hypothesis_role,
                 name=f"hypothesize-{q.eid}",
-                model=self.model_for("hypothesize"),
-                effort=self.effort_for("hypothesize"),
+                **self._stage_agent_settings("hypothesize"),
                 emits=h_emits,
             )
             await run.operate_with_repair(
@@ -1192,8 +1217,7 @@ class HypothesisEngine(Engine):
             agent = await run.make_agent(
                 self.design_role,
                 name=f"design-{h.eid}",
-                model=self.model_for("design"),
-                effort=self.effort_for("design"),
+                **self._stage_agent_settings("design"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -1215,8 +1239,7 @@ class HypothesisEngine(Engine):
             agent = await run.make_agent(
                 self.validate_role,
                 name=f"validate-{x.eid}",
-                model=self.model_for("validate"),
-                effort=self.effort_for("validate"),
+                **self._stage_agent_settings("validate"),
                 tools=self.validate_tools,
                 permissions=self.validate_permissions if self.validate_tools else None,
                 cwd=self.validate_cwd,
@@ -1245,8 +1268,7 @@ class HypothesisEngine(Engine):
             agent = await run.make_agent(
                 self.conclude_role,
                 name=f"conclude-{r.eid}",
-                model=self.model_for("conclude"),
-                effort=self.effort_for("conclude"),
+                **self._stage_agent_settings("conclude"),
                 emits=emits,
             )
             await run.operate_with_repair(
@@ -1262,8 +1284,7 @@ class HypothesisEngine(Engine):
             agent = await run.make_agent(
                 self.apply_role,
                 name=f"apply-{c.eid}",
-                model=self.model_for("apply"),
-                effort=self.effort_for("apply"),
+                **self._stage_agent_settings("apply"),
                 emits=(ApplicationMapped,),
             )
             # No repair: "bears on nothing -> emit nothing" is legitimate here.
@@ -1279,8 +1300,7 @@ class HypothesisEngine(Engine):
         synth = await run.make_agent(
             self.synthesis_role,
             name="synthesizer",
-            model=self.model_for("synthesize"),
-            effort=self.effort_for("synthesize"),
+            **self._stage_agent_settings("synthesize"),
             exempt=True,
         )
         res = await synth.operate(instruction=_synthesis_instruction(run))

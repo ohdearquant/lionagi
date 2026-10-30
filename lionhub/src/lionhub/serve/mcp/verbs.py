@@ -744,6 +744,13 @@ _REGISTERED: tuple[Verb, ...] = (
         admits=(),
     ),
     Verb(
+        name="state.terminal-consumer.list",
+        summary="Registered terminal consumers and their outstanding deliveries.",
+        executor="machine",
+        cli_path="state terminal-consumer list",
+        admits=(),
+    ),
+    Verb(
         name="team.list",
         summary="Teams on disk with their members and message counts.",
         executor="machine",

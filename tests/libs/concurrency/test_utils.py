@@ -63,9 +63,7 @@ class _UnhashableOwner(_CallbackOwner):
         ("sync-partial-bound-method", False),
         ("async-partial-bound-method", True),
         ("hashable-sync-callable-instance", False),
-        # An instance whose class defines `async def __call__` reads False: inspect
-        # examines the instance, not type(obj).__call__.
-        ("hashable-async-callable-instance", False),
+        ("hashable-async-callable-instance", True),
     ],
 )
 def test_is_coro_func_preserves_callable_classification(shape, expected):
@@ -125,8 +123,7 @@ def test_is_coro_func_does_not_retain_a_bound_owner(method_name, wrapped, expect
     "shape,expected",
     [
         ("sync-callable-instance", False),
-        # Same rule as for hashable instances: an async __call__ reads False.
-        ("async-callable-instance", False),
+        ("async-callable-instance", True),
         ("sync-owner-bound-method", False),
         ("async-owner-bound-method", True),
     ],

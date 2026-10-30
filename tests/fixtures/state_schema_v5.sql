@@ -1,0 +1,1081 @@
+-- lionagi state schema v1
+-- Core tables: messages, progressions, sessions, branches,
+-- shows, plays, definitions.
+--
+-- Field names match model_dump() output from the runtime objects.
+
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
+PRAGMA cache_size = -64000;
+
+-- ── Schema version ────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+  key     TEXT PRIMARY KEY,
+  value   TEXT NOT NULL
+);
+
+-- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
+-- so a migrated database reports the shape it now has.
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '5');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
+
+-- ── Message types (int enum for lion_class) ───────────────────────────────
+
+CREATE TABLE IF NOT EXISTS message_types (
+  type_id       INTEGER PRIMARY KEY,
+  lion_class    TEXT    NOT NULL UNIQUE        -- full qualified class path
+);
+
+INSERT OR IGNORE INTO message_types (type_id, lion_class) VALUES
+  (0, '__unknown__'),
+  (1, 'lionagi.protocols.messages.system.System'),
+  (2, 'lionagi.protocols.messages.instruction.Instruction'),
+  (3, 'lionagi.protocols.messages.assistant_response.AssistantResponse'),
+  (4, 'lionagi.protocols.messages.action_request.ActionRequest'),
+  (5, 'lionagi.protocols.messages.action_response.ActionResponse');
+
+-- ── Messages ──────────────────────────────────────────────────────────────
+-- Atomic content.  Referenced by progressions, not owned by branch/session.
+
+CREATE TABLE IF NOT EXISTS messages (
+  id            TEXT    PRIMARY KEY,
+  created_at    REAL    NOT NULL,
+  node_metadata JSON,
+  content       JSON    NOT NULL,
+  embedding     BLOB,                         -- packed little-endian float32 vec or NULL
+  sender        TEXT,
+  recipient     TEXT,
+  channel       TEXT,
+  role          TEXT    NOT NULL,             -- 'user' | 'assistant' | 'system' | 'tool' | ...
+  lion_class    INTEGER NOT NULL REFERENCES message_types(type_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_role
+  ON messages(role);
+CREATE INDEX IF NOT EXISTS idx_messages_lion_class
+  ON messages(lion_class);
+CREATE INDEX IF NOT EXISTS idx_messages_sender
+  ON messages(sender) WHERE sender IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_recipient
+  ON messages(recipient) WHERE recipient IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_created
+  ON messages(created_at);
+
+-- ── Progressions ──────────────────────────────────────────────────────────
+-- Progression[Message] — ordered sequence of message IDs.
+-- collection is a JSON array of message id strings.
+
+CREATE TABLE IF NOT EXISTS progressions (
+  id            TEXT    PRIMARY KEY,
+  created_at    REAL    NOT NULL,
+  collection    TEXT    NOT NULL DEFAULT '[]' -- JSON array of message id strings
+);
+
+-- ── Projects (ADR-0063) ───────────────────────────────────────────────────
+-- Auto-registered from session detection; also created explicitly via Studio.
+-- Uses name as primary key (project names are unique + used as FK in sessions.project).
+
+CREATE TABLE IF NOT EXISTS projects (
+    name         TEXT PRIMARY KEY,
+    source       TEXT NOT NULL,
+    path         TEXT,
+    github       TEXT,
+    description  TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,
+    last_seen_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_source ON projects(source);
+CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
+
+-- ── Run tags ──────────────────────────────────────────────────────────────
+-- User-defined m2m labels over runs (a run == a session). Free-form strings.
+CREATE TABLE IF NOT EXISTS run_tags (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    tag        TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
+
+-- ── Sessions ──────────────────────────────────────────────────────────────
+-- Scope boundary.  Owns a progression (the session-level message pool)
+-- and zero or more branches.
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id              TEXT    PRIMARY KEY,
+  cc_session_id   TEXT,
+  -- The CLI run this session belongs to. NULL for a session no run started,
+  -- and for rows written before this column existed.
+  run_id          TEXT,
+  cli_worker_generation TEXT,
+  created_at      REAL    NOT NULL,
+  node_metadata   JSON,
+  name            TEXT,
+  user_label      TEXT,
+  user            TEXT,
+  progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+  first_msg_id    TEXT    REFERENCES messages(id),
+  last_msg_id     TEXT    REFERENCES messages(id),
+  updated_at      REAL    NOT NULL,
+  -- ── Provenance (ADR-0012) ──────────────────────────────────────────────
+  playbook_name   TEXT,
+  agent_name     TEXT,
+  invocation_kind TEXT CHECK(
+                    invocation_kind IS NULL
+                    OR invocation_kind IN
+                      ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
+                  ),
+  show_topic      TEXT,
+  show_play_name  TEXT,
+  artifacts_path  TEXT,
+  source_kind     TEXT    DEFAULT 'live' CHECK(
+                    source_kind IS NULL
+                    OR source_kind IN ('live', 'imported_fs', 'imported_codex')
+                  ),
+  -- ── Lifecycle (ADR-0057) ─────────────────────
+  -- No CHECK constraint: ADR-0057 makes Python the source of truth for
+  -- session.status (VALID_SESSION_STATUSES in lionagi/state/db.py). The
+  -- six-value vocabulary (running, completed, failed, timed_out, aborted,
+  -- cancelled) can evolve without a SQLite table rebuild.
+  status          TEXT,
+  started_at      REAL,
+  ended_at        REAL,
+  -- 1 means ended_at was reconstructed from historical activity evidence,
+  -- not observed at the terminal transition. Consumers must not derive a
+  -- measured duration from it.
+  ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
+  -- ── Activity ────────────────────────────────────────────
+  -- Bumped on every message INSERT so staleness_check() can answer
+  -- "is this running session still active?" without scanning messages.
+  last_message_at REAL,
+  -- ── Live execution phase (#1235) ───────────────────────────────────
+  -- Coarse flow lifecycle marker (planning → executing → synthesizing)
+  -- surfaced as the PHASE column in `li monitor`. NULL for non-flow
+  -- sessions, which fall back to agent_name/playbook_name in the reader.
+  current_phase   TEXT,
+  -- ── Skill invocation ────────────────────────────────────
+  -- Optional FK to the higher-order skill orchestration (e.g. /show or
+  -- /codex-pr-review) that spawned this session. NULL when the CLI
+  -- ran standalone. Orthogonal to invocation_kind, which describes the
+  -- CLI primitive (agent / play / flow / fanout / show-play).
+  invocation_id   TEXT    REFERENCES invocations(id),
+  -- ── Provenance disclosure (ADR-0022) ────────────────────────────────
+  -- Resolved values — what the runtime actually used after defaults,
+  -- overrides, and fallbacks. ``model`` is the canonical spec ("claude/
+  -- claude-sonnet-4-6"), not the user input ("sonnet"). ``agent_hash``
+  -- is a 16-char SHA-256 fingerprint of the agent profile content at
+  -- invocation time for drift detection.
+  model           TEXT,
+  provider        TEXT,
+  effort          TEXT,
+  agent_hash      TEXT,
+  -- ── Project detection (ADR-0063) ────────────────────────────────────
+  project         TEXT,
+  project_source  TEXT,
+  -- ── Status reason (ADR-0028) ────────────────────────────────────────
+  -- Denormalized "current reason" for the hot read path. The full
+  -- history of transitions lives in ``status_transitions``; these
+  -- three columns let a status pill render its tooltip without a JOIN.
+  -- All writes go through StateDB.update_status() in the same SQLite
+  -- transaction as the status update, so the columns and history table
+  -- never drift.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON,
+  -- ── Artifact contract (ADR-0029) ──────────────────────────────────────
+  -- Resolved contract snapshot written at session creation and verifier
+  -- result written at teardown. NULL contract means verification skipped.
+  artifact_contract_json      JSON,
+  artifact_verification_json  JSON,
+  -- ── Run usage (populated at RunEnd) ───────────────────────────────────
+  input_tokens    INTEGER,   -- prompt tokens (uncached)
+  output_tokens   INTEGER,   -- completion tokens
+  total_cost_usd  REAL,      -- 0 for subscription runs
+  num_turns       INTEGER,   -- LLM turns in the run
+  duration_ms     REAL       -- wall-clock run duration in milliseconds
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_updated
+  ON sessions(updated_at DESC);
+-- ADR-0028: failed/timed_out queries in the attention queue (ADR-0030)
+-- need an index that covers terminal states, not just running. The
+-- existing idx_sessions_status_last_msg is a partial index for
+-- status='running' only.
+CREATE INDEX IF NOT EXISTS idx_sessions_status_updated
+  ON sessions(status, updated_at DESC);
+-- Lets the staleness query (running sessions sorted by oldest
+-- activity) skip the full table scan.
+CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
+  ON sessions(status, last_message_at) WHERE status = 'running';
+-- The grouped runs view fetches all sessions for an invocation.
+CREATE INDEX IF NOT EXISTS idx_sessions_invocation
+  ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
+-- The active snapshot reads one invocation's running children in creation
+-- order, once per poll. On the index above, sqlite matched only `status` and
+-- then built a temp b-tree to order the result, so every running session in the
+-- database was visited and sorted before a LIMIT could discard any of it.
+-- Carrying status and the sort columns lets that read seek straight to the
+-- invocation and stop at its limit. The narrower index above is a prefix of
+-- this one and stays only because dropping it is a separate migration.
+CREATE INDEX IF NOT EXISTS idx_sessions_invocation_status_created
+  ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL;
+-- Project-scoped session listing in Studio.
+CREATE INDEX IF NOT EXISTS idx_sessions_project
+  ON sessions(project) WHERE project IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
+  ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_run_id
+  ON sessions(run_id) WHERE run_id IS NOT NULL;
+-- Keeps the resumable v4 end-time repair linear as each completed batch
+-- removes itself from this otherwise-empty partial index.
+CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end
+  ON sessions(id)
+  WHERE ended_at IS NULL
+    AND status IN ('completed','completed_empty','failed','timed_out','aborted','cancelled');
+-- first_msg_id / last_msg_id are child keys of messages(id); without an
+-- index, a message delete scans the whole table looking for referrers, once
+-- per deleted row. Not partial: only a plain index is certain to serve it.
+-- See docs/internals/runtime.md for the measurement.
+CREATE INDEX IF NOT EXISTS idx_sessions_first_msg_id
+  ON sessions(first_msg_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id
+  ON sessions(last_msg_id);
+-- Same shape one level up: progressions(id) is this column's parent.
+CREATE INDEX IF NOT EXISTS idx_sessions_progression_id
+  ON sessions(progression_id);
+
+-- CLI worker identities remain as evidence after their session is removed.
+CREATE TABLE IF NOT EXISTS cli_worker_spawns (
+  spawn_id              TEXT NOT NULL PRIMARY KEY,
+  session_id            TEXT NOT NULL,
+  generation_id         TEXT NOT NULL,
+  run_id                TEXT,
+  engine_run_id         TEXT,
+  branch_id             TEXT,
+  pid                   INTEGER NOT NULL,
+  pgid                  INTEGER NOT NULL,
+  pid_create_time       REAL NOT NULL,
+  pid_host              TEXT NOT NULL,
+  pid_boot_time         REAL NOT NULL,
+  process_identity_mode TEXT NOT NULL,
+  recorded_at           REAL NOT NULL,
+  confirmed_empty_at    REAL,
+  CONSTRAINT ck_cli_worker_spawns_process_group CHECK(pid > 1 AND pgid = pid),
+  CONSTRAINT ck_cli_worker_spawns_identity_mode CHECK(process_identity_mode = 'local')
+);
+CREATE INDEX IF NOT EXISTS idx_cli_worker_spawns_session
+  ON cli_worker_spawns(session_id, confirmed_empty_at, generation_id);
+
+-- ── Branches ──────────────────────────────────────────────────────────────
+-- A progression with identity.  Branch config (provider, model,
+-- system_prompt, tools, effort, etc.) lives in metadata.
+
+CREATE TABLE IF NOT EXISTS branches (
+  id              TEXT    PRIMARY KEY,
+  created_at      REAL    NOT NULL,
+  node_metadata   JSON,                       -- agent config: provider, model, tools, effort, ...
+  user            TEXT,
+  name            TEXT,
+  session_id      TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+  system_msg_id   TEXT    REFERENCES messages(id),  -- system prompt; just a reference to the message
+  -- ── Provenance disclosure (ADR-0022) ────────────────────────────────
+  -- Per-branch (per-agent) resolved model + provider + agent role name.
+  -- For multi-agent flows the session-level model is the "default" and
+  -- per-branch model is the actual model that produced messages on this
+  -- branch. agent_name here is the *role* within the flow (e.g., "r1"
+  -- or "critic"), not the agent_profile name on sessions.
+  model           TEXT,
+  provider        TEXT,
+  agent_name      TEXT,
+  status          TEXT,
+  started_at      REAL,
+  ended_at        REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_branches_session_created
+  ON branches(session_id, created_at);
+-- Child keys of messages(id) / progressions(id); see idx_sessions_first_msg_id.
+CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id
+  ON branches(system_msg_id);
+CREATE INDEX IF NOT EXISTS idx_branches_progression_id
+  ON branches(progression_id);
+
+-- ── Definitions (versioned agent + playbook + skill files) ───────────────────
+-- Disk files remain source of truth; this table tracks edit history.
+-- Current version = MAX(version) per (kind, name).
+
+CREATE TABLE IF NOT EXISTS definitions (
+  id          TEXT    PRIMARY KEY,
+  kind        TEXT    NOT NULL
+              CHECK(kind IN ('agent', 'playbook', 'skill')),  -- ADR-0016 editable set
+  name        TEXT    NOT NULL,           -- e.g. 'analyst', 'review-flow'
+  path        TEXT    NOT NULL,           -- disk path relative to .lionagi/
+  content     TEXT    NOT NULL,           -- full file content at this version
+  version     INTEGER NOT NULL,           -- monotonic per (kind, name)
+  created_at  REAL    NOT NULL,
+  message     TEXT                        -- optional edit note
+);
+
+CREATE INDEX IF NOT EXISTS idx_def_kind_name
+  ON definitions(kind, name, version DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_def_unique_version
+  ON definitions(kind, name, version);
+
+-- ── Shows (multi-play DAGs) ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS shows (
+  id                  TEXT    PRIMARY KEY,
+  topic               TEXT    NOT NULL UNIQUE,
+  goal                TEXT,
+  repo                TEXT,
+  base_branch         TEXT,
+  integration_branch  TEXT,
+  status              TEXT    NOT NULL DEFAULT 'active' CHECK(
+                        status IN ('active', 'completed', 'aborted', 'imported')
+                      ),
+  show_dir            TEXT    NOT NULL,
+  status_source       TEXT    NOT NULL DEFAULT 'unknown',
+  created_at          REAL    NOT NULL,
+  updated_at          REAL    NOT NULL,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_shows_topic ON shows(topic);
+CREATE INDEX IF NOT EXISTS idx_shows_status ON shows(status);
+CREATE INDEX IF NOT EXISTS idx_shows_updated ON shows(updated_at DESC);
+
+-- ── Plays (within a show) ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS plays (
+  id              TEXT    PRIMARY KEY,
+  show_id         TEXT    NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+  name            TEXT    NOT NULL,
+  playbook        TEXT,
+  effort          TEXT,
+  status          TEXT    NOT NULL DEFAULT 'pending' CHECK(
+                    status IN (
+                      'pending', 'prepared', 'running', 'running_complete',
+                      'gated', 'gate_failed', 'redoing', 'merged',
+                      'escalated', 'blocked', 'aborted_after_finish'
+                    )
+                  ),
+  attempt         INTEGER NOT NULL DEFAULT 1,
+  session_id      TEXT    REFERENCES sessions(id),
+  started_at      REAL,
+  ended_at        REAL,
+  exit_code       INTEGER,
+  worktree        TEXT,
+  branch          TEXT,
+  merge_sha       TEXT,
+  merged_at       REAL,
+  gate_passed     INTEGER,
+  gate_feedback   TEXT,
+  depends_on      JSON    DEFAULT '[]',
+  sort_order      INTEGER NOT NULL DEFAULT 0,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_plays_show ON plays(show_id);
+CREATE INDEX IF NOT EXISTS idx_plays_status ON plays(status);
+CREATE INDEX IF NOT EXISTS idx_plays_session ON plays(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_show_name ON plays(show_id, name);
+
+-- ── Teams ────────────────────────────────────────────────────────────────
+-- Mirrors the JSON files at ~/.lionagi/teams/{id}.json (still primary
+-- write path; populated via dual-write or `li state import-teams`).
+-- Storing teams in the DB unlocks queries, cross-session linkage, and
+-- replaces the file-only model that doesn't compose with async DB code.
+
+CREATE TABLE IF NOT EXISTS teams (
+  id              TEXT    PRIMARY KEY,
+  name            TEXT    NOT NULL,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  member_count    INTEGER NOT NULL DEFAULT 0,
+  members         JSON    NOT NULL DEFAULT '[]',
+  node_metadata   JSON,
+  status          TEXT    NOT NULL DEFAULT 'active' CHECK(
+                    status IN ('active', 'archived')
+                  ),
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name);
+CREATE INDEX IF NOT EXISTS idx_teams_updated ON teams(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teams_status ON teams(status);
+
+CREATE TABLE IF NOT EXISTS team_messages (
+  id              TEXT    PRIMARY KEY,
+  team_id         TEXT    NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  created_at      REAL    NOT NULL,
+  sender          TEXT    NOT NULL,
+  recipient       TEXT    NOT NULL DEFAULT 'all',
+  content         TEXT    NOT NULL,
+  summary         TEXT,
+  read_by         JSON    NOT NULL DEFAULT '[]',
+  session_id      TEXT    REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_msgs_team ON team_messages(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_msgs_created ON team_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_team_msgs_session ON team_messages(session_id)
+  WHERE session_id IS NOT NULL;
+
+-- ── Invocations ──────────────────────────────────────────────────────────
+-- Skill-level orchestration records. One invocation row per /show,
+-- /codex-pr-review, etc., aggregating the N sessions that the skill
+-- spawned. invocation_id is FK'd from sessions; invocation_kind on
+-- sessions remains the CLI primitive (agent/play/flow/...).
+
+CREATE TABLE IF NOT EXISTS invocations (
+  id              TEXT    PRIMARY KEY,
+  skill           TEXT    NOT NULL,
+  plugin          TEXT,
+  prompt          TEXT,
+  started_at      REAL    NOT NULL,
+  ended_at        REAL,
+  status          TEXT    NOT NULL DEFAULT 'running' CHECK(
+                    status IN ('running', 'completed', 'completed_empty',
+                               'failed', 'timed_out', 'aborted', 'cancelled')
+                  ),
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  node_metadata   JSON,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_invocations_skill ON invocations(skill);
+CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
+CREATE INDEX IF NOT EXISTS idx_invocations_updated ON invocations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invocations_reaper
+  ON invocations(status, started_at, id);
+
+-- ── Schedules (ADR-0027) ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS schedules (
+  id                  TEXT    PRIMARY KEY,
+  name                TEXT    NOT NULL UNIQUE,
+  description         TEXT,
+  enabled             INTEGER NOT NULL DEFAULT 1
+                      CHECK(enabled IN (0, 1)),
+  trigger_type        TEXT    NOT NULL
+                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll', 'at')),
+  cron_expr           TEXT,
+  interval_sec        INTEGER,
+  github_repo         TEXT,
+  github_filter       JSON,
+  github_cursor       TEXT,
+  poll_interval_sec   INTEGER,
+  action_kind         TEXT    NOT NULL
+                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml', 'command')),
+  action_model        TEXT,
+  action_prompt       TEXT,
+  action_agent        TEXT,
+  action_playbook     TEXT,
+  action_flow_yaml    TEXT,
+  action_project      TEXT,
+  -- lifts ADR-0070 delta 1: the schedule's own persisted execution root,
+  -- captured once at creation time so a scheduled fire never depends on
+  -- wherever the Studio daemon happened to be started from. NULL only on
+  -- pre-migration rows (see MIGRATION_COLUMNS backfill).
+  action_cwd          TEXT,
+  action_extra_args   JSON    DEFAULT '[]',
+  -- The 'command' action kind spawns an allow-listed
+  -- executable directly (never through `li`); action_command_args are
+  -- {{var}} templates rendered against trigger_context at fire time.
+  action_command       TEXT,
+  action_command_args  JSON    DEFAULT '[]',
+  on_success          JSON,
+  on_fail             JSON,
+  last_fired_at       REAL,
+  next_fire_at        REAL,
+  missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip'
+                      CHECK(missed_fire_policy IN ('skip', 'run_once')),
+  overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
+                      CHECK(overlap_policy IN ('skip', 'allow')),
+  -- One-shot / bounded-run semantics: NULL means unlimited. Once the number
+  -- of fired top-level runs (chain children excluded) reaches max_runs, the
+  -- engine auto-disables the schedule via the existing enabled flag.
+  max_runs            INTEGER,
+  -- Cumulative spend budget: NULL means unlimited. Checked pre-fire against
+  -- the sum of total_cost_usd / (input_tokens + output_tokens) across the
+  -- schedule's prior sessions; either bound tripping auto-disables the
+  -- schedule the same way max_runs does.
+  budget_usd          REAL,
+  budget_tokens       INTEGER,
+  -- Rolling-window fire cap. NULL means unlimited; otherwise the JSON shape
+  -- is {max_fires, window_sec}. Exhaustion defers a due fire without
+  -- disabling or advancing the schedule.
+  rate_limit          JSON,
+  project             TEXT,
+  -- Metric threshold alerts: when set, this schedule's own cron/interval
+  -- cadence only evaluates a metric (does not unconditionally fire); the
+  -- schedule's action fires only when the metric breaches the configured
+  -- threshold. Shape: {metric, op, value, window_minutes}. last_alert_at
+  -- tracks the most recent breach fire so the window doubles as a cooldown
+  -- (no refire until window_minutes has elapsed since the last alert).
+  threshold_config    JSON,
+  last_alert_at       REAL,
+  -- Detector-liveness watermark for threshold schedules. This advances
+  -- whenever the metric is evaluated, including the healthy no-breach path;
+  -- last_alert_at remains the most recent action-producing breach.
+  last_evaluated_at   REAL,
+  -- Observer self-health (github_poll poller): last_healthy_poll_at is
+  -- stamped on a github_poll() read whose every fetched page answered
+  -- 2xx/304 (including a healthy-empty one); poller_consecutive_401
+  -- counts consecutive 401s and resets only on a healthy read (a transient
+  -- error/non-200 between 401s does not reset the run). Read by the github_poll_healthy_age_minutes /
+  -- github_poll_consecutive_401 threshold metrics.
+  last_healthy_poll_at    REAL,
+  poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
+  -- Settled capped reads that neither dispatched nor retained an engine batch.
+  -- A qualified launch or an unheld complete read resets this separate streak.
+  poller_consecutive_cap_no_dispatch INTEGER NOT NULL DEFAULT 0,
+  -- Bounded retry for a github_poll fire that refuses before it dispatches
+  -- anything. Such a refusal holds github_cursor back so the event is
+  -- re-offered, but the refusal can be a property of that one event's
+  -- rendered values rather than of the schedule, so an unbounded hold would
+  -- block every later event forever. predispatch_refusal_event names the
+  -- event (its updated_at, the cursor value being held back) the streak
+  -- applies to and predispatch_refusal_count counts the consecutive
+  -- refusals of that same event; both reset when a different event refuses
+  -- or when a fire dispatches.
+  predispatch_refusal_event  TEXT,
+  predispatch_refusal_count  INTEGER NOT NULL DEFAULT 0,
+  -- Declarative ScheduleSet layer: versioned document identity, resolved
+  -- target/trigger snapshot + digest, and set ownership. NULL on every row
+  -- created before this layer (legacy) or by an unmanaged quick-create.
+  spec_version        TEXT,
+  managed_by          TEXT
+                      CHECK(managed_by IS NULL OR managed_by IN ('cli', 'declaration')),
+  owner_key           TEXT,
+  authored_spec       JSON,
+  resolved_target     JSON,
+  resolved_digest     TEXT,
+  resolved_timezone   TEXT,
+  -- The zone this schedule's cron expression was last actually interpreted
+  -- in, and how that zone was arrived at (declared on this row, the
+  -- process-wide configured default and its own provenance, or a UTC
+  -- fallback). Written by the scheduler whenever it resolves a fire time and
+  -- never read back when resolving, so it records the outcome without being
+  -- able to change it. The name alone is not diagnostic -- a requested UTC
+  -- and a fallback UTC are the same string -- which is why the source is
+  -- stored beside it. NULL for triggers that resolve no wall-clock fields
+  -- (interval/at/github_poll) and for cron rows not yet armed or fired.
+  effective_timezone        TEXT,
+  effective_timezone_source TEXT,
+  -- Terminal notification (declaration-layer `notify`): registers the
+  -- existing run terminal-callback machinery on the invocation this
+  -- schedule spawns, filtered to notify_on. Replaces on_fail for
+  -- declaration-managed schedules; NULL/empty means no callback.
+  notify_on           JSON,
+  notify_command      TEXT,
+  created_at          REAL    NOT NULL,
+  updated_at          REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled
+  ON schedules(enabled, next_fire_at) WHERE enabled = 1;
+CREATE INDEX IF NOT EXISTS idx_schedules_name
+  ON schedules(name);
+CREATE INDEX IF NOT EXISTS idx_schedules_project
+  ON schedules(project) WHERE project IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_schedules_owner_key
+  ON schedules(owner_key) WHERE owner_key IS NOT NULL;
+
+-- ── Schedule Runs (ADR-0027) ─────────────────────────────────────────────────
+-- ADR-0071 D2: generalized into the durable task-application entity. schedule_id
+-- is nullable so an ad-hoc task application (schedule_id IS NULL) can share this
+-- table with schedule-fired runs; the status CHECK is widened to the ADR-0062
+-- lifecycle; queued_at/leased_by/lease_expires_at/concurrency_key are ADR-0071's
+-- queue columns.
+CREATE TABLE IF NOT EXISTS schedule_runs (
+  id                  TEXT    PRIMARY KEY,
+  schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+  invocation_id       TEXT    REFERENCES invocations(id),
+  trigger_context     JSON    NOT NULL,
+  action_kind         TEXT    NOT NULL,
+  action_args         JSON    NOT NULL,
+  status              TEXT    NOT NULL DEFAULT 'running'
+                      CHECK(status IN ('queued', 'waiting_dependency', 'running',
+                                       'retry_wait', 'completed', 'failed',
+                                       'timed_out', 'skipped', 'cancelled')),
+  exit_code           INTEGER,
+  chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+  chain_depth         INTEGER NOT NULL DEFAULT 0,
+  fired_at            REAL    NOT NULL,
+  ended_at            REAL,
+  error_detail        TEXT,
+  created_at          REAL    NOT NULL,
+  -- ADR-0028: schedule_runs needs updated_at so StateDB.update_status()
+  -- can write it consistently (the only entity table that originally
+  -- lacked one).
+  updated_at          REAL,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON,
+  -- ADR-0071 D2: durable queue columns.
+  queued_at           REAL,
+  leased_by           TEXT,
+  lease_expires_at    REAL,
+  concurrency_key     TEXT,
+  -- ADR-0071 D4: bounds the lease-expiry recovery loop (worker.py's reaper).
+  lease_attempts      INTEGER NOT NULL DEFAULT 0,
+  -- ADR-0071 D2: task-application provenance.
+  required_capabilities  JSON,
+  execution_target       TEXT,
+  library_ref             TEXT,
+  library_content_hash    TEXT,
+  -- Delivery-contract marker: stamped the moment the scheduler engine
+  -- confirms the external process for this occurrence was actually
+  -- launched (create_subprocess_exec returned), separate from fired_at
+  -- (when the occurrence + cursor advance committed) and updated_at (any
+  -- write). NULL means the occurrence's transaction committed but launch
+  -- was never confirmed -- the signal a startup recovery scan uses to
+  -- distinguish "crashed before dispatch, safe to re-fire" from
+  -- "dispatched, outcome merely lost" (see SchedulerEngine._fire_inner and
+  -- SchedulerEngine._recover_undispatched_fires).
+  dispatched_at           REAL,
+  -- Nullable sidecar metadata blob for resuming a run, shaped like an
+  -- Element.to_dict(mode="db") payload (arbitrary JSON-serializable dict).
+  -- NULL means no resume state has been captured for this run.
+  resume_packet           JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
+  ON schedule_runs(schedule_id, fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sched_runs_status
+  ON schedule_runs(status) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_sched_runs_invocation
+  ON schedule_runs(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue
+  ON schedule_runs(status, queued_at)
+  WHERE status IN ('queued', 'retry_wait');
+CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency
+  ON schedule_runs(concurrency_key, status)
+  WHERE status IN ('queued', 'running', 'retry_wait');
+
+-- ── Workers (ADR-0071 D5) ─────────────────────────────────────────────────
+-- Capability-matching worker registry, upserted by worker_tick's heartbeat
+-- pass; a heartbeat older than worker.py's TTL makes it ineligible for NEW
+-- claims only -- in-flight leases still recover via lease_expires_at.
+CREATE TABLE IF NOT EXISTS workers (
+  worker_id                 TEXT    PRIMARY KEY,
+  advertised_capabilities   JSON    NOT NULL DEFAULT '[]',
+  execution_targets         JSON    NOT NULL DEFAULT '[]',
+  last_heartbeat_at         REAL    NOT NULL,
+  leased_run_id             TEXT    REFERENCES schedule_runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workers_heartbeat
+  ON workers(last_heartbeat_at);
+
+-- ── Admin event log (ADR-0024) ───────────────────────────────────────────
+-- Append-only audit log following NIST SP 800-92 pattern. Every admin
+-- mutation (transition, prune, checkpoint, vacuum, classify) inserts
+-- one row; no UPDATE / DELETE except the bounded cleanup job.
+
+CREATE TABLE IF NOT EXISTS admin_events (
+  id          TEXT    PRIMARY KEY,
+  created_at  REAL    NOT NULL,
+  action      TEXT    NOT NULL,    -- transition|prune|checkpoint|vacuum|classify
+  target_id   TEXT,                -- session_id, or NULL for DB-wide actions
+  details     JSON    NOT NULL,
+  actor       TEXT    NOT NULL DEFAULT 'admin'  -- admin|doctor_auto|chain
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_events_created
+  ON admin_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_events_action
+  ON admin_events(action);
+CREATE INDEX IF NOT EXISTS idx_admin_events_target
+  ON admin_events(target_id) WHERE target_id IS NOT NULL;
+
+-- ── Artifacts (ADR-0021) ─────────────────────────────────────────────────
+-- Structured skill outputs (review verdicts, gate verdicts, CI results,
+-- ...). The split is DB-for-structured, filesystem-for-blobs: `content`
+-- holds the outcome's JSON payload; `file_path` optionally
+-- points to a large blob (full log, generated artifact, worktree diff).
+-- `kind` is the discriminator the frontend renderer dispatches on.
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id              TEXT    PRIMARY KEY,
+  invocation_id   TEXT    REFERENCES invocations(id) ON DELETE CASCADE,
+  session_id      TEXT    REFERENCES sessions(id),
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL DEFAULT (strftime('%s','now')),
+  kind            TEXT    NOT NULL,
+  name            TEXT    NOT NULL,
+  content         JSON    NOT NULL,
+  file_path       TEXT
+);
+
+-- Natural uniqueness keys for idempotent upserts. INSERT OR REPLACE must
+-- NOT be used — it deletes then re-inserts, generating a new id and
+-- breaking external references. Use ON CONFLICT DO UPDATE instead.
+-- SQLite treats NULLs as distinct in UNIQUE indexes, so a single
+-- 4-column index on (invocation_id, session_id, kind, name) fails
+-- when either FK is NULL. Four partial indexes cover every reachable
+-- artifact shape without the NULL-distinctness pitfall.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_inv_only
+  ON artifacts(invocation_id, kind, name)
+  WHERE invocation_id IS NOT NULL AND session_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_ses_only
+  ON artifacts(session_id, kind, name)
+  WHERE session_id IS NOT NULL AND invocation_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_both
+  ON artifacts(invocation_id, session_id, kind, name)
+  WHERE invocation_id IS NOT NULL AND session_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_unattached
+  ON artifacts(kind, name)
+  WHERE invocation_id IS NULL AND session_id IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_invocation
+  ON artifacts(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_session
+  ON artifacts(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);
+CREATE INDEX IF NOT EXISTS idx_artifacts_created
+  ON artifacts(created_at DESC);
+-- Composite indexes that match the ORDER BY shape of the two list
+-- queries — avoids a temp B-tree for the sort step.
+CREATE INDEX IF NOT EXISTS idx_artifacts_invocation_time
+  ON artifacts(invocation_id, created_at) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_session_time
+  ON artifacts(session_id, created_at) WHERE session_id IS NOT NULL;
+
+-- ── Status transitions (ADR-0028) ────────────────────────────────────
+-- Append-only history of every status change across all entity types.
+-- Hot reads use the denormalized status_reason_* columns on each
+-- entity table; this table is the cold path for audit, "show me all
+-- failures with reason X", and the run-detail status-history tab.
+-- Writes are paired with the entity status UPDATE in a single SQLite
+-- transaction via StateDB.update_status(), so the two views never
+-- drift.
+
+CREATE TABLE IF NOT EXISTS status_transitions (
+  id              TEXT    PRIMARY KEY,
+  entity_type     TEXT    NOT NULL,    -- canonical singular: 'session' | 'show' | ...
+                                       -- (see lionagi/state/reasons.py VALID_ENTITY_TYPES)
+  entity_id       TEXT    NOT NULL,
+  previous_status TEXT,                -- NULL for the first transition
+  status          TEXT    NOT NULL,
+  reason_code     TEXT    NOT NULL,    -- see lionagi/state/reasons.py VALID_REASON_CODES
+  reason_summary  TEXT,
+  evidence_refs   JSON,                -- list[{kind, id|path|ref, label?}]
+  source          TEXT    NOT NULL,    -- 'executor' | 'agent' | 'admin' | 'system'
+  actor           TEXT,                -- session_id, user, 'doctor_auto', ...
+  created_at      REAL    NOT NULL,
+  metadata        JSON                 -- optional: timing, exit code, exc class
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_transitions_entity
+  ON status_transitions(entity_type, entity_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
+  ON status_transitions(reason_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_transitions_created
+  ON status_transitions(created_at DESC);
+
+-- ── Terminal deliveries (run-terminal callbacks) ────────────────────────────
+-- Durable reconciliation-consumer acknowledgment ledger for post-commit
+-- terminal-event callbacks. Never written by the in-process push path (that
+-- stays fire-and-forget); only a registered reconciliation consumer inserts a
+-- row here, once, when it has durably processed a terminal event. The
+-- composite primary key makes concurrent/repeated acks of the same event by
+-- the same consumer a single-row no-op (INSERT ... ON CONFLICT DO NOTHING).
+
+CREATE TABLE IF NOT EXISTS terminal_deliveries (
+  transition_id   TEXT    NOT NULL REFERENCES status_transitions(id),
+  consumer        TEXT    NOT NULL,
+  acked_at        REAL    NOT NULL,
+  PRIMARY KEY (transition_id, consumer)
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_deliveries_consumer
+  ON terminal_deliveries(consumer, acked_at);
+
+-- ── Session signals (Phase C Move 1) ─────────────────────────────────────────
+-- Append-only lifecycle signal log emitted by SessionObserver.emit().
+-- seq is a monotonic per-session counter (assigned at INSERT via MAX+1).
+-- payload holds the JSON-serialised signal fields (kind, op_id, name, …).
+-- The SSE endpoint polls rows WHERE session_id = ? AND seq > ? ORDER BY seq.
+
+CREATE TABLE IF NOT EXISTS session_signals (
+  id          TEXT    PRIMARY KEY,         -- uuid4 hex
+  session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,            -- per-session monotone, 1-based
+  kind        TEXT    NOT NULL,            -- signal class name (NodeStarted, …)
+  op_id       TEXT    NOT NULL DEFAULT '', -- op/node id when applicable
+  ts          REAL    NOT NULL,            -- Unix epoch seconds (float)
+  payload     JSON    NOT NULL DEFAULT '{}'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_signals_seq
+  ON session_signals(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_session_signals_session_ts
+  ON session_signals(session_id, ts);
+
+-- ── Engine runs (Phase C Move 2) ─────────────────────────────────────────────
+-- One row per `li engine run` invocation.  Tracks the kind, spec, lifecycle
+-- status, and optional link to the Session that ran inside the engine.
+-- session_id is a nullable FK: populated after the engine creates its Session
+-- so the row exists from the moment the CLI is invoked.
+
+CREATE TABLE IF NOT EXISTS engine_runs (
+  id          TEXT    PRIMARY KEY,         -- uuid4 hex
+  kind        TEXT    NOT NULL,            -- 'research' | 'review' | 'coding' | 'hypothesis' | 'planning'
+  spec_json   JSON    NOT NULL,            -- serialised CLI spec (prompt / artifact / findings …)
+  status      TEXT    NOT NULL DEFAULT 'running'
+              CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+  started_at  REAL    NOT NULL,            -- Unix epoch seconds
+  ended_at    REAL,                        -- NULL while running
+  session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL, -- legacy parent-session alias
+  invocation_id TEXT  REFERENCES invocations(id) ON DELETE SET NULL,
+  signal_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  outcome_json JSON,                       -- bounded, schema-versioned terminal outcome
+  export_dir  TEXT,                        -- filesystem path when --save used
+  error       TEXT                         -- last exception message on failure
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_runs_kind
+  ON engine_runs(kind);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_status
+  ON engine_runs(status);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_started
+  ON engine_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id
+  ON engine_runs(started_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_session
+  ON engine_runs(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation
+  ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session
+  ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session
+  ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL;
+
+-- ── Engine definitions ────────────────────────────────────────────────────────
+-- Named, persisted engine configurations created via Studio.  A definition
+-- captures the engine kind + tunable parameters so operators can launch
+-- a specific pipeline on demand without repeating its configuration.
+
+CREATE TABLE IF NOT EXISTS engine_defs (
+  id          TEXT    PRIMARY KEY,
+  name        TEXT    NOT NULL UNIQUE,
+  kind        TEXT    NOT NULL,    -- one of the five engine kinds
+  model       TEXT,               -- optional model override
+  max_depth   INTEGER,            -- max pipeline depth [1, 100]
+  max_agents  INTEGER,            -- max concurrent agents [1, 100]
+  options     JSON,               -- {test_cmd?, export_dir?} only
+  description TEXT,
+  created_at  REAL    NOT NULL,
+  updated_at  REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_defs_name
+  ON engine_defs(name);
+CREATE INDEX IF NOT EXISTS idx_engine_defs_kind
+  ON engine_defs(kind);
+CREATE INDEX IF NOT EXISTS idx_engine_defs_updated
+  ON engine_defs(updated_at DESC);
+
+-- ── Workflow definitions ──────────────────────────────────────────────────────
+-- Named, persisted workflow graphs authored in the Studio Designer.  The
+-- spec_json holds the canvas graph (nodes, edges, inputs, outputs) that the
+-- frontend renders and serializes to YAML.
+
+CREATE TABLE IF NOT EXISTS workflow_defs (
+  id          TEXT    PRIMARY KEY,
+  name        TEXT    NOT NULL UNIQUE,
+  description TEXT,
+  spec_json   JSON,
+  created_at  REAL    NOT NULL,
+  updated_at  REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_defs_name
+  ON workflow_defs(name);
+CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
+  ON workflow_defs(updated_at);
+
+-- ── Session controls (ADR-0069 D1–D3: live-control transport) ───────────
+-- One row per operator control verb queued against a live session, polled by
+-- cli/orchestrate/flow.py's _execute_dag. See docs/internals/runtime.md for
+-- the verb-classed apply/stamp ordering.
+
+CREATE TABLE IF NOT EXISTS session_controls (
+  id          TEXT    PRIMARY KEY,         -- uuid4 hex
+  session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  verb        TEXT    NOT NULL
+              CHECK(verb IN ('pause', 'resume', 'message', 'stop')),
+  payload     JSON,                        -- verb-specific; NULL for pause/resume
+  created_at  REAL    NOT NULL,
+  applied_at  REAL,                        -- NULL until the poller consumes it
+  -- NULL until a consumer claims the row; set beside the 'applying:<owner>'
+  -- result so an operator looking at a wedged queue can tell a slow owner from
+  -- a dead one without going through the run's history.
+  claimed_at  REAL,
+  result      TEXT                         -- 'applying[:<owner>]' | 'applied' | 'rejected:<reason>'
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_controls_pending
+  ON session_controls(session_id, applied_at) WHERE applied_at IS NULL;
+
+-- ── Dispatch outbox (ADR-0092: durable dispatch outbox) ────────────────────────
+-- Producer-driven at-least-once outbound delivery. A row survives independent
+-- of any consumer's liveness; the scheduler tick re-attempts the configured
+-- notify template until it succeeds, backs off, or exhausts max_attempts.
+
+CREATE TABLE IF NOT EXISTS dispatch_outbox (
+  id                TEXT PRIMARY KEY,
+  kind              TEXT NOT NULL,              -- 'revival_ping' | 'terminal_notify' | ...
+  deliver_to        TEXT NOT NULL,              -- opaque routing key for the transport template
+  payload           JSON NOT NULL,              -- DispatchSignal contract
+  dedup_key         TEXT,                       -- cross-submission idempotency
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'delivering', 'delivered', 'acked', 'dead_letter', 'expired')),
+  attempt           INTEGER NOT NULL DEFAULT 0,
+  max_attempts      INTEGER NOT NULL DEFAULT 8,
+  next_attempt_at   REAL NOT NULL,              -- backoff schedule; drives the tick scan
+  ack_required      INTEGER NOT NULL DEFAULT 0, -- opt-in retry-until-ack tier
+  ack_token         TEXT,                       -- consumer presents this to `li dispatch ack`
+  session_id        TEXT REFERENCES sessions(id),        -- denormalized, nullable
+  schedule_run_id   TEXT REFERENCES schedule_runs(id),   -- denormalized, nullable
+  last_error        TEXT,
+  created_at        REAL NOT NULL,
+  expires_at        REAL,
+  updated_at        REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_outbox_dedup
+  ON dispatch_outbox(dedup_key) WHERE dedup_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_due
+  ON dispatch_outbox(status, next_attempt_at)
+  WHERE status IN ('pending', 'delivering');
+
+-- ── Approvals (studio operator permission ledger) ──────────────────────────
+-- Server-side confirm-flow: a mutating action is proposed, a human grants or
+-- denies it, and the real endpoint consumes the granted approval exactly
+-- once. params_hash is a sha256 over canonical (sorted-keys) JSON of the
+-- action's parameters, checked at consume time so a granted approval can
+-- only execute the exact action it was granted for.
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id            TEXT    PRIMARY KEY,
+  action_kind   TEXT    NOT NULL,
+  params_hash   TEXT    NOT NULL,
+  session_id    TEXT    REFERENCES sessions(id),
+  status        TEXT    NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'granted', 'consumed', 'expired', 'denied')),
+  proposed_at   REAL    NOT NULL,
+  granted_at    REAL,
+  consumed_at   REAL,
+  expires_at    REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status
+  ON approvals(status) WHERE status IN ('pending', 'granted');
+CREATE INDEX IF NOT EXISTS idx_approvals_session
+  ON approvals(session_id) WHERE session_id IS NOT NULL;
+
+-- ── Approval evidence (hash-chained audit trail) ────────────────────────────
+-- Append-only: every approval lifecycle event (proposed/granted/denied/
+-- consumed/expired) writes one row here, in the same transaction as the
+-- approvals status change. chain_hash = sha256(content_hash + previous_hash);
+-- genesis previous_hash is 64 zero chars. content_hash is a sha256 over
+-- canonical (sorted-keys) JSON of the row's payload fields. Never stores raw
+-- action params -- only the params_hash already computed for the approval.
+-- hmac_sig is populated only when LIONAGI_STUDIO_EVIDENCE_HMAC_KEY is set.
+
+CREATE TABLE IF NOT EXISTS approval_evidence (
+  id                    TEXT    PRIMARY KEY,
+  sequence              INTEGER NOT NULL,
+  event_type            TEXT    NOT NULL
+                        CHECK(event_type IN ('proposed', 'granted', 'denied', 'consumed', 'expired')),
+  approval_id           TEXT    NOT NULL REFERENCES approvals(id),
+  action_kind           TEXT    NOT NULL,
+  status_from           TEXT,
+  status_to             TEXT    NOT NULL,
+  params_hash           TEXT    NOT NULL,
+  justification_class   TEXT,
+  justification_reason  TEXT,
+  created_at            REAL    NOT NULL,
+  content_hash          TEXT    NOT NULL,
+  previous_hash         TEXT    NOT NULL,
+  chain_hash            TEXT    NOT NULL,
+  hmac_sig              TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_evidence_sequence
+  ON approval_evidence(sequence);
+CREATE INDEX IF NOT EXISTS idx_approval_evidence_approval
+  ON approval_evidence(approval_id);
+
+-- ── Attention dispositions (Studio needs-attention discharge lifecycle) ────
+-- One row per derived attention item (item_id == "run:<id>" | "inv:<id>" |
+-- "sched:<id>", the id boardReducer.buildAttentionItems already builds).
+-- Records what an operator decided about seeing a condition; the source
+-- run/invocation/schedule status is never written here. See attention.py.
+
+CREATE TABLE IF NOT EXISTS attention_dispositions (
+  item_id        TEXT    PRIMARY KEY,
+  state          TEXT    NOT NULL
+                 CHECK(state IN ('acknowledged', 'resolved', 'expected', 'snoozed')),
+  note           TEXT,
+  created_at     REAL    NOT NULL,
+  updated_at     REAL    NOT NULL,
+  expires_at     REAL,
+  actor          TEXT    NOT NULL,
+  source_status  TEXT    NOT NULL,
+  revision       INTEGER NOT NULL DEFAULT 1
+);
+
+-- ── Attention disposition revisions (per-item_id revision ledger) ──────────
+-- Survives a DELETE of the disposition row itself so a PUT that recreates
+-- item_id afterward can still be fenced against the last operation.
+
+CREATE TABLE IF NOT EXISTS attention_disposition_revisions (
+  item_id        TEXT    PRIMARY KEY,
+  revision       INTEGER NOT NULL
+);
+
+-- ── Attention disposition history (append-only discharge ledger) ──────────
+
+CREATE TABLE IF NOT EXISTS attention_disposition_history (
+  id             TEXT    PRIMARY KEY,
+  item_id        TEXT    NOT NULL,
+  sequence       INTEGER NOT NULL,
+  prior_state    TEXT,
+  new_state      TEXT    NOT NULL,
+  note           TEXT,
+  actor          TEXT    NOT NULL,
+  source_status  TEXT,
+  created_at     REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attention_disposition_history_item
+  ON attention_disposition_history(item_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_disposition_history_sequence
+  ON attention_disposition_history(sequence);
