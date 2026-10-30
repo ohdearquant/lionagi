@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.operations.act._gate_arguments import gate_arguments
 from lionagi.operations.act.act import _act
 from lionagi.protocols.messages import ActionRequest, ActionResponse
@@ -92,3 +93,44 @@ async def test_deep_argument_without_gate_still_reaches_manager_unchanged(monkey
         await _act(branch, {"function": "tool", "arguments": arguments})
 
     assert seen == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verbose_action", [False, True])
+@pytest.mark.parametrize("suppress_errors", [False, True])
+async def test_plain_deep_arguments_reach_manager_without_gate(
+    monkeypatch, verbose_action, suppress_errors
+):
+    class ReachedManager(BaseException):
+        pass
+
+    arguments = {"payload": _nested_value(50_000, "private-leaf")}
+    with pytest.raises(RecursionError):
+        str(arguments)
+
+    branch = Branch()
+    seen = []
+    pre_calls = []
+    bus = HookBus()
+
+    async def on_pre(**kwargs):
+        pre_calls.append(kwargs)
+
+    bus.on(HookPoint.TOOL_PRE, on_pre)
+    branch._hooks = bus
+
+    async def invoke(_manager, request):
+        seen.append(request["arguments"] is arguments)
+        raise ReachedManager
+
+    monkeypatch.setattr(type(branch._action_manager), "invoke", invoke)
+    with pytest.raises(ReachedManager):
+        await _act(
+            branch,
+            {"function": "tool", "arguments": arguments},
+            verbose_action=verbose_action,
+            suppress_errors=suppress_errors,
+        )
+    assert seen == [True]
+    assert len(pre_calls) == 1
+    assert pre_calls[0]["args_summary"] == "<arguments too deeply nested>"

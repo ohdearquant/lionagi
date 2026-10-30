@@ -24,6 +24,14 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 
+def _argument_text(arguments: object) -> str:
+    """Render observational text without rejecting recursive argument structures."""
+    try:
+        return str(arguments)
+    except RecursionError:
+        return "<arguments too deeply nested>"
+
+
 async def _act(
     branch: "Branch",
     action_request: BaseModel | dict | ActionRequest,
@@ -156,7 +164,7 @@ async def _act(
 
     _hooks = branch._hooks
     _tool_name = _request["function"]
-    _args_summary = str(_request["arguments"])[:200]
+    _args_summary = _argument_text(_request["arguments"])[:200]
 
     if _hooks is not None:
         from lionagi.hooks.bus import HookPoint
@@ -171,7 +179,7 @@ async def _act(
     func_call = None
     try:
         if verbose_action:
-            args_ = str(_request["arguments"])
+            args_ = _argument_text(_request["arguments"])
             args_ = args_[:50] + "..." if len(args_) > 50 else args_
             logger.debug("Invoking action %s with %s.", _request["function"], args_)
 

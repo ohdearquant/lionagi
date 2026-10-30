@@ -292,6 +292,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Tool hook and verbose summaries no longer block dispatch when deeply nested
+  arguments exceed Python's string-representation recursion limit.
+
 - The email-in-header guard runs in linear time on long hyphenated text.
 
 - A failed or cancelled Operator setup now makes a bounded attempt to close a
