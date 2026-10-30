@@ -3872,3 +3872,20 @@ def test_mirror_settings_imports_only_the_standard_library() -> None:
     imported = resolved_imports(source, "lionagi.cli")
     assert imported
     assert all(name.split(".")[0] in sys.stdlib_module_names for name in imported)
+
+
+def test_importing_the_studio_config_does_not_load_the_mirror_service() -> None:
+    """A fresh interpreter that imports the studio config loads the settings module only."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, lionagi.studio.config; "
+        "print(' '.join(sorted(m for m in sys.modules if m.startswith('lionagi.cli'))))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=120
+    )
+    loaded = set(out.stdout.split())
+    assert "lionagi.cli._mirror_settings" in loaded
+    assert {"lionagi.cli._mirror_service", "lionagi.cli.mirror"}.isdisjoint(loaded)
