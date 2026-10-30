@@ -466,11 +466,13 @@ selection reads it: the D4 ledger.
      pending before the write is admitted, it stops the write; arriving during the worker wait, it
      returns to the caller at once and the write commits after (`messages.py:578-580`). Both hold
      for the two existing shields as well. A shielded write also waits without a timeout for a
-     thread-limiter token. D6's five-second bound (`ADR-0126.md:572-573`) covers the SQLite wait,
-     not admission, for the existing shields and for these three alike.
+     thread-limiter token. D6's five-second bound on the SQLite lock (`busy_timeout_s`) covers that
+     wait, not admission, for the existing shields and for these three alike. Amendment 6 adds a
+     separate admission bound.
    - The streamed adapter's `GeneratorExit` handler (`messages.py:1061-1065`) records `stream_error`
      when the stream carried an error event (`saw_error_event`, `:935`, `:955-958`) and
-     `stream_closed` otherwise, as its end-of-stream branch already does (`:1045-1047`).
+     `stream_closed` otherwise. Its end-of-stream branch makes the same error-event test to choose
+     `stream_error` over `stream_truncated` (`:1045-1047`).
    - In the streamed attempt every settlement sets `settled` before it awaits the router (the
      status branches, `messages.py:986-1017`, and `:951`, `:1048`), and the transport-failure
      branch (`:1079-1084`) settles only when `settled` is false; it still raises. Today a status
