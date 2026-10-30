@@ -268,6 +268,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   enforcement. A Codex request passed to endpoint payload construction also
   retains its workspace when that request is rebuilt. If the Codex CLI was not
   discovered, the call reports that before resolving secrets or checking launch-time configuration.
+  An allowlist naming no server in the readable layers now loads user config with every
+  declared server disabled, where it previously skipped user config.
   A judge raises when an exclusive MCP selection cannot be enforced. Configuration may
   still change between the check and Codex reading it: a removed system server can cause
   startup to fail, while a newly added one can load. Managed and cloud configuration is
