@@ -365,7 +365,9 @@ class SessionObserver(Observer):
         allowed = True
         if self._gate is not None:
             try:
-                allowed = bool(await maybe_await(self._gate(payload)))
+                from lionagi.protocols.action.gate import _session_gate_result
+
+                allowed = _session_gate_result(await maybe_await(self._gate(payload))).allowed
             except Exception:
                 allowed = False
 

@@ -138,7 +138,7 @@ async def test_gate_is_called_once_per_emit_with_the_unwrapped_payload():
 @pytest.mark.parametrize(
     "verdict", [None, 0, "", False], ids=["None", "zero", "empty-str", "False"]
 )
-async def test_falsy_gate_verdict_denies(verdict):
+async def test_false_or_non_boolean_gate_verdict_denies(verdict):
     obs = SessionObserver()
     fired: list = []
     obs.observe(Noticed, handler=lambda e, _c: fired.append(e))
@@ -148,14 +148,23 @@ async def test_falsy_gate_verdict_denies(verdict):
     assert fired == []
 
 
-@pytest.mark.parametrize(
-    "verdict", [True, 1, "yes", object()], ids=["True", "one", "str", "object"]
-)
-async def test_truthy_gate_verdict_allows(verdict):
+@pytest.mark.parametrize("verdict", [1, "yes", object()], ids=["one", "str", "object"])
+async def test_truthy_non_boolean_gate_verdict_denies(verdict):
     obs = SessionObserver()
     fired: list = []
     obs.observe(Noticed, handler=lambda e, _c: fired.append(e))
     obs.gate(lambda _p: verdict)
+
+    assert await obs.emit(Noticed(note="x")) == []
+    assert fired == []
+    assert len(obs.flow.items) == 1
+
+
+async def test_true_gate_verdict_allows():
+    obs = SessionObserver()
+    fired: list = []
+    obs.observe(Noticed, handler=lambda e, _c: fired.append(e))
+    obs.gate(lambda _p: True)
 
     await obs.emit(Noticed(note="x"))
     assert len(fired) == 1
