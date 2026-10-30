@@ -12,14 +12,12 @@ from pathlib import Path
 import pytest
 
 from lionagi import Branch, Session
+from lionagi.cli._runs import register_branch_hook as _register_branch_hook
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     setup_orchestration_persist,
     start_live_persist,
     stop_live_persist,
-)
-from lionagi.cli.orchestrate._orchestration import (
-    register_branch_hook as _register_branch_hook,
 )
 from lionagi.state.db import StateDB
 from tests.cli._aiosqlite_threads import aiosqlite_threads, settled_new_aiosqlite_threads
@@ -495,6 +493,34 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
             blocker.rollback()
         blocker.close()
         await db.close()
+
+
+def test_register_branch_hook_lives_in_the_runs_module():
+    """The hook is defined beside the message handler it calls, the orchestration module re-exports
+    the same object, and the runs module imports no orchestration module."""
+    import ast
+
+    from lionagi.cli import _runs
+    from lionagi.cli.orchestrate import _orchestration
+
+    assert _runs.register_branch_hook.__module__ == "lionagi.cli._runs"
+    assert _orchestration.register_branch_hook is _runs.register_branch_hook
+
+    tree = ast.parse(Path(_runs.__file__).read_text())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            base = ("." * node.level) + (node.module or "")
+            imported.add(base)
+            imported.update(f"{base}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+    orchestration_imports = {
+        name
+        for name in imported
+        if name.startswith(("lionagi.cli.orchestrate", ".orchestrate", "..cli.orchestrate"))
+    }
+    assert not orchestration_imports
 
 
 # _register_branch_hook: lazy branch row + multi-message paths
@@ -3550,8 +3576,8 @@ async def test_flow_timeout_shields_completed_branch_status_until_commit(
 ):
     from lionagi._errors import TimeoutError as LionTimeoutError
     from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli._runs import register_branch_hook
     from lionagi.cli.orchestrate import flow as flow_module
-    from lionagi.cli.orchestrate._orchestration import register_branch_hook
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted
     from lionhub.orchestration.engines import PlanningEngine
