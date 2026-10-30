@@ -288,6 +288,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Importing the Claude Code, Codex, and Pi providers no longer configures the
+  application's root logger.
+
 - A failed or cancelled Operator setup now makes a bounded attempt to close a
   session created before admission and logs when cleanup did not complete.
   Cancellation during cleanup still cancels the run unless the store refused a
