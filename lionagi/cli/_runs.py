@@ -2463,6 +2463,9 @@ async def setup_agent_persist(
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
+        # Raise store refusals as themselves first so the caller can identify them (ADR-0128 D6).
+        # Then preserve drain cancellation, the original non-Exception failure,
+        # and finally any cancellation caught during cleanup, in that order.
         if refusal is not None:
             raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         if drain_cancel is not None:

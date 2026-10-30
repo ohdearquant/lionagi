@@ -280,7 +280,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - A failed or cancelled Operator setup now makes a bounded attempt to close a
   session created before admission and logs when cleanup did not complete.
-  Cancellation delivered during that cleanup still cancels the run.
+  Cancellation during cleanup still cancels the run unless the store refused a
+  write, in which case the refusal is raised.
   A failed Operator turn reports an incomplete recovery lookup in its error.
   The attempt requires a recorded worker generation and a timestamp fence;
   compatibility stores without that generation cannot close this pre-admission
