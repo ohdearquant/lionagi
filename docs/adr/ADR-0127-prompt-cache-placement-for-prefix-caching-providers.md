@@ -442,10 +442,12 @@ that code on one of two paths, and the two paths differ:
   (`service/connections/endpoint.py:563-566`) before `messages.py:1152` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
-- **An endpoint with no request-option filter carries no request-option model** — an `iModel`
-  restored from a serialized config, whose `request_options` comes back None, or a model configured
-  from a plain dict. There the flag is not filtered out, so the flag reaches the mark code and one
-  ephemeral five-minute mark lands on the last message's last block.
+- **An endpoint with no request-option filter carries no request-option model** — a model
+  configured from a plain dict. (When this record was written, an `iModel` restored from a
+  serialized config also came back with `request_options` None; a restored model now keeps its
+  endpoint's registered request model and behaves as a default one.) There the flag is not filtered
+  out, so the flag reaches the mark code and one ephemeral five-minute mark lands on the last
+  message's last block.
 
 `iModel` then pops the same flag from the request (`service/imodel.py:403`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
@@ -482,8 +484,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 (`providers/anthropic/messages.py:1152-1178`) stays exactly as today wherever it fires today.
 
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
-mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
-with `request_options` None, or a dict-configured model
+mark code, so no mark is placed; on an endpoint with no request-option filter — a dict-configured model
 (`service/connections/endpoint.py:563-566`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the

@@ -128,3 +128,40 @@ def test_restored_routed_payload_can_be_priced_and_unknown_key_is_not_disclosed(
     assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
     assert key not in str(caught.value)
     assert value not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("role", "content"),
+    [
+        ("assistant", [{"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}}]),
+        ("user", [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]),
+    ],
+)
+def test_restored_and_fresh_models_refuse_the_same_native_blocks(role, content):
+    fresh = iModel(provider="anthropic", model="synthetic-model")
+    restored = iModel.from_dict(fresh.to_dict())
+    request = {
+        "model": "synthetic-model",
+        "messages": [{"role": role, "content": content}],
+        "max_tokens": 32,
+    }
+    with pytest.raises(ValueError) as fresh_error:
+        fresh.endpoint.create_payload(request)
+    with pytest.raises(ValueError) as restored_error:
+        restored.endpoint.create_payload(request)
+    assert str(restored_error.value) == str(fresh_error.value)
+
+
+def test_restored_and_fresh_models_build_the_same_payload_with_cache_and_tier_options():
+    fresh = iModel(provider="anthropic", model="synthetic-model")
+    restored = iModel.from_dict(fresh.to_dict())
+    request = {
+        "model": "synthetic-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 32,
+        "service_tier": "standard_only",
+        "cache_control": {"type": "ephemeral"},
+    }
+    fresh_payload, _ = fresh.endpoint.create_payload(request)
+    restored_payload, _ = restored.endpoint.create_payload(request)
+    assert restored_payload == fresh_payload
