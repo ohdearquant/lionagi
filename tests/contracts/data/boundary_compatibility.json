@@ -1806,6 +1806,14 @@
       "resolve_and_build_context_block",
       "resolve_context_refs"
     ],
+    "lionagi/cli/_inspection.py": [
+      "fetch_by_id",
+      "resolve_agent_target",
+      "resolve_any_target",
+      "resolve_play_target",
+      "resolve_primary_session",
+      "run_id_candidates"
+    ],
     "lionagi/cli/_logging.py": [
       "configure_cli_logging"
     ],
@@ -1850,6 +1858,9 @@
       "setup_agent_persist",
       "teardown_orchestration_persist",
       "teardown_persist"
+    ],
+    "lionagi/cli/_team_service.py": [
+      "read_team_json"
     ],
     "lionagi/cli/_util.py": [
       "AmbiguousIdError",
@@ -2097,7 +2108,6 @@
       "post_done_signal",
       "post_finished_signal",
       "post_wakeup_signal",
-      "read_team_json",
       "run_team"
     ],
     "lionagi/cli/wait.py": [

@@ -398,6 +398,27 @@ class TestReadTeamJson:
         with pytest.raises(FileNotFoundError):
             team._load_team("r2")
 
+    def test_reader_lives_in_the_team_service_module(self):
+        """The team command re-exports the very reader the private team-service
+        module defines, and that module imports no command module (nor anything
+        else from lionagi), so other layers can read team files without it."""
+        import ast
+
+        from lionagi.cli import _team_service
+
+        assert team.read_team_json is _team_service.read_team_json
+
+        tree = ast.parse(Path(_team_service.__file__).read_text())
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.level == 0, "relative import in the team-service module"
+                imported.add(node.module or "")
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+        assert imported, "expected the module to import something"
+        assert not any(name.split(".")[0] == "lionagi" for name in imported), imported
+
     def test_cmd_list_skips_corrupt_files_without_crashing(self, capsys):
         _make_team("r3", ["orchestrator", "alice"])
         (team._teams_dir() / "corrupt2.json").write_text("{not json")
