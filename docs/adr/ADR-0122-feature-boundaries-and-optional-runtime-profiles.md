@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: Phase 0 inventory and report-only checker implemented
+- **Implementation-status**: Phase 0 partial. Implemented: compatibility fixture (item 1), import graph (item 2), owner and layer inventory (item 3), report-only checker (item 6). Pending: import side-effect record, with the probe tool landed (item 4); target owners per shared symbol (item 5); a follow-up issue per existing finding (item 6).
 - **Area**: governance
 - **Date**: 2026-08-16
 - **Relations**: depends on ADR-0119 (deterministic declaration and configuration substrate);
