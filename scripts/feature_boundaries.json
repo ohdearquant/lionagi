@@ -1539,6 +1539,11 @@
       "owner": "provider_deepseek",
       "target_owner": "lionhub (destination not yet recorded)"
     },
+    "lionagi.providers.errors": {
+      "layer": "adapter",
+      "owner": "provider_support",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
     "lionagi.providers.exa": {
       "layer": "adapter",
       "owner": "provider_exa",

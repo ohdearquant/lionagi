@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Provider exception types are available from `lionagi.providers.errors`, so
+  applications can catch them without importing a private module.
+
 - A checked feature ownership inventory and static import report expose
   dependencies across package layers while keeping existing boundary debt
   report-only.
