@@ -634,6 +634,7 @@ async def _kill_one(
                 "conflict": "session changed before cancellation was recorded",
                 "missing": "session no longer exists",
                 "rejected": "session cancellation was rejected",
+                "timed_out": "session cancellation did not finish before the deadline",
             }.get(cancel_status, f"guarded cancellation returned {cancel_status!r}")
     else:
         await _persist_cancel(
@@ -964,6 +965,9 @@ async def _try_recorded_worker_cleanup(
                     f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill"
                 )
                 return 1
+        elif outcome == "timed_out":
+            log_error(f"session {sid[:12]} cancellation did not finish before the deadline")
+            return 1
         elif outcome != "applied":
             log_error(f"session {sid[:12]} changed during cleanup")
             return 1

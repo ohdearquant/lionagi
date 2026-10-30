@@ -4050,8 +4050,14 @@ class StateDB:
         reason_code: str,
         reason_summary: str,
         evidence: dict[str, Any],
-    ) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
-        """Cancel only the captured running execution, through lifecycle policy."""
+    ) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected", "timed_out"]:
+        """Cancel only the captured running execution, through lifecycle policy.
+
+        ``timed_out`` means the worker-operation deadline passed before the
+        cancellation was recorded, whichever of this method's and the service's
+        deadlines expired first. The caller cannot tell whether the session is
+        still running.
+        """
         self._refuse_in_compatibility(
             "cancel_session_if_worker_generation", "worker cleanup requires native storage"
         )
@@ -4063,16 +4069,19 @@ class StateDB:
             raise ValueError("expected_runner_identity must be a mapping")
         expected_runner_identity = dict(expected_runner_identity)
         _validate_reason_code(reason_code)
-        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
-            return await _lifecycle_adapters.run_cancel_session_if_worker_generation(
-                self._lifecycle_service(),
-                session_id=session_id,
-                generation_id=generation_id,
-                expected_runner_identity=expected_runner_identity,
-                reason_code=reason_code,
-                reason_summary=reason_summary,
-                evidence=evidence,
-            )
+        try:
+            with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+                return await _lifecycle_adapters.run_cancel_session_if_worker_generation(
+                    self._lifecycle_service(),
+                    session_id=session_id,
+                    generation_id=generation_id,
+                    expected_runner_identity=expected_runner_identity,
+                    reason_code=reason_code,
+                    reason_summary=reason_summary,
+                    evidence=evidence,
+                )
+        except TimeoutError:
+            return "timed_out"
 
     @_operation("settle_cli_worker_spawn")
     async def settle_cli_worker_spawn(self, spawn_id: str, *, confirmed_empty_at: float) -> bool:

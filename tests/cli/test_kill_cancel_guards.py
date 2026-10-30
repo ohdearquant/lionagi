@@ -138,6 +138,24 @@ async def test_no_pid_kill_refuses_when_runner_identity_changes_in_same_generati
 
 
 @pytest.mark.asyncio
+async def test_guard_deadline_is_reported_as_not_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    async with StateDB(tmp_path / "state.db") as db:
+        sid = await _session(db, generation=None, metadata={})
+        before = await db.get_session(sid)
+
+        async def deadline_passed(session_id, generation, **kwargs):
+            return "timed_out"
+
+        monkeypatch.setattr(db, "cancel_session_if_worker_generation", deadline_passed)
+        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        after = await db.get_session(sid)
+        assert result["cancel_status"] == "timed_out"
+        assert result["cancel_error"] == "session cancellation did not finish before the deadline"
+        assert after["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_ended_execution_with_a_replaced_runner_is_still_a_conflict(tmp_path, monkeypatch):
     monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
     async with StateDB(tmp_path / "state.db") as db:
