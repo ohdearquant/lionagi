@@ -276,7 +276,7 @@ def _reserved_flow_flags() -> frozenset[str]:
     if _RESERVED_FLOW_FLAGS is None:
         import argparse
 
-        from lionagi.cli.orchestrate import add_orchestrate_subparser
+        from lionagi.cli._orchestrate_parsing import add_orchestrate_subparser
 
         probe = argparse.ArgumentParser(prog="li", add_help=False)
         flow = add_orchestrate_subparser(probe.add_subparsers(dest="command"))["flow"]

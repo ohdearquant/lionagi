@@ -551,13 +551,13 @@ def make_engine_operation(
         engine_workspace: str | None = None,
         **_ignored: Any,
     ) -> Any:
-        from lionagi.cli.engine import _KIND_META, _import_engine_class
+        from lionagi.cli._engine_definitions import KIND_META, import_engine_class
 
-        meta = _KIND_META.get(engine_kind)
+        meta = KIND_META.get(engine_kind)
         if meta is None:
             raise RuntimeError(f"unknown engine kind {engine_kind!r}")
         module, cls_name = meta["cls_path"]
-        engine_class = _import_engine_class(module, cls_name)
+        engine_class = import_engine_class(module, cls_name)
 
         engine_kwargs: dict[str, Any] = {}
         if engine_model:

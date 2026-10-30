@@ -76,7 +76,7 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
     """
     db_path = patched_env
 
-    from lionagi.cli.orchestrate._orchestration import register_branch_hook
+    from lionagi.cli._runs import register_branch_hook
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.session import Session
     from lionagi.studio.services.workflow_run import (

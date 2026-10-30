@@ -212,7 +212,7 @@ The shared dependency closure is part of step 3:
   status adapter (`lionagi/cli/orchestrate/_checkpoint.py:227`).
 - Shared code and Studio use the existing neutral log emitters. Their identity
   already comes from `lionagi._log_channels`; CLI-specific formatter setup stays
-  with the CLI (`lionagi/cli/_logging.py:10`, `lionagi/cli/_logging.py:91`).
+  with the CLI (`lionagi/cli/_logging.py:10`, `lionagi/cli/_logging.py:109`).
 - Mirror settings become wheel-owned before or with mirror extraction, preserving
   the current configuration value and defaults rather than importing application
   configuration (`lionagi/cli/mirror.py:21`;

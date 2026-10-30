@@ -295,10 +295,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- `DataLogger` no longer stays alive solely for its exit callback. Pending logs
-  are saved when an unreferenced logger is collected or at normal process exit;
-  if log content refers back to its logger, it remains alive until exit. An
-  automatic save failure is logged and does not clear the snapshot from its pile.
+- Importing the Claude Code, Codex, and Pi providers no longer configures the
+  application's root logger.
 
 - Successful structured-response repairs on API models now replace the invalid
   assistant text in later conversation history and run-level live persistence.
