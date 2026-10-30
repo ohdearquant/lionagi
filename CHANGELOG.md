@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Provider exception types are available from `lionagi.providers.errors`, so
+  applications can catch them without importing a private module.
+
 - A checked feature ownership inventory and static import report expose
   dependencies across package layers while keeping existing boundary debt
   report-only.
@@ -291,6 +294,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   drop their `synonyms_removed_after` field.
 
 ### Fixed
+
+- The email-in-header guard runs in linear time on long hyphenated text.
 
 - A failed or cancelled Operator setup now makes a bounded attempt to close a
   session created before admission and logs when cleanup did not complete.
