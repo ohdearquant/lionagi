@@ -202,6 +202,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
   ON sessions(updated_at DESC);
+-- Include malformed metadata so adding the index does not reject legacy rows
+-- or change which metadata values can be written.
+CREATE INDEX IF NOT EXISTS idx_sessions_recent_visible
+  ON sessions(updated_at DESC)
+  WHERE node_metadata IS NULL OR NOT json_valid(node_metadata)
+    OR json_extract(node_metadata, '$.engine_parent_run_id') IS NULL;
 -- ADR-0028: failed/timed_out queries in the attention queue (ADR-0030)
 -- need an index that covers terminal states, not just running. The
 -- existing idx_sessions_status_last_msg is a partial index for

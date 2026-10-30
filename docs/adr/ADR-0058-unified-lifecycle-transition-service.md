@@ -852,7 +852,7 @@ the policy registry covering eight entity types, the guarded algorithm, and the
 facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
 route through the service. Creation-path initialization is further along than an earlier revision
 of this note recorded. `initialize_in_transaction` is reached through
-`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:1056`), and that helper has eight
+`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:1057`), and that helper has eight
 call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
 `play`. Schedule uses its specialized definition adapter. Two other policies are outside
 the creation helper: `team`, which has no creation path in `lionagi/state/db.py`
