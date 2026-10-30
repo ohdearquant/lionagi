@@ -22,10 +22,10 @@ V2 implementation and adoption require acceptance of this record and the tests i
 
 **P1 — A bounded result is not a bounded query.** At the source baseline the page query uses
 a limited CTE, selected-session correlated aggregates, a CROSS JOIN and a final ORDER BY
-(`lionagi/studio/services/sessions.py:491-545`). Status filtering uses an IN predicate with
-a NULL arm for completed (`lionagi/studio/services/sessions.py:370-375`). OFFSET remains
-(`lionagi/studio/services/sessions.py:496`) and a separate exact count is read
-(`lionagi/studio/services/sessions.py:405`, `lionagi/studio/services/sessions.py:1672-1673`).
+(`lionagi/studio/services/sessions.py:540-594`). Status filtering uses an IN predicate with
+a NULL arm for completed (`lionagi/studio/services/sessions.py:371-376`). OFFSET remains
+(`lionagi/studio/services/sessions.py:545`) and a separate exact count is read
+(`lionagi/studio/services/sessions.py:406`, `lionagi/studio/services/sessions.py:1741-1742`).
 A later `list_sessions` implementation includes a `recent_unfiltered` path and a query-plan
 fallback when its required index or ordering plan is unavailable. The existing projection
 growth test measures the page statement rather than the entire route
@@ -34,15 +34,15 @@ growth test measures the page statement rather than the entire route
 
 **P2 — Contains can reject an arbitrary prefix before producing a result.** The filter
 uses escaped, case-insensitive contains on name fields and playbook
-(`lionagi/studio/services/sessions.py:355-365`, `lionagi/studio/services/sessions.py:349-354`).
-The page applies those predicates before LIMIT (`lionagi/studio/services/sessions.py:491-496`).
+(`lionagi/studio/services/sessions.py:356-366`, `lionagi/studio/services/sessions.py:350-355`).
+The page applies those predicates before LIMIT (`lionagi/studio/services/sessions.py:540-545`).
 A returned-row limit therefore does not limit rejected candidates. The existing tag
-predicate can also group rows across the tag table (`lionagi/studio/services/sessions.py:395-400`).
+predicate can also group rows across the tag table (`lionagi/studio/services/sessions.py:396-401`).
 
 **P3 — Existing clients rely on numeric totals and numbered transport.** Runs returns
 page/per_page, total, total_pages, has_next and has_prev; sessions returns limit/offset,
 total and truncated (`lionagi/studio/services/runs.py:257`,
-`lionagi/studio/services/sessions.py:1672-1679`). The runs client requires those numeric fields
+`lionagi/studio/services/sessions.py:1741-1748`). The runs client requires those numeric fields
 (`apps/studio/frontend/src/lib/api.ts:979`). The visible history control already uses
 Load more, but its pager increments page numbers and consumes has_next
 (`apps/studio/frontend/src/components/fleet/FleetView.tsx:489`,
@@ -51,25 +51,25 @@ Load more, but its pager increments page numbers and consumes has_next
 **P4 — Mutable sort keys do not define a historical snapshot.** Current recent order is
 updated_at descending; cost orders reported values before NULL, including reported zero,
 then updated_at. Neither includes an id tie-break
-(`lionagi/studio/services/sessions.py:426-428`). Fresh schemas require updated_at, but legacy
+(`lionagi/studio/services/sessions.py:427-429`). Fresh schemas require updated_at, but legacy
 additive migration permits NULL (`lionagi/state/schema.sql:124`,
 `lionagi/state/schema_migrations.py:10`). Cursor keys must come from stored values,
 before the listing DTO's NULL-to-zero timestamp fallback
-(`lionagi/studio/services/sessions.py:562`).
+(`lionagi/studio/services/sessions.py:611`).
 
 **P5 — Query labels and cursor encodings are not authorization.** Authentication and
 origin controls run before API routes (`lionagi/studio/app.py:592`). File-store guards and
 configured store resolution precede listing (`lionagi/studio/services/_db.py:27`,
-`lionagi/studio/services/_db.py:64`, `lionagi/studio/services/sessions.py:506`). A project
-label is an ordinary user predicate (`lionagi/studio/services/sessions.py:429`). This
+`lionagi/studio/services/_db.py:64`, `lionagi/studio/services/sessions.py:555`). A project
+label is an ordinary user predicate (`lionagi/studio/services/sessions.py:430`). This
 deployment exposes the configured store to an admitted caller; it does not establish a
 new row-level tenant boundary.
 
 **P6 — Progress must include rejected candidates.** A candidate window can return no
 matches while later candidates remain. Continuation based only on the last returned row
 cannot advance such a window. Separately, persisted page fields and totals currently
-come from different connections (`lionagi/studio/services/sessions.py:449`,
-`lionagi/studio/services/sessions.py:514`); a shared response snapshot requires new work.
+come from different connections (`lionagi/studio/services/sessions.py:450`,
+`lionagi/studio/services/sessions.py:563`); a shared response snapshot requires new work.
 
 Accepted records constrain this proposal without selecting its new wire details:
 
@@ -123,7 +123,7 @@ An unsupported version fails validation. Supplying a reserved v2 control (`curso
 `exact_total`, even false) with v1 fails validation instead of silently altering behavior.
 Do not otherwise broaden or tighten legacy unknown-parameter handling: runs currently
 forbids extras, while sessions uses individual query arguments
-(`lionagi/studio/services/runs.py:35-36`, `lionagi/studio/services/sessions.py:1654-1666`).
+(`lionagi/studio/services/runs.py:35-36`, `lionagi/studio/services/sessions.py:1723-1735`).
 
 | Endpoint | Preserved v1 contract |
 | --- | --- |
@@ -144,14 +144,14 @@ exact_total: bool = False
 
 Sessions retains `limit` (default 500, maximum 500); runs retains `per_page` (default 20,
 maximum 500). Those existing bounds are defined at
-`lionagi/studio/services/sessions.py:299`, `lionagi/studio/services/sessions.py:1655-1659`,
+`lionagi/studio/services/sessions.py:300`, `lionagi/studio/services/sessions.py:1724-1728`,
 and `lionagi/studio/services/runs.py:40`. A requested row count must be at least one.
 `candidate_limit` is server policy reported in the response, not a request override.
 
 Sessions gains no runs filters. Runs preserves current status alias expansion, kind
 validation/expansion, playbook/name contains, project/project-null, and AND-composed tags
 (`lionagi/studio/services/runs.py:69`, `lionagi/studio/services/runs.py:86`,
-`lionagi/studio/services/sessions.py:380`). Canonicalization follows effective predicates:
+`lionagi/studio/services/sessions.py:381`). Canonicalization follows effective predicates:
 deduplicate and sort set-like inputs, expand existing aliases, and discard project when
 project_null selects the NULL predicate. Preserve text matching and escaping; do not
 introduce a different Unicode-folding policy. Ineffective empty inputs remain ineffective.
@@ -199,7 +199,7 @@ cost:
 
 The last tie-break is the existing Session id using its database text ordering/collation,
 not nullable run provenance (`lionagi/state/schema.sql:110`,
-`lionagi/studio/services/sessions.py:491-499`). Reported zero precedes unknown cost. Negative
+`lionagi/studio/services/sessions.py:540-548`). Reported zero precedes unknown cost. Negative
 finite values keep ordinary numeric order. NULL updated_at is distinct from numeric zero.
 Capture the raw key before DTO conversion. Unsupported nonnumeric/nonfinite stored numeric
 keys or invalid ids encountered within the bounded candidate/lookahead traversal produce
@@ -343,14 +343,14 @@ remain unchanged.
 
 Tag matching must use candidate-constrained probes on `(session_id, tag)`; this primary
 key already exists (`lionagi/state/schema.sql:97`). Do not reuse the global grouped tag
-subquery in the default bounded path (`lionagi/studio/services/sessions.py:395-400`). Only
+subquery in the default bounded path (`lionagi/studio/services/sessions.py:396-401`). Only
 returned-row tag hydration may enumerate all tags for those rows. Request tag count and
 returned tag fanout remain explicit work dimensions.
 
 This contract bounds candidate rows and residual evaluations, not arbitrary metadata
 bytes, predicate input size, lock waits, or latency. Branch and progression counts retain
 existing membership semantics. Current projection counts selected branches and JSON array
-lengths (`lionagi/studio/services/sessions.py:532-542`), including duplicate and pruned
+lengths (`lionagi/studio/services/sessions.py:581-591`), including duplicate and pruned
 membership tested at `tests/apps_studio_server/test_session_listing_projection.py:80`.
 Selected-row fanout and membership payload can be large and must be measured separately.
 ADR-0117's proposed progression ordinal index does not supply a sessions seek index
@@ -415,7 +415,7 @@ interrupt the ongoing database work rather than leave an abandoned count running
 
 Current page/count helpers independently open connections, and tag hydration opens
 another connection and executes lazy table/index creation
-(`lionagi/studio/services/sessions.py:449`, `lionagi/studio/services/sessions.py:514`,
+(`lionagi/studio/services/sessions.py:450`, `lionagi/studio/services/sessions.py:563`,
 `lionagi/studio/services/run_tags.py:24`, `lionagi/studio/services/run_tags.py:89`).
 V2 requires shared-transaction read helpers; it must not reuse these behaviors unchanged.
 On an otherwise compatible store without a run_tags table, tag membership and hydration
@@ -489,7 +489,7 @@ Readiness also verifies the access paths used after candidate selection: Session
 progression id point lookups, an index with leading branches.session_id, and the
 `(session_id, tag)` primary key whenever run_tags exists. The baseline supplies those
 through `lionagi/state/schema.sql:110`, `lionagi/state/schema.sql:72`,
-`lionagi/state/schema.sql:301` and `lionagi/state/schema.sql:97`. An equivalent branch
+`lionagi/state/schema.sql:307` and `lionagi/state/schema.sql:97`. An equivalent branch
 index is sufficient; a full scan over unrelated branches/tags is not selected-row fanout.
 Missing required hydration access paths receive the same readiness refusal.
 
@@ -497,7 +497,7 @@ Add indexes and the singleton identity through the canonical schema/version/migr
 lifecycle, including fresh schema, upgrade and repeated-open parity. Runtime MetaData is
 the authority, and compatibility DDL must agree. Existing-table index additions need the
 explicit migration path because create_all does not repair them
-(`lionagi/state/schema_migrations.py:270`, `lionagi/state/db.py:1742-1750`, `lionagi/state/db.py:1863-1866`). Listing reads must
+(`lionagi/state/schema_migrations.py:270`, `lionagi/state/db.py:1743-1751`, `lionagi/state/db.py:1864-1867`). Listing reads must
 not run a migration or fabricate an incarnation on an old read-only store.
 
 Missing required index, identity or keyring capability returns HTTP 503:
