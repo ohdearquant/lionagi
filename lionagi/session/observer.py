@@ -374,7 +374,9 @@ class SessionObserver(Observer):
             persist = None
 
         try:
-            await self._dispatch(event, _payload(event), subscribers=subscribers, skip=persist)
+            await self._dispatch(
+                event, _payload(event), subscribers=subscribers, skip=persist, close_on_error=True
+            )
         except Exception as exc:  # noqa: BLE001 -- observation cannot change a denial
             logger.warning("denial observation failed (%s)", type(exc).__name__)
 
@@ -419,6 +421,7 @@ class SessionObserver(Observer):
         *,
         subscribers: Sequence[tuple[Filter, Handler]],
         skip: Handler | None = None,
+        close_on_error: bool = False,
     ) -> list[Any]:
         """Route and dispatch an event after it has been admitted and stored."""
 
@@ -429,15 +432,22 @@ class SessionObserver(Observer):
         ctx = self.session if self.session is not None else self
         sync_results: list[Any] = []
         coros: list[Any] = []
-        for flt, handler in subscribers:
-            if handler is skip:
-                continue
-            for matched in self._match(flt, event, payload):
-                out = handler(matched, ctx)
-                if inspect.isawaitable(out):
-                    coros.append(out)
-                else:
-                    sync_results.append(out)
+        try:
+            for flt, handler in subscribers:
+                if handler is skip:
+                    continue
+                for matched in self._match(flt, event, payload):
+                    out = handler(matched, ctx)
+                    if inspect.isawaitable(out):
+                        coros.append(out)
+                    else:
+                        sync_results.append(out)
+        except BaseException:
+            if close_on_error:
+                for awaitable in coros:
+                    if inspect.iscoroutine(awaitable):
+                        awaitable.close()
+            raise
         if coros:
             from lionagi.ln.concurrency import gather as _gather
 
