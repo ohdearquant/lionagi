@@ -280,6 +280,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Adapter error details now fully redact credential-named strings even when
+  they look like URLs; location fields retain their existing URL sanitization.
+
 - ReAct no longer sends an internal display setting in API requests.
 
 - Restored API models use their registered request schema when a snapshot omits it, validating
