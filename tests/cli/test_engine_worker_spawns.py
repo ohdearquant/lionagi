@@ -180,7 +180,7 @@ async def engine_workers(monkeypatch):
             raise ImportError("scripted engine import failure")
         return Engine
 
-    monkeypatch.setattr(cli, "_import_engine_class", load_engine)
+    monkeypatch.setattr(cli, "import_engine_class", load_engine)
     state.engine_class = Engine
     state.owner_class = Owner
     state.real_owner_class = worker_module._WorkerSpawnOwner
@@ -405,7 +405,7 @@ async def test_cancellation_during_real_owner_drain_terminalizes_then_closes(
             h.tasks.append(task)
 
     monkeypatch.setattr(worker_module, "_WorkerSpawnOwner", ObservedOwner)
-    monkeypatch.setattr(h.cli, "_import_engine_class", lambda _module, _name: AdmittedEngine)
+    monkeypatch.setattr(h.cli, "import_engine_class", lambda _module, _name: AdmittedEngine)
     call = asyncio.create_task(h.cli._do_engine_run(_args()))
     try:
         await asyncio.wait_for(h.registration_started.wait(), 1)

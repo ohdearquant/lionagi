@@ -1082,7 +1082,7 @@ async def test_a_run_id_prefix_short_of_the_t_cannot_control_a_run(db_path, enti
     start of an entity id. It acts on no run, while read-only status keeps the
     broader lookup.
     """
-    from lionagi.cli import status
+    from lionagi.cli import _inspection
 
     async with StateDB(db_path) as db:
         sid = await _named_session(db, "run-backed-session")
@@ -1091,7 +1091,7 @@ async def test_a_run_id_prefix_short_of_the_t_cannot_control_a_run(db_path, enti
     assert rc == EXIT_UNKNOWN
     async with StateDB(db_path) as db:
         assert await db.list_pending_session_controls(sid) == []
-        hit = await status._resolve_any_target(db, entity_id)
+        hit = await _inspection.resolve_any_target(db, entity_id)
     assert hit is not None
     assert hit[1]["id"] == sid
 
@@ -1108,7 +1108,7 @@ async def test_a_run_id_prefix_through_the_t_controls_its_run(db_path):
 
 async def test_a_branch_prefix_that_also_begins_a_run_is_refused(db_path):
     """The branch fallback refuses a cross-space match, as the entity search does."""
-    from lionagi.cli import status
+    from lionagi.cli import _inspection
     from lionagi.cli._util import AmbiguousIdError
 
     async with StateDB(db_path) as db:
@@ -1124,7 +1124,7 @@ async def test_a_branch_prefix_that_also_begins_a_run_is_refused(db_path):
         run_backed = await _named_session(db, "run-backed-session")
         await db.update_session(run_backed, run_id="20260801T020202-aaaaaa")
         with pytest.raises(AmbiguousIdError):
-            await status._resolve_any_target(db, "20260801")
+            await _inspection.resolve_any_target(db, "20260801")
     output, rc = await _enqueue_control_inner(entity_id="20260801", verb="pause", payload=None)
     assert rc == EXIT_UNKNOWN
     assert "ambiguous" in output

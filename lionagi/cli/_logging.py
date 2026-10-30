@@ -76,6 +76,24 @@ class _LazyStderrHandler(logging.StreamHandler):
         super().emit(record)
 
 
+class _ProviderFallbackHandler(_LazyStderrHandler):
+    """Print provider output only when the process has no root handler."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not logging.getLogger().handlers:
+            super().emit(record)
+
+
+def _setup_provider_fallback(name: str) -> None:
+    logger = logging.getLogger(name)
+    if logger.propagate and not any(
+        isinstance(h, _ProviderFallbackHandler) for h in logger.handlers
+    ):
+        handler = _ProviderFallbackHandler()
+        handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+        logger.addHandler(handler)
+
+
 def _setup_channel(name: str, level: int, formatter: logging.Formatter) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -107,3 +125,18 @@ def configure_cli_logging(verbose: bool) -> None:
     library_level = logging.INFO if verbose else logging.WARNING
     for name in _LIBRARY_LOGGERS:
         logging.getLogger(name).setLevel(library_level)
+
+    # Provider imports do not configure the host logger. Supply the CLI's output
+    # when no root handler exists while leaving configured root handlers in place.
+    for name in ("claude-cli", "codex-cli", "pi-cli"):
+        _setup_provider_fallback(name)
+    pi_logger = logging.getLogger("pi-cli")
+    root_has_handlers = bool(logging.getLogger().handlers)
+    fallback_level = getattr(pi_logger, "_lionagi_cli_fallback_level", False)
+    if root_has_handlers and fallback_level:
+        if pi_logger.level == logging.INFO:
+            pi_logger.setLevel(logging.NOTSET)
+        del pi_logger._lionagi_cli_fallback_level
+    elif not root_has_handlers and pi_logger.propagate and pi_logger.level == logging.NOTSET:
+        pi_logger.setLevel(logging.INFO)
+        pi_logger._lionagi_cli_fallback_level = True

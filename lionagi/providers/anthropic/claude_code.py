@@ -121,7 +121,6 @@ def claude_cli_search_locations() -> str:
     )
 
 
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("claude-cli")
 
 
