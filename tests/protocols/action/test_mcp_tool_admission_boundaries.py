@@ -21,7 +21,8 @@ path consults ``Branch.authorize``.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -36,11 +37,24 @@ from lionagi.session.signal import GateDenied
 
 
 @pytest.fixture(autouse=True)
-def _restore_pool_security():
-    """The pool's security policy is process-global; restore it after each test."""
-    original = MCPConnectionPool._security
-    yield
-    MCPConnectionPool._security = original
+def _isolate_pool(monkeypatch):
+    """Keep alias lookup synthetic and make transport construction impossible."""
+    monkeypatch.setattr(MCPConnectionPool, "_security", None)
+    monkeypatch.setattr(MCPConnectionPool, "_configs", {"srv": {"url": "https://srv.invalid/mcp"}})
+    monkeypatch.setattr(MCPConnectionPool, "_clients", {})
+    monkeypatch.setattr(MCPConnectionPool, "_creation_locks", {})
+
+    def no_transport(*_args, **_kwargs):
+        raise AssertionError("unexpected MCP transport construction")
+
+    fastmcp = ModuleType("fastmcp")
+    fastmcp.Client = no_transport
+    client_module = ModuleType("fastmcp.client")
+    transports = ModuleType("fastmcp.client.transports")
+    transports.StdioTransport = no_transport
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setitem(sys.modules, "fastmcp.client", client_module)
+    monkeypatch.setitem(sys.modules, "fastmcp.client.transports", transports)
 
 
 def _descriptor(name: str, schema: dict, description: str | None = None):
@@ -75,7 +89,7 @@ async def _register_descriptors(manager, descriptors, server=_SERVER):
     client = AsyncMock()
     client.list_tools.return_value = descriptors
 
-    async def get_client(server_config, security=None):
+    async def get_client(server_config, security=None, *, _bound_transport=None):
         return client
 
     with patch.object(MCPConnectionPool, "get_client", side_effect=get_client):
@@ -91,10 +105,10 @@ async def _register_request_tool(manager, server=_SERVER):
 
 
 def _patch_reconnect(client):
-    async def reconnect(server_config, capability=None):
+    async def get_or_create(config, cache_key, security):
         return client
 
-    return patch.object(MCPConnectionPool, "_get_reconnect_client", side_effect=reconnect)
+    return patch.object(MCPConnectionPool, "_get_or_create_client", side_effect=get_or_create)
 
 
 class TestMcpTransportAdmission:
@@ -120,7 +134,7 @@ class TestMcpTransportAdmission:
         client = AsyncMock()
         client.list_tools.return_value = [_descriptor("request", _BOUNDED)]
 
-        async def get_client(server_config, security=None):
+        async def get_client(server_config, security=None, *, _bound_transport=None):
             return client
 
         with patch.object(MCPConnectionPool, "get_client", side_effect=get_client):
@@ -177,6 +191,28 @@ class TestMcpDescriptorAdmission:
         manager = ActionManager()
         names = await manager.register_mcp_server({"server": _SERVER}, tool_names=["request"])
         assert names == [_TOOL_NAME]
+
+    async def test_the_name_only_shortcut_resolves_the_default_file(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(MCPConnectionPool, "_configs", {})
+        (tmp_path / ".mcp.json").write_text(
+            '{"mcpServers":{"srv":{"url":"https://srv.invalid/mcp"}}}', encoding="utf-8"
+        )
+        manager = ActionManager()
+
+        assert await manager.register_mcp_server({"server": _SERVER}, tool_names=["request"]) == [
+            _TOOL_NAME
+        ]
+
+    async def test_the_name_only_shortcut_refuses_an_unresolved_name(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(MCPConnectionPool, "_configs", {})
+        (tmp_path / ".mcp.json").write_text('{"mcpServers":{}}', encoding="utf-8")
+        manager = ActionManager()
+
+        with pytest.raises(ValueError, match="not declared in the selected config.*srv"):
+            await manager.register_mcp_server({"server": _SERVER}, tool_names=["request"])
+        assert manager.registry == {}
 
     async def test_the_name_only_shortcut_still_refuses_a_generic_executor_name(self):
         manager = ActionManager()
