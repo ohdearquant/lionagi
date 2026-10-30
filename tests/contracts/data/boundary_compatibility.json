@@ -1806,6 +1806,9 @@
       "resolve_and_build_context_block",
       "resolve_context_refs"
     ],
+    "lionagi/cli/_engine_definitions.py": [
+      "import_engine_class"
+    ],
     "lionagi/cli/_inspection.py": [
       "fetch_by_id",
       "resolve_agent_target",

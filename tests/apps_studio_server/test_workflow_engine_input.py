@@ -44,7 +44,7 @@ import pytest
 async def test_legacy_context_reaches_engine_unchanged_as_derived_input(
     monkeypatch, context, expected
 ):
-    import lionagi.cli.engine as engine_mod
+    import lionagi.cli._engine_definitions as engine_mod
     from lionagi.studio.services.workflow_compile import make_engine_operation
 
     received = []
@@ -54,7 +54,7 @@ async def test_legacy_context_reaches_engine_unchanged_as_derived_input(
             received.append((spec_input, session, on_branch_created))
             return "ok"
 
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda *_args: RecordingEngine)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda *_args: RecordingEngine)
     session = object()
 
     def branch_created(_branch):
