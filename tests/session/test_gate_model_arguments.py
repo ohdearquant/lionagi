@@ -72,10 +72,10 @@ async def test_gate_authorizes_actual_model_arguments(
     await branch.drain_signals()
 
     assert len(seen) == 1
-    assert seen[0].arguments == {"path": path}
+    assert seen[0].arguments == {"path": path, "mode": "read"}
     assert manager_arguments == ([{"path": path}] if permitted else [])
     if permitted:
-        assert manager_arguments[0] is seen[0].arguments
+        assert manager_arguments[0] is not seen[0].arguments
     assert calls == ([(path, "read")] if permitted else [])
     assert result.output == (
         path if permitted else {"error": "denied by governance gate", "function": "read_path"}
@@ -127,19 +127,12 @@ async def test_nested_model_dump_cannot_bypass_restricted_path_gate(is_async, mo
         else {"function": "read_path", "arguments": arguments}
     )
 
-    # Rejecting an invalid model dump before authorization is also fail-closed;
-    # an implementation that admits the request must provide the true arguments
-    # to the policy and return its ordinary governance denial.
     try:
-        result = await _act(branch, request)
-    except (TypeError, ValueError):
-        result = None
+        with pytest.raises(ValueError, match="could not normalize action arguments"):
+            await _act(branch, request)
     finally:
         await branch.drain_signals()
 
     assert tool_calls == []
-    if result is not None:
-        assert len(gate_calls) == 1
-        assert gate_calls[0].arguments["path"] == "/restricted/secret"
-        assert result.output == {"error": "denied by governance gate", "function": "read_path"}
-        assert [item.data for item in session.observer.by_type(GateDenied)] == gate_calls
+    assert gate_calls == []
+    assert session.observer.by_type(GateDenied) == []

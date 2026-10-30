@@ -79,13 +79,16 @@ async def _act(
     if isinstance(_request["arguments"], BaseModel):
         # FunctionCalling uses the same dump. Unset model fields reach neither
         # the gate nor the manager; the tool's defaults apply on invocation.
+        normalization_error = None
         try:
             arguments = _request["arguments"].model_dump(exclude_unset=True)
             if not isinstance(arguments, dict):
                 raise TypeError("model arguments must serialize to a dictionary")
         except Exception as e:
+            normalization_error = f"could not normalize action arguments ({type(e).__name__})"
+        if normalization_error is not None:
             # Do not expose or reserialize arguments that could not be inspected.
-            error = f"could not normalize action arguments ({type(e).__name__})"
+            error = normalization_error
             safe_request = {"function": _request["function"], "arguments": {}}
             branch._log_manager.log({**safe_request, "error": error, "branch": str(branch.id)})
             failed_request = ActionRequest(
@@ -99,7 +102,7 @@ async def _act(
                 recipient=branch.id,
             )
             if not suppress_errors:
-                raise ValueError(error) from e
+                raise ValueError(error)
             return ActionResponseModel(
                 function=_request["function"], arguments={}, output={"error": error}
             )
@@ -110,8 +113,20 @@ async def _act(
 
     _call_id = str(uuid.uuid4())
     _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
+    _has_gate = (
+        branch._observer is not None and getattr(branch._observer, "_gate", True) is not None
+    )
+    invoke_args = authorized_args = _args
+    if _has_gate:
+        from ._gate_arguments import gate_arguments
+
+        invoke_args, authorized_args = gate_arguments(
+            branch._action_manager, _request["function"], _args
+        )
     if not await branch.authorize(
-        ToolInvocation(function=_request["function"], arguments=_args, branch_id=str(branch.id))
+        ToolInvocation(
+            function=_request["function"], arguments=authorized_args, branch_id=str(branch.id)
+        )
     ):
         record_guard_refusal(call_id=_call_id)
         denial = {"error": "denied by governance gate", "function": _request["function"]}
@@ -126,6 +141,9 @@ async def _act(
             recipient=branch.id,
         )
         return ActionResponseModel(function=_request["function"], arguments=_args, output=denial)
+
+    if _has_gate and isinstance(_request["arguments"], dict):
+        _request = {**_request, "arguments": invoke_args}
 
     _hooks = branch._hooks
     _tool_name = _request["function"]

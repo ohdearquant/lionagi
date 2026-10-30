@@ -183,20 +183,29 @@ def _session_gate_result(result: Any, tool_name: str = "") -> GateResult:
                 errored=True,
             )
         return result
-    allowed = bool(result)
+    if type(result) is not bool:
+        # Avoid repr(result): a gate may return sensitive or unprintable data.
+        return GateResult(
+            False,
+            "session_gate",
+            tool_name,
+            "authorize",
+            f"unsupported session gate result type: {type(result).__name__}",
+            errored=True,
+        )
     return GateResult(
-        allowed,
+        result,
         "session_gate",
         tool_name,
         "authorize",
-        "allowed" if allowed else "denied by session gate",
+        "allowed" if result else "denied by session gate",
     )
 
 
 def adapt_session_gate(
     check: Callable[[Any], Any],
 ) -> Callable[[Any], Awaitable[GateResult]]:
-    """Adapt a ``SessionObserver`` gate callable (``check(action) -> bool``)."""
+    """Adapt a ``SessionObserver`` gate returning a bool or ``GateResult``."""
 
     async def evaluate(action: Any) -> GateResult:
         tool_name = str(getattr(action, "function", "") or "")

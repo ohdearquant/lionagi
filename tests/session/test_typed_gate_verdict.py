@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Session gates honor typed verdicts and retain legacy truthiness."""
+"""Session gates accept boolean or typed verdicts and fail closed otherwise."""
 
 import asyncio
 
@@ -21,6 +21,11 @@ class TruthyDecision:
 class BrokenTruthiness:
     def __bool__(self):
         raise RuntimeError("cannot evaluate verdict")
+
+
+class UnprintableDecision:
+    def __repr__(self):
+        raise RuntimeError("verdict contents must not be rendered")
 
 
 def _gate(value, calls, is_async):
@@ -174,53 +179,83 @@ async def test_invalid_typed_verdict_never_routes_or_dispatches(is_async, verdic
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize(
-    "value,allowed",
-    [
-        (True, True),
-        ("legacy", True),
-        (1, True),
-        ({"allowed": True}, True),
-        (False, False),
-        (None, False),
-        (0, False),
-        ("", False),
-        ([], False),
-        ({}, False),
-    ],
-)
-async def test_legacy_truthiness_on_both_paths(is_async, value, allowed):
+@pytest.mark.parametrize("allowed", [True, False], ids=["allow", "deny"])
+async def test_boolean_decisions_on_all_paths(is_async, allowed):
     observer = SessionObserver()
     calls, dispatched = [], []
     action = ToolInvocation(function="tool", arguments={})
     event = Signal(data="event-data")
-    observer.gate(_gate(value, calls, is_async))
+    observer.gate(_gate(allowed, calls, is_async))
     observer.observe(Signal, handler=lambda item, _ctx: dispatched.append(item) or "delivered")
 
+    result = await adapt_session_gate(_gate(allowed, calls, is_async))(action)
+    assert result.allowed is allowed
+    assert result.errored is False
     assert await observer.authorize(action) is allowed
     assert [item.data for item in observer.by_type(GateDenied)] == ([] if allowed else [action])
     assert await observer.emit(event) == (["delivered"] if allowed else [])
     assert dispatched == ([event] if allowed else [])
     assert event in list(observer.flow.items)
-    assert calls == [action, "event-data"]
+    assert calls == [action, action, "event-data"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-async def test_legacy_truthiness_error_fails_closed(is_async):
+@pytest.mark.parametrize(
+    "value,type_name",
+    [
+        pytest.param({"secret": "fixture-private-value"}, "dict", id="dict"),
+        pytest.param("fixture-private-value", "str", id="string"),
+        pytest.param(("fixture-private-value",), "tuple", id="tuple"),
+        pytest.param(None, "NoneType", id="none"),
+        pytest.param(1, "int", id="truthy-int"),
+        pytest.param(0, "int", id="falsey-int"),
+        pytest.param([], "list", id="list"),
+        pytest.param(TruthyDecision(), "TruthyDecision", id="truthy-object"),
+        pytest.param(BrokenTruthiness(), "BrokenTruthiness", id="broken-bool"),
+        pytest.param(UnprintableDecision(), "UnprintableDecision", id="unprintable"),
+    ],
+)
+async def test_non_boolean_untyped_decisions_fail_closed_on_all_paths(is_async, value, type_name):
     observer = SessionObserver()
     action = ToolInvocation(function="tool", arguments={})
     event = Signal(data="event-data")
-    calls, dispatched = [], []
-    observer.gate(_gate(BrokenTruthiness(), calls, is_async))
+    calls, dispatched, routed = [], [], []
+    observer.gate(_gate(value, calls, is_async))
     observer.observe(Signal, handler=lambda item, _ctx: dispatched.append(item))
+    observer.route(lambda payload: routed.append(payload) or True, into="selected")
 
+    result = await adapt_session_gate(_gate(value, calls, is_async))(action)
+    assert result.allowed is False
+    assert result.errored is True
+    assert type_name in result.reason
+    assert "fixture-private-value" not in result.reason
     assert await observer.authorize(action) is False
     assert [item.data for item in observer.by_type(GateDenied)] == [action]
     assert await observer.emit(event) == []
-    assert dispatched == []
+    assert dispatched == routed == []
+    assert observer.stream("selected") == []
     assert event in list(observer.flow.items)
-    assert calls == [action, "event-data"]
+    assert calls == [action, action, "event-data"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+async def test_emit_refuses_unsupported_typed_rewrite_but_records_event(is_async):
+    observer = SessionObserver()
+    event = Signal(data="event-data")
+    calls, dispatched, routed = [], [], []
+    verdict = GateResult(True, "policy", "event", "emit", "allow", {"x": 1})
+    observer.gate(_gate(verdict, calls, is_async))
+    observer.observe(Signal, handler=lambda item, _ctx: dispatched.append(item))
+    observer.route(lambda payload: routed.append(payload) or True, into="selected")
+
+    assert await observer.emit(event) == []
+    assert calls == ["event-data"]
+    assert dispatched == routed == []
+    assert observer.stream("selected") == []
+    assert list(observer.flow.items) == [event]
+    assert observer.by_type(GateDenied) == []
 
 
 @pytest.mark.asyncio

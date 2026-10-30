@@ -8,6 +8,8 @@ in both suppression modes; suppression returns an error instead of raising.
 Unnamed calls retain their nameless error and never serialize their arguments.
 """
 
+import traceback
+
 import pytest
 from pydantic import BaseModel, model_serializer
 
@@ -113,6 +115,12 @@ async def test_model_argument_failure_is_recorded_before_gate_and_tool_hooks(
             assert "names no function" in str(result.output["error"])
     else:
         assert str(caught.value)
+        if named:
+            assert caught.value.__cause__ is None
+            assert caught.value.__context__ is None
+            assert "synthetic serializer failure" not in "".join(
+                traceback.format_exception(caught.value)
+            )
         if not named:
             assert isinstance(caught.value, ValueError)
             assert "names no function" in str(caught.value)
