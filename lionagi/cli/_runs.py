@@ -23,7 +23,7 @@ from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
-from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes
+from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, move_on_after
 from lionagi.providers._provider_errors import ProviderError, _WorkerSpawnAdmissionError
 from lionagi.utils import LIONAGI_HOME
 
@@ -60,6 +60,7 @@ PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
 # When the run's signal persistence first stopped waiting on a store that refused the writer lock
 SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
+_SETUP_RECOVERY_TIMEOUT_SECONDS = 2.0
 
 
 def _new_run_id() -> str:
@@ -2028,6 +2029,8 @@ async def setup_agent_persist(
     shared_db_registered = False
     fresh_session = False
     admitted_session_id = None
+    inserted_session_id = None
+    unrecorded = False
     generation_id = str(uuid4())
     try:
         # Claim the branch before touching the shared DB registry: registering a
@@ -2150,6 +2153,7 @@ async def setup_agent_persist(
             from lionagi.state.compat import is_compatibility_store
 
             unrecorded = is_compatibility_store(db)
+            inserted_session_id = session_id
             await db.create_session(
                 {
                     "id": session_id,
@@ -2325,6 +2329,7 @@ async def setup_agent_persist(
         return ctx
     except BaseException as exc:
         from lionagi.state.compat import refusal_in
+        from lionagi.state.lifecycle import LifecycleNotFoundError
         from lionagi.state.reasons import RunReasons
 
         # A store that refuses a write in compatibility mode stops the run instead of
@@ -2347,34 +2352,86 @@ async def setup_agent_persist(
                 exc_info=True,
             )
             _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
-        if admitted_session_id is not None and db is not None:
+        if (admitted_session_id is not None or inserted_session_id is not None) and db is not None:
             # The row this setup admitted reads as a live execution while it stays running,
             # and a later setup refuses a running session that comes without a continuation,
             # so the branch could never be resumed. Close the row out before the handle goes.
             cancelled = drain_cancel is not None or isinstance(exc, cancelled_exc_classes())
-            with CancelScope(shield=True):
-                try:
-                    await db.update_status(
-                        "session",
-                        admitted_session_id,
-                        new_status="cancelled" if cancelled else "failed",
-                        reason_code=(
-                            RunReasons.CANCELLED_SYSTEM
-                            if cancelled
-                            else RunReasons.FAILED_EXCEPTION
-                        ),
-                        reason_summary="live persist setup failed after the session row was admitted",
-                        source="executor",
-                        actor=admitted_session_id,
-                        expected_statuses={"running"},
-                        extra_fields=_terminal_status_extra_fields(
-                            db, ended_at=time.time(), duration_ms=None
-                        ),
-                    )
-                except Exception as status_exc:  # noqa: BLE001 -- the setup failure stays primary
-                    _log.warning(
-                        "could not close the session row a failed setup admitted: %s", status_exc
-                    )
+            try:
+                with (
+                    CancelScope(shield=True),
+                    move_on_after(_SETUP_RECOVERY_TIMEOUT_SECONDS) as scope,
+                ):
+                    try:
+                        recovery_id = admitted_session_id
+                        expected_updated_at = None
+                        if recovery_id is None and not unrecorded:
+                            candidate = await db.get_session(inserted_session_id)
+                            if candidate is not None:
+                                if (
+                                    candidate.get("status") == "running"
+                                    and candidate.get("cli_worker_generation") == generation_id
+                                    and candidate.get("updated_at") is not None
+                                ):
+                                    recovery_id = inserted_session_id
+                                    expected_updated_at = candidate["updated_at"]
+                                else:
+                                    _log.warning(
+                                        "session setup recovery did not complete: ownership unproven"
+                                    )
+                        elif recovery_id is None:
+                            _log.warning(
+                                "session setup recovery did not complete: generation unrecorded"
+                            )
+                        if recovery_id is not None:
+                            # The timestamp guards intervening writes, but is not an atomic generation
+                            # predicate: equal timestamps or replacement under the key can defeat it.
+                            try:
+                                applied = await db.update_status(
+                                    "session",
+                                    recovery_id,
+                                    new_status="cancelled" if cancelled else "failed",
+                                    reason_code=(
+                                        RunReasons.CANCELLED_SYSTEM
+                                        if cancelled
+                                        else RunReasons.FAILED_EXCEPTION
+                                    ),
+                                    reason_summary=(
+                                        "live persist setup failed after the session row was admitted"
+                                        if admitted_session_id is not None
+                                        else "live persist setup failed before the insert outcome was observed"
+                                    ),
+                                    source="executor",
+                                    actor=recovery_id,
+                                    expected_statuses={"running"},
+                                    expected_updated_at=expected_updated_at,
+                                    extra_fields=_terminal_status_extra_fields(
+                                        db, ended_at=time.time(), duration_ms=None
+                                    ),
+                                )
+                            except LookupError as missing:
+                                # The row disappeared before the guarded close.
+                                if type(missing) is not LookupError or not isinstance(
+                                    missing.__cause__, LifecycleNotFoundError
+                                ):
+                                    raise
+                                applied = None
+                            if applied is False:
+                                _log.warning("session setup recovery did not complete: row changed")
+                    except Exception as status_exc:  # noqa: BLE001 -- the setup failure stays primary
+                        _log.warning("session setup recovery did not complete: %s", status_exc)
+                if scope.cancel_called:
+                    _log.warning("session setup recovery did not complete: deadline expired")
+            except cancelled_exc_classes() as recovery_cancel:
+                # Direct task cancellation can interrupt a shield. Preserve the first
+                # cancellation and report the unfinished recovery, without orphaning work.
+                _log.warning("session setup recovery did not complete: interrupted")
+                if (
+                    refusal is None
+                    and not isinstance(exc, cancelled_exc_classes())
+                    and drain_cancel is None
+                ):
+                    drain_cancel = recovery_cancel
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:
@@ -2383,10 +2440,30 @@ async def setup_agent_persist(
             except Exception as release_exc:  # noqa: BLE001
                 _log.debug("branch ownership release failed: %s", release_exc)
         if db is not None:
-            try:
-                await db.close()
-            except Exception as close_exc:
-                _log.warning("fallback db.close after setup failure also failed: %s", close_exc)
+            close_deadline = time.monotonic() + _SETUP_RECOVERY_TIMEOUT_SECONDS
+            while True:
+                try:
+                    with (
+                        CancelScope(shield=True),
+                        move_on_after(max(0, close_deadline - time.monotonic())) as close_scope,
+                    ):
+                        await db.close()
+                    if close_scope.cancel_called:
+                        _log.warning("fallback db.close after setup failure did not complete")
+                    break
+                except cancelled_exc_classes() as close_cancel:
+                    if (
+                        refusal is None
+                        and not isinstance(exc, cancelled_exc_classes())
+                        and drain_cancel is None
+                    ):
+                        drain_cancel = close_cancel
+                    if time.monotonic() >= close_deadline:
+                        _log.warning("fallback db.close after setup failure did not complete")
+                        break
+                except Exception as close_exc:
+                    _log.warning("fallback db.close after setup failure also failed: %s", close_exc)
+                    break
             if shared_db_registered:
                 # Drop the now-closed handle so get_shared_db() can't hand it out.
                 from lionagi.state.db import unregister_shared_db
