@@ -47,6 +47,7 @@ __all__ = (
     "mcp_servers_declaration_line",
     "parse_failure",
     "project_layers",
+    "project_mcp_server_names",
 )
 
 # How many candidate lines `mcp_servers_declaration_line` tries before naming the first.
@@ -118,6 +119,37 @@ def declaring_project_layer(
         if found is not None:
             return path, *found
     return None
+
+
+def project_mcp_server_names(
+    cwd: str | os.PathLike[str], env: Mapping[str, str]
+) -> set[str]:
+    """Names in every project layer that could contribute to a Codex run.
+
+    The effective root and trust decision are not fully visible here, so the
+    walk intentionally uses the same conservative scope as project-layer
+    refusal. A layer whose structure cannot be read cannot support an
+    exclusive selection and is refused before the process starts.
+    """
+    names: set[str] = set()
+    for path, text in project_layers(cwd, env):
+        try:
+            parsed = _tomllib.loads(text)
+        except (_tomllib.TOMLDecodeError, RecursionError) as exc:
+            raise ConfigurationError(
+                f"Cannot enforce an exclusive Codex MCP selection: project config {path} "
+                "cannot be parsed, so its server names are unknown."
+            ) from exc
+        if "mcp_servers" not in parsed:
+            continue
+        servers = parsed["mcp_servers"]
+        if not isinstance(servers, dict):
+            raise ConfigurationError(
+                f"Cannot enforce an exclusive Codex MCP selection: project config {path} "
+                "sets `mcp_servers` to a value that is not a table."
+            )
+        names.update(servers)
+    return names
 
 
 def _codex_home(env: Mapping[str, str]) -> Path:
