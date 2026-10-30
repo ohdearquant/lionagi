@@ -1020,9 +1020,10 @@ headers may not be detected. The edit check resolves and reads the file before t
 writes it; a concurrent change can occur between those operations, and the read is not an atomic
 no-follow read. For toolkit edits, the guard runs before the read-before-edit check; when both
 would refuse, the guard's refusal is reported. Tools registered outside the agent factory do not
-receive this guard. CLI-backed
-providers such as Claude Code, Codex, Gemini and Antigravity execute their own tools; their tool
-calls do not pass through this guard.
+receive this guard. Wrapping the email guard in another hook prevents the factory from binding it;
+an unbound guard refuses every edit without inspecting the file. CLI-backed providers such as Claude
+Code, Codex, Gemini and Antigravity execute their own tools; their tool calls do not pass through
+this guard.
 Additional allowed addresses and an optional refusal note come from the global settings file:
 
 ```yaml

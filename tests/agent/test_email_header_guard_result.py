@@ -312,7 +312,7 @@ async def test_rewritten_edit_is_rechecked_against_result(variant, tmp_path, mon
 
 @pytest.mark.parametrize("variant", ["toolkit", "standalone"])
 @pytest.mark.parametrize("wildcard", [False, True])
-async def test_wrapped_guard_keeps_wrapper_and_uses_editor_context(
+async def test_wrapped_guard_keeps_wrapper_and_refuses_unbound_edit(
     variant, wildcard, tmp_path, monkeypatch
 ):
     monkeypatch.chdir(tmp_path)
@@ -348,11 +348,39 @@ async def test_wrapped_guard_keeps_wrapper_and_uses_editor_context(
     assert "wrapper rule" in rule.execution.error.result.reason
     leak = await _call(branch, name, _edit(target, "PLACEHOLDER", ADDRESS))
     _assert_denied(leak)
-    assert "Deployment policy" in leak.execution.error.result.reason
+    assert "unbound editor" in leak.execution.error.result.reason
     assert target.read_text() == original
 
 
-async def test_two_toolkit_roots_keep_context_during_interleaved_edits(tmp_path, monkeypatch):
+@pytest.mark.parametrize("variant", ["toolkit", "standalone"])
+async def test_wildcard_registered_guard_binds_to_editor(variant, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings = tmp_path / ".lionagi" / "settings.yaml"
+    settings.parent.mkdir()
+    settings.write_text("guards:\n  email_in_headers:\n    note: Deployment policy\n")
+    if variant == "toolkit":
+        spec = AgentSpec.coding(cwd=str(tmp_path))
+        name = "editor"
+    else:
+        spec = AgentSpec.compose("implementer", tools=["editor"], cwd=str(tmp_path))
+        _wire_secure_guards(spec, str(tmp_path))
+        name = "editor_tool"
+    guard = spec.hook_handlers["security_pre:editor"].pop(0)
+    spec.security_pre("*", guard)
+    branch = await create_agent(spec, load_settings=False)
+    target = tmp_path / "client.py"
+    original = 'headers = {"User-Agent": "PLACEHOLDER"}'
+    target.write_text(original)
+    await _prepare_read(branch, variant, target)
+    call = await _call(branch, name, _edit(target, "PLACEHOLDER", ADDRESS))
+    _assert_denied(call)
+    assert "Deployment policy" in call.execution.error.result.reason
+    assert "unbound editor" not in call.execution.error.result.reason
+    assert target.read_text() == original
+
+
+async def test_two_toolkit_roots_stay_independent_during_interleaved_edits(tmp_path, monkeypatch):
     from lionagi.ln import concurrency
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -386,27 +414,89 @@ async def test_two_toolkit_roots_keep_context_during_interleaved_edits(tmp_path,
     assert set(seen) == {first_root, second_root}
 
 
-@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
-async def test_nested_editor_context_is_restored_after_error_or_cancellation(failure, tmp_path):
-    from lionagi.agent.hooks import _bind_email_header_editor_preprocessor, _editor_preview
+async def test_two_configured_editor_guards_keep_independent_policies(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings = tmp_path / ".lionagi" / "settings.yaml"
+    settings.parent.mkdir()
+    settings.write_text(
+        "guards:\n  email_in_headers:\n    allow: [sample-person@project.example]\n"
+        "    note: First policy\n"
+    )
+    first_spec = AgentSpec.coding(cwd=str(tmp_path))
+    settings.write_text(
+        "guards:\n  email_in_headers:\n    allow: [another-person@project.example]\n"
+        "    note: Second policy\n"
+    )
+    second_spec = AgentSpec.coding(cwd=str(tmp_path))
+    first = await create_agent(first_spec, load_settings=False)
+    second = await create_agent(second_spec, load_settings=False)
+    target = tmp_path / "client.py"
+    target.write_text('headers = {"User-Agent": "PLACEHOLDER"}')
+    first_args = _edit(target, "PLACEHOLDER", ADDRESS)
+    second_args = _edit(target, "PLACEHOLDER", "another-person@project.example")
+    first_pre = first.acts.registry["editor"].preprocessor
+    second_pre = second.acts.registry["editor"].preprocessor
+    assert await first_pre(first_args) == first_args
+    assert await second_pre(second_args) == second_args
+    with pytest.raises(GateDeniedError) as first_denial:
+        await first_pre(second_args)
+    with pytest.raises(GateDeniedError) as second_denial:
+        await second_pre(first_args)
+    assert "First policy" in first_denial.value.result.reason
+    assert "Second policy" in second_denial.value.result.reason
 
+
+async def test_nested_editor_uses_its_own_binding_and_direct_guard_refuses(tmp_path, monkeypatch):
+    from lionagi.agent.hooks import guard_email_in_headers
+
+    monkeypatch.setenv("HOME", str(tmp_path))
     outer_root, inner_root = tmp_path / "outer", tmp_path / "inner"
-    preparer = object()
+    outer_root.mkdir()
+    inner_root.mkdir()
+    (outer_root / "client.py").write_text("PLACEHOLDER")
+    (inner_root / "client.py").write_text('headers = {"User-Agent": "PLACEHOLDER"}')
+    inner = await create_agent(AgentSpec.coding(cwd=str(inner_root)), load_settings=False)
+    spec = AgentSpec.coding(cwd=str(outer_root))
+    inner_args = _edit("client.py", "PLACEHOLDER", ADDRESS)
+    checks = []
 
-    async def inner(_args):
-        assert _editor_preview.get() == (preparer, inner_root)
-        raise failure()
-
-    async def outer(args):
-        assert _editor_preview.get() == (preparer, outer_root)
-        with pytest.raises(failure):
-            await _bind_email_header_editor_preprocessor(inner, preparer, inner_root)(args)
-        assert _editor_preview.get() == (preparer, outer_root)
+    async def nested(_name, _action, args):
+        with pytest.raises(GateDeniedError) as denial:
+            await inner.acts.registry["editor"].preprocessor(inner_args)
+        assert "unbound editor" not in denial.value.result.reason
+        with pytest.raises(PermissionError, match="unbound editor"):
+            await guard_email_in_headers("editor", "edit", inner_args)
+        checks.append(True)
         return args
 
-    assert _editor_preview.get() is None
-    assert await _bind_email_header_editor_preprocessor(outer, preparer, outer_root)({}) == {}
-    assert _editor_preview.get() is None
+    spec.pre("editor", nested)
+    outer = await create_agent(spec, load_settings=False)
+    outer_args = _edit("client.py", "PLACEHOLDER", "safe")
+    assert await outer.acts.registry["editor"].preprocessor(outer_args) == outer_args
+    assert checks == [True]
+
+
+def test_binding_leaves_nonfunction_callables_unchecked_and_unchanged(tmp_path):
+    from lionagi.agent.hooks import _bind_email_header_editor_guard, guard_email_in_headers
+
+    class Spoof:
+        def __hash__(self):
+            return hash(guard_email_in_headers)
+
+        def __eq__(self, _other):
+            raise AssertionError("binding must not invoke arbitrary callable equality")
+
+        async def __call__(self, _name, _action, _args):
+            return None
+
+    class NoWeakReference:
+        __slots__ = ()
+
+        async def __call__(self, _name, _action, _args):
+            return None
+
+    for handler in (Spoof(), NoWeakReference()):
+        assert _bind_email_header_editor_guard(handler, object(), tmp_path) is handler
 
 
 @pytest.mark.parametrize("variant", ["toolkit", "standalone"])

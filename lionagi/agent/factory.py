@@ -732,13 +732,15 @@ def _attach_hooks(
     _editor_binding: tuple | None = None,
 ) -> Any:
     security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
+    if _editor_binding is not None:
+        from .hooks import _bind_email_header_editor_guard
+
+        security_hooks = [
+            _bind_email_header_editor_guard(hook, *_editor_binding) for hook in security_hooks
+        ]
     user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
     post_hooks = _tool_hooks(spec, "post", canonical_name)
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
-    if _editor_binding is not None:
-        from .hooks import _bind_email_header_editor_preprocessor
-
-        pre = _bind_email_header_editor_preprocessor(pre, *_editor_binding)
     post = _chain_post_hooks(
         canonical_name, post_hooks, _command_env_supplier=_command_env_supplier
     )
@@ -913,7 +915,7 @@ def _register_coding_tools(
 
     from lionagi.tools.coding import DEFAULT_CODING_TOOLS, CodingToolkit, _prepare_edit_file
 
-    from .hooks import _bind_email_header_editor_preprocessor
+    from .hooks import _bind_email_header_editor_guard
 
     workspace_root = Path(spec.cwd) if spec.cwd else Path.cwd()
     context_management = getattr(spec, "context_management", True)
@@ -938,6 +940,10 @@ def _register_coding_tools(
         phase, tool_name = parts
         for handler in handlers:
             if phase == "security_pre":
+                if tool_name in ("editor", "*"):
+                    handler = _bind_email_header_editor_guard(
+                        handler, _prepare_edit_file, toolkit.workspace_root
+                    )
                 toolkit.security_pre(tool_name, handler)
             elif phase == "pre":
                 toolkit.pre(tool_name, handler)
@@ -946,16 +952,7 @@ def _register_coding_tools(
             elif phase == "error":
                 toolkit.on_error(tool_name, handler)
 
-    def bind_editor_preprocessor(preprocessor):
-        return _bind_email_header_editor_preprocessor(
-            preprocessor, _prepare_edit_file, toolkit.workspace_root
-        )
-
-    tools = toolkit.bind(
-        branch,
-        _command_env_names=command_env_names,
-        _editor_preprocessor_wrapper=bind_editor_preprocessor,
-    )
+    tools = toolkit.bind(branch, _command_env_names=command_env_names)
     branch.register_tools(tools)
 
 

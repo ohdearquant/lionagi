@@ -439,7 +439,6 @@ class CodingToolkit(LionTool):
         branch: Branch,
         *,
         _command_env_names: frozenset[str] | None = None,
-        _editor_preprocessor_wrapper: Callable | None = None,
     ) -> list[Tool]:
         from lionagi.protocols.messages import ActionResponse
 
@@ -1038,14 +1037,11 @@ class CodingToolkit(LionTool):
         for name, func, request_cls in tool_defs:
             if name not in self.enabled_tools:
                 continue
-            preprocessor = self._build_preprocessor(name)
-            if name == "editor" and _editor_preprocessor_wrapper is not None:
-                preprocessor = _editor_preprocessor_wrapper(preprocessor)
             tools.append(
                 Tool(
                     func_callable=func,
                     request_options=request_cls,
-                    preprocessor=preprocessor,
+                    preprocessor=self._build_preprocessor(name),
                     postprocessor=self._build_postprocessor(
                         name, _command_env_supplier=prepared_command_environment
                     ),

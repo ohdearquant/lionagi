@@ -9,9 +9,10 @@ import logging
 import re
 import warnings
 from collections.abc import Mapping
-from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
+from types import FunctionType
+from weakref import WeakKeyDictionary
 
 from lionagi.libs.path_safety import is_protected_name, resolve_workspace_path
 
@@ -25,7 +26,6 @@ __all__ = (
 )
 
 logger = logging.getLogger(__name__)
-_editor_preview: ContextVar[tuple | None] = ContextVar("email_header_editor_preview", default=None)
 
 _DESTRUCTIVE_PATTERNS = [
     r"\brm\s+-rf\b",
@@ -67,8 +67,6 @@ async def guard_email_in_headers(
     """Refuse an email in an outbound header in a command or file write."""
     from ._email_in_headers import find_leak_with_allowed
 
-    if _edit_preparer is None and (preview := _editor_preview.get()) is not None:
-        _edit_preparer, _workspace_root = preview
     if tool_name in ("editor", "editor_tool") and action == "edit" and _edit_preparer is None:
         raise PermissionError("Cannot check the resulting file for an unbound editor.")
     if tool_name in ("bash", "bash_tool"):
@@ -118,6 +116,9 @@ async def guard_email_in_headers(
     return None
 
 
+_email_header_guards = WeakKeyDictionary({guard_email_in_headers: (frozenset(), None)})
+
+
 def _email_header_guard_from_settings(settings: Mapping):
     """Bind the global email-header policy to one agent's guard."""
     from ._email_in_headers import EMAIL_RE
@@ -144,21 +145,29 @@ def _email_header_guard_from_settings(settings: Mapping):
     async def configured_guard(tool_name: str, action: str, args: dict) -> dict | None:
         return await guard_email_in_headers(tool_name, action, args, allow=allowed, note=note)
 
+    _email_header_guards[configured_guard] = (allowed, note)
     return configured_guard
 
 
-def _bind_email_header_editor_preprocessor(preprocessor, preparer, workspace_root: Path):
-    """Give the entire editor hook chain its own instance's edit preparation."""
-    if preprocessor is None:
-        return None
+def _bind_email_header_editor_guard(handler, preparer, workspace_root: Path):
+    """Bind an installed guard to the editor instance, leaving other handlers alone."""
+    # Only functions made by this module are registered. Function equality is identity;
+    # arbitrary callable equality and attributes do not select a security control.
+    if not isinstance(handler, FunctionType) or handler not in _email_header_guards:
+        return handler
+    allowed, note = _email_header_guards[handler]
 
-    @wraps(preprocessor)
-    async def bound(args: dict, **kwargs):
-        token = _editor_preview.set((preparer, workspace_root))
-        try:
-            return await preprocessor(args, **kwargs)
-        finally:
-            _editor_preview.reset(token)
+    @wraps(handler)
+    async def bound(tool_name: str, action: str, args: dict) -> dict | None:
+        return await guard_email_in_headers(
+            tool_name,
+            action,
+            args,
+            allow=allowed,
+            note=note,
+            _edit_preparer=preparer,
+            _workspace_root=workspace_root,
+        )
 
     return bound
 
