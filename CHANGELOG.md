@@ -130,6 +130,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   artifact before the task. If the artifact turn fails or its reply is not the
   requested word, each dimension sends the artifact with its own task, and the
   run reports `artifact_turn_failed` or `artifact_turn_unused`.
+
+- MCP tools registered by server name now bind to the transport and effective
+  security policy selected at registration, so later configuration reloads or
+  policy changes cannot redirect them or change their policy. With an explicit
+  configuration file, missing server names are refused before any tools are
+  registered. Metadata-free registration also resolves names at registration,
+  including from the default configuration file; an unknown name is refused,
+  and a missing default `.mcp.json` raises `FileNotFoundError`. Registering
+  again picks up changed configuration or policy. Superseded cached clients
+  remain available to be closed by `cleanup()`.
+
+  Inline transport identity accepts exact built-in `None`, `bool`, `int`,
+  `float`, `str`, `list`, `tuple`, and `dict` values recursively; lists and
+  tuples have distinct identities. Nested dictionary keys may be any of those
+  types that Python permits as keys; transport fields may impose stricter rules.
+  Other values, including `Path` and built-in subclasses, and cyclic structures
+  raise `ValueError`. Convert unsupported values to strings where appropriate
+  and remove cycles first. A name absent from the default configuration raises
+  the loader's "not declared in the selected config" error.
+
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from

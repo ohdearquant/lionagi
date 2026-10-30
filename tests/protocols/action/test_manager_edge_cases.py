@@ -13,6 +13,25 @@ from lionagi.protocols.action.manager import (
 )
 from lionagi.protocols.action.tool import Tool
 from lionagi.protocols.messages.action_request import ActionRequest
+from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_mcp_pool(monkeypatch):
+    """Do not discover ambient servers or open a transport in these unit tests."""
+    monkeypatch.setattr(
+        MCPConnectionPool,
+        "_configs",
+        {
+            name: {"url": f"https://{name.replace('.', '-')}.invalid/mcp"}
+            for name in ("alpha", "beta", "srv", "test_server", "bad.alias")
+        },
+    )
+    monkeypatch.setattr(
+        MCPConnectionPool,
+        "_get_or_create_client",
+        AsyncMock(side_effect=AssertionError("unexpected MCP transport")),
+    )
 
 
 class TestActionManagerDictRegistration:
@@ -208,12 +227,20 @@ class TestActionManagerMCPMethodStubs:
         manager = ActionManager()
 
         # Mock the MCP connection pool to avoid real MCP dependencies
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = "mocked_tool"
+            mock_tool.description = "Read a synthetic value"
+            mock_tool.inputSchema = {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            }
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
 
             server_config = {
                 "server": "test_server",
@@ -221,23 +248,21 @@ class TestActionManagerMCPMethodStubs:
                 "args": ["-m", "test_server"],
             }
 
-            # This should complete without error (though tool registration might fail)
+            # The discovered descriptor is registered under its qualified name.
             result = await manager.register_mcp_server(server_config)
 
-            # Should return a list (even if empty due to mocking)
-            assert isinstance(result, list)
+            assert result == ["mcp__test_server__mocked_tool"]
 
     @pytest.mark.asyncio
     async def test_load_mcp_config_basic_structure(self):
         manager = ActionManager()
 
-        # Mock the MCP connection pool. load_config returns the server names
-        # declared in the loaded file — load_mcp_config's default server set —
-        # so the stub must return them rather than relying on pool state.
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
-            mock_pool.load_config = Mock(return_value=["test_server"])
-            mock_pool._configs = {"test_server": {"command": "python"}}
-
+        # The selected file snapshot, not the process-wide registry, chooses the servers.
+        with patch.object(
+            MCPConnectionPool,
+            "_load_config_snapshot",
+            return_value={"test_server": {"url": "https://test.invalid/mcp"}},
+        ):
             # Mock the register_mcp_server method
             manager.register_mcp_server = AsyncMock(return_value=["tool1", "tool2"])
 
@@ -284,11 +309,18 @@ class TestActionManagerMCPNaming:
             client.list_tools.return_value = [self._tool("request")]
             client.call_tool.return_value = server_name
 
-        async def get_client(server_config, security=None):
+        async def get_client(server_config, security=None, *, _bound_transport=None):
             return clients[server_config["server"]]
 
         with (
-            patch.object(MCPConnectionPool, "load_config", return_value=["alpha", "beta"]),
+            patch.object(
+                MCPConnectionPool,
+                "_load_config_snapshot",
+                return_value={
+                    "alpha": {"url": "https://alpha.invalid/mcp"},
+                    "beta": {"url": "https://beta.invalid/mcp"},
+                },
+            ),
             patch.object(MCPConnectionPool, "get_client", side_effect=get_client),
         ):
             loaded = await manager.load_mcp_config("/fake/path.json")
@@ -306,10 +338,10 @@ class TestActionManagerMCPNaming:
             assert tool.tool_schema["function"]["name"] == registry_name
             assert tool.mcp_config[registry_name]["_original_tool_name"] == "request"
 
-        async def reconnect(server_config, capability=None):
-            return clients[server_config["server"]]
+        async def reconnect(config, cache_key, security):
+            return clients[config["url"].split("//", 1)[1].split(".", 1)[0]]
 
-        with patch.object(MCPConnectionPool, "_get_reconnect_client", side_effect=reconnect):
+        with patch.object(MCPConnectionPool, "_get_or_create_client", side_effect=reconnect):
             await manager.registry["mcp__alpha__request"].func_callable()
             await manager.registry["mcp__beta__request"].func_callable()
 
@@ -438,8 +470,11 @@ class TestActionManagerMCPNaming:
         manager = ActionManager()
         manager.register_mcp_server = AsyncMock(side_effect=RuntimeError("incomplete tools"))
 
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
-            mock_pool.load_config.return_value = ["alpha"]
+        with patch.object(
+            MCPConnectionPool,
+            "_load_config_snapshot",
+            return_value={"alpha": {"url": "https://alpha.invalid/mcp"}},
+        ):
             with pytest.raises(RuntimeError, match="incomplete tools"):
                 await manager.load_mcp_config("/fake/path.json")
 
@@ -487,7 +522,11 @@ class TestActionManagerMCPNaming:
         client.list_tools.return_value = [self._tool("request")]
 
         with (
-            patch.object(MCPConnectionPool, "load_config", return_value=[server_name]),
+            patch.object(
+                MCPConnectionPool,
+                "_load_config_snapshot",
+                return_value={server_name: {"url": "https://long.invalid/mcp"}},
+            ),
             patch.object(MCPConnectionPool, "get_client", return_value=client),
         ):
             with pytest.raises(ValueError) as exc_info:
@@ -559,7 +598,9 @@ class TestActionManagerMCPAdmission:
     async def test_register_mcp_server_denies_discovered_shell_executor(self):
         manager = ActionManager()
 
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = "bash"
@@ -569,7 +610,7 @@ class TestActionManagerMCPAdmission:
                 "properties": {"script": {"type": "string"}},
             }
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
 
             with pytest.raises(PermissionError):
                 await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
@@ -580,7 +621,9 @@ class TestActionManagerMCPAdmission:
     async def test_register_mcp_server_admits_structured_run_tests(self):
         manager = ActionManager()
 
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = "run_tests"
@@ -595,7 +638,7 @@ class TestActionManagerMCPAdmission:
                 },
             }
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
 
             result = await manager.register_mcp_server(
                 {"server": "srv", "command": "python", "args": ["-m", "srv"]}
@@ -608,7 +651,9 @@ class TestActionManagerMCPAdmission:
     async def test_register_mcp_server_denial_error_is_actionable(self):
         manager = ActionManager()
 
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = "spawn_process"
@@ -621,7 +666,7 @@ class TestActionManagerMCPAdmission:
                 },
             }
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
 
             with pytest.raises(PermissionError) as exc_info:
                 await manager.register_mcp_server({"command": "python"})
@@ -637,7 +682,9 @@ class TestActionManagerMCPAdmission:
         scalar-only numeric bound."""
         manager = ActionManager()
 
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = "exec"
@@ -650,7 +697,7 @@ class TestActionManagerMCPAdmission:
                 "minCustomVocabulary": {"properties": {"command": {"type": "string"}}},
             }
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
 
             with pytest.raises(PermissionError):
                 await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
@@ -775,28 +822,32 @@ class TestActionManagerMCPAdmission:
         """Helper: register a server whose discovery returns a single mock
         tool built from `descriptor` (name/description/inputSchema)."""
         manager = ActionManager()
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = descriptor["name"]
             mock_tool.description = descriptor.get("description")
             mock_tool.inputSchema = descriptor.get("inputSchema")
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
             return manager, await manager.register_mcp_server(
                 {"server": "srv", "command": "python", "args": ["-m", "srv"]}
             )
 
     async def _discover_and_expect_denial(self, descriptor):
         manager = ActionManager()
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = descriptor["name"]
             mock_tool.description = descriptor.get("description")
             mock_tool.inputSchema = descriptor.get("inputSchema")
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
             with pytest.raises(PermissionError):
                 await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
         return manager
@@ -936,7 +987,9 @@ class TestActionManagerMCPAdmission:
         list is validated before any registry mutation."""
         manager = ActionManager()
 
-        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+        with patch.object(
+            MCPConnectionPool, "get_client", new_callable=AsyncMock
+        ) as mock_get_client:
             mock_client = AsyncMock()
 
             allowed_tool = Mock()
@@ -958,7 +1011,7 @@ class TestActionManagerMCPAdmission:
             }
 
             mock_client.list_tools = AsyncMock(return_value=[allowed_tool, denied_tool])
-            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value = mock_client
 
             with pytest.raises(PermissionError):
                 await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
@@ -1263,6 +1316,7 @@ class TestLoadMCPToolsFunction:
 
         servers = [call.args[0] for call in manager.register_mcp_server.await_args_list]
         assert servers == [{"server": "beta"}]
+        assert manager.register_mcp_server.await_args.kwargs["_bound_transport"] == {"command": "b"}
 
 
 class TestActionManagerValidation:
