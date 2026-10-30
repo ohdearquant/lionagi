@@ -1823,13 +1823,13 @@ def _make_message_handler(
     if message_retry_queues is not None:
         message_retry_queues.append(retry_queue)
 
-    async def _on_message(msg):
+    async def _persist(msg, *, update=False):
         try:
-            if on_first_msg is not None:
+            if not update and on_first_msg is not None:
                 await on_first_msg()
             msg_dict = msg.to_dict(mode="db")
             msg_id = msg_dict["id"]
-            append_to_progressions = dedup_set is None or msg_id not in dedup_set
+            append_to_progressions = not update and (dedup_set is None or msg_id not in dedup_set)
             on_persisted = None
             if append_to_progressions and new_msg_ids_list is not None:
 
@@ -1843,7 +1843,9 @@ def _make_message_handler(
                     session_id=session_id,
                     branch_progression_id=(branch_prog_id if append_to_progressions else None),
                     session_progression_id=(session_prog_id if append_to_progressions else None),
-                    system_branch_id=branch_id if msg_dict.get("role") == "system" else None,
+                    system_branch_id=branch_id
+                    if not update and msg_dict.get("role") == "system"
+                    else None,
                     activity_at=msg_dict.get("created_at"),
                     on_persisted=on_persisted,
                 )
@@ -1859,6 +1861,13 @@ def _make_message_handler(
                 exc_info=True,
             )
 
+    async def _on_message(msg):
+        await _persist(msg)
+
+    async def _persist_update(msg):
+        await _persist(msg, update=True)
+
+    _on_message._persist_update = _persist_update
     return _on_message
 
 
