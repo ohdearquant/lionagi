@@ -1,0 +1,1389 @@
+{
+  "console_scripts": {
+    "li": "lionagi.cli.main:main"
+  },
+  "extras": {
+    "ag2": [
+      "ag2[openai]>=0.13.0"
+    ],
+    "all": [
+      "lionagi[ollama]",
+      "lionagi[mcp]",
+      "lionagi[rich]",
+      "lionagi[postgres]",
+      "lionagi[graph]",
+      "lionagi[sqlite]",
+      "lionagi[xml]",
+      "lionagi[ag2]",
+      "lionagi[studio]"
+    ],
+    "graph": [
+      "networkx>=3.0.0"
+    ],
+    "mcp": [
+      "fastmcp>=3.4.10",
+      "starlette>=1.3.1",
+      "mcp>=1.30.0"
+    ],
+    "ollama": [
+      "ollama>=0.6.1",
+      "tqdm>=4.67.1"
+    ],
+    "pandas": [
+      "pandas>=1.3.0"
+    ],
+    "postgres": [
+      "pydapter[postgres]>=1.3.2",
+      "asyncpg>=0.27.0"
+    ],
+    "rich": [
+      "rich>=13.0.0"
+    ],
+    "ruvector": [
+      "ruvector>=0.1.2,<0.2",
+      "numpy>=1.24,<3"
+    ],
+    "sqlite": [
+      "aiosqlite>=0.22.0,<0.23"
+    ],
+    "studio": [
+      "fastapi>=0.115",
+      "uvicorn>=0.34",
+      "starlette>=1.3.1",
+      "croniter>=1.4"
+    ],
+    "xml": [
+      "xmltodict>=0.12.0"
+    ]
+  },
+  "package_exports": {
+    "lionagi/__init__.py": [
+      "import logging",
+      "from typing import TYPE_CHECKING",
+      "from . import ln as ln",
+      "from ._moved import install as _install_moved",
+      "from .ln._lazy_init import lazy_import",
+      "from .ln.types import DataClass, Operable, Params, Spec, Undefined, Unset",
+      "from .version import __version__",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"Session\": (\"session.session\", \"Session\"),\n    \"Branch\": (\"session.branch\", \"Branch\"),\n    \"iModel\": (\"service.imodel\", \"iModel\"),\n    \"Builder\": (\"operations.builder\", \"OperationGraphBuilder\"),\n    \"Operation\": (\"operations.node\", \"Operation\"),\n    \"load_mcp_tools\": (\"protocols.action.manager\", \"load_mcp_tools\"),\n    \"FieldModel\": (\"models.field_model\", \"FieldModel\"),\n    \"OperableModel\": (\"models.operable_model\", \"OperableModel\"),\n    \"Element\": (\"protocols.generic.element\", \"Element\"),\n    \"Pile\": (\"protocols.generic.pile\", \"Pile\"),\n    \"Progression\": (\"protocols.generic.progression\", \"Progression\"),\n    \"Node\": (\"protocols.graph.node\", \"Node\"),\n    \"Edge\": (\"protocols.graph.edge\", \"Edge\"),\n    \"Graph\": (\"protocols.graph.graph\", \"Graph\"),\n    \"Event\": (\"protocols.generic.event\", \"Event\"),\n    \"Message\": (\"protocols.messages\", \"Message\"),\n    \"MemoryItem\": (\"protocols.memory\", \"MemoryItem\"),\n    \"MemoryQuery\": (\"protocols.memory\", \"MemoryQuery\"),\n    \"MemoryStore\": (\"protocols.memory\", \"MemoryStore\"),\n    \"InMemoryStore\": (\"protocols.memory\", \"InMemoryStore\"),\n    \"ContextProvider\": (\"protocols.context_providers\", \"ContextProvider\"),\n    \"ContextProviderRegistry\": (\"protocols.context_providers\", \"ContextProviderRegistry\"),\n    \"ProviderReport\": (\"protocols.context_providers\", \"ProviderReport\"),\n    \"create_message\": (\"protocols.messages.manager\", \"create_message\"),\n    \"HookRegistry\": (\"service.hooks.hook_registry\", \"HookRegistry\"),\n    \"HookedEvent\": (\"service.hooks.hooked_event\", \"HookedEvent\"),\n    \"Broadcaster\": (\"service.broadcaster\", \"Broadcaster\"),\n    \"alcall\": (\"ln\", \"alcall\"),\n    \"lcall\": (\"ln\", \"lcall\"),\n    \"to_list\": (\"ln\", \"to_list\"),\n    \"to_dict\": (\"ln\", \"to_dict\"),\n    \"json_dumps\": (\"ln\", \"json_dumps\"),\n    # lndl \u2014 Lion Notation Definition Language\n    \"LNDLOutput\": (\"lndl\", \"LNDLOutput\"),\n    \"LNDLError\": (\"lndl\", \"LNDLError\"),\n    \"MissingLvarError\": (\"lndl\", \"MissingLvarError\"),\n    \"MissingFieldError\": (\"lndl\", \"MissingFieldError\"),\n    \"TypeMismatchError\": (\"lndl\", \"TypeMismatchError\"),\n    \"InvalidConstructorError\": (\"lndl\", \"InvalidConstructorError\"),\n    \"get_lndl_system_prompt\": (\"lndl\", \"get_lndl_system_prompt\"),\n    \"extract_lndl_blocks\": (\"lndl\", \"extract_lndl_blocks\"),\n    \"normalize_lndl_text\": (\"lndl\", \"normalize_lndl_text\"),\n    # adapters \u2014 inlined adapter stack\n    \"AdapterRegistry\": (\"adapters\", \"AdapterRegistry\"),\n    \"AsyncAdapterRegistry\": (\"adapters\", \"AsyncAdapterRegistry\"),\n    \"Adaptable\": (\"adapters\", \"Adaptable\"),\n    \"AsyncAdaptable\": (\"adapters\", \"AsyncAdaptable\"),\n    \"AdapterError\": (\"adapters\", \"AdapterError\"),\n    \"JsonAdapter\": (\"adapters\", \"JsonAdapter\"),\n    \"CsvAdapter\": (\"adapters\", \"CsvAdapter\"),\n    \"TomlAdapter\": (\"adapters\", \"TomlAdapter\"),\n}",
+      "def __getattr__(name: str):\n    if name in (\"BaseModel\", \"Field\"):\n        from pydantic import BaseModel, Field\n\n        globals()[\"BaseModel\"] = BaseModel\n        globals()[\"Field\"] = Field\n        return BaseModel if name == \"BaseModel\" else Field\n    if name == \"types\":\n        from . import _types as types\n\n        globals()[\"types\"] = types\n        return types\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    \"__version__\",\n    \"Adaptable\",\n    \"AdapterError\",\n    \"AdapterRegistry\",\n    \"AsyncAdaptable\",\n    \"AsyncAdapterRegistry\",\n    \"BaseModel\",\n    \"Branch\",\n    \"Broadcaster\",\n    \"Builder\",\n    \"ContextProvider\",\n    \"ContextProviderRegistry\",\n    \"CsvAdapter\",\n    \"DataClass\",\n    \"Edge\",\n    \"Element\",\n    \"Event\",\n    \"Field\",\n    \"FieldModel\",\n    \"Graph\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"InMemoryStore\",\n    \"InvalidConstructorError\",\n    \"JsonAdapter\",\n    \"LNDLError\",\n    \"LNDLOutput\",\n    \"MemoryItem\",\n    \"MemoryQuery\",\n    \"MemoryStore\",\n    \"Message\",\n    \"MissingFieldError\",\n    \"MissingLvarError\",\n    \"Node\",\n    \"Operable\",\n    \"OperableModel\",\n    \"Operation\",\n    \"Params\",\n    \"Pile\",\n    \"Progression\",\n    \"ProviderReport\",\n    \"Session\",\n    \"Spec\",\n    \"TomlAdapter\",\n    \"TypeMismatchError\",\n    \"Undefined\",\n    \"Unset\",\n    \"alcall\",\n    \"create_message\",\n    \"extract_lndl_blocks\",\n    \"get_lndl_system_prompt\",\n    \"iModel\",\n    \"json_dumps\",\n    \"lcall\",\n    \"ln\",\n    \"load_mcp_tools\",\n    \"logger\",\n    \"normalize_lndl_text\",\n    \"to_dict\",\n    \"to_list\",\n    \"types\",\n)"
+    ],
+    "lionagi/_checkpoint_v3_codec.py": [
+      "__all__ = (\n    \"CodecError\",\n    \"FrozenArray\",\n    \"FrozenObject\",\n    \"JournalRecord\",\n    \"PatchOp\",\n    \"apply_patch\",\n    \"capture_context\",\n    \"decode_json\",\n    \"decode_record\",\n    \"diff_context\",\n    \"encode_record\",\n    \"freeze_json\",\n    \"thaw_json\",\n    \"validate_entry\",\n)"
+    ],
+    "lionagi/_checkpoint_version.py": [
+      "__all__ = (\"CHECKPOINT_VERSION\", \"UnsupportedCheckpointVersionError\", \"load_legacy_checkpoint_json\")"
+    ],
+    "lionagi/_class_registry.py": [
+      "__all__ = (\n    \"get_class\",\n    \"LION_CLASS_REGISTRY\",\n)",
+      "_LAZY = (\n    \"its module is imported and may supply the name through a module-level \"\n    \"__getattr__, which is called only for a module under an allowed prefix; allow \"\n    \"its package with lionagi.ln.register_type_prefix(), giving its prefix with the \"\n    'trailing dot (\"mypkg.\")'\n)"
+    ],
+    "lionagi/_cli_worker_context.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/_command_env.py": [
+      "__all__ = (\n    \"credential_env_names\",\n    \"normalize_command_env_allowlist\",\n    \"scrub_command_env\",\n)"
+    ],
+    "lionagi/_command_env_metadata.py": [
+      "__all__ = (\"configured_command_env_names\", \"command_environment\")"
+    ],
+    "lionagi/_errors.py": [
+      "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
+    ],
+    "lionagi/_log_channels.py": [
+      "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
+    ],
+    "lionagi/_moved.py": [
+      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"still_on_disk\")"
+    ],
+    "lionagi/_paths.py": [
+      "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n)"
+    ],
+    "lionagi/_settings.py": [
+      "__all__ = (\"load_global_settings_layer\", \"load_project_settings_layer\", \"load_settings\")"
+    ],
+    "lionagi/_types.py": [
+      "_lazy_type_cache: dict[str, object] = {}",
+      "def __getattr__(name: str):\n    if name in _lazy_type_cache:\n        return _lazy_type_cache[name]\n\n    from lionagi.ln import import_module\n\n    for mod_path in _SOURCE_MODULES:\n        try:\n            mod = import_module(f\".{mod_path}\", package=__name__.rpartition(\".\")[0])\n            if hasattr(mod, name):\n                obj = getattr(mod, name)\n                _lazy_type_cache[name] = obj\n                return obj\n        except (ImportError, AttributeError):\n            continue\n\n    raise AttributeError(f\"module '{__name__}' has no attribute '{name}'\")"
+    ],
+    "lionagi/adapters/__init__.py": [
+      "from ._base import (\n    Adaptable,\n    Adapter,\n    AdapterBase,\n    AdapterConfigurationError,\n    AdapterConnectionError,\n    AdapterError,\n    AdapterNotFoundError,\n    AdapterParseError,\n    AdapterQueryError,\n    AdapterRegistry,\n    AdapterResourceError,\n    AdapterValidationError,\n    AsyncAdaptable,\n    AsyncAdapter,\n    AsyncAdapterRegistry,\n    dispatch_adapt_meth,\n)",
+      "from .csv_ import CsvAdapter",
+      "from .json_ import JsonAdapter",
+      "from .toml_ import TomlAdapter",
+      "__all__ = (\n    # protocols / mixins\n    \"Adaptable\",\n    \"AsyncAdaptable\",\n    \"Adapter\",\n    \"AsyncAdapter\",\n    \"AdapterBase\",\n    \"AdapterRegistry\",\n    \"AsyncAdapterRegistry\",\n    \"dispatch_adapt_meth\",\n    # exceptions\n    \"AdapterError\",\n    \"AdapterValidationError\",\n    \"AdapterParseError\",\n    \"AdapterNotFoundError\",\n    \"AdapterConfigurationError\",\n    \"AdapterResourceError\",\n    \"AdapterConnectionError\",\n    \"AdapterQueryError\",\n    # adapters\n    \"JsonAdapter\",\n    \"CsvAdapter\",\n    \"TomlAdapter\",\n)"
+    ],
+    "lionagi/adapters/_base.py": [
+      "__all__ = (\n    \"Adaptable\",\n    \"AsyncAdaptable\",\n    \"Adapter\",\n    \"AsyncAdapter\",\n    \"AdapterBase\",\n    \"AdapterRegistry\",\n    \"AsyncAdapterRegistry\",\n    \"dispatch_adapt_meth\",\n    # Exceptions\n    \"AdapterError\",\n    \"AdapterValidationError\",\n    \"AdapterParseError\",\n    \"AdapterNotFoundError\",\n    \"AdapterConfigurationError\",\n    \"AdapterResourceError\",\n    \"AdapterConnectionError\",\n    \"AdapterQueryError\",\n    \"_ADAPTER_PYTHON_ERRORS\",\n)"
+    ],
+    "lionagi/adapters/_utils.py": [
+      "__all__ = (\"check_async_postgres_available\",)"
+    ],
+    "lionagi/adapters/async_postgres_adapter.py": [
+      "__all__ = (\"LionAGIAsyncPostgresAdapter\", \"create_lionagi_async_postgres_adapter\")"
+    ],
+    "lionagi/adapters/csv_.py": [
+      "__all__ = (\"CsvAdapter\",)"
+    ],
+    "lionagi/adapters/json_.py": [
+      "__all__ = (\"JsonAdapter\",)"
+    ],
+    "lionagi/adapters/pandas_.py": [
+      "__all__ = (\"DataFrameAdapter\",)"
+    ],
+    "lionagi/adapters/spec_adapters/__init__.py": [
+      "from ._protocol import SpecAdapter",
+      "from .pydantic_field import PydanticSpecAdapter",
+      "__all__ = (\n    \"SpecAdapter\",\n    \"PydanticSpecAdapter\",\n)"
+    ],
+    "lionagi/adapters/spec_adapters/_protocol.py": [
+      "__all__ = (\"SpecAdapter\",)"
+    ],
+    "lionagi/adapters/spec_adapters/pydantic_field.py": [
+      "__all__ = (\"PydanticSpecAdapter\",)"
+    ],
+    "lionagi/adapters/toml_.py": [
+      "__all__ = (\"TomlAdapter\",)"
+    ],
+    "lionagi/agent/__init__.py": [
+      "from .factory import create_agent",
+      "from .permissions import PermissionPolicy",
+      "from .settings import apply_hooks_from_settings, load_settings",
+      "from .spec import AgentSpec, HooksMixin",
+      "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
+    ],
+    "lionagi/agent/context_fold.py": [
+      "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
+    ],
+    "lionagi/agent/factory.py": [
+      "__all__ = (\n    \"create_agent\",\n    \"CREATE_AGENT_BRANCH_ORIGIN_KEY\",\n    \"_chain_pre_hooks\",\n    \"_chain_post_hooks\",\n)"
+    ],
+    "lionagi/agent/gate.py": [
+      "__all__ = (\n    \"ControlUnavailableError\",\n    \"GateDeniedError\",\n    \"GateEvaluator\",\n    \"GateResult\",\n    \"adapt_legacy_hook\",\n    \"adapt_session_gate\",\n    \"run_gate_pass\",\n)"
+    ],
+    "lionagi/agent/hooks.py": [
+      "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
+    ],
+    "lionagi/agent/nudge.py": [
+      "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
+    ],
+    "lionagi/agent/permissions.py": [
+      "__all__ = (\n    \"PermissionDecision\",\n    \"PermissionPolicy\",\n)"
+    ],
+    "lionagi/agent/settings.py": [
+      "__all__ = (\n    \"apply_hooks_from_settings\",\n    \"load_settings\",\n    \"parse_external_hooks\",\n)"
+    ],
+    "lionagi/agent/spec.py": [
+      "__all__ = (\"AgentSpec\", \"HooksMixin\")"
+    ],
+    "lionagi/casts/__init__.py": [
+      "from ..ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"build_catalog\": (\"catalog\", None),\n    \"SPAWN_ALLOWED_OPERATIONS\": (\"emission\", None),\n    \"AnalysisResult\": (\"emission\", None),\n    \"ArtifactProduced\": (\"emission\", None),\n    \"ComplexityScore\": (\"emission\", None),\n    \"ComplianceVerdict\": (\"emission\", None),\n    \"Conflict\": (\"emission\", None),\n    \"DesignSpec\": (\"emission\", None),\n    \"Diagnosis\": (\"emission\", None),\n    \"Document\": (\"emission\", None),\n    \"EscalationRequest\": (\"emission\", None),\n    \"ExecutionPlan\": (\"emission\", None),\n    \"Finding\": (\"emission\", None),\n    \"Gap\": (\"emission\", None),\n    \"Objection\": (\"emission\", None),\n    \"OperationOutcome\": (\"emission\", None),\n    \"Postmortem\": (\"emission\", None),\n    \"Proposal\": (\"emission\", None),\n    \"Recommendation\": (\"emission\", None),\n    \"RiskAssessment\": (\"emission\", None),\n    \"SpawnRequest\": (\"emission\", None),\n    \"Synthesis\": (\"emission\", None),\n    \"TaskAssignment\": (\"emission\", None),\n    \"Verdict\": (\"emission\", None),\n    \"VerificationResult\": (\"emission\", None),\n    \"build_emission_operable\": (\"emission\", None),\n    \"field_name_for\": (\"emission\", None),\n    \"Pack\": (\"pack\", None),\n    \"RoleConfig\": (\"pack\", None),\n    \"RolePolicy\": (\"pack\", None),\n    \"Mode\": (\"pattern\", None),\n    \"Pattern\": (\"pattern\", None),\n    \"PatternKind\": (\"pattern\", None),\n    \"Role\": (\"pattern\", None),\n    \"list_modes\": (\"pattern\", None),\n    \"list_roles\": (\"pattern\", None),\n    \"Profile\": (\"profile\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    # catalog (read-only metadata seam)\n    \"build_catalog\",\n    # pattern layer\n    \"Pattern\",\n    \"PatternKind\",\n    \"Role\",\n    \"Mode\",\n    \"list_roles\",\n    \"list_modes\",\n    # profile\n    \"Profile\",\n    # pack layer\n    \"Pack\",\n    \"RolePolicy\",\n    \"RoleConfig\",\n    # emission builder\n    \"build_emission_operable\",\n    \"field_name_for\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n    # emission contracts \u2014 discovery\n    \"Finding\",\n    \"Conflict\",\n    \"Gap\",\n    \"Diagnosis\",\n    \"Synthesis\",\n    # emission contracts \u2014 judgement\n    \"Verdict\",\n    \"ComplianceVerdict\",\n    \"RiskAssessment\",\n    \"Objection\",\n    \"Recommendation\",\n    # emission contracts \u2014 analysis\n    \"AnalysisResult\",\n    \"ComplexityScore\",\n    # emission contracts \u2014 planning / coordination\n    \"ExecutionPlan\",\n    \"TaskAssignment\",\n    \"DesignSpec\",\n    # emission contracts \u2014 production\n    \"ArtifactProduced\",\n    \"VerificationResult\",\n    \"Document\",\n    \"OperationOutcome\",\n    # emission contracts \u2014 generative / retrospective\n    \"Proposal\",\n    \"Postmortem\",\n    # emission contracts \u2014 universal\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n)"
+    ],
+    "lionagi/casts/catalog.py": [
+      "__all__ = (\"build_catalog\",)"
+    ],
+    "lionagi/casts/emission.py": [
+      "__all__ = (\n    # discovery\n    \"Finding\",\n    \"Conflict\",\n    \"Gap\",\n    \"Diagnosis\",\n    \"Synthesis\",\n    # judgement\n    \"Verdict\",\n    \"ComplianceVerdict\",\n    \"RiskAssessment\",\n    \"Objection\",\n    \"Recommendation\",\n    # analysis\n    \"AnalysisResult\",\n    \"ComplexityScore\",\n    # planning / coordination\n    \"ExecutionPlan\",\n    \"TaskAssignment\",\n    \"DesignSpec\",\n    # production\n    \"ArtifactProduced\",\n    \"VerificationResult\",\n    \"Document\",\n    \"OperationOutcome\",\n    # generative / retrospective\n    \"Proposal\",\n    \"Postmortem\",\n    # universal\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n    \"build_emission_operable\",\n    \"field_name_for\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n)"
+    ],
+    "lionagi/casts/pack.py": [
+      "__all__ = (\"Pack\", \"RolePolicy\", \"RoleConfig\")"
+    ],
+    "lionagi/casts/pattern.py": [
+      "__all__ = (\n    \"Pattern\",\n    \"PatternKind\",\n    \"Mode\",\n    \"Role\",\n    \"list_roles\",\n    \"list_modes\",\n)"
+    ],
+    "lionagi/casts/profile.py": [
+      "__all__ = (\"Profile\",)"
+    ],
+    "lionagi/cli/__init__.py": [
+      "from lionagi.ln import lazy_import",
+      "__all__ = (\"main\",)",
+      "def __getattr__(name: str):\n    # Lazy: importing lionagi.studio.cli (which main.py imports at module\n    # level) must not re-enter main.py through this package init.\n    if name == \"main\":\n        return lazy_import(name, {\"main\": (\"main\", \"main\")}, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/cli/_argtypes.py": [
+      "__all__ = (\"BoundedInt\", \"JsonArgument\")"
+    ],
+    "lionagi/cli/_code_identity.py": [
+      "__all__ = (\n    \"code_identity\",\n    \"git_identity\",\n    \"snapshot_git_position\",\n    \"GIT_TIMEOUT_SECONDS\",\n    \"IDENTITY_BUDGET_SECONDS\",\n)"
+    ],
+    "lionagi/cli/_logging.py": [
+      "__all__ = (\n    \"configure_cli_logging\",\n    \"progress\",\n    \"hint\",\n    \"warn\",\n    \"log_error\",\n)"
+    ],
+    "lionagi/cli/_mcp_resolve.py": [
+      "__all__ = (\n    \"MCP_CONFIG_FILENAME\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n)"
+    ],
+    "lionagi/cli/_providers.py": [
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"normalize_effort\",\n    \"add_common_cli_args\",\n    \"build_chat_model\",\n    \"build_imodel_from_spec\",\n    \"parse_model_spec\",\n    \"resolve_codex_config_profile\",\n    \"resolve_persisted_effort\",\n    \"AgentProfile\",\n    \"AgentProfileNotFoundError\",\n    \"AmbiguousProfileNameError\",\n    \"build_agent_profile_catalog\",\n    \"build_deadline_preamble\",\n    \"list_agents\",\n    \"load_agent_profile\",\n    \"profile_config\",\n    \"_parse_profile\",\n    \"_resolve_profile_path\",\n    \"_validate_bare_name\",\n)"
+    ],
+    "lionagi/cli/_runs.py": [
+      "__all__ = (\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"RunDir\",\n    \"allocate_run\",\n    \"find_branch\",\n    \"load_last_branch\",\n    \"save_last_branch_pointer\",\n    \"list_runs\",\n    \"current_run_id\",\n    \"active_run_id\",\n    \"resolve_run_reason\",\n    \"setup_agent_persist\",\n    \"find_incomplete_session_for_run\",\n    \"teardown_persist\",\n    \"teardown_agent_persist\",\n    \"teardown_orchestration_persist\",\n)"
+    ],
+    "lionagi/cli/dispatch.py": [
+      "__all__ = (\n    \"add_dispatch_subparser\",\n    \"run_dispatch\",\n    \"machine_result\",\n)"
+    ],
+    "lionagi/cli/doctor.py": [
+      "__all__ = (\n    \"add_doctor_subparser\",\n    \"run_doctor\",\n    \"collect_checks\",\n)"
+    ],
+    "lionagi/cli/hooks.py": [
+      "__all__ = (\"add_hooks_subparser\", \"run_hooks\")"
+    ],
+    "lionagi/cli/machine.py": [
+      "__all__ = (\n    \"CONTRACT_VERSION\",\n    \"MIN_SUPPORTED_CONTRACT_VERSION\",\n    \"ERROR_KINDS\",\n    \"MachineError\",\n    \"ok\",\n    \"failure\",\n    \"validate_envelope\",\n    \"available\",\n    \"unavailable\",\n    \"read_json_file\",\n    \"list_directory\",\n    \"machine_parser\",\n    \"parse_machine_argv\",\n    \"machine_subcommand\",\n    \"readonly_state_db\",\n    \"state_db_absent\",\n    \"store_unreachable\",\n    \"reserve_stdout\",\n    \"dispatch_machine\",\n    \"handshake_data\",\n    \"add_handshake_subparser\",\n    \"run_handshake\",\n    \"add_runs_subparser\",\n    \"run_runs\",\n    \"lifecycle_data\",\n    \"add_lifecycle_subparser\",\n    \"run_lifecycle\",\n)"
+    ],
+    "lionagi/cli/machine_schedule.py": [
+      "__all__ = (\"dispatch_schedule\",)"
+    ],
+    "lionagi/cli/mcp.py": [
+      "__all__ = (\"add_mcp_subparser\", \"run_mcp\")"
+    ],
+    "lionagi/cli/monitor.py": [
+      "__all__ = (\n    \"add_monitor_subparser\",\n    \"run_monitor\",\n    \"run_monitor_wait\",\n)"
+    ],
+    "lionagi/cli/orchestrate/__init__.py": [
+      "from __future__ import annotations",
+      "import argparse",
+      "import sys",
+      "from pathlib import Path",
+      "from lionagi._auto import CliDeclaration, auto_register",
+      "from lionagi._errors import TimeoutError as LionTimeoutError",
+      "from lionagi._flow_spec import (\n    FLOW_SPEC_FIELDS,\n    load_flow_spec,\n    validate_flow_args_schema,\n    validate_flow_spec_fields,\n)",
+      "from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS",
+      "from lionagi.libs.path_safety import validate_path_component as validate_path_component",
+      "from lionagi.ln.concurrency import is_cancelled, run_async",
+      "from lionagi.providers._provider_errors import NestedAgentRefusedError",
+      "from lionagi.providers._subagent_admission import refuse_nested_agent",
+      "from .._logging import hint, log_error",
+      "from .._providers import add_common_cli_args",
+      "from .._util import EXIT_CODE_BY_STATUS",
+      "from ._checkpoint import FlowResumeError",
+      "from .fanout import FanoutPlanError, _run_fanout",
+      "from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation"
+    ],
+    "lionagi/cli/orchestrate/_checkpoint.py": [
+      "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"CheckpointWriter\",\n    \"FlowResumeError\",\n    \"UnsupportedFlowCheckpointVersionError\",\n    \"load_checkpoint\",\n    \"resolve_checkpoint_target\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_control.py": [
+      "__all__ = (\n    \"run_ctl_pause\",\n    \"run_ctl_resume\",\n    \"run_ctl_msg\",\n    \"run_ctl_resolve\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_finalize.py": [
+      "__all__ = (\n    \"CLAIM_ROLE_RUNNER\",\n    \"CLAIM_ROLE_KILL_REAPER\",\n    \"CLAIM_ROLE_ORPHAN_REAPER\",\n    \"NOTHING_OWED\",\n    \"TERMINAL_WRITE_ONLY\",\n    \"LATE_FACTS\",\n    \"FULL_PATH\",\n    \"FinalizeClaim\",\n    \"claim_path\",\n    \"claim_finalization\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_harvest.py": [
+      "__all__ = (\n    \"MAX_FILES_PER_LEG\",\n    \"MAX_BYTES_PER_LEG\",\n    \"COPY_CHUNK_BYTES\",\n    \"STATE_ABSENT\",\n    \"STATE_EMPTY\",\n    \"STATE_FAILED\",\n    \"SKIP_SYMLINK\",\n    \"SKIP_HARDLINK\",\n    \"SKIP_SWAPPED\",\n    \"SKIP_SPECIAL\",\n    \"SKIP_UNREADABLE\",\n    \"HarvestResult\",\n    \"harvest_leg_artifacts\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_manifest.py": [
+      "__all__ = (\n    \"MANIFEST_VERSION\",\n    \"MIN_LEGS\",\n    \"MAX_LEGS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"LABEL_PATTERN\",\n    \"ENV_KEY_PATTERN\",\n    \"RESERVED_ENV_KEYS\",\n    \"ManifestError\",\n    \"Leg\",\n    \"Manifest\",\n    \"load_manifest\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_notify.py": [
+      "__all__ = (\n    \"deliver_flow_notify_now\",\n    \"register_flow_notify_scope\",\n    \"unregister_flow_notify_scope\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_orchestration.py": [
+      "__all__ = (\n    \"OrchestrationEnv\",\n    \"resolve_worker_spec\",\n    \"setup_orchestration\",\n    \"build_worker_branch\",\n    \"WorkerBuildError\",\n    \"attribute_worker_build_failure\",\n    \"make_help_coordinator\",\n    \"TeamLifecycleCoordinator\",\n    \"make_team_lifecycle_coordinator\",\n    \"finalize_orchestration\",\n    \"start_live_persist\",\n    \"stop_live_persist\",\n    \"EFFORT_GUIDANCE\",\n    \"EFFORT_MAP\",\n    \"team_guidance\",\n    \"team_worker_system\",\n    \"team_history_context\",\n    \"worker_is_cli\",\n    \"available_roles\",\n    \"role_roster\",\n    \"mode_roster\",\n    \"casts_role_system\",\n    \"role_config\",\n    \"resolve_modes\",\n    \"parse_orchestrator_provider\",\n    \"DEFAULT_ORCHESTRATOR_AGENT\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_quiescence.py": [
+      "__all__ = (\n    \"QUIET\",\n    \"BUSY\",\n    \"UNPROVEN\",\n    \"NO_DOMAIN\",\n    \"GroupObservation\",\n    \"Quiescence\",\n    \"QuietEnforcement\",\n    \"sweep_quiet\",\n    \"enforce_quiet\",\n)"
+    ],
+    "lionagi/cli/orchestrate/_round_records.py": [
+      "__all__ = (\n    \"ROUND_VERSION\",\n    \"ROUND_STATE_PENDING\",\n    \"ROUND_STATE_COMPLETE\",\n    \"RESULT_COMPLETED\",\n    \"RESULT_PARTIAL\",\n    \"RESULT_FAILED\",\n    \"LEG_SUCCEEDED\",\n    \"LEG_FAILED\",\n    \"LEG_TIMED_OUT\",\n    \"LEG_CANCELLED\",\n    \"LEG_KILLED\",\n    \"RECORDED_BY_RUNNER\",\n    \"RECORDED_BY_KILL_REAPER\",\n    \"RECORDED_BY_ORPHAN_REAPER\",\n    \"LegDispatch\",\n    \"legs_dir\",\n    \"round_path\",\n    \"write_leg_dispatch\",\n    \"complete_leg_record\",\n    \"read_leg_records\",\n    \"ControlGroupDomain\",\n    \"control_group_domain\",\n    \"recorded_control_groups\",\n    \"write_round_summary\",\n    \"read_round_summary\",\n    \"flip_round_complete\",\n    \"round_result\",\n)"
+    ],
+    "lionagi/cli/state.py": [
+      "__all__ = [\n    # import helpers\n    \"RUNS_ROOT\",\n    \"_mtime_as_float\",\n    \"_msg_from_collection_entry\",\n    \"_import_runs\",\n    \"_STATUS_MAP\",\n    \"_EXIT_CODE_STATUS_MAP\",\n    \"_derive_import_status\",\n    \"_derive_timestamps\",\n    \"_import_one_run\",\n    \"_import_teams\",\n    # ops helpers\n    \"_format_bytes\",\n    \"_list_sessions\",\n    \"_print_stats\",\n    \"_collect_message_breakdown\",\n    \"_checkpoint\",\n    \"_vacuum\",\n    \"_prune\",\n    \"_prune_candidates\",\n    \"_null_content\",\n    \"_null_content_candidates\",\n    \"_null_content_targets\",\n    \"_doctor\",\n    # CLI entrypoints\n    \"add_state_subparser\",\n    \"run_state\",\n    \"machine_result\",\n]"
+    ],
+    "lionagi/cli/stats.py": [
+      "__all__ = (\n    \"GROUP_BY_COLUMNS\",\n    \"add_stats_subparser\",\n    \"run_stats\",\n)"
+    ],
+    "lionagi/cli/status.py": [
+      "__all__ = (\n    \"run_agent_status\",\n    \"run_play_status\",\n    \"run_ctl_status\",\n)"
+    ],
+    "lionagi/cli/wait.py": [
+      "__all__ = (\n    \"wait_for_terminal\",\n    \"run_wait\",\n)"
+    ],
+    "lionagi/hooks/__init__.py": [
+      "from __future__ import annotations",
+      "from .bus import DORMANT_POINTS, HookBus, HookPoint, HookSignal, StopHook, hook",
+      "from .loader import (\n    DEFAULT_HOOKS,\n    build_session_bus,\n    load_hooks_for_agent,\n    register_handler,\n    resolve_handler,\n)",
+      "from .persist import route_message_persistence, unroute_message_persistence",
+      "__all__ = [\n    \"HookBus\",\n    \"HookPoint\",\n    \"HookSignal\",\n    \"StopHook\",\n    \"hook\",\n    \"DORMANT_POINTS\",\n    \"DEFAULT_HOOKS\",\n    \"build_session_bus\",\n    \"load_hooks_for_agent\",\n    \"register_handler\",\n    \"resolve_handler\",\n    \"route_message_persistence\",\n    \"unroute_message_persistence\",\n]"
+    ],
+    "lionagi/hooks/builtins.py": [
+      "__all__ = (\n    \"persist_session_start\",\n    \"persist_session_end\",\n    \"persist_branch_provenance\",\n    \"persist_branch_end\",\n    \"persist_message\",\n    \"log_api_metrics\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
+    ],
+    "lionagi/hooks/bus.py": [
+      "__all__ = (\n    \"HookPoint\",\n    \"HookBus\",\n    \"HookSignal\",\n    \"HookHandler\",\n    \"StopHook\",\n    \"hook\",\n    \"DORMANT_POINTS\",\n)"
+    ],
+    "lionagi/hooks/external.py": [
+      "__all__ = (\n    \"BLOCKING_EVENTS\",\n    \"PROFILE_VERSION\",\n    \"SUPPORTED_EVENTS\",\n    \"ExternalHookConfigError\",\n    \"HookVerdict\",\n    \"build_envelope\",\n    \"compute_command_hash\",\n    \"compute_executable_digest\",\n    \"compute_trust_record\",\n    \"external_hook_adapter\",\n    \"is_command_trusted\",\n    \"match_hook\",\n    \"resolve_hook_executable\",\n    \"validate_argv\",\n)"
+    ],
+    "lionagi/hooks/loader.py": [
+      "__all__ = (\n    \"DEFAULT_HOOKS\",\n    \"register_handler\",\n    \"resolve_handler\",\n    \"load_hooks_for_agent\",\n    \"build_session_bus\",\n)"
+    ],
+    "lionagi/hooks/persist.py": [
+      "__all__ = (\n    \"route_message_persistence\",\n    \"unroute_message_persistence\",\n)"
+    ],
+    "lionagi/integrations/__init__.py": [
+      "from __future__ import annotations",
+      "__all__ = ()"
+    ],
+    "lionagi/integrations/ruvector/__init__.py": [
+      "from __future__ import annotations",
+      "__all__ = (\"RuVectorMemoryStore\", \"RuVectorStore\", \"SearchHit\")"
+    ],
+    "lionagi/integrations/ruvector/memory.py": [
+      "__all__ = (\"RuVectorMemoryStore\",)"
+    ],
+    "lionagi/integrations/ruvector/store.py": [
+      "__all__ = (\"RuVectorStore\", \"SearchHit\")"
+    ],
+    "lionagi/libs/__init__.py": [
+      "from .nested import (\n    deep_merge,\n    deep_update,\n    flatten,\n    get_target_container,\n    nget,\n    npop,\n    nset,\n    unflatten,\n)",
+      "__all__ = [\n    \"get_target_container\",\n    \"nget\",\n    \"nset\",\n    \"npop\",\n    \"flatten\",\n    \"unflatten\",\n    \"deep_update\",\n    \"deep_merge\",\n]"
+    ],
+    "lionagi/libs/credential_fields.py": [
+      "__all__ = (\n    \"EXACT_SECRET_FIELD_NAMES\",\n    \"SECRET_KEY_MARKERS\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n)"
+    ],
+    "lionagi/libs/nested.py": [
+      "__all__ = [\n    \"get_target_container\",\n    \"nget\",\n    \"nset\",\n    \"npop\",\n    \"flatten\",\n    \"unflatten\",\n    \"deep_update\",\n    \"deep_merge\",\n]"
+    ],
+    "lionagi/libs/schema/extract_code_block.py": [
+      "__all__ = (\"extract_code_block\", \"extract_fenced_blocks\")"
+    ],
+    "lionagi/libs/schema/load_pydantic_model_from_schema.py": [
+      "__all__ = (\"SCHEMA_MODEL_MODULE\", \"load_pydantic_model_from_schema\")"
+    ],
+    "lionagi/ln/__init__.py": [
+      "from __future__ import annotations",
+      "from ._cache import BoundedLRUCache",
+      "from ._hash import (\n    GENESIS_HASH,\n    MAX_HASH_INPUT_BYTES,\n    HashAlgorithm,\n    compute_chain_hash,\n    compute_hash,\n    hash_dict,\n    hash_fd,\n    hash_file,\n    hash_obj,\n)",
+      "from ._json_dump import (\n    get_orjson_default,\n    json_dumpb,\n    json_dumps,\n    json_lines_iter,\n    make_options,\n    raise_if_non_finite,\n)",
+      "from ._json_load import JSONDecodeError, json_loads",
+      "from ._lazy_init import LazyInit, lazy_import",
+      "from ._list_call import lcall",
+      "from ._ssrf import is_ssrf_safe",
+      "from .fuzzy import (\n    MAX_JSON_INPUT_SIZE,\n    SIMILARITY_TYPE,\n    extract_json,\n    fuzzy_json,\n    fuzzy_match_keys,\n    fuzzy_validate_mapping,\n    fuzzy_validate_pydantic,\n    string_similarity,\n    to_dict,\n)",
+      "from .types import (\n    CommonMeta,\n    DataClass,\n    DuplicateRegistryKeyError,\n    DuplicateRegistryOwnerError,\n    Enum,\n    FieldRef,\n    Filter,\n    KeysDict,\n    KeysLike,\n    MaybeSentinel,\n    MaybeUndefined,\n    MaybeUnset,\n    Meta,\n    ModelConfig,\n    Operable,\n    Params,\n    Registry,\n    RegistryCompositionError,\n    RegistryEntry,\n    RegistryFragment,\n    RegistryOverride,\n    RegistryOverrideRule,\n    RegistryRecord,\n    RegistrySource,\n    RegistryValueError,\n    RoleFilter,\n    SingletonType,\n    Spec,\n    SpecFilter,\n    T,\n    TypeFilter,\n    Undefined,\n    UndefinedType,\n    UnhashableStructuralValueError,\n    Unset,\n    UnsetType,\n    all_of,\n    as_filter,\n    is_sentinel,\n    not_sentinel,\n    resolve_path,\n)",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    # ._async_call\n    \"AlcallParams\": (\"_async_call\", \"AlcallParams\"),\n    \"BcallParams\": (\"_async_call\", \"BcallParams\"),\n    \"alcall\": (\"_async_call\", \"alcall\"),\n    \"bcall\": (\"_async_call\", \"bcall\"),\n    # ._to_list\n    \"ToListParams\": (\"_to_list\", \"ToListParams\"),\n    \"to_list\": (\"_to_list\", \"to_list\"),\n    # ._utils (imports anyio.Path at module scope)\n    \"acreate_path\": (\"_utils\", \"acreate_path\"),\n    \"async_synchronized\": (\"_utils\", \"async_synchronized\"),\n    \"coerce_created_at\": (\"_utils\", \"coerce_created_at\"),\n    \"copy\": (\"_utils\", \"copy\"),\n    \"create_path\": (\"_utils\", \"create_path\"),\n    \"extract_types\": (\"_utils\", \"extract_types\"),\n    \"get_bins\": (\"_utils\", \"get_bins\"),\n    \"import_module\": (\"_utils\", \"import_module\"),\n    \"is_import_installed\": (\"_utils\", \"is_import_installed\"),\n    \"is_pydantic_model_class\": (\"_utils\", \"is_pydantic_model_class\"),\n    \"is_same_dtype\": (\"_utils\", \"is_same_dtype\"),\n    \"is_union_type\": (\"_utils\", \"is_union_type\"),\n    \"load_type_from_string\": (\"_utils\", \"load_type_from_string\"),\n    \"now_utc\": (\"_utils\", \"now_utc\"),\n    \"parse_duration\": (\"_utils\", \"parse_duration\"),\n    \"register_type_prefix\": (\"_utils\", \"register_type_prefix\"),\n    \"short_id\": (\"_utils\", \"short_id\"),\n    \"synchronized\": (\"_utils\", \"synchronized\"),\n    \"to_uuid\": (\"_utils\", \"to_uuid\"),\n    \"union_members\": (\"_utils\", \"union_members\"),\n    \"unwrap_optional\": (\"_utils\", \"unwrap_optional\"),\n    # ._proc (imports .concurrency at module scope)\n    \"capture_group_witnesses\": (\"_proc\", \"capture_group_witnesses\"),\n    \"observe_process_group_leader\": (\"_proc\", \"observe_process_group_leader\"),\n    \"prepare_process_group_env\": (\"_proc\", \"prepare_process_group_env\"),\n    \"terminate_process_group\": (\"_proc\", \"terminate_process_group\"),\n    \"aterminate_process_group\": (\"_proc\", \"aterminate_process_group\"),\n    # .concurrency (imports anyio)\n    \"bounded_map\": (\"concurrency\", \"bounded_map\"),\n    \"create_task_group\": (\"concurrency\", \"create_task_group\"),\n    \"fail_after\": (\"concurrency\", \"fail_after\"),\n    \"fail_at\": (\"concurrency\", \"fail_at\"),\n    \"gather\": (\"concurrency\", \"gather\"),\n    \"get_cancelled_exc_class\": (\"concurrency\", \"get_cancelled_exc_class\"),\n    \"is_cancelled\": (\"concurrency\", \"is_cancelled\"),\n    \"is_coro_func\": (\"concurrency\", \"is_coro_func\"),\n    \"move_on_after\": (\"concurrency\", \"move_on_after\"),\n    \"move_on_at\": (\"concurrency\", \"move_on_at\"),\n    \"race\": (\"concurrency\", \"race\"),\n    \"retry\": (\"concurrency\", \"retry\"),\n}",
+      "def __getattr__(name: str):\n    if name == \"concurrency\":\n        from . import concurrency\n\n        globals()[\"concurrency\"] = concurrency\n        return concurrency\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    \"alcall\",\n    \"bcall\",\n    \"BoundedLRUCache\",\n    \"GENESIS_HASH\",\n    \"HashAlgorithm\",\n    \"MAX_HASH_INPUT_BYTES\",\n    \"compute_chain_hash\",\n    \"compute_hash\",\n    \"hash_dict\",\n    \"hash_fd\",\n    \"hash_file\",\n    \"hash_obj\",\n    \"get_orjson_default\",\n    \"json_dumps\",\n    \"json_loads\",\n    \"JSONDecodeError\",\n    \"make_options\",\n    \"json_dumpb\",\n    \"json_lines_iter\",\n    \"raise_if_non_finite\",\n    \"lcall\",\n    \"to_list\",\n    \"acreate_path\",\n    \"async_synchronized\",\n    \"coerce_created_at\",\n    \"copy\",\n    \"create_path\",\n    \"extract_types\",\n    \"get_bins\",\n    \"import_module\",\n    \"is_import_installed\",\n    \"is_pydantic_model_class\",\n    \"is_same_dtype\",\n    \"is_union_type\",\n    \"load_type_from_string\",\n    \"now_utc\",\n    \"parse_duration\",\n    \"register_type_prefix\",\n    \"short_id\",\n    \"synchronized\",\n    \"to_uuid\",\n    \"union_members\",\n    \"unwrap_optional\",\n    \"bounded_map\",\n    \"create_task_group\",\n    \"fail_after\",\n    \"fail_at\",\n    \"gather\",\n    \"get_cancelled_exc_class\",\n    \"is_cancelled\",\n    \"is_coro_func\",\n    \"move_on_after\",\n    \"move_on_at\",\n    \"race\",\n    \"retry\",\n    \"SIMILARITY_TYPE\",\n    \"extract_json\",\n    \"fuzzy_json\",\n    \"fuzzy_match_keys\",\n    \"fuzzy_validate_pydantic\",\n    \"string_similarity\",\n    \"is_sentinel\",\n    \"not_sentinel\",\n    \"to_dict\",\n    \"fuzzy_validate_mapping\",\n    \"AlcallParams\",\n    \"BcallParams\",\n    \"ToListParams\",\n    \"MAX_JSON_INPUT_SIZE\",\n    \"capture_group_witnesses\",\n    \"observe_process_group_leader\",\n    \"prepare_process_group_env\",\n    \"terminate_process_group\",\n    \"aterminate_process_group\",\n    # ln.types\n    \"Undefined\",\n    \"Unset\",\n    \"MaybeUndefined\",\n    \"MaybeUnset\",\n    \"MaybeSentinel\",\n    \"SingletonType\",\n    \"UndefinedType\",\n    \"UnsetType\",\n    \"UnhashableStructuralValueError\",\n    \"ModelConfig\",\n    \"Enum\",\n    \"Params\",\n    \"DataClass\",\n    \"Meta\",\n    \"KeysDict\",\n    \"KeysLike\",\n    \"T\",\n    \"Registry\",\n    \"RegistryEntry\",\n    \"RegistryFragment\",\n    \"RegistryOverrideRule\",\n    \"RegistrySource\",\n    \"RegistryRecord\",\n    \"RegistryOverride\",\n    \"RegistryCompositionError\",\n    \"DuplicateRegistryOwnerError\",\n    \"DuplicateRegistryKeyError\",\n    \"RegistryValueError\",\n    \"Spec\",\n    \"CommonMeta\",\n    \"Operable\",\n    \"Filter\",\n    \"TypeFilter\",\n    \"SpecFilter\",\n    \"FieldRef\",\n    \"RoleFilter\",\n    \"as_filter\",\n    \"all_of\",\n    \"resolve_path\",\n    # is_ssrf_safe, lazy_import\n    \"is_ssrf_safe\",\n    \"LazyInit\",\n    \"lazy_import\",\n)"
+    ],
+    "lionagi/ln/_async_call.py": [
+      "_lazy = LazyInit()",
+      "__all__ = (\n    \"alcall\",\n    \"bcall\",\n    \"AlcallParams\",\n    \"BcallParams\",\n)"
+    ],
+    "lionagi/ln/_cache.py": [
+      "__all__ = (\"BoundedLRUCache\",)"
+    ],
+    "lionagi/ln/_hash.py": [
+      "__all__ = (\n    \"GENESIS_HASH\",\n    \"HashAlgorithm\",\n    \"MAX_HASH_INPUT_BYTES\",\n    \"compute_chain_hash\",\n    \"compute_hash\",\n    \"hash_dict\",\n    \"hash_fd\",\n    \"hash_file\",\n    \"hash_obj\",\n)",
+      "_lazy = LazyInit()"
+    ],
+    "lionagi/ln/_json_dump.py": [
+      "__all__ = [\n    \"get_orjson_default\",\n    \"make_options\",\n    \"json_dumpb\",\n    \"json_dumps\",\n    \"json_lines_iter\",\n    \"raise_if_non_finite\",\n]"
+    ],
+    "lionagi/ln/_json_load.py": [
+      "__all__ = (\"JSONDecodeError\", \"json_loads\")"
+    ],
+    "lionagi/ln/_lazy_init.py": [
+      "__all__ = (\"LazyInit\", \"lazy_import\")"
+    ],
+    "lionagi/ln/_list_call.py": [
+      "__all__ = (\"lcall\",)"
+    ],
+    "lionagi/ln/_structural.py": [
+      "__all__ = (\"UnhashableStructuralValueError\",)"
+    ],
+    "lionagi/ln/_to_list.py": [
+      "__all__ = (\"to_list\", \"ToListParams\")",
+      "_lazy = LazyInit()"
+    ],
+    "lionagi/ln/_utils.py": [
+      "__all__ = (\n    \"acreate_path\",\n    \"async_synchronized\",\n    \"coerce_created_at\",\n    \"copy\",\n    \"create_path\",\n    \"extract_types\",\n    \"get_bins\",\n    \"import_module\",\n    \"is_import_installed\",\n    \"is_pydantic_model_class\",\n    \"is_same_dtype\",\n    \"is_union_type\",\n    \"load_type_from_string\",\n    \"now_utc\",\n    \"parse_duration\",\n    \"register_type_prefix\",\n    \"short_id\",\n    \"synchronized\",\n    \"to_uuid\",\n    \"union_members\",\n    \"unwrap_optional\",\n)"
+    ],
+    "lionagi/ln/concurrency/__init__.py": [
+      "from ._compat import BaseExceptionGroup, ExceptionGroup",
+      "from .cancel import (\n    CancelScope,\n    effective_deadline,\n    fail_after,\n    fail_at,\n    move_on_after,\n    move_on_at,\n)",
+      "from .errors import (\n    cache_cancelled_exc_class,\n    cancelled_exc_classes,\n    get_cancelled_exc_class,\n    is_cancelled,\n    non_cancel_subgroup,\n    shield,\n    split_cancellation,\n)",
+      "from .patterns import CompletionStream, bounded_map, gather, race, retry",
+      "from .primitives import CapacityLimiter, Condition, Event, Lock, Queue, Semaphore",
+      "from .resource_tracker import LeakInfo, LeakTracker, track_resource, untrack_resource",
+      "from .task import TaskGroup, create_task_group",
+      "from .utils import (\n    SigtermInterrupt,\n    current_time,\n    is_coro_func,\n    maybe_await,\n    run_async,\n    run_sync,\n    sigterm_received,\n    sleep,\n    temporary_signal_handlers,\n)",
+      "__all__ = (\n    \"CancelScope\",\n    \"fail_after\",\n    \"move_on_after\",\n    \"fail_at\",\n    \"move_on_at\",\n    \"effective_deadline\",\n    \"cache_cancelled_exc_class\",\n    \"cancelled_exc_classes\",\n    \"get_cancelled_exc_class\",\n    \"is_cancelled\",\n    \"non_cancel_subgroup\",\n    \"shield\",\n    \"split_cancellation\",\n    \"TaskGroup\",\n    \"create_task_group\",\n    \"Lock\",\n    \"Semaphore\",\n    \"CapacityLimiter\",\n    \"Queue\",\n    \"Event\",\n    \"Condition\",\n    \"gather\",\n    \"race\",\n    \"bounded_map\",\n    \"retry\",\n    \"CompletionStream\",\n    \"track_resource\",\n    \"untrack_resource\",\n    \"LeakInfo\",\n    \"LeakTracker\",\n    \"is_coro_func\",\n    \"maybe_await\",\n    \"ConcurrencyEvent\",\n    \"BaseExceptionGroup\",\n    \"ExceptionGroup\",\n    \"run_async\",\n    \"run_sync\",\n    \"current_time\",\n    \"sleep\",\n    \"SigtermInterrupt\",\n    \"sigterm_received\",\n    \"temporary_signal_handlers\",\n)"
+    ],
+    "lionagi/ln/concurrency/_compat.py": [
+      "__all__ = [\n    \"BaseExceptionGroup\",\n    \"ExceptionGroup\",\n    \"is_exception_group\",\n    \"get_exception_group_exceptions\",\n]"
+    ],
+    "lionagi/ln/concurrency/cancel.py": [
+      "__all__ = (\n    \"CancelScope\",\n    \"fail_after\",\n    \"move_on_after\",\n    \"fail_at\",\n    \"move_on_at\",\n    \"effective_deadline\",\n)"
+    ],
+    "lionagi/ln/concurrency/errors.py": [
+      "__all__ = (\n    \"cache_cancelled_exc_class\",\n    \"cancelled_exc_classes\",\n    \"get_cancelled_exc_class\",\n    \"is_cancelled\",\n    \"non_cancel_subgroup\",\n    \"shield\",\n    \"split_cancellation\",\n)"
+    ],
+    "lionagi/ln/concurrency/patterns.py": [
+      "__all__ = (\n    \"gather\",\n    \"race\",\n    \"bounded_map\",\n    \"CompletionStream\",\n    \"retry\",\n)"
+    ],
+    "lionagi/ln/concurrency/primitives.py": [
+      "__all__ = (\n    \"Lock\",\n    \"Semaphore\",\n    \"CapacityLimiter\",\n    \"Queue\",\n    \"Event\",\n    \"Condition\",\n)"
+    ],
+    "lionagi/ln/concurrency/resource_tracker.py": [
+      "__all__ = (\n    \"track_resource\",\n    \"untrack_resource\",\n    \"LeakInfo\",\n    \"LeakTracker\",\n)"
+    ],
+    "lionagi/ln/concurrency/task.py": [
+      "__all__ = (\n    \"TaskGroup\",\n    \"create_task_group\",\n)"
+    ],
+    "lionagi/ln/concurrency/utils.py": [
+      "__all__ = (\n    \"is_coro_func\",\n    \"maybe_await\",\n    \"run_sync\",\n    \"run_async\",\n    \"sleep\",\n    \"current_time\",\n    \"SigtermInterrupt\",\n    \"sigterm_received\",\n    \"temporary_signal_handlers\",\n)"
+    ],
+    "lionagi/ln/fuzzy/__init__.py": [
+      "from ._extract_json import extract_json",
+      "from ._fuzzy_json import MAX_JSON_INPUT_SIZE, fuzzy_json",
+      "from ._fuzzy_match import FuzzyMatchKeysParams, fuzzy_match_keys",
+      "from ._fuzzy_validate import fuzzy_validate_mapping, fuzzy_validate_pydantic",
+      "from ._string_similarity import SIMILARITY_TYPE, string_similarity",
+      "from ._to_dict import to_dict",
+      "__all__ = (\n    \"MAX_JSON_INPUT_SIZE\",\n    \"to_dict\",\n    \"fuzzy_json\",\n    \"fuzzy_match_keys\",\n    \"extract_json\",\n    \"string_similarity\",\n    \"SIMILARITY_TYPE\",\n    \"fuzzy_validate_pydantic\",\n    \"FuzzyMatchKeysParams\",\n    \"fuzzy_validate_mapping\",\n)"
+    ],
+    "lionagi/ln/fuzzy/_fuzzy_match.py": [
+      "__all__ = (\n    \"fuzzy_match_keys\",\n    \"FuzzyMatchKeysParams\",\n)"
+    ],
+    "lionagi/ln/fuzzy/_fuzzy_validate.py": [
+      "__all__ = (\"fuzzy_validate_pydantic\",)"
+    ],
+    "lionagi/ln/fuzzy/_string_similarity.py": [
+      "__all__ = (\"string_similarity\",)"
+    ],
+    "lionagi/ln/types/__init__.py": [
+      "from __future__ import annotations",
+      "from .._structural import UnhashableStructuralValueError",
+      "from ._sentinel import (\n    MaybeSentinel,\n    MaybeUndefined,\n    MaybeUnset,\n    SingletonType,\n    T,\n    Undefined,\n    UndefinedType,\n    Unset,\n    UnsetType,\n    is_sentinel,\n    not_sentinel,\n)",
+      "from .base import DataClass, Enum, KeysDict, KeysLike, Meta, ModelConfig, Params",
+      "from .filters import (\n    FieldRef,\n    Filter,\n    RoleFilter,\n    SpecFilter,\n    TypeFilter,\n    all_of,\n    as_filter,\n    resolve_path,\n)",
+      "from .operable import Operable",
+      "from .registry import (\n    DuplicateRegistryKeyError,\n    DuplicateRegistryOwnerError,\n    Registry,\n    RegistryCompositionError,\n    RegistryEntry,\n    RegistryFragment,\n    RegistryOverride,\n    RegistryOverrideRule,\n    RegistryRecord,\n    RegistrySource,\n    RegistryValueError,\n)",
+      "from .spec import CommonMeta, Spec",
+      "__all__ = (\n    # Sentinel types\n    \"Undefined\",\n    \"Unset\",\n    \"MaybeUndefined\",\n    \"MaybeUnset\",\n    \"MaybeSentinel\",\n    \"SingletonType\",\n    \"UndefinedType\",\n    \"UnsetType\",\n    \"is_sentinel\",\n    \"not_sentinel\",\n    \"UnhashableStructuralValueError\",\n    # Base classes\n    \"ModelConfig\",\n    \"Enum\",\n    \"Params\",\n    \"DataClass\",\n    \"Meta\",\n    \"KeysDict\",\n    \"KeysLike\",\n    \"T\",\n    \"Registry\",\n    \"RegistryEntry\",\n    \"RegistryFragment\",\n    \"RegistryOverrideRule\",\n    \"RegistrySource\",\n    \"RegistryRecord\",\n    \"RegistryOverride\",\n    \"RegistryCompositionError\",\n    \"DuplicateRegistryOwnerError\",\n    \"DuplicateRegistryKeyError\",\n    \"RegistryValueError\",\n    # Spec system\n    \"Spec\",\n    \"CommonMeta\",\n    \"Operable\",\n    # Filter DSL\n    \"Filter\",\n    \"TypeFilter\",\n    \"SpecFilter\",\n    \"FieldRef\",\n    \"RoleFilter\",\n    \"as_filter\",\n    \"all_of\",\n    \"resolve_path\",\n)"
+    ],
+    "lionagi/ln/types/_sentinel.py": [
+      "__all__ = (\n    \"Undefined\",\n    \"Unset\",\n    \"MaybeUndefined\",\n    \"MaybeUnset\",\n    \"MaybeSentinel\",\n    \"SingletonType\",\n    \"UndefinedType\",\n    \"UnsetType\",\n    \"is_sentinel\",\n    \"not_sentinel\",\n    \"T\",\n)"
+    ],
+    "lionagi/ln/types/base.py": [
+      "__all__ = (\n    \"Enum\",\n    \"ModelConfig\",\n    \"Params\",\n    \"DataClass\",\n    \"Meta\",\n    \"KeysDict\",\n    \"KeysLike\",\n)"
+    ],
+    "lionagi/ln/types/filters.py": [
+      "__all__ = (\n    \"Filter\",\n    \"TypeFilter\",\n    \"SpecFilter\",\n    \"FieldRef\",\n    \"RoleFilter\",\n    \"as_filter\",\n    \"all_of\",\n    \"resolve_path\",\n)"
+    ],
+    "lionagi/ln/types/operable.py": [
+      "__all__ = (\"Operable\",)"
+    ],
+    "lionagi/ln/types/registry.py": [
+      "__all__ = (\n    \"RegistryEntry\",\n    \"RegistryFragment\",\n    \"RegistryOverrideRule\",\n    \"RegistrySource\",\n    \"RegistryRecord\",\n    \"RegistryOverride\",\n    \"Registry\",\n    \"RegistryCompositionError\",\n    \"DuplicateRegistryOwnerError\",\n    \"DuplicateRegistryKeyError\",\n    \"RegistryValueError\",\n)"
+    ],
+    "lionagi/ln/types/spec.py": [
+      "__all__ = (\"Spec\", \"CommonMeta\")"
+    ],
+    "lionagi/lndl/__init__.py": [
+      "from .assembler import (\n    NOTE_NAMESPACE,\n    assemble,\n    assemble_spec_value,\n    build_action_call,\n    collect_actions,\n    collect_notes,\n    replace_actions,\n)",
+      "from .ast import Identifier, Lact, Literal, Lvar, OutBlock, Program, RLvar",
+      "from .diagnostics import (\n    LndlChunkHealth,\n    LndlRoundRecord,\n    LndlTrace,\n    classify_chunk,\n    classify_result,\n    extract_lndl_chunks,\n)",
+      "from .errors import (\n    InvalidConstructorError,\n    LNDLError,\n    MissingFieldError,\n    MissingLvarError,\n    TypeMismatchError,\n)",
+      "from .extract import extract_lndl_blocks",
+      "from .lexer import Lexer, Token, TokenType",
+      "from .normalize import normalize_lndl_text",
+      "from .parser import ParseError, Parser",
+      "from .prompt import LNDL_SYSTEM_PROMPT, get_lndl_system_prompt",
+      "from .round_outcome import Continue, Retry, RoundOutcome, Success",
+      "from .types import (\n    ActionCall,\n    LactMetadata,\n    LNDLOutput,\n    LvarMetadata,\n    ParsedConstructor,\n    RLvarMetadata,\n    Scalar,\n    ensure_no_action_calls,\n    has_action_calls,\n    revalidate_with_action_results,\n)",
+      "__all__ = (\n    \"LNDL_SYSTEM_PROMPT\",\n    \"NOTE_NAMESPACE\",\n    \"ActionCall\",\n    \"Continue\",\n    \"Identifier\",\n    \"InvalidConstructorError\",\n    \"LNDLError\",\n    \"LNDLOutput\",\n    \"Lact\",\n    \"LactMetadata\",\n    \"Lexer\",\n    \"Literal\",\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"Lvar\",\n    \"LvarMetadata\",\n    \"MissingFieldError\",\n    \"MissingLvarError\",\n    \"OutBlock\",\n    \"ParseError\",\n    \"ParsedConstructor\",\n    \"Parser\",\n    \"Program\",\n    \"RLvar\",\n    \"RLvarMetadata\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Scalar\",\n    \"Success\",\n    \"Token\",\n    \"TokenType\",\n    \"TypeMismatchError\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"ensure_no_action_calls\",\n    \"extract_lndl_blocks\",\n    \"extract_lndl_chunks\",\n    \"get_lndl_system_prompt\",\n    \"has_action_calls\",\n    \"normalize_lndl_text\",\n    \"replace_actions\",\n    \"revalidate_with_action_results\",\n)"
+    ],
+    "lionagi/lndl/_parse_function_call.py": [
+      "__all__ = (\n    \"parse_batch_function_calls\",\n    \"parse_function_call\",\n    \"qualified_name\",\n)"
+    ],
+    "lionagi/lndl/assembler.py": [
+      "__all__ = (\n    \"NOTE_NAMESPACE\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"replace_actions\",\n)"
+    ],
+    "lionagi/lndl/ast.py": [
+      "__all__ = (\n    \"ASTNode\",\n    \"Expr\",\n    \"Identifier\",\n    \"Lact\",\n    \"Literal\",\n    \"Lvar\",\n    \"OutBlock\",\n    \"Program\",\n    \"RLvar\",\n    \"Stmt\",\n)"
+    ],
+    "lionagi/lndl/diagnostics.py": [
+      "__all__ = (\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"extract_lndl_chunks\",\n)"
+    ],
+    "lionagi/lndl/extract.py": [
+      "__all__ = (\"extract_lndl_blocks\",)"
+    ],
+    "lionagi/lndl/lexer.py": [
+      "__all__ = (\"Lexer\", \"Token\", \"TokenType\")"
+    ],
+    "lionagi/lndl/normalize.py": [
+      "__all__ = (\"normalize_lndl_text\",)"
+    ],
+    "lionagi/lndl/parser.py": [
+      "__all__ = (\"ParseError\", \"Parser\")"
+    ],
+    "lionagi/lndl/round_outcome.py": [
+      "__all__ = (\n    \"Continue\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Success\",\n)"
+    ],
+    "lionagi/models/__init__.py": [
+      "from .field_model import FieldModel",
+      "from .hashable_model import HashableModel",
+      "from .note import Note",
+      "from .operable_model import OperableModel",
+      "from .schema_model import SchemaModel",
+      "__all__ = (\n    \"FieldModel\",\n    \"HashableModel\",\n    \"Note\",\n    \"OperableModel\",\n    \"SchemaModel\",\n)"
+    ],
+    "lionagi/models/_build_model.py": [
+      "__all__ = (\"build_model_type\",)"
+    ],
+    "lionagi/models/field_model.py": [
+      "_lazy_field_params = LazyInit()",
+      "__all__ = (\"FieldModel\",)"
+    ],
+    "lionagi/models/hashable_model.py": [
+      "__all__ = (\n    \"HashableModel\",\n    \"ConversionMode\",\n)"
+    ],
+    "lionagi/models/operable_model.py": [
+      "__all__ = (\"OperableModel\",)"
+    ],
+    "lionagi/models/schema_model.py": [
+      "__all__ = (\"SchemaModel\",)"
+    ],
+    "lionagi/operations/__init__.py": [
+      "from .builder import ExpansionStrategy, OperationGraphBuilder",
+      "from .flow import (\n    DependencyAwareExecutor,\n    FlowEvent,\n    ReactiveExecutor,\n    flow,\n    flow_stream,\n)",
+      "from .node import BranchOperations, Operation",
+      "__all__ = (\n    \"ExpansionStrategy\",\n    \"OperationGraphBuilder\",\n    \"flow\",\n    \"flow_stream\",\n    \"FlowEvent\",\n    \"DependencyAwareExecutor\",\n    \"ReactiveExecutor\",\n    \"BranchOperations\",\n    \"Operation\",\n    \"Builder\",\n)"
+    ],
+    "lionagi/operations/_api_hooks.py": [
+      "__all__ = (\"emit_api_pre_call\", \"emit_api_post_call\", \"emit_api_stream_chunk\")"
+    ],
+    "lionagi/operations/_turn_origin.py": [
+      "__all__ = (\"TurnOrigin\", \"resolve_turn_origin\", \"consume_turn_origin\")"
+    ],
+    "lionagi/operations/builder.py": [
+      "__all__ = (\n    \"OperationGraphBuilder\",\n    \"ExpansionStrategy\",\n)"
+    ],
+    "lionagi/operations/fields.py": [
+      "def __getattr__(name: str):\n    if name in _FIELD_CONSTANTS:\n        with _FIELD_CONSTANTS_LOCK:\n            if name not in globals():\n                field_name, kwargs = _FIELD_CONSTANTS[name]\n                globals()[name] = get_default_field(field_name, **kwargs)\n            return globals()[name]\n    raise AttributeError(f\"module '{__name__}' has no attribute '{name}'\")",
+      "__all__ = (\n    \"ACTION_REQUESTS_FIELD\",\n    \"ACTION_RESPONSES_FIELD\",\n    \"ACTION_REQUIRED_FIELD\",\n    \"INSTRUCT_FIELD\",\n    \"LIST_INSTRUCT_FIELD_MODEL\",\n    \"REASON_FIELD\",\n    \"ActionRequestModel\",\n    \"ActionResponseModel\",\n    \"Instruct\",\n    \"Reason\",\n    \"get_default_field\",\n)"
+    ],
+    "lionagi/operations/lndl_middle/__init__.py": [
+      "from .lndl_middle import DEFAULT_ROUND_BUDGET, build_lndl_middle, lndl_middle",
+      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
+    ],
+    "lionagi/operations/lndl_middle/lndl_middle.py": [
+      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
+    ],
+    "lionagi/operations/operate/operative.py": [
+      "__all__ = (\"Operative\",)"
+    ],
+    "lionagi/operations/operate/step.py": [
+      "__all__ = (\"Step\",)"
+    ],
+    "lionagi/operations/parse/__init__.py": [
+      "from ..types import (\n    ExtractionError,\n    ParseError,\n    ParseFailureKind,\n    SchemaRejectedError,\n    UnparsedResponse,\n)",
+      "__all__ = (\n    \"ExtractionError\",\n    \"ParseError\",\n    \"ParseFailureKind\",\n    \"SchemaRejectedError\",\n    \"UnparsedResponse\",\n)"
+    ],
+    "lionagi/operations/schema/__init__.py": [
+      "from .json_structure import JsonStructure",
+      "from .structure import Structure",
+      "__all__ = (\"JsonStructure\", \"Structure\")"
+    ],
+    "lionagi/operations/schema/json_structure.py": [
+      "__all__ = (\"JsonStructure\",)"
+    ],
+    "lionagi/operations/schema/structure.py": [
+      "__all__ = (\"Structure\",)"
+    ],
+    "lionagi/plugins/__init__.py": [
+      "from __future__ import annotations",
+      "from .discovery import DiscoveredPlugin, discover_plugins",
+      "from .manifest import Capabilities, ManifestError, PluginManifest, parse_manifest",
+      "from .registry import (\n    PluginActivationError,\n    PluginRecord,\n    PluginRegistry,\n    PluginState,\n    PluginToolCollisionError,\n    ToolTarget,\n)",
+      "from .trust import TrustState, build_trust_disclosure, gc_trust_records, trust_plugin, trust_state",
+      "__all__ = (\n    \"Capabilities\",\n    \"DiscoveredPlugin\",\n    \"ManifestError\",\n    \"PluginActivationError\",\n    \"PluginManifest\",\n    \"PluginRecord\",\n    \"PluginRegistry\",\n    \"PluginState\",\n    \"PluginToolCollisionError\",\n    \"ToolTarget\",\n    \"TrustState\",\n    \"build_trust_disclosure\",\n    \"discover_plugins\",\n    \"gc_trust_records\",\n    \"parse_manifest\",\n    \"trust_plugin\",\n    \"trust_state\",\n)"
+    ],
+    "lionagi/plugins/_user_settings.py": [
+      "__all__ = (\n    \"locked_user_settings\",\n    \"read_user_settings\",\n    \"user_settings_revision\",\n    \"user_settings_path\",\n    \"write_user_settings\",\n)"
+    ],
+    "lionagi/plugins/discovery.py": [
+      "__all__ = (\n    \"DiscoveredPlugin\",\n    \"discover_plugins\",\n)"
+    ],
+    "lionagi/plugins/manifest.py": [
+      "__all__ = (\n    \"Capabilities\",\n    \"HookCommand\",\n    \"HookMatcher\",\n    \"ManifestError\",\n    \"PluginManifest\",\n    \"ProviderCapability\",\n    \"ToolCapability\",\n    \"parse_manifest\",\n    \"parse_tool_target\",\n)"
+    ],
+    "lionagi/plugins/registry.py": [
+      "__all__ = (\n    \"PluginActivationError\",\n    \"PluginRecord\",\n    \"PluginRegistry\",\n    \"PluginState\",\n    \"PluginToolCollisionError\",\n    \"ToolTarget\",\n)"
+    ],
+    "lionagi/plugins/trust.py": [
+      "__all__ = (\n    \"TrustState\",\n    \"build_trust_disclosure\",\n    \"compute_trust_hashes\",\n    \"gc_trust_records\",\n    \"read_trusted_plugins\",\n    \"trust_plugin\",\n    \"trust_state\",\n)"
+    ],
+    "lionagi/protocols/_concepts.py": [
+      "__all__ = (\n    \"Observer\",\n    \"Manager\",\n    \"Relational\",\n    \"Sendable\",\n    \"Observable\",\n    \"Communicatable\",\n    \"Condition\",\n    \"Collective\",\n    \"Ordering\",\n    \"Composable\",\n    \"Composed\",\n)"
+    ],
+    "lionagi/protocols/action/gate.py": [
+      "__all__ = (\n    \"ControlUnavailableError\",\n    \"GateDeniedError\",\n    \"GateEvaluator\",\n    \"GateResult\",\n    \"adapt_legacy_hook\",\n    \"adapt_session_gate\",\n    \"run_gate_pass\",\n)"
+    ],
+    "lionagi/protocols/action/lion_tool.py": [
+      "__all__ = (\"LionTool\",)"
+    ],
+    "lionagi/protocols/action/manager.py": [
+      "__all__ = [\"ActionManager\", \"load_mcp_tools\", \"qualified_mcp_name\"]"
+    ],
+    "lionagi/protocols/action/tool.py": [
+      "__all__ = (\n    \"Tool\",\n    \"FuncTool\",\n    \"FuncToolRef\",\n    \"ToolRef\",\n)"
+    ],
+    "lionagi/protocols/action/tool_hooks.py": [
+      "__all__ = (\n    \"ActionGovernanceDeniedError\",\n    \"ToolHookDeniedError\",\n    \"ToolPostDecision\",\n    \"ToolPostHook\",\n    \"ToolPreDecision\",\n    \"ToolPreHook\",\n    \"run_tool_post_hooks\",\n    \"run_tool_pre_hooks\",\n)"
+    ],
+    "lionagi/protocols/context_providers.py": [
+      "__all__ = (\n    \"ContextProvider\",\n    \"ProviderReport\",\n    \"ContextProviderRegistry\",\n)"
+    ],
+    "lionagi/protocols/flow_requests.py": [
+      "__all__ = (\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n)"
+    ],
+    "lionagi/protocols/generic/__init__.py": [
+      "from .element import ID, Element",
+      "from .event import Event, EventStatus, Execution",
+      "from .flow import Flow",
+      "from .log import DataLogger, DataLoggerConfig, Log",
+      "from .pile import Pile",
+      "from .processor import Executor, Processor",
+      "from .progression import Progression",
+      "__all__ = (\n    \"Element\",\n    \"ID\",\n    \"Event\",\n    \"Execution\",\n    \"Flow\",\n    \"Log\",\n    \"DataLogger\",\n    \"DataLoggerConfig\",\n    \"Pile\",\n    \"Progression\",\n    \"Processor\",\n    \"Executor\",\n    \"EventStatus\",\n)"
+    ],
+    "lionagi/protocols/generic/element.py": [
+      "__all__ = (\n    \"Element\",\n    \"validate_order\",\n)"
+    ],
+    "lionagi/protocols/generic/event.py": [
+      "__all__ = (\n    \"EventStatus\",\n    \"Execution\",\n    \"Event\",\n)"
+    ],
+    "lionagi/protocols/generic/flow.py": [
+      "__all__ = (\"Flow\",)"
+    ],
+    "lionagi/protocols/generic/log.py": [
+      "__all__ = (\n    \"DataLoggerConfig\",\n    \"LogManagerConfig\",\n    \"Log\",\n    \"DataLogger\",\n    \"LogManager\",\n    \"redact_binary_content\",\n)"
+    ],
+    "lionagi/protocols/generic/pile.py": [
+      "__all__ = (\"Pile\",)"
+    ],
+    "lionagi/protocols/generic/processor.py": [
+      "__all__ = (\n    \"Processor\",\n    \"Executor\",\n)"
+    ],
+    "lionagi/protocols/generic/progression.py": [
+      "__all__ = (\n    \"Progression\",\n    \"prog\",\n)"
+    ],
+    "lionagi/protocols/graph/__init__.py": [
+      "from .edge import Edge, EdgeCondition",
+      "from .graph import Graph",
+      "from .node import Node",
+      "from .node_factory import NodeConfig, create_node",
+      "__all__ = [\n    \"Edge\",\n    \"EdgeCondition\",\n    \"Graph\",\n    \"Node\",\n    \"NodeConfig\",\n    \"create_node\",\n]"
+    ],
+    "lionagi/protocols/graph/edge.py": [
+      "__all__ = (\n    \"EdgeCondition\",\n    \"Edge\",\n)"
+    ],
+    "lionagi/protocols/graph/graph.py": [
+      "__all__ = (\"Graph\",)"
+    ],
+    "lionagi/protocols/graph/node.py": [
+      "__all__ = (\"Node\",)"
+    ],
+    "lionagi/protocols/graph/node_factory.py": [
+      "__all__ = (\n    \"NodeConfig\",\n    \"create_node\",\n)"
+    ],
+    "lionagi/protocols/ids.py": [
+      "__all__ = (\n    \"to_uuid\",\n    \"canonical_id\",\n)"
+    ],
+    "lionagi/protocols/memory.py": [
+      "__all__ = (\n    \"MemoryItem\",\n    \"MemoryQuery\",\n    \"MemoryStore\",\n    \"InMemoryStore\",\n)"
+    ],
+    "lionagi/protocols/messages/__init__.py": [
+      "from .action_request import ActionRequest, ActionRequestContent",
+      "from .action_response import ActionResponse, ActionResponseContent",
+      "from .assistant_response import AssistantResponse, AssistantResponseContent",
+      "from .base import MESSAGE_FIELDS, MessageRole, SenderRecipient",
+      "from .instruction import Instruction, InstructionContent",
+      "from .manager import MessageManager, create_message",
+      "from .message import Message, MessageContent, RoledMessage",
+      "from .prepare import prepare_messages_for_chat",
+      "from .rendering import CustomParser, CustomRenderer, StructureFormat",
+      "from .system import System, SystemContent",
+      "from .validators import validate_image_url",
+      "__all__ = (\n    \"ActionRequest\",\n    \"ActionRequestContent\",\n    \"ActionResponse\",\n    \"ActionResponseContent\",\n    \"AssistantResponse\",\n    \"AssistantResponseContent\",\n    \"CustomParser\",\n    \"CustomRenderer\",\n    \"Instruction\",\n    \"InstructionContent\",\n    \"MESSAGE_FIELDS\",\n    \"Message\",\n    \"MessageContent\",\n    \"MessageManager\",\n    \"MessageRole\",\n    \"RoledMessage\",\n    \"SenderRecipient\",\n    \"StructureFormat\",\n    \"System\",\n    \"SystemContent\",\n    \"create_message\",\n    \"prepare_messages_for_chat\",\n    \"validate_image_url\",\n)"
+    ],
+    "lionagi/protocols/messages/_result_projection.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/protocols/messages/base.py": [
+      "__all__ = (\n    \"MessageRole\",\n    \"MessageField\",\n    \"MESSAGE_FIELDS\",\n    \"validate_sender_recipient\",\n    \"serialize_sender_recipient\",\n)"
+    ],
+    "lionagi/protocols/messages/prepare.py": [
+      "__all__ = (\"prepare_messages_for_chat\",)"
+    ],
+    "lionagi/protocols/messages/rendering.py": [
+      "__all__ = (\"CustomRenderer\", \"CustomParser\", \"StructureFormat\")"
+    ],
+    "lionagi/protocols/messages/validators.py": [
+      "__all__ = (\"validate_image_url\",)"
+    ],
+    "lionagi/protocols/types.py": [
+      "__all__ = (\n    \"Collective\",\n    \"Communicatable\",\n    \"Condition\",\n    \"Manager\",\n    \"Observer\",\n    \"Ordering\",\n    \"Observable\",\n    \"Relational\",\n    \"Sendable\",\n    \"canonical_id\",\n    \"to_uuid\",\n    \"ID\",\n    \"Element\",\n    \"validate_order\",\n    \"Event\",\n    \"EventStatus\",\n    \"Execution\",\n    \"Log\",\n    \"Pile\",\n    \"Executor\",\n    \"Processor\",\n    \"Progression\",\n    \"prog\",\n    \"EdgeCondition\",\n    \"Edge\",\n    \"Graph\",\n    \"Node\",\n    \"MESSAGE_FIELDS\",\n    \"MessageField\",\n    \"MessageRole\",\n    \"validate_sender_recipient\",\n    \"ActionRequest\",\n    \"ActionResponse\",\n    \"AssistantResponse\",\n    \"Instruction\",\n    \"Message\",\n    \"MessageManager\",\n    \"RoledMessage\",\n    \"SenderRecipient\",\n    \"System\",\n    \"DataLogger\",\n    \"DataLoggerConfig\",\n    \"MemoryItem\",\n    \"MemoryQuery\",\n    \"MemoryStore\",\n    \"InMemoryStore\",\n)"
+    ],
+    "lionagi/providers/_agentic_handlers.py": [
+      "__all__ = (\"RUNTIME_STATE_NAMES\", \"AgenticHandlersMixin\")"
+    ],
+    "lionagi/providers/_multipart.py": [
+      "__all__ = (\"_replayable_file_factory\",)"
+    ],
+    "lionagi/providers/_secret_resolution.py": [
+      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
+    ],
+    "lionagi/providers/_subagent_admission.py": [
+      "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
+    ],
+    "lionagi/providers/ag2/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AG2AgentRequest\": (\"agent\", None),\n    \"AG2BetaEndpoint\": (\"agent\", None),\n    \"AG2GroupChatEndpoint\": (\"groupchat\", None),\n    \"AG2GroupChatRequest\": (\"groupchat\", None),\n    \"AG2NlipEndpoint\": (\"nlip\", None),\n    \"AG2NlipRequest\": (\"nlip\", None),\n    \"AgentConfig\": (\"agent\", None),\n    \"AgentSpec\": (\"groupchat\", None),\n    \"GroupChatSpec\": (\"groupchat\", None),\n    \"HandoffCondition\": (\"groupchat\", None),\n    \"ResearchPlan\": (\"groupchat\", None),\n    \"_assert_nlip_url_safe\": (\"nlip\", None),\n    \"build_group_chat\": (\"groupchat\", None),\n    \"call_nlip_remote\": (\"nlip\", None),\n    \"run_beta_agent\": (\"agent\", None),\n    \"stream_group_chat\": (\"groupchat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/ag2/_config.py": [
+      "__all__ = (\"AG2Configs\",)"
+    ],
+    "lionagi/providers/ag2/agent.py": [
+      "__all__ = [\"AG2AgentRequest\", \"AgentConfig\", \"run_beta_agent\", \"AG2BetaEndpoint\"]"
+    ],
+    "lionagi/providers/ag2/groupchat.py": [
+      "__all__ = [\n    \"HandoffCondition\",\n    \"AgentSpec\",\n    \"GroupChatSpec\",\n    \"ResearchPlan\",\n    \"AG2GroupChatRequest\",\n    \"build_group_chat\",\n    \"stream_group_chat\",\n    \"AG2GroupChatEndpoint\",\n]"
+    ],
+    "lionagi/providers/ag2/nlip.py": [
+      "__all__ = [\"AG2NlipRequest\", \"_assert_nlip_url_safe\", \"call_nlip_remote\", \"AG2NlipEndpoint\"]"
+    ],
+    "lionagi/providers/anthropic/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AnthropicMessagesEndpoint\": (\"messages\", None),\n    \"ClaudeCodeCLIEndpoint\": (\"claude_code\", None),\n    \"ClaudeCodeRequest\": (\"claude_code\", None),\n    \"CreateMessageRequest\": (\"messages\", None),\n    \"stream_claude_code_cli\": (\"claude_code\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/anthropic/_config.py": [
+      "__all__ = (\"AnthropicConfigs\", \"ClaudeCodeConfigs\")"
+    ],
+    "lionagi/providers/anthropic/_prompt_cache.py": [
+      "__all__ = (\"CERT_VERSION\", \"LOOKBACK\", \"MAX_MARKS\", \"Point\", \"place\")"
+    ],
+    "lionagi/providers/anthropic/claude_code.py": [
+      "__all__ = (\"ClaudeCodeRequest\", \"stream_claude_code_cli\", \"ClaudeCodeCLIEndpoint\")"
+    ],
+    "lionagi/providers/anthropic/messages.py": [
+      "__all__ = (\"ANTHROPIC_DEFAULT_MAX_TOKENS\", \"CreateMessageRequest\", \"AnthropicMessagesEndpoint\")"
+    ],
+    "lionagi/providers/deepseek/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"DeepseekChatCompletionsRequest\": (\"chat\", None),\n    \"DeepseekChatEndpoint\": (\"chat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/deepseek/_config.py": [
+      "__all__ = (\"DeepSeekConfigs\",)"
+    ],
+    "lionagi/providers/deepseek/chat.py": [
+      "__all__ = (\"DeepseekChatCompletionsRequest\", \"DeepseekChatEndpoint\")"
+    ],
+    "lionagi/providers/exa/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"ExaContentsEndpoint\": (\"contents\", None),\n    \"ExaContentsRequest\": (\"contents\", None),\n    \"ExaFindSimilarEndpoint\": (\"find_similar\", None),\n    \"ExaFindSimilarRequest\": (\"find_similar\", None),\n    \"ExaSearchEndpoint\": (\"search\", None),\n    \"ExaSearchRequest\": (\"search\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/exa/_config.py": [
+      "__all__ = (\"ExaConfigs\",)"
+    ],
+    "lionagi/providers/exa/_schemas.py": [
+      "__all__ = (\n    \"LivecrawlType\",\n    \"_ExaBase\",\n    \"ContentsText\",\n    \"ContentsHighlights\",\n    \"ContentsSummary\",\n    \"ContentsExtras\",\n    \"Contents\",\n)"
+    ],
+    "lionagi/providers/exa/contents.py": [
+      "__all__ = (\"ExaContentsRequest\", \"ExaContentsEndpoint\")"
+    ],
+    "lionagi/providers/exa/find_similar.py": [
+      "__all__ = (\"ExaFindSimilarRequest\", \"ExaFindSimilarEndpoint\")"
+    ],
+    "lionagi/providers/exa/search.py": [
+      "__all__ = (\"ExaSearchRequest\", \"ExaSearchEndpoint\")"
+    ],
+    "lionagi/providers/firecrawl/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"CrawlScrapeOptions\": (\"crawl\", None),\n    \"FirecrawlCrawlEndpoint\": (\"crawl\", None),\n    \"FirecrawlCrawlRequest\": (\"crawl\", None),\n    \"FirecrawlMapEndpoint\": (\"map\", None),\n    \"FirecrawlMapRequest\": (\"map\", None),\n    \"FirecrawlScrapeEndpoint\": (\"scrape\", None),\n    \"FirecrawlScrapeRequest\": (\"scrape\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/firecrawl/_config.py": [
+      "__all__ = (\"FirecrawlConfigs\",)"
+    ],
+    "lionagi/providers/firecrawl/_schemas.py": [
+      "__all__ = (\"OutputFormat\",)"
+    ],
+    "lionagi/providers/firecrawl/crawl.py": [
+      "__all__ = (\"FirecrawlCrawlRequest\", \"CrawlScrapeOptions\", \"FirecrawlCrawlEndpoint\")"
+    ],
+    "lionagi/providers/firecrawl/map.py": [
+      "__all__ = (\"FirecrawlMapRequest\", \"FirecrawlMapEndpoint\")"
+    ],
+    "lionagi/providers/firecrawl/scrape.py": [
+      "__all__ = (\"FirecrawlScrapeRequest\", \"FirecrawlScrapeEndpoint\")"
+    ],
+    "lionagi/providers/google/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"GeminiCLIEndpoint\": (\"gemini_code\", None),\n    \"GeminiChatEndpoint\": (\"chat\", None),\n    \"GeminiChunk\": (\"gemini_code\", None),\n    \"GeminiCodeRequest\": (\"gemini_code\", None),\n    \"GeminiSession\": (\"gemini_code\", None),\n    \"OpenAIChatCompletionsRequest\": (\"chat\", None),\n    \"stream_gemini_cli\": (\"gemini_code\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/google/_config.py": [
+      "__all__ = (\"GeminiChatConfigs\", \"GeminiCodeConfigs\")"
+    ],
+    "lionagi/providers/google/chat.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"GeminiChatEndpoint\")"
+    ],
+    "lionagi/providers/google/gemini_code.py": [
+      "__all__ = (\n    \"GeminiChunk\",\n    \"GeminiCodeRequest\",\n    \"GeminiSession\",\n    \"derive_print_timeout\",\n    \"stream_gemini_cli\",\n    \"stream_gemini_cli_events\",\n    \"GeminiCLIEndpoint\",\n    \"resolve_agy_model\",\n)"
+    ],
+    "lionagi/providers/groq/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"GroqAudioTranscriptionEndpoint\": (\"audio_transcription\", None),\n    \"GroqChatEndpoint\": (\"chat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/groq/audio_transcription.py": [
+      "__all__ = (\"GroqAudioTranscriptionEndpoint\",)"
+    ],
+    "lionagi/providers/groq/chat.py": [
+      "__all__ = (\"GroqChatEndpoint\",)"
+    ],
+    "lionagi/providers/lattice/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"LatticeChatCompletionsRequest\": (\"chat\", None),\n    \"LatticeChatEndpoint\": (\"chat\", None),\n    \"LatticeEmbedEndpoint\": (\"embed\", None),\n    \"LatticeEmbedRequest\": (\"embed\", None),\n    \"LatticeLoraSelection\": (\"chat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/lattice/_config.py": [
+      "__all__ = (\n    \"LATTICE_DEFAULT_BASE_URL\",\n    \"LatticeConfigs\",\n    \"LatticeRedirectsRefused\",\n    \"_setup_lattice_endpoint\",\n)"
+    ],
+    "lionagi/providers/lattice/chat.py": [
+      "__all__ = (\"LatticeChatCompletionsRequest\", \"LatticeChatEndpoint\", \"LatticeLoraSelection\")"
+    ],
+    "lionagi/providers/lattice/embed.py": [
+      "__all__ = (\"LatticeEmbedEndpoint\", \"LatticeEmbedRequest\")"
+    ],
+    "lionagi/providers/nvidia_nim/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"NvidiaNimChatEndpoint\": (\"chat\", None),\n    \"NvidiaNimEmbedEndpoint\": (\"embed\", None),\n    \"NvidiaNimEmbeddingRequest\": (\"embed\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/nvidia_nim/_config.py": [
+      "__all__ = (\"NvidiaNimConfigs\",)"
+    ],
+    "lionagi/providers/nvidia_nim/chat.py": [
+      "__all__ = (\"NvidiaNimChatEndpoint\",)"
+    ],
+    "lionagi/providers/nvidia_nim/embed.py": [
+      "__all__ = (\"NvidiaNimEmbeddingRequest\", \"NvidiaNimEmbedEndpoint\")"
+    ],
+    "lionagi/providers/ollama/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"OllamaChatEndpoint\": (\"chat\", None),\n    \"OllamaEmbedEndpoint\": (\"embed\", None),\n    \"OllamaEmbedRequest\": (\"embed\", None),\n    \"OllamaGenerateEndpoint\": (\"generate\", None),\n    \"OllamaGenerateRequest\": (\"generate\", None),\n    \"OpenAIChatCompletionsRequest\": (\"chat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/ollama/_config.py": [
+      "__all__ = (\"OllamaConfigs\", \"_setup_ollama_endpoint\")"
+    ],
+    "lionagi/providers/ollama/chat.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"OllamaChatEndpoint\")"
+    ],
+    "lionagi/providers/ollama/embed.py": [
+      "__all__ = (\"OllamaEmbedRequest\", \"OllamaEmbedEndpoint\")"
+    ],
+    "lionagi/providers/ollama/generate.py": [
+      "__all__ = (\"OllamaGenerateRequest\", \"OllamaGenerateEndpoint\")"
+    ],
+    "lionagi/providers/openai/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AudioSpeechRequest\": (\"audio\", None),\n    \"AudioTranscriptionRequest\": (\"audio\", None),\n    \"OpenAIBatchRequest\": (\"batch\", None),\n    \"CodexCLIEndpoint\": (\"codex\", None),\n    \"CodexCodeRequest\": (\"codex\", None),\n    \"ImageEditRequest\": (\"images\", None),\n    \"ImageGenerationRequest\": (\"images\", None),\n    \"OpenAIChatCompletionsRequest\": (\"chat\", None),\n    \"OpenAIEmbeddingRequest\": (\"embed\", None),\n    \"OpenAIResponsesRequest\": (\"response\", None),\n    \"OpenaiAudioSpeechEndpoint\": (\"audio\", None),\n    \"OpenaiAudioTranscriptionEndpoint\": (\"audio\", None),\n    \"OpenaiBatchEndpoint\": (\"batch\", None),\n    \"OpenaiChatEndpoint\": (\"chat\", None),\n    \"OpenaiEmbedEndpoint\": (\"embed\", None),\n    \"OpenaiImageEditEndpoint\": (\"images\", None),\n    \"OpenaiImageGenerationEndpoint\": (\"images\", None),\n    \"OpenaiResponseEndpoint\": (\"response\", None),\n    \"stream_codex_cli\": (\"codex\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/openai/_audio_schemas.py": [
+      "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
+    ],
+    "lionagi/providers/openai/_chat_schemas.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
+    ],
+    "lionagi/providers/openai/_codex_profile.py": [
+      "__all__ = (\n    \"CODEX_MCP_PROFILE_PREFIX\",\n    \"codex_config_defining_profile\",\n    \"codex_config_setting_default_permissions\",\n    \"codex_home_for_env\",\n    \"configured_codex_profile\",\n    \"global_codex_reasoning_effort\",\n    \"is_generated_codex_profile\",\n    \"project_codex_profile\",\n    \"refuse_codex_profile_run_settings\",\n    \"refuse_non_absolute_codex_home\",\n    \"resolve_codex_config_profile\",\n)"
+    ],
+    "lionagi/providers/openai/_codex_project_layers.py": [
+      "__all__ = (\n    \"declaring_project_layer\",\n    \"mcp_servers_declaration_line\",\n    \"parse_failure\",\n    \"project_layers\",\n)"
+    ],
+    "lionagi/providers/openai/audio.py": [
+      "__all__ = (\n    \"AudioSpeechRequest\",\n    \"AudioTranscriptionRequest\",\n    \"OpenaiAudioSpeechEndpoint\",\n    \"OpenaiAudioTranscriptionEndpoint\",\n)"
+    ],
+    "lionagi/providers/openai/batch.py": [
+      "__all__ = (\n    \"OpenAIBatchOutputExpiration\",\n    \"OpenAIBatchRequest\",\n    \"OpenaiBatchEndpoint\",\n)"
+    ],
+    "lionagi/providers/openai/chat.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"OpenaiChatEndpoint\")"
+    ],
+    "lionagi/providers/openai/codex.py": [
+      "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n)"
+    ],
+    "lionagi/providers/openai/embed.py": [
+      "__all__ = (\"OpenAIEmbeddingRequest\", \"OpenaiEmbedEndpoint\")"
+    ],
+    "lionagi/providers/openai/images.py": [
+      "__all__ = (\n    \"ImageGenerationRequest\",\n    \"ImageEditRequest\",\n    \"OpenaiImageGenerationEndpoint\",\n    \"OpenaiImageEditEndpoint\",\n)"
+    ],
+    "lionagi/providers/openai/response.py": [
+      "__all__ = (\"OpenAIResponsesRequest\", \"OpenaiResponseEndpoint\")"
+    ],
+    "lionagi/providers/openrouter/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"OpenRouterEndpoint\": (\"chat\", None),\n    \"OpenRouterRequest\": (\"chat\", None),\n    \"ReasoningConfig\": (\"chat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/openrouter/_config.py": [
+      "__all__ = (\"OpenRouterConfigs\",)"
+    ],
+    "lionagi/providers/openrouter/chat.py": [
+      "__all__ = (\"ReasoningConfig\", \"OpenRouterRequest\", \"OpenRouterEndpoint\")"
+    ],
+    "lionagi/providers/perplexity/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"PerplexityChatEndpoint\": (\"chat\", None),\n    \"PerplexityChatRequest\": (\"chat\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/perplexity/_config.py": [
+      "__all__ = (\"PerplexityConfigs\",)"
+    ],
+    "lionagi/providers/perplexity/chat.py": [
+      "__all__ = (\"PerplexityChatRequest\", \"PerplexityChatEndpoint\")"
+    ],
+    "lionagi/providers/pi/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"PiCLIEndpoint\": (\"cli\", None),\n    \"PiChunk\": (\"cli\", None),\n    \"PiCodeRequest\": (\"cli\", None),\n    \"PiSession\": (\"cli\", None),\n    \"stream_pi_cli\": (\"cli\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/pi/_config.py": [
+      "__all__ = (\"PiConfigs\",)"
+    ],
+    "lionagi/providers/pi/cli.py": [
+      "__all__ = (\"PiChunk\", \"PiCodeRequest\", \"PiSession\", \"stream_pi_cli\", \"PiCLIEndpoint\")"
+    ],
+    "lionagi/providers/tavily/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"TavilyExtractEndpoint\": (\"search\", None),\n    \"TavilyExtractRequest\": (\"search\", None),\n    \"TavilySearchEndpoint\": (\"search\", None),\n    \"TavilySearchRequest\": (\"search\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = tuple(sorted(_LAZY_MAP))"
+    ],
+    "lionagi/providers/tavily/_config.py": [
+      "__all__ = (\"TavilyConfigs\",)"
+    ],
+    "lionagi/providers/tavily/search.py": [
+      "__all__ = (\n    \"TavilySearchRequest\",\n    \"TavilyExtractRequest\",\n    \"TavilySearchEndpoint\",\n    \"TavilyExtractEndpoint\",\n)"
+    ],
+    "lionagi/service/__init__.py": [
+      "from typing import TYPE_CHECKING",
+      "from lionagi.ln._lazy_init import lazy_import",
+      "from .hooks import (\n    AssociatedEventInfo,\n    HookDict,\n    HookedEvent,\n    HookEvent,\n    HookEventTypes,\n    HookRegistry,\n    global_hook_logger,\n)",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"RateLimitedAPIExecutor\": (\n        \"rate_limited_processor\",\n        \"RateLimitedAPIExecutor\",\n    ),\n    \"Endpoint\": (\"connections.endpoint\", \"Endpoint\"),\n    \"EndpointConfig\": (\"connections.endpoint\", \"EndpointConfig\"),\n    \"iModelManager\": (\"manager\", \"iModelManager\"),\n    \"iModel\": (\"imodel\", \"iModel\"),\n    \"APICalling\": (\"connections.api_calling\", \"APICalling\"),\n    \"TokenCalculator\": (\"token_calculator\", \"TokenCalculator\"),\n    \"Broadcaster\": (\"broadcaster\", \"Broadcaster\"),\n    \"cache_intent\": (\"_prompt_cache\", \"cache_intent\"),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    \"APICalling\",\n    \"AssociatedEventInfo\",\n    \"Broadcaster\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HookDict\",\n    \"HookEvent\",\n    \"HookEventTypes\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"RateLimitedAPIExecutor\",\n    \"TokenCalculator\",\n    \"cache_intent\",\n    \"global_hook_logger\",\n    \"iModel\",\n    \"iModelManager\",\n)"
+    ],
+    "lionagi/service/_prompt_cache.py": [
+      "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
+    ],
+    "lionagi/service/accounts/__init__.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/service/accounts/_credentials.py": [
+      "__all__ = (\"CredentialSources\", \"resolve_account_key\")"
+    ],
+    "lionagi/service/accounts/_ledger.py": [
+      "__all__ = (\"CredentialLedger\", \"AccountStatus\", \"default_ledger_path\")"
+    ],
+    "lionagi/service/accounts/_pricing.py": [
+      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"usage_outcome\",\n)"
+    ],
+    "lionagi/service/accounts/_router.py": [
+      "__all__ = (\"AccountRouter\",)"
+    ],
+    "lionagi/service/accounts/_scope.py": [
+      "__all__ = (\"current_scope\", \"routing_scope\")"
+    ],
+    "lionagi/service/accounts/_types.py": [
+      "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
+    ],
+    "lionagi/service/broadcaster.py": [
+      "__all__ = (\"Broadcaster\",)"
+    ],
+    "lionagi/service/connections/__init__.py": [
+      "import warnings",
+      "from .agentic_endpoint import AgenticEndpoint",
+      "from .api_calling import APICalling",
+      "from .endpoint import Endpoint",
+      "from .endpoint_config import EndpointConfig",
+      "from .header_factory import HeaderFactory",
+      "from .match_endpoint import match_endpoint",
+      "from .mcp_wrapper import MCPConnectionPool, MCPSecurityConfig, create_mcp_tool",
+      "from .provider_config import LazyType, ProviderConfig",
+      "from .registry import (\n    EndpointMeta,\n    EndpointRegistry,\n    EndpointType,\n    ProviderAliasCollisionError,\n    ProviderNotFoundError,\n    register_endpoint,\n)",
+      "__all__ = (\n    \"AgenticEndpoint\",\n    \"APICalling\",\n    \"CLIEndpoint\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HeaderFactory\",\n    \"match_endpoint\",\n    \"MCPConnectionPool\",\n    \"MCPSecurityConfig\",\n    \"create_mcp_tool\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"EndpointType\",\n    \"LazyType\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderConfig\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)",
+      "def __getattr__(name: str):\n    if name == \"CLIEndpoint\":\n        warnings.warn(\n            \"CLIEndpoint is deprecated and will be removed in a future release. \"\n            \"Use AgenticEndpoint from lionagi.service.connections instead.\",\n            DeprecationWarning,\n            stacklevel=2,\n        )\n        # Cache to prevent double-fire from importlib _handle_fromlist.\n        import sys\n\n        sys.modules[__name__].__dict__[\"CLIEndpoint\"] = AgenticEndpoint\n        return AgenticEndpoint\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/service/connections/agentic_endpoint.py": [
+      "__all__ = (\"AgenticEndpoint\",)"
+    ],
+    "lionagi/service/connections/api_calling.py": [
+      "__all__ = (\"APICalling\", \"estimate_payload_input_tokens\")"
+    ],
+    "lionagi/service/connections/cli_endpoint.py": [
+      "def __getattr__(name: str):\n    if name == \"CLIEndpoint\":\n        warnings.warn(\n            \"CLIEndpoint is deprecated and will be removed in a future release. \"\n            \"Use AgenticEndpoint from lionagi.service.connections instead.\",\n            DeprecationWarning,\n            stacklevel=2,\n        )\n        return AgenticEndpoint\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/service/connections/endpoint.py": [
+      "__all__ = (\"Endpoint\",)"
+    ],
+    "lionagi/service/connections/endpoint_config.py": [
+      "__all__ = (\"AUTHORIZATION_KWARG_NAMES\", \"RUNTIME_STATE_NAMES\", \"EndpointConfig\")"
+    ],
+    "lionagi/service/connections/header_factory.py": [
+      "__all__ = (\"HeaderFactory\",)"
+    ],
+    "lionagi/service/connections/match_endpoint.py": [
+      "__all__ = (\"match_endpoint\",)"
+    ],
+    "lionagi/service/connections/mcp_wrapper.py": [
+      "__all__ = (\n    \"MCPSecurityConfig\",\n    \"MCPConnectionPool\",\n    \"create_mcp_tool\",\n    \"is_synthetic_mcp_wrapper_schema\",\n    \"validate_mcp_tool_admission\",\n)"
+    ],
+    "lionagi/service/connections/registry.py": [
+      "__all__ = (\n    \"EndpointType\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)"
+    ],
+    "lionagi/service/hooks/__init__.py": [
+      "from ._types import (\n    AssociatedEventInfo,\n    HookDict,\n    HookEventTypes,\n    StreamTerminalState,\n)",
+      "from .hook_event import HookEvent",
+      "from .hook_registry import HookRegistry",
+      "from .hooked_event import HookedEvent, global_hook_logger",
+      "__all__ = (\n    \"HookEventTypes\",\n    \"HookDict\",\n    \"AssociatedEventInfo\",\n    \"HookEvent\",\n    \"HookRegistry\",\n    \"global_hook_logger\",\n    \"HookedEvent\",\n    \"StreamTerminalState\",\n)"
+    ],
+    "lionagi/service/hooks/_types.py": [
+      "__all__ = (\n    \"HookEventTypes\",\n    \"ALLOWED_HOOKS_TYPES\",\n    \"HookDict\",\n    \"StreamHandlers\",\n    \"AssociatedEventInfo\",\n    \"StreamTerminalState\",\n)"
+    ],
+    "lionagi/service/hooks/_utils.py": [
+      "__all__ = (\n    \"get_handler\",\n    \"validate_hooks\",\n    \"validate_stream_handlers\",\n)"
+    ],
+    "lionagi/service/providers.py": [
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_REPO_KWARG\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"codex_unset_effort_default\",\n    \"normalize_effort\",\n    \"parse_model_spec\",\n    \"reclamp_effort_for_model\",\n    \"split_effort_suffix\",\n)"
+    ],
+    "lionagi/service/rate_limited_processor.py": [
+      "__all__ = (\n    \"RateLimitedAPIProcessor\",\n    \"RateLimitedAPIExecutor\",\n)"
+    ],
+    "lionagi/service/types/__init__.py": [
+      "from .cli_session import CLISession",
+      "from .stream_chunk import StreamChunk",
+      "__all__ = (\"CLISession\", \"StreamChunk\")"
+    ],
+    "lionagi/session/__init__.py": [
+      "from lionagi.protocols.messages import Message",
+      "from .branch import Branch",
+      "from .capabilities import CapabilityViolation, render_capabilities_prompt",
+      "from .exchange import Exchange",
+      "from .observer import SessionObserver",
+      "from .session import Session",
+      "from .signal import (\n    NodeAwaitingApproval,\n    NodeCancelled,\n    NodeEscalated,\n    NodeLifecycleState,\n    NodePaused,\n    NodeQueued,\n    NodeSpawned,\n    RunEnd,\n    RunFailed,\n    RunStart,\n    Signal,\n    StructuredOutput,\n    lane_for,\n)",
+      "__all__ = [\n    \"Branch\",\n    \"CapabilityViolation\",\n    \"Exchange\",\n    \"Message\",\n    \"NodeAwaitingApproval\",\n    \"NodeCancelled\",\n    \"NodeEscalated\",\n    \"NodeLifecycleState\",\n    \"NodePaused\",\n    \"NodeQueued\",\n    \"NodeSpawned\",\n    \"RunEnd\",\n    \"RunFailed\",\n    \"RunStart\",\n    \"Session\",\n    \"SessionObserver\",\n    \"Signal\",\n    \"StructuredOutput\",\n    \"lane_for\",\n    \"render_capabilities_prompt\",\n]"
+    ],
+    "lionagi/session/_lifecycle_ctx.py": [
+      "__all__ = (\"suppress_lifecycle_var\",)"
+    ],
+    "lionagi/session/branch.py": [
+      "__all__ = (\"Branch\",)"
+    ],
+    "lionagi/session/capabilities.py": [
+      "__all__ = (\n    \"render_capabilities_prompt\",\n    \"CapabilityViolation\",\n    \"EmissionRejected\",\n    \"CAP_BEGIN\",\n    \"CAP_END\",\n)"
+    ],
+    "lionagi/session/control.py": [
+      "__all__ = (\"LoopDirective\", \"LoopControl\", \"LoopBreak\", \"ToolInvocation\")"
+    ],
+    "lionagi/session/exchange.py": [
+      "__all__ = (\"OUTBOX\", \"Exchange\")"
+    ],
+    "lionagi/session/observer.py": [
+      "__all__ = (\"SessionObserver\", \"RoleFilter\", \"_sanitize_signal_payload\")"
+    ],
+    "lionagi/session/session.py": [
+      "__all__ = (\"Session\",)"
+    ],
+    "lionagi/session/signal.py": [
+      "__all__ = (\n    \"Signal\",\n    \"StructuredOutput\",\n    \"RunStart\",\n    \"RunEnd\",\n    \"RunFailed\",\n    \"NodeSpawned\",\n    \"NodeStarted\",\n    \"NodeCompleted\",\n    \"NodeFailed\",\n    \"NodeSkipped\",\n    \"NodeCancelled\",\n    \"NodeQueued\",\n    \"NodeAwaitingApproval\",\n    \"NodeEscalated\",\n    \"NodePaused\",\n    \"GateDenied\",\n    \"MessageAdded\",\n    \"DispatchSignal\",\n    \"NodeLifecycleState\",\n    \"lane_for\",\n    \"build_run_end\",\n    \"SIGNAL_SCHEMA_VERSION\",\n)"
+    ],
+    "lionagi/state/__init__.py": [
+      "from typing import TYPE_CHECKING",
+      "from lionagi.ln import lazy_import",
+      "__all__ = (\n    \"CompatibilityProfile\",\n    \"ForeignLineageError\",\n    \"SchemaTooNewError\",\n    \"StateCompatibilityRefused\",\n    \"StateDB\",\n    \"UnreadableStoreError\",\n    \"UnrecognizedStoreError\",\n)",
+      "def __getattr__(name: str):\n    if name in __all__:\n        return lazy_import(name, _MODULES, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/state/_mirror_common.py": [
+      "__all__ = (\n    \"MIRROR_PROVIDER_ERROR_KEY\",\n    \"reconcile_status\",\n    \"link_lineage\",\n    \"MirrorKind\",\n    \"MirrorSourcePointer\",\n    \"SourceLine\",\n    \"ResolutionStatus\",\n    \"ResolvedContent\",\n    \"canonical_json\",\n    \"content_sha256\",\n    \"bound_mirror_content\",\n    \"resolve_mirrored_content\",\n    \"MIRROR_WRITE_CHUNK\",\n    \"write_mirrored_messages\",\n    \"name_answered_results\",\n)"
+    ],
+    "lionagi/state/cli_workers.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/state/codex_mirror.py": [
+      "__all__ = (\n    \"session_db_id\",\n    \"session_meta\",\n    \"messages_for_record\",\n    \"mirror_session\",\n    \"reconcile_session_status\",\n    \"link_session_lineage\",\n    \"absorb_orchestrated_session\",\n    \"absorb_orchestrated_backfill\",\n    \"RecordTally\",\n    \"turn_context\",\n    \"SOURCE_KIND\",\n    \"ID_FIELD\",\n    \"SKIPPED_ORIGINATORS\",\n)"
+    ],
+    "lionagi/state/compat.py": [
+      "__all__ = (\n    \"Closure\",\n    \"ColumnShape\",\n    \"CompatibilityProfile\",\n    \"ForeignKeyShape\",\n    \"OwnerRule\",\n    \"SchemaObject\",\n    \"StateCompatibilityRefused\",\n    \"TableShape\",\n    \"TableWrites\",\n    \"is_compatibility_store\",\n    \"read_closure\",\n    \"refusal_in\",\n)"
+    ],
+    "lionagi/state/content_pruned.py": [
+      "__all__ = [\n    \"CONTENT_PRUNED_KEY\",\n    \"pruned_content_sql\",\n    \"content_was_pruned\",\n]"
+    ],
+    "lionagi/state/lifecycle/__init__.py": [
+      "from __future__ import annotations",
+      "from typing import Protocol",
+      "from sqlalchemy.ext.asyncio import AsyncConnection",
+      "from .callbacks import (\n    DEFAULT_TERMINAL_CALLBACKS,\n    EXECUTION_ENTITY_KINDS,\n    Correlation,\n    EntityRef,\n    RunTerminalEnvelope,\n    TerminalCallbackHandler,\n    TerminalCallbackRegistry,\n)",
+      "from .models import (\n    ActorRecord,\n    ActorType,\n    EdgePolicy,\n    InitialStateCommand,\n    JsonValue,\n    LifecyclePolicy,\n    OverrideRecord,\n    ReasonRecord,\n    SameStatusRule,\n    ScheduleAuditContext,\n    TransitionCommand,\n    TransitionOutcome,\n    TransitionResultKind,\n)",
+      "from .policy import DEFAULT_REGISTRY, PolicyRegistry, build_default_registry",
+      "__all__ = (\n    \"ActorRecord\",\n    \"ActorType\",\n    \"Correlation\",\n    \"DEFAULT_REGISTRY\",\n    \"DEFAULT_TERMINAL_CALLBACKS\",\n    \"EdgePolicy\",\n    \"EntityRef\",\n    \"EXECUTION_ENTITY_KINDS\",\n    \"InitialStateCommand\",\n    \"JsonValue\",\n    \"LifecycleError\",\n    \"LifecycleNotFoundError\",\n    \"LifecyclePolicy\",\n    \"LifecycleService\",\n    \"LifecycleStorageError\",\n    \"LifecycleValidationError\",\n    \"OverrideRecord\",\n    \"PolicyRegistry\",\n    \"ReasonRecord\",\n    \"RunTerminalEnvelope\",\n    \"SameStatusRule\",\n    \"ScheduleAuditContext\",\n    \"TerminalCallbackHandler\",\n    \"TerminalCallbackRegistry\",\n    \"TransitionCommand\",\n    \"TransitionOutcome\",\n    \"TransitionResultKind\",\n    \"build_default_registry\",\n)"
+    ],
+    "lionagi/state/lifecycle/adapters.py": [
+      "__all__ = (\n    \"TransitionRejectedError\",\n    \"run_cancel_session_if_worker_generation\",\n    \"run_legacy_transition\",\n    \"run_update_status\",\n)"
+    ],
+    "lionagi/state/lifecycle/callbacks.py": [
+      "__all__ = (\n    \"Correlation\",\n    \"EntityRef\",\n    \"EXECUTION_ENTITY_KINDS\",\n    \"HANDLER_BUDGET_SECONDS\",\n    \"RunTerminalEnvelope\",\n    \"SCHEMA_NAME\",\n    \"SCHEMA_VERSION\",\n    \"TerminalCallbackHandler\",\n    \"TerminalCallbackRegistry\",\n    \"DEFAULT_TERMINAL_CALLBACKS\",\n)"
+    ],
+    "lionagi/state/lifecycle/consumer_inspection.py": [
+      "__all__ = (\n    \"ConsumerInspectionBackendError\",\n    \"ConsumerPreviewAlreadyActiveError\",\n    \"ConsumerPreviewAlreadyRetiredError\",\n    \"ConsumerSnapshot\",\n    \"list_consumers\",\n    \"preview_consumer_change\",\n)"
+    ],
+    "lionagi/state/lifecycle/deliveries.py": [
+      "__all__ = (\n    \"ConsumerAlreadyActiveError\",\n    \"ConsumerAlreadyRetiredError\",\n    \"ConsumerChange\",\n    \"ConsumerCompatibilityError\",\n    \"ConsumerNotRegisteredError\",\n    \"ConsumerRegistration\",\n    \"ConsumerRetiredError\",\n    \"ConsumerSchemaError\",\n    \"EligibilityCounts\",\n    \"ack_delivery\",\n    \"change_consumer\",\n    \"eligibility_counts\",\n    \"get_owed_transition\",\n    \"is_acknowledged\",\n    \"reconcile_unacknowledged\",\n    \"register_consumer\",\n    \"retire_consumer\",\n)"
+    ],
+    "lionagi/state/lifecycle/notify_settings.py": [
+      "__all__ = (\n    \"NotifyConfigResolution\",\n    \"NotifyProvenance\",\n    \"DurableRunRecorder\",\n    \"PayloadBuilder\",\n    \"ResolvedNotifyHandler\",\n    \"RunNotifyRecord\",\n    \"build_handler\",\n    \"classify_notify_provenance\",\n    \"record_notify_outcome_to_run\",\n    \"record_notify_rejection_to_run\",\n    \"register_run_notify_outcome_scope\",\n    \"register_settings_terminal_callback\",\n    \"resolve_notify_config\",\n    \"resolve_durable_global_config\",\n    \"unregister_run_notify_outcome_scope\",\n)"
+    ],
+    "lionagi/state/lifecycle/schedules.py": [
+      "__all__ = (\"ScheduleLifecycleAdapter\",)"
+    ],
+    "lionagi/state/lifecycle/settings_delivery.py": [
+      "__all__ = (\"prepare_current_global_delivery\", \"prepare_resolved_delivery\")"
+    ],
+    "lionagi/state/session_naming.py": [
+      "__all__ = (\n    \"DISPLAY_NAME_MAX_LEN\",\n    \"agent_role_label\",\n    \"normalize_session_user_label\",\n    \"resolve_display_name\",\n    \"sanitize_prompt_name\",\n    \"validate_name_characters\",\n)"
+    ],
+    "lionagi/state/terminal_eligibility.py": [
+      "__all__ = (\"HistoryWriteKind\", \"has_delivery_eligibility_column\", \"is_delivery_eligible\")"
+    ],
+    "lionagi/state/transitions.py": [
+      "__all__ = (\n    \"Actor\",\n    \"StateReason\",\n    \"TransitionRequest\",\n    \"TransitionResult\",\n    \"transition\",\n)"
+    ],
+    "lionagi/studio/_host.py": [
+      "__all__ = (\"admitted_host_names\", \"is_unspecified_host\", \"normalize_host\")"
+    ],
+    "lionagi/studio/_timezone_rules.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/studio/daemon_log.py": [
+      "__all__ = (\"DAEMON_LOG_FORMAT\", \"SCHEDULER_LOGGER\", \"daemon_log_handler\")"
+    ],
+    "lionagi/studio/launch_access.py": [
+      "__all__ = (\n    \"DECISION_CAPABILITY_TTL_S\",\n    \"DECISION_SCOPE\",\n    \"DECISION_TOKEN_HEADER\",\n    \"DecisionPrincipal\",\n    \"PAIRING_CODE_TTL_S\",\n    \"PAIRING_REDEEM_PATH\",\n    \"begin_serving\",\n    \"daemon_epoch\",\n    \"is_launch_origin\",\n    \"launch_bearer\",\n    \"mint_decision_capability\",\n    \"mint_pairing_code\",\n    \"redeem_pairing_code\",\n    \"redeem_pairing_grant\",\n    \"reset_launch_access\",\n    \"resolve_decision_capability\",\n    \"revoke_decision_capability\",\n)"
+    ],
+    "lionagi/studio/operator/__init__.py": [
+      "from .coordinator import (\n    OperatorCoordinator,\n    get_operator_coordinator,\n    reset_operator_coordinator_for_testing,\n)",
+      "__all__ = (\n    \"OperatorCoordinator\",\n    \"get_operator_coordinator\",\n    \"reset_operator_coordinator_for_testing\",\n)"
+    ],
+    "lionagi/studio/operator/_common.py": [
+      "__all__ = (\"wait_for_proposal\",)"
+    ],
+    "lionagi/studio/operator/conversation_metadata.py": [
+      "__all__ = (\"UpdateConversationInput\", \"normalize_description\")"
+    ],
+    "lionagi/studio/operator/redact.py": [
+      "__all__ = (\n    \"MAX_CANDIDATES\",\n    \"PER_KIND_ITEM_CAP\",\n    \"PER_ITEM_TEXT_CAP\",\n    \"MESSAGE_BYTE_CAP\",\n    \"ARTIFACT_BYTE_CAP\",\n    \"public_project\",\n    \"scrub_text\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n    \"known_secret_values\",\n    \"redact_scalar\",\n    \"redact_arguments\",\n    \"cap_by_bytes\",\n    \"cap_payload_by_bytes\",\n)"
+    ],
+    "lionagi/studio/operator/run_detail.py": [
+      "__all__ = (\"RunDetailInput\", \"run_detail\")"
+    ],
+    "lionagi/studio/operator/run_findings.py": [
+      "__all__ = (\"RunFindingsInput\", \"run_findings\")"
+    ],
+    "lionagi/studio/operator/run_progress.py": [
+      "__all__ = (\"MissingOwnerContextError\", \"RunProgressInput\", \"resolve_run\", \"run_progress\")"
+    ],
+    "lionagi/studio/reconnect.py": [
+      "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
+    ],
+    "lionagi/studio/scheduler/admit.py": [
+      "__all__ = (\n    \"DEFAULT_KEY_CONCURRENCY\",\n    \"DEFAULT_WAITER_CAP_MULTIPLIER\",\n    \"AdmissionDecision\",\n    \"WorkerCaps\",\n    \"admit\",\n    \"allows_deferred_over_cap\",\n    \"declared_max_duration_seconds\",\n    \"holder_is_running\",\n    \"normalize_action_args\",\n    \"notify_request\",\n    \"validate_rate_limit\",\n    \"waiter_ahead_count\",\n)"
+    ],
+    "lionagi/studio/scheduler/capabilities.py": [
+      "__all__ = (\n    \"CAPABILITY_CLASSES\",\n    \"DEFAULT_CAPABILITY_CLASS\",\n    \"affinity_score\",\n    \"affinity_tokens\",\n    \"capability_class\",\n    \"host_scoped_concurrency_key\",\n    \"matching_tokens\",\n    \"serialization_tokens\",\n    \"worker_can_serve\",\n)"
+    ],
+    "lionagi/studio/scheduler/coordination.py": [
+      "__all__ = (\"compute_files_overlap\",)"
+    ],
+    "lionagi/studio/scheduler/signals.py": [
+      "__all__ = (\n    \"ScheduleRunSucceeded\",\n    \"ScheduleRunFailed\",\n    \"ScheduleRunCancelled\",\n    \"SchedulerHandlerCancelled\",\n    \"SchedulerSignalBus\",\n    \"Handler\",\n    \"Predicate\",\n    \"build_schedule_run_signal\",\n    \"register_default_handlers\",\n    \"record_handler_failure\",\n)"
+    ],
+    "lionagi/studio/scheduler/worker.py": [
+      "__all__ = (\n    \"DEFAULT_HEARTBEAT_TTL_SECONDS\",\n    \"DEFAULT_KEY_CONCURRENCY\",\n    \"DEFAULT_LEASE_TTL_SECONDS\",\n    \"DEFAULT_WAITER_CAP_MULTIPLIER\",\n    \"MAX_LEASE_ATTEMPTS\",\n    \"TASK_WORKER_ENABLED\",\n    \"claim_and_execute\",\n    \"default_execute\",\n    \"reap_expired_leases\",\n    \"register_heartbeat\",\n    \"worker_tick\",\n)"
+    ],
+    "lionagi/studio/services/_session_tail.py": [
+      "__all__ = (\"SessionTailRegistry\", \"StreamResyncError\", \"capture_frontiers\")"
+    ],
+    "lionagi/studio/services/artifact_verification.py": [
+      "__all__ = (\"provisional_artifact_verification\", \"resolve_artifact_verification\")"
+    ],
+    "lionagi/studio/services/run_view.py": [
+      "__all__ = (\n    \"build_outcome\",\n    \"build_run_view\",\n    \"build_run_view_for\",\n    \"exit_code_for_view\",\n    \"get_run_view\",\n    \"get_schedule_status_view\",\n    \"list_run_views\",\n)"
+    ],
+    "lionagi/studio/services/signals.py": [
+      "__all__ = (\"get_signals_after\",)"
+    ],
+    "lionagi/studio/services/task_applications.py": [
+      "__all__ = (\"AdmissionRejectedError\", \"TaskApplication\", \"cancel_task\", \"submit_task\")"
+    ],
+    "lionagi/studio/services/workflow_compile.py": [
+      "__all__ = (\n    \"StudioExprCondition\",\n    \"UnsafeExpressionError\",\n    \"WorkflowCompileError\",\n    \"EXECUTABLE_NODE_KINDS\",\n    \"DROPPED_NODE_KINDS\",\n    \"compile_workflow_def\",\n    \"build_early_graph\",\n    \"make_engine_operation\",\n)"
+    ],
+    "lionagi/studio/services/workflow_run.py": [
+      "__all__ = (\"run_workflow_def\", \"WorkflowNotFoundError\")"
+    ],
+    "lionagi/testing/__init__.py": [
+      "from __future__ import annotations",
+      "from ._branch import TestBranch, scripted_imodel",
+      "from ._endpoint import ENV_SCRIPT_PATH, ScriptedEndpoint",
+      "from ._env import (\n    DEFAULT_SCRIPTED_MODEL,\n    ENV_MODEL,\n    ENV_PROVIDER,\n    SCRIPTED_PROVIDER,\n    is_scripted_provider_active,\n    resolve_script_path,\n    scripted_env,\n    subprocess_env,\n)",
+      "from ._legacy import LionAGIMockFactory, oai_chat_endpoint_config",
+      "from ._script import ScriptExhaustedError, ScriptModel",
+      "from ._types import (\n    ErrorResponse,\n    RecordedCall,\n    ResponseEntry,\n    StreamChunkSpec,\n    StreamResponse,\n    StructuredResponse,\n    TextResponse,\n    ToolCallResponse,\n    WhenMatcher,\n)",
+      "from .helpers import (\n    AsyncTestHelpers,\n    IModelKwargCaptor,\n    MockClaudeCode,\n    MockElement,\n    TestDataHelpers,\n    ValidationHelpers,\n)",
+      "from .loaders import (\n    TestDataLoader,\n    get_api_response,\n    get_conversation,\n    get_error_scenario,\n    load_test_data,\n)",
+      "__all__ = (\n    # Scripted infrastructure\n    \"ENV_MODEL\",\n    \"ENV_PROVIDER\",\n    \"ENV_SCRIPT_PATH\",\n    \"DEFAULT_SCRIPTED_MODEL\",\n    \"SCRIPTED_PROVIDER\",\n    \"ScriptedEndpoint\",\n    \"ScriptExhaustedError\",\n    \"ScriptModel\",\n    \"TestBranch\",\n    \"is_scripted_provider_active\",\n    \"resolve_script_path\",\n    \"scripted_env\",\n    \"scripted_imodel\",\n    \"subprocess_env\",\n    # Response entry types\n    \"ErrorResponse\",\n    \"RecordedCall\",\n    \"ResponseEntry\",\n    \"StreamChunkSpec\",\n    \"StreamResponse\",\n    \"StructuredResponse\",\n    \"TextResponse\",\n    \"ToolCallResponse\",\n    \"WhenMatcher\",\n    # Legacy\n    \"LionAGIMockFactory\",\n    \"oai_chat_endpoint_config\",\n    # Helpers\n    \"AsyncTestHelpers\",\n    \"IModelKwargCaptor\",\n    \"MockClaudeCode\",\n    \"MockElement\",\n    \"TestDataHelpers\",\n    \"TestDataLoader\",\n    \"ValidationHelpers\",\n    \"get_api_response\",\n    \"get_conversation\",\n    \"get_error_scenario\",\n    \"load_test_data\",\n)"
+    ],
+    "lionagi/testing/_branch.py": [
+      "__all__ = (\"TestBranch\", \"scripted_imodel\")"
+    ],
+    "lionagi/testing/_endpoint.py": [
+      "__all__ = (\"ScriptedEndpoint\",)"
+    ],
+    "lionagi/testing/_env.py": [
+      "__all__ = (\n    \"DEFAULT_SCRIPTED_MODEL\",\n    \"ENV_MODEL\",\n    \"ENV_PROVIDER\",\n    \"ENV_SCRIPT_PATH\",\n    \"SCRIPTED_PROVIDER\",\n    \"is_scripted_provider_active\",\n    \"resolve_script_path\",\n    \"scripted_env\",\n    \"subprocess_env\",\n)"
+    ],
+    "lionagi/testing/_legacy.py": [
+      "__all__ = (\"LionAGIMockFactory\", \"oai_chat_endpoint_config\")"
+    ],
+    "lionagi/testing/_script.py": [
+      "__all__ = (\"ScriptExhaustedError\", \"ScriptModel\")"
+    ],
+    "lionagi/testing/_types.py": [
+      "__all__ = (\n    \"ErrorKind\",\n    \"ErrorResponse\",\n    \"RecordedCall\",\n    \"ResponseEntry\",\n    \"ResponseType\",\n    \"StreamChunkSpec\",\n    \"StreamResponse\",\n    \"StructuredResponse\",\n    \"TextResponse\",\n    \"ToolCallResponse\",\n    \"WhenMatcher\",\n)"
+    ],
+    "lionagi/testing/helpers.py": [
+      "__all__ = (\n    \"AsyncTestHelpers\",\n    \"IModelKwargCaptor\",\n    \"MockClaudeCode\",\n    \"MockElement\",\n    \"TestDataHelpers\",\n    \"ValidationHelpers\",\n)"
+    ],
+    "lionagi/testing/loaders.py": [
+      "__all__ = (\n    \"TestDataLoader\",\n    \"get_api_response\",\n    \"get_conversation\",\n    \"get_error_scenario\",\n    \"load_test_data\",\n)"
+    ],
+    "lionagi/testing/pytest_plugin.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/tools/code/__init__.py": [
+      "from .ast_search import AstSearchTool",
+      "from .bash import BashTool",
+      "from .check import CodeCheckTool",
+      "from .nav import NavTool",
+      "from .search import SearchTool",
+      "__all__ = (\"AstSearchTool\", \"BashTool\", \"CodeCheckTool\", \"NavTool\", \"SearchTool\")"
+    ],
+    "lionagi/tools/code/ast_search.py": [
+      "__all__ = (\n    \"AstSearchRequest\",\n    \"AstSearchResponse\",\n    \"AstSearchTool\",\n)"
+    ],
+    "lionagi/tools/code/nav.py": [
+      "__all__ = (\n    \"NavRequest\",\n    \"NavResponse\",\n    \"NavTool\",\n)"
+    ],
+    "lionagi/tools/code/search.py": [
+      "__all__ = (\n    \"SearchAction\",\n    \"SearchRequest\",\n    \"SearchResponse\",\n    \"SearchTool\",\n)"
+    ],
+    "lionagi/tools/communication/__init__.py": [
+      "from .messenger import LionMessenger",
+      "__all__ = (\"LionMessenger\",)"
+    ],
+    "lionagi/tools/communication/messenger.py": [
+      "__all__ = (\"LionMessenger\",)"
+    ],
+    "lionagi/tools/file/__init__.py": [
+      "from .editor import EditorTool",
+      "from .reader import ReaderTool",
+      "__all__ = (\"ReaderTool\", \"EditorTool\")"
+    ],
+    "lionagi/tools/khive_injection.py": [
+      "__all__ = (\n    \"RecallPolicy\",\n    \"ComposePolicy\",\n    \"WritebackPolicy\",\n    \"KhiveInjectionPolicy\",\n    \"KhiveInjectionProvider\",\n)"
+    ],
+    "lionagi/tools/sandbox_backend.py": [
+      "__all__ = (\n    \"ExecutionLimits\",\n    \"ExecutionTarget\",\n    \"SubstrateStreamEvent\",\n    \"BackendName\",\n    \"CellKind\",\n    \"ColdStartClass\",\n    \"Capabilities\",\n    \"ProvisionSpec\",\n    \"Handle\",\n    \"Cell\",\n    \"CellResult\",\n    \"SandboxBackend\",\n    \"DIFF_ARTIFACT\",\n    \"LocalWorktreeBackend\",\n    \"DaytonaBackend\",\n    \"get_backend\",\n    \"select_backend_for_cell\",\n)"
+    ],
+    "lionagi/tools/types.py": [
+      "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
+    ],
+    "lionagi/utils.py": [
+      "__all__ = (\n    \"UndefinedType\",\n    \"KeysDict\",\n    \"Params\",\n    \"DataClass\",\n    \"UNDEFINED\",\n    \"copy\",\n    \"is_same_dtype\",\n    \"is_coro_func\",\n    \"to_list\",\n    \"create_path\",\n    \"get_bins\",\n    \"logger\",\n    \"Enum\",\n    \"hash_dict\",\n    \"is_union_type\",\n    \"union_members\",\n    \"Unset\",\n    \"UnsetType\",\n    \"Undefined\",\n    \"MaybeSentinel\",\n    \"MaybeUndefined\",\n    \"MaybeUnset\",\n    \"is_import_installed\",\n    \"import_module\",\n    \"to_dict\",\n    \"LIONAGI_HOME\",\n)"
+    ]
+  },
+  "settings_declarations": [
+    "model_config = SettingsConfigDict(\n        # A later file overrides an earlier one and the environment overrides every file, so the\n        # user-wide file under LIONAGI_HOME supplies defaults the working directory can replace.\n        env_file=(LIONAGI_HOME / \".env\", \".env\", \".env.local\", \".secrets.env\"),\n        env_file_encoding=\"utf-8\",\n        case_sensitive=False,\n        extra=\"ignore\",\n    )",
+    "aiocache_config: CacheConfig = Field(\n        default_factory=CacheConfig, description=\"Cache settings for aiocache\"\n    )",
+    "OPENAI_API_KEY: SecretStr | None = None",
+    "OPENROUTER_API_KEY: SecretStr | None = None",
+    "OLLAMA_API_KEY: SecretStr | None = None",
+    "EXA_API_KEY: SecretStr | None = None",
+    "TAVILY_API_KEY: SecretStr | None = None",
+    "FIRECRAWL_API_KEY: SecretStr | None = None",
+    "PERPLEXITY_API_KEY: SecretStr | None = None",
+    "GROQ_API_KEY: SecretStr | None = None",
+    "ANTHROPIC_API_KEY: SecretStr | None = None",
+    "NVIDIA_NIM_API_KEY: SecretStr | None = None",
+    "GEMINI_API_KEY: SecretStr | None = None",
+    "DEEPSEEK_API_KEY: SecretStr | None = None",
+    "ANTHROPIC_ACCOUNTS: Annotated[tuple[ProviderAccount, ...], NoDecode] = ()",
+    "OPENAI_DEFAULT_MODEL: str = \"gpt-4.1-mini\"",
+    "LIONAGI_EMBEDDING_PROVIDER: str = \"openai\"",
+    "LIONAGI_EMBEDDING_MODEL: str = \"text-embedding-3-small\"",
+    "LIONAGI_CHAT_PROVIDER: str = \"openai\"",
+    "LIONAGI_CHAT_MODEL: str = \"gpt-4.1-mini\"",
+    "LIONAGI_AUTO_STORE_EVENT: bool = False",
+    "LIONAGI_STORAGE_PROVIDER: str = \"async_qdrant\"",
+    "LIONAGI_AUTO_EMBED_LOG: bool = False",
+    "LIONAGI_QDRANT_URL: str = \"http://localhost:6333\"",
+    "LIONAGI_DEFAULT_QDRANT_COLLECTION: str = \"event_logs\"",
+    "LIONAGI_STATE_DB_URL: str | None = None",
+    "LIONAGI_WORKER_LIVENESS_TIMEOUT: float = 120.0",
+    "LIONAGI_WORKER_IDLE_TIMEOUT: float = 600.0",
+    "LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT: float = 3600.0",
+    "LOG_PERSIST_DIR: str = \"./data/logs\"",
+    "LOG_SUBFOLDER: str | None = None",
+    "LOG_CAPACITY: int = 50",
+    "LOG_EXTENSION: str = \".json\"",
+    "LOG_USE_TIMESTAMP: bool = True",
+    "LOG_HASH_DIGITS: int = 5",
+    "LOG_FILE_PREFIX: str = \"log\"",
+    "LOG_AUTO_SAVE_ON_EXIT: bool = True",
+    "LOG_CLEAR_AFTER_DUMP: bool = True",
+    "LOG_REDACT_BINARY: bool = True",
+    "LOG_REDACT_BINARY_THRESHOLD: int = 1024",
+    "_instance: ClassVar[Any] = None",
+    "_dotenv_files: tuple[Path, ...] = PrivateAttr(default=())"
+  ]
+}
