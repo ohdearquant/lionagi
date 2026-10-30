@@ -55,7 +55,12 @@ class ActionRequestContent(MessageContent):
         if not isinstance(function, str):
             raise ValueError("Function must be a string or callable")
 
-        arguments = copy(arguments)
+        try:
+            arguments = copy(arguments)
+        except RecursionError:
+            # Arguments nested past the interpreter's recursion limit cannot be
+            # deep-copied; keep them by reference rather than refuse the call.
+            arguments = copy(arguments, deep=False)
         if not isinstance(arguments, dict):
             try:
                 arguments = to_dict(arguments, fuzzy_parse=True)

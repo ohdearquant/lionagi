@@ -147,3 +147,50 @@ async def test_plain_deep_arguments_reach_manager_without_gate(
     assert seen == [True]
     assert len(pre_calls) == 1
     assert pre_calls[0]["args_summary"] == expected_summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depth", [300, sys.getrecursionlimit() + 100])
+async def test_deep_arguments_run_once_and_log_with_placeholder(depth):
+    leaf = "deep-log-fixture-leaf"
+    calls = []
+
+    def tool(payload: list):
+        """Record each call that reaches the tool."""
+        calls.append(payload)
+        return "ran"
+
+    branch = Branch()
+    branch.register_tools([tool])
+    arguments = {"payload": _nested_value(depth, leaf)}
+
+    result = await _act(branch, {"function": "tool", "arguments": arguments})
+
+    assert result.output == "ran"
+    assert len(calls) == 1
+    requests = [message for message in branch.messages if isinstance(message, ActionRequest)]
+    responses = [message for message in branch.messages if isinstance(message, ActionResponse)]
+    assert len(requests) == len(responses) == 1
+    assert responses[0].output == "ran"
+    entries = [log.content for log in branch.logs if log.content.get("function") == "tool"]
+    assert len(entries) == 1
+    assert entries[0]["arguments"] == "<arguments too deeply nested>"
+    assert leaf not in repr(entries[0])
+
+
+@pytest.mark.asyncio
+async def test_other_log_serialization_error_still_surfaces():
+    calls = []
+
+    def tool(payload: list):
+        """Record each call that reaches the tool."""
+        calls.append(payload)
+        return "ran"
+
+    branch = Branch()
+    branch.register_tools([tool])
+
+    with pytest.raises(ValueError, match="non-finite"):
+        await _act(branch, {"function": "tool", "arguments": {"payload": [float("nan")]}})
+
+    assert len(calls) == 1
