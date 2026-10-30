@@ -98,15 +98,28 @@ async def test_deep_argument_without_gate_still_reaches_manager_unchanged(monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verbose_action", [False, True])
 @pytest.mark.parametrize("suppress_errors", [False, True])
+@pytest.mark.parametrize("representation", ["deep-plain", "forced-error"])
 async def test_plain_deep_arguments_reach_manager_without_gate(
-    monkeypatch, verbose_action, suppress_errors
+    monkeypatch, verbose_action, suppress_errors, representation
 ):
     class ReachedManager(BaseException):
         pass
 
-    arguments = {"payload": _nested_value(50_000, "private-leaf")}
-    with pytest.raises(RecursionError):
-        str(arguments)
+    class Unrenderable:
+        def __repr__(self):
+            raise RecursionError("test representation failure")
+
+    if representation == "deep-plain":
+        arguments = {"payload": _nested_value(50_000, "private-leaf")}
+        try:
+            expected_summary = str(arguments)[:200]
+        except RecursionError:
+            expected_summary = "<arguments too deeply nested>"
+    else:
+        arguments = {"payload": Unrenderable()}
+        with pytest.raises(RecursionError):
+            str(arguments)
+        expected_summary = "<arguments too deeply nested>"
 
     branch = Branch()
     seen = []
@@ -133,4 +146,4 @@ async def test_plain_deep_arguments_reach_manager_without_gate(
         )
     assert seen == [True]
     assert len(pre_calls) == 1
-    assert pre_calls[0]["args_summary"] == "<arguments too deeply nested>"
+    assert pre_calls[0]["args_summary"] == expected_summary
