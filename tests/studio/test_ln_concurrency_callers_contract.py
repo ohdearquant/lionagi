@@ -134,6 +134,13 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
     writes = []
 
     class Store:
+        mode = "native"
+
+        def __init__(self):
+            self._in_transaction = False
+            self._pending_history = {}
+            self._committed_history = {}
+
         async def __aenter__(self):
             return self
 
@@ -141,7 +148,17 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
             return False
 
         async def execute(self, statement, *args):
-            writes.append((str(statement), args))
+            sql = str(statement)
+            writes.append((sql, args))
+            if "INSERT INTO status_transitions" in sql:
+                assert self._in_transaction
+                values = args[0]
+                assert values["delivery_eligible"] is True
+                self._pending_history[values["id"]] = values["delivery_eligible"]
+            elif "SELECT delivery_eligible FROM status_transitions" in sql:
+                assert not self._in_transaction
+                value = self._committed_history.get(args[0]["id"])
+                return SimpleNamespace(first=lambda: None if value is None else (value,))
             return self
 
         async def fetchone(self):
@@ -154,8 +171,40 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
             assert sid == row["id"]
             return row
 
-        def transaction(self):
-            return self
+        @contextlib.asynccontextmanager
+        async def transaction(self):
+            assert not self._in_transaction
+            self._in_transaction = True
+            try:
+                yield self
+            except BaseException:
+                self._pending_history.clear()
+                raise
+            else:
+                self._committed_history.update(self._pending_history)
+                self._pending_history.clear()
+            finally:
+                self._in_transaction = False
+
+        @contextlib.asynccontextmanager
+        async def _read(self):
+            assert not self._in_transaction
+            yield self
+
+        def _owner_predicate(self, table):
+            assert table == "status_transitions"
+            return "", {}
+
+        def _lifecycle_service(self):
+            from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
+            class Callbacks:
+                async def emit(_self, envelope):
+                    assert not self._in_transaction
+                    assert self._committed_history[envelope.event_id] is True
+                    writes.append(("terminal_callback", envelope.event_id))
+
+            return SQLAlchemyLifecycleService(self, terminal_callbacks=Callbacks())
 
         @property
         def rowcount(self):
@@ -320,6 +369,12 @@ async def test_admin_workers_preserve_arguments_context_results_and_errors(
                 }
                 assert any("UPDATE sessions" in statement for statement, _ in writes)
                 assert any("INSERT INTO status_transitions" in statement for statement, _ in writes)
+                inserted = next(
+                    args[0]["id"]
+                    for statement, args in writes
+                    if "INSERT INTO status_transitions" in statement
+                )
+                assert ("terminal_callback", inserted) in writes
         assert len(probe.calls) == 1
         _assert_admin_arguments(site, probe, row, boundaries)
         assert probe.calls[0][2] != threading.get_ident()
@@ -469,12 +524,23 @@ async def test_terminal_sync_workers_keep_context_awaitables_and_failure_recordi
         assert probe.context.get() == "caller"
         assert awaited == ([] if fails else ["caller"])
         if fails:
-            assert any(record.exc_info and record.exc_info[1] is error for record in caplog.records)
             if consumer == "notify":
+                messages = [
+                    record
+                    for record in caplog.records
+                    if "direct-path notify.on_terminal delivery failed" in record.getMessage()
+                ]
+                assert len(messages) == 1
+                assert messages[0].getMessage().endswith("for run run-worker (ValueError)")
+                assert messages[0].exc_info is None
+                assert "terminal worker failed" not in messages[0].getMessage()
                 assert len(records) == 1
                 assert records[0]["ok"] is False and records[0]["exit_code"] is None
                 assert "ValueError: terminal worker failed" in records[0]["stderr_text"]
             else:
+                assert any(
+                    record.exc_info and record.exc_info[1] is error for record in caplog.records
+                )
                 assert records == []
         else:
             assert records == []

@@ -101,8 +101,8 @@ relative timestamps, formatted durations, or tables.
       "cli_path": "schedule apply"
     }
   ],
-  "verb_count": 70,
-  "available_count": 44,
+  "verb_count": 71,
+  "available_count": 45,
   "max_ops": 8,
   "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ..."
 }
@@ -143,7 +143,7 @@ resolves that playbook's own declared arguments into the schema.
 
 ## The catalog
 
-44 verbs are reachable. Both tables in this section are checked against the
+45 verbs are reachable. Both tables in this section are checked against the
 registry by the test suite, so a verb added or withdrawn without updating them
 fails a test rather than going unnoticed. The registry is the authority; ask it
 directly with:
@@ -194,6 +194,7 @@ python -c "from lionhub.serve.mcp import verbs as v; print(len(v.VERBS)); [print
 | `server.info` | Which build is serving: version, contract version, uptime, verb counts. |
 | `state.ls` | Sessions in the lifecycle store with their branch and message counts. |
 | `state.stats` | Store and write-ahead-log size, per-table row counts, session status spread. |
+| `state.terminal-consumer.list` | Registered terminal consumers and their outstanding deliveries. |
 | `stats.runs` | Run counts and first/last timestamps, grouped by project/kind/agent/model/status. |
 | `team.create` | Create a new team with named members. |
 | `team.list` | Teams on disk with their members and message counts. |

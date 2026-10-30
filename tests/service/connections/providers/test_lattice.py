@@ -417,30 +417,28 @@ def test_the_reference_states_the_limits_and_refusals_lionagi_does_not_check():
         assert named in paragraph
 
 
-def test_the_reference_states_the_stream_error_chunk_and_the_restored_model():
-    """Two behaviours a caller cannot see from lionagi: a mid-stream failure arrives as a
-    chunk with `is_error` set rather than as a raise, and a model restored with
-    `iModel.from_dict` sends an unvalidated payload."""
+def test_the_reference_states_the_stream_error_chunk():
+    """A mid-stream failure arrives as an error chunk before the call fails."""
     paragraph = _lattice_doc_paragraph()
 
     assert "is_error" in paragraph and "iModel.stream" in paragraph
-    assert "iModel.from_dict" in paragraph
 
 
 @pytest.mark.asyncio
-async def test_a_model_restored_from_its_dict_sends_an_unvalidated_payload(lattice_server):
-    """`iModel.to_dict()` leaves the request model out of the endpoint config and `from_dict`
-    does not restore it, so a restored model forwards the payload as given: a numeric string
-    the model would have coerced reaches the server as a string."""
+async def test_a_model_restored_from_its_dict_validates_its_payload(lattice_server):
+    """A default snapshot omits the request model, which is recovered on restore."""
     base_url, received = await lattice_server()
     model = iModel(provider="lattice", model=MODEL, base_url=base_url)
 
     restored = iModel.from_dict(model.to_dict())
+    fresh, _ = model.endpoint.create_payload(
+        {"messages": [{"role": "user", "content": "hi"}], "temperature": "0.5"}
+    )
     await restored.invoke(messages=[{"role": "user", "content": "hi"}], temperature="0.5")
 
-    assert restored.endpoint.config.request_options is None
+    assert restored.endpoint.config.request_options is LatticeChatCompletionsRequest
     (request,) = received
-    assert request["body"]["temperature"] == "0.5"
+    assert request["body"]["temperature"] == fresh["temperature"] == 0.5
 
 
 def test_the_request_model_records_what_the_server_does_not_apply():

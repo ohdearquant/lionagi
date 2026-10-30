@@ -120,6 +120,7 @@ from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
 from lionagi.state.schema_migrations import MIGRATION_CONSTRAINTS as _MIGRATION_CONSTRAINTS
 from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
+from lionagi.state.schema_migrations import RECENT_VISIBLE_INDEXES as _RECENT_VISIBLE_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
     "running": _RunReasons.STARTED_OK,
@@ -205,12 +206,13 @@ CursorClaim = float | str | None | NoCursorClaim
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
 # migration changes the shape a reader would see.
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
 _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
 _SESSION_ENDED_AT_BACKFILL_KEY = "migration.session_ended_at_backfill"
+_TERMINAL_ELIGIBILITY_BACKFILL_KEY = "migration.terminal_delivery_eligibility"
 _SESSION_ENDED_AT_BACKFILL_BATCH_SIZE = 500
 # The ``schema_meta.version`` values a lionagi release writes: a whole number, no sign or padding.
 _RECORDED_VERSION = re.compile(r"[1-9][0-9]*")
@@ -1910,6 +1912,7 @@ class StateDB:
         async with self._engine.begin() as conn:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
+            await self._classify_terminal_delivery_history_once(conn)
             # Before _reconcile_indexes, which recreates the unique index on
             # attention_disposition_history.sequence: that would fail against the DEFAULT 0
             # placeholder every pre-existing row shares until this backfill gives each a distinct
@@ -2032,6 +2035,77 @@ class StateDB:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
+        if self.dialect == "sqlite":
+            indexes = (await conn.exec_driver_sql("PRAGMA index_list('sessions')")).all()
+            old = next((row for row in indexes if row[1] == "idx_sessions_updated"), None)
+            if old is None or old[4]:
+                return
+            fields = (
+                await conn.exec_driver_sql("PRAGMA index_xinfo('idx_sessions_updated')")
+            ).all()
+            keys = [field for field in fields if field[5]]
+            if (
+                len(keys) != 1
+                or keys[0][2] != "updated_at"
+                or str(keys[0][4]).upper() != "BINARY"
+                or keys[0][3] not in (0, 1)
+            ):
+                return
+            # Match the existing index's direction: equal timestamps otherwise
+            # reverse row order when the listing scans in descending order.
+            direction = "DESC" if keys[0][3] else "ASC"
+            await conn.execute(text(_RECENT_VISIBLE_INDEXES[direction]))
+
+    async def _classify_terminal_delivery_history_once(self, conn) -> None:
+        """Freeze v5 replay eligibility, the unknown count and marker in one transaction."""
+        columns = await conn.run_sync(
+            lambda c: {col["name"] for col in inspect(c).get_columns("status_transitions")}
+        )
+        if "delivery_eligible" not in columns:
+            await conn.execute(
+                text("ALTER TABLE status_transitions ADD COLUMN delivery_eligible BOOLEAN")
+            )
+        marker = await conn.execute(
+            text("SELECT 1 FROM schema_meta WHERE key = :key"),
+            {"key": _TERMINAL_ELIGIBILITY_BACKFILL_KEY},
+        )
+        if marker.first() is not None:
+            return
+        if self.dialect == "postgresql":
+            # Block old writers until the classification and baseline count both commit.
+            await conn.execute(text("LOCK TABLE status_transitions IN SHARE ROW EXCLUSIVE MODE"))
+
+        # This is the v5 replay predicate, deliberately frozen here rather than imported
+        # from the live registry. A NULL predecessor on a terminal execution row is
+        # ambiguous between initial history and a reaper transition.
+        eligible_kind_status = (
+            "((entity_type IN ('session', 'invocation') AND status IN "
+            "('completed', 'completed_empty', 'failed', 'timed_out', 'aborted', 'cancelled')) "
+            "OR (entity_type = 'play' AND status IN "
+            "('merged', 'escalated', 'gate_failed', 'blocked', 'aborted_after_finish')) "
+            "OR (entity_type = 'schedule_run' AND status IN "
+            "('completed', 'failed', 'timed_out', 'skipped', 'cancelled')))"
+        )
+        await conn.execute(
+            text(
+                "UPDATE status_transitions SET delivery_eligible = CASE "  # noqa: S608
+                f"WHEN NOT {eligible_kind_status} THEN FALSE "
+                "WHEN previous_status IS NULL THEN NULL "
+                "WHEN previous_status = status THEN FALSE ELSE TRUE END"
+            )
+        )
+        count = (
+            await conn.execute(
+                text("SELECT COUNT(*) FROM status_transitions WHERE delivery_eligible IS NULL")
+            )
+        ).scalar_one()
+        await conn.execute(
+            text("INSERT INTO schema_meta (key, value) VALUES (:key, :value)"),
+            {
+                "key": _TERMINAL_ELIGIBILITY_BACKFILL_KEY,
+                "value": json.dumps({"classified_at": time.time(), "initial_null_count": count}),
+            },
+        )
 
     async def _reconcile_constraints(self, conn) -> None:
         """Widen CHECK constraints that ``metadata.create_all`` cannot alter; PostgreSQL only."""
@@ -3309,6 +3383,26 @@ class StateDB:
 
     # Progressions
 
+    @staticmethod
+    def _validate_progression_message_id(progression_id: str, message_id: Any) -> None:
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError(
+                f"progression {progression_id!r} requires non-empty string message IDs"
+            )
+
+    @staticmethod
+    def _validate_progression_collection(
+        progression_id: str, collection: Any, *, allow_none: bool = False
+    ) -> list[str]:
+        if collection is None and allow_none:
+            return []
+        if not isinstance(collection, (list, tuple)):
+            raise ValueError(f"progression {progression_id!r} requires a list or tuple of IDs")
+        snapshot = list(collection)
+        for message_id in snapshot:
+            StateDB._validate_progression_message_id(progression_id, message_id)
+        return snapshot
+
     @_operation("create_progression")
     async def create_progression(
         self, progression_id: str, collection: list[str] | None = None
@@ -3325,6 +3419,9 @@ class StateDB:
             async with self._tx() as conn:
                 await self._insert_new_row(conn, "progressions", values)
             return
+        collection = self._validate_progression_collection(
+            progression_id, collection, allow_none=True
+        )
         async with self._tx() as conn:
             await conn.execute(
                 text(
@@ -3340,6 +3437,8 @@ class StateDB:
 
     async def set_progression(self, progression_id: str, collection: list[str]) -> None:
         """Replace a progression's collection wholesale, serializing the JSON here."""
+        if self._compat is None:
+            collection = self._validate_progression_collection(progression_id, collection)
         async with self._tx() as conn:
             await conn.execute(
                 text("UPDATE progressions SET collection = :col WHERE id = :id"),
@@ -3387,6 +3486,8 @@ class StateDB:
 
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
         """Idempotent append of message_id to the progression JSON array."""
+        if self._compat is None:
+            self._validate_progression_message_id(progression_id, message_id)
         async with self._tx() as conn:
             await self._append_to_progression_in_tx(conn, progression_id, message_id)
 
@@ -3423,9 +3524,10 @@ class StateDB:
         per message. Ids are appended in batch order and
         skipped when already present, so re-running a batch leaves a string-id progression
         unchanged. That single rewrite covers a stored array of string ids given string ids,
-        the shape every writer produces; any other stored value or id goes through
-        ``append_to_progression``'s own statement one id at a time, so it ends as appending
-        one message at a time would. ``session_id`` moves that session's activity clock in
+        the ordinary string-ID shape; any other stored value or id goes through the
+        legacy internal append statement one id at a time. The public
+        ``append_to_progression`` validates new IDs; this batch path retains its own
+        existing input contract. ``session_id`` moves that session's activity clock in
         the same transaction.
         """
         for msg in msgs:
@@ -5542,7 +5644,15 @@ class StateDB:
             _validate_reason_code(reason.code)
             if not reason.code.startswith("schedule_definition."):
                 raise ValueError("ScheduleSet reasons must use the schedule_definition namespace")
+        touched = {str(s["id"]) for s in creates if s.get("id")}
+        touched.update(schedule_id for schedule_id, _ in updates)
+        touched.update(disables)
         async with self._tx() as conn:
+            # Two applies touching the same schedules in different plan orders could
+            # deadlock on PostgreSQL, so every definition lock is taken here in one sorted
+            # order before any row lock. The per-row locks below re-enter them.
+            for schedule_id in sorted(touched):
+                await adapter._lock_id(conn, schedule_id)
             for schedule in creates:
                 created_reason = self._schedule_set_reason(
                     schedule, _ScheduleDefinitionReasons.CREATED_OBSERVED, "created", reason
@@ -5556,7 +5666,8 @@ class StateDB:
                 )
             for schedule_id, fields in updates:
                 claimed = schedule_id in claims
-                stmt, params = self._build_update_schedule_stmt(
+                stmt, params = await self._build_target_aware_schedule_update_in_tx(
+                    conn,
                     schedule_id,
                     fields,
                     expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
@@ -5748,6 +5859,7 @@ class StateDB:
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: _ScheduleAuditContext | None = None,
         reason: _ReasonRecord | None = None,
         **fields: Any,
@@ -5762,31 +5874,94 @@ class StateDB:
         claim on that value matches twice and separates nothing; github_cursor advances per event
         and is the only value in the row that distinguishes one event of a batch from the next.
         """
-        stmt, params = self._build_update_schedule_stmt(
-            schedule_id,
-            fields,
-            guard_cursor_forward=guard_cursor_forward,
-            expect_next_fire_at=expect_next_fire_at,
-            expect_github_cursor=expect_github_cursor,
-            expect_owner_key=expect_owner_key,
-        )
         async with self._tx() as conn:
+            stmt, params = await self._build_target_aware_schedule_update_in_tx(
+                conn,
+                schedule_id,
+                fields,
+                guard_cursor_forward=guard_cursor_forward,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
+                expect_owner_key=expect_owner_key,
+                expect_target_generation=expect_target_generation,
+            )
             return await self._update_schedule_in_tx(
                 conn, schedule_id, fields, stmt, params, audit_context=audit_context, reason=reason
             )
 
-    async def record_github_poll_stagnation(self, schedule_id: str, *, reset: bool) -> bool:
+    async def _build_target_aware_schedule_update_in_tx(
+        self, conn: AsyncConnection, schedule_id: str, fields: dict[str, Any], **claims: Any
+    ):
+        """Build an update against its locked target; engine cursor progress is runtime state."""
+        target_fields = {"trigger_type", "github_repo", "github_filter", "github_cursor"}
+        if claims.get("guard_cursor_forward"):
+            target_fields.remove("github_cursor")
+        changed = False
+        if target_fields & fields.keys():
+            # Match the lifecycle adapter's transaction-lock-before-row-lock order on PostgreSQL.
+            # SQLite's BEGIN IMMEDIATE has already serialized writers in this transaction.
+            adapter = self._lifecycle_service().schedule_adapter
+            await adapter._lock_id(conn, schedule_id)
+            sql = (
+                "SELECT trigger_type, github_repo, github_filter, github_cursor "
+                "FROM schedules WHERE id = :id"
+            )
+            if self.dialect != "sqlite":
+                sql += " FOR UPDATE"
+            result = (await conn.execute(text(sql), {"id": schedule_id})).mappings().first()
+            if result is not None:
+                before = self._row_to_dict(result)
+                after = {**before, **{key: fields[key] for key in target_fields & fields.keys()}}
+
+                def target(row):
+                    github_filter = row.get("github_filter")
+                    if isinstance(github_filter, dict):
+                        github_filter = {
+                            key: value
+                            for key, value in github_filter.items()
+                            if key != "merged_page_limit"
+                        }
+                    return (
+                        row.get("trigger_type"),
+                        row.get("github_repo"),
+                        github_filter,
+                        row.get("github_cursor"),
+                    )
+
+                changed = target(before) != target(after)
+        return self._build_update_schedule_stmt(
+            schedule_id, fields, reset_github_poll_target=changed, **claims
+        )
+
+    async def record_github_poll_stagnation(
+        self,
+        schedule_id: str,
+        *,
+        reset: bool,
+        page_limit: int | None = None,
+        expected_target_generation: int | None = None,
+    ) -> bool:
         """Account for one settled observation against the current GitHub schedule.
 
         The transaction's commit orders independent observations. A late increment after
         a reset starts at one instead of restoring a caller's earlier snapshot.
         """
+        where = " WHERE id = :id AND trigger_type = 'github_poll'"
+        if expected_target_generation is not None:
+            where += " AND poller_target_generation = :expected_target_generation"
         stmt = text(
-            "UPDATE schedules SET poller_consecutive_cap_no_dispatch = "
+            "UPDATE schedules SET poller_consecutive_cap_no_dispatch = "  # noqa: S608
             "CASE WHEN :reset THEN 0 ELSE poller_consecutive_cap_no_dispatch + 1 END, "
-            "updated_at = :updated_at WHERE id = :id AND trigger_type = 'github_poll'"
+            "poller_last_capped_page_limit = CASE WHEN :reset THEN NULL "
+            "ELSE CAST(:page_limit AS INTEGER) END, updated_at = :updated_at" + where
         )
-        params = {"id": schedule_id, "reset": reset, "updated_at": time.time()}
+        params = {
+            "id": schedule_id,
+            "reset": reset,
+            "page_limit": page_limit,
+            "expected_target_generation": expected_target_generation,
+            "updated_at": time.time(),
+        }
         context = _ScheduleAuditContext(origin="scheduler", source="scheduler", assurance="system")
         async with self._tx() as conn:
             return await self._update_schedule_in_tx(
@@ -5804,6 +5979,8 @@ class StateDB:
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
         expect_updated_at: float | None | NoCursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
+        reset_github_poll_target: bool = False,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -5829,6 +6006,14 @@ class StateDB:
             and fields["github_cursor"] is not None
         )
         sets_parts = []
+        if reset_github_poll_target:
+            sets_parts.extend(
+                (
+                    "poller_consecutive_cap_no_dispatch = 0",
+                    "poller_last_capped_page_limit = NULL",
+                    "poller_target_generation = poller_target_generation + 1",
+                )
+            )
         bind_params = []
         for k in fields:
             if k == "github_cursor" and guarded_cursor:
@@ -5848,6 +6033,9 @@ class StateDB:
         params = dict(fields)
         params["_id"] = schedule_id
         where = "id = :_id"
+        if expect_target_generation is not None:
+            where += " AND poller_target_generation = :_expect_target_generation"
+            params["_expect_target_generation"] = expect_target_generation
         # One loop rather than a block per column, so a second claim cannot be given subtly
         # different NULL handling from the first. Branching on the Python value rather than
         # emitting a NULL-safe operator: sqlite spells one `IS`, postgres rejects `IS` with a
@@ -5953,6 +6141,7 @@ class StateDB:
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_target_generation: int | None = None,
         audit_context: _ScheduleAuditContext | None = None,
         reason: _ReasonRecord | None = None,
     ) -> bool:
@@ -5972,6 +6161,7 @@ class StateDB:
             guard_cursor_forward=True,
             expect_next_fire_at=expect_next_fire_at,
             expect_github_cursor=expect_github_cursor,
+            expect_target_generation=expect_target_generation,
         )
         async with self._tx() as conn:
             # The cursor claim goes FIRST so a lost race writes no occurrence at all. Selecting a
@@ -6026,7 +6216,7 @@ class StateDB:
             ),
         )
         async with self._tx() as conn:
-            transition_id = await lifecycle_service._write(  # noqa: SLF001
+            history_write = await lifecycle_service._write(  # noqa: SLF001
                 conn,
                 "schedule_runs",
                 command,
@@ -6034,7 +6224,7 @@ class StateDB:
                 now=now,
                 extra_guard={"dispatched_at": None},
             )
-            if transition_id is None:
+            if history_write is None:
                 return False
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(
@@ -6047,8 +6237,10 @@ class StateDB:
         await lifecycle_service._emit_terminal_event(  # noqa: SLF001
             command,
             previous_status=expected_orphan_status,
-            transition_id=transition_id,
+            transition_id=history_write.transition_id,
             occurred_at=now,
+            eligibility_stored=history_write.eligibility_stored,
+            eligibility_at_write=history_write.eligibility_at_write,
         )
         return True
 

@@ -147,6 +147,16 @@ _cached_token: str | None = None
 # repeated capped polls without dispatch as stalled progress.
 _MERGED_MODE_MAX_PAGES = 5
 
+
+def merged_page_limit(value: object) -> int:
+    """Resolve a bounded page limit for a merged pull-request scan."""
+    if value is None:
+        return _MERGED_MODE_MAX_PAGES
+    if type(value) is not int or not 5 <= value <= 100:
+        raise ValueError("github_filter.merged_page_limit must be an integer from 5 through 100")
+    return value
+
+
 # Page size requested (GitHub's maximum); the page budget above is stated in
 # terms of this.
 _PER_PAGE = 100
@@ -286,6 +296,15 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     rather than silently skipped, so only the caller -- who knows what it
     actually dispatched -- can decide how far the cursor is safe to advance.
     """
+    github_filter = schedule.get("github_filter") or {}
+    merged_mode = github_filter.get("event") == "pr_merged"
+    try:
+        page_limit = (
+            merged_page_limit(github_filter.get("merged_page_limit")) if merged_mode else None
+        )
+    except ValueError:
+        _log.warning("Invalid merged pull-request page limit for schedule %s", schedule.get("id"))
+        return GithubPollResult(items=[], scan_complete=False, poll_status="error")
     repo = schedule.get("github_repo")
     if not repo:
         return GithubPollResult(items=[], scan_complete=True, poll_status="error")
@@ -319,11 +338,9 @@ async def github_poll(schedule: dict) -> GithubPollResult:
 
     node_meta = schedule.get("node_metadata") or {}
     etag = node_meta.get("github_etag") if isinstance(node_meta, dict) else None
-    if etag:
+    if etag and not merged_mode:
         headers["If-None-Match"] = etag
 
-    github_filter = schedule.get("github_filter") or {}
-    merged_mode = github_filter.get("event") == "pr_merged"
     params: dict[str, str] = {
         # pr_merged is only ever true on a closed PR, so merged mode always
         # polls closed PRs regardless of any (nonsensical) explicit state.
@@ -382,6 +399,9 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     _cached_token = None if resp.status_code == 403 else token
 
     if resp.status_code == 304:
+        if merged_mode:
+            _log.warning("GitHub API returned 304 to an unconditional merged-PR poll for %s", repo)
+            return GithubPollResult(items=[], scan_complete=False, poll_status="error")
         return GithubPollResult(items=[], scan_complete=True, poll_status="ok")
 
     if resp.status_code != 200:
@@ -426,7 +446,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             if is_short_page or cursor_reached or not next_url:
                 # Boundary proven safe regardless of how many pages were fetched.
                 break
-            if pages_fetched >= _MERGED_MODE_MAX_PAGES:
+            if pages_fetched >= page_limit:
                 # Full page, more to fetch, cursor not reached: unproven data
                 # may remain beyond the cap.
                 scan_complete = False

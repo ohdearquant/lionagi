@@ -802,6 +802,14 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
 # ── Startup + periodic entry points ──────────────────────────────────────────
 
 
+async def _reconcile_terminal_notifications() -> int:
+    # Import inside the per-operation boundary so a broken notifier cannot
+    # prevent the independent lifecycle reapers from running.
+    from .terminal_reconciliation import run_terminal_reconciliation
+
+    return await run_terminal_reconciliation()
+
+
 async def _run_reapers(phase: str) -> dict[str, int]:
     """Run every reaper in order, each isolated: one that raises is logged
     with *phase* and counted as 0, and the rest still run."""
@@ -813,6 +821,7 @@ async def _run_reapers(phase: str) -> dict[str, int]:
         ("stale_plays", "play", reap_stale_plays),
         ("stale_shows", "show", reap_stale_shows),
         ("stale_schedule_runs", "schedule_run", reap_stale_schedule_runs),
+        ("terminal_notifications", "terminal notification", _reconcile_terminal_notifications),
     )
     results: dict[str, int] = {}
     for key, label, reap in reapers:
