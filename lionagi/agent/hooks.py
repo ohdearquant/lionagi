@@ -9,6 +9,7 @@ import logging
 import re
 import warnings
 from collections.abc import Mapping
+from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 
@@ -24,6 +25,7 @@ __all__ = (
 )
 
 logger = logging.getLogger(__name__)
+_editor_preview: ContextVar[tuple | None] = ContextVar("email_header_editor_preview", default=None)
 
 _DESTRUCTIVE_PATTERNS = [
     r"\brm\s+-rf\b",
@@ -59,14 +61,46 @@ async def guard_email_in_headers(
     *,
     allow: frozenset[str] = frozenset(),
     note: str | None = None,
+    _edit_preparer=None,
+    _workspace_root: Path | None = None,
 ) -> dict | None:
     """Refuse an email in an outbound header in a command or file write."""
     from ._email_in_headers import find_leak_with_allowed
 
+    if _edit_preparer is None and (preview := _editor_preview.get()) is not None:
+        _edit_preparer, _workspace_root = preview
+    if tool_name in ("editor", "editor_tool") and action == "edit" and _edit_preparer is None:
+        raise PermissionError("Cannot check the resulting file for an unbound editor.")
     if tool_name in ("bash", "bash_tool"):
         text = args.get("command", "")
-    elif tool_name in ("editor", "editor_tool") and action in ("write", "edit"):
-        text = args.get("content" if action == "write" else "new_string", "")
+    elif tool_name in ("editor", "editor_tool") and action == "edit" and _edit_preparer:
+        from pydantic import ValidationError
+
+        from lionagi.ln.concurrency import run_sync
+        from lionagi.tools.file.editor import EditorRequest
+
+        try:
+            request = EditorRequest.model_validate(args)
+        except ValidationError:
+            return None
+        if request.old_string is None or request.new_string is None:
+            return None
+        try:
+            prepared = await run_sync(
+                _edit_preparer,
+                request.file_path,
+                request.old_string,
+                request.new_string,
+                request.replace_all,
+                _workspace_root,
+            )
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if not isinstance(prepared, tuple):
+            return None
+        text = prepared[1]
+    elif tool_name in ("editor", "editor_tool") and action == "write":
+        text = args.get("content", "")
     else:
         return None
     if not isinstance(text, str):
@@ -76,6 +110,8 @@ async def guard_email_in_headers(
         address, token = hit
         masked = address[:3] + "…@" + address.split("@", 1)[1]
         message = f"Blocked an email address ({masked}) in an outbound HTTP header after {token!r}."
+        if action == "edit" and _edit_preparer:
+            message += " The resulting file contains the header."
         if note:
             message += f" {note}"
         raise PermissionError(message)
@@ -109,6 +145,22 @@ def _email_header_guard_from_settings(settings: Mapping):
         return await guard_email_in_headers(tool_name, action, args, allow=allowed, note=note)
 
     return configured_guard
+
+
+def _bind_email_header_editor_preprocessor(preprocessor, preparer, workspace_root: Path):
+    """Give the entire editor hook chain its own instance's edit preparation."""
+    if preprocessor is None:
+        return None
+
+    @wraps(preprocessor)
+    async def bound(args: dict, **kwargs):
+        token = _editor_preview.set((preparer, workspace_root))
+        try:
+            return await preprocessor(args, **kwargs)
+        finally:
+            _editor_preview.reset(token)
+
+    return bound
 
 
 def _is_hard_floor_error(exc: PermissionError) -> bool:

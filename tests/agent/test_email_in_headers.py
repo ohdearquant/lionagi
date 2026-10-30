@@ -59,15 +59,22 @@ async def test_each_control_passes_with_a_refused_probe(command):
         await guard_email_in_headers("bash", "", {"command": LEAKS[0]})
 
 
-@pytest.mark.parametrize("action,field", [("write", "content"), ("edit", "new_string")])
-async def test_editor_written_text_is_checked(action, field):
+async def test_editor_written_text_is_checked():
     body = 'HEADERS = {"User-Agent": "product (sample-person@project.example)"}'
     with pytest.raises(PermissionError):
-        await guard_email_in_headers("editor", action, {field: body})
+        await guard_email_in_headers("editor", "write", {"content": body})
     assert (
-        await guard_email_in_headers("editor", action, {field: 'headers={"User-Agent": "product"}'})
+        await guard_email_in_headers(
+            "editor", "write", {"content": 'headers={"User-Agent": "product"}'}
+        )
         is None
     )
+
+
+async def test_unbound_edit_refuses_without_echoing_content():
+    with pytest.raises(PermissionError, match="unbound editor") as error:
+        await guard_email_in_headers("editor", "edit", {"new_string": ADDRESS})
+    assert ADDRESS not in str(error.value)
 
 
 def test_find_leak_unit_shapes():
@@ -132,6 +139,9 @@ async def test_secure_agent_editor_preprocessor_refuses_written_headers(tmp_path
 
     branch = await create_agent(AgentSpec.coding(cwd=str(tmp_path)), load_settings=False)
     args = {"action": action, "file_path": str(tmp_path / "output.txt"), field: LEAKS[0]}
+    if action == "edit":
+        (tmp_path / "output.txt").write_text("placeholder")
+        args["old_string"] = "placeholder"
     with pytest.raises(GateDeniedError) as error:
         await branch.acts.registry["editor"].preprocessor(args)
     assert error.value.result.control == "guard_email_in_headers"
@@ -294,11 +304,3 @@ def test_invalid_global_guard_settings_fail_closed(tmp_path, monkeypatch, policy
     monkeypatch.setenv("HOME", str(home))
     with pytest.raises(ValueError, match="guards.email_in_headers"):
         AgentSpec.coding(cwd=str(tmp_path))
-
-
-async def test_edit_replacement_is_checked_without_reconstructing_existing_file():
-    existing = 'headers={"User-Agent": "CONTACT_PLACEHOLDER"}'
-    args = {"old_string": "CONTACT_PLACEHOLDER", "new_string": ADDRESS}
-    assert await guard_email_in_headers("editor", "edit", args) is None
-    reconstructed = existing.replace(args["old_string"], args["new_string"])
-    assert predicate.find_leak(reconstructed) is not None

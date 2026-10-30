@@ -1012,12 +1012,17 @@ basename denial fails identically against every root and always surfaces over a 
 denial. `guard_paths` validation is check-time only — a TOCTOU race (swapping a validated file
 for a symlink after the check passes) is explicitly out of scope.
 
-`guard_email_in_headers()` checks bash commands, editor write content and editor edit replacement
-text for an email address in an outbound HTTP header. It does not reconstruct the full file for an
-edit, so an address inserted into a pre-existing header can escape detection. Documentation-domain
-examples pass by default. It examines raw text, so a quoted example may be refused, and dynamically
-assembled headers may not be detected. CLI-backed providers such as Claude Code, Codex, Gemini and
-Antigravity execute their own tools; their tool calls do not pass through this guard.
+`guard_email_in_headers()` checks bash commands, editor write content and the resulting text of an
+editor edit for an email address in an outbound HTTP header. An existing header can therefore block
+an unrelated edit, while an edit that removes the address can pass. Documentation-domain examples
+pass by default. It examines raw text, so a quoted example may be refused, and dynamically assembled
+headers may not be detected. The edit check resolves and reads the file before the editor reads and
+writes it; a concurrent change can occur between those operations, and the read is not an atomic
+no-follow read. For toolkit edits, the guard runs before the read-before-edit check; when both
+would refuse, the guard's refusal is reported. Tools registered outside the agent factory do not
+receive this guard. CLI-backed
+providers such as Claude Code, Codex, Gemini and Antigravity execute their own tools; their tool
+calls do not pass through this guard.
 Additional allowed addresses and an optional refusal note come from the global settings file:
 
 ```yaml
