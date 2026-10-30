@@ -1694,7 +1694,10 @@ class MCPConnectionPool:
         if "server" in server_config:
             server_name = server_config["server"]
             if server_name not in cls._configs:
-                cls._load_config_snapshot(".mcp.json", [server_name])
+                from lionagi.ln import copy
+
+                snapshot = cls._load_config_snapshot(".mcp.json", [server_name])
+                cls._configs.update(copy(snapshot))
             if server_name not in cls._configs:
                 raise ValueError(f"Unknown MCP server: {server_name}")
             return cls._configs[server_name]
@@ -1802,7 +1805,14 @@ class MCPConnectionPool:
         """Load MCP server configurations from a .mcp.json file; returns
         only the server names declared in THIS file (see docs/internals/runtime.md
         for the _configs accumulation gotcha)."""
-        return list(cls._load_config_snapshot(path))
+        from lionagi.ln import copy
+
+        snapshot = cls._load_config_snapshot(path)
+        # Cache keys include transport and security fingerprints. Retain old
+        # clients: an existing tool may still hold that transport, and cleanup
+        # must keep the handle needed to close it.
+        cls._configs.update(copy(snapshot))
+        return list(snapshot)
 
     @classmethod
     def _load_config_snapshot(
@@ -1837,11 +1847,16 @@ class MCPConnectionPool:
             if missing:
                 raise ValueError(f"MCP servers not declared in the selected config: {missing!r}")
 
-        # Cache keys include the transport and security fingerprints. Retain
-        # old clients: an existing tool may still hold that transport, and
-        # cleanup must keep the handle needed to close it.
-        cls._configs.update(copy(servers))
         return copy(servers)
+
+    @staticmethod
+    def _cache_key(
+        policy_key: str, security_fp: str, *, server_name: str | None, is_server: bool
+    ) -> str:
+        """Combine transport identity and the effective security policy."""
+        if is_server:
+            return f"server:{server_name}:{policy_key}:sec:{security_fp}"
+        return f"inline:{policy_key}:sec:{security_fp}"
 
     @classmethod
     def _resolve_identity(
@@ -1857,15 +1872,18 @@ class MCPConnectionPool:
 
         effective_security = cls._effective_security(security)
         security_fp = cls._security_fingerprint(effective_security)
-        if "server" in server_config:
+        is_server = "server" in server_config
+        if is_server:
             server_name = server_config["server"]
             config = cls._resolve_config(server_config)
             policy_key = cls._policy_key(config, server_name=server_name)
-            cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
         else:
+            server_name = None
             config = copy(server_config)
             policy_key = cls._policy_key(config)
-            cache_key = f"inline:{policy_key}:sec:{security_fp}"
+        cache_key = cls._cache_key(
+            policy_key, security_fp, server_name=server_name, is_server=is_server
+        )
         return config, policy_key, cache_key
 
     @classmethod
@@ -1927,10 +1945,9 @@ class MCPConnectionPool:
             raise TypeError("security must be an MCPSecurityConfig or None")
         security_fp = cls._security_fingerprint(cls._effective_security(security))
         policy_key = cls._policy_key(config, server_name=server_name)
-        if server_name is not None:
-            cache_key = f"server:{server_name}:{policy_key}:sec:{security_fp}"
-        else:
-            cache_key = f"inline:{policy_key}:sec:{security_fp}"
+        cache_key = cls._cache_key(
+            policy_key, security_fp, server_name=server_name, is_server=server_name is not None
+        )
         return await cls._get_or_create_client(copy(config), cache_key, security)
 
     @classmethod

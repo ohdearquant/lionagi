@@ -12,6 +12,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   readable user, system and project MCP configuration across request serialization.
   Servers enabled by managed or cloud configuration are outside this selection.
 
+- A checked feature ownership inventory and static import report expose
+  dependencies across package layers while keeping existing boundary debt
+  report-only.
+
+- Secure coding agents refuse email addresses in outbound HTTP headers in bash commands and editor writes.
+
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
   repeated scans hit the limit, schedule health explains how to recover.
 
@@ -108,6 +114,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `chat_model` (set the option on that model's endpoint instead) and without a model.
 
 ### Changed
+
+- Session gate denials now store a redacted `GateDenied` signal and deliver it
+  to a bound persistence subscriber before observation callbacks; the proposed
+  action is no longer retained in the denial's Flow copy.
 
 - A session tool gate sees arguments bound to a registered callable's
   signature with defaults applied when inspection and binding succeed; otherwise
@@ -259,6 +269,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Deprecated
 
+- Filtering emitted events through a Session gate is deprecated. Use route
+  predicates or subscribers to filter observations, and `authorize` for
+  decisions before an operation runs.
+
 - `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
   `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when
   passed. None of them changed the result: `remove_branch()` leaves the branch object with the caller
@@ -294,6 +308,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   still change between the check and Codex reading it: a removed system server can cause
   startup to fail, while a newly added one can load. Managed and cloud configuration is
   not visible to the selection check.
+
+- A failed or cancelled Operator setup now makes a bounded attempt to close a
+  session created before admission and logs when cleanup did not complete.
+  Cancellation during cleanup still cancels the run unless the store refused a
+  write, in which case the refusal is raised.
+  A failed Operator turn reports an incomplete recovery lookup in its error.
+  The attempt requires a recorded worker generation and a timestamp fence;
+  compatibility stores without that generation cannot close this pre-admission
+  candidate. A concurrent replacement or update that preserves the same timestamp
+  can defeat the fence.
 
 - Adapter error details now fully redact credential-named strings even when
   they look like URLs; location fields retain their existing URL sanitization.

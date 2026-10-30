@@ -149,12 +149,13 @@ async def test_observer_honors_typed_verdict_on_both_paths(is_async, allowed):
     observer.route(lambda payload: routed.append(payload) or True, into="selected")
 
     assert await observer.authorize(action) is allowed
-    assert [item.data for item in observer.by_type(GateDenied)] == ([] if allowed else [action])
+    denials = observer.by_type(GateDenied)
+    assert [item.data for item in denials] == ([] if allowed else [None])
     assert await observer.emit(event) == (["delivered"] if allowed else [])
     assert calls == [action, "event-data"]
-    assert dispatched == ([event] if allowed else [])
-    assert routed == (["event-data"] if allowed else [])
-    assert observer.stream("selected") == ([event] if allowed else [])
+    assert dispatched == ([event] if allowed else denials)
+    assert routed == (["event-data"] if allowed else [None])
+    assert observer.stream("selected") == ([event] if allowed else denials)
     assert event in list(observer.flow.items)
 
 
@@ -192,9 +193,10 @@ async def test_boolean_decisions_on_all_paths(is_async, allowed):
     assert result.allowed is allowed
     assert result.errored is False
     assert await observer.authorize(action) is allowed
-    assert [item.data for item in observer.by_type(GateDenied)] == ([] if allowed else [action])
+    denials = observer.by_type(GateDenied)
+    assert [item.data for item in denials] == ([] if allowed else [None])
     assert await observer.emit(event) == (["delivered"] if allowed else [])
-    assert dispatched == ([event] if allowed else [])
+    assert dispatched == ([event] if allowed else denials)
     assert event in list(observer.flow.items)
     assert calls == [action, action, "event-data"]
 
@@ -231,10 +233,12 @@ async def test_non_boolean_untyped_decisions_fail_closed_on_all_paths(is_async, 
     assert type_name in result.reason
     assert "fixture-private-value" not in result.reason
     assert await observer.authorize(action) is False
-    assert [item.data for item in observer.by_type(GateDenied)] == [action]
+    denials = observer.by_type(GateDenied)
+    assert [item.data for item in denials] == [None]
     assert await observer.emit(event) == []
-    assert dispatched == routed == []
-    assert observer.stream("selected") == []
+    assert dispatched == denials
+    assert routed == [None]
+    assert observer.stream("selected") == denials
     assert event in list(observer.flow.items)
     assert calls == [action, action, "event-data"]
 

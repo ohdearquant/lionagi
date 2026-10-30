@@ -83,7 +83,7 @@ async def test_gate_authorizes_actual_model_arguments(
     denials = session.observer.by_type(GateDenied)
     assert len(denials) == (0 if permitted else 1)
     if denials:
-        assert denials[0].data is seen[0]
+        assert denials[0].data is None
 
 
 @pytest.mark.asyncio
