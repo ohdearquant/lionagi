@@ -1019,7 +1019,7 @@ async def test_idle_transcript_status_reconciliation_quiesces_after_cold_pass(
     ``running`` rows after a daemon restart.  Once that check succeeds, another
     unchanged pass has no new liveness fact to ask StateDB about.
     """
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     root = tmp_path / "projects"
     now = 1_800_000_000.0
@@ -1044,7 +1044,7 @@ async def test_idle_transcript_status_reconciliation_quiesces_after_cold_pass(
         calls.append(uid)
         return True
 
-    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
         "lionagi.state.claude_mirror.reconcile_session_status",
         _record_reconcile,
@@ -1061,7 +1061,7 @@ async def test_live_transcript_reconciles_until_one_final_idle_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The DB liveness verdict, not file mtime, controls the final idle check."""
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     root = tmp_path / "projects"
     uid = "live-then-idle"
@@ -1087,7 +1087,7 @@ async def test_live_transcript_reconciles_until_one_final_idle_check(
         calls.append(reconciled_uid)
         return settled["value"]
 
-    monkeypatch.setattr(mirror_mod.time, "time", lambda: modified_at)
+    monkeypatch.setattr(service_mod.time, "time", lambda: modified_at)
     monkeypatch.setattr(
         "lionagi.state.claude_mirror.reconcile_session_status",
         _record_reconcile,
@@ -1113,7 +1113,7 @@ async def test_an_unwindowed_pass_does_not_stat_for_a_window_it_will_not_read(
     """`li mirror` defaults to no window, and mtime has no consumer but the
     window check. Reading it anyway costs one syscall per transcript per pass,
     on the loop whose whole purpose is not to touch settled files."""
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     root = tmp_path / "projects"
     uid = "unwindowed"
@@ -1133,7 +1133,7 @@ async def test_an_unwindowed_pass_does_not_stat_for_a_window_it_will_not_read(
     async def _settled_reconcile(_db, _uid, **_kwargs):
         return True
 
-    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
         "lionagi.state.claude_mirror.reconcile_session_status",
         _settled_reconcile,
@@ -1167,7 +1167,7 @@ async def test_an_unwindowed_codex_pass_does_not_stat_for_the_window_either(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same rule on the Codex sweep, which carries its own copy of the check."""
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     now = 1_800_000_000.0
     uid = "0199cccc-0000-0000-0000-0000000000cc"
@@ -1187,7 +1187,7 @@ async def test_an_unwindowed_codex_pass_does_not_stat_for_the_window_either(
     async def _settled_reconcile(_db, _uid, **_kwargs):
         return True
 
-    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
         "lionagi.state.codex_mirror.reconcile_session_status",
         _settled_reconcile,
@@ -1205,7 +1205,7 @@ async def test_an_unwindowed_codex_pass_does_not_stat_for_the_window_either(
         stats.clear()
         monkeypatch.setattr(Path, "stat", _counting_stat)
         try:
-            await mirror_mod._codex_pass(
+            await service_mod._codex_pass(
                 None, tmp_path, states, since=since, live_window=300, threads={}
             )
         finally:
@@ -1221,7 +1221,7 @@ async def test_idle_codex_rollout_status_reconciliation_also_quiesces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The bounded polling rule covers Studio's default Codex tree too."""
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     now = 1_800_000_000.0
     uid = "0199bbbb-0000-0000-0000-000000000099"
@@ -1242,14 +1242,14 @@ async def test_idle_codex_rollout_status_reconciliation_also_quiesces(
         calls.append(reconciled_uid)
         return True
 
-    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
         "lionagi.state.codex_mirror.reconcile_session_status",
         _record_reconcile,
     )
 
-    await mirror_mod._codex_pass(None, tmp_path, states, since=None, live_window=300, threads={})
-    await mirror_mod._codex_pass(None, tmp_path, states, since=None, live_window=300, threads={})
+    await service_mod._codex_pass(None, tmp_path, states, since=None, live_window=300, threads={})
+    await service_mod._codex_pass(None, tmp_path, states, since=None, live_window=300, threads={})
 
     assert calls == [uid]
 
@@ -1306,11 +1306,11 @@ async def test_mirror_forever_retries_after_connection_open_failure(
     # transient open error killed the tail permanently and invisibly.
     import asyncio
 
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as dbmod
 
     monkeypatch.setattr(dbmod, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "mirror" / "offsets.json")
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "mirror" / "offsets.json")
 
     attempts = {"open": 0}
     real_open = dbmod.StateDB.open
@@ -1327,7 +1327,7 @@ async def test_mirror_forever_retries_after_connection_open_failure(
     # root is an empty dir: passes find no transcripts, so this isolates the
     # connection-lifecycle behaviour from any mirroring work.
     task = asyncio.create_task(
-        mirror_mod.mirror_forever(stop, root=tmp_path, since="24h", interval=0.05)
+        service_mod.mirror_forever(stop, root=tmp_path, since="24h", interval=0.05)
     )
     try:
         for _ in range(100):  # let it fail the first open, back off, and reconnect
@@ -1711,7 +1711,7 @@ async def test_attr_peeked_flag_not_set_on_backfill_failure(
     transient set_session_provenance failure inside the idle project
     backfill must not permanently mark this in-memory state as peeked, or no
     later pass in this process ever retries it."""
-    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli import _mirror_service as service_mod
 
     work = tmp_path / "ghost-proj-flaky"
     work.mkdir()
@@ -1725,7 +1725,7 @@ async def test_attr_peeked_flag_not_set_on_backfill_failure(
     _write_lineage_file(path, events)
 
     attempts = []
-    real_attribute = mirror_mod._attribute_idle
+    real_attribute = service_mod._attribute_idle
 
     async def flaky_attribute(db, state, cwd):
         attempts.append(state.session_uid)
@@ -1733,7 +1733,7 @@ async def test_attr_peeked_flag_not_set_on_backfill_failure(
             raise RuntimeError("set_session_provenance transient failure")
         return await real_attribute(db, state, cwd)
 
-    monkeypatch.setattr(mirror_mod, "_attribute_idle", flaky_attribute)
+    monkeypatch.setattr(service_mod, "_attribute_idle", flaky_attribute)
 
     async with StateDB() as db:
         await mirror_session(db, session_uid=uid, events=events, tool_names={}, project=None)
@@ -1787,7 +1787,7 @@ async def test_tool_name_survives_restart_between_use_and_result(
     # A restart between a tool_use and its tool_result must not drop the response's
     # function name. tool_names is rebuilt from the persisted per-file state, so the
     # ActionResponse still labels the call instead of falling back to "".
-    monkeypatch.setattr("lionagi.cli.mirror._OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr("lionagi.cli._mirror_service._OFFSETS_PATH", tmp_path / "offsets.json")
     root = tmp_path / "projects"
     path = root / "-w-proj" / f"{SID}.jsonl"
     _write_lineage_file(
@@ -2061,16 +2061,16 @@ async def test_a_mirror_pass_rewrites_each_progression_once(temp_db_path: Path) 
 def test_a_legacy_tool_name_map_loads_as_its_newest_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     offsets = tmp_path / "offsets.json"
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", offsets)
     names = {f"tool_{i}": f"Fn{i}" for i in range(100)}
     offsets.write_text(json.dumps({"f": {"offset": 5, "session_uid": "s", "tool_names": names}}))
 
     loaded = _load_states()["f"].tool_names
 
-    keep = mirror_mod._LEGACY_TOOL_NAMES_KEEP
+    keep = service_mod._LEGACY_TOOL_NAMES_KEEP
     assert list(loaded) == [f"tool_{i}" for i in range(100 - keep, 100)]
     assert loaded["tool_99"] == "Fn99"
 
@@ -2078,12 +2078,12 @@ def test_a_legacy_tool_name_map_loads_as_its_newest_entries(
 def test_a_saved_pending_tool_name_map_loads_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
     # More uses waiting for a result than a legacy map keeps, as one message with many
     # parallel tool calls leaves them across a restart.
-    names = {f"tool_{i}": f"Fn{i}" for i in range(mirror_mod._LEGACY_TOOL_NAMES_KEEP + 6)}
+    names = {f"tool_{i}": f"Fn{i}" for i in range(service_mod._LEGACY_TOOL_NAMES_KEEP + 6)}
     _save_states({"f": _FileState(session_uid="s", offset=5, tool_names=dict(names))})
 
     assert _load_states()["f"].tool_names == names
@@ -2092,10 +2092,10 @@ def test_a_saved_pending_tool_name_map_loads_whole(
 def test_the_saved_map_is_also_written_under_the_key_earlier_releases_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     offsets = tmp_path / "offsets.json"
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", offsets)
     names = {"tool_1": "Read", "tool_2": "Bash"}
     _save_states({"f": _FileState(session_uid="s", offset=5, tool_names=dict(names))})
 
@@ -2172,10 +2172,10 @@ async def test_a_failed_codex_batch_is_re_read_in_the_turn_it_started_in(
 def test_an_unchanged_save_leaves_offsets_json_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
 
     offsets = tmp_path / "offsets.json"
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", offsets)
     states = {"f": _FileState(session_uid="s", offset=12, tool_names={"t1": "Read"})}
 
     _save_states(states)
@@ -2206,7 +2206,7 @@ async def test_lineage_resolves_after_restart(
     # The parent transcript is mirrored, then state is dropped (restart) before the
     # continuation arrives. Its leaf is re-indexed from persisted state on reload,
     # so the child still links to it instead of losing the cross-session lineage.
-    monkeypatch.setattr("lionagi.cli.mirror._OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr("lionagi.cli._mirror_service._OFFSETS_PATH", tmp_path / "offsets.json")
     root = tmp_path / "projects"
     a = "a1a1a1a1-0000-0000-0000-000000000aaa"
     b = "b2b2b2b2-0000-0000-0000-000000000bbb"
@@ -2599,7 +2599,7 @@ async def test_codex_provenance_peeked_flag_not_set_on_backfill_failure(tmp_path
     set_session_provenance failure (e.g. a DB hiccup) permanently blocks
     retry for the rest of that process, even though the flag's own docstring
     promise is "attempted", not "attempted once and given up on"."""
-    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli import _mirror_service as service_mod
     from lionagi.cli.mirror import _FileState, _mirror_one_codex
     from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
     from lionagi.state.codex_mirror import session_db_id as codex_sid
@@ -2611,7 +2611,7 @@ async def test_codex_provenance_peeked_flag_not_set_on_backfill_failure(tmp_path
     records = [json.loads(line) for line in contents.splitlines()]
 
     attempts = []
-    real_attribute = mirror_mod._attribute_idle_codex
+    real_attribute = service_mod._attribute_idle_codex
 
     async def flaky_attribute(db, state):
         attempts.append(state.session_uid)
@@ -2619,7 +2619,7 @@ async def test_codex_provenance_peeked_flag_not_set_on_backfill_failure(tmp_path
             raise RuntimeError("set_session_provenance transient failure")
         return await real_attribute(db, state)
 
-    monkeypatch.setattr(mirror_mod, "_attribute_idle_codex", flaky_attribute)
+    monkeypatch.setattr(service_mod, "_attribute_idle_codex", flaky_attribute)
 
     async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
         await codex_mirror_session(db, rollout_uid=uid, records=records, tool_names={}, cwd=None)
@@ -3296,12 +3296,15 @@ def test_resolve_mirrored_content_no_message_match_falls_back(tmp_path):
 def test_config_negative_preview_chars_rejected(monkeypatch):
     import importlib
 
+    from lionagi.cli import _mirror_settings
     from lionagi.studio import config as config_mod
 
     monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "-1")
     with pytest.raises(ValueError):
+        importlib.reload(_mirror_settings)
         importlib.reload(config_mod)
     monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
+    importlib.reload(_mirror_settings)
     importlib.reload(config_mod)
 
 
@@ -3309,14 +3312,16 @@ def test_config_omitted_preview_chars_defaults_to_500(monkeypatch):
     import importlib
 
     monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
+    from lionagi.cli import _mirror_settings
     from lionagi.studio import config as config_mod
 
+    importlib.reload(_mirror_settings)
     importlib.reload(config_mod)
     assert config_mod.MIRROR_PREVIEW_CHARS == 500
 
 
 # Live-path mirror bounding: oversized ingestion through the three real
-# writers (claude_mirror.py, codex_mirror.py, cli/mirror.py). A unit test on
+# writers (claude_mirror.py, codex_mirror.py, cli/_mirror_service.py). A unit test on
 # the codec alone (above) does not prove these are wired; each test here
 # writes an oversized transcript to disk and reads the row back out of a real
 # StateDB after it went through the module's own tailer, never constructing
@@ -3452,10 +3457,11 @@ async def test_live_cli_mirror_run_once_bounds_oversized_message_end_to_end(
     the lower-level per-file helpers exercised by the other two live tests."""
     import argparse
 
+    from lionagi.cli import _mirror_service as service_mod
     from lionagi.cli import mirror as mirror_mod
     from lionagi.state._mirror_common import resolve_mirrored_content
 
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
 
     uid = "0199dddd-0000-0000-0000-000000000003"
     root = tmp_path / "projects"
@@ -3512,10 +3518,11 @@ async def test_live_cli_mirror_run_once_relative_root_produces_resolvable_pointe
     """
     import argparse
 
+    from lionagi.cli import _mirror_service as service_mod
     from lionagi.cli import mirror as mirror_mod
     from lionagi.state._mirror_common import resolve_mirrored_content
 
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
     monkeypatch.chdir(tmp_path)
 
     uid = "0199dddd-0000-0000-0000-000000000004"
@@ -3558,7 +3565,7 @@ async def test_live_cli_mirror_run_once_relative_root_produces_resolvable_pointe
 
 
 def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
-    """The bounding codec must not end up with zero callers: both writers call it directly and the CLI tailer threads the source-pointer data into every live write."""
+    """The bounding codec must not end up with zero callers: both writers call it directly and the mirror service threads the source-pointer data into every live write."""
     root = Path(__file__).resolve().parents[2] / "lionagi"
     codec_callers = {
         root / "state" / "claude_mirror.py": "claude_mirror.py",
@@ -3571,9 +3578,9 @@ def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
     ]
     assert not missing, f"bound_mirror_content has zero callers in: {missing}"
 
-    cli_text = (root / "cli" / "mirror.py").read_text()
-    assert "max_preview_chars" in cli_text and "event_sources" in cli_text, (
-        "cli/mirror.py does not thread the mirror bounding budget/source pointers "
+    service_text = (root / "cli" / "_mirror_service.py").read_text()
+    assert "max_preview_chars" in service_text and "event_sources" in service_text, (
+        "cli/_mirror_service.py does not thread the mirror bounding budget/source pointers "
         "into mirror_session()"
     )
 
@@ -3814,3 +3821,54 @@ async def test_a_stored_row_without_arguments_is_not_a_use() -> None:
     ]
     await name_answered_results(_Store(), rows)
     assert rows[0]["content"]["function"] == ""
+
+
+def test_mirror_service_is_defined_in_its_own_module() -> None:
+    """The tail loop and its helpers live in the service module; the command module re-exports them."""
+    import lionagi.cli._mirror_service as service
+    from lionagi.cli import mirror
+
+    assert service.mirror_forever.__module__ == "lionagi.cli._mirror_service"
+    assert service._FileState.__module__ == "lionagi.cli._mirror_service"
+    assert mirror.mirror_forever is service.mirror_forever
+    assert mirror._FileState is service._FileState
+    assert mirror._one_pass is service._one_pass
+    assert mirror.CLAUDE_PROJECTS_DIR == service.CLAUDE_PROJECTS_DIR
+    assert mirror.CODEX_SESSIONS_DIR == service.CODEX_SESSIONS_DIR
+
+
+def test_studio_preview_limit_comes_from_the_settings_module() -> None:
+    """The studio config and the mirror service read one preview limit, defined in one place."""
+    import lionagi.cli._mirror_service as service
+    from lionagi.cli import _mirror_settings
+    from lionagi.studio import config
+
+    assert config.MIRROR_PREVIEW_CHARS == _mirror_settings.MIRROR_PREVIEW_CHARS
+    assert service.MIRROR_PREVIEW_CHARS == _mirror_settings.MIRROR_PREVIEW_CHARS
+
+
+def test_mirror_service_imports_neither_a_command_module_nor_the_studio() -> None:
+    """The service module sits under the command module and above nothing in the studio."""
+    from pathlib import Path
+
+    import lionagi.cli
+    from tests.cli._import_guard import command_module_imports, resolved_imports
+
+    source = Path(lionagi.cli.__file__).resolve().parent / "_mirror_service.py"
+    imported = resolved_imports(source, "lionagi.cli")
+    assert command_module_imports(imported) == set()
+    assert not [name for name in imported if name.split(".")[:2] == ["lionagi", "studio"]]
+
+
+def test_mirror_settings_imports_only_the_standard_library() -> None:
+    """The settings module is read by the studio config at import time, so it imports nothing else."""
+    import sys
+    from pathlib import Path
+
+    import lionagi.cli
+    from tests.cli._import_guard import resolved_imports
+
+    source = Path(lionagi.cli.__file__).resolve().parent / "_mirror_settings.py"
+    imported = resolved_imports(source, "lionagi.cli")
+    assert imported
+    assert all(name.split(".")[0] in sys.stdlib_module_names for name in imported)

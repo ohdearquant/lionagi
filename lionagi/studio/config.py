@@ -13,6 +13,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+# The preview limit is read in one place so the mirror service and the studio agree on it.
+from lionagi.cli._mirror_settings import MIRROR_PREVIEW_CHARS  # noqa: F401
+
 from ._timezone_rules import MAX_TZIF_BYTES, read_tzif, rules_equal, tzif_rules
 
 _logger = logging.getLogger(__name__)
@@ -733,14 +736,6 @@ MIRROR_CODEX_ROOT: Path | None = _optional_mirror_root("LIONAGI_STUDIO_MIRROR_CO
 MIRROR_IMPORT_AMBIENT: bool = _env_flag(
     "LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", default=_mirror_import_ambient_default()
 )
-# Bounded display preview stored in messages.content for mirror-ingested rows
-# (Unicode code points, not bytes). 0 is valid (empty preview + pointer only).
-# Negative values are a configuration error — there is no "unbounded" sentinel.
-MIRROR_PREVIEW_CHARS: int = int(os.environ.get("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "500"))
-if MIRROR_PREVIEW_CHARS < 0:
-    raise ValueError(
-        f"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS must be >= 0, got {MIRROR_PREVIEW_CHARS}"
-    )
 
 # Durable replay of terminal notifications into the global settings notifier. Off by
 # default: the push path does not yet record what it delivered, so with this on a pass

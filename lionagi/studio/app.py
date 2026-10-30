@@ -236,7 +236,7 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
 
     if not MIRROR_CLAUDE_ENABLED:
         return None, None
-    from lionagi.cli.mirror import CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR, mirror_forever
+    from lionagi.cli._mirror_service import CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR, mirror_forever
 
     claude_root = MIRROR_CLAUDE_ROOT
     codex_root = MIRROR_CODEX_ROOT
