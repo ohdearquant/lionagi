@@ -128,3 +128,52 @@ async def test_strict_worker_and_admission_share_one_reported_slot(tmp_path, cap
             release.set()
             await asyncio.gather(attempt, return_exceptions=True)
             await _wait_released(key)
+
+
+@pytest.mark.asyncio
+async def test_strict_preparation_timeout_is_reported_while_cancel_resistant(tmp_path):
+    """A preparation still running after its timeout remains visible as timed out."""
+    entered, cancelled, release, finished = (asyncio.Event() for _ in range(4))
+    clock = lambda: 100.0  # noqa: E731 -- keep the clock below the deadline
+    hook_calls = []
+
+    async def prepare(_row, _db):
+        entered.set()
+        try:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            hook_calls.append("prepared")
+            return DeliveryOutcome.FAILURE
+        finally:
+            finished.set()
+
+    async with StateDB(tmp_path / "state.db") as db:
+        (event_id,) = await _seed(db, 1)
+        await register_consumer(db, "strict-prepare-timeout", start="all")
+        strict = TerminalReconciler(
+            "strict-prepare-timeout", prepare, batch_size=1, timeout=0.03, clock=clock
+        )
+        reporter = TerminalReconciler(
+            "strict-prepare-timeout", prepare, batch_size=1, timeout=0.03, clock=clock
+        )
+        key = (reconciliation._store_identity(db), "strict-prepare-timeout", event_id)
+        try:
+            result = await strict.attempt_exact(db, event_id)
+            await asyncio.wait_for(cancelled.wait(), 2)
+            assert entered.is_set() and result.status == "failed" and not result.attempted
+            assert not finished.is_set() and not hook_calls
+            with reconciliation._workers_lock:
+                admission = reconciliation._attempts[key]
+                assert key not in reconciliation._workers
+                assert admission.timed_out
+            snapshot = await reporter.run_pass(db)
+            assert snapshot["outstanding"] == snapshot["past_timeout"] == 1
+            assert not finished.is_set() and not hook_calls
+        finally:
+            release.set()
+            if entered.is_set():
+                await asyncio.wait_for(finished.wait(), 2)
+                await _wait_released(key)

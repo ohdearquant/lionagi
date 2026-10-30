@@ -245,6 +245,7 @@ class _Worker:
     abandoned: bool = False
     late_settled: tuple[bool, Any] | None = None
     late_task: asyncio.Future[Any] | None = None
+    late_cancelled: bool = False
     started_at: float = 0.0
     deadline: float = 0.0
     timed_out: bool = False
@@ -947,29 +948,6 @@ def _finish_strict_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) 
 
 def _finish_late_result(worker: _Worker, result: Any) -> None:
     """Record an already-completed detached delivery without reopening its store schema."""
-    if worker.strict_outcomes:
-        try:
-            if result not in _STRICT_ACKNOWLEDGE_OUTCOMES:
-                logger.warning("Late terminal delivery failed for %s", worker.key[2])
-                _release_worker(worker)
-                return
-            try:
-                asyncio.run(_acknowledge_late(worker))
-            except _MemoryStoreChangedError:
-                logger.warning("Private memory store closed before late ACK for %s", worker.key[2])
-            except Exception as exc:
-                if worker.key[0].startswith("sqlite-memory:"):
-                    logger.warning(
-                        "Late ACK deferred for %s: %s", worker.key[2], type(exc).__name__
-                    )
-                    with _workers_lock:
-                        worker.deferred = True
-                    return
-                raise
-        except Exception as exc:
-            logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
-        _release_worker(worker)
-        return
     try:
         if result not in _ACKNOWLEDGE_OUTCOMES:
             logger.warning("Late terminal delivery failed for %s", worker.key[2])
@@ -1044,6 +1022,7 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
     The final wait is bounded only by the hook itself; unobservable unfinished
     work follows the abandoned-worker rule.
     """
+    task: asyncio.Future[Any] | None = None
     try:
         with _workers_lock:
             if worker.late_claimed or _workers.get(worker.key) is not worker:
@@ -1054,9 +1033,29 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
         if not done:
             task.cancel()
         try:
-            result = await task
+            result = await asyncio.shield(task)
         except asyncio.CancelledError:
+            if not task.done():
+                raise
+            with _workers_lock:
+                worker.late_cancelled = True
             result = DeliveryOutcome.FAILURE
+    except asyncio.CancelledError:
+        # The wrapper may be cancelled while the delivery handles its own
+        # cancellation asynchronously. Do not report settlement (and release
+        # the reservation) until that delivery actually finishes.
+        with _workers_lock:
+            worker.late_cancelled = True
+        while task is not None and not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if task is not None and task.done() and not task.cancelled():
+            task.exception()  # Observe a late failure without acknowledging it.
+        result = DeliveryOutcome.FAILURE
     except BaseException as exc:
         with _workers_lock:
             worker.late_settled = (False, exc)
@@ -1144,6 +1143,7 @@ def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None
                             with _workers_lock:
                                 settled = worker.late_settled
                                 task = worker.late_task
+                                cancelled = worker.late_cancelled
                             if settled is not None:
                                 success, value = settled
                                 if not success:
@@ -1158,6 +1158,8 @@ def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None
                                 try:
                                     result = task.result()
                                 except asyncio.CancelledError:
+                                    result = DeliveryOutcome.FAILURE
+                                if cancelled:
                                     result = DeliveryOutcome.FAILURE
                                 break
                             if isinstance(result, asyncio.Future) and result.done():
@@ -1222,6 +1224,12 @@ def _late_delivery_task_done(worker: _Worker, task: asyncio.Future[Any]) -> None
         ):
             return
         worker.late_claimed = True
+        cancelled = worker.late_cancelled
+    if cancelled:
+        if not task.cancelled():
+            task.exception()  # Observe it without acknowledging a cancelled wrapper.
+        _finish_late_result(worker, DeliveryOutcome.FAILURE)
+        return
     _record_claimed_task(worker, task)
 
 
