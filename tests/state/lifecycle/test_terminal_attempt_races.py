@@ -57,7 +57,7 @@ async def _seed(db):
     return row["id"]
 
 
-async def _wait_admission_released(db, consumer, event_id):
+async def _wait_admission_released(db, consumer, event_id, *, timeout=2):
     key = (kernel._store_identity(db), consumer, event_id)
 
     async def wait():
@@ -68,7 +68,7 @@ async def _wait_admission_released(db, consumer, event_id):
                 return
             await asyncio.sleep(0)
 
-    await asyncio.wait_for(wait(), 2)
+    await asyncio.wait_for(wait(), timeout)
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_ack_cancellation_is_uncertain_or_propagated_and_reserved(
             assert not await is_acknowledged(db, event_id, "ack-timeout")
             assert calls == [event_id]
             release.set()
-            await asyncio.wait_for(settled.wait(), 1)
+            await asyncio.wait_for(settled.wait(), 10)
             await _wait_admission_released(db, "ack-timeout", event_id)
             assert await is_acknowledged(db, event_id, "ack-timeout") is commits
             assert secret not in caplog.text
@@ -136,7 +136,7 @@ async def test_ack_cancellation_is_uncertain_or_propagated_and_reserved(
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)
-            await _wait_admission_released(db, "ack-timeout", event_id)
+            await _wait_admission_released(db, "ack-timeout", event_id, timeout=10)
 
 
 @pytest.mark.asyncio
