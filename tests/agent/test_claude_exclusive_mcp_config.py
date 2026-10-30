@@ -123,6 +123,117 @@ def test_incomplete_quoted_config_is_not_logged_as_a_path(caplog):
     assert marker not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    ["\v", "\f", "\x00", "\u0085", "\u00a0", "\u2028", "\u200b", "\ufeff"],
+    ids=[
+        "vertical-tab",
+        "form-feed",
+        "nul",
+        "next-line",
+        "nbsp",
+        "line-separator",
+        "zero-width",
+        "bom",
+    ],
+)
+def test_control_prefixed_inline_config_cannot_inject_log_content(caplog, prefix):
+    marker = "fixture-value-do-not-log"
+    inline = prefix + json.dumps({"mcpServers": {"demo": {"env": {"TOKEN": marker}}}})
+    kwargs = {"mcp_config": inline}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory"
+        and record.levelno >= logging.WARNING
+        and record.getMessage().startswith("Dropping mcp_config ")
+    ]
+    assert len(warnings) == 1
+    assert "inline" in warnings[0].lower() or "non-path" in warnings[0].lower()
+    assert all(marker not in record.getMessage() for record in caplog.records)
+    assert marker not in caplog.text
+    assert len(caplog.text.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "separator",
+    ["\v", "\f", "\x00", "\u0085", "\u00a0", "\u2028", "\u2029", "\u200b", "\ufeff", "\u2007"],
+    ids=[
+        "vertical-tab",
+        "form-feed",
+        "nul",
+        "next-line",
+        "nbsp",
+        "line",
+        "paragraph",
+        "zero-width",
+        "bom",
+        "figure-space",
+    ],
+)
+def test_unprintable_or_unsafe_separator_in_path_is_not_logged(caplog, separator):
+    marker = "fixture-value-do-not-log"
+    kwargs = {"mcp_config": "agent" + separator + marker + ".json"}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory"
+        and record.levelno >= logging.WARNING
+        and record.getMessage().startswith("Dropping mcp_config ")
+    ]
+    assert len(warnings) == 1
+    assert "non-path" in warnings[0].lower()
+    assert all(marker not in record.getMessage() for record in caplog.records)
+    assert marker not in caplog.text
+    assert len(caplog.text.splitlines()) == 1
+
+
+@pytest.mark.parametrize("as_path", [False, True], ids=["string", "pathlike"])
+def test_line_break_in_config_path_cannot_forge_a_log_record(caplog, as_path):
+    marker = "fixture-forged-record"
+    path = "ordinary.json\n" + marker
+    kwargs = {"mcp_config": Path(path) if as_path else path}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory"
+        and record.levelno >= logging.WARNING
+        and record.getMessage().startswith("Dropping mcp_config ")
+    ]
+    assert len(warnings) == 1
+    assert "non-path" in warnings[0].lower()
+    assert all(marker not in record.getMessage() for record in caplog.records)
+    assert marker not in caplog.text
+    assert len(caplog.text.splitlines()) == 1
+
+
+@pytest.mark.parametrize("as_path", [False, True], ids=["string", "pathlike"])
+def test_printable_unicode_config_path_is_named(caplog, as_path):
+    path = "café/服务器 配置.json"
+    kwargs = {"mcp_config": Path(path) if as_path else path}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "mcp_config" not in kwargs
+    _assert_drop_warning(caplog, inherited_file=True, config_arg=path)
+
+
 def test_none_config_is_removed_without_warning(caplog):
     kwargs = {"mcp_config": None}
 

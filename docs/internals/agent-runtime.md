@@ -147,8 +147,9 @@ and one implementation.
   overrides (a whole `mcp_servers` table included) and a generated codex
   profile are dropped first; a profile the caller named is not dropped, and is
   refused as above. An explicit per-call option can replace the configured set
-  for that call. Dropping a Claude `mcp_config` warns with its path, or identifies
-  inline JSON without logging its contents.
+  for that call. Dropping a Claude `mcp_config` warns with its path, or says it
+  was inline JSON or another non-path value without logging its contents;
+  `None` is dropped silently.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters

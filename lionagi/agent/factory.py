@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import unicodedata
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -1152,15 +1153,24 @@ def apply_forwarded_mcp_servers(
                     config_text = None
                 if config_text is None:
                     description = "non-path config"
-                elif config_text.lstrip("\ufeff \t\r\n").startswith(("{", "[", '"')):
-                    description = "inline JSON config"
                 else:
-                    try:
-                        json.loads(config_text)
-                    except (TypeError, ValueError):
-                        description = config_text
-                    else:
+                    candidate = config_text.lstrip()
+                    while candidate.startswith("\ufeff"):
+                        candidate = candidate[1:].lstrip()
+                    if candidate.startswith(("{", "[", '"')):
                         description = "inline JSON config"
+                    else:
+                        try:
+                            json.loads(candidate)
+                        except (TypeError, ValueError):
+                            unsafe = any(
+                                unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"}
+                                or (unicodedata.category(char) == "Zs" and char != " ")
+                                for char in config_text
+                            )
+                            description = "non-path config" if unsafe else config_text
+                        else:
+                            description = "inline JSON config"
                 logger.warning(
                     "Dropping mcp_config %s because an exclusive MCP server set was supplied",
                     description,
