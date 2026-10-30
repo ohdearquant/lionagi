@@ -117,13 +117,22 @@ async def _act(
         branch._observer is not None and getattr(branch._observer, "_gate", True) is not None
     )
     invoke_args = authorized_args = _args
+    copy_refused = False
     if _has_gate:
         from ._gate_arguments import gate_arguments
 
-        invoke_args, authorized_args = gate_arguments(
-            branch._action_manager, _request["function"], _args
-        )
-    if not await branch.authorize(
+        try:
+            invoke_args, authorized_args = gate_arguments(
+                branch._action_manager, _request["function"], _args
+            )
+        except RecursionError:
+            # The gate cannot inspect an over-deep structure safely. Refuse it
+            # without retaining the arguments in the denial or action history.
+            copy_refused = True
+            _args = {}
+            _request = {"function": _request["function"], "arguments": _args}
+            action_request = ActionRequest(content=_request, sender=branch.id, recipient=branch.id)
+    if copy_refused or not await branch.authorize(
         ToolInvocation(
             function=_request["function"], arguments=authorized_args, branch_id=str(branch.id)
         )
