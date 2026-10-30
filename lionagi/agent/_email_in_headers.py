@@ -19,6 +19,7 @@ __all__ = (
     "HEADER_TOKEN_RE",
     "SHORT_HEADER_FLAG_RE",
     "find_leak",
+    "find_leak_with_allowed",
 )
 
 # fmt: off
@@ -55,6 +56,7 @@ def _header_tokens(text: str):
 
 WINDOW = 240
 
+# Direct calls use only built-in domains; the wrapper sets and resets extra addresses per call.
 _extra_allowed: ContextVar[frozenset[str]] = ContextVar("email_header_allowed", default=frozenset())
 
 

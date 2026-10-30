@@ -66,6 +66,25 @@ def _assert_denied(call, *, edit=True):
         assert "resulting file" in call.execution.error.result.reason
 
 
+async def test_directly_registered_guard_refuses_unbound_edit_and_checks_other_actions(
+    tmp_path, monkeypatch
+):
+    from lionagi.agent.hooks import guard_email_in_headers
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    spec = AgentSpec.coding(secure=False, cwd=str(tmp_path))
+    spec.pre("editor", guard_email_in_headers)
+    branch = await create_agent(spec, load_settings=False)
+    target = tmp_path / "client.py"
+    target.write_text("old\n")
+    with pytest.raises(PermissionError, match="unbound editor"):
+        await branch.acts.registry["editor"].preprocessor(_edit(target, "old", "new"))
+    with pytest.raises(PermissionError, match="outbound HTTP header"):
+        await guard_email_in_headers("editor", "write", {"content": UNSAFE})
+    with pytest.raises(PermissionError, match="outbound HTTP header"):
+        await guard_email_in_headers("bash", "run", {"command": f'curl -H "From: {ADDRESS}"'})
+
+
 @pytest.mark.parametrize("variant", ["toolkit", "standalone"])
 async def test_edit_reconstructs_header_from_old_file_and_inserted_address(
     variant, tmp_path, monkeypatch

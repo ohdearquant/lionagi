@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 
 import pytest
@@ -22,6 +23,20 @@ def test_assignment_matching_handles_long_blank_lines_promptly():
 
 ADDRESS = "sample-person@project.example"
 OTHER = "another-person@project.example"
+
+
+def test_public_guard_signature_contains_no_private_parameters():
+    assert not any(
+        name.startswith("_") for name in inspect.signature(guard_email_in_headers).parameters
+    )
+
+
+def test_direct_predicate_uses_only_builtin_allowed_domains():
+    text = f'headers={{"X-Contact": "{ADDRESS}"}}'
+    assert predicate.find_leak(text) is not None
+    assert predicate.find_leak_with_allowed(text, frozenset({ADDRESS})) is None
+    assert predicate.find_leak(text) is not None
+
 
 LEAKS = [
     'curl -s -A "release-check (sample-person@project.example)" https://packages.example/',

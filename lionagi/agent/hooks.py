@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import wraps
 from pathlib import Path
 from types import FunctionType
@@ -61,17 +61,33 @@ async def guard_email_in_headers(
     *,
     allow: frozenset[str] = frozenset(),
     note: str | None = None,
-    _edit_preparer=None,
-    _workspace_root: Path | None = None,
 ) -> dict | None:
-    """Refuse an email in an outbound header in a command or file write."""
+    """Refuse an email in an outbound header in a command or file write.
+
+    An editor edit is refused unless this guard was installed through the agent
+    bound to that editor, because the resulting file cannot otherwise be checked.
+    Editor writes and bash commands are checked directly.
+    """
+    return await _guard_email_in_headers(tool_name, action, args, allow=allow, note=note)
+
+
+async def _guard_email_in_headers(
+    tool_name: str,
+    action: str,
+    args: dict,
+    *,
+    allow: frozenset[str],
+    note: str | None,
+    edit_preparer: Callable[..., object] | None = None,
+    workspace_root: Path | None = None,
+) -> dict | None:
     from ._email_in_headers import find_leak_with_allowed
 
-    if tool_name in ("editor", "editor_tool") and action == "edit" and _edit_preparer is None:
+    if tool_name in ("editor", "editor_tool") and action == "edit" and edit_preparer is None:
         raise PermissionError("Cannot check the resulting file for an unbound editor.")
     if tool_name in ("bash", "bash_tool"):
         text = args.get("command", "")
-    elif tool_name in ("editor", "editor_tool") and action == "edit" and _edit_preparer:
+    elif tool_name in ("editor", "editor_tool") and action == "edit" and edit_preparer:
         from pydantic import ValidationError
 
         from lionagi.ln.concurrency import run_sync
@@ -87,12 +103,12 @@ async def guard_email_in_headers(
         # between these reads is not covered by this preview.
         try:
             prepared = await run_sync(
-                _edit_preparer,
+                edit_preparer,
                 request.file_path,
                 request.old_string,
                 request.new_string,
                 request.replace_all,
-                _workspace_root,
+                workspace_root,
             )
         except (OSError, UnicodeError, ValueError):
             return None
@@ -110,7 +126,7 @@ async def guard_email_in_headers(
         address, token = hit
         masked = address[:3] + "…@" + address.split("@", 1)[1]
         message = f"Blocked an email address ({masked}) in an outbound HTTP header after {token!r}."
-        if action == "edit" and _edit_preparer:
+        if action == "edit" and edit_preparer:
             message += " The resulting file contains the header."
         if note:
             message += f" {note}"
@@ -161,14 +177,14 @@ def _bind_email_header_editor_guard(handler, preparer, workspace_root: Path):
 
     @wraps(handler)
     async def bound(tool_name: str, action: str, args: dict) -> dict | None:
-        return await guard_email_in_headers(
+        return await _guard_email_in_headers(
             tool_name,
             action,
             args,
             allow=allowed,
             note=note,
-            _edit_preparer=preparer,
-            _workspace_root=workspace_root,
+            edit_preparer=preparer,
+            workspace_root=workspace_root,
         )
 
     return bound
