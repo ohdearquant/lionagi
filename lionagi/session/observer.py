@@ -381,7 +381,11 @@ class SessionObserver(Observer):
             logger.warning("denial observation failed (%s)", type(exc).__name__)
 
     async def authorize(self, action: Any) -> bool:
-        """Pre-invoke gate. Returns True when no gate is set; denials are redacted."""
+        """Return the pre-invoke decision, recording redacted denials before delivery.
+
+        Denials go to subscribers as emitted events do. A subscriber that never
+        returns holds this call, and the denied action does not run.
+        """
         result = await self._evaluate_gate(action=action)
         if not result.allowed:
             await self._publish_gate_denial(result=result)
