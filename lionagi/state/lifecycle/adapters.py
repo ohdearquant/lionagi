@@ -154,15 +154,12 @@ async def run_cancel_session_if_worker_generation(
     reason_code: str,
     reason_summary: str,
     evidence: dict[str, Any],
-) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected", "timed_out"]:
+) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
     """Bind cancellation to one execution, through the service's guarded transition.
 
     ``already_terminal`` means the row observed by the guarded transition was
     terminal and still carried the captured generation and runner identity.
     Nothing is written; a later change to the row is not ruled out.
-
-    ``timed_out`` means the service's deadline passed before the cancellation was
-    recorded. The caller cannot tell whether the session is still running.
     """
     try:
         outcome, terminal_same_execution = await service.guarded_cancel_session(
@@ -177,8 +174,6 @@ async def run_cancel_session_if_worker_generation(
         return "missing"
     except LifecycleValidationError:
         return "rejected"
-    except TimeoutError:
-        return "timed_out"
     if outcome.result == "conflict" and terminal_same_execution:
         return "already_terminal"
     return outcome.result
