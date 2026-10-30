@@ -1872,7 +1872,8 @@ class MCPConnectionPool:
 
         effective_security = cls._effective_security(security)
         security_fp = cls._security_fingerprint(effective_security)
-        if "server" in server_config:
+        is_server = "server" in server_config
+        if is_server:
             server_name = server_config["server"]
             config = cls._resolve_config(server_config)
             policy_key = cls._policy_key(config, server_name=server_name)
@@ -1881,7 +1882,7 @@ class MCPConnectionPool:
             config = copy(server_config)
             policy_key = cls._policy_key(config)
         cache_key = cls._cache_key(
-            policy_key, security_fp, server_name=server_name, is_server="server" in server_config
+            policy_key, security_fp, server_name=server_name, is_server=is_server
         )
         return config, policy_key, cache_key
 
