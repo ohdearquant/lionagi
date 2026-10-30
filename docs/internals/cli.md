@@ -1003,7 +1003,7 @@ so other surfaces can await completion without shelling out; `run_wait()` is the
 that resolves argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
 
 **`_resolve_wait_target`** — any-kind resolver order: session, invocation, play
-(`_resolve_any_target`, which also falls back to a branch_id), then schedule_run.
+(`resolve_any_target` in `lionagi/cli/_inspection.py`, which also falls back to a branch_id), then schedule_run.
 Terminal-state definitions live in `TERMINAL_STATUSES_BY_ENTITY_TYPE`
 (`lionagi/state/db.py`, ADR-0035).
 

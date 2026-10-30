@@ -55,14 +55,14 @@ async def _seed_engine_def(
 
 
 def test_valid_engine_kinds_matches_kind_meta():
-    """_VALID_ENGINE_KINDS must equal the keys of _KIND_META to prevent drift."""
-    from lionagi.cli.engine import _KIND_META
+    """_VALID_ENGINE_KINDS must equal the keys of KIND_META to prevent drift."""
+    from lionagi.cli._engine_definitions import KIND_META
     from lionagi.studio.services.engine_defs import _VALID_ENGINE_KINDS
 
-    assert _VALID_ENGINE_KINDS == set(_KIND_META), (
-        "_VALID_ENGINE_KINDS drifted from _KIND_META. "
-        f"Extra in svc: {_VALID_ENGINE_KINDS - set(_KIND_META)!r}. "
-        f"Missing in svc: {set(_KIND_META) - _VALID_ENGINE_KINDS!r}."
+    assert _VALID_ENGINE_KINDS == set(KIND_META), (
+        "_VALID_ENGINE_KINDS drifted from KIND_META. "
+        f"Extra in svc: {_VALID_ENGINE_KINDS - set(KIND_META)!r}. "
+        f"Missing in svc: {set(KIND_META) - _VALID_ENGINE_KINDS!r}."
     )
 
 

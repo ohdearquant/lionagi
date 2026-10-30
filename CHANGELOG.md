@@ -126,12 +126,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   callable's own values, and later hooks can still change arguments. Arguments
   too deeply nested to copy are denied without running the tool.
 
-- A tool call whose arguments nest too deeply to serialize (past 255 levels)
-  still runs and returns its result. Its log entry records the arguments as
-  `<arguments too deeply nested>`; any other serialization error still surfaces.
-  Arguments nested past the interpreter's recursion limit run this way only when
-  no session tool gate is set; a gate still denies them without running the tool.
-
 - A `SessionObserver` gate must return a `bool` or `GateResult`. Other values,
   including `1` and `"yes"`, deny routing and subscriber delivery while the
   event is still recorded.
@@ -301,8 +295,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- Tool hook and verbose summaries no longer block dispatch when deeply nested
-  arguments exceed Python's string-representation recursion limit.
+- Importing the Claude Code, Codex, and Pi providers no longer configures the
+  application's root logger.
 
 - Successful structured-response repairs on API models now replace the invalid
   assistant text in later conversation history and run-level live persistence.

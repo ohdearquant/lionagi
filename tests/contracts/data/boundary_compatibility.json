@@ -449,7 +449,8 @@
       "from lionagi.providers._provider_errors import NestedAgentRefusedError",
       "from lionagi.providers._subagent_admission import refuse_nested_agent",
       "from .._logging import hint, log_error",
-      "from .._providers import add_common_cli_args",
+      "from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args",
+      "from .._orchestrate_parsing import add_orchestrate_subparser as add_orchestrate_subparser",
       "from .._util import EXIT_CODE_BY_STATUS",
       "from ._checkpoint import FlowResumeError",
       "from .fanout import FanoutPlanError, _run_fanout",
@@ -1806,6 +1807,17 @@
       "resolve_and_build_context_block",
       "resolve_context_refs"
     ],
+    "lionagi/cli/_engine_definitions.py": [
+      "import_engine_class"
+    ],
+    "lionagi/cli/_inspection.py": [
+      "fetch_by_id",
+      "resolve_agent_target",
+      "resolve_any_target",
+      "resolve_play_target",
+      "resolve_primary_session",
+      "run_id_candidates"
+    ],
     "lionagi/cli/_logging.py": [
       "configure_cli_logging"
     ],
@@ -1818,6 +1830,9 @@
     ],
     "lionagi/cli/_notify_outcomes.py": [
       "DurableRunRecorder"
+    ],
+    "lionagi/cli/_orchestrate_parsing.py": [
+      "add_orchestrate_subparser"
     ],
     "lionagi/cli/_project.py": [
       "detect_project"
@@ -1845,11 +1860,15 @@
       "list_runs",
       "load_last_branch",
       "lost_terminal_write",
+      "register_branch_hook",
       "resolve_run_reason",
       "save_last_branch_pointer",
       "setup_agent_persist",
       "teardown_orchestration_persist",
       "teardown_persist"
+    ],
+    "lionagi/cli/_team_service.py": [
+      "read_team_json"
     ],
     "lionagi/cli/_util.py": [
       "AmbiguousIdError",
@@ -1954,7 +1973,6 @@
       "run_monitor_wait"
     ],
     "lionagi/cli/orchestrate/__init__.py": [
-      "add_orchestrate_subparser",
       "inject_playbook_schema_into_parser",
       "list_playbooks",
       "run_orchestrate"
@@ -2011,7 +2029,6 @@
       "make_team_lifecycle_coordinator",
       "mode_roster",
       "parse_orchestrator_provider",
-      "register_branch_hook",
       "resolve_modes",
       "resolve_worker_spec",
       "role_config",
@@ -2097,7 +2114,6 @@
       "post_done_signal",
       "post_finished_signal",
       "post_wakeup_signal",
-      "read_team_json",
       "run_team"
     ],
     "lionagi/cli/wait.py": [
