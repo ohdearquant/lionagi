@@ -83,7 +83,10 @@ def _amendment_flat() -> str:
 
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
-    assert "run.spawn" in _span("lionhub/src/lionhub/orchestration/engines/hypothesis.py", 890, 961)
+    hypothesis = "lionhub/src/lionhub/orchestration/engines/hypothesis.py"
+    assert "run.spawn" in _line(hypothesis, 977)
+    assert "run.spawn" in _line(hypothesis, 1057)
+    assert f"{hypothesis}:977-1057" in _amendment()
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 711)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
@@ -100,7 +103,7 @@ def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
-    body = _span("lionagi/session/observer.py", 365, 374)
+    body = _span("lionagi/session/observer.py", 365, 376)
     assert "allowed = True" in body
     assert "except Exception" in body
     assert "allowed = False" in body
@@ -168,13 +171,13 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
     assert "DEFAULT_MAX_ATTEMPTS" in _line(
-        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 48
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 52
     )
     assert "ack_required: bool = False" in _line(
-        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 166
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 170
     )
     assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line(
-        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 167
+        "lionhub/src/lionhub/orchestration/dispatch/outbox.py", 171
     )
 
 
@@ -187,9 +190,11 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5840)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7679)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7704)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 6004)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7850)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7875)
+    assert "limit: int = 500" in _line("lionagi/state/db.py", 7880)
+    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6140)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -208,12 +213,13 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:824-828" in flat
-    assert "lionagi/state/db.py:7679-7689" in flat
-    assert "lionagi/state/db.py:7704-7721" in flat
+    assert "lionagi/state/schema.sql:839-843" in flat
+    assert "lionagi/state/db.py:7850-7860" in flat
+    assert "lionagi/state/db.py:7875-7892" in flat
+    assert "(`:7880`)" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
-    assert "whose forward read defaults to 500 rows" in flat
+    assert "whose forward read defaults to 500 rows (`:7880`)" in flat
     assert "`emitter_role`, versioned payload type" in flat
     assert "filter-required data without destructive truncation; every page is read" in flat
     assert "read through a frozen closure cutoff" in flat
@@ -228,7 +234,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "lionagi/session/branch.py:479-507" in flat
     assert "lionagi/operations/run/run.py:835-846" in flat
     assert "`unbind_db_persistence`" in flat
-    assert "lionagi/session/observer.py:597-614" in flat
+    assert "lionagi/session/observer.py:599-616" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
     assert "keeps its tail pending for the life of the session" in flat
     assert "no timeout and no new setting" in flat
@@ -286,8 +292,8 @@ def test_phase_two_is_a_target_and_the_gate_is_cited_where_it_still_runs() -> No
     flat = _flat()
     assert "Phase 2 already makes" not in text
     assert "Phase 2's target is to make `SessionObservation` signal-only" in flat
-    assert "lionagi/session/observer.py:365-374" in flat
-    assert "lionagi/session/observer.py:369-370`) and then returns at `:374" in flat
+    assert "lionagi/session/observer.py:365-376" in flat
+    assert "lionagi/session/observer.py:371-372`) and then returns at `:376" in flat
     assert "lionagi/session/observer.py:235-236" not in flat
 
 
@@ -321,8 +327,8 @@ def test_delivery_default_matches_the_outbox_tier_it_cites() -> None:
     assert "`best_effort` is an explicit volatile option with no durable cursor" in flat
     assert "docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609" in flat
     assert "`enqueue_dispatch` inserts a row unconditionally" in flat
-    assert "acknowledgement is the opt-in (`:166`)" in flat
-    assert "the only per-call bound is `max_attempts` (`:167`)" in flat
+    assert "acknowledgement is the opt-in (`:170`)" in flat
+    assert "the only per-call bound is `max_attempts` (`:171`)" in flat
 
 
 def test_d1_gains_a_durable_observing_subscriber_row() -> None:
@@ -346,7 +352,8 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
     assert "lionagi/state/schema.sql:487" in flat
-    assert "lionagi/state/db.py:5840-5842" in flat
+    assert "lionagi/state/db.py:6004-6006" in flat
+    assert "`:6140`" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
@@ -451,7 +458,7 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionhub/src/lionhub/orchestration/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
+    assert "lionhub/src/lionhub/orchestration/dispatch/outbox.py:52`, `:520-537`, `:593-623" in flat
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four

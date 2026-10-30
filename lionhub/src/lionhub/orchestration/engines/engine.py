@@ -747,6 +747,8 @@ class EngineRun:
         khive_injection: Any = None,
         command_env_allowlist: Sequence[str] = (),
         _command_env_names_out: Callable[[frozenset[str]], None] | None = None,
+        _effort_origin: str | None = None,
+        _model_origin: str | None = None,
     ) -> Branch:
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
@@ -775,13 +777,22 @@ class EngineRun:
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
         resolved_model = model or self.engine.model or prof_model
+        model_origin = (
+            (_model_origin or "explicit")
+            if model
+            else "explicit"
+            if self.engine.model
+            else "profile"
+        )
         resolved_effort = effort or self.engine.effort
+        effort_origin = _effort_origin if effort and _effort_origin else "explicit"
         resolved_max_tokens = max_tokens if max_tokens is not None else self.engine.max_tokens
         if not resolved_effort and resolved_model:
-            from lionagi.service.providers import parse_model_spec  # noqa: PLC0415
+            from lionagi.agent.factory import _parse_agent_model_spec  # noqa: PLC0415
 
-            if not parse_model_spec(resolved_model).effort:
+            if not _parse_agent_model_spec(resolved_model, origin=model_origin).effort:
                 resolved_effort = prof_effort
+                effort_origin = "profile"
         # Same precedence for khive injection; explicit False stops the profile fallback.
         injection = khive_injection
         if injection is None:
@@ -813,6 +824,8 @@ class EngineRun:
             max_tokens=resolved_max_tokens,
             command_env_allowlist=command_env_allowlist,
         )
+        spec._effort_origin = effort_origin
+        spec._model_origin = model_origin
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
         if mcp_config_path is not None:
@@ -1966,7 +1979,14 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Budget exhaustion stops; any other error fails open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal on the error's chain of causes and contexts, within the first 100 links read, nearest first; and, when the engine contains account integrations, every other error, because no error can show that a contained judge ran, so none can be read as a pass."""
+        """Return whether to expand an item, or raise when the judge cannot be trusted.
+
+        With no judge configured this returns True; budget exhaustion returns False.
+        Judge failures fail open except for settings errors, a containment refusal on
+        the bounded exception chain, and failures under account containment. An
+        ordinary error reporting a denial does not change that denial; an unreadable
+        callback error chain or a containment or settings refusal still raises.
+        """
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
@@ -1990,13 +2010,11 @@ class Engine:
                     )
             for v in verdicts:
                 if v.subject == eid:
-                    if not v.allow:
-                        run.notify("gated", eid=eid, reason=v.reason)
-                    return v.allow
-            allow = isinstance(res, str) and res.strip().lower() == "pass"
-            if not allow:
-                run.notify("gated", eid=eid, reason="text-reject")
-            return allow
+                    allow, reason = v.allow, v.reason
+                    break
+            else:
+                allow = isinstance(res, str) and res.strip().lower() == "pass"
+                reason = "text-reject"
         except EngineBudgetError:
             return False
         except _AgentSettingError:
@@ -2034,6 +2052,45 @@ class Engine:
             if self.contain_account_integrations:
                 raise
             return True
+
+        if not allow:
+            try:
+                run.notify("gated", eid=eid, reason=reason)
+            except Exception as exc:
+                # A reporting error cannot reverse a decision, but a containment or
+                # configuration refusal still stops the caller. Read both links,
+                # including hidden contexts and exception-group members.
+                pending = deque([exc])
+                seen = {}
+                group_members = 0
+                while pending:
+                    cause = pending.popleft()
+                    if cause is None or id(cause) in seen:
+                        continue
+                    if len(seen) >= _JUDGE_CHAIN_LIMIT:
+                        # An unread chain cannot establish that it contains no refusal.
+                        raise
+                    seen[id(cause)] = cause
+                    if issubclass(type(cause), (ContainmentRefusedError, _AgentSettingError)):
+                        raise cause  # noqa: B904 — retain the refusal's own cause
+                    incomplete = False
+                    try:
+                        if is_exception_group(cause):
+                            for member in get_exception_group_exceptions(cause):
+                                group_members += 1
+                                if group_members > _JUDGE_CHAIN_LIMIT:
+                                    incomplete = True
+                                    break
+                                pending.append(member)
+                        for name in ("__context__", "__cause__"):
+                            pending.append(getattr(cause, name, None))
+                    except Exception:  # noqa: BLE001 — fail closed when a link is unreadable
+                        incomplete = True
+                    if incomplete:
+                        raise
+                # Exception text and traceback may carry secrets of an event sink.
+                logger.error("gated callback failed (%s): [redacted]", type(exc).__name__)
+        return allow
 
     def new_run(
         self,

@@ -509,10 +509,10 @@ def test_marks_the_caller_placed_count_toward_the_four(caller_marks):
 
 
 def test_a_provider_without_the_declaration_is_unchanged_by_the_option():
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-openai-key"}):
-        off = iModel(provider="openai", model="gpt-4.1-mini").endpoint
-        on = iModel(provider="openai", model="gpt-4.1-mini", prompt_caching=True).endpoint
-    request = {"messages": [{"role": "user", "content": "hello"}], "model": "gpt-4.1-mini"}
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "test-gemini-key"}):
+        off = iModel(provider="gemini", model="gemini-2.5-flash").endpoint
+        on = iModel(provider="gemini", model="gemini-2.5-flash", prompt_caching=True).endpoint
+    request = {"messages": [{"role": "user", "content": "hello"}], "model": "gemini-2.5-flash"}
 
     assert on.places_prompt_cache is False
     assert json.dumps(on.create_payload(copy.deepcopy(request))[0]) == json.dumps(
