@@ -2422,16 +2422,10 @@ async def setup_agent_persist(
                         _log.warning("session setup recovery did not complete: %s", status_exc)
                 if scope.cancel_called:
                     _log.warning("session setup recovery did not complete: deadline expired")
-            except cancelled_exc_classes() as recovery_cancel:
+            except cancelled_exc_classes():
                 # Direct task cancellation can interrupt a shield. Preserve the first
                 # cancellation and report the unfinished recovery, without orphaning work.
                 _log.warning("session setup recovery did not complete: interrupted")
-                if (
-                    refusal is None
-                    and not isinstance(exc, cancelled_exc_classes())
-                    and drain_cancel is None
-                ):
-                    drain_cancel = recovery_cancel
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:
@@ -2451,13 +2445,7 @@ async def setup_agent_persist(
                     if close_scope.cancel_called:
                         _log.warning("fallback db.close after setup failure did not complete")
                     break
-                except cancelled_exc_classes() as close_cancel:
-                    if (
-                        refusal is None
-                        and not isinstance(exc, cancelled_exc_classes())
-                        and drain_cancel is None
-                    ):
-                        drain_cancel = close_cancel
+                except cancelled_exc_classes():
                     if time.monotonic() >= close_deadline:
                         _log.warning("fallback db.close after setup failure did not complete")
                         break

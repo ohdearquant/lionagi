@@ -249,7 +249,7 @@ async def test_fresh_recovery_guards(isolated_setup, monkeypatch, tmp_path, capl
             await db.close()
 
 
-@pytest.mark.parametrize("mode", ["refusal", "close"])
+@pytest.mark.parametrize("mode", ["refusal", "ordinary", "close"])
 @pytest.mark.asyncio
 async def test_direct_cancel_during_cleanup_keeps_first_failure(
     isolated_setup, monkeypatch, tmp_path, mode
@@ -269,11 +269,13 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
         await original_create(row)
         if mode == "refusal":
             raise failure
+        if mode == "ordinary":
+            raise ValueError("first failure")
         entered.set()
         await gate.wait()
 
     async def update(*args, **kwargs):
-        if mode == "refusal":
+        if mode in {"refusal", "ordinary"}:
             cleanup.set()
             await gate.wait()
         return await original_update(*args, **kwargs)
@@ -306,6 +308,8 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
             with pytest.raises(_WorkerSpawnAdmissionError) as raised:
                 await task
             assert raised.value is failure
+        elif mode == "ordinary":
+            assert await task is None
         else:
             with pytest.raises(asyncio.CancelledError) as raised:
                 await task
