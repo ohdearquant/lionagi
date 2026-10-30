@@ -1237,14 +1237,20 @@ def _record_claimed_task(worker: _Worker, task: asyncio.Future[Any]) -> None:
     try:
         result = task.result()
     except asyncio.CancelledError:
-        _release_worker(worker)
+        try:
+            if not worker.strict_outcomes:
+                _observe_cancelled_hook(task)
+        finally:
+            _release_worker(worker)
         return
     except BaseException as exc:
-        if worker.strict_outcomes:
-            logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
-        else:
-            logger.warning("terminal delivery hook failed after cancellation", exc_info=True)
-        _release_worker(worker)
+        try:
+            if worker.strict_outcomes:
+                logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
+            else:
+                _observe_cancelled_hook(task)
+        finally:
+            _release_worker(worker)
         return
     try:
         threading.Thread(target=_finish_late_result, args=(worker, result), daemon=True).start()

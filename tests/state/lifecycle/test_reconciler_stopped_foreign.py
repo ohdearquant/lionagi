@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import uuid
 
@@ -470,3 +471,101 @@ async def test_pass_reobserves_future_completed_after_closed_loop_scan(
                 ]
             for worker in workers:
                 real_release(worker)
+
+
+def _claimed_worker_and_task(loop, strict, kind):
+    worker = reconciliation._Worker(
+        ("claimed-task", "consumer", "transition"),
+        None,
+        loop,
+        concurrent.futures.Future(),
+        1,
+        None,
+        strict_outcomes=strict,
+    )
+    task = loop.create_future()
+    if kind == "cancelled":
+        task.cancel()
+    elif kind == "system_exit":
+        task.set_exception(SystemExit(1))
+    else:
+        task.set_exception(RuntimeError("hook failed"))
+    return worker, task
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["non_strict", "strict"])
+@pytest.mark.parametrize("kind", ["cancelled", "failed"])
+def test_claimed_task_failure_paths_observe_then_release(monkeypatch, caplog, strict, kind):
+    loop = asyncio.new_event_loop()
+    events = []
+    real_observe = reconciliation._observe_cancelled_hook
+
+    def observe(task):
+        events.append("observe")
+        real_observe(task)
+
+    monkeypatch.setattr(reconciliation, "_observe_cancelled_hook", observe)
+    monkeypatch.setattr(reconciliation, "_release_worker", lambda _worker: events.append("release"))
+    try:
+        worker, task = _claimed_worker_and_task(loop, strict, kind)
+        with caplog.at_level("WARNING", logger=reconciliation.logger.name):
+            reconciliation._record_claimed_task(worker, task)
+    finally:
+        loop.close()
+    records = [item for item in caplog.records if item.name == reconciliation.logger.name]
+    if strict:
+        # Strict workers never hand a failed or cancelled task to the observer.
+        assert events == ["release"]
+        if kind == "cancelled":
+            assert records == []
+        else:
+            assert [item.getMessage() for item in records] == [
+                "Late delivery failed for transition: RuntimeError"
+            ]
+            assert records[0].exc_info is None
+        return
+    assert events == ["observe", "release"]
+    if kind == "cancelled":
+        assert records == []
+    else:
+        # The observer is the only place that logs, so the failure appears once.
+        assert [item.getMessage() for item in records] == [
+            "terminal delivery hook failed after cancellation"
+        ]
+        assert records[0].exc_info and records[0].exc_info[0] is RuntimeError
+
+
+@pytest.mark.parametrize("kind", ["cancelled", "failed"])
+def test_claimed_task_releases_worker_when_observer_raises(monkeypatch, kind):
+    loop = asyncio.new_event_loop()
+    releases = []
+    real_observe = reconciliation._observe_cancelled_hook
+
+    def observe(task):
+        real_observe(task)
+        raise RuntimeError("observer broke")
+
+    monkeypatch.setattr(reconciliation, "_observe_cancelled_hook", observe)
+    monkeypatch.setattr(reconciliation, "_release_worker", releases.append)
+    try:
+        worker, task = _claimed_worker_and_task(loop, False, kind)
+        with pytest.raises(RuntimeError, match="observer broke"):
+            reconciliation._record_claimed_task(worker, task)
+    finally:
+        loop.close()
+    assert releases == [worker]
+
+
+def test_claimed_task_releases_worker_when_task_failed_with_system_exit(monkeypatch):
+    # The observer consumes ordinary failures only, so a task that failed with a
+    # process-exit exception makes it raise; the worker must still be released.
+    loop = asyncio.new_event_loop()
+    releases = []
+    monkeypatch.setattr(reconciliation, "_release_worker", releases.append)
+    try:
+        worker, task = _claimed_worker_and_task(loop, False, "system_exit")
+        with pytest.raises(SystemExit):
+            reconciliation._record_claimed_task(worker, task)
+    finally:
+        loop.close()
+    assert releases == [worker]
