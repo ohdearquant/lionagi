@@ -519,6 +519,13 @@ async def _kill_one(
     from lionagi.state.reasons import RunReasons
 
     meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+    if entity_type == "session":
+        from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
+
+        # Capture before signalling; missing keys and explicit nulls differ.
+        identity = {key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta}
+        generation_present = "cli_worker_generation" in row
+        generation = row.get("cli_worker_generation")
     # Asked before the pid is read, not only when one exists — a pid-less row from another
     # host or runtime would otherwise fall through and get cancelled for work still running.
     unaddressable = _unaddressable_pid_reason(meta)
@@ -598,23 +605,59 @@ async def _kill_one(
     if user_reason:
         evidence["user_reason"] = user_reason
 
-    await _persist_cancel(
-        db,
-        entity_type,
-        entity_id,
-        reason_code=reason_code,
-        reason_summary=reason_summary,
-        evidence=evidence,
-    )
+    cancel_status = None
+    cancel_error = None
+    if entity_type == "session":
+        # The process we signalled may have exited and the session been resumed
+        # during the grace period. Guard the write with the original snapshot,
+        # including absent identity keys, rather than re-reading after signalling.
+        if not generation_present:
+            cancel_status = "unavailable"
+            cancel_error = "session generation was not available in the snapshot"
+        else:
+            try:
+                cancel_status = await db.cancel_session_if_worker_generation(
+                    entity_id,
+                    generation,
+                    expected_runner_identity=identity,
+                    reason_code=reason_code,
+                    reason_summary=reason_summary,
+                    evidence=evidence,
+                )
+            except Exception as exc:
+                cancel_status = "unavailable"
+                cancel_error = f"guarded cancellation unavailable: {exc}"
+        # "already_terminal": the signalled execution recorded its own end during the
+        # grace period, so the kill worked and that record is kept as written.
+        if cancel_status not in ("applied", "already_terminal") and cancel_error is None:
+            cancel_error = {
+                "conflict": "session changed before cancellation was recorded",
+                "missing": "session no longer exists",
+                "rejected": "session cancellation was rejected",
+            }.get(cancel_status, f"guarded cancellation returned {cancel_status!r}")
+    else:
+        await _persist_cancel(
+            db,
+            entity_type,
+            entity_id,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence=evidence,
+        )
     if degraded is not None:
         _settle_degraded_run(*degraded)
 
-    return {
+    result = {
         "entity_type": entity_type,
         "entity_id": entity_id,
         "signal": signal_used,
         "pid": pid,
     }
+    if cancel_status is not None:
+        result["cancel_status"] = cancel_status
+    if cancel_error is not None:
+        result["cancel_error"] = cancel_error
+    return result
 
 
 def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
@@ -899,13 +942,36 @@ async def _try_recorded_worker_cleanup(
         except Exception as exc:
             warn(f"  session {sid[:12]}: cancellation could not be confirmed ({exc})")
             return 1
-        if outcome != "applied":
+        if outcome == "already_terminal":
+            # The runner's own end was recorded after the snapshot and is kept as written;
+            # the session is handled from here as one that had already ended.
+            try:
+                current = await db.get_session(sid)
+            except Exception as exc:
+                warn(f"  session {sid[:12]}: session could not be re-read ({exc})")
+                return 1
+            if (
+                current is None
+                or current.get("status") not in SESSION_TERMINAL_STATUSES
+                or current.get("cli_worker_generation") != generation
+            ):
+                log_error(f"session {sid[:12]} changed during cleanup")
+                return 1
+            running = False
+            status = current["status"]
+            if not records:
+                log_error(
+                    f"session {sid[:12]} is already in terminal state: {status!r} — nothing to kill"
+                )
+                return 1
+        elif outcome != "applied":
             log_error(f"session {sid[:12]} changed during cleanup")
             return 1
-        status = "cancelled"
-        if not records:
-            print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
-            return 0
+        else:
+            status = "cancelled"
+            if not records:
+                print(f"killed session {sid[:12]} (signal=already_dead, pid={pid})")
+                return 0
     elif not records:
         return None
 
@@ -1173,7 +1239,14 @@ async def _do_kill(
                     verbose=verbose,
                 )
                 results.append(r)
-                if r["signal"] in _NOT_STOPPED_SIGNALS:
+                if r.get("cancel_error"):
+                    blocked.append(r)
+                    log_error(
+                        f"  child {child_type} {child_row['id'][:12]}: "
+                        f"signal={r['signal']}, but cancellation was not recorded: "
+                        f"{r['cancel_error']}"
+                    )
+                elif r["signal"] in _NOT_STOPPED_SIGNALS:
                     blocked.append(r)
                 else:
                     print(
@@ -1201,7 +1274,13 @@ async def _do_kill(
             verbose=verbose,
         )
         results.append(r)
-        if r["signal"] in _NOT_STOPPED_SIGNALS:
+        if r.get("cancel_error"):
+            blocked.append(r)
+            log_error(
+                f"{entity_type} {row['id'][:12]}: signal={r['signal']}, "
+                f"but cancellation was not recorded: {r['cancel_error']}"
+            )
+        elif r["signal"] in _NOT_STOPPED_SIGNALS:
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")

@@ -1235,7 +1235,6 @@ class Branch(Element, Relational):
                 response_kwargs=response_kwargs,
                 return_analysis=return_analysis,
                 analysis_model=analysis_model,
-                verbose_action=verbose,
                 verbose_analysis=verbose,
                 verbose_length=verbose_length,
                 interpret_model=interpret_model,

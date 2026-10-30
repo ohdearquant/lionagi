@@ -75,6 +75,8 @@ REVIEWED_PATHS = frozenset(
         "schedule validate",
         "state ls",
         "state stats",
+        # Read-only open; unsupported backends refused: no writes, creation, or migration.
+        "state terminal-consumer list",
         "stats runs",
         "team list",
         # Team coordination read/write. Reviewed together: all four act only on

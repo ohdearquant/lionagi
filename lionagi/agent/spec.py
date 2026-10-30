@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from .permissions import PermissionPolicy
 
 __all__ = ("AgentSpec", "HooksMixin")
+
+_CODING_EFFORT_DEFAULT = object()
 
 
 class HooksMixin:
@@ -48,9 +50,17 @@ def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
     Uses the security_pre bucket (not user pre) so these guards participate
     in the security -> user -> security recheck (ADR-0086 delta row 1).
     """
-    from lionagi.agent.hooks import guard_destructive, guard_paths
+    from lionagi.agent.hooks import (
+        _email_header_guard_from_settings,
+        guard_destructive,
+        guard_paths,
+    )
+    from lionagi.agent.settings import load_settings
 
     obj.security_pre("bash", guard_destructive)
+    email_guard = _email_header_guard_from_settings(load_settings(include_project=False))
+    obj.security_pre("bash", email_guard)
+    obj.security_pre("editor", email_guard)
     workspace_root = str(Path(cwd) if cwd else Path.cwd())
     path_guard = guard_paths(allowed_paths=[workspace_root])
     obj.security_pre("reader", path_guard)
@@ -60,6 +70,9 @@ def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
 @dataclass
 class AgentSpec(HooksMixin):
     """Universal runtime spec: Profile (identity) plus model, tools, hooks, and permissions."""
+
+    _effort_origin: ClassVar[str] = "explicit"
+    _model_origin: ClassVar[str] = "explicit"
 
     profile: Profile
     model: str | None = None
@@ -96,6 +109,13 @@ class AgentSpec(HooksMixin):
     # request field its endpoint names ``max_tokens``; any other provider refuses it.
     # None sets nothing, so the provider's own default applies (Anthropic sends 8192).
     max_tokens: int | None = None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "effort" and hasattr(self, "_effort_origin"):
+            object.__setattr__(self, "_effort_origin", "explicit")
+        if name == "model" and hasattr(self, "_model_origin"):
+            object.__setattr__(self, "_model_origin", "explicit")
+        super().__setattr__(name, value)
 
     def __post_init__(self) -> None:
         # Every way of building a spec (constructor, compose, from_yaml) passes here, so a
@@ -158,7 +178,7 @@ class AgentSpec(HooksMixin):
         *,
         role: str = "implementer",
         model: str | None = None,
-        effort: str | None = "high",
+        effort: str | None | object = _CODING_EFFORT_DEFAULT,
         system_prompt: str | None = None,
         cwd: str | None = None,
         secure: bool = True,
@@ -169,15 +189,18 @@ class AgentSpec(HooksMixin):
 
         ``context_management=False`` drops the context tool and its system-prompt one-liner.
         """
+        default_effort = effort is _CODING_EFFORT_DEFAULT
         spec = cls.compose(
             role,
             model=model,
-            effort=effort,
+            effort="high" if default_effort else effort,
             tools=["coding"],
             system_prompt=system_prompt,
             cwd=cwd,
             **kwargs,
         )
+        if default_effort:
+            object.__setattr__(spec, "_effort_origin", "default")
         spec.context_management = context_management
         if secure:
             _wire_secure_guards(spec, cwd)
@@ -185,7 +208,7 @@ class AgentSpec(HooksMixin):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AgentSpec:
-        """Load an agent spec from a YAML file."""
+        """Load an agent spec from YAML; its effort is a profile default."""
         import yaml
 
         p = Path(path)
@@ -223,6 +246,8 @@ class AgentSpec(HooksMixin):
             spec.context_management = bool(data["context_management"])
         if "khive_injection" in data:
             spec.khive_injection = data["khive_injection"]
+        object.__setattr__(spec, "_effort_origin", "profile")
+        object.__setattr__(spec, "_model_origin", "profile")
         return spec
 
     def build_system_message(self) -> str:
