@@ -557,7 +557,7 @@ ADR is **narrowed, not discharged**:
 - The **dependency-direction clause is untouched and remains open in full**, and it is
   larger than a single site. `manager.py` imports from
   `lionagi.service.connections.mcp_wrapper` at **nine** places (`:12`, `:132`, `:148`,
-  `:374`, `:395`, `:443`, `:546`, `:590`, `:652`) — one under `TYPE_CHECKING` and eight lazily
+  `:374`, `:395`, `:443`, `:546`, `:590`, `:651`) — one under `TYPE_CHECKING` and eight lazily
   inside function bodies. The lazy form defers the import; it does not remove the
   dependency, which is what 0011's clause is about. The service-factory design remains
   the standing answer for that clause, and its cost is nine call sites rather than the
