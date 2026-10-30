@@ -158,6 +158,29 @@ async def test_denial_is_persisted_once_per_binding(audit_store):
     assert len(observer.by_type(GateDenied)) == 3
 
 
+async def test_subscriber_mutation_does_not_change_persisted_denial(audit_store):
+    path, db = audit_store
+    observer = SessionObserver()
+    observer.bind_db_persistence("audit-session", db=db)
+    observer.gate(lambda _action: False)
+    subscriber_value = "subscriber-mutated-value"
+
+    def mutate(event, _ctx):
+        event.data = subscriber_value
+
+    observer.observe(GateDenied, handler=mutate)
+    assert await observer.authorize(object()) is False
+
+    rows = _rows(path)
+    assert len(rows) == 1
+    assert rows[0][0] == "GateDenied"
+    assert subscriber_value not in rows[0][1]
+    assert "data" not in json.loads(rows[0][1])
+    flow = observer.by_type(GateDenied)
+    assert len(flow) == 1
+    assert flow[0].data == subscriber_value
+
+
 async def test_rebinding_while_denial_is_persisting_does_not_duplicate():
     started, release = asyncio.Event(), asyncio.Event()
 
