@@ -24,6 +24,13 @@ def fixture_project(tmp_path: Path):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    hub_init = root / "lionhub/src/lionhub/__init__.py"
+    hub_init.parent.mkdir(parents=True)
+    hub_init.write_text("", encoding="utf-8")
+    adr = root / "docs/adr"
+    adr.mkdir(parents=True)
+    (adr / "ADR-0138-fixture.md").write_text("lionhub.serve\n", encoding="utf-8")
+    (adr / "ADR-0139-fixture.md").write_text("lionhub.cli\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(
         """\n[project]\ndependencies = ["Example_Package>=1"]\n[project.optional-dependencies]\nextra = ["Some.Extra>=2", "lionagi[extra]"]\n[dependency-groups]\ndev = ["pytest"]\n[build-system]\nrequires = ["hatchling"]\n[tool.uv]\nconstraint-dependencies = ["Safety-Pkg"]\n""",
         encoding="utf-8",
@@ -104,6 +111,9 @@ def test_exception_exactness_and_evidence(tmp_path):
     checked = checker.load_manifest(manifest, modules, declared)
     findings = checker.classify(checker.scan(modules), checked)
     assert any(f["exception"] == entry for f in findings)
+    checker.validate_exception_edges(checker.scan(modules), checked)
+    with pytest.raises(checker.ManifestError, match="does not name a graph edge"):
+        checker.validate_exception_edges([], checked)
     for change in (
         {"source": "lionagi.*"},
         {"target": "lionagi.missing"},
@@ -180,7 +190,7 @@ _SOURCE_MODULES = ("sibling",)
 def test_lionhub_graph_targets_are_classified_without_ownership(tmp_path):
     root, modules, data, manifest = fixture_project(tmp_path)
     hub = root / "lionhub/src/lionhub"
-    (hub / "serve").mkdir(parents=True)
+    (hub / "serve").mkdir(parents=True, exist_ok=True)
     (hub / "__init__.py").write_text("", encoding="utf-8")
     (hub / "serve/config.py").write_text("", encoding="utf-8")
     (root / "lionagi/root.py").write_text("import lionhub.serve.config\n", encoding="utf-8")
@@ -191,6 +201,10 @@ def test_lionhub_graph_targets_are_classified_without_ownership(tmp_path):
         'import importlib\nimportlib.import_module("lionhub.serve.config")\n'
         "from lionagi.ln import import_module as load\n"
         'load("lionhub.serve", "config")\n'
+        'load("lionhub.serve", module_name="config")\n'
+        "import importlib as imp\n"
+        "def unrelated():\n    import math as imp\n"
+        'def still_imports():\n    return imp.import_module("lionhub.serve.config")\n'
         'def f(x: "lionhub.serve.config.Value"):\n    pass\n'
         '_LAZY_MAP = {"x": ("lionhub.serve.config", "Value")}\n',
         encoding="utf-8",
@@ -203,7 +217,7 @@ def test_lionhub_graph_targets_are_classified_without_ownership(tmp_path):
         assert ("lionhub.serve.config", kind) in forms
     assert (
         sum(e["kind"] == "dynamic_literal" and e["target"] == "lionhub.serve.config" for e in graph)
-        == 2
+        == 4
     )
     checked = checker.load_manifest(
         manifest, modules, checker.requirements(root / "pyproject.toml"), targets
@@ -250,3 +264,31 @@ def test_target_notes_use_recorded_destinations_only():
     )
     assert builder.match(builder.TARGET_RULES, "lionagi.providers.openai.codex") == fallback
     assert builder.match(builder.TARGET_RULES, "lionagi.tools.khive_injection") == fallback
+    assert (
+        builder.match(builder.TARGET_RULES, "lionagi.studio.services.sessions") == "lionhub.serve"
+    )
+    assert builder.ADDITIONAL_TARGETS["lionagi.cli.orchestrate"] == [
+        "lionhub.orchestration.flow.parsing"
+    ]
+
+
+def test_quoted_extra_names_and_missing_target_tree(tmp_path):
+    root, _, _, _ = fixture_project(tmp_path)
+    project = root / "pyproject.toml"
+    project.write_text(
+        '[project]\ndependencies=[]\n["project"."optional-dependencies"]\n'
+        '"special-group"=["one-dep"]\n\'other-group\'=["two-dep"]\n',
+        encoding="utf-8",
+    )
+    assert checker.requirements(project) == {"one-dep", "two-dep"}
+    with pytest.raises(checker.ManifestError, match="target tree"):
+        checker.lionhub_targets(root / "missing")
+
+
+def test_target_notes_require_public_evidence(tmp_path):
+    root, _, data, _ = fixture_project(tmp_path)
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve"
+    checker.validate_target_notes(root, data, checker.lionhub_targets(root))
+    data["modules"]["lionagi.foundation"]["target_owner"] = "lionhub.serve.unrecorded"
+    with pytest.raises(checker.ManifestError, match="unrecorded destination"):
+        checker.validate_target_notes(root, data, checker.lionhub_targets(root))

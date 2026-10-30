@@ -137,6 +137,15 @@ TARGET_RULES = {
     "lionagi.studio.services.schedule_export": "lionhub.orchestration.schedule",
     "lionagi.studio.services.schedules": "lionhub.orchestration.schedule",
     "lionagi.studio.cli": "lionhub.cli",
+    "lionagi.studio.services.runs": "lionhub.serve",
+    "lionagi.studio.services.run_resume": "lionhub.serve",
+    "lionagi.studio.services.engine_runs": "lionhub.serve",
+    "lionagi.studio.services.invocations": "lionhub.serve",
+    "lionagi.studio.services.launches": "lionhub.serve",
+    "lionagi.studio.services.identity": "lionhub.serve",
+    "lionagi.studio.services.pairing": "lionhub.serve",
+    "lionagi.studio.services.sessions": "lionhub.serve",
+    "lionagi.studio.services.admin": "lionhub.serve",
     "lionagi.tools.khive_injection": "lionhub (destination not yet recorded)",
     "lionagi.tools.context.context": "lionhub (destination not yet recorded)",
     "lionagi.tools.code.bash": "lionhub (destination not yet recorded)",
@@ -153,6 +162,13 @@ TARGET_RULES = {
     "lionagi.providers.openai.embed": "lionhub (destination not yet recorded)",
     "lionagi.providers.google.chat": "lionhub (destination not yet recorded)",
     "lionagi.providers.google.gemini_code": "lionhub (destination not yet recorded)",
+}
+
+# Mixed modules retain their existing owner while multiple portions move.
+ADDITIONAL_TARGETS = {
+    "lionagi.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
+    "lionagi.studio.cli": ["lionhub.cli.schedule", "lionhub.cli.studio"],
+    "lionagi.studio.services.schedules": ["lionhub.serve"],
 }
 for name in ("openrouter", "exa", "perplexity", "groq", "lattice", "ollama", "nvidia_nim"):
     TARGET_RULES[f"lionagi.providers.{name}"] = "lionhub (destination not yet recorded)"
@@ -217,6 +233,8 @@ def main():
         target = match(TARGET_RULES, name)
         if target:
             entry["target_owner"] = target
+        if name in ADDITIONAL_TARGETS:
+            entry["additional_targets"] = ADDITIONAL_TARGETS[name]
         modules[name] = entry
     requirements = {}
     for (layer, owner), names in REQUIREMENT_GROUPS.items():

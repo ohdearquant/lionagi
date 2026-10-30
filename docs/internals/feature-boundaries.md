@@ -30,9 +30,11 @@ dynamic imports, aliases the scanner cannot resolve and native imports require
 separate inspection. Internal names that could not be resolved are reported.
 
 `tests/contracts/test_boundary_compatibility.py` records package declarations,
-settings fields, extras and console-script wiring; the existing CLI surface
-tests exercise selected command behavior. Update the fixture deliberately when
-an intended compatibility surface changes.
+public definitions, moved-module mappings, settings fields, direct environment
+lookups, extras and console-script wiring; the existing CLI surface tests
+exercise selected command behavior. Update the fixture deliberately when an
+intended compatibility surface changes. Computed environment names and dynamic
+exports still need their own behavior tests.
 
 `scripts/probe_import_effects.py` observes one listed module per fresh process.
 It requires an independently enforced operating-system sandbox and scratch

@@ -49,7 +49,7 @@ def lionhub_targets(root: Path) -> set[str]:
     base = root / "lionhub" / "src"
     package = base / "lionhub"
     if not package.is_dir():
-        return set()
+        raise ManifestError("lionhub graph target tree is missing")
     names = {"lionhub"}
     for path in sorted(package.rglob("*.py")):
         parts = list(path.relative_to(base).with_suffix("").parts)
@@ -77,12 +77,29 @@ def requirements(path: Path) -> set[str]:
         i += 1
         header = re.match(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$", line.strip())
         if header:
-            section = header.group(1)
+            raw = header.group(1).strip()
+            components = re.findall(r"""(?:[\w-]+|"(?:[^"\\]|\\.)*"|'[^']*')""", raw)
+            if not components or ".".join(components) != re.sub(r"\s*\.\s*", ".", raw):
+                raise ManifestError(f"unsupported TOML table name: {raw}")
+            try:
+                section = ".".join(
+                    ast.literal_eval(part) if part.startswith(('"', "'")) else part
+                    for part in components
+                )
+            except (SyntaxError, ValueError):
+                raise ManifestError(f"unsupported TOML table name: {raw}") from None
             continue
-        assignment = re.match(r"^\s*([\w.-]+)\s*=\s*(.*)", line)
+        assignment = re.match(
+            r"""^\s*((?:[\w.-]+)|(?:"(?:[^"\\]|\\.)*")|(?:'[^']*'))\s*=\s*(.*)""", line
+        )
         if not assignment:
             continue
         key, value = assignment.groups()
+        if key.startswith(('"', "'")):
+            try:
+                key = ast.literal_eval(key)
+            except (SyntaxError, ValueError):
+                raise ManifestError(f"unsupported requirement key: {key}") from None
         relevant = (
             (section == "project" and key == "dependencies")
             or section in {"project.optional-dependencies", "dependency-groups"}
@@ -153,7 +170,7 @@ def load_manifest(
             )
         for name, entry in entries.items():
             allowed = (
-                {"layer", "owner", "target_owner"}
+                {"layer", "owner", "target_owner", "additional_targets"}
                 if field == "modules"
                 else {"layer", "owner", "secondary_users"}
             )
@@ -171,6 +188,15 @@ def load_manifest(
                 not isinstance(entry["target_owner"], str) or not entry["target_owner"].strip()
             ):
                 raise ManifestError(f"invalid target owner: {name}")
+            if "additional_targets" in entry:
+                targets_value = entry["additional_targets"]
+                if (
+                    not isinstance(targets_value, list)
+                    or not targets_value
+                    or any(not isinstance(item, str) or not item.strip() for item in targets_value)
+                    or len(set(targets_value)) != len(targets_value)
+                ):
+                    raise ManifestError(f"invalid additional targets: {name}")
             if "secondary_users" in entry:
                 users = entry["secondary_users"]
                 if (
@@ -222,6 +248,25 @@ def load_manifest(
             raise ManifestError(f"duplicate exception: {pair}")
         seen.add(pair)
     return data
+
+
+def validate_target_notes(root: Path, manifest: dict[str, Any], targets: set[str]) -> None:
+    """Only name a destination that exists or is stated in a public allocation."""
+    docs = sorted((root / "docs/adr").glob("ADR-013[89]-*.md"))
+    if len(docs) != 2:
+        raise ManifestError("destination allocation documents are missing or ambiguous")
+    allocations = "\n".join(path.read_text(encoding="utf-8") for path in docs)
+    for name, entry in manifest["modules"].items():
+        notes = ([entry["target_owner"]] if "target_owner" in entry else []) + entry.get(
+            "additional_targets", []
+        )
+        for target in notes:
+            if target == "lionhub (destination not yet recorded)" or target in targets:
+                continue
+            if not NAME.fullmatch(target) or not re.search(
+                rf"(?<![\w.]){re.escape(target)}(?![\w.])", allocations
+            ):
+                raise ManifestError(f"unrecorded destination for {name}: {target}")
 
 
 def dotted(node: ast.AST) -> str | None:
@@ -348,8 +393,12 @@ class Scanner(ast.NodeVisitor):
             arg = node.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 module = arg.value
-                if wrapped and len(node.args) > 1:
-                    child = node.args[1]
+                child = node.args[1] if wrapped and len(node.args) > 1 else None
+                if wrapped:
+                    child = next(
+                        (kw.value for kw in node.keywords if kw.arg == "module_name"), child
+                    )
+                if wrapped and child is not None:
                     if isinstance(child, ast.Constant) and isinstance(child.value, str):
                         module += "." + child.value
                     elif not isinstance(child, ast.Constant) or child.value is not None:
@@ -457,10 +506,21 @@ class Scanner(ast.NodeVisitor):
             self.annotation(node.args.vararg.annotation)
         if node.args.kwarg:
             self.annotation(node.args.kwarg.annotation)
-        self.generic_visit(node)
+        aliases = self.aliases.copy()
+        try:
+            self.generic_visit(node)
+        finally:
+            self.aliases = aliases
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        aliases = self.aliases.copy()
+        try:
+            self.generic_visit(node)
+        finally:
+            self.aliases = aliases
 
 
 def scan(files: dict[str, Path], targets: set[str] | None = None) -> list[dict[str, Any]]:
@@ -514,6 +574,15 @@ def classify(
     return findings
 
 
+def validate_exception_edges(edges: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    pairs = {(edge["source"], edge["target"]) for edge in edges}
+    for entry in manifest["exceptions"]:
+        if (entry["source"], entry["target"]) not in pairs:
+            raise ManifestError(
+                f"exception does not name a graph edge: {entry['source']} -> {entry['target']}"
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -527,7 +596,9 @@ def main(argv: list[str] | None = None) -> int:
         manifest = load_manifest(
             args.manifest or args.root / "scripts/feature_boundaries.json", files, declared, targets
         )
+        validate_target_notes(args.root, manifest, targets)
         edges = scan(files, targets)
+        validate_exception_edges(edges, manifest)
         findings = classify(edges, manifest, targets)
     except (ManifestError, OSError) as exc:
         print(f"feature boundary error: {exc}", file=sys.stderr)
