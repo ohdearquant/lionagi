@@ -1,11 +1,36 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Bounded, at-least-once delivery of persisted terminal transitions."""
+"""Bounded, at-least-once delivery of persisted terminal transitions.
+
+Capacity is shared per store and consumer in one process for synchronous
+deliveries and asynchronous tasks. Timeout or caller cancellation requests
+task cancellation, but a task still running retains its slot. If its loop
+closes before it finishes, the event stays unacknowledged. An awaitable completed
+by another thread after its owning loop closed may be observed and released on
+a later pass; otherwise its slot is held until the process exits. An
+unacknowledged event in a surviving durable store can be replayed after process
+restart.
+Tasks do not track work delegated beyond their own lifetime to executors,
+threads, processes, or independent operations. Separate processes may also
+deliver the same event. Consumers should deduplicate effects by event ID.
+
+For a completed late success against a private in-memory store, a stopped but
+restartable original loop retains the completed reservation for acknowledgement
+on its next pass. If that loop is permanently closed, the finished reservation
+is released without acknowledgement, and the fact remains owed. No other loop
+is used to drive the original private-memory connection.
+
+Each observed saturated pass advances its warning episode's version, so a stale
+retired pass cannot erase an episode subsequently observed as active. A
+reactivation with no subsequent saturated observation is not distinguishable
+here as a separate in-process warning episode.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import inspect
 import json
 import logging
@@ -44,6 +69,7 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 4
 BACKOFF_CAPACITY = 512
 BACKOFF_MAX_SECONDS = 3600.0
+SATURATION_WARNING_INTERVAL_SECONDS = 600.0
 
 
 class DeliveryOutcome(Enum):
@@ -62,6 +88,7 @@ _ACKNOWLEDGE_OUTCOMES = frozenset(
         DeliveryOutcome.AMBIGUOUS_PROJECT,
     }
 )
+
 
 _STRICT_ACKNOWLEDGE_OUTCOMES = frozenset({DeliveryOutcome.SUCCESS, DeliveryOutcome.NOT_APPLICABLE})
 
@@ -147,6 +174,9 @@ async def _await_hook(
         task.cancel()
         raise
     if not done:
+        if admission is not None:
+            with _workers_lock:
+                admission.timed_out = True
         retain_hook()
         task.cancel()
         return DeliveryOutcome.FAILURE
@@ -193,7 +223,7 @@ class _Backoff:
 
 @dataclass(eq=False)
 class _Worker:
-    """One process-wide synchronous delivery reservation, independent of an event loop."""
+    """One process-wide delivery reservation."""
 
     key: tuple[str, str, str]
     db: Any
@@ -201,18 +231,39 @@ class _Worker:
     future: concurrent.futures.Future[Any]
     limit: int
     engine: Any
-    url: str
-    dialect: str
+    url: str = ""
+    dialect: str = ""
     keeper: sqlite3.Connection | None = None
+    strict_outcomes: bool = False
     detached: bool = False
     finished: bool = False
     late_started: bool = False
+    late_claimed: bool = False
     deferred: bool = False
-    strict_outcomes: bool = False
+    async_loop: asyncio.AbstractEventLoop | None = None
+    async_task: asyncio.Future[Any] | None = None
+    abandoned: bool = False
+    late_settled: tuple[bool, Any] | None = None
+    late_task: asyncio.Future[Any] | None = None
+    late_cancelled: bool = False
+    started_at: float = 0.0
+    deadline: float = 0.0
+    timed_out: bool = False
+    clock: Callable[[], float] = time.monotonic
+
+
+@dataclass
+class _SaturationWarning:
+    clock: Callable[[], float]
+    last_at: float
+    threshold: int
+    version: int = 0
 
 
 _workers_lock = threading.Lock()
 _workers: dict[tuple[str, str, str], _Worker] = {}
+_saturation_warnings: dict[tuple[str, str], _SaturationWarning] = {}
+
 _attempts: dict[tuple[str, str, str], _AttemptAdmission] = {}
 
 
@@ -230,6 +281,10 @@ class _AttemptAdmission:
     keeper: sqlite3.Connection | None = None
     owner: bool = True
     pending: int = 0
+    started_at: float = 0.0
+    deadline: float = 0.0
+    timed_out: bool = False
+    clock: Callable[[], float] = time.monotonic
 
     def retain(
         self,
@@ -255,6 +310,7 @@ class _AttemptAdmission:
                     if not self.owner and self.pending == 0 and _attempts.get(self.key) is self:
                         del _attempts[self.key]
                         keeper, self.keeper = self.keeper, None
+                        _clear_saturation_if_recovered(self.key[:2])
                 if keeper is not None:
                     keeper.close()
 
@@ -267,6 +323,7 @@ class _AttemptAdmission:
             if self.pending == 0 and _attempts.get(self.key) is self:
                 del _attempts[self.key]
                 keeper, self.keeper = self.keeper, None
+                _clear_saturation_if_recovered(self.key[:2])
         if keeper is not None:
             keeper.close()
 
@@ -285,7 +342,15 @@ def _open_shared_keeper(store: str, db: Any) -> sqlite3.Connection | None:
 
 
 def _reserve_attempt(
-    store: str, consumer: str, transition_id: str, limit: int, db: Any
+    store: str,
+    consumer: str,
+    transition_id: str,
+    limit: int,
+    db: Any,
+    *,
+    started_at: float,
+    timeout_seconds: float,
+    clock: Callable[[], float],
 ) -> _AttemptAdmission | None:
     key = (store, consumer, transition_id)
     with _workers_lock:
@@ -299,7 +364,17 @@ def _reserve_attempt(
             return None
         keeper = _open_shared_keeper(store, db)
         admission = _AttemptAdmission(
-            key, limit, db, asyncio.get_running_loop(), db._engine, db.url, db.dialect, keeper
+            key,
+            limit,
+            db,
+            asyncio.get_running_loop(),
+            db._engine,
+            db.url,
+            db.dialect,
+            keeper,
+            started_at=started_at,
+            deadline=started_at + timeout_seconds,
+            clock=clock,
         )
         _attempts[key] = admission
         return admission
@@ -359,10 +434,15 @@ def _reserve_worker(
     transition_id: str,
     limit: int,
     *,
+    started_at: float | None = None,
+    timeout_seconds: float = HANDLER_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
     strict_outcomes: bool = False,
     admission: _AttemptAdmission | None = None,
 ) -> _Worker | None:
     key = (store, consumer, transition_id)
+    if started_at is None:
+        started_at = clock()
     with _workers_lock:
         active = [worker for k, worker in _workers.items() if k[:2] == key[:2]]
         attempts = [item for k, item in _attempts.items() if k[:2] == key[:2]]
@@ -393,8 +473,47 @@ def _reserve_worker(
             keeper,
             strict_outcomes=strict_outcomes,
         )
+        worker.started_at = started_at
+        worker.deadline = worker.started_at + timeout_seconds
+        worker.clock = clock
         _workers[key] = worker
         return worker
+
+
+def _clear_saturation_if_recovered(scope: tuple[str, str]) -> None:
+    """Clear a warning after the shared reservation count falls below its threshold.
+
+    The caller holds ``_workers_lock``.
+    """
+    warning = _saturation_warnings.get(scope)
+    if warning is not None:
+        remaining = {key for key in _workers if key[:2] == scope}
+        remaining.update(key for key in _attempts if key[:2] == scope)
+        if len(remaining) < warning.threshold:
+            del _saturation_warnings[scope]
+
+
+def _capacity_reservations(scope: tuple[str, str]) -> list[tuple[Any, ...]]:
+    """Snapshot each shared key once; the caller holds ``_workers_lock``."""
+    keys = {key: None for key in _workers if key[:2] == scope}
+    keys.update({key: None for key in _attempts if key[:2] == scope})
+    active = []
+    for key in keys:
+        worker, admission = _workers.get(key), _attempts.get(key)
+        reference = admission if admission is not None else worker
+        assert reference is not None
+        limits = [item.limit for item in (worker, admission) if item is not None]
+        active.append(
+            (
+                (key, worker, admission),
+                reference.started_at,
+                reference.deadline,
+                any(item.timed_out for item in (worker, admission) if item is not None),
+                min(limits),
+                reference.clock,
+            )
+        )
+    return active
 
 
 def _release_worker(worker: _Worker) -> None:
@@ -403,12 +522,81 @@ def _release_worker(worker: _Worker) -> None:
         if _workers.get(worker.key) is worker:
             del _workers[worker.key]
             keeper, worker.keeper = worker.keeper, None
+            _clear_saturation_if_recovered(worker.key[:2])
     if keeper is not None:
         keeper.close()
 
 
+def _release_closed_loop_workers(store: str, consumer: str) -> None:
+    """Observe finished tasks without disturbing their stopped or closed loops."""
+    with _workers_lock:
+        completed = []
+        completed_late = []
+        for key, worker in _workers.items():
+            if key[:2] != (store, consumer) or worker.strict_outcomes:
+                # Strict foreign Futures are observed only on their owner loop.
+                continue
+            task, loop = worker.async_task, worker.async_loop
+            if loop is not None:
+                closed = loop.is_closed()
+                stopped_foreign = (
+                    store.startswith(("sqlite-inode:", "sqlite-path:"))
+                    and loop is not worker.loop
+                    and not loop.is_running()
+                )
+                if task is not None and task.done() and (closed or stopped_foreign):
+                    completed.append((worker, task))
+                elif closed:
+                    worker.abandoned = True
+            late_task = worker.late_task
+            if worker.detached and late_task is None and worker.future.done():
+                try:
+                    candidate = worker.future.result()
+                except BaseException:
+                    candidate = None
+                if isinstance(candidate, asyncio.Future):
+                    late_task = candidate
+                    worker.late_task = candidate
+            if worker.detached and late_task is not None:
+                late_loop = late_task.get_loop()
+                if (
+                    store.startswith(("sqlite-inode:", "sqlite-path:"))
+                    and late_loop is not worker.loop
+                    and not late_loop.is_running()
+                    and late_task.done()
+                ):
+                    completed_late.append((worker, late_task))
+        closed = [
+            worker
+            for key, worker in _workers.items()
+            if key[:2] == (store, consumer)
+            and key[0].startswith("sqlite-memory:private:")
+            and worker.deferred
+            and worker.loop.is_closed()
+        ]
+    for worker, task in completed:
+        _async_delivery_done(worker, task)
+    for worker, task in completed_late:
+        _late_delivery_task_done(worker, task)
+    for worker in closed:
+        _release_worker(worker)
+
+
 class _MemoryStoreChangedError(RuntimeError):
     """A private in-memory store was closed or replaced before acknowledgement."""
+
+
+class _LoopClosedBeforeCompletionError(RuntimeError):
+    """An unfinished task cannot be observed on its permanently closed loop."""
+
+
+def _abandon_worker(worker: _Worker) -> None:
+    """Keep unobservable unfinished work reserved for this process's lifetime."""
+    with _workers_lock:
+        if _workers.get(worker.key) is not worker or worker.late_claimed:
+            return
+        worker.abandoned = True
+    logger.warning("Terminal delivery loop closed before completion for %s", worker.key[2])
 
 
 def _keeper_ack(worker: _Worker | _AttemptAdmission) -> None:
@@ -563,8 +751,7 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
                 await asyncio.wait_for(asyncio.shield(wrapped), timeout=HANDLER_BUDGET_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("Late ACK stuck for %s: transaction remains reserved", target.key[2])
-                # Cancelling the cross-thread proxy does not prove that the
-                # owner-loop coroutine, or its transaction, has settled.
+                # Cancelling the proxy does not prove the owner-loop ACK settled.
                 await asyncio.shield(wrapped)
         else:
             await asyncio.wait_for(wrapped, timeout=HANDLER_BUDGET_SECONDS)
@@ -602,7 +789,7 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
         await db.close()
 
 
-async def _settle_late_awaitable(awaitable: Awaitable[Any], transition_id: str) -> Any:
+async def _settle_strict_late_awaitable(awaitable: Awaitable[Any], transition_id: str) -> Any:
     """Cancel once at the budget, retaining ownership until actual settlement."""
 
     async def run_effect() -> Any:
@@ -706,7 +893,7 @@ def _observe_foreign_future(worker: _Worker, future: Any) -> None:
         )
 
 
-def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None:
+def _finish_strict_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None:
     """A detached worker may finish after the event loop that started it is gone."""
     try:
         result = worker.future.result() if settled_result is _NO_LATE_RESULT else settled_result
@@ -715,7 +902,7 @@ def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None
             return
         if inspect.isawaitable(result):
             if worker.strict_outcomes:
-                result = asyncio.run(_settle_late_awaitable(result, worker.key[2]))
+                result = asyncio.run(_settle_strict_late_awaitable(result, worker.key[2]))
             else:
 
                 async def await_result() -> Any:
@@ -759,9 +946,412 @@ def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None
     _release_worker(worker)
 
 
+def _finish_late_result(worker: _Worker, result: Any) -> None:
+    """Record an already-completed detached delivery without reopening its store schema."""
+    try:
+        if result not in _ACKNOWLEDGE_OUTCOMES:
+            logger.warning("Late terminal delivery failed for %s", worker.key[2])
+            _release_worker(worker)
+            return
+        if worker.key[0].startswith("sqlite-memory:shared:"):
+            # The keeper pins the generation and writes directly, avoiding
+            # StateDB.open() and its schema initialization/locking.
+            try:
+                _keeper_ack(worker)
+            except Exception:
+                logger.exception(
+                    "Late shared-memory acknowledgement deferred for %s", worker.key[2]
+                )
+                with _workers_lock:
+                    worker.deferred = True
+                return
+        elif worker.key[0].startswith("sqlite-memory:"):
+            if worker.db._engine is not worker.engine or worker.db._engine is None:
+                logger.warning("Private memory store closed before late ACK for %s", worker.key[2])
+                _release_worker(worker)
+                return
+
+            async def acknowledge_private() -> None:
+                async with worker.db._holding_open_lock():
+                    if worker.db._engine is not worker.engine:
+                        raise _MemoryStoreChangedError
+                    await ack_delivery(worker.db, worker.key[2], worker.key[1])
+
+            if worker.loop.is_closed():
+                # A closed loop cannot drain this private-memory ACK. Leave
+                # the fact owed without driving the connection on another loop.
+                _release_worker(worker)
+                return
+            if not worker.loop.is_running():
+                # Its private-memory connection belongs to that loop. A later
+                # pass on the same loop may drain this completed delivery.
+                with _workers_lock:
+                    worker.deferred = True
+                return
+
+            coroutine = acknowledge_private()
+            try:
+                ack = asyncio.run_coroutine_threadsafe(coroutine, worker.loop)
+            except RuntimeError:
+                coroutine.close()
+                with _workers_lock:
+                    worker.deferred = True
+                return
+            try:
+                ack.result(timeout=HANDLER_BUDGET_SECONDS)
+            except _MemoryStoreChangedError:
+                _release_worker(worker)
+                return
+            except Exception:
+                # Keep completed work for retry if the same private store lives.
+                ack.cancel()
+                with _workers_lock:
+                    worker.deferred = True
+                return
+        else:
+            asyncio.run(_acknowledge_late(worker))
+    except Exception:
+        logger.exception("Late terminal delivery or acknowledgement failed for %s", worker.key[2])
+    _release_worker(worker)
+
+
+async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> Any:
+    """Request cancellation on budget expiry, but wait for the actual operation.
+
+    Wrapper cancellation is failure: the event remains owed and may be retried.
+    Once the delivery has settled, the cancellation is re-raised so the
+    cancelled caller still observes it.
+    The final wait is bounded only by the hook itself; unobservable unfinished
+    work follows the abandoned-worker rule.
+    """
+    task: asyncio.Future[Any] | None = None
+    caller_cancelled = False
+    try:
+        with _workers_lock:
+            if worker.late_claimed or _workers.get(worker.key) is not worker:
+                return DeliveryOutcome.FAILURE
+            task = asyncio.ensure_future(awaitable)
+            worker.late_task = task
+        done, _ = await asyncio.wait({task}, timeout=HANDLER_BUDGET_SECONDS)
+        if not done:
+            task.cancel()
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.done():
+                raise
+            with _workers_lock:
+                worker.late_cancelled = True
+            result = DeliveryOutcome.FAILURE
+    except asyncio.CancelledError:
+        # The wrapper may be cancelled while the delivery handles its own
+        # cancellation asynchronously. Do not report settlement (and release
+        # the reservation) until that delivery actually finishes.
+        caller_cancelled = True
+        with _workers_lock:
+            worker.late_cancelled = True
+        while task is not None and not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if task is not None and task.done() and not task.cancelled():
+            task.exception()  # Observe a late failure without acknowledging it.
+        result = DeliveryOutcome.FAILURE
+    except BaseException as exc:
+        with _workers_lock:
+            worker.late_settled = (False, exc)
+        raise
+    with _workers_lock:
+        worker.late_settled = (True, result)
+    if caller_cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+def _close_late_coroutine(coroutine: Any) -> None:
+    """Best-effort cleanup must not decide whether unfinished work is settled."""
+    if inspect.iscoroutine(coroutine):
+        try:
+            coroutine.close()
+        except BaseException:
+            logger.warning(
+                "Unable to close an unfinished terminal delivery coroutine", exc_info=True
+            )
+
+
+def _claim_late_completion(worker: _Worker) -> bool:
+    """Only one observer may record or release a detached delivery."""
+    with _workers_lock:
+        if _workers.get(worker.key) is not worker or worker.late_claimed:
+            return False
+        worker.late_claimed = True
+        return True
+
+
+def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None:
+    """Complete a detached synchronous factory, including a returned awaitable."""
+    if worker.strict_outcomes:
+        _finish_strict_late(worker, settled_result)
+        return
+    try:
+        with _workers_lock:
+            if worker.late_claimed or _workers.get(worker.key) is not worker:
+                return
+        result = worker.future.result()
+        if isinstance(result, asyncio.Future) and result.done():
+            result = result.result()
+        elif inspect.isawaitable(result):
+            # Loop-bound Futures must be consumed on their own loop. A coroutine
+            # returned by a worker uses the originating loop while it is alive.
+            loop = result.get_loop() if isinstance(result, asyncio.Future) else worker.loop
+            if isinstance(result, asyncio.Future):
+                with _workers_lock:
+                    if worker.late_claimed or _workers.get(worker.key) is not worker:
+                        return
+                    worker.late_task = result
+            if not loop.is_closed():
+                coroutine = _settle_late_awaitable(worker, result)
+                try:
+                    with _workers_lock:
+                        if worker.late_claimed or _workers.get(worker.key) is not worker:
+                            coroutine.close()
+                            return
+                        pending = asyncio.run_coroutine_threadsafe(coroutine, loop)
+                except RuntimeError:
+                    _close_late_coroutine(coroutine)
+                    _close_late_coroutine(result)
+                    if loop.is_closed():
+                        if isinstance(result, asyncio.Future) and result.done():
+                            result = result.result()
+                            if _claim_late_completion(worker):
+                                _finish_late_result(worker, result)
+                            return
+                        raise _LoopClosedBeforeCompletionError from None
+                    raise
+                while True:
+                    try:
+                        result = pending.result(timeout=0.1)
+                        break
+                    except concurrent.futures.CancelledError:
+                        # The wrapper was cancelled after the delivery settled:
+                        # a failed delivery, so the event stays owed.
+                        result = DeliveryOutcome.FAILURE
+                        break
+                    except concurrent.futures.TimeoutError:
+                        with _workers_lock:
+                            if worker.late_claimed or _workers.get(worker.key) is not worker:
+                                return
+                        if pending.done():
+                            # Completion can race the wait timeout. Reading
+                            # again preserves a successful result and still
+                            # propagates a hook's own TimeoutError.
+                            try:
+                                result = pending.result()
+                            except concurrent.futures.CancelledError:
+                                result = DeliveryOutcome.FAILURE
+                            break
+                        if loop.is_closed():
+                            with _workers_lock:
+                                settled = worker.late_settled
+                                task = worker.late_task
+                                cancelled = worker.late_cancelled
+                            if settled is not None:
+                                success, value = settled
+                                if not success:
+                                    raise value from None
+                                result = value
+                                break
+                            if task is not None and task.done():
+                                # The hook finished, but the wait wrapper's
+                                # completion callback never ran before closure.
+                                pending.cancel()
+                                _close_late_coroutine(coroutine)
+                                try:
+                                    result = task.result()
+                                except asyncio.CancelledError:
+                                    result = DeliveryOutcome.FAILURE
+                                if cancelled:
+                                    result = DeliveryOutcome.FAILURE
+                                break
+                            if isinstance(result, asyncio.Future) and result.done():
+                                # The wrapper never started, but the Future
+                                # returned by the factory has completed.
+                                pending.cancel()
+                                _close_late_coroutine(coroutine)
+                                result = result.result()
+                                break
+                            pending.cancel()
+                            _close_late_coroutine(coroutine)
+                            _close_late_coroutine(result)
+                            raise _LoopClosedBeforeCompletionError from None
+            elif isinstance(result, asyncio.Future):
+                if result.done():
+                    result = result.result()
+                else:
+                    raise _LoopClosedBeforeCompletionError
+            else:
+                # A bare coroutine may capture resources from the old loop.
+                # Closing it prevents an unawaited-coroutine warning, but does
+                # not prove that the delivery has completed.
+                _close_late_coroutine(result)
+                raise _LoopClosedBeforeCompletionError
+    except _LoopClosedBeforeCompletionError:
+        _abandon_worker(worker)
+        return
+    except BaseException as exc:
+        if _claim_late_completion(worker):
+            if worker.strict_outcomes:
+                logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
+            else:
+                logger.exception("Late terminal delivery failed for %s", worker.key[2])
+            _release_worker(worker)
+        return
+    if _claim_late_completion(worker):
+        _finish_late_result(worker, result)
+
+
+def _async_delivery_done(worker: _Worker, task: asyncio.Future[Any]) -> None:
+    """Transfer a detached async result to the late acknowledgement path once."""
+    with _workers_lock:
+        if (
+            _workers.get(worker.key) is not worker
+            or worker.async_task is not task
+            or worker.late_claimed
+        ):
+            return
+        worker.async_task = None
+        worker.async_loop = None
+        worker.late_claimed = True
+    _record_claimed_task(worker, task)
+
+
+def _late_delivery_task_done(worker: _Worker, task: asyncio.Future[Any]) -> None:
+    """Claim a detached factory's completed foreign-loop task once."""
+    with _workers_lock:
+        if (
+            _workers.get(worker.key) is not worker
+            or worker.late_task is not task
+            or worker.late_claimed
+        ):
+            return
+        worker.late_claimed = True
+        cancelled = worker.late_cancelled
+    if cancelled:
+        if not task.cancelled():
+            task.exception()  # Observe it without acknowledging a cancelled wrapper.
+        _finish_late_result(worker, DeliveryOutcome.FAILURE)
+        return
+    _record_claimed_task(worker, task)
+
+
+def _record_claimed_task(worker: _Worker, task: asyncio.Future[Any]) -> None:
+    try:
+        result = task.result()
+    except asyncio.CancelledError:
+        try:
+            if not worker.strict_outcomes:
+                _observe_cancelled_hook(task)
+        finally:
+            _release_worker(worker)
+        return
+    except BaseException as exc:
+        try:
+            if worker.strict_outcomes:
+                logger.warning("Late delivery failed for %s: %s", worker.key[2], type(exc).__name__)
+            else:
+                _observe_cancelled_hook(task)
+        finally:
+            _release_worker(worker)
+        return
+    try:
+        threading.Thread(target=_finish_late_result, args=(worker, result), daemon=True).start()
+    except Exception:
+        logger.exception("Could not record late terminal delivery for %s", worker.key[2])
+        _release_worker(worker)
+
+
+async def _await_reserved_hook(
+    worker: _Worker, awaitable: Awaitable[Any], timeout: float
+) -> tuple[DeliveryOutcome, _Worker | None]:
+    """Keep the reservation if the hook survives its timeout or caller cancellation."""
+    task = asyncio.ensure_future(awaitable)
+    task_loop = task.get_loop()
+    current_loop = asyncio.get_running_loop()
+    waiter: asyncio.Future[Any] = task
+    if task_loop is not current_loop:
+        # The returned Future may already belong to another loop. Observe it
+        # there and wake this loop without moving or cancelling its wrapper.
+        completed: concurrent.futures.Future[None] = concurrent.futures.Future()
+        waiter = asyncio.wrap_future(completed)
+
+        def signal_completion(_task: asyncio.Future[Any]) -> None:
+            if not completed.done():
+                completed.set_result(None)
+
+        if task.done():
+            signal_completion(task)
+        else:
+            try:
+                task_loop.call_soon_threadsafe(task.add_done_callback, signal_completion)
+            except RuntimeError:
+                if not task_loop.is_closed():
+                    raise
+                if task.done():
+                    try:
+                        return task.result(), worker
+                    except asyncio.CancelledError:
+                        return DeliveryOutcome.FAILURE, worker
+                with _workers_lock:
+                    worker.async_loop = task_loop
+                    worker.async_task = task
+                _abandon_worker(worker)
+                return DeliveryOutcome.FAILURE, None
+
+    def detach() -> None:
+        with _workers_lock:
+            worker.async_loop = task_loop
+            worker.async_task = task
+
+        def attach_and_cancel() -> None:
+            with _workers_lock:
+                if worker.late_claimed or worker.async_task is not task:
+                    return
+            task.add_done_callback(lambda completed: _async_delivery_done(worker, completed))
+            task.cancel()
+
+        if task_loop is current_loop:
+            attach_and_cancel()
+        else:
+            try:
+                task_loop.call_soon_threadsafe(attach_and_cancel)
+            except RuntimeError:
+                if task.done():
+                    _async_delivery_done(worker, task)
+                else:
+                    _abandon_worker(worker)
+
+    try:
+        done, _ = await asyncio.wait({waiter}, timeout=timeout)
+    except asyncio.CancelledError:
+        detach()
+        raise
+    if not done:
+        with _workers_lock:
+            worker.timed_out = True
+        detach()
+        return DeliveryOutcome.FAILURE, None
+    try:
+        return task.result(), worker
+    except asyncio.CancelledError:
+        return DeliveryOutcome.FAILURE, worker
+
+
 def _start_late(worker: _Worker) -> None:
     with _workers_lock:
-        if worker.late_started:
+        if worker.late_started or worker.late_claimed:
             return
         worker.late_started = True
     threading.Thread(target=_finish_late, args=(worker,), daemon=True).start()
@@ -848,8 +1438,14 @@ class TerminalReconciler:
     baseline the consumer registers with on first use. A pass reads pages of
     ``batch_size`` rows until the traversal wraps or ``pass_budget`` seconds have
     passed; the budget is checked between pages, so the default of zero attempts
-    one page per pass. ``prepare`` must be effect-free: it may inspect data and
-    construct a delivery, but must not invoke the delivery effect itself.
+    one page per pass. ``prepare`` must be effect-free and must not invoke the delivery effect.
+
+    The process-local capacity tracks each delivery task through timeout and
+    cancellation. If its loop closes before the task completes, the slot stays
+    occupied until completion is observed, or until process exit if it is not
+    observed. The event remains unacknowledged until a successful completion is
+    recorded. Work a handler delegates beyond the task's lifetime is outside
+    this guarantee; consumers should deduplicate by event ID.
     """
 
     def __init__(
@@ -892,12 +1488,103 @@ class TerminalReconciler:
         self._backoff[transition_id] = _Backoff(attempts, self.clock() + delay)
 
     def _pending(self) -> tuple[set[str], int]:
+        assert self._store_identity is not None
+        _release_closed_loop_workers(self._store_identity, self.consumer)
         with _workers_lock:
             keys = {key[2] for key in _workers if key[:2] == (self._store_identity, self.consumer)}
             keys.update(
                 key[2] for key in _attempts if key[:2] == (self._store_identity, self.consumer)
             )
         return keys, len(keys)
+
+    def _report_capacity(
+        self, store: str, result: dict[str, int | float], *, retired: bool = False
+    ) -> None:
+        """Snapshot shared outstanding work and rate-limit saturation warnings."""
+        scope = (store, self.consumer)
+        warn = False
+        with _workers_lock:
+            # Capture immutable fields together. Clock samples happen just
+            # afterward, so ages may be slightly later than membership.
+            active = _capacity_reservations(scope)
+            previous = _saturation_warnings.get(scope)
+            previous_state = (
+                (previous.clock, previous.last_at, previous.threshold, previous.version)
+                if previous
+                else None
+            )
+        clocks = [self.clock, *(entry[5] for entry in active)]
+        if previous_state is not None:
+            clocks.append(previous_state[0])
+        # Injected clocks are caller code and may re-enter the reconciler.
+        samples: dict[int, float] = {}
+        for clock in clocks:
+            if id(clock) not in samples:
+                samples[id(clock)] = clock()
+        ages = [max(0.0, samples[id(clock)] - start) for _, start, _, _, _, clock in active]
+        outstanding = len(active)
+        past_timeout = sum(
+            timed_out or samples[id(clock)] >= deadline
+            for _, _, deadline, timed_out, _, clock in active
+        )
+        oldest = max(ages, default=0.0)
+        capacity = min([self.batch_size, *(entry[4] for entry in active)])
+        saturated = (
+            not retired
+            and outstanding > 0
+            and (bool(result["saturated"]) or outstanding >= capacity)
+        )
+        if saturated:
+            result["saturated"] = 1
+        result["outstanding"] = outstanding
+        result["past_timeout"] = past_timeout
+        result["oldest_age_seconds"] = oldest
+
+        with _workers_lock:
+            current = [entry[0] for entry in _capacity_reservations(scope)]
+            current_warning = _saturation_warnings.get(scope)
+            same_workers = [entry[0] for entry in active] == current
+            same_warning = current_warning is previous and (
+                previous_state is None
+                or (
+                    previous.clock is previous_state[0]
+                    and previous.last_at == previous_state[1]
+                    and previous.threshold == previous_state[2]
+                    and previous.version == previous_state[3]
+                )
+            )
+            if retired and same_workers and same_warning:
+                _saturation_warnings.pop(scope, None)
+            elif not retired and same_workers and same_warning:
+                if saturated:
+                    threshold = min(outstanding, capacity)
+                    if previous is None:
+                        _saturation_warnings[scope] = _SaturationWarning(
+                            self.clock, samples[id(self.clock)], threshold
+                        )
+                        warn = True
+                    else:
+                        # The opening clock keeps the interval consistent even
+                        # if reconcilers use different injected clocks.
+                        previous.version += 1
+                        now = samples[id(previous.clock)]
+                        if now - previous.last_at >= SATURATION_WARNING_INTERVAL_SECONDS:
+                            previous.last_at = now
+                            warn = True
+                        previous.threshold = min(previous.threshold, threshold)
+                elif previous is not None and outstanding < previous.threshold:
+                    del _saturation_warnings[scope]
+        if warn:
+            store_id = hashlib.sha256(store.encode("utf-8")).hexdigest()[:16]
+            logger.warning(
+                "Terminal delivery saturated store=%s consumer=%s outstanding=%d "
+                "past_timeout=%d oldest_age_seconds=%.3f",
+                store_id,
+                self.consumer,
+                outstanding,
+                past_timeout,
+                oldest,
+            )
 
     async def _invoke(
         self,
@@ -915,7 +1602,7 @@ class TerminalReconciler:
             await _acknowledge_late(admission)
 
         late_ack = acknowledge_late if strict_outcomes and admission is not None else None
-        if inspect.iscoroutinefunction(call):
+        if strict_outcomes and inspect.iscoroutinefunction(call):
             return await _await_hook(
                 call(), timeout=self.timeout, admission=admission, late_ack=late_ack
             ), None
@@ -926,11 +1613,23 @@ class TerminalReconciler:
             self.consumer,
             transition_id,
             self.batch_size,
+            started_at=self.clock(),
+            timeout_seconds=self.timeout,
+            clock=self.clock,
             strict_outcomes=strict_outcomes,
             admission=admission,
         )
         if worker is None:
             raise _WorkerBusyError
+        if inspect.iscoroutinefunction(call):
+            try:
+                return await _await_reserved_hook(worker, call(), timeout=self.timeout)
+            except asyncio.CancelledError:
+                # The helper detached the still-running task before propagating.
+                raise
+            except BaseException:
+                _release_worker(worker)
+                raise
         try:
             threading.Thread(target=_run_worker, args=(worker, call), daemon=True).start()
         except BaseException:
@@ -940,7 +1639,12 @@ class TerminalReconciler:
             result = await asyncio.wait_for(
                 asyncio.shield(asyncio.wrap_future(worker.future)), timeout=self.timeout
             )
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
+            with _workers_lock:
+                worker.timed_out = True
+            _detach_worker(worker)
+            raise
+        except asyncio.CancelledError:
             _detach_worker(worker)
             raise
         except BaseException:
@@ -952,16 +1656,25 @@ class TerminalReconciler:
             except BaseException:
                 foreign = True
             if foreign:
-                # The attempt owns only this local wait. The foreign future and
-                # the retained worker continue independently after cancellation.
+                # Transfer ownership without driving or cancelling the foreign Future.
                 _detach_worker(worker)
                 await asyncio.Future()
                 raise AssertionError("unreachable local waiter")
         if inspect.isawaitable(result):
+            deadline = self.clock() + self.timeout
+            with _workers_lock:
+                worker.deadline = deadline
             try:
-                result = await _await_hook(
-                    result, timeout=self.timeout, admission=admission, late_ack=late_ack
-                )
+                if strict_outcomes:
+                    result = await _await_hook(
+                        result, timeout=self.timeout, admission=admission, late_ack=late_ack
+                    )
+                else:
+                    return await _await_reserved_hook(worker, result, timeout=self.timeout)
+            except asyncio.CancelledError:
+                if strict_outcomes:
+                    _release_worker(worker)
+                raise
             except BaseException:
                 _release_worker(worker)
                 raise
@@ -982,7 +1695,16 @@ class TerminalReconciler:
         elif self._store_identity != store:
             raise ValueError("a reconciler instance belongs to one state store")
         try:
-            admission = _reserve_attempt(store, self.consumer, transition_id, self.batch_size, db)
+            admission = _reserve_attempt(
+                store,
+                self.consumer,
+                transition_id,
+                self.batch_size,
+                db,
+                started_at=self.clock(),
+                timeout_seconds=self.timeout,
+                clock=self.clock,
+            )
         except Exception as exc:  # noqa: BLE001 -- no effect started
             logger.warning(
                 "Terminal admission failed for %s: %s", transition_id, type(exc).__name__
@@ -1058,6 +1780,8 @@ class TerminalReconciler:
         except _WorkerBusyError:
             return AttemptResult("busy")
         except asyncio.TimeoutError:
+            with _workers_lock:
+                admission.timed_out = True
             if ack_uncertain:
                 return AttemptResult("uncertain", observed_outcome, attempted=True)
             return AttemptResult("failed", attempted=started)
@@ -1081,7 +1805,7 @@ class TerminalReconciler:
         """Unwired replay adapter for the same exact-event attempt contract."""
         return await self._attempt_one(db, transition_id)
 
-    async def run_pass(self, db: Any) -> dict[str, int]:
+    async def run_pass(self, db: Any) -> dict[str, int | float]:
         """Attempt bounded pages until the traversal wraps or the pass budget is spent.
 
         Only explicit outcomes are acknowledged.
@@ -1093,6 +1817,9 @@ class TerminalReconciler:
                 self._store_identity = store
             elif self._store_identity != store:
                 raise ValueError("a reconciler instance belongs to one state store")
+            # Closed-loop completions and completed private-memory ACKs must be
+            # reconciled even if this consumer was retired while work ran.
+            _release_closed_loop_workers(store, self.consumer)
             await _drain_deferred(db, self.consumer, self._store_identity)
             try:
                 registration = await register_consumer(db, self.consumer, start=self.start)
@@ -1115,6 +1842,7 @@ class TerminalReconciler:
                 "post_migration_null": counts.post_migration_null_count,
             }
             if retired:
+                self._report_capacity(store, result, retired=True)
                 return result
             while True:
                 pending_ids, pending_count = self._pending()
@@ -1174,6 +1902,11 @@ class TerminalReconciler:
                         result["saturated"] = 1
                         self._cursor = previous_cursor
                         break
+                    except asyncio.CancelledError:
+                        # A cancelled pass can leave a resistant hook occupying
+                        # capacity even when no later pass is scheduled.
+                        self._report_capacity(store, result)
+                        raise
                     except Exception:
                         logger.exception("Terminal delivery failed for %s", transition_id)
                     finally:
@@ -1188,4 +1921,5 @@ class TerminalReconciler:
                         continue
                 break
             result["past_ten_failures"] = sum(x.attempts > 10 for x in self._backoff.values())
+            self._report_capacity(store, result)
             return result
