@@ -64,7 +64,9 @@ def _allowed(address: str) -> bool:
 
 SHORT_FLAG_RE = re.compile(r"^-[a-zA-Z]*[AHU][ =]?$")
 
-ASSIGN_RE = re.compile(r"(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([\"']?)(.*)$")
+# [ \t] not \s: a \s run at a line start spans newlines, so whitespace-only lines are
+# rescanned from every line start (4000 blank lines: 350 ms, x4 per doubling; now 0.3 ms).
+ASSIGN_RE = re.compile(r"(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=([\"']?)(.*)$")
 
 def _window(text: str, tok: re.Match) -> str:
     """The text a header token's value occupies. A short curl flag (`-A`, `-H`) takes exactly

@@ -4,12 +4,21 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
 from lionagi.agent import _email_in_headers as predicate
 from lionagi.agent.hooks import guard_email_in_headers
 from lionagi.agent.spec import AgentSpec
+
+
+def test_assignment_matching_handles_long_blank_lines_promptly():
+    text = " \n" * 200_000 + "x" + chr(64)
+    started = time.perf_counter()
+    assert predicate.find_leak(text) is None
+    assert time.perf_counter() - started < 0.5
+
 
 ADDRESS = "sample-person@project.example"
 OTHER = "another-person@project.example"
