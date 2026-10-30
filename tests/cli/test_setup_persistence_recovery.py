@@ -447,3 +447,73 @@ async def test_recovery_close_is_bounded_and_preserves_open_error(
                 await asyncio.wait_for(isolated_setup.find_incomplete_session_for_run("run"), 5)
     finally:
         await original_close()
+
+
+@pytest.mark.asyncio
+async def test_admission_refusal_remains_primary_when_owner_drain_is_cancelled(
+    isolated_setup, monkeypatch, tmp_path
+):
+    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi.state import cli_workers
+    from lionagi.state.db import StateDB
+
+    db = StateDB(tmp_path / "state.db")
+    await db.open()
+    refusal = _WorkerSpawnAdmissionError("original admission refusal")
+    drain_calls = []
+
+    class CancellingOwner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def aclose(self):
+            drain_calls.append(True)
+            if len(drain_calls) == 1:
+                raise asyncio.CancelledError("later drain cancellation")
+
+    async def fail_branch(_row):
+        raise refusal
+
+    async def open_db(*, register):
+        return db
+
+    monkeypatch.setattr(cli_workers, "_WorkerSpawnOwner", CancellingOwner)
+    monkeypatch.setattr(db, "create_branch", fail_branch)
+    monkeypatch.setattr(isolated_setup, "_open_shared_db", open_db)
+    try:
+        with pytest.raises(_WorkerSpawnAdmissionError) as raised:
+            await asyncio.wait_for(
+                isolated_setup.setup_agent_persist(fake_branch(), share_db=False), 5
+            )
+        assert raised.value is refusal
+        assert len(drain_calls) == 2
+        assert db._engine is None
+    finally:
+        if db._engine is not None:
+            await db.close()
+
+
+@pytest.mark.asyncio
+async def test_timed_out_open_still_closes_once(isolated_setup, monkeypatch):
+    from lionagi.ln.concurrency import move_on_after
+    from lionagi.state import db as db_module
+
+    class BlockedStore:
+        def __init__(self):
+            self.opened = False
+            self.closes = 0
+
+        async def open(self):
+            self.opened = True
+            await asyncio.Event().wait()
+
+        async def close(self):
+            self.closes += 1
+
+    db = BlockedStore()
+    monkeypatch.setattr(db_module, "StateDB", lambda: db)
+    with move_on_after(0.05) as scope:
+        await isolated_setup.find_incomplete_session_for_run("run")
+    assert scope.cancel_called
+    assert db.opened
+    assert db.closes == 1

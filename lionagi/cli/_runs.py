@@ -2458,12 +2458,12 @@ async def setup_agent_persist(
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
+        if refusal is not None:
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         if drain_cancel is not None:
             raise drain_cancel  # noqa: B904 -- preserve the drain cancellation's own cause
         if not isinstance(exc, Exception):
             raise
-        if refusal is not None:
-            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         return None
 
 
