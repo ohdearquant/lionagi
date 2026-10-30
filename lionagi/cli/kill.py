@@ -152,10 +152,14 @@ def _pid_addressability(reason: str | None, pid: int | None) -> tuple[str | None
 
     The second value is the observed liveness, or None if no probe was needed;
     callers can reuse it without observing a different process at the same PID.
+    A missing pid leaves a Linux boot ambiguity unresolved: with nothing to probe,
+    the run is never read as gone.
     """
     if reason != "boot_unverifiable":
         return reason, None
-    alive = pid is not None and _pid_alive(pid)
+    if pid is None:
+        return "boot_unverifiable", None
+    alive = _pid_alive(pid)
     return ("boot_unverifiable" if alive else "boot_mismatch"), alive
 
 
@@ -1436,7 +1440,12 @@ async def _do_kill_all_stale(
     skipped_unjudgeable = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
-    unknown_reasons = {"start_mismatch": 0, "boot_disagreement": 0, "permission_denied": 0}
+    unknown_reasons = {
+        "start_mismatch": 0,
+        "boot_disagreement": 0,
+        "permission_denied": 0,
+        "identity_unknown": 0,
+    }
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -1735,6 +1744,7 @@ async def _do_kill_all_stale(
         f"skipped_linux_start_mismatch={unknown_reasons['start_mismatch']}, "
         f"skipped_linux_boot_disagreement={unknown_reasons['boot_disagreement']}, "
         f"skipped_permission_denied={unknown_reasons['permission_denied']}, "
+        f"skipped_identity_unknown={unknown_reasons['identity_unknown']}, "
         f"skipped_unjudgeable={skipped_unjudgeable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )

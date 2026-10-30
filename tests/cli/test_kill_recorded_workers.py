@@ -780,6 +780,69 @@ async def test_running_dead_runner_boot_mismatch_preserves_original_refusal(monk
     assert any("last booted" in message for message in warnings)
 
 
+def _serve_db(monkeypatch, module, db):
+    """Make the kill command open ``db`` and resolve its one session."""
+
+    class Context:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *args):
+            return False
+
+    async def resolve(_db, _identifier):
+        return "sessions", "session", db.session
+
+    monkeypatch.setattr(db_mod, "StateDB", Context)
+    monkeypatch.setattr(module, "_resolve_entity", resolve)
+
+
+async def _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid):
+    """Run the kill command on a running session with recorded workers whose runner
+    pid is alive and whose boot time disagrees on Linux; return its db, exit code and
+    the worker groups that were signalled."""
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+    db.session["node_metadata"] = {"pid": runner_pid}
+    sent = _stub_recorded_groups(monkeypatch, module)
+    _serve_db(monkeypatch, module, db)
+    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: "boot_unverifiable")
+    monkeypatch.setattr(module, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        module, "_terminate_pid", lambda *args, **kwargs: pytest.fail("unexpected signal")
+    )
+    monkeypatch.setattr(module, "warn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_error", lambda *args, **kwargs: None)
+    code = await module._do_kill("session-test")
+    return db, code, sent
+
+
+@pytest.mark.asyncio
+async def test_direct_kill_of_a_live_runner_with_ambiguous_boot_cancels_and_signals_nothing(
+    monkeypatch,
+):
+    db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, 76543)
+    assert code == 1
+    assert db.session["status"] == "running"
+    assert db.cancelled == []
+    assert db.settled == []
+    assert sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner_pid", ["not-a-pid", 1], ids=["unreadable", "reserved"])
+async def test_direct_kill_with_unusable_runner_pid_and_ambiguous_boot_cancels_and_signals_nothing(
+    monkeypatch, runner_pid
+):
+    db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid)
+    assert code == 1
+    assert db.session["status"] == "running"
+    assert db.cancelled == []
+    assert db.settled == []
+    assert sent == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["host_mismatch", "in_process", "foreign_mode"])
 async def test_recorded_workers_of_a_runner_this_host_cannot_judge_are_reported(
