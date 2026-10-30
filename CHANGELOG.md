@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Secure coding agents refuse email addresses in outbound HTTP headers in bash commands and editor writes.
+
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
   repeated scans hit the limit, schedule health explains how to recover.
 

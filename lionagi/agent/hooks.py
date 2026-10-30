@@ -16,6 +16,7 @@ from lionagi.libs.path_safety import is_protected_name, resolve_workspace_path
 __all__ = (
     "auto_format_python",
     "guard_destructive",
+    "guard_email_in_headers",
     "guard_paths",
     "log_tool_call",
     "log_tool_use",
@@ -47,6 +48,36 @@ async def guard_destructive(tool_name: str, action: str, args: dict) -> dict | N
             f"Blocked destructive command: {cmd}\n"
             "If you need this, explain why and ask the user to run it manually."
         )
+    return None
+
+
+async def guard_email_in_headers(
+    tool_name: str,
+    action: str,
+    args: dict,
+    *,
+    allow: frozenset[str] = frozenset(),
+    note: str | None = None,
+) -> dict | None:
+    """Refuse an email in an outbound header in a command or file write."""
+    from ._email_in_headers import find_leak_with_allowed
+
+    if tool_name in ("bash", "bash_tool"):
+        text = args.get("command", "")
+    elif tool_name in ("editor", "editor_tool") and action in ("write", "edit"):
+        text = args.get("content" if action == "write" else "new_string", "")
+    else:
+        return None
+    if not isinstance(text, str):
+        return None
+    hit = find_leak_with_allowed(text, allow)
+    if hit is not None:
+        address, token = hit
+        masked = address[:3] + "…@" + address.split("@", 1)[1]
+        message = f"Blocked an email address ({masked}) in an outbound HTTP header after {token!r}."
+        if note:
+            message += f" {note}"
+        raise PermissionError(message)
     return None
 
 

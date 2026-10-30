@@ -1012,6 +1012,12 @@ basename denial fails identically against every root and always surfaces over a 
 denial. `guard_paths` validation is check-time only — a TOCTOU race (swapping a validated file
 for a symlink after the check passes) is explicitly out of scope.
 
+`guard_email_in_headers()` checks bash commands and the text written by editor write and edit
+actions for an email address in an outbound HTTP header. Documentation-domain examples pass by
+default. It examines raw text, so a quoted example may be refused, and dynamically assembled
+headers may not be detected. CLI-backed providers such as Claude Code, Codex, Gemini and
+Antigravity execute their own tools; their tool calls do not pass through this guard.
+
 ### `agent/nudge.py`
 
 `NudgeEngine.evaluate()`/`_merge()` — firing bookkeeping (once/cooldown state) is committed
