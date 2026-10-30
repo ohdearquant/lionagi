@@ -674,7 +674,7 @@ async def test_authorize_passes_the_action_itself_to_the_gate():
     assert seen == [action]
 
 
-async def test_authorize_denial_appends_gate_denied_carrying_the_action():
+async def test_authorize_denial_appends_redacted_gate_denied():
     obs = SessionObserver()
     obs.gate(lambda action: action.function != "rm")
     denied, allowed = _Action("rm"), _Action("ls")
