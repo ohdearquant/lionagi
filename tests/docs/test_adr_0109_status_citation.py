@@ -11,11 +11,11 @@ RECORD = ROOT / "docs/adr/ADR-0109-mirrored-session-idleness-is-not-completion.m
 def test_status_update_citation_points_to_source_and_actor_parameters() -> None:
     record = RECORD.read_text(encoding="utf-8")
     source = (ROOT / "lionagi/state/db.py").read_text(encoding="utf-8").splitlines()
-    assert "lionagi/state/db.py:4999-5010" in record
-    assert "async def update_status(" in source[4999 - 1]
-    assert 'source: str = "executor"' in source[5008 - 1]
-    assert "actor: str | None = None" in source[5009 - 1]
-    assert "metadata: dict[str, Any] | None = None" in source[5010 - 1]
+    assert "lionagi/state/db.py:5020-5031" in record
+    assert "async def update_status(" in source[5020 - 1]
+    assert 'source: str = "executor"' in source[5029 - 1]
+    assert "actor: str | None = None" in source[5030 - 1]
+    assert "metadata: dict[str, Any] | None = None" in source[5031 - 1]
     actor = (ROOT / "lionagi/state/lifecycle/models.py").read_text(encoding="utf-8").splitlines()
     assert "lionagi/state/lifecycle/models.py:49-52" in record
     assert "class ActorRecord:" in actor[50 - 1]
