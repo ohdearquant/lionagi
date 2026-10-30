@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -2484,8 +2485,8 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
     from lionagi.state.reasons import RunReasons
 
     db = StateDB()
-    await db.open()
     try:
+        await db.open()
         rows = await db.get_sessions_for_run(run_id)
         if not rows:
             return None
@@ -2508,4 +2509,15 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
             row = await db.get_session(row["id"]) or row
         return row
     finally:
-        await db.close()
+        # Plain open may have created an engine even when it failed or was cancelled.
+        # Bound disposal separately so a cancelled lookup still attempts to release it.
+        original_error = sys.exc_info()[1]
+        try:
+            with CancelScope(shield=True), move_on_after(_SETUP_RECOVERY_TIMEOUT_SECONDS) as scope:
+                await db.close()
+            if scope.cancel_called:
+                raise TimeoutError("session recovery database close did not complete")
+        except BaseException as close_error:
+            if original_error is None:
+                raise
+            _log.warning("session recovery database close did not complete: %s", close_error)

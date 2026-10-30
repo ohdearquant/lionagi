@@ -323,3 +323,127 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
             await asyncio.gather(task, return_exceptions=True)
         if db._engine is not None:
             await original_close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_create_never_starts_candidate_recovery(
+    isolated_setup, monkeypatch, tmp_path, caplog
+):
+    from lionagi.state.db import StateDB
+
+    db = StateDB(tmp_path / "state.db")
+    await db.open()
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    updates = []
+
+    async def progression(_identifier):
+        entered.set()
+        await gate.wait()
+
+    async def update(*args, **kwargs):
+        updates.append((args, kwargs))
+
+    async def open_db(*, register):
+        return db
+
+    monkeypatch.setattr(db, "create_progression", progression)
+    monkeypatch.setattr(db, "update_status", update)
+    monkeypatch.setattr(isolated_setup, "_open_shared_db", open_db)
+    task = asyncio.create_task(isolated_setup.setup_agent_persist(fake_branch(), share_db=False))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        async with StateDB(tmp_path / "state.db") as check:
+            assert await check.list_sessions() == []
+        assert updates == []
+        assert "session setup recovery did not complete" not in caplog.text
+    finally:
+        gate.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if db._engine is not None:
+            await db.close()
+
+
+@pytest.mark.parametrize("failure", ["error", "cancel"])
+@pytest.mark.asyncio
+async def test_recovery_disposes_engine_when_open_fails(
+    isolated_setup, monkeypatch, tmp_path, failure
+):
+    from lionagi.state import db as db_module
+
+    db = db_module.StateDB(tmp_path / "state.db")
+    original_open = db.open
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    error = ValueError("partial open")
+
+    async def failed_open():
+        await original_open()
+        assert db._engine is not None
+        if failure == "error":
+            raise error
+        entered.set()
+        await gate.wait()
+
+    monkeypatch.setattr(db, "open", failed_open)
+    monkeypatch.setattr(db_module, "StateDB", lambda: db)
+    task = asyncio.create_task(isolated_setup.find_incomplete_session_for_run("run"))
+    try:
+        if failure == "cancel":
+            await asyncio.wait_for(entered.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+        else:
+            with pytest.raises(ValueError) as raised:
+                await asyncio.wait_for(task, 5)
+            assert raised.value is error
+        assert db._engine is None
+    finally:
+        gate.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if db._engine is not None:
+            await db.close()
+
+
+@pytest.mark.parametrize("open_fails", [False, True])
+@pytest.mark.asyncio
+async def test_recovery_close_is_bounded_and_preserves_open_error(
+    isolated_setup, monkeypatch, tmp_path, caplog, open_fails
+):
+    from lionagi.state import db as db_module
+
+    db = db_module.StateDB(tmp_path / "state.db")
+    original_open, original_close = db.open, db.close
+    error = ValueError("partial open")
+
+    async def open_db():
+        await original_open()
+        if open_fails:
+            raise error
+
+    async def close():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(db, "open", open_db)
+    monkeypatch.setattr(db, "close", close)
+    monkeypatch.setattr(db_module, "StateDB", lambda: db)
+    monkeypatch.setattr(isolated_setup, "_SETUP_RECOVERY_TIMEOUT_SECONDS", 0.05)
+    try:
+        if open_fails:
+            with pytest.raises(ValueError) as raised:
+                await asyncio.wait_for(isolated_setup.find_incomplete_session_for_run("run"), 5)
+            assert raised.value is error
+            assert "database close did not complete" in caplog.text
+        else:
+            with pytest.raises(TimeoutError, match="database close did not complete"):
+                await asyncio.wait_for(isolated_setup.find_incomplete_session_for_run("run"), 5)
+    finally:
+        await original_close()
