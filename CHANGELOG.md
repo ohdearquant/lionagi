@@ -261,9 +261,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - ReAct no longer sends an internal display setting in API requests.
 
 - Restored API models use their registered request schema when a snapshot omits it, validating
-  and coercing requests as fresh models do. A formerly unvalidated payload may now be refused.
-  On restored Anthropic models, `cache_control=True` no longer adds a five-minute mark to the
-  last message, matching fresh models.
+  and coercing requests as fresh models do. A formerly unvalidated payload may now be refused,
+  and fields outside that schema are filtered. On restored Anthropic models using the registered
+  schema, with account routing and prompt caching off, `cache_control=True` no longer adds a
+  five-minute mark to the last message, matching fresh models.
 
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
   A caller-supplied chat model keeps its own settings.
