@@ -16,6 +16,7 @@ from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import ensure_lionagi_dir
+from lionagi.cli._team_service import read_team_json
 from lionagi.cli._util import AmbiguousIdError
 from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
@@ -37,22 +38,6 @@ WAKEUP_KIND = "wakeup"
 
 def _teams_dir() -> Path:
     return ensure_lionagi_dir(TEAMS_DIR)
-
-
-def read_team_json(path: Path) -> dict[str, Any] | None:
-    """Read one team JSON file under a SHARED flock — the canonical
-    safe-read every team-file reader goes through. Returns None (never
-    raises) for a missing, unreadable, or corrupt file."""
-    try:
-        with open(path) as fp:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_SH)
-            try:
-                raw = fp.read()
-            finally:
-                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-        return json.loads(raw) if raw.strip() else {}
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def _team_file(team_id: str) -> Path:

@@ -235,15 +235,15 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
             return run_dir, load_checkpoint(run_dir.checkpoint_path)
         _raise_if_persistence_degraded(run_dir)
 
-    from lionagi.cli.status import _resolve_any_target, _resolve_primary_session
+    from lionagi.cli._inspection import resolve_any_target, resolve_primary_session
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        resolved = await _resolve_any_target(db, target)
+        resolved = await resolve_any_target(db, target)
         if resolved is None:
             raise FlowResumeError(f"No run, session, invocation, or play found for {target!r}.")
         entity_type, row = resolved
-        session_row = await _resolve_primary_session(db, entity_type, row)
+        session_row = await resolve_primary_session(db, entity_type, row)
         if session_row is None:
             raise FlowResumeError(f"No backing session found for {target!r}.")
         node_meta = session_row.get("node_metadata") or {}
