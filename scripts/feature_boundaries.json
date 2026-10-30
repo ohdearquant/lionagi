@@ -519,6 +519,11 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.mcp_config"
     },
+    "lionagi.cli._notify_outcomes": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "pending the CLI location decision (ADR-0139 D1)"
+    },
     "lionagi.cli._project": {
       "layer": "root",
       "owner": "cli",
@@ -1537,6 +1542,11 @@
     "lionagi.providers.deepseek.chat": {
       "layer": "adapter",
       "owner": "provider_deepseek",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
+    "lionagi.providers.errors": {
+      "layer": "adapter",
+      "owner": "provider_support",
       "target_owner": "lionhub (destination not yet recorded)"
     },
     "lionagi.providers.exa": {

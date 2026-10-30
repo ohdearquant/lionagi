@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Provider exception types are available from `lionagi.providers.errors`, so
+  applications can catch them without importing a private module.
+
 - A checked feature ownership inventory and static import report expose
   dependencies across package layers while keeping existing boundary debt
   report-only.
@@ -294,6 +297,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Tool hook and verbose summaries no longer block dispatch when deeply nested
   arguments exceed Python's string-representation recursion limit.
+
+- Successful structured-response repairs on API models now replace the invalid
+  assistant text in later conversation history and run-level live persistence.
+  The original text remains available in the message metadata. A branch using
+  the `persist_message` hook keeps the original stored text.
+
+- Recent Studio session pages on SQLite avoid scanning newer hidden engine
+  transcripts when a compatible optional index is available. Opening an existing
+  store builds the index when its session-time index has the expected shape; a
+  store where it cannot be built keeps the previous listing path. The build holds
+  the SQLite write lock until it completes.
 
 - The email-in-header guard runs in linear time on long hyphenated text.
 

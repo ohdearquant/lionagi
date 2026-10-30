@@ -983,6 +983,9 @@
     "lionagi/providers/deepseek/chat.py": [
       "__all__ = (\"DeepseekChatCompletionsRequest\", \"DeepseekChatEndpoint\")"
     ],
+    "lionagi/providers/errors.py": [
+      "__all__ = (\n    \"ProviderError\",\n    \"ProviderQuotaError\",\n    \"ProviderAuthError\",\n    \"ProviderContextError\",\n    \"ProviderCapacityError\",\n    \"ProviderUnsupportedModelError\",\n    \"ProviderSafetyError\",\n    \"ProviderStreamDisconnectError\",\n    \"ProviderTeardownError\",\n    \"ProviderPermissionError\",\n    \"ProviderAdapterError\",\n    \"WorkerLivenessError\",\n    \"SubagentAdmissionRefusedError\",\n    \"NestedAgentRefusedError\",\n)"
+    ],
     "lionagi/providers/exa/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"ExaContentsEndpoint\": (\"contents\", None),\n    \"ExaContentsRequest\": (\"contents\", None),\n    \"ExaFindSimilarEndpoint\": (\"find_similar\", None),\n    \"ExaFindSimilarRequest\": (\"find_similar\", None),\n    \"ExaSearchEndpoint\": (\"search\", None),\n    \"ExaSearchRequest\": (\"search\", None),\n}",
@@ -1812,6 +1815,9 @@
       "discover_mcp_config",
       "explicit_mcp_config_path",
       "resolve_spawn_mcp_servers"
+    ],
+    "lionagi/cli/_notify_outcomes.py": [
+      "DurableRunRecorder"
     ],
     "lionagi/cli/_project.py": [
       "detect_project"

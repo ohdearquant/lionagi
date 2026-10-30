@@ -247,7 +247,7 @@ def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> N
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _line("lionagi/state/schema.sql", 487)
+    assert "github_cursor" in _line("lionagi/state/schema.sql", 493)
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
@@ -271,11 +271,11 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 6004)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7850)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7875)
-    assert "limit: int = 500" in _line("lionagi/state/db.py", 7880)
-    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6140)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 6025)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7871)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7896)
+    assert "limit: int = 500" in _line("lionagi/state/db.py", 7901)
+    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6161)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -294,13 +294,13 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:839-843" in flat
-    assert "lionagi/state/db.py:7850-7860" in flat
-    assert "lionagi/state/db.py:7875-7892" in flat
-    assert "(`:7880`)" in flat
+    assert "lionagi/state/schema.sql:845-849" in flat
+    assert "lionagi/state/db.py:7871-7881" in flat
+    assert "lionagi/state/db.py:7896-7913" in flat
+    assert "(`:7901`)" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
-    assert "whose forward read defaults to 500 rows (`:7880`)" in flat
+    assert "whose forward read defaults to 500 rows (`:7901`)" in flat
     assert "`emitter_role`, versioned payload type" in flat
     assert "filter-required data without destructive truncation; every page is read" in flat
     assert "read through a frozen closure cutoff" in flat
@@ -432,9 +432,9 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
-    assert "lionagi/state/schema.sql:487" in flat
-    assert "lionagi/state/db.py:6004-6006" in flat
-    assert "`:6140`" in flat
+    assert "lionagi/state/schema.sql:493" in flat
+    assert "lionagi/state/db.py:6025-6027" in flat
+    assert "`:6161`" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
