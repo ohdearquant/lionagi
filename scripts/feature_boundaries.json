@@ -509,6 +509,16 @@
       "owner": "cli",
       "target_owner": "pending the CLI location decision (ADR-0139 D1)"
     },
+    "lionagi.cli._engine_definitions": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.engine_definitions"
+    },
+    "lionagi.cli._inspection": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.inspection"
+    },
     "lionagi.cli._logging": {
       "layer": "root",
       "owner": "cli",
@@ -538,6 +548,11 @@
       "layer": "root",
       "owner": "cli",
       "target_owner": "lionhub.orchestration.runs"
+    },
+    "lionagi.cli._team_service": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.team"
     },
     "lionagi.cli._util": {
       "layer": "root",
