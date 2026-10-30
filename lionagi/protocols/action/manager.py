@@ -543,22 +543,20 @@ class ActionManager(Manager):
         update: bool = False,
         mcp_security: "MCPSecurityConfig | None" = None,
     ) -> dict[str, list[str]]:
+        from lionagi.ln import copy
         from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
         # An omitted policy is not upgraded to a permissive one: it flows
         # through to the wrapper's fail-closed default. See
         # docs/internals/agent-runtime.md for the full trust model.
         snapshot = MCPConnectionPool._load_config_snapshot(config_path, server_names)
+        MCPConnectionPool._configs.update(copy(snapshot))
         loaded_names = list(snapshot)
 
         if server_names is None:
             # Default to servers in THIS config file — the pool accumulates
             # configs globally, so enumerating it would re-register unrelated servers.
             server_names = loaded_names
-        else:
-            missing = [name for name in server_names if name not in snapshot]
-            if missing:
-                raise ValueError(f"MCP servers not declared in the selected config: {missing!r}")
         all_tools = {}
         for server_name in server_names:
             try:
@@ -587,6 +585,7 @@ async def load_mcp_tools(
     update: bool = False,
     mcp_security: "MCPSecurityConfig | None" = None,
 ) -> list[Tool]:
+    from lionagi.ln import copy
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
     manager = ActionManager()
@@ -600,15 +599,12 @@ async def load_mcp_tools(
     snapshot = None
     if config_path:
         snapshot = MCPConnectionPool._load_config_snapshot(config_path, server_names)
+        MCPConnectionPool._configs.update(copy(snapshot))
         loaded_names = list(snapshot)
         if server_names is None:
             # Same default as load_mcp_config: the servers in this file, not
             # every server the process-global pool has accumulated.
             server_names = loaded_names
-        else:
-            missing = [name for name in server_names if name not in snapshot]
-            if missing:
-                raise ValueError(f"MCP servers not declared in the selected config: {missing!r}")
 
     if server_names is None:
         raise ValueError("Either provide server_names or config_path to discover servers")
