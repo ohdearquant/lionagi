@@ -2338,6 +2338,7 @@ async def setup_agent_persist(
         # cleanup, so a caller's check finds it even when a task group wrapped it.
         refusal = exc if isinstance(exc, _WorkerSpawnAdmissionError) else refusal_in(exc)
         drain_cancel = None
+        cleanup_cancel = None
         if owner is not None:
             while True:
                 try:
@@ -2423,9 +2424,11 @@ async def setup_agent_persist(
                         _log.warning("session setup recovery did not complete: %s", status_exc)
                 if scope.cancel_called:
                     _log.warning("session setup recovery did not complete: deadline expired")
-            except cancelled_exc_classes():
+            except cancelled_exc_classes() as caught_cancel:
                 # Direct task cancellation can interrupt a shield. Preserve the first
                 # cancellation and report the unfinished recovery, without orphaning work.
+                if cleanup_cancel is None:
+                    cleanup_cancel = caught_cancel
                 _log.warning("session setup recovery did not complete: interrupted")
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
@@ -2446,7 +2449,9 @@ async def setup_agent_persist(
                     if close_scope.cancel_called:
                         _log.warning("fallback db.close after setup failure did not complete")
                     break
-                except cancelled_exc_classes():
+                except cancelled_exc_classes() as caught_cancel:
+                    if cleanup_cancel is None:
+                        cleanup_cancel = caught_cancel
                     if time.monotonic() >= close_deadline:
                         _log.warning("fallback db.close after setup failure did not complete")
                         break
@@ -2464,6 +2469,8 @@ async def setup_agent_persist(
             raise drain_cancel  # noqa: B904 -- preserve the drain cancellation's own cause
         if not isinstance(exc, Exception):
             raise
+        if cleanup_cancel is not None:
+            raise cleanup_cancel  # noqa: B904 -- preserve the cleanup cancellation's own cause
         return None
 
 

@@ -309,12 +309,62 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
                 await task
             assert raised.value is failure
         elif mode == "ordinary":
-            assert await task is None
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await task
+            assert raised.value.args == ("second",)
         else:
             with pytest.raises(asyncio.CancelledError) as raised:
                 await task
             assert raised.value.args != ("second",)
             assert closes == 2
+        assert db._engine is None
+    finally:
+        gate.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if db._engine is not None:
+            await original_close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_fallback_close_after_ordinary_setup_failure(
+    isolated_setup, monkeypatch, tmp_path
+):
+    from lionagi.state.db import StateDB
+
+    db = StateDB(tmp_path / "state.db")
+    await db.open()
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    original_close = db.close
+    closes = 0
+
+    async def create(_row):
+        raise ValueError("synthetic setup failure")
+
+    async def close():
+        nonlocal closes
+        closes += 1
+        if closes == 1:
+            entered.set()
+            await gate.wait()
+        await original_close()
+
+    async def open_db(*, register):
+        return db
+
+    monkeypatch.setattr(db, "create_session", create)
+    monkeypatch.setattr(db, "close", close)
+    monkeypatch.setattr(isolated_setup, "_open_shared_db", open_db)
+    task = asyncio.create_task(isolated_setup.setup_agent_persist(fake_branch(), share_db=False))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel("second")
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await asyncio.wait_for(task, 5)
+        assert raised.value.args == ("second",)
+        assert closes == 2
         assert db._engine is None
     finally:
         gate.set()
