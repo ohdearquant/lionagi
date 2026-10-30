@@ -1982,8 +1982,8 @@ class Engine:
         """Return whether to expand an item, or raise when the judge cannot be trusted.
 
         With no judge configured this returns True; budget exhaustion returns False.
-        Judge failures fail open except for settings errors, a containment refusal on
-        the bounded exception chain, and failures under account containment. An
+        Judge failures fail open except for settings errors, a containment or exclusive MCP
+        selection refusal on the bounded exception chain, and failures under account containment. An
         ordinary error reporting a denial does not change that denial; an unreadable
         callback error chain or a containment or settings refusal still raises.
         """

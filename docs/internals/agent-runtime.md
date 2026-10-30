@@ -129,7 +129,8 @@ and one implementation.
   config, system config and project layers, then disables unselected servers by name only
   where their declarations and project trust are proven. A layer or trust
   decision it cannot check refuses the run. The check cannot be atomic with
-  Codex's later config reads, so configuration can change between them. An
+  Codex's later config reads: removing a system server in between can make
+  Codex refuse to start, while adding one can let it load unselected. An
   exclusive selection covers the user, system and project configuration lionagi can
   read; servers enabled by managed or cloud configuration are outside it.
   An explicit per-call MCP override replaces the configured selection for that
