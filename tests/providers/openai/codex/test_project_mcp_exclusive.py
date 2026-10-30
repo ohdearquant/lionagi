@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi._errors import ConfigurationError
+from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
 from lionagi.agent.factory import apply_forwarded_mcp_servers
 from lionagi.providers.openai import _codex_project_layers as project_layers
 from lionagi.providers.openai import codex as codex_mod
@@ -135,6 +135,22 @@ async def test_missing_cli_refuses_before_secret_fill_or_census(tmp_path, monkey
 def _config_args(call):
     args = call[0]
     return [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-c"]
+
+
+@pytest.mark.parametrize("names", [["selected"], []])
+def test_exclusive_request_refuses_public_argv_without_launch_check(fixture, names):
+    project, env, _ = fixture
+    request = CodexCodeRequest(prompt="synthetic", repo=project, env=env, exclusive_mcp_names=names)
+    with pytest.raises(_ExclusiveMcpSelectionError, match="launch-time configuration check"):
+        request.as_cmd_args()
+
+
+def test_exclusive_public_argv_refuses_a_nonexclusive_supplied_snapshot(fixture):
+    project, env, _ = fixture
+    request = CodexCodeRequest(prompt="synthetic", repo=project, env=env, exclusive_mcp_names=[])
+    other = CodexCodeRequest(prompt="synthetic", repo=project, env=env)
+    with pytest.raises(_ExclusiveMcpSelectionError, match="launch-time configuration check"):
+        request.as_cmd_args(plain=codex_mod._plain_request(other))
 
 
 @pytest.mark.asyncio

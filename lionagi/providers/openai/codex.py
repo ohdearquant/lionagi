@@ -1855,14 +1855,23 @@ class CodexCodeRequest(BaseModel):
         """Build the argument list for ``codex exec`` from one normalized snapshot.
 
         ``overrides`` is one read of ``config_overrides``; ``None`` reads it here. A
-        caller that already reduced the request (the spawn path) hands its snapshot in as
-        ``plain``, so that check and this render cannot read the fields twice. Either way
-        every check below and every rendered argument reads one plain snapshot, so a field
-        whose own methods answer differently on each read cannot be judged as one value and
-        rendered as another.
+        supplied ``plain`` snapshot is used for rendering, but the request is also checked
+        for an exclusive selection. Either snapshot naming an exclusive selection is refused:
+        only the endpoint's spawn path can perform the required launch-time check.
         """
+        request_snapshot = _plain_request(self, overrides)
+        if request_snapshot.exclusive_mcp_names is not None:
+            raise _ExclusiveMcpSelectionError(
+                "Exclusive MCP selection needs the launch-time configuration check "
+                "performed by the endpoint's spawn path."
+            )
         if plain is None:
-            plain = _plain_request(self, overrides)
+            plain = request_snapshot
+        if plain.exclusive_mcp_names is not None:
+            raise _ExclusiveMcpSelectionError(
+                "Exclusive MCP selection needs the launch-time configuration check "
+                "performed by the endpoint's spawn path."
+            )
         return self._cmd_args(plain, self.cwd())
 
     def _cmd_args(self, plain: _PlainRequest, cwd: Path) -> list[str]:

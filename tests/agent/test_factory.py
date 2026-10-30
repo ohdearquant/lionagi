@@ -1226,7 +1226,10 @@ async def test_forward_mcp_codex_empty_allowlist_ignores_the_ambient_config_too(
     config.mcp_servers = []  # explicit empty allowlist; no lionagi MCP config resolves
     branch = await create_agent(config, load_settings=False)
     api_call = await branch.chat_model.create_event(prompt="hi")
-    args = api_call.payload["request"].as_cmd_args()
+    from lionagi.providers.openai.codex import _plain_request
+
+    request = api_call.payload["request"]
+    args = request._cmd_args(_plain_request(request), request.cwd())
 
     kwargs = branch.chat_model.endpoint.config.kwargs
     assert kwargs["ignore_user_config"] is True
@@ -1258,7 +1261,10 @@ async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_u
     config.mcp_servers = []
     branch = await create_agent(config, load_settings=False)
     api_call = await branch.chat_model.create_event(prompt="hi")
-    args = api_call.payload["request"].as_cmd_args()
+    from lionagi.providers.openai.codex import _plain_request
+
+    request = api_call.payload["request"]
+    args = request._cmd_args(_plain_request(request), request.cwd())
 
     assert "--ignore-user-config" in args
     assert any(args[i : i + 2] == ["-s", "workspace-write"] for i in range(len(args) - 1))

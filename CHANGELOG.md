@@ -307,7 +307,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   A judge raises when an exclusive MCP selection cannot be enforced. Configuration may
   still change between the check and Codex reading it: a removed system server can cause
   startup to fail, while a newly added one can load. Managed and cloud configuration is
-  not visible to the selection check.
+  not visible to the selection check. `CodexCodeRequest.as_cmd_args()` refuses an exclusive
+  selection because only the endpoint's spawn path can check the launch configuration.
 
 - A failed or cancelled Operator setup now makes a bounded attempt to close a
   session created before admission and logs when cleanup did not complete.

@@ -144,7 +144,7 @@ def test_an_empty_exclusive_set_with_a_named_profile_is_refused(codex_home):
     """A profile is user config too, and the by-name disables read config.toml alone, so a
     server the profile's file or a project layer declares would load. The empty set still
     takes the flag, and the codex request refuses the profile under it."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionagi.providers.openai.codex import CodexCodeRequest, _plain_request
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     kwargs: dict = {"profile": "work"}
@@ -152,8 +152,9 @@ def test_an_empty_exclusive_set_with_a_named_profile_is_refused(codex_home):
     assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
 
     assert kwargs == {"profile": "work", "ignore_user_config": True, "exclusive_mcp_names": []}
+    request = CodexCodeRequest(prompt="hi", **kwargs)
     with pytest.raises(ConfigurationError, match="and profile='work'"):
-        CodexCodeRequest(prompt="hi", **kwargs).as_cmd_args()
+        request._cmd_args(_plain_request(request), request.cwd())
 
 
 def test_an_exclusive_caller_with_no_set_is_strict_for_the_claude_transport():
@@ -851,10 +852,12 @@ def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(cod
 @pytest.mark.asyncio
 async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
     from lionagi.cli._providers import build_chat_model
+    from lionagi.providers.openai.codex import _plain_request
 
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
     model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers={})
-    args = await _cmd_args(model)
+    request = (await model.create_event(prompt="hi")).payload["request"]
+    args = request._cmd_args(_plain_request(request), request.cwd())
 
     assert "--ignore-user-config" in args
     assert not [arg for arg in args if "ambient" in arg]
@@ -1553,7 +1556,10 @@ async def test_a_codex_worker_is_spawned_with_the_runs_server_set(flow_run, code
     codex_home.write_config({})
     _env, branch = await _codex_worker(flow_run, SERVERS)
 
-    args = await _cmd_args(branch.chat_model)
+    from lionagi.providers.openai.codex import _plain_request
+
+    request = (await branch.chat_model.create_event(prompt="hi")).payload["request"]
+    args = request._cmd_args(_plain_request(request), request.cwd())
     forwarded = [args[i + 1] for i, a in enumerate(args) if a == "-c" and i + 1 < len(args)]
     assert 'mcp_servers.khive.command="kkernel"' in forwarded
     assert 'mcp_servers.khive.args=["serve"]' in forwarded
