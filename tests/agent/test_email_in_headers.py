@@ -42,6 +42,42 @@ CONTROLS = [
 ]
 
 
+@pytest.mark.parametrize(
+    "template",
+    [
+        'curl -sH "From: {address}"',
+        'curl -sSA "{address}"',
+        "curl -Akfin({address}) u",
+        "curl -Atool/0.1({address})",
+        "curl -HFrom:{address}",
+        'wget -U "{address}"',
+        "req.headers['From'] = \"{address}\"",
+        'headers["From"] = "{address}"',
+        'h["User-Agent"] = "x ({address})"',
+    ],
+)
+def test_widened_header_forms_are_refused(template):
+    address = "sample.person" + chr(64) + "corp.co"
+    assert predicate.find_leak(template.format(address=address)) is not None
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "grep -A3 {address} file",
+        "ls -lA file; echo {address}",
+        "openssl dgst -SHA256 {address}",
+        "diff -U3 {address} file",
+        "msg['From'] = \"{address}\"",
+        'git commit -a --author="Name <{address}>"',
+        "ssh -h host; echo {address}",
+    ],
+)
+def test_widened_header_forms_leave_controls_unchanged(template):
+    address = "sample.person" + chr(64) + "corp.co"
+    assert predicate.find_leak(template.format(address=address)) is None
+
+
 @pytest.mark.parametrize("command", LEAKS)
 async def test_each_header_leak_is_refused_with_a_passing_control(command):
     with pytest.raises(PermissionError) as error:

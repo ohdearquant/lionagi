@@ -36,13 +36,15 @@ HEADER_TOKEN_RE = re.compile(
     r"|\bX-[A-Za-z0-9-]+\s*:"       # X-Contact: ...
     r"|setRequestHeader\s*\("
     r"|add_header\s*\("
+    r"|\bheaders?\s*\[[^\]\n]{1,80}\]\s*="  # headers["From"] = ..., req.headers['User-Agent'] =
     r")",
     re.I,
 )
 
 SHORT_HEADER_FLAG_RE = re.compile(
-    r"(?<![A-Za-z0-9-])-A[ =\"']"  # curl -A '...'
-    r"|(?<![A-Za-z0-9-])-H[ =\"']"  # curl -H 'Name: value'
+    r"(?<![A-Za-z0-9-])-[a-zA-Z]*[AHU][ =\"']"  # curl -A '...', -H 'Name: value', -sH ..., wget -U ...
+    r"|(?<![A-Za-z0-9-])-A(?=[A-Za-z_/(])"       # glued value: -Akfin/0.1 (…)
+    r"|(?<![A-Za-z0-9-])-H(?=[A-Za-z][A-Za-z0-9-]*:)"  # glued header: -HFrom: …
 )
 
 def _header_tokens(text: str):
@@ -60,7 +62,7 @@ def _allowed(address: str) -> bool:
     return address.lower() in _extra_allowed.get() or bool(ALLOWED_DOMAIN_RE.search(address))
 
 
-SHORT_FLAG_RE = re.compile(r"^-[AH][ =]?$")
+SHORT_FLAG_RE = re.compile(r"^-[a-zA-Z]*[AHU][ =\"']?$")
 
 ASSIGN_RE = re.compile(r"(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([\"']?)(.*)$")
 

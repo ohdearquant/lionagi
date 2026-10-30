@@ -1016,11 +1016,9 @@ for a symlink after the check passes) is explicitly out of scope.
 editor edit for an email address in an outbound HTTP header. An existing header can therefore block
 an unrelated edit, while an edit that removes the address can pass. Documentation-domain examples
 pass by default. It examines raw text, so a quoted example may be refused. Dynamically assembled
-headers and static forms outside the token list may not be detected, including combined short flags
-such as `curl -sH`, a glued `-A` value without a separator, `wget -U`, and headers set by subscript
-such as a `From` header assigned with `headers[...] = ...`. If the guard cannot read or decode the
-file, or cannot prepare the edit, it allows the call and the editor reports its own error when it
-reads and prepares the edit. The edit check resolves and reads the file before the editor reads and
+headers and static forms outside the token list may not be detected. If the guard cannot read or
+decode the file, or cannot prepare the edit, it allows the call and the editor reports its own error
+when it reads and prepares the edit. The edit check resolves and reads the file before the editor reads and
 writes it; a concurrent change can occur between those operations, and the read is not an atomic
 no-follow read. For toolkit edits, the guard runs before the read-before-edit check; when both
 would refuse, the guard's refusal is reported. Tools registered outside the agent factory do not
