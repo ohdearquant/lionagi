@@ -294,3 +294,11 @@ def test_invalid_global_guard_settings_fail_closed(tmp_path, monkeypatch, policy
     monkeypatch.setenv("HOME", str(home))
     with pytest.raises(ValueError, match="guards.email_in_headers"):
         AgentSpec.coding(cwd=str(tmp_path))
+
+
+async def test_edit_replacement_is_checked_without_reconstructing_existing_file():
+    existing = 'headers={"User-Agent": "CONTACT_PLACEHOLDER"}'
+    args = {"old_string": "CONTACT_PLACEHOLDER", "new_string": ADDRESS}
+    assert await guard_email_in_headers("editor", "edit", args) is None
+    reconstructed = existing.replace(args["old_string"], args["new_string"])
+    assert predicate.find_leak(reconstructed) is not None
