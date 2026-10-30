@@ -892,7 +892,7 @@ a request for its server like any other: the server is identified by the name it
 has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
 grant names that server and the captured parent permits it. The option's server configuration
 names a server in one of two ways, told apart by the test the connection pool itself applies
-(`lionagi/service/connections/mcp_wrapper.py:1651`, `:1810`): a mapping with a top-level
+(`lionagi/service/connections/mcp_wrapper.py:1686`, `:1860`): a mapping with a top-level
 `server` key is a reference, whatever else it carries, and any other mapping is an inline
 transport configuration. A reference names its server by the value of `server` alone, compared
 exactly, case-sensitively and without normalization. The pool resolves that name and ignores
@@ -905,25 +905,27 @@ nested key beginning with `_` is part of the transport and is compared. The top-
 lionagi's own annotations on a configuration, and the connection pool drops every one of them,
 whatever its name, both when it builds a client and when it fingerprints a transport:
 `config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}`
-(`lionagi/service/connections/mcp_wrapper.py:2044`) and
-`material = {k: v for k, v in config.items() if not k.startswith("_")}` (`:1595`).
+(`lionagi/service/connections/mcp_wrapper.py:2121`) and
+`material = {k: v for k, v in config.items() if not k.startswith("_")}` (`:1630`).
 The one such key read on the call path, `_original_tool_name`, picks the tool to call on the
 server already chosen, never
-the transport (`lionagi/protocols/action/manager.py:154`, `mcp_wrapper.py:2042`), so they are no
-part of the transport. Equal means that the two give the same text under `json.dumps` with
-`sort_keys=True` and its default separators and ASCII escaping, as the pool serializes a transport
-when it fingerprints it (`:1595-1596`): object key order does not matter, array order does, and
-a number compares by the JSON form of its parsed value, so `1` and `1.0` differ while `1e2` and
-`100.0` match. A configuration holding a value that has no JSON form is refused, as is one that
-repeats a key (above).
+the transport (`lionagi/protocols/action/manager.py:154`, `mcp_wrapper.py:2119`), so they are no
+part of the transport. Equal means the pool's `_policy_key` gives both transports the same content
+fingerprint with `server_name=None` (`lionagi/service/connections/mcp_wrapper.py:1595-1635`).
+The pool tags value types recursively, orders dictionary entries by their typed keys, preserves
+sequence order, and represents floats with `float.hex()`. Thus `1` and `1.0` differ, parsed `1e2`
+and `100.0` match, and lists and tuples differ. Unsupported value types and cyclic containers are
+refused. The configuration declaration rules above still apply: a value without a JSON form and a
+repeated key are refused. A fingerprint is a cache identifier, not authorization; equality of hashes
+is subject to the possibility of a collision.
 Nothing is expanded before the comparison: an entry is compared as the selected configuration
 declares it and an inline configuration as the option gives it, so an environment or secret
 reference and any placeholder are compared as the text they are written as. Two configurations
-that differ only in how they spell a value therefore do not match, and the opt-in is refused
-rather than matched through a resolved value. This is the material the pool fingerprints a
-transport by (`lionagi/service/connections/mcp_wrapper.py:1595`). It is not the pool's
-client-cache key, which for an inline configuration also carries the object's identity
-(`:1818`). An inline configuration equal to more than one entry is refused as ambiguous.
+that spell an environment or secret reference differently therefore do not match through their
+resolved values; the opt-in is refused instead. The pool's client-cache key also incorporates the
+effective security policy; named keys include the server name, while inline keys do not depend on
+the mapping object's identity (`lionagi/service/connections/mcp_wrapper.py:1847-1869`). An inline
+configuration equal to more than one entry is refused as ambiguous.
 A `khive_injection` whose configuration matches no named server is permitted only under ambient
 discovery, never under a declared or inherited grant. Every requested
 server name that is unknown or absent must be
