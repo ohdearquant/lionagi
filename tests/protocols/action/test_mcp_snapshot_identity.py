@@ -155,6 +155,13 @@ async def test_resolved_identity_equals_bound_client_cache_key(pool, monkeypatch
         return Client()
 
     monkeypatch.setattr(pool, "_create_client", classmethod(create))
+    original_key = pool._cache_key
+
+    def marked_key(*args, **kwargs):
+        return original_key(*args, **kwargs) + ":marker"
+
+    # Both paths must follow a future change to the shared key builder.
+    monkeypatch.setattr(pool, "_cache_key", staticmethod(marked_key))
     resolved, _, identity_key = pool._resolve_identity(identity_input, policy)
     client = await pool._get_bound_client(transport, server_name, policy)
 
@@ -163,3 +170,21 @@ async def test_resolved_identity_equals_bound_client_cache_key(pool, monkeypatch
     assert pool._clients[identity_key] is client
     assert await pool.get_client(identity_input, security=policy) is client
     assert len(created) == 1
+
+
+def test_server_reference_membership_is_checked_once_per_resolution_layer(pool):
+    class Reference(dict):
+        def __init__(self):
+            super().__init__({"server": "alpha"})
+            self.contains_calls = 0
+
+        def __contains__(self, key):
+            self.contains_calls += 1
+            return super().__contains__(key)
+
+    pool._configs["alpha"] = {"command": "runner"}
+    reference = Reference()
+    resolved, _, _ = pool._resolve_identity(reference, MCPSecurityConfig.trusted())
+    assert resolved == {"command": "runner"}
+    # One check in identity resolution and one in the nested config resolver.
+    assert reference.contains_calls == 2
