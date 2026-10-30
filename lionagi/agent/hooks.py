@@ -83,6 +83,8 @@ async def guard_email_in_headers(
             return None
         if request.old_string is None or request.new_string is None:
             return None
+        # The editor reads again when it applies the edit; a concurrent change
+        # between these reads is not covered by this preview.
         try:
             prepared = await run_sync(
                 _edit_preparer,

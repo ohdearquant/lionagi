@@ -49,6 +49,11 @@ CONTROLS = [
         'curl -sSA "{address}"',
         "curl -Akfin({address}) u",
         "curl -Atool/0.1({address})",
+        'curl -H"From: {address}" u',
+        "curl -A'tool/0.1 ({address})' u",
+        'curl -sH"From: {address}" u',
+        "wget -U'x {address}' u",
+        "wget -Ux({address}) u",
         "curl -HFrom:{address}",
         'wget -U "{address}"',
         "req.headers['From'] = \"{address}\"",
@@ -71,6 +76,7 @@ def test_widened_header_forms_are_refused(template):
         "msg['From'] = \"{address}\"",
         'git commit -a --author="Name <{address}>"',
         "ssh -h host; echo {address}",
+        "psql -Upostgres; echo {address}",
     ],
 )
 def test_widened_header_forms_leave_controls_unchanged(template):

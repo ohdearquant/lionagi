@@ -26,7 +26,7 @@ ALLOWED_DOMAIN_RE = re.compile(
     r"@(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net)|[a-z0-9-]+\.(?:invalid|test))$", re.I
 )
 
-EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
 
 HEADER_TOKEN_RE = re.compile(
     r"(?:"
@@ -42,8 +42,8 @@ HEADER_TOKEN_RE = re.compile(
 )
 
 SHORT_HEADER_FLAG_RE = re.compile(
-    r"(?<![A-Za-z0-9-])-[a-zA-Z]*[AHU][ =\"']"  # curl -A '...', -H 'Name: value', -sH ..., wget -U ...
-    r"|(?<![A-Za-z0-9-])-A(?=[A-Za-z_/(])"       # glued value: -Akfin/0.1 (…)
+    r"(?<![A-Za-z0-9-])-[a-zA-Z]*[AHU](?:[ =]|(?=[\"']))"  # curl -A '...', -H 'Name: value', -sH ..., wget -U ...; a quote is left for _window
+    r"|(?<![A-Za-z0-9-])-[AU](?=[A-Za-z_/(])"    # glued value: -Akfin/0.1 (…), wget -Ukfin/0.1 (…)
     r"|(?<![A-Za-z0-9-])-H(?=[A-Za-z][A-Za-z0-9-]*:)"  # glued header: -HFrom: …
 )
 
@@ -62,7 +62,7 @@ def _allowed(address: str) -> bool:
     return address.lower() in _extra_allowed.get() or bool(ALLOWED_DOMAIN_RE.search(address))
 
 
-SHORT_FLAG_RE = re.compile(r"^-[a-zA-Z]*[AHU][ =\"']?$")
+SHORT_FLAG_RE = re.compile(r"^-[a-zA-Z]*[AHU][ =]?$")
 
 ASSIGN_RE = re.compile(r"(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([\"']?)(.*)$")
 

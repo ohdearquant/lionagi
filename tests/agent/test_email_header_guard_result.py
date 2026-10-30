@@ -83,6 +83,25 @@ async def test_edit_reconstructs_header_from_old_file_and_inserted_address(
 
 
 @pytest.mark.parametrize("variant", ["toolkit", "standalone"])
+async def test_edit_refuses_header_using_existing_address_carrier(variant, tmp_path, monkeypatch):
+    from lionagi.agent._email_in_headers import find_leak
+
+    branch, name = await _editor(variant, tmp_path, monkeypatch)
+    target = tmp_path / "client.sh"
+    original = f'UA="client ({ADDRESS})"\nPLACEHOLDER\n'
+    header_use = 'curl -H "X-Contact: $UA" https://service.example/'
+    target.write_text(original)
+    await _prepare_read(branch, variant, target)
+    assert find_leak(original) is None
+    assert find_leak(header_use) is None
+
+    call = await _call(branch, name, _edit(target, "PLACEHOLDER", header_use))
+
+    _assert_denied(call)
+    assert target.read_text() == original
+
+
+@pytest.mark.parametrize("variant", ["toolkit", "standalone"])
 async def test_edit_refuses_an_unrelated_change_that_preserves_a_leak(
     variant, tmp_path, monkeypatch
 ):
