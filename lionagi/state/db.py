@@ -120,6 +120,7 @@ from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
 from lionagi.state.schema_migrations import MIGRATION_CONSTRAINTS as _MIGRATION_CONSTRAINTS
 from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
+from lionagi.state.schema_migrations import RECENT_VISIBLE_INDEXES as _RECENT_VISIBLE_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
     "running": _RunReasons.STARTED_OK,
@@ -2034,6 +2035,26 @@ class StateDB:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
+        if self.dialect == "sqlite":
+            indexes = (await conn.exec_driver_sql("PRAGMA index_list('sessions')")).all()
+            old = next((row for row in indexes if row[1] == "idx_sessions_updated"), None)
+            if old is None or old[4]:
+                return
+            fields = (
+                await conn.exec_driver_sql("PRAGMA index_xinfo('idx_sessions_updated')")
+            ).all()
+            keys = [field for field in fields if field[5]]
+            if (
+                len(keys) != 1
+                or keys[0][2] != "updated_at"
+                or str(keys[0][4]).upper() != "BINARY"
+                or keys[0][3] not in (0, 1)
+            ):
+                return
+            # Match the existing index's direction: equal timestamps otherwise
+            # reverse row order when the listing scans in descending order.
+            direction = "DESC" if keys[0][3] else "ASC"
+            await conn.execute(text(_RECENT_VISIBLE_INDEXES[direction]))
 
     async def _classify_terminal_delivery_history_once(self, conn) -> None:
         """Freeze v5 replay eligibility, the unknown count and marker in one transaction."""

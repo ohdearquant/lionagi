@@ -280,6 +280,16 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
     "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
 )
 
+RECENT_VISIBLE_INDEXES = {
+    direction: (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_recent_visible "
+        f"ON sessions(updated_at {direction}) "
+        "WHERE node_metadata IS NULL OR NOT json_valid(node_metadata) "
+        "OR json_extract(node_metadata, '$.engine_parent_run_id') IS NULL"
+    )
+    for direction in ("ASC", "DESC")
+}
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "

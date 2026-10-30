@@ -1816,6 +1816,9 @@
       "explicit_mcp_config_path",
       "resolve_spawn_mcp_servers"
     ],
+    "lionagi/cli/_notify_outcomes.py": [
+      "DurableRunRecorder"
+    ],
     "lionagi/cli/_project.py": [
       "detect_project"
     ],

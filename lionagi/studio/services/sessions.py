@@ -7,6 +7,7 @@ import base64
 import heapq
 import json
 import math
+import re
 import time
 from typing import Any
 
@@ -467,6 +468,54 @@ _SESSION_SORTS: dict[str, str] = {
     "cost": "s.total_cost_usd IS NULL, s.total_cost_usd DESC, s.updated_at DESC",
 }
 
+_VISIBLE_INDEX = "idx_sessions_recent_visible"
+_VISIBLE_PREDICATE = (
+    "node_metadata IS NULL OR NOT json_valid(node_metadata) "
+    "OR json_extract(node_metadata, '$.engine_parent_run_id') IS NULL"
+)
+
+
+def _sql_tokens(sql: str) -> list[str]:
+    """Compare an index definition without changing quoted SQL literals."""
+    tokens = re.findall(r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z_0-9]*|[^\s]", sql)
+    return [token if token.startswith("'") else token.lower() for token in tokens]
+
+
+async def _has_compatible_visible_index(db: Any) -> bool:
+    """Use the optional index only when its definition and tie order are known."""
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = 'sessions'",
+        (_VISIBLE_INDEX,),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    if row is None or row["sql"] is None:
+        return False
+    definitions = {
+        tuple(
+            _sql_tokens(
+                f"CREATE INDEX {_VISIBLE_INDEX} ON sessions(updated_at {direction}) "
+                f"WHERE {_VISIBLE_PREDICATE}"
+            )
+        )
+        for direction in ("ASC", "DESC")
+    }
+    if tuple(_sql_tokens(row["sql"])) not in definitions:
+        return False
+
+    keys = []
+    for index in (_VISIBLE_INDEX, "idx_sessions_updated"):
+        cursor = await db.execute(f"PRAGMA index_xinfo('{index}')")  # noqa: S608 -- fixed names
+        rows = await cursor.fetchall()
+        await cursor.close()
+        keys.append([(item["name"], item["desc"], item["coll"]) for item in rows if item["key"]])
+    # Backward scans of ascending and forward scans of descending indexes order
+    # equal timestamps differently; keep the existing path if they differ.
+    return keys[0] == keys[1] and keys[0] in (
+        [("updated_at", 0, "BINARY")],
+        [("updated_at", 1, "BINARY")],
+    )
+
 
 async def _approximate_end_selection(db: Any, *, alias: str = "") -> str:
     """How to read the approximate-end flag from the store in front of us.
@@ -563,11 +612,19 @@ async def list_sessions(
                 row["name"] == "idx_sessions_updated" and not row["partial"] for row in indexes
             )
         fallback = (page_cte, page_source, page_where, page_limit)
+        visible_index = False
         if recent_unfiltered:
             page_cte = ""
             page_source = "sessions s INDEXED BY idx_sessions_updated"
             page_where = clause
             page_limit = "LIMIT ? OFFSET ?"
+            if await _has_compatible_visible_index(db):
+                visible_index = True
+                page_source = f"sessions s INDEXED BY {_VISIBLE_INDEX}"
+                # Keep the original predicate as well: malformed metadata must
+                # still fail when the listing reaches it.
+                predicate = _VISIBLE_PREDICATE.replace("node_metadata", "s.node_metadata")
+                page_where = f"WHERE ({predicate}) AND " + clause.removeprefix("WHERE ")
 
         def listing_sql() -> str:
             return f"""
@@ -627,9 +684,21 @@ async def list_sessions(
         sql = listing_sql()
         if recent_unfiltered:
             cursor = await db.cursor()
-            await cursor.execute("EXPLAIN QUERY PLAN " + sql, query_params)
-            plan = await cursor.fetchall()
-            await cursor.close()
+            try:
+                try:
+                    await cursor.execute("EXPLAIN QUERY PLAN " + sql, query_params)
+                except aiosqlite.OperationalError as exc:
+                    if not visible_index or str(exc).lower() != "no query solution":
+                        raise
+                    # A stale or unusable optional index must not break old
+                    # stores. Return to the same ordered path as before.
+                    page_source = "sessions s INDEXED BY idx_sessions_updated"
+                    page_where = clause
+                    sql = listing_sql()
+                    await cursor.execute("EXPLAIN QUERY PLAN " + sql, query_params)
+                plan = await cursor.fetchall()
+            finally:
+                await cursor.close()
             if any(
                 "TEMP B-TREE" in row[3].upper() and "ORDER BY" in row[3].upper() for row in plan
             ):
