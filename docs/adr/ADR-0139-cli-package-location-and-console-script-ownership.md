@@ -409,7 +409,7 @@ Rewrite executable module strings, not just imports: the background launch names
 the old CLI at `lionagi/cli/orchestrate/__init__.py:1239`, the MCP fallback names it at `lionhub/src/lionhub/serve/mcp/config.py:116`,
 and the diagnostic probe names it at `lionagi/cli/doctor.py:28`.
 Update the dynamic adapter load at
-`lionhub/src/lionhub/serve/mcp/projection.py:526` as well.
+`lionhub/src/lionhub/serve/mcp/projection.py:523` as well.
 Self-recognition must accept both canonical and compatibility spellings during 1.x,
 rather than silently dropping old subprocess recognition. Its current module/script
 sets and path-tail comparison are at
