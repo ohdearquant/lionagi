@@ -74,10 +74,11 @@ class GateDeniedError(PermissionError):
 
 
 def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
-    """Adapt a legacy ``(tool_name, action, args) -> dict | None`` pre-hook.
+    """Adapt a ``(tool_name, action, args) -> GateResult | dict | None`` pre-hook.
 
-    Denial = raise ``PermissionError``; rewrite = return a ``dict``; any
-    other exception fails closed as a deny GateResult. See docs/internals/runtime.md.
+    Legacy denial raises ``PermissionError``; a dict rewrites arguments and
+    None allows them unchanged. A GateResult retains its verdict. Unknown or
+    malformed results and other exceptions fail closed as control faults.
     """
 
     async def evaluate(tool_name: str, action: str, args: dict) -> GateResult:
@@ -101,22 +102,115 @@ def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
                 f"evaluator error: {e}",
                 errored=True,
             )
+        if isinstance(result, GateResult):
+            # Dataclass annotations are not runtime validation: do not treat a
+            # truthy non-boolean decision or an inconsistent fault as approval.
+            try:
+                valid = (
+                    type(result.allowed) is bool
+                    and type(result.errored) is bool
+                    and not (result.allowed and result.errored)
+                    and (result.mutated_args is None or isinstance(result.mutated_args, dict))
+                    and all(
+                        isinstance(value, str)
+                        for value in (
+                            result.control,
+                            result.tool_name,
+                            result.action,
+                            result.reason,
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001 - unreadable verdicts must fail closed
+                valid = False
+            if valid:
+                return result
+            return GateResult(False, control, tool_name, action, "invalid GateResult", errored=True)
         if isinstance(result, dict):
             return GateResult(True, control, tool_name, action, "allow", mutated_args=result)
-        return GateResult(True, control, tool_name, action, "allow")
+        if result is None:
+            return GateResult(True, control, tool_name, action, "allow")
+        # Avoid repr(result): a hook may return sensitive or unprintable data.
+        return GateResult(
+            False,
+            control,
+            tool_name,
+            action,
+            f"unsupported hook result type: {type(result).__name__}",
+            errored=True,
+        )
 
     return evaluate
+
+
+def _session_gate_result(result: Any, tool_name: str = "") -> GateResult:
+    """Preserve typed session verdicts and fail closed on invalid decisions."""
+    if isinstance(result, GateResult):
+        if type(result.allowed) is not bool:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                f"invalid allowed type: {type(result.allowed).__name__}",
+                errored=True,
+            )
+        if type(result.errored) is not bool:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                f"invalid errored type: {type(result.errored).__name__}",
+                errored=True,
+            )
+        if result.allowed and result.errored:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                "contradictory GateResult: allowed and errored are both true",
+                errored=True,
+            )
+        if result.allowed and result.mutated_args is not None:
+            return GateResult(
+                False,
+                "session_gate",
+                tool_name,
+                "authorize",
+                "session gate does not apply argument rewrites",
+                errored=True,
+            )
+        return result
+    if type(result) is not bool:
+        # Avoid repr(result): a gate may return sensitive or unprintable data.
+        return GateResult(
+            False,
+            "session_gate",
+            tool_name,
+            "authorize",
+            f"unsupported session gate result type: {type(result).__name__}",
+            errored=True,
+        )
+    return GateResult(
+        result,
+        "session_gate",
+        tool_name,
+        "authorize",
+        "allowed" if result else "denied by session gate",
+    )
 
 
 def adapt_session_gate(
     check: Callable[[Any], Any],
 ) -> Callable[[Any], Awaitable[GateResult]]:
-    """Adapt a ``SessionObserver`` gate callable (``check(action) -> bool``)."""
+    """Adapt a ``SessionObserver`` gate returning a bool or ``GateResult``."""
 
     async def evaluate(action: Any) -> GateResult:
         tool_name = str(getattr(action, "function", "") or "")
         try:
-            allowed = bool(await maybe_await(check(action)))
+            return _session_gate_result(await maybe_await(check(action)), tool_name)
         except Exception as e:  # noqa: BLE001 - fail-closed on any evaluator error
             logger.warning("session gate raised %s; failing closed", type(e).__name__)
             return GateResult(
@@ -127,9 +221,6 @@ def adapt_session_gate(
                 f"evaluator error: {e}",
                 errored=True,
             )
-        if allowed:
-            return GateResult(True, "session_gate", tool_name, "authorize", "allowed")
-        return GateResult(False, "session_gate", tool_name, "authorize", "denied by session gate")
 
     return evaluate
 

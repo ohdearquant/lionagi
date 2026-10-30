@@ -524,12 +524,23 @@ async def test_terminal_sync_workers_keep_context_awaitables_and_failure_recordi
         assert probe.context.get() == "caller"
         assert awaited == ([] if fails else ["caller"])
         if fails:
-            assert any(record.exc_info and record.exc_info[1] is error for record in caplog.records)
             if consumer == "notify":
+                messages = [
+                    record
+                    for record in caplog.records
+                    if "direct-path notify.on_terminal delivery failed" in record.getMessage()
+                ]
+                assert len(messages) == 1
+                assert messages[0].getMessage().endswith("for run run-worker (ValueError)")
+                assert messages[0].exc_info is None
+                assert "terminal worker failed" not in messages[0].getMessage()
                 assert len(records) == 1
                 assert records[0]["ok"] is False and records[0]["exit_code"] is None
                 assert "ValueError: terminal worker failed" in records[0]["stderr_text"]
             else:
+                assert any(
+                    record.exc_info and record.exc_info[1] is error for record in caplog.records
+                )
                 assert records == []
         else:
             assert records == []

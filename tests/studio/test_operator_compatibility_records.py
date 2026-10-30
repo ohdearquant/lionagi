@@ -687,7 +687,9 @@ async def test_a_refused_setup_records_a_store_refusal_not_a_retryable_model_fai
     assert errors[0]["payload"]["error"]["code"] == "store_refused"
     assert errors[0]["payload"]["error"]["message"] == str(refusal)
     assert errors[0]["payload"]["error"]["retryable"] is False
-    assert errors[0]["payload"]["error"]["details"] == {"runId": None}
+    # Recovery was refused, so the absence of an observed run is not evidence
+    # that no session row exists.
+    assert errors[0]["payload"]["error"]["details"] == {}
 
 
 @pytest.mark.asyncio
@@ -759,7 +761,7 @@ async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_
     (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
     assert turn["status"] == "failed"
     assert error["code"] == "store_refused"
-    assert error["message"] == str(refusal)
+    assert error["message"] == f"{refusal}; run recovery did not complete"
     assert error["retryable"] is False
 
 
@@ -806,7 +808,7 @@ async def test_a_setup_recovery_whose_native_open_is_refused_is_a_store_refusal(
     (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
     assert turn["status"] == "failed"
     assert error["code"] == "store_refused"
-    assert error["message"] == str(refused_open)
+    assert error["message"] == f"{refused_open}; run recovery did not complete"
     assert error["retryable"] is False
 
 
