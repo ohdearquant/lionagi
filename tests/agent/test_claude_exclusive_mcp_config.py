@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -121,6 +123,62 @@ def test_incomplete_quoted_config_is_not_logged_as_a_path(caplog):
     assert "inline" in warnings[0].lower() and "json" in warnings[0].lower()
     assert all(marker not in record.getMessage() for record in caplog.records)
     assert marker not in caplog.text
+
+
+def test_bom_prefixed_inline_config_is_identified_without_logging_content(caplog):
+    marker = "fixture-value-do-not-log"
+    inline = "\ufeff \ufeff\t" + json.dumps({"mcpServers": {"demo": {"token": marker}}})
+    kwargs = {"mcp_config": inline}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory" and record.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "inline JSON config" in warnings[0]
+    assert marker not in caplog.text
+    assert "mcp_config" not in kwargs
+
+
+def test_bytes_path_with_surrogate_is_not_logged_or_unencodable(caplog):
+    class BytesPath(os.PathLike):
+        def __fspath__(self):
+            return b"agent-\xff.json"
+
+    path = BytesPath()
+    assert "\udcff" in os.fsdecode(path)
+    kwargs = {"mcp_config": path}
+    output = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+    handler = logging.StreamHandler(output)
+    errors = []
+    handler.handleError = errors.append
+    logger = logging.getLogger("lionagi.agent.factory")
+    logger.addHandler(handler)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+        handler.flush()
+        assert not errors
+        assert "non-path config" in output.buffer.getvalue().decode("utf-8")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        output.close()
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "lionagi.agent.factory" and record.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "non-path config" in warnings[0]
+    assert "\udcff" not in warnings[0]
+    assert "agent-" not in warnings[0]
+    assert "mcp_config" not in kwargs
 
 
 @pytest.mark.parametrize(

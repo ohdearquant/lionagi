@@ -1164,7 +1164,7 @@ def apply_forwarded_mcp_servers(
                             json.loads(candidate)
                         except (TypeError, ValueError):
                             unsafe = any(
-                                unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"}
+                                unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
                                 or (unicodedata.category(char) == "Zs" and char != " ")
                                 for char in config_text
                             )
