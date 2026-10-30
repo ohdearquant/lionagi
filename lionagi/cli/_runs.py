@@ -1822,6 +1822,7 @@ def _make_message_handler(
     )
     if message_retry_queues is not None:
         message_retry_queues.append(retry_queue)
+    queued_adds: set[str] = set()
 
     async def _persist(msg, *, update=False):
         try:
@@ -1829,6 +1830,12 @@ def _make_message_handler(
                 await on_first_msg()
             msg_dict = msg.to_dict(mode="db")
             msg_id = msg_dict["id"]
+            if update and msg_id not in queued_adds:
+                _log.warning(
+                    "live persist skipped update for message %s: original write was never queued",
+                    msg_id,
+                )
+                return
             append_to_progressions = not update and (dedup_set is None or msg_id not in dedup_set)
             on_persisted = None
             if append_to_progressions and new_msg_ids_list is not None:
@@ -1850,6 +1857,8 @@ def _make_message_handler(
                     on_persisted=on_persisted,
                 )
             )
+            if not update:
+                queued_adds.add(msg_id)
         except StateCompatibilityRefused:
             # A write the store refused in compatibility mode stops the run (ADR-0128 D6).
             raise

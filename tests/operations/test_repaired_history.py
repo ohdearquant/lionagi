@@ -225,7 +225,7 @@ async def test_later_successful_retry_is_the_history_text():
     assert message.metadata["original_text"] == original
 
 
-async def _routed_store(branch, db, *, queues=None, new_ids=None):
+async def _routed_store(branch, db, *, queues=None, new_ids=None, on_first_msg=None):
     session = Session(default_branch=branch)
     session_id, branch_id = str(session.id), str(branch.id)
     await db.create_progression("bp")
@@ -241,9 +241,53 @@ async def _routed_store(branch, db, *, queues=None, new_ids=None):
         dedup_set=set(),
         new_msg_ids_list=new_ids,
         message_retry_queues=queues,
+        on_first_msg=on_first_msg,
     )
     handler = route_message_persistence(session, branch, callback)
     return session_id, handler
+
+
+@pytest.mark.asyncio
+async def test_dropped_add_does_not_create_an_unlinked_repair_row(monkeypatch, caplog):
+    from lionagi.hooks._message_retry import MessagePersistRetryQueue
+
+    branch = LionAGIMockFactory.create_mocked_branch(
+        responses=["invalid original", '{"answer":"fixed"}']
+    )
+    db = StateDB(":memory:")
+    await db.open()
+    calls, submitted = 0, []
+    submit = MessagePersistRetryQueue.submit
+
+    async def first_message():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("initial write preparation failed")
+
+    async def capture_submit(self, event):
+        submitted.append(event.message["id"])
+        return await submit(self, event)
+
+    monkeypatch.setattr(MessagePersistRetryQueue, "submit", capture_submit)
+    try:
+        _, handler = await _routed_store(branch, db, on_first_msg=first_message)
+        with caplog.at_level("WARNING"):
+            result = await branch.operate(
+                instruction="Question", response_format=Answer, invoke_actions=False
+            )
+        assert result.answer == "fixed"
+        message = next(item for item in branch.messages if isinstance(item, AssistantResponse))
+        message_id = str(message.id)
+        assert await db.get_message(message_id) is None
+        assert message_id not in submitted
+        assert message_id not in await db.get_progression("bp")
+        assert message_id not in await db.get_progression("sp")
+        assert message_id in caplog.text
+        assert "original write was never queued" in caplog.text
+        unroute_message_persistence(branch, handler)
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio
