@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- A checked feature ownership inventory and static import report expose
+  dependencies across package layers while keeping existing boundary debt
+  report-only.
+
 - Secure coding agents refuse email addresses in outbound HTTP headers in bash commands and editor writes.
 
 - Merged pull-request schedules can persist a page limit from 5 to 100. When
