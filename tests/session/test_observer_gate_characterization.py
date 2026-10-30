@@ -674,7 +674,7 @@ async def test_authorize_passes_the_action_itself_to_the_gate():
     assert seen == [action]
 
 
-async def test_authorize_denial_appends_gate_denied_carrying_the_action():
+async def test_authorize_denial_appends_redacted_gate_denied():
     obs = SessionObserver()
     obs.gate(lambda action: action.function != "rm")
     denied, allowed = _Action("rm"), _Action("ls")
@@ -684,7 +684,7 @@ async def test_authorize_denial_appends_gate_denied_carrying_the_action():
 
     items = list(obs.flow.items)
     assert [type(i) for i in items] == [GateDenied]
-    assert items[0].data is denied
+    assert items[0].data is None
 
 
 @pytest.mark.parametrize(
@@ -715,7 +715,7 @@ async def test_authorize_cancelled_gate_propagates_and_records_nothing():
     assert len(obs.flow.items) == 0
 
 
-async def test_authorize_denial_is_not_routed_dispatched_or_persisted():
+async def test_authorize_denial_is_routed_dispatched_and_persisted():
     obs = SessionObserver()
     db = _RecordingDb()
     subscriber_calls: list = []
@@ -729,14 +729,14 @@ async def test_authorize_denial_is_not_routed_dispatched_or_persisted():
 
     assert await obs.authorize(action) is False
 
-    # One gate call, on the action: a denial sent through emit() would be
-    # gated a second time, and this deny-all gate would then hide it from the
-    # route, the subscriber and the db below.
+    # The denial is published without re-evaluating the gate.
     assert gate_calls == [action]
     assert len(obs.by_type(GateDenied)) == 1
-    assert subscriber_calls == []
-    assert route_calls == []
-    assert db.rows == []
+    assert subscriber_calls == obs.by_type(GateDenied)
+    assert route_calls == [None]
+    assert len(db.rows) == 1
+    assert db.rows[0]["kind"] == "GateDenied"
+    assert "data" not in db.rows[0]["payload"]
 
 
 async def test_authorize_after_clear_gate_allows_again():
