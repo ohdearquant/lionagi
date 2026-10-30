@@ -948,6 +948,119 @@ async def test_completed_late_wrapper_is_observed_when_its_loop_closes(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_cancelled_late_wrapper_reraises_after_the_hook_settles():
+    import concurrent.futures
+
+    from lionagi.state.lifecycle import reconciler as reconciliation
+
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def hook():
+        started.set()
+        await finish.wait()
+        return DeliveryOutcome.SUCCESS
+
+    worker = reconciliation._Worker(
+        ("sqlite-test", "wrapper-cancel", str(uuid.uuid4())),
+        None,
+        asyncio.get_running_loop(),
+        concurrent.futures.Future(),
+        1,
+        None,
+    )
+    with reconciliation._workers_lock:
+        reconciliation._workers[worker.key] = worker
+    wrapper = asyncio.ensure_future(reconciliation._settle_late_awaitable(worker, hook()))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        wrapper.cancel()
+        await asyncio.sleep(0.05)
+        # The reservation is not settled while the hook is still running.
+        assert not wrapper.done()
+        finish.set()
+        await asyncio.wait({wrapper}, timeout=2)
+        assert wrapper.done()
+        # The caller's cancellation reaches it once the hook has finished.
+        assert wrapper.cancelled()
+        with reconciliation._workers_lock:
+            assert worker.late_cancelled
+            # A cancelled wrapper is still a failed delivery, never an ACK.
+            assert worker.late_settled == (True, DeliveryOutcome.FAILURE)
+    finally:
+        finish.set()
+        if not wrapper.done():
+            wrapper.cancel()
+        reconciliation._release_worker(worker)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_late_wrapper_counts_as_failed_delivery_for_the_finisher(monkeypatch):
+    import concurrent.futures
+
+    from lionagi.state.lifecycle import reconciler as reconciliation
+
+    loop = asyncio.new_event_loop()
+    results = []
+    completion: concurrent.futures.Future = concurrent.futures.Future()
+
+    async def hook():
+        return DeliveryOutcome.SUCCESS
+
+    completion.set_result(hook())
+    worker = reconciliation._Worker(
+        ("sqlite-test", "wrapper-cancel-finisher", str(uuid.uuid4())),
+        None,
+        loop,
+        completion,
+        1,
+        None,
+    )
+    with reconciliation._workers_lock:
+        reconciliation._workers[worker.key] = worker
+
+    async def cancelled_wrapper(item, awaitable):
+        awaitable.close()
+        with reconciliation._workers_lock:
+            item.late_cancelled = True
+            item.late_settled = (True, DeliveryOutcome.FAILURE)
+        raise asyncio.CancelledError
+
+    def record(item, result):
+        results.append(result)
+        reconciliation._release_worker(item)
+
+    monkeypatch.setattr(reconciliation, "_settle_late_awaitable", cancelled_wrapper)
+    monkeypatch.setattr(reconciliation, "_finish_late_result", record)
+
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    worker_thread = threading.Thread(
+        target=reconciliation._finish_late, args=(worker,), daemon=True
+    )
+    worker_thread.start()
+    try:
+
+        async def finished():
+            return not worker_thread.is_alive()
+
+        await _eventually(finished)
+        assert results == [DeliveryOutcome.FAILURE]
+        with reconciliation._workers_lock:
+            assert worker.key not in reconciliation._workers
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        worker_thread.join(timeout=2)
+        if not loop.is_closed():
+            loop.close()
+        reconciliation._release_worker(worker)
+
+
+@pytest.mark.asyncio
 async def test_foreign_task_completing_during_loop_close_keeps_completed_outcome(monkeypatch):
     import concurrent.futures
 

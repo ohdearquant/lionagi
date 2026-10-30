@@ -1019,10 +1019,13 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
     """Request cancellation on budget expiry, but wait for the actual operation.
 
     Wrapper cancellation is failure: the event remains owed and may be retried.
+    Once the delivery has settled, the cancellation is re-raised so the
+    cancelled caller still observes it.
     The final wait is bounded only by the hook itself; unobservable unfinished
     work follows the abandoned-worker rule.
     """
     task: asyncio.Future[Any] | None = None
+    caller_cancelled = False
     try:
         with _workers_lock:
             if worker.late_claimed or _workers.get(worker.key) is not worker:
@@ -1044,6 +1047,7 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
         # The wrapper may be cancelled while the delivery handles its own
         # cancellation asynchronously. Do not report settlement (and release
         # the reservation) until that delivery actually finishes.
+        caller_cancelled = True
         with _workers_lock:
             worker.late_cancelled = True
         while task is not None and not task.done():
@@ -1062,6 +1066,8 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
         raise
     with _workers_lock:
         worker.late_settled = (True, result)
+    if caller_cancelled:
+        raise asyncio.CancelledError
     return result
 
 
@@ -1129,6 +1135,11 @@ def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None
                     try:
                         result = pending.result(timeout=0.1)
                         break
+                    except concurrent.futures.CancelledError:
+                        # The wrapper was cancelled after the delivery settled:
+                        # a failed delivery, so the event stays owed.
+                        result = DeliveryOutcome.FAILURE
+                        break
                     except concurrent.futures.TimeoutError:
                         with _workers_lock:
                             if worker.late_claimed or _workers.get(worker.key) is not worker:
@@ -1137,7 +1148,10 @@ def _finish_late(worker: _Worker, settled_result: Any = _NO_LATE_RESULT) -> None
                             # Completion can race the wait timeout. Reading
                             # again preserves a successful result and still
                             # propagates a hook's own TimeoutError.
-                            result = pending.result()
+                            try:
+                                result = pending.result()
+                            except concurrent.futures.CancelledError:
+                                result = DeliveryOutcome.FAILURE
                             break
                         if loop.is_closed():
                             with _workers_lock:
