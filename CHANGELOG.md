@@ -296,9 +296,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - Recent Studio session pages on SQLite avoid scanning newer hidden engine
-  transcripts when a compatible optional index is available. Existing stores
-  without that index continue to use the previous listing path. Building the
-  index on an existing store holds the SQLite write lock until it completes.
+  transcripts when a compatible optional index is available. Opening an existing
+  store builds the index when its session-time index has the expected shape; a
+  store where it cannot be built keeps the previous listing path. The build holds
+  the SQLite write lock until it completes.
 
 - The email-in-header guard runs in linear time on long hyphenated text.
 
