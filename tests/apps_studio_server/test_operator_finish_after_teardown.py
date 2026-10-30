@@ -347,25 +347,31 @@ async def test_cancel_during_setup_failure_recovery_finishes_turn(tmp_path, monk
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     store = OperatorStore(path)
-    coordinator = OperatorCoordinator(store=store, engine_factory=MessageWritingEngine)
+
+    def unexpected_provider():
+        raise AssertionError("provider must not run after setup failure")
+
+    coordinator = OperatorCoordinator(store=store, engine_factory=unexpected_provider)
     entered, release = asyncio.Event(), asyncio.Event()
     real_finish = store.finish_turn
+    real_recovery = runs_mod.find_incomplete_session_for_run
     records = []
 
-    async def fail_setup(*_args, **_kwargs):
-        raise RuntimeError("injected canonical setup failure")
+    async def fail_branch(*_args, **_kwargs):
+        raise RuntimeError("injected setup failure after session commit")
 
     async def held_recovery(run_id):
         assert run_id.startswith("operator-")
         entered.set()
         await release.wait()
-        return None
+        return await real_recovery(run_id)
 
     async def record_finish(request_id, *args, **kwargs):
         records.append(request_id)
         return await real_finish(request_id, *args, **kwargs)
 
-    monkeypatch.setattr(runs_mod, "setup_agent_persist", fail_setup)
+    monkeypatch.setattr(StateDB, "create_branch", fail_branch)
+    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: {})
     monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", held_recovery)
     monkeypatch.setattr(store, "finish_turn", record_finish)
     await coordinator.startup()
@@ -379,22 +385,99 @@ async def test_cancel_during_setup_failure_recovery_finishes_turn(tmp_path, monk
         assert request_id is not None
         task = coordinator._tasks[request_id]
         assert (await coordinator.cancel(cid, request_id))["cancelRequested"] is True
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
         await asyncio.gather(task, return_exceptions=True)
         await asyncio.wait_for(submission, 5)
         frames = await store.list_frames(cid)
         done = _done_for(frames, request_id)
-        assert len(done) == 1 and done[0]["payload"]["outcome"] == "cancelled"
+        assert len(done) == 1 and done[0]["payload"]["outcome"] == "failed"
         errors = [
             frame["payload"]["error"]
             for frame in frames
             if frame["type"] == "error" and frame["requestId"] == request_id
         ]
-        assert len(errors) == 1 and errors[0]["code"] == "cancelled"
+        assert len(errors) == 1 and errors[0]["code"] == "model_failure"
+        assert "RuntimeError" in errors[0]["message"]
+        run_id = errors[0]["details"]["runId"]
+        assert errors[0]["details"]["href"] == f"/runs/{run_id}"
+        async with StateDB(path) as db:
+            assert (await db.get_session(run_id))["status"] == "failed"
         assert records.count(request_id) == 1
         assert (await store.get_conversation(cid))["activeRequestId"] is None
     finally:
         release.set()
         await asyncio.gather(submission, return_exceptions=True)
+        await asyncio.wait_for(coordinator.shutdown(), 10)
+
+
+@pytest.mark.asyncio
+async def test_setup_recovery_lookup_is_bounded(monkeypatch):
+    from lionagi.studio.operator import coordinator as coordinator_mod
+
+    async def never_returns(_run_id):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", never_returns)
+    monkeypatch.setattr(coordinator_mod, "_SETUP_RECOVERY_TIMEOUT_SECONDS", 0.05)
+    complete, session = await asyncio.wait_for(coordinator_mod._recover_setup_session("run"), 1)
+    assert not complete and session is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery_outcome", ["none", "timeout", "failure", "cancelled"])
+async def test_setup_recovery_distinguishes_no_row_from_unknown(
+    tmp_path, monkeypatch, recovery_outcome, caplog
+):
+    from lionagi.studio.operator import coordinator as coordinator_mod
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=MessageWritingEngine)
+
+    async def fail_setup(*_args, **_kwargs):
+        raise RuntimeError("original setup failure")
+
+    async def recover(_run_id):
+        if recovery_outcome == "timeout":
+            await asyncio.Event().wait()
+        if recovery_outcome == "failure":
+            raise ValueError("lookup failed")
+        if recovery_outcome == "cancelled":
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", fail_setup)
+    monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", recover)
+    monkeypatch.setattr(coordinator_mod, "_SETUP_RECOVERY_TIMEOUT_SECONDS", 0.05)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    try:
+        accepted = await asyncio.wait_for(
+            coordinator.submit(
+                cid, instruction="first", context=_CONTEXT, expected_last_sequence=0
+            ),
+            5,
+        )
+        frames = await _wait_done(store, cid)
+        done = _done_for(frames, accepted["requestId"])
+        assert len(done) == 1 and done[0]["payload"]["outcome"] == "failed"
+        (error,) = [frame["payload"]["error"] for frame in frames if frame["type"] == "error"]
+        assert error["code"] == "model_failure"
+        assert "RuntimeError" in error["message"]
+        if recovery_outcome == "none":
+            assert error["details"] == {"runId": None}
+            assert "no run was recorded" in error["message"]
+        else:
+            assert error["details"] == {}
+            assert "recovery did not complete" in error["message"]
+            assert "no run was recorded" not in error["message"]
+            assert "setup recovery" in caplog.text
+    finally:
         await asyncio.wait_for(coordinator.shutdown(), 10)
 
 

@@ -343,6 +343,9 @@
       "from .spec import AgentSpec, HooksMixin",
       "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
     ],
+    "lionagi/agent/_email_in_headers.py": [
+      "__all__ = (\n    \"ALLOWED_DOMAIN_RE\",\n    \"EMAIL_RE\",\n    \"HEADER_TOKEN_RE\",\n    \"SHORT_HEADER_FLAG_RE\",\n    \"find_leak\",\n    \"find_leak_with_allowed\",\n)"
+    ],
     "lionagi/agent/context_fold.py": [
       "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
     ],
@@ -353,7 +356,7 @@
       "__all__ = (\n    \"ControlUnavailableError\",\n    \"GateDeniedError\",\n    \"GateEvaluator\",\n    \"GateResult\",\n    \"adapt_legacy_hook\",\n    \"adapt_session_gate\",\n    \"run_gate_pass\",\n)"
     ],
     "lionagi/agent/hooks.py": [
-      "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
+      "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_email_in_headers\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
     ],
     "lionagi/agent/nudge.py": [
       "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
@@ -1682,6 +1685,10 @@
     "lionagi/adapters/toml_.py": [
       "TomlAdapter"
     ],
+    "lionagi/agent/_email_in_headers.py": [
+      "find_leak",
+      "find_leak_with_allowed"
+    ],
     "lionagi/agent/context_fold.py": [
       "ContextFold",
       "estimate_next_request_tokens",
@@ -1698,6 +1705,7 @@
     "lionagi/agent/hooks.py": [
       "auto_format_python",
       "guard_destructive",
+      "guard_email_in_headers",
       "guard_paths",
       "log_tool_call",
       "log_tool_use"

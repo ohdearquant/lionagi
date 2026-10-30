@@ -114,6 +114,11 @@
       "owner": "agent",
       "target_owner": "lionhub (destination not yet recorded)"
     },
+    "lionagi.agent._email_in_headers": {
+      "layer": "adapter",
+      "owner": "agent",
+      "target_owner": "lionhub (destination not yet recorded)"
+    },
     "lionagi.agent.context_fold": {
       "layer": "adapter",
       "owner": "agent",
