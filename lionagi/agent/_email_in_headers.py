@@ -17,6 +17,7 @@ __all__ = (
     "ALLOWED_DOMAIN_RE",
     "EMAIL_RE",
     "HEADER_TOKEN_RE",
+    "X_HEADER_RE",
     "SHORT_HEADER_FLAG_RE",
     "find_leak",
     "find_leak_with_allowed",
@@ -34,13 +35,15 @@ HEADER_TOKEN_RE = re.compile(
     r"user[-_ ]?agent"              # User-Agent: / "User-Agent" / --user-agent / user_agent=
     r"|--header[ =]"
     r"|\bheaders?\s*[=:]"           # headers={...}, headers: {...}, header=
-    r"|\bX-[A-Za-z0-9-]+\s*:"       # X-Contact: ...
     r"|setRequestHeader\s*\("
     r"|add_header\s*\("
     r"|\bheaders?\s*\[[^\]\n]{1,80}\]\s*="  # headers["From"] = ..., req.headers['User-Agent'] =
     r")",
     re.I,
 )
+
+# Start once per name run; each prefix segment has one way to be consumed.
+X_HEADER_RE = re.compile(r"(?<![A-Za-z0-9-])(?:(?!X-)[A-Za-z0-9]+-|-)*X-[A-Za-z0-9-]+\s*:", re.I)
 
 SHORT_HEADER_FLAG_RE = re.compile(
     r"(?<![A-Za-z0-9-])-[a-zA-Z]*[AHU](?:[ =]|(?=[\"']))"  # curl -A '...', -H 'Name: value', -sH ..., wget -U ...; a quote is left for _window
@@ -50,7 +53,11 @@ SHORT_HEADER_FLAG_RE = re.compile(
 
 def _header_tokens(text: str):
     """Every header-shaped token in text, in document order (case-insensitive names, case-sensitive short flags)."""
-    toks = list(HEADER_TOKEN_RE.finditer(text)) + list(SHORT_HEADER_FLAG_RE.finditer(text))
+    toks = (
+        list(HEADER_TOKEN_RE.finditer(text))
+        + list(X_HEADER_RE.finditer(text))
+        + list(SHORT_HEADER_FLAG_RE.finditer(text))
+    )
     toks.sort(key=lambda m: m.start())
     return toks
 
