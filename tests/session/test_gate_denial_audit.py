@@ -132,7 +132,7 @@ async def test_failing_observer_cannot_drop_denial_audit(failure, audit_store):
         raise RuntimeError("observer failed")
 
     if failure == "subscriber":
-        # Register before the sink; old emit order runs this first.
+        # Registered before the persistence handler, so dispatch reaches it first.
         observer.observe(GateDenied, handler=broken)
     else:
         observer.route(broken, into="audit")
@@ -141,6 +141,27 @@ async def test_failing_observer_cannot_drop_denial_audit(failure, audit_store):
     assert await observer.authorize(ToolInvocation(function="tool", arguments={})) is False
     assert [kind for kind, _payload in _rows(path)] == ["GateDenied"]
     assert len(observer.by_type(GateDenied)) == 1
+
+
+async def test_denial_remains_in_flow_when_bound_persistence_fails():
+    attempts = []
+
+    class FailingStore:
+        async def insert_session_signal(self, **row):
+            attempts.append(row)
+            raise RuntimeError("write failed")
+
+    observer = SessionObserver()
+    observer.bind_db_persistence("audit-session", db=FailingStore())
+    observer.gate(lambda _action: False)
+
+    assert await observer.authorize(object()) is False
+    assert len(attempts) == 1
+    assert attempts[0]["kind"] == "GateDenied"
+    events = observer.by_type(GateDenied)
+    assert len(events) == 1
+    assert events[0].data is None
+    assert observer.persist_dropped == 1
 
 
 async def test_denial_is_persisted_once_per_binding(audit_store):
