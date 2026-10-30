@@ -103,12 +103,93 @@ def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
-    body = _span("lionagi/session/observer.py", 365, 376)
+    # This checks the current method's behavior; the record's cited line range
+    # must be checked separately when the method moves.
+    relpath = "lionagi/session/observer.py"
+    source = (ROOT / relpath).read_text(encoding="utf-8")
+    emit = _method(_class(ast.parse(source), "SessionObserver"), "emit")
+    body = ast.get_source_segment(source, emit)
+    assert body is not None
     assert "allowed = True" in body
     assert "except Exception" in body
     assert "allowed = False" in body
     assert "if not allowed:" in body
     assert "return []" in body
+
+    # Check the gate and its refusal branch in emit itself, not a helper or
+    # adjacent method that happens to contain the same strings.
+    gate = next(
+        stmt
+        for stmt in emit.body
+        if isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.Compare)
+        and isinstance(stmt.test.left, ast.Attribute)
+        and isinstance(stmt.test.left.value, ast.Name)
+        and stmt.test.left.value.id == "self"
+        and stmt.test.left.attr == "_gate"
+        and len(stmt.test.ops) == 1
+        and isinstance(stmt.test.ops[0], ast.IsNot)
+        and len(stmt.test.comparators) == 1
+        and isinstance(stmt.test.comparators[0], ast.Constant)
+        and stmt.test.comparators[0].value is None
+    )
+    gate_try = next(stmt for stmt in gate.body if isinstance(stmt, ast.Try))
+    decision = next(
+        stmt.value
+        for stmt in gate_try.body
+        if isinstance(stmt, ast.Assign)
+        and len(stmt.targets) == 1
+        and isinstance(stmt.targets[0], ast.Name)
+        and stmt.targets[0].id == "allowed"
+    )
+    assert isinstance(decision, ast.Attribute) and decision.attr == "allowed"
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and node.func.attr == "_gate"
+        for node in ast.walk(decision)
+    )
+    assert any(
+        isinstance(handler.type, ast.Name)
+        and handler.type.id == "Exception"
+        and any(
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id == "allowed"
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is False
+            for stmt in handler.body
+        )
+        for handler in gate_try.handlers
+    )
+    refused = next(
+        stmt
+        for stmt in emit.body
+        if isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.UnaryOp)
+        and isinstance(stmt.test.op, ast.Not)
+        and isinstance(stmt.test.operand, ast.Name)
+        and stmt.test.operand.id == "allowed"
+    )
+    assert any(
+        isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.List) and not stmt.value.elts
+        for stmt in refused.body
+    )
+    dispatch = next(
+        stmt
+        for stmt in emit.body
+        if isinstance(stmt, ast.Return)
+        and isinstance(stmt.value, ast.Await)
+        and isinstance(stmt.value.value, ast.Call)
+        and isinstance(stmt.value.value.func, ast.Attribute)
+        and isinstance(stmt.value.value.func.value, ast.Name)
+        and stmt.value.value.func.value.id == "self"
+        and stmt.value.value.func.attr == "_dispatch"
+    )
+    assert emit.body.index(gate) < emit.body.index(refused) < emit.body.index(dispatch)
 
 
 REVIEW = "lionhub/src/lionhub/orchestration/engines/review.py"
