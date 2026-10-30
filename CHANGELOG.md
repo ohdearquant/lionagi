@@ -258,6 +258,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- ReAct no longer sends an internal display setting in API requests.
+
 - Restored API models retain their registered request schema when a snapshot omits it.
 
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
