@@ -344,7 +344,7 @@
       "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
     ],
     "lionagi/agent/_email_in_headers.py": [
-      "__all__ = (\n    \"ALLOWED_DOMAIN_RE\",\n    \"EMAIL_RE\",\n    \"HEADER_TOKEN_RE\",\n    \"SHORT_HEADER_FLAG_RE\",\n    \"find_leak\",\n    \"find_leak_with_allowed\",\n)"
+      "__all__ = (\n    \"ALLOWED_DOMAIN_RE\",\n    \"EMAIL_RE\",\n    \"HEADER_TOKEN_RE\",\n    \"X_HEADER_RE\",\n    \"SHORT_HEADER_FLAG_RE\",\n    \"find_leak\",\n    \"find_leak_with_allowed\",\n)"
     ],
     "lionagi/agent/context_fold.py": [
       "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
