@@ -109,6 +109,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- A session tool gate sees arguments bound to a registered callable's
+  signature with defaults applied when inspection and binding succeed; otherwise
+  it sees the supplied arguments. Supplied arguments passed to the tool are
+  structurally copied: exact `dict`, `list` and `tuple` values are copied,
+  while other objects are shared by reference. Callable defaults remain the
+  callable's own values, and later hooks can still change arguments. Arguments
+  too deeply nested to copy are denied without running the tool.
+
+- A `SessionObserver` gate must return a `bool` or `GateResult`. Other values,
+  including `1` and `"yes"`, deny routing and subscriber delivery while the
+  event is still recorded.
+
 - Merged pull-request scans no longer send conditional requests: a first-page
   cache hit cannot establish that later pages are unchanged.
 
