@@ -64,7 +64,7 @@ turn input is limited to 1,048,576 characters, and died at turn start.
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
 (`lionagi/providers/_cli_subprocess.py:1832-1855`), and Codex carries the system text as a separate
-argument (`lionagi/providers/openai/codex.py:1931-1937`). A provider that resumes a session it holds
+argument (`lionagi/providers/openai/codex.py:1930-1936`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 
 ## Decision
@@ -111,7 +111,7 @@ be measured, and under a ceiling are refused with that reason, never sent unmeas
 provider holds the history remotely, and whether a count it reports is for one request, is that
 provider adapter's statement, not an inference from a `resume` argument. The Codex adapter
 renders branch history for every turn and does not resume a Codex thread
-(`lionagi/providers/openai/codex.py:2825-2830`). Today no resuming adapter makes
+(`lionagi/providers/openai/codex.py:2824-2829`). Today no resuming adapter makes
 that statement: the Claude Code adapter yields only its terminal `result` usage, a total
 whenever the session ran more than one request. The run attaches that metadata to an
 `AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:544-563`),

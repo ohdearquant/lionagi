@@ -147,7 +147,7 @@ and one implementation.
   refused as above. A per-call Claude `mcp_config` or `mcp_servers` can replace
   that call's configured set (`lionagi/providers/_agentic_handlers.py:162`);
   `mcp_config` takes precedence over the server map
-  (`lionagi/providers/anthropic/claude_code.py:624-629`). When a Claude
+  (`lionagi/providers/anthropic/claude_code.py:623-628`). When a Claude
   `mcp_config` is dropped, a value is logged as the path the CLI would read if
   it contains no control, format, surrogate, line or paragraph separator, or
   non-space whitespace characters, does not parse as JSON, and does not start

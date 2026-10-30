@@ -16,6 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.cli._import_guard import (
+    COMMAND_IMPORT_PROBES,
+    command_module_imports,
+    resolved_imports,
+    source_with_line,
+)
+
 # Fixtures
 
 
@@ -72,13 +79,14 @@ def test_add_engine_subparser_registers_engine_command():
 
 def test_all_engine_kinds_are_valid():
     """Every expected kind is accepted by the parser."""
-    from lionagi.cli.engine import _KIND_META, add_engine_subparser
+    from lionagi.cli._engine_definitions import KIND_META
+    from lionagi.cli.engine import add_engine_subparser
 
     top = argparse.ArgumentParser(prog="li")
     sub = top.add_subparsers(dest="command")
     add_engine_subparser(sub)
 
-    for kind in _KIND_META:
+    for kind in KIND_META:
         args = top.parse_args(["engine", "run", kind, f"input for {kind}"])
         assert args.kind == kind, f"kind={kind} was not parsed correctly"
 
@@ -159,7 +167,7 @@ async def test_successful_engine_run_returns_0(monkeypatch, capsys):
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
-    # Patch _import_engine_class to return a mock engine class.
+    # Patch import_engine_class to return a mock engine class.
     async def _mock_run(spec, *, on_event=None, **kwargs):
         if on_event:
             on_event({"type": "thinking", "detail": "deep dive"})
@@ -169,7 +177,7 @@ async def test_successful_engine_run_returns_0(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     args = _build_args(kind="research", spec="What is GQA?", no_persist=True)
     result = await engine_mod._do_engine_run(args)
@@ -196,7 +204,7 @@ async def test_engine_failure_returns_1(monkeypatch):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run_fail
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     args = _build_args(kind="planning", spec="Build something", no_persist=True)
     result = await engine_mod._do_engine_run(args)
@@ -233,7 +241,7 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     args = _build_args(
         kind="coding",
@@ -282,7 +290,7 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     update_calls: list[dict] = []
 
@@ -343,7 +351,7 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     update_calls: list[dict] = []
 
@@ -402,7 +410,7 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     update_calls: list[dict] = []
     created_sessions: list[dict] = []
@@ -466,7 +474,7 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run_cancel
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     insert_calls: list[dict] = []
     update_calls: list[dict] = []
@@ -525,7 +533,7 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run_interrupt
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     update_calls: list[dict] = []
     close_count = [0]
@@ -581,7 +589,7 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     insert_calls: list[dict] = []
     update_calls: list[dict] = []
@@ -636,7 +644,7 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda m, n: MockEngineClass)
 
     db_opened = []
 
@@ -658,7 +666,7 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
 
 
 async def test_import_failure_closes_db(monkeypatch):
-    """When _import_engine_class raises, the open DB handle must still be closed."""
+    """When import_engine_class raises, the open DB handle must still be closed."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -670,7 +678,7 @@ async def test_import_failure_closes_db(monkeypatch):
     def _failing_import(module, name):
         raise ImportError(f"cannot import {name} from {module}")
 
-    monkeypatch.setattr(engine_mod, "_import_engine_class", _failing_import)
+    monkeypatch.setattr(engine_mod, "import_engine_class", _failing_import)
 
     close_count = [0]
     update_calls: list[dict] = []
@@ -894,7 +902,7 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
     mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     monkeypatch.setattr(
-        engine_mod, "_import_engine_class", lambda m, n: MagicMock(return_value=mock_engine)
+        engine_mod, "import_engine_class", lambda m, n: MagicMock(return_value=mock_engine)
     )
 
     args = _build_args(kind="research", spec="GQA", no_persist=False)
@@ -991,31 +999,31 @@ def engine_import_package(tmp_path, monkeypatch):
 
 
 def test_engine_class_loader_keeps_class_identity_and_attribute_boundary(engine_import_package):
-    from lionagi.cli.engine import _import_engine_class
+    from lionagi.cli._engine_definitions import import_engine_class
 
     package, _ = engine_import_package
     (package / "engine.py").write_text("class SelectedEngine: pass\n")
-    selected = _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
+    selected = import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
     assert selected is sys.modules["_engine_loader_fixture.engine"].SelectedEngine
-    assert _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine") is selected
+    assert import_engine_class("_engine_loader_fixture.engine", "SelectedEngine") is selected
 
     marker = package / "child-imported"
     (package / "Unexported.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
     )
     with pytest.raises(AttributeError, match="Unexported"):
-        _import_engine_class("_engine_loader_fixture", "Unexported")
+        import_engine_class("_engine_loader_fixture", "Unexported")
     assert not marker.exists()
     assert "_engine_loader_fixture.Unexported" not in sys.modules
 
 
 def test_engine_class_loader_keeps_plain_import_error_cause(engine_import_package):
-    from lionagi.cli.engine import _import_engine_class
+    from lionagi.cli._engine_definitions import import_engine_class
 
     package, errors = engine_import_package
     (package / "engine.py").write_text("from . import broken\nraise broken\n")
     with pytest.raises(ImportError) as caught:
-        _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
+        import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
     assert type(caught.value) is ImportError
     assert str(caught.value) == (
         "Failed to import module _engine_loader_fixture.engine: engine module broke"
@@ -1029,12 +1037,12 @@ def test_engine_class_loader_keeps_plain_import_error_cause(engine_import_packag
 
 
 def test_engine_class_loader_preserves_original_missing_module(engine_import_package):
-    from lionagi.cli.engine import _import_engine_class
+    from lionagi.cli._engine_definitions import import_engine_class
 
     package, errors = engine_import_package
     (package / "engine.py").write_text("from . import missing\nraise missing\n")
     with pytest.raises(ModuleNotFoundError) as caught:
-        _import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
+        import_engine_class("_engine_loader_fixture.engine", "SelectedEngine")
     assert caught.value is errors.missing
     assert caught.value.name == "engine_optional"
     assert caught.value.path == "dependency/engine.py"
@@ -1051,7 +1059,7 @@ async def test_actual_engine_import_failure_is_logged_stored_and_closed(
     package, _ = engine_import_package
     (package / "engine.py").write_text(f"from . import {failure}\nraise {failure}\n")
     monkeypatch.setitem(
-        engine_module._KIND_META,
+        engine_module.KIND_META,
         "research",
         {"cls_path": ("_engine_loader_fixture.engine", "SelectedEngine"), "pos_arg": "topic"},
     )
@@ -1095,3 +1103,32 @@ async def test_actual_engine_import_failure_is_logged_stored_and_closed(
     assert len(outcomes) == 1
     assert outcomes[0]["reason_code"] == "import_failure"
     assert closed == [True]
+
+
+def test_engine_definitions_live_in_a_private_module_without_command_imports() -> None:
+    """The engine kind registry and class loader live in `_engine_definitions`,
+    which sits under the engine command and Studio, so it must not import any
+    command module."""
+    definitions = importlib.import_module("lionagi.cli._engine_definitions")
+    engine_module = importlib.import_module("lionagi.cli.engine")
+
+    assert isinstance(definitions.KIND_META, dict)
+    assert callable(definitions.import_engine_class)
+    assert not hasattr(engine_module, "_KIND_META")
+    assert not hasattr(engine_module, "_import_engine_class")
+
+    assert command_module_imports(resolved_imports(definitions.__file__, "lionagi.cli")) == set()
+
+
+@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+def test_engine_definitions_guard_rejects_a_command_import(
+    probe: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The layering guard fails when `_engine_definitions` imports a command module, whether the
+    import is absolute, relative or by name."""
+    definitions = importlib.import_module("lionagi.cli._engine_definitions")
+
+    patched = source_with_line(definitions.__file__, probe, tmp_path)
+    monkeypatch.setattr(definitions, "__file__", str(patched))
+    with pytest.raises(AssertionError):
+        test_engine_definitions_live_in_a_private_module_without_command_imports()
