@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: Phase 0 inventory and report-only checker implemented
 - **Area**: governance
 - **Date**: 2026-08-16
 - **Relations**: depends on ADR-0119 (deterministic declaration and configuration substrate);
