@@ -292,6 +292,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The email-in-header guard runs in linear time on long hyphenated text.
+
 - A failed or cancelled Operator setup now makes a bounded attempt to close a
   session created before admission and logs when cleanup did not complete.
   Cancellation during cleanup still cancels the run unless the store refused a
