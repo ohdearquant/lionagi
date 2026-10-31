@@ -952,3 +952,76 @@ async def test_factory_model_roundtrip_checks_project_layer_added_later(fixture)
     payload, _ = restored.endpoint.create_payload({"prompt": "x", "repo": project, "env": env})
     await _run(payload["request"])
     assert "mcp_servers.late.enabled=false" in _config_args(calls[-1])
+
+
+@pytest.mark.asyncio
+async def test_factory_named_mcp_config_file_set_is_exclusive_without_spec_selection(fixture):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.spec import AgentSpec
+
+    project, env, calls = fixture
+    spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))
+    assert spec.mcp_servers is None
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        resolved_mcp_servers={"selected": {"command": "selected-mcp"}},
+        resolved_mcp_explicit=True,
+        log_config={"auto_save_on_exit": False},
+    )
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert kwargs["exclusive_mcp_names"] == ["selected"]
+    payload, _ = branch.chat_model.endpoint.create_payload(
+        {"prompt": "x", "repo": project, "env": env}
+    )
+    await _run(payload["request"])
+    args = _config_args(calls[-1])
+    assert "mcp_servers.ambient.enabled=false" in args
+    assert 'mcp_servers.selected.command="selected-mcp"' in args
+
+
+@pytest.mark.asyncio
+async def test_factory_ambient_mcp_set_stays_non_exclusive(fixture):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.spec import AgentSpec
+
+    project, env, calls = fixture
+    spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))
+    assert spec.mcp_servers is None
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        resolved_mcp_servers={"selected": {"command": "selected-mcp"}},
+        resolved_mcp_explicit=False,
+        log_config={"auto_save_on_exit": False},
+    )
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert not kwargs.get("exclusive_mcp_names")
+    payload, _ = branch.chat_model.endpoint.create_payload(
+        {"prompt": "x", "repo": project, "env": env}
+    )
+    await _run(payload["request"])
+    args = _config_args(calls[-1])
+    assert "mcp_servers.ambient.enabled=false" not in args
+    assert 'mcp_servers.selected.command="selected-mcp"' in args
+
+
+@pytest.mark.asyncio
+async def test_factory_empty_named_mcp_config_set_ignores_user_config(fixture):
+    from lionagi.agent.factory import create_agent
+    from lionagi.agent.spec import AgentSpec
+
+    project, env, calls = fixture
+    spec = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(project))
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        resolved_mcp_servers={},
+        resolved_mcp_explicit=True,
+        log_config={"auto_save_on_exit": False},
+    )
+    payload, _ = branch.chat_model.endpoint.create_payload(
+        {"prompt": "x", "repo": project, "env": env}
+    )
+    await _run(payload["request"])
+    assert "--ignore-user-config" in calls[-1][0]

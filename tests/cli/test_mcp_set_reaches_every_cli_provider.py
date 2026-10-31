@@ -33,6 +33,8 @@ from lionagi.agent.factory import apply_forwarded_mcp_servers
 CODEX_SPEC = "codex/gpt-5.3-codex"
 
 SERVERS = {"khive": {"command": "kkernel", "args": ["serve"]}}
+# The `-c` value a codex launch renders for the one server in SERVERS.
+SERVERS_COMMAND_ARG = next(f'mcp_servers.{n}.command="{s["command"]}"' for n, s in SERVERS.items())
 SECRET = "sk-live-do-not-put-me-on-argv"
 SECRET_SERVERS = {"khive": {"command": "kkernel", "env": {"KHIVE_API_KEY": SECRET}}}
 
@@ -54,7 +56,8 @@ def codex_launch(monkeypatch, tmp_path):
 
     from lionagi.providers.openai import _codex_project_layers, codex
 
-    async def launch(request):
+    async def launch(request, *, argv: bool = False):
+        """Render the launch command; the `-c` values, or the whole argv when `argv`."""
         calls = []
 
         def forbid(*_args, **_kwargs):
@@ -87,6 +90,8 @@ def codex_launch(monkeypatch, tmp_path):
             assert [item async for item in codex._ndjson_from_cli(request)] == []
         assert len(calls) == 1
         args = calls[0]
+        if argv:
+            return args
         return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-c"]
 
     return launch
@@ -887,6 +892,91 @@ def test_plain_leg_with_no_set_and_no_declaration_is_left_alone(codex_home):
     assert model == "codex/gpt-5.3-codex"
 
 
+def _wire_plain_leg_stubs(monkeypatch, tmp_path: Path) -> dict:
+    """Stub every external I/O a plain `_run_agent` does and record the keyword
+    arguments the leg hands `build_chat_model`."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.manager import iModelManager
+
+    handed: dict = {}
+
+    def fake_build(provider, model, *args, **kwargs):
+        handed.update(kwargs)
+        return f"{provider}/{model}"
+
+    async def fake_operate(self, instruction=None, **kw):
+        return "done"
+
+    async def fake_setup(*a, **kw):
+        return None
+
+    async def fake_teardown(ctx, **kw):
+        return kw.get("status", "completed")
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", fake_build)
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+        ),
+    )
+    return handed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec", ["claude_code/sonnet", CODEX_SPEC])
+async def test_plain_leg_with_a_named_config_file_is_the_whole_set(monkeypatch, tmp_path, spec):
+    """`--mcp-config FILE` names the set the leg runs with, so it is exclusive:
+    servers outside it are not left to load beside it."""
+    import lionagi.cli.agent as agent_mod
+
+    handed = _wire_plain_leg_stubs(monkeypatch, tmp_path)
+
+    await agent_mod._run_agent(spec, "do the thing", mcp_config=_mcp_config_file(tmp_path, SERVERS))
+
+    assert handed["mcp_servers"] == SERVERS
+    assert handed["mcp_exclusive"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec", ["claude_code/sonnet", CODEX_SPEC])
+async def test_plain_leg_with_a_found_config_file_stays_additive(monkeypatch, tmp_path, spec):
+    """A set found by the directory search is not one the caller named: the CLI
+    keeps its own servers beside it."""
+    import lionagi.cli.agent as agent_mod
+
+    project = tmp_path / "project"
+    project.mkdir()
+    _mcp_config_file(project, SERVERS)
+    monkeypatch.chdir(project)
+    handed = _wire_plain_leg_stubs(monkeypatch, tmp_path)
+
+    await agent_mod._run_agent(spec, "do the thing")
+
+    assert handed["mcp_servers"] == SERVERS
+    assert handed["mcp_exclusive"] is False
+
+
 # Site 2 — the resumed leg.
 
 
@@ -978,9 +1068,12 @@ async def test_resumed_codex_leg_gets_the_set_the_resume_command_resolved(
 
 
 @pytest.mark.asyncio
-async def test_resumed_leg_request_carries_the_codex_overrides(monkeypatch, tmp_path, codex_home):
+async def test_resumed_leg_request_carries_the_codex_overrides(
+    monkeypatch, tmp_path, codex_home, codex_launch
+):
     """Read the built request, not the report: the overrides are what the child
-    is spawned with."""
+    is spawned with. A resume that names a file is exclusive, so the command is
+    rendered by the endpoint's launch path, which is where that set is checked."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
 
@@ -991,7 +1084,8 @@ async def test_resumed_leg_request_carries_the_codex_overrides(monkeypatch, tmp_
 
     async def capture(self, instruction=None, **kw):
         seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
-        seen["args"] = await _cmd_args(self.chat_model)
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        seen["config"] = await codex_launch(event.payload["request"])
         return "done"
 
     monkeypatch.setattr(Branch, "operate", capture)
@@ -1006,13 +1100,44 @@ async def test_resumed_leg_request_carries_the_codex_overrides(monkeypatch, tmp_
         "mcp_servers.khive.command": "kkernel",
         "mcp_servers.khive.args": ["serve"],
     }
-    assert "-c" in seen["args"]
-    assert 'mcp_servers.khive.command="kkernel"' in seen["args"]
+    assert seen["config"]
+    assert SERVERS_COMMAND_ARG in seen["config"]
+
+
+@pytest.mark.asyncio
+async def test_resume_naming_a_file_disables_the_codex_ambient_servers(
+    monkeypatch, tmp_path, codex_home, codex_launch
+):
+    """The set a resume names is the whole set: a server only codex's own config
+    declares is turned off for the resumed child."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "codex", "gpt-5.3-codex")
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        seen["config"] = await codex_launch(event.payload["request"])
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(
+        None,
+        "follow up",
+        resume=branch_id,
+        mcp_config=_mcp_config_file(tmp_path, SERVERS),
+    )
+
+    assert SERVERS_COMMAND_ARG in seen["config"]
+    assert "mcp_servers.ambient.enabled=false" in seen["config"]
 
 
 @pytest.mark.asyncio
 async def test_resumed_leg_keeps_codex_secret_fields_off_the_command_line(
-    monkeypatch, tmp_path, codex_home
+    monkeypatch, tmp_path, codex_home, codex_launch
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
@@ -1024,7 +1149,8 @@ async def test_resumed_leg_keeps_codex_secret_fields_off_the_command_line(
 
     async def capture(self, instruction=None, **kw):
         seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
-        seen["args"] = await _cmd_args(self.chat_model)
+        event = await self.chat_model.create_event(prompt="hi", repo=tmp_path)
+        seen["args"] = await codex_launch(event.payload["request"], argv=True)
         return "done"
 
     monkeypatch.setattr(Branch, "operate", capture)
@@ -1119,6 +1245,77 @@ async def test_resumed_claude_leg_with_no_mcp_config_is_strict_and_empty(monkeyp
 
     assert seen["kwargs"]["mcp_servers"] == {}
     assert seen["kwargs"]["strict_mcp_config"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named_by", ["flag", "launch"])
+@pytest.mark.parametrize("provider", ["claude_code", "codex"])
+async def test_resumed_leg_with_a_named_config_file_is_the_whole_set(
+    monkeypatch, tmp_path, codex_home, provider, named_by
+):
+    """A config file named on the resume, or recorded as the one the branch was
+    launched with, is the leg's whole set, as it is for a new leg."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({})
+    model = "sonnet" if provider == "claude_code" else "gpt-5.3-codex"
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, provider, model)
+    config = _mcp_config_file(tmp_path, SERVERS)
+    kwargs = {}
+    if named_by == "flag":
+        kwargs["mcp_config"] = config
+    else:
+        _record_launch(
+            tmp_path,
+            branch_id,
+            {"mcp_config": config, "no_mcp_config": False, "launch_dir": str(tmp_path)},
+        )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id, **kwargs)
+
+    if provider == "claude_code":
+        assert seen["kwargs"]["mcp_servers"] == SERVERS
+        assert seen["kwargs"]["strict_mcp_config"] is True
+    else:
+        _assert_factory_selection(seen["kwargs"], list(SERVERS))
+
+
+@pytest.mark.asyncio
+async def test_resumed_leg_with_a_found_config_file_stays_additive(monkeypatch, tmp_path):
+    """A set found in the launch directory is not one the caller named, so the
+    resumed leg does not make it exclusive."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    launched = tmp_path / "launched"
+    launched.mkdir()
+    _mcp_config_file(launched, SERVERS)
+    branch_id = _wire_resume_stubs(monkeypatch, tmp_path, "claude_code", "sonnet")
+    _record_launch(
+        tmp_path,
+        branch_id,
+        {"mcp_config": None, "no_mcp_config": False, "launch_dir": str(launched)},
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(None, "follow up", resume=branch_id)
+
+    assert seen["kwargs"]["mcp_servers"] == SERVERS
+    assert "strict_mcp_config" not in seen["kwargs"]
 
 
 @pytest.mark.asyncio

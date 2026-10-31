@@ -276,10 +276,11 @@ def build_chat_model(
 
         # Whether/how this provider accepts a server set (e.g. codex via config
         # overrides) is decided by apply_forwarded_mcp_servers, not here. An
-        # empty set means the caller states the whole set; non-empty adds to
-        # whatever the provider finds for itself. `mcp_exclusive` says the
-        # caller's set is the whole set even when it is null: `--no-mcp-config`
-        # arrives as the same null as a search that found nothing.
+        # empty set means the caller states the whole set; a non-empty set adds
+        # to whatever the provider finds for itself. `mcp_exclusive` says the
+        # caller's set is the whole set: a config file named with `--mcp-config`,
+        # or `--no-mcp-config`, which arrives as the same null as a search that
+        # found nothing.
         apply_forwarded_mcp_servers(
             extra,
             mcp_servers,

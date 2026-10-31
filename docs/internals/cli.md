@@ -128,8 +128,10 @@ from the record, searching from the launch directory, so the directory the resum
 not decide what is found. A flag given on the resume is used for that leg instead of the record.
 Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
 codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
-them: a non-empty set is handed to a resumed leg as it is to a new one, without
-`--strict-mcp-config`. A recorded config is read from the launch directory when its path is
+them. The set is handed to a resumed leg as it is to a new one: a set named by a config file,
+on the resume or in the record, is the whole set (Claude gets `--strict-mcp-config`, and codex
+is given only those servers), while a set found by searching the launch directory adds to the
+servers the provider finds for itself. A recorded config is read from the launch directory when its path is
 relative; one that is missing or can no longer be read refuses the resume, naming that config
 and the flags to resume with instead. A branch created before the choice was recorded resolves
 nothing new, and its request keeps the servers its earlier run was handed.
