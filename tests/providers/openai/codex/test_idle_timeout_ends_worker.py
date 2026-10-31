@@ -22,8 +22,8 @@ import sys
 import psutil
 import pytest
 
+from lionagi._provider_errors import WorkerLivenessError
 from lionagi.operations.run.run import RunParam, run
-from lionagi.providers._provider_errors import WorkerLivenessError
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 

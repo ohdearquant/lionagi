@@ -1236,7 +1236,7 @@ async def test_run_liveness_watchdog_raises_after_exhausting_retries():
     """A worker that never produces a first chunk is retried once, then
     fails loud with WorkerLivenessError — the operation must be able to
     transition to FAILED instead of hanging forever."""
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls)
@@ -1274,7 +1274,7 @@ async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
     in leaves every log line exactly as unattributed as before, and that
     failure looks identical to a working one from the helper's own tests.
     """
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     class NeverYields:
         def __aiter__(self):
@@ -1408,7 +1408,7 @@ async def test_run_liveness_watchdog_disabled_by_zero():
 async def test_run_liveness_watchdog_uses_configured_default_when_absent(monkeypatch):
     """When the caller omits liveness_timeout, run() falls back to LIONAGI_WORKER_LIVENESS_TIMEOUT (monkeypatched small here) for an endpoint that declares streams_first_output_early."""
     import lionagi.config as config_module
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls)
@@ -1500,7 +1500,7 @@ async def test_run_liveness_watchdog_default_path_skips_buffered_endpoint(monkey
 
 async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpoint():
     """An explicitly-passed liveness_timeout is always honored, even for a buffered endpoint -- the caller opted in deliberately, so the watchdog still retries then raises WorkerLivenessError on a worker that never produces output."""
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls, streams_first_output_early=False)
@@ -1517,7 +1517,7 @@ async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpo
 async def test_run_idle_watchdog_fails_after_partial_output_without_retry(monkeypatch):
     """A worker that emits once then stalls fails distinctly and is not rerun."""
     import lionagi.config as config_module
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list[dict] = []
     model = _make_scheduled_cli_model(
@@ -1586,7 +1586,7 @@ async def test_run_idle_watchdog_resets_after_every_chunk():
 
 async def test_run_idle_watchdog_yields_to_tighter_overall_deadline():
     """The caller's total-stream budget retains ownership when it expires first."""
-    from lionagi.providers._provider_errors import WorkerLivenessError
+    from lionagi._provider_errors import WorkerLivenessError
 
     create_event_calls: list[dict] = []
     model = _make_scheduled_cli_model(

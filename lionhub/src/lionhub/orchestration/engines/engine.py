@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi._errors import CLIInputRefusedError, ConfigurationError, InputTokenCapError
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import _AgentSettingError
 from lionagi.ln import short_id
@@ -31,7 +32,6 @@ from lionagi.ln.concurrency._compat import (
 )
 from lionagi.ln.types import RoleFilter, TypeFilter
 from lionagi.protocols._concepts import Observable
-from lionagi.providers._provider_errors import NestedAgentRefusedError
 from lionagi.session.observer import SessionObserver
 from lionagi.session.session import Session
 from lionagi.session.signal import Signal

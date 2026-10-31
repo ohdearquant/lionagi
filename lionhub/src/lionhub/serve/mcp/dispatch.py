@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
-from lionagi.providers._provider_errors import NestedAgentRefusedError
 
 from . import config, jobs, projection, roster
 from .verbs import (

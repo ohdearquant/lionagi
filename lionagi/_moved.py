@@ -35,7 +35,7 @@ _LIONAGI_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class Moved(NamedTuple):
-    """One moved package: ``old`` and everything below it now lives under ``new``."""
+    """One moved package or module: ``old`` and everything below it now lives under ``new``."""
 
     old: str
     new: str
@@ -49,6 +49,7 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.dispatch", "lionhub.orchestration.dispatch", "0.37.0", "2.0.0"),
     Moved("lionagi.work", "lionhub.orchestration.work", "0.37.0", "2.0.0"),
     Moved("lionagi.mcp", "lionhub.serve.mcp", "0.37.0", "2.0.0"),
+    Moved("lionagi.providers._provider_errors", "lionagi._provider_errors", "0.37.0", "2.0.0"),
 )
 
 

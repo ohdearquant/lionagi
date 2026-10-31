@@ -13,8 +13,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
+from lionagi._provider_errors import _WorkerSpawnAdmissionError
 from lionagi.ln.concurrency.cancel import CancelScope
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
 from .db import (
     _validate_cli_worker_session_id,

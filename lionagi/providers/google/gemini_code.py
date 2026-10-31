@@ -18,6 +18,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
+from lionagi._provider_errors import (
+    ProviderTeardownError,
+    classify_provider_error,
+)
 from lionagi.libs.path_safety import check_paths_safe, contain_paths_in_root
 from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
@@ -28,10 +32,6 @@ from lionagi.providers._cli_subprocess import (
     print_readable,
     resolve_cli_workspace,
     validate_message_prompt,
-)
-from lionagi.providers._provider_errors import (
-    ProviderTeardownError,
-    classify_provider_error,
 )
 from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint

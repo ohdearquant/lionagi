@@ -247,7 +247,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -445,10 +445,10 @@
       "from lionagi._auto import CliDeclaration, auto_register",
       "from lionagi._errors import TimeoutError as LionTimeoutError",
       "from lionagi._flow_spec import (\n    FLOW_SPEC_FIELDS,\n    load_flow_spec,\n    validate_flow_args_schema,\n    validate_flow_spec_fields,\n)",
+      "from lionagi._provider_errors import NestedAgentRefusedError",
       "from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS",
       "from lionagi.libs.path_safety import validate_path_component as validate_path_component",
       "from lionagi.ln.concurrency import is_cancelled, run_async",
-      "from lionagi.providers._provider_errors import NestedAgentRefusedError",
       "from lionagi.providers._subagent_admission import refuse_nested_agent",
       "from .._logging import hint, log_error",
       "from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args",
@@ -1646,6 +1646,24 @@
       "find_lionagi_dirs",
       "is_account_home",
       "is_account_lionagi_dir"
+    ],
+    "lionagi/_provider_errors.py": [
+      "EmissionError",
+      "NestedAgentRefusedError",
+      "ProviderAdapterError",
+      "ProviderAuthError",
+      "ProviderCapacityError",
+      "ProviderContextError",
+      "ProviderError",
+      "ProviderPermissionError",
+      "ProviderQuotaError",
+      "ProviderSafetyError",
+      "ProviderStreamDisconnectError",
+      "ProviderTeardownError",
+      "ProviderUnsupportedModelError",
+      "SubagentAdmissionRefusedError",
+      "WorkerLivenessError",
+      "classify_provider_error"
     ],
     "lionagi/_settings.py": [
       "load_global_settings_layer",
@@ -2957,24 +2975,6 @@
       "spawned_pgid",
       "unencodable_env_entry",
       "validate_message_prompt"
-    ],
-    "lionagi/providers/_provider_errors.py": [
-      "EmissionError",
-      "NestedAgentRefusedError",
-      "ProviderAdapterError",
-      "ProviderAuthError",
-      "ProviderCapacityError",
-      "ProviderContextError",
-      "ProviderError",
-      "ProviderPermissionError",
-      "ProviderQuotaError",
-      "ProviderSafetyError",
-      "ProviderStreamDisconnectError",
-      "ProviderTeardownError",
-      "ProviderUnsupportedModelError",
-      "SubagentAdmissionRefusedError",
-      "WorkerLivenessError",
-      "classify_provider_error"
     ],
     "lionagi/providers/_secret_resolution.py": [
       "OneNameLookup",

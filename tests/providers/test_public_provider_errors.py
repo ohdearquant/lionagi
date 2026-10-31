@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers import _provider_errors as legacy
+from lionagi import _provider_errors as legacy
 from lionagi.providers import errors as public
 
 EXPECTED = {

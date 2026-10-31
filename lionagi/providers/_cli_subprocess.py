@@ -30,6 +30,7 @@ from lionagi._errors import (
     ContainmentRefusedError,
     _ExclusiveMcpSelectionError,
 )
+from lionagi._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
@@ -48,7 +49,6 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
 from lionagi.ln.concurrency.utils import maybe_await
 
-from ._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
 from ._secret_resolution import fill_declared_secrets_and_names
 from ._subagent_admission import (
     AGENT_DEPTH_ENV,
@@ -1418,7 +1418,7 @@ async def ndjson_from_cli(
             if (lease.slots or admission is not None) and observed.create_time is None:
                 if admission is not None:
                     raise _WorkerSpawnAdmissionError("worker start time could not be observed")
-                from ._provider_errors import SubagentAdmissionRefusedError
+                from lionagi._provider_errors import SubagentAdmissionRefusedError
 
                 raise SubagentAdmissionRefusedError(
                     "subagent admission refused: the agent's start time could not be read"

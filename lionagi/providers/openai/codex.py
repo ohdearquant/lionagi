@@ -37,6 +37,7 @@ from lionagi._errors import (
     ContainmentRefusedError,
     _ExclusiveMcpSelectionError,
 )
+from lionagi._provider_errors import classify_provider_error
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -61,7 +62,6 @@ from lionagi.providers._cli_subprocess import (
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
-from lionagi.providers._provider_errors import classify_provider_error
 from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig

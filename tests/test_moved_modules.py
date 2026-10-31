@@ -50,7 +50,9 @@ def _module_pairs() -> list[tuple[str, str]]:
     for row in _moved.MOVED:
         package = importlib.import_module(row.new)
         names = [row.new]
-        names += [info.name for info in pkgutil.walk_packages(package.__path__, row.new + ".")]
+        search_path = getattr(package, "__path__", None)  # a lone module has no submodules
+        if search_path is not None:
+            names += [info.name for info in pkgutil.walk_packages(search_path, row.new + ".")]
         # A package moved inside this one is paired under its own row, by the name it had.
         inner = tuple(other.new for other in _inner_rows(row))
         names = [n for n in names if not any(n == p or n.startswith(p + ".") for p in inner)]
@@ -286,6 +288,57 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
     assert added
     assert added <= moved
     assert all(any(prefix.startswith(a) for a in added) for prefix in moved)
+
+
+# A module that moved on its own (one file, not a package) is a row of the table too. Its old
+# name sits inside a package that stays in lionagi/, so the finder must serve it while that
+# package is still on disk.
+MOVED_MODULE_OLD = "lionagi.providers._provider_errors"
+MOVED_MODULE_NEW = "lionagi._provider_errors"
+
+
+def test_an_old_module_name_warns_once_and_is_the_new_module():
+    sys.modules.pop(MOVED_MODULE_OLD, None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        old = importlib.import_module(MOVED_MODULE_OLD)
+    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecations) == 1, [str(w.message) for w in deprecations]
+    assert MOVED_MODULE_NEW in str(deprecations[0].message)
+    assert deprecations[0].filename == __file__
+    assert old is importlib.import_module(MOVED_MODULE_NEW)
+    assert sys.modules[MOVED_MODULE_OLD] is old
+
+
+def test_every_class_of_a_moved_module_is_the_same_object_under_the_old_name():
+    new = importlib.import_module(MOVED_MODULE_NEW)
+    classes = [
+        name
+        for name, obj in vars(new).items()
+        if isinstance(obj, type) and obj.__module__ == MOVED_MODULE_NEW
+    ]
+    assert {"ProviderError", "EmissionError"} <= set(classes)
+    for name in classes:
+        namespace: dict = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            exec(f"from {MOVED_MODULE_OLD} import {name}", namespace)  # noqa: S102
+        assert namespace[name] is getattr(new, name), name
+
+
+def test_an_old_module_name_is_served_while_its_old_package_stays_on_disk():
+    assert _moved.still_on_disk("lionagi.providers")
+    assert not _moved.still_on_disk(MOVED_MODULE_OLD)
+    assert _moved.resolve(MOVED_MODULE_OLD) == MOVED_MODULE_NEW
+    # Names beside the moved module, and the package around it, did not move.
+    assert _moved.resolve(MOVED_MODULE_OLD + "x") is None
+    assert _moved.resolve("lionagi.providers") is None
+    assert _moved.resolve("lionagi.providers.errors") is None
+    finder = next(f for f in sys.meta_path if getattr(f, "lionagi_moved", False))
+    spec = finder.find_spec(MOVED_MODULE_OLD)
+    assert spec is not None
+    assert spec.submodule_search_locations is None
+    assert finder.find_spec("lionagi.providers") is None
 
 
 def test_reload_through_the_old_name_keeps_the_real_spec():

@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lionagi._errors import ExecutionError
+from lionagi._provider_errors import ProviderError
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers._provider_errors import ProviderError
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 
@@ -184,7 +184,7 @@ async def test_a_cli_failure_is_classified_on_its_own_text_not_the_assistant_tex
 ):
     """Assistant text the run produced before it failed is not the failure: the
     error is classified, and reported, on what the provider said went wrong."""
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model(provider, model))
     error = await _failed_chat(branch, provider, events, seam)
@@ -198,7 +198,7 @@ async def test_a_cli_failure_is_classified_on_its_own_text_not_the_assistant_tex
 async def test_a_codex_failure_with_no_text_is_not_reported_as_the_assistant_text():
     """A failed turn that says nothing is classified as an unexplained failure,
     not on the assistant text the stream would otherwise fill the result with."""
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model("codex", "gpt-5.1-codex"))
     error = await _failed_chat(
@@ -232,7 +232,7 @@ async def test_a_bare_gemini_error_status_is_reported_by_its_status():
 
 @pytest.mark.asyncio
 async def test_a_gemini_teardown_failure_is_reported_as_one():
-    from lionagi.providers._provider_errors import ProviderTeardownError
+    from lionagi._provider_errors import ProviderTeardownError
 
     async def failing_events(_request):
         raise RuntimeError("Event loop is closed")
@@ -370,7 +370,7 @@ async def test_a_cli_failure_is_classified_on_the_text_that_names_it(
 ):
     """The failure's own text decides the class: not the response or assistant
     message the turn produced, and not a later event that names nothing."""
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model(provider, model))
     error = await _failed_chat(branch, provider, events, seam)
@@ -562,7 +562,7 @@ async def test_every_failure_a_cli_reported_decides_the_class(
     repeating the assistant text, a later event with an empty or placeholder payload, a failed
     command's output, a status or a reason with no message beside it, and a result's text beside
     its errors neither hide nor replace the text that names the failure."""
-    from lionagi.providers import _provider_errors
+    from lionagi import _provider_errors
 
     branch = Branch(chat_model=_chat_model(provider, model))
     error = await _failed_chat(branch, provider, events, seam)
@@ -574,7 +574,7 @@ async def test_every_failure_a_cli_reported_decides_the_class(
 
 @pytest.mark.asyncio
 async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     async def events(_request):
         yield {
@@ -599,7 +599,7 @@ async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
 
 @pytest.mark.asyncio
 async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_text():
-    from lionagi.providers._provider_errors import classify_provider_error
+    from lionagi._provider_errors import classify_provider_error
 
     branch = Branch(chat_model=_chat_model("codex", "gpt-5.1-codex"))
     error = await _failed_chat(
