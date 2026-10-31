@@ -1351,3 +1351,27 @@ def test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line():
     assert result["same"] == dict.fromkeys(_ROOT_LNDL_EXPORTS, True)
     moved = [w for w in result["warnings"] if "lionhub.lndl" in w[3]]
     assert [(w[0], w[1], w[2]) for w in moved] == [("DeprecationWarning", "<string>", 6)], result
+
+
+# Every lionhub.lndl module a file under lionagi/ names, by file (relative to lionagi/). The CLI's
+# API leg builds the LNDL Middle lazily until the CLI move; no other file names the language.
+LNDL_INTERIM_EDGES = {"cli/agent.py": ["lionhub.lndl.middle"]}
+
+_HUB_LNDL = re.compile(r"lionhub\.lndl(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def test_lndl_interim_edge_inventory():
+    lionagi = SOURCE_ROOTS[0]
+    found = {}
+    # _moved.py names lionhub as data: the table of new paths it serves old names from.
+    for path in sorted(lionagi.rglob("*.py")):
+        if path.name == "_moved.py":
+            continue
+        names = sorted(
+            name
+            for name in (hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path))
+            if _HUB_LNDL.fullmatch(name)
+        )
+        if names:
+            found[path.relative_to(lionagi).as_posix()] = names
+    assert found == LNDL_INTERIM_EDGES
