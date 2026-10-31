@@ -989,6 +989,35 @@ def test_the_notice_is_the_one_the_run_configured(sandbox, monkeypatch):
     assert seen["sender"] == "who"
 
 
+def test_a_run_that_named_a_recipient_with_no_command_ends_with_that_recorded(sandbox, monkeypatch):
+    """The observer's notice honours the run's own request, not the environment.
+
+    The record names a recipient and nothing anywhere says how to reach it, so
+    the delivery outcome says so instead of reading like a run that never asked.
+    The real delivery function runs; only the settings lookup is doubled.
+    """
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **_kw: SimpleNamespace(reason=None, handler=None),
+    )
+    _pid_absent(monkeypatch)
+    rid = _stranded(notify_target="recipient")
+
+    delivery = jobs.status(rid)["notify_delivery"]
+
+    assert delivery == {
+        "attempted": False,
+        "ok": False,
+        "exit_code": None,
+        "error": "no_delivery_command",
+        "command": None,
+    }
+    assert jobs._read_job(rid)["notify_delivery"] == delivery
+
+
 # --- verify-by 9: records written before this existed --------------------------
 
 

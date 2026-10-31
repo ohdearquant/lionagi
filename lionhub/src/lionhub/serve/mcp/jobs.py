@@ -828,6 +828,37 @@ def _split_at_sentinel(flags: Sequence[str]) -> tuple[list[str], list[str]]:
     return tokens[:cut], tokens[cut:]
 
 
+def _notify_warning(
+    notify_target: str | None,
+    notify_command: str | None,
+    notify_sender: str | None,
+    cwd: str | None,
+) -> str | None:
+    """Why a requested terminal notice cannot be sent, or None when it can.
+
+    A submission asks for a notice by naming a *notify_target* or a
+    *notify_sender*. It can only be sent when a delivery command resolves the
+    way the terminal hook will resolve it: the per-submit *notify_command*,
+    else ``LIONAGI_MCP_NOTIFY_COMMAND``, else the ``notify.on_terminal``
+    setting. Returns None when no notice was asked for or a command resolves.
+    """
+    if not (notify_target or notify_sender):
+        return None
+    from ._notify_hook import _resolve_command
+
+    argv, reason = _resolve_command(
+        notify_command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"), cwd=cwd
+    )
+    if argv is not None:
+        return None
+    return (
+        f"a terminal notice was asked for but no delivery command is usable "
+        f"({reason or 'no_delivery_command'}): the run will record its status and "
+        "deliver nothing. Give notify_command, set LIONAGI_MCP_NOTIFY_COMMAND, "
+        "or configure notify.on_terminal."
+    )
+
+
 def _notify_template(
     run_id: str,
     notify_target: str | None,
@@ -1309,6 +1340,10 @@ def submit(
     per-submit delivery-argv override (JSON list); *notify_target* fills the
     ``{target}`` placeholder in the configured command. With neither and no
     configured default, the run simply records its status and delivers nothing.
+    When a *notify_target* or *notify_sender* is given but no delivery command
+    resolves (per-submit *notify_command*, then ``LIONAGI_MCP_NOTIFY_COMMAND``,
+    then ``notify.on_terminal``), the handle, the record and ``status`` carry a
+    ``notify_warning`` saying so; the run is still submitted.
 
     *mcp_config* and *no_mcp_config* are the caller's own answer to where the
     child's MCP servers come from. *exclude_mcp_servers* removes named servers
@@ -1526,6 +1561,8 @@ def submit(
         _withdraw_fresh_mint(fresh_mint)
         raise
 
+    notify_warning = _notify_warning(notify_target, notify_command, notify_sender, cwd)
+
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
     # always finds a record to mark. mark_terminal no-ops on a missing record, so
     # a child that reaches a terminal in the window between spawn and this write
@@ -1559,6 +1596,7 @@ def submit(
         "notify_command": notify_command,
         "notify_target": notify_target,
         "notify_sender": notify_sender,
+        "notify_warning": notify_warning,
         # The actor a write-capable run signs as, the config minted for it, and
         # the submitting actor it was derived from. None for every other submit.
         "child_actor": minted.actor if minted else None,
@@ -1651,6 +1689,7 @@ def submit(
         "excluded_mcp_servers": recorded_exclusions,
         "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
+        **({"notify_warning": notify_warning} if notify_warning else {}),
         "child_actor": minted.actor if minted else None,
         "child_actor_config": minted.config_path if minted else None,
         "submitting_actor": minted.submitting_actor if minted else None,
@@ -2422,6 +2461,7 @@ def status(run_id: str) -> dict[str, Any]:
         # written before the field existed, which is not the same as "observed".
         "finished_at_precision": (job or {}).get("finished_at_precision"),
         "notify_delivery": notify_delivery,
+        "notify_warning": (job or {}).get("notify_warning"),
         "child_actor": (job or {}).get("child_actor"),
         "child_actor_config": (job or {}).get("child_actor_config"),
         "submitting_actor": (job or {}).get("submitting_actor"),
