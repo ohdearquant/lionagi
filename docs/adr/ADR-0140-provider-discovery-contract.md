@@ -1,6 +1,6 @@
 # ADR-0140: Provider discovery and composition through the 1.x transition
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
