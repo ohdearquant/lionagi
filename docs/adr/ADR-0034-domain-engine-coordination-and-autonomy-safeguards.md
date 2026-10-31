@@ -114,6 +114,45 @@ treating an unread chain as ordinary. Interrupts and cancellations continue
 to propagate. This rule does not change how failures in the judge itself are
 handled, or promise delivery of a failed notification.
 
+## Amendment 4 (2026-10-31) — request and policy refusals in the judge
+
+- **Status**: Proposed; pending acceptance.
+- **Scope**: Judge failures under D3 and Amendment 1. Amendment 3's handling of
+  notification failures after a denial is unchanged.
+
+P5 lets the judge fail open on infrastructure failures. An input the judge cannot
+send or a policy refusal that prevents its launch is different: retrying the same
+request without changing it cannot produce a verdict, so treating that refusal as
+a pass can bypass the gate for the whole run.
+
+In addition to containment and exclusive MCP selection refusals, the judge raises
+`CLIInputRefusedError`, `InputTokenCapError`, `NestedAgentRefusedError`, and
+`_AgentSettingError` when reached directly, through cause or context, or in an
+exception group. A directly raised `_AgentSettingError` keeps its existing handler
+before the search. A containment refusal inside a CLI input refusal retains
+precedence over the outer CLI refusal; among the four added classes, the first
+found in walk order is raised.
+
+The search remains breadth-first, nearest first: cause and context enter the same
+queue before exception-group members, which enter in member order. One budget of
+100 visited slots covers all links and members, including duplicate slots; a seen
+object is skipped to break cycles, but its slot still counts. Group members are read
+lazily up to the remaining budget, never copied wholesale. Unreadable links are
+skipped. Beyond the bound, the existing uncontained outcome remains `judge_error`
+and allow.
+
+A direct `EngineBudgetError` still returns `False`. Without account containment,
+generic `ConfigurationError` still fails open because it includes missing
+credentials and provider setup; provider 4xx/5xx, transient admission failures and
+generic runtime failures likewise emit `judge_error` and allow. Under
+`contain_account_integrations`, other errors are reported and raised as in
+Amendment 1. Cancellation propagates.
+
+This rule applies to types that reach the judge. The CLI argv preparation boundary
+can replace an `_AgentSettingError`, `InputTokenCapError`, or
+`NestedAgentRefusedError` with a sanitized `RuntimeError` without its original
+cause; that path does not preserve the type and is not changed by this amendment.
+
 ## Context
 
 Domain engines encode reusable reaction topology for work whose decomposition is
