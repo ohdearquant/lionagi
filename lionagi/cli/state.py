@@ -343,6 +343,20 @@ async def _lock_import_messages_in_tx(conn: Any, message_ids: list[str]) -> set[
     return set(rows.scalars().all())
 
 
+async def _existing_sqlite_import_messages_in_tx(conn: Any, message_ids: list[str]) -> set[str]:
+    """Find present SQLite candidates under the import transaction's writer reservation."""
+    from sqlalchemy import text
+
+    if not message_ids:
+        return set()
+    sql = (
+        "WITH candidates AS (SELECT value AS id FROM json_each(:candidate_ids)) "
+        "SELECT id FROM messages WHERE id IN (SELECT id FROM candidates)"
+    )
+    rows = await conn.execute(text(sql), {"candidate_ids": json.dumps(message_ids)})
+    return set(rows.scalars().all())
+
+
 async def _import_one_run(
     db: Any,
     run_id: str,
@@ -471,7 +485,9 @@ async def _import_one_run(
             if found.first() is not None:
                 raise _ImportAlreadyExistsError
 
-            shared_ids = sorted(existing) if db.dialect == "postgresql" else candidate_ids
+            if db.dialect == "sqlite":
+                existing = await _existing_sqlite_import_messages_in_tx(conn, candidate_ids)
+            shared_ids = sorted(existing)
             shared = await _shared_import_messages_in_tx(conn, db.dialect, run_id, shared_ids)
             compared: set[tuple[str, str]] = set()
 

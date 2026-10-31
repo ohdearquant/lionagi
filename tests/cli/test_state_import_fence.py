@@ -395,6 +395,43 @@ async def test_concurrent_imports_admit_one_run_and_skip_the_other(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_fresh_run_does_not_expand_memberships(tmp_path):
+    messages = [_message(f"candidate-{i:04}", "new") for i in range(5)]
+    run, manifest = _run(tmp_path / "runs", branches=[messages])
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_progression("keeper-progress", ["unrelated"])
+        await db.create_session({"id": "keeper", "progression_id": "keeper-progress"})
+        expansions = []
+        rewrites = []
+
+        def count_expansion(value):
+            expansions.append(value)
+            return value
+
+        async with db._engine.connect() as conn:
+            raw = await conn.get_raw_connection()
+            await raw.driver_connection.create_function("count_import_json", 1, count_expansion)
+
+        pattern = re.compile(r"json_each\(\s*([a-z_]\w*\.collection)\s*\)", re.I)
+
+        def observe_expansion(_conn, _cursor, statement, parameters, _context, _executemany):
+            statement, count = pattern.subn(r"json_each(count_import_json(\1))", statement)
+            if count:
+                rewrites.append(count)
+            return statement, parameters
+
+        event.listen(
+            db._engine.sync_engine, "before_cursor_execute", observe_expansion, retval=True
+        )
+        try:
+            assert await state_mod._import_one_run(db, "run-1", run, manifest) == (1, 1, 5)
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", observe_expansion)
+        assert expansions == []
+        assert rewrites == []
+
+
+@pytest.mark.asyncio
 async def test_membership_expands_other_progressions_once_for_the_run(tmp_path):
     messages = [_message(f"candidate-{i:04}", "same") for i in range(1001)]
     run, manifest = _run(tmp_path / "runs", branches=[messages])
