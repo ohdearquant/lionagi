@@ -293,6 +293,15 @@ async def _await_cleanup(operation: Awaitable[None]) -> None:
         raise
 
 
+async def _cleanup_after_lookup_failure(
+    proc: asyncio.subprocess.Process, leader_created: float | None
+) -> None:
+    try:
+        await _await_cleanup(_terminate_draining(proc, leader_created))
+    except Exception:  # noqa: BLE001 -- cleanup errors may contain command arguments or output
+        logger.warning("secret lookup cleanup failed")
+
+
 async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     """Run the lookup for one variable, returning its value or None.
 
@@ -324,7 +333,7 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
         )
     except asyncio.TimeoutError:
         if proc is not None:
-            await _await_cleanup(_terminate(proc, leader_created))
+            await _cleanup_after_lookup_failure(proc, leader_created)
         logger.warning("secret lookup %s for %s timed out", program, name)
         return None
     except get_cancelled_exc_class():
@@ -424,7 +433,7 @@ async def lookup_one_name(
         out = await asyncio.wait_for(read_bounded(proc), timeout=_LOOKUP_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         if proc is not None:
-            await _await_cleanup(_terminate_draining(proc, leader_created))
+            await _cleanup_after_lookup_failure(proc, leader_created)
         return OneNameLookup(failure="timeout")
     except get_cancelled_exc_class():
         if proc is not None:
@@ -437,10 +446,10 @@ async def lookup_one_name(
         raise
     except Exception:  # noqa: BLE001 -- the exception can carry argv; only the outcome leaves
         if proc is not None and proc.returncode is None:
-            await _await_cleanup(_terminate_draining(proc, leader_created))
+            await _cleanup_after_lookup_failure(proc, leader_created)
         return OneNameLookup(failure="failed_to_run")
     if out is None:
-        await _await_cleanup(_terminate_draining(proc, leader_created))
+        await _cleanup_after_lookup_failure(proc, leader_created)
         return OneNameLookup(failure="too_long")
     if proc.returncode != 0:
         return OneNameLookup(failure="exit_nonzero")

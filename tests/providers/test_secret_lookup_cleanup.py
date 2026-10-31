@@ -17,7 +17,9 @@ pytestmark = pytest.mark.asyncio
 
 _SECRET = "secret-lookup-output-never-log-this"
 _NAME = "LOOKUP_TOKEN"
-_LOOKUP = secret_lookup.ResolvedSecretLookup(("lookup", "{name}"), (_NAME,))
+_LOOKUP = secret_lookup.ResolvedSecretLookup(
+    ("sensitive_lookup_program", "{name}", "private-argv-sentinel"), (_NAME,)
+)
 
 
 class _Pipe:
@@ -56,6 +58,8 @@ class _Reader:
         if not self.proc.killed.is_set():
             self.before_kill_reads += 1
             self.proc.active_started.set()
+            if self.proc.initial_failure:
+                raise OSError(_SECRET)
             if self.overflow:
                 return _SECRET.encode()[:size]
             await asyncio.Event().wait()
@@ -93,6 +97,7 @@ class _Child:
         rendezvous=False,
         fail_on=None,
         hold_failure=False,
+        initial_failure=False,
     ):
         self.pid = None
         self.returncode = None
@@ -103,6 +108,7 @@ class _Child:
         self.stall_wait = stall_wait
         self.rendezvous = rendezvous
         self.fail_on = fail_on
+        self.initial_failure = initial_failure
         self.hold_failure = hold_failure
         self.failure_release = asyncio.Event()
         self.failure = OSError(_SECRET)
@@ -213,7 +219,15 @@ async def test_cleanup_bounds_wait_and_drain_and_closes_pipe(
         assert result.failure == failure
     _assert_finished(proc)
     assert proc.pipe.close_calls == 1
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    reap_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage() == "secret lookup cleanup exceeded its reap timeout"
+    ]
+    assert reap_warnings == ["secret lookup cleanup exceeded its reap timeout"]
+    assert _NAME not in reap_warnings[0]
+    assert _LOOKUP.argv[0] not in reap_warnings[0]
+    assert _LOOKUP.argv[2] not in reap_warnings[0]
     assert _SECRET not in caplog.text
     assert "VISIBLE" not in caplog.text
 
@@ -265,7 +279,7 @@ async def test_wait_and_drain_run_concurrently_without_cleanup_timeout(install_f
     if path == "ordinary":
         assert result is None
         assert [record.getMessage() for record in caplog.records] == [
-            "secret lookup lookup for LOOKUP_TOKEN timed out"
+            "secret lookup sensitive_lookup_program for LOOKUP_TOKEN timed out"
         ]
     else:
         assert (result.value, result.failure) == (None, "too_long")
@@ -399,32 +413,49 @@ async def test_cancellation_during_cleanup_survives_later_cleanup_failure(
     }
 
 
-@pytest.mark.parametrize("path", ["ordinary", "strict"])
+@pytest.mark.parametrize(
+    ("path", "outcome"),
+    [
+        ("ordinary", "timeout"),
+        ("strict", "timeout"),
+        ("strict", "too_long"),
+        ("strict", "failed_to_run"),
+    ],
+)
 @pytest.mark.parametrize("fail_on", ["drain", "wait"])
-async def test_cleanup_failure_finalizes_pending_sibling_and_preserves_error(
-    install_fake, monkeypatch, caplog, path, fail_on
+async def test_cleanup_failure_returns_lookup_outcome_and_finalizes_sibling(
+    install_fake, monkeypatch, caplog, path, outcome, fail_on
 ):
     monkeypatch.setattr(secret_lookup, "_REAP_TIMEOUT_SECONDS", 0.5)
     proc = install_fake(
         _Child(
             stall_read=fail_on == "wait",
             stall_wait=fail_on == "drain",
-            overflow=path == "strict",
+            overflow=outcome == "too_long",
             fail_on=fail_on,
+            initial_failure=outcome == "failed_to_run",
         )
     )
     caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
     existing_tasks = asyncio.all_tasks()
 
-    if path == "ordinary" and fail_on == "drain":
-        assert await asyncio.wait_for(_lookup(path, proc), timeout=1.5) is None
+    result = await asyncio.wait_for(_lookup(path, proc), timeout=1.5)
+    if path == "ordinary":
+        assert result is None
     else:
-        with pytest.raises(OSError) as caught:
-            await asyncio.wait_for(_lookup(path, proc), timeout=1.5)
-        assert caught.value is proc.failure
+        assert (result.value, result.failure) == (None, outcome)
     _assert_finished(proc)
     assert proc.pipe.close_calls == 1
     assert _SECRET not in caplog.text
+    cleanup_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage() == "secret lookup cleanup failed"
+    ]
+    assert cleanup_warnings == ["secret lookup cleanup failed"]
+    assert _NAME not in cleanup_warnings[0]
+    assert _LOOKUP.argv[0] not in cleanup_warnings[0]
+    assert _LOOKUP.argv[2] not in cleanup_warnings[0]
     assert not {
         task for task in asyncio.all_tasks() if task not in existing_tasks and not task.done()
     }
@@ -446,12 +477,11 @@ async def test_drain_failure_after_wait_finishes_closes_stdout(
     caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
     existing_tasks = asyncio.all_tasks()
 
+    result = await asyncio.wait_for(_lookup(path, proc), timeout=1.5)
     if path == "ordinary":
-        assert await asyncio.wait_for(_lookup(path, proc), timeout=1.5) is None
+        assert result is None
     else:
-        with pytest.raises(OSError) as caught:
-            await asyncio.wait_for(_lookup(path, proc), timeout=1.5)
-        assert caught.value is proc.failure
+        assert (result.value, result.failure) == (None, "too_long")
     _assert_finished(proc)
     assert proc.pipe.close_calls == 1
     assert _SECRET not in caplog.text
@@ -465,7 +495,7 @@ async def test_cancellation_before_kill_finishes_cleanup_and_propagates(
     install_fake, monkeypatch, path
 ):
     proc = install_fake(_Child(stall_read=False, stall_wait=False))
-    cleanup_name = "_terminate" if path == "ordinary" else "_terminate_draining"
+    cleanup_name = "_terminate_draining"
     real_cleanup = getattr(secret_lookup, cleanup_name)
     started, release = asyncio.Event(), asyncio.Event()
 

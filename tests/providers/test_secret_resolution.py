@@ -618,7 +618,7 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
             lambda lookup: _secret_resolution.lookup_one_name(lookup, NAME, env={}, max_bytes=64),
             "_terminate_draining",
         ),
-        (lambda lookup: _secret_resolution._run_lookup(lookup, NAME), "_terminate"),
+        (lambda lookup: _secret_resolution._run_lookup(lookup, NAME), "_terminate_draining"),
     ],
     ids=["one-name", "cli-fill"],
 )
