@@ -2149,7 +2149,7 @@ async def _run_agent(
                 elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                     # agy (Antigravity CLI) has no effort kwarg — fold effort into
                     # the resolved --model name instead (see resolve_agy_model).
-                    from lionagi.providers.google.gemini_code import resolve_agy_model
+                    from lionhub.providers.google.gemini_code import resolve_agy_model
 
                     cfg["model"] = resolve_agy_model(
                         cfg.get("model"),

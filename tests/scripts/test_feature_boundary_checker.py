@@ -269,7 +269,6 @@ def test_target_notes_use_recorded_destinations_only():
     assert builder.match(builder.TARGET_RULES, "lionagi.studio.scheduler.engine") == (
         "lionhub.orchestration.scheduler"
     )
-    assert builder.match(builder.TARGET_RULES, "lionagi.providers.openai.codex") == fallback
     assert builder.match(builder.TARGET_RULES, "lionagi.tools.khive_injection") == fallback
     assert (
         builder.match(builder.TARGET_RULES, "lionagi.studio.services.sessions") == "lionhub.serve"

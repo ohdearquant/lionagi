@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers.openai._codex_profile import resolve_codex_config_profile
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.openai._codex_profile import resolve_codex_config_profile
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 
 @pytest.fixture

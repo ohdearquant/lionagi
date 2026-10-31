@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from lionagi.providers import _cli_subprocess as cs
+from lionhub.providers import _cli_subprocess as cs
 
 
 @pytest_asyncio.fixture(loop_scope="function")

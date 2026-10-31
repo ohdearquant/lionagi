@@ -22,10 +22,6 @@ from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
-from lionagi.providers.openai._codex_profile import (
-    refuse_codex_profile_run_settings,
-    resolve_codex_config_profile,
-)
 from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
@@ -45,6 +41,10 @@ from lionagi.service.providers import (
     codex_unset_effort_default,
     normalize_effort,
     parse_model_spec,
+)
+from lionhub.providers.openai._codex_profile import (
+    refuse_codex_profile_run_settings,
+    resolve_codex_config_profile,
 )
 
 __all__ = (
@@ -197,7 +197,7 @@ def build_imodel_from_spec(
         elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
-            from lionagi.providers.google.gemini_code import resolve_agy_model
+            from lionhub.providers.google.gemini_code import resolve_agy_model
 
             bare_model = ms.model.split("/", 1)[1] if "/" in ms.model else ms.model
             resolved_model = f"{provider_raw}/{resolve_agy_model(bare_model, effort=effort)}"
@@ -317,7 +317,7 @@ def build_chat_model(
         elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
             # agy (Antigravity CLI) has no effort kwarg — fold effort into the
             # resolved --model name instead (see resolve_agy_model).
-            from lionagi.providers.google.gemini_code import resolve_agy_model
+            from lionhub.providers.google.gemini_code import resolve_agy_model
 
             model = resolve_agy_model(model, effort=effort)
 

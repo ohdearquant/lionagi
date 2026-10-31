@@ -365,7 +365,7 @@ async def test_cancellation_still_propagates():
 
 
 async def test_oversized_codex_request_construction_is_refused_before_spawn(monkeypatch, tmp_path):
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     spawned = []
 
@@ -398,7 +398,7 @@ async def test_oversized_codex_request_construction_is_refused_before_spawn(monk
 
 
 async def test_oversized_copied_codex_request_stays_advisory_before_spawn(monkeypatch, tmp_path):
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     spawned = []
 
@@ -438,7 +438,7 @@ async def test_oversized_copied_codex_request_stays_advisory_before_spawn(monkey
 async def test_synthetic_pre_spawn_argv_refusal_redacts_chain_and_only_preserves_cli_type(
     monkeypatch, refusal_type
 ):
-    from lionagi.providers import _cli_subprocess as cli
+    from lionhub.providers import _cli_subprocess as cli
 
     secret = "synthetic-secret-value"
     spawned = []

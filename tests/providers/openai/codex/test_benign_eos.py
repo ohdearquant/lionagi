@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers.openai.codex import CodexCodeRequest, stream_codex_cli
 from lionagi.service.types.stream_chunk import StreamChunk
+from lionhub.providers.openai.codex import CodexCodeRequest, stream_codex_cli
 
 
 def _make_request() -> CodexCodeRequest:
@@ -28,7 +28,7 @@ async def _chunks_from_events(events: list[dict]) -> list[StreamChunk]:
 
     collected = []
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_codex_cli(_make_request()):

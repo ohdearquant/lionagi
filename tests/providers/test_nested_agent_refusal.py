@@ -27,7 +27,6 @@ from lionagi._provider_errors import (
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
-from lionagi.providers._cli_subprocess import ndjson_from_cli
 from lionagi.service import _subagent_admission as admission
 from lionagi.service._subagent_admission import (
     AGENT_DEPTH_ENV,
@@ -38,6 +37,7 @@ from lionagi.service._subagent_admission import (
     set_child_agent_depth,
     subagent_admission_status,
 )
+from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 # Bound at import, before the conftest replaces it for each test.
 _REAL_ANCESTOR_AGENT_DEPTH = _ancestor_agent_depth

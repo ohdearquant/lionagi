@@ -1,0 +1,38 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from enum import Enum
+
+from lionagi.service.connections.provider_config import LazyType, ProviderConfig
+from lionagi.service.connections.registry import EndpointType
+
+
+class AnthropicConfigs(ProviderConfig, Enum):
+    MESSAGES = (
+        "messages",
+        ["chat"],
+        EndpointType.API,
+        LazyType("lionhub.providers.anthropic.messages:CreateMessageRequest"),
+        "https://api.anthropic.com/v1",
+        "x-api-key",
+    )
+
+
+AnthropicConfigs._PROVIDER = "anthropic"
+AnthropicConfigs._PROVIDER_ALIASES = []
+AnthropicConfigs._API_KEY_ENV = "ANTHROPIC_API_KEY"
+
+
+class ClaudeCodeConfigs(ProviderConfig, Enum):
+    CLI = (
+        "query_cli",
+        ["cli", "code"],
+        EndpointType.AGENTIC,
+        LazyType("lionhub.providers.anthropic.claude_code:ClaudeCodeRequest"),
+    )
+
+
+ClaudeCodeConfigs._PROVIDER = "claude_code"
+ClaudeCodeConfigs._PROVIDER_ALIASES = ["claude-code", "claude"]
+
+__all__ = ("AnthropicConfigs", "ClaudeCodeConfigs")

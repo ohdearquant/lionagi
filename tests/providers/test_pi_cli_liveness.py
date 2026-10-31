@@ -1,10 +1,10 @@
 import pytest
 
-from lionagi.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
-from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
-from lionagi.providers.openai.codex import CodexCLIEndpoint
-from lionagi.providers.pi import cli as pi_cli
-from lionagi.providers.pi.cli import PiChunk, PiCLIEndpoint
+from lionhub.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
+from lionhub.providers.google.gemini_code import GeminiCLIEndpoint
+from lionhub.providers.openai.codex import CodexCLIEndpoint
+from lionhub.providers.pi import cli as pi_cli
+from lionhub.providers.pi.cli import PiChunk, PiCLIEndpoint
 
 
 def test_early_output_capability_matches_projected_streams():

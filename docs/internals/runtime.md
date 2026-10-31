@@ -2,7 +2,7 @@
 
 Terse, per-module reference for invariants, protocol contracts, and non-obvious design
 rationale that used to live as long-form docstrings/comments in the runtime source
-(`lionagi/state/`, `lionagi/service/`, `lionagi/providers/`, `lionagi/tools/`,
+(`lionagi/state/`, `lionagi/service/`, `lionhub/src/lionhub/providers/`, `lionagi/tools/`,
 `lionagi/agent/`, `lionagi/testing/`, `lionhub/src/lionhub/orchestration/dispatch/`, `lionagi/hooks/`). The source
 now carries a 1-2 line pointer; this file carries the substance. Organized by module path.
 
@@ -1116,7 +1116,7 @@ stamps the status itself, as before. Related: `persist_session_start`'s explicit
 transition avoids tripping a deprecation shim that would otherwise raise and get swallowed by
 the bus, silently dropping all the provenance fields passed alongside it.
 
-## lionagi/providers/
+## lionhub/src/lionhub/providers/
 
 ### `_cli_subprocess.py`
 

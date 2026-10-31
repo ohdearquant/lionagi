@@ -19,8 +19,8 @@ import pydantic
 import pytest
 
 from lionagi._errors import CLIInputRefusedError
-from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai.codex import (
+from lionhub.providers.openai import codex as codex_mod
+from lionhub.providers.openai.codex import (
     CODEX_MAX_TURN_INPUT_CHARS,
     CodexCodeRequest,
     toml_override_value,
@@ -1006,7 +1006,7 @@ async def test_a_copied_environment_the_spawn_cannot_encode_is_refused_before_it
 ):
     """A copy skips validation, so the spawn helper every CLI provider shares checks the
     environment itself, before any process starts."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1100,7 +1100,7 @@ def test_a_mapping_whose_views_disagree_is_checked_on_its_copy(tmp_path, field, 
 
 @pytest.mark.parametrize("shape", [_IterationHidesAKey, _ItemsHideAKey])
 def test_the_claude_code_env_is_checked_on_its_copy_too(shape):
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     hidden = shape({(SECRET_OVERRIDE_KEY, 1): "v"})
 
@@ -1262,7 +1262,7 @@ async def test_a_copied_environment_is_checked_as_the_spawn_copies_it(tmp_path, 
     """The spawn helper copies the mapping with dict() and encodes every key and value of
     that copy, as the spawn would: an entry items() leaves out, or a value read through
     ``__fspath__``, is refused by position before any process starts."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1366,7 +1366,7 @@ async def test_the_process_receives_the_environment_the_check_read(tmp_path, mon
     """Each key and value is read once, and the copy that was checked is the copy the
     process is given, so a value that would answer a later read differently is never
     read again."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -1403,7 +1403,7 @@ async def test_a_copied_environment_value_that_cannot_be_read_is_refused_without
 ):
     """Refused by position, with ``TypeError`` when the read raised it, as the spawn's own
     encoding would have."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1434,7 +1434,7 @@ async def test_a_bytes_value_whose_own_decode_raises_is_passed_as_the_spawn_woul
     """The spawn concatenates each encoded entry, which reads a bytes value as the bytes it
     holds and never calls the subclass's ``decode``, so the copy takes those bytes and the
     child receives their text."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -1488,8 +1488,8 @@ async def test_a_bytes_value_is_read_as_the_spawn_reads_it_not_by_its_own_bytes_
     the child receives what the spawn passes and not the answer of a method the spawn never
     calls."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
-    from lionagi.providers import _cli_subprocess
     from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -1519,8 +1519,8 @@ async def test_a_bytes_value_beside_its_text_twin_is_taken_as_one_entry(tmp_path
     value holding the bytes its twin spells out holds one encoded value: the spawn passes two
     equal entries, the pair is admitted, and the child receives one entry."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
-    from lionagi.providers import _cli_subprocess
     from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -1561,7 +1561,7 @@ async def test_a_copied_environment_key_that_cannot_be_read_is_refused_without_i
 ):
     """Refused by position, with ``TypeError`` when the read raised it, as the spawn's own
     encoding would have."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1608,7 +1608,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_refused_by_position(
     """Two keys that encode to the same bytes are one variable: the process would read one of
     the two values, and the copy would keep only the last, so the pair is refused when the
     values differ."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1635,7 +1635,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_taken_when_their_val
 ):
     """Two keys for one encoded name holding the same value leave the process one value to
     read, so the pair is admitted and the child receives one entry for that name."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -1663,8 +1663,8 @@ async def test_keys_and_values_spelled_two_ways_that_encode_alike_are_taken(tmp_
     one encoded name, and the two values spell the same bytes too: the spawn passes one entry
     with equal sides, so the pair is admitted and the child receives that one entry."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
-    from lionagi.providers import _cli_subprocess
     from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -1696,7 +1696,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_refused_when_their_v
 ):
     """Two keys for one encoded name holding different values would leave the process reading
     one of the two, so the pair is refused by position."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1720,7 +1720,7 @@ async def test_keys_that_name_one_variable_once_encoded_are_refused_when_their_v
 
 @pytest.mark.parametrize("part", ["key", "value"])
 def test_a_claude_code_environment_the_spawn_cannot_encode_is_refused_at_construction(part):
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     entry = (
         {f"K{_SECRET_IN_A_VALUE}\ud800": "v"}
@@ -1810,7 +1810,7 @@ class _EncodesToAnotherTextSubclassHoldingALoneSurrogate(str):
 def test_a_text_encoding_to_a_lone_surrogate_is_refused_by_the_read_the_spawn_makes(part):
     """The copy is re-encoded from its plain text under this refusal, so the failure names
     the entry and carries none of the value rather than surfacing at the spawn."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     value = _EncodesToAPlainStringHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
     entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
@@ -1831,7 +1831,7 @@ def test_a_text_encoding_to_a_lone_surrogate_is_refused_by_the_read_the_spawn_ma
 def test_a_text_encoding_to_a_lone_surrogate_is_refused_by_the_check_the_spawn_reads_with(part):
     """The construction-time check reads the same plain text the copy does, so it refuses the
     entry the spawn could not encode, by position and with no part of the value."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     value = _EncodesToAPlainStringHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
     entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
@@ -1855,7 +1855,7 @@ def test_a_text_encoding_to_another_subclass_is_kept_as_plain_text():
     """The subclass the value's own ``encode`` answered is reduced to a plain ``str`` and
     encoded again here, so the bytes the spawn builds are the bytes that were checked and the
     subclass's own encoder is never reached a second time."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     value = _EncodesToAnotherTextSubclass(_SECRET_IN_A_VALUE)
     copied = _cli_subprocess.env_as_the_spawn_encodes_it({"HOME": "/h", "OPENAI_API_KEY": value})
@@ -1871,7 +1871,7 @@ def test_a_text_subclass_encoding_to_another_subclass_is_read_as_its_plain_text(
     """An ``encode`` that answers another text subclass is read once, and its answer is
     reduced to plain text and re-encoded here, so the subclass's own encoder is never applied
     a second time: the entry is admitted with the plain-text bytes the spawn would send."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     value = _EncodesToAnotherTextSubclassHoldingALoneSurrogate(_SECRET_IN_A_VALUE)
     entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
@@ -1894,7 +1894,7 @@ async def test_a_lone_surrogate_behind_a_subclass_encoder_is_refused_without_its
 ):
     """On the path where the process would start, the refusal names the entry: the spawn's own
     encode error is never reached, so no error holds the value in its object, message or args."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
         raise AssertionError("a process was started")
@@ -1930,8 +1930,8 @@ async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_pl
     child is handed text whose bytes the check measured, not a subclass the spawn would encode
     a second time."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
-    from lionagi.providers import _cli_subprocess
     from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
+    from lionhub.providers import _cli_subprocess
 
     given = {}
 
@@ -2072,7 +2072,7 @@ class _EncodesToAnInteger(str):
 def test_a_bytes_answer_is_checked_as_the_bytes_the_spawn_sends(part):
     """The construction check takes a ``bytes`` answer through the base type's slice, as the
     spawn copy does, so a subclass's own ``decode`` cannot refuse an entry the spawn sends."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     value = _EncodesToBytesWhoseOwnDecodeDiffers("ok")
     entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}
@@ -2088,7 +2088,7 @@ def test_an_encoder_answering_neither_text_nor_bytes_is_refused_by_position_at_c
 ):
     """The construction check refuses the entry with the spawn copy's own refusal: by
     position and type, as a TypeError, with no error kept as its context."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     value = _EncodesToAnInteger(_SECRET_IN_A_VALUE)
     entry = {value: "v"} if part == "key" else {"OPENAI_API_KEY": value}

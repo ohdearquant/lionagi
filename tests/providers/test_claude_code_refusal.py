@@ -17,7 +17,7 @@ from lionagi._provider_errors import (
     ProviderQuotaError,
     classify_provider_error,
 )
-from lionagi.providers.anthropic import claude_code as cc
+from lionhub.providers.anthropic import claude_code as cc
 
 REFUSAL = {
     "type": "result",

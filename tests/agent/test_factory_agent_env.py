@@ -18,8 +18,8 @@ import pytest
 from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import create_agent
 from lionagi.agent.spec import AgentSpec
-from lionagi.providers._cli_subprocess import reveal_redacted
 from lionagi.service.imodel import iModel
+from lionhub.providers._cli_subprocess import reveal_redacted
 
 
 async def _request_env(**create_kwargs) -> dict[str, str] | None:

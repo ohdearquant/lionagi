@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from lionagi.providers._cli_subprocess import reveal_redacted
 from lionhub.orchestration.engines import Engine
+from lionhub.providers._cli_subprocess import reveal_redacted
 
 pytestmark = pytest.mark.asyncio
 
@@ -769,7 +769,7 @@ async def test_the_judge_raises_when_codex_refuses_its_containment(
     """Codex refuses a contained call whose config could select a profile, before it
     runs and on every call; no judge ran, so the refusal is raised, never read as a pass.
     No codex binary is needed: the refusal comes before any process would start."""
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
     home = tmp_path / "codex-home"
@@ -792,7 +792,7 @@ async def test_the_judge_raises_when_codex_refuses_its_containment(
 
 def _record_cli_spawns(monkeypatch):
     """Fail the spawn seam if any CLI process is started."""
-    import lionagi.providers._cli_subprocess as cli_sub
+    import lionhub.providers._cli_subprocess as cli_sub
 
     started: list[tuple] = []
 
@@ -813,7 +813,7 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
     judge raises the refusal, and no CLI process is ever started."""
     import subprocess
 
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import _ExclusiveMcpSelectionError
 
     home = tmp_path / "codex-home"
@@ -857,7 +857,7 @@ async def test_the_judge_refuses_a_working_directory_that_is_a_symlink_to_itself
 ):
     """The containment walk cannot resolve such a cwd; a judge that could not read the
     configs of its working directory has no verdict to give, so the refusal is raised."""
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
     loop = tmp_path / "loop"
@@ -878,7 +878,7 @@ async def test_the_judge_refuses_a_working_directory_that_is_a_symlink_to_itself
 
 async def test_the_judge_refuses_a_working_directory_that_does_not_exist(tmp_path, monkeypatch):
     """Same as above for a cwd that is absent: the refusal names the directory."""
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
     missing = tmp_path / "missing"
@@ -932,7 +932,7 @@ async def test_an_uncontained_judge_still_reads_an_error_as_a_pass(monkeypatch):
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
 async def test_the_judge_refuses_a_working_directory_it_cannot_enter(tmp_path, monkeypatch):
     """A cwd with no permissions is refused before any process starts, naming it."""
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
     locked = tmp_path / "locked"
@@ -957,7 +957,7 @@ async def test_a_contained_judge_raises_over_a_profile_nested_too_deep_to_parse(
     tmp_path, monkeypatch
 ):
     """The request model rejects the profile; under containment that error is raised."""
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
 
     home = tmp_path / "codex-home"
     home.mkdir()
@@ -981,7 +981,7 @@ async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_pat
     server: an empty one is the run that loads no user config and needs no discovery."""
     import subprocess
 
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import _ExclusiveMcpSelectionError
 
     home = tmp_path / "codex-home"
@@ -1020,7 +1020,7 @@ async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_pat
 
 
 async def test_unrelated_launch_configuration_error_still_reads_as_a_pass(tmp_path, monkeypatch):
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ConfigurationError
 
     fake_cli = tmp_path / "codex"

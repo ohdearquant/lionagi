@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.google.gemini_code import (
+from lionhub.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
     derive_print_timeout,
@@ -167,7 +167,7 @@ class TestSubprocessErrorSurfacing:
             yield  # pragma: no cover — make it an async generator
 
         with patch(
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             side_effect=fake_events,
         ):
             with pytest.raises(RuntimeError, match="authentication required"):
@@ -180,7 +180,7 @@ class TestEndpointCall:
 
     @pytest.mark.asyncio
     async def test_call_returns_session_dict_with_session_id(self):
-        from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
+        from lionhub.providers.google.gemini_code import GeminiCLIEndpoint
 
         async def fake_events(_request):
             yield {
@@ -195,7 +195,7 @@ class TestEndpointCall:
         ep = GeminiCLIEndpoint()
         request = GeminiCodeRequest(prompt="hello")
         with patch(
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             side_effect=fake_events,
         ):
             result = await ep._call({"request": request}, {})

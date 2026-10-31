@@ -20,13 +20,13 @@ from lionagi._provider_errors import (
     ProviderTeardownError,
     classify_provider_error,
 )
-from lionagi.providers.google.gemini_code import (
+from lionagi.service.token_budget import lookup_context_window
+from lionhub.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
     resolve_agy_model,
     stream_gemini_cli,
 )
-from lionagi.service.token_budget import lookup_context_window
 
 
 def _make_request(**kw) -> GeminiCodeRequest:
@@ -46,7 +46,7 @@ async def _run_objects(
 
     session = None
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_gemini_cli(request or _make_request()):
@@ -196,7 +196,7 @@ async def _run_chunks(objects: list[dict], request: GeminiCodeRequest | None = N
 
     chunks = []
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_gemini_cli(request or _make_request()):
@@ -376,7 +376,7 @@ async def test_loop_closed_during_teardown_preserves_text_and_is_retryable():
 
     yielded = []
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=events_then_teardown_failure,
     ):
         async for item in stream_gemini_cli(_make_request()):
@@ -403,7 +403,7 @@ async def test_a_teardown_failure_after_a_reported_model_clears_it():
         raise RuntimeError("Event loop is closed")
 
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=events_then_teardown_failure,
     ):
         yielded = [item async for item in stream_gemini_cli(_make_request())]
@@ -421,7 +421,7 @@ async def test_loop_closed_before_output_emits_one_retryable_error():
 
     yielded = []
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=teardown_failure,
     ):
         async for item in stream_gemini_cli(_make_request()):
@@ -443,7 +443,7 @@ async def test_unrelated_runtime_error_is_not_reclassified_as_teardown():
 
     with (
         patch(
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             side_effect=failing_events,
         ),
         pytest.raises(RuntimeError, match="parser invariant failed"),
@@ -461,7 +461,7 @@ async def test_on_text_and_on_final_fire():
         yield _success_obj(response="hello world")
 
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=fake_events,
     ):
         async for _ in stream_gemini_cli(
@@ -486,7 +486,7 @@ async def test_on_text_loop_closed_error_propagates():
 
     with (
         patch(
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             side_effect=fake_events,
         ),
         pytest.raises(RuntimeError, match="Event loop is closed"),

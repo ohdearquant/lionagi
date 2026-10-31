@@ -48,7 +48,6 @@ MODULE_RULES = {
     "lionagi.integrations.ruvector": ("adapter", "ruvector"),
     "lionagi.lndl": ("adapter", "lndl"),
     "lionagi.plugins": ("adapter", "plugins"),
-    "lionagi.providers": ("adapter", "provider_support"),
     "lionagi.state": ("adapter", "state"),
     "lionagi.tools": ("adapter", "tools"),
     "lionagi.tools.base": ("sdk", "tools"),
@@ -63,26 +62,6 @@ MODULE_RULES = {
     "lionagi.studio.services.schedule_export": ("adapter", "scheduler"),
 }
 
-# Concrete providers are separate features; shared provider support remains
-# its own owner so sibling dependencies remain visible in the report.
-for name in (
-    "ag2",
-    "anthropic",
-    "deepseek",
-    "exa",
-    "firecrawl",
-    "google",
-    "groq",
-    "lattice",
-    "nvidia_nim",
-    "ollama",
-    "openai",
-    "openrouter",
-    "perplexity",
-    "pi",
-    "tavily",
-):
-    MODULE_RULES[f"lionagi.providers.{name}"] = ("adapter", f"provider_{name}")
 
 ROOT_MODULES = {
     "lionagi": ("sdk", "public_api"),
@@ -117,7 +96,6 @@ TARGET_RULES = {
     "lionagi.lndl": "lionhub (destination not yet recorded)",
     "lionagi.operations.lndl_middle": "lionhub (destination not yet recorded)",
     "lionagi.tools": "lionhub (destination not yet recorded)",
-    "lionagi.providers": "lionhub (destination not yet recorded)",
     "lionagi.cli": "pending the CLI location decision (ADR-0139 D1)",
     "lionagi.cli._argtypes": "lionhub.orchestration.arguments",
     "lionagi.cli._code_identity": "lionhub.serve.diagnostics",
@@ -163,16 +141,6 @@ TARGET_RULES = {
     "lionagi.tools.code.bash": "lionhub (destination not yet recorded)",
     "lionagi.tools.sandbox_backend": "lionhub (destination not yet recorded)",
     "lionagi.tools.daytona": "lionhub (destination not yet recorded)",
-    "lionagi.providers.anthropic.messages": "lionhub (destination not yet recorded)",
-    "lionagi.providers.anthropic.claude_code": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai.chat": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai.response": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai.codex": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai._codex_profile": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai._codex_project_layers": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai.embed": "lionhub (destination not yet recorded)",
-    "lionagi.providers.google.chat": "lionhub (destination not yet recorded)",
-    "lionagi.providers.google.gemini_code": "lionhub (destination not yet recorded)",
 }
 
 # Mixed modules retain their existing owner while multiple portions move.
@@ -180,8 +148,6 @@ ADDITIONAL_TARGETS = {
     "lionagi.cli.orchestrate": ["lionhub.orchestration.flow.parsing"],
     "lionagi.studio.services.schedules": ["lionhub.serve"],
 }
-for name in ("openrouter", "exa", "perplexity", "groq", "lattice", "ollama", "nvidia_nim"):
-    TARGET_RULES[f"lionagi.providers.{name}"] = "lionhub (destination not yet recorded)"
 
 REQUIREMENT_GROUPS = {
     ("foundation", "concurrency"): "anyio sniffio",

@@ -75,7 +75,7 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
             "codex",
             "gpt-5.1-codex",
             [{"type": "turn.failed", "error": {"message": "rate limit exceeded"}}],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
         ),
         (
             "claude_code",
@@ -88,7 +88,7 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
                     "api_error_status": 429,
                 }
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         ),
         (
             "gemini_code",
@@ -101,13 +101,13 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
                     "error": "rate limit exceeded",
                 }
             ],
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         ),
         (
             "pi",
             "gemini-2.5-flash",
             [{"type": "error", "error": {"message": "rate limit exceeded"}}],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
         ),
     ],
     ids=["codex", "claude_code", "gemini_code", "pi"],
@@ -142,7 +142,7 @@ _ASSISTANT_TEXT = "Investigating why the user is not logged in"
                 },
                 {"type": "turn.failed", "error": {"message": "rate limit exceeded"}},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
         ),
         (
             "claude_code",
@@ -154,7 +154,7 @@ _ASSISTANT_TEXT = "Investigating why the user is not logged in"
                 },
                 {"type": "result", "result": "rate limit exceeded", "is_error": True},
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         ),
         (
             "pi",
@@ -171,7 +171,7 @@ _ASSISTANT_TEXT = "Investigating why the user is not logged in"
                     ],
                 },
             ],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
         ),
     ],
     ids=["codex", "claude_code", "pi"],
@@ -208,7 +208,7 @@ async def test_a_codex_failure_with_no_text_is_not_reported_as_the_assistant_tex
             {"type": "item.completed", "item": {"type": "agent_message", "text": _ASSISTANT_TEXT}},
             {"type": "turn.failed", "error": ""},
         ],
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
     )
 
     assert type(error.__cause__) is type(classify_provider_error("Codex session failed"))
@@ -223,7 +223,7 @@ async def test_a_bare_gemini_error_status_is_reported_by_its_status():
         branch,
         "gemini_code",
         [{"conversation_id": "conv-1", "status": "ERROR"}],
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
     )
 
     assert isinstance(error.__cause__, ProviderError)
@@ -240,7 +240,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
 
     branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=failing_events,
     ):
         with pytest.raises(ExecutionError) as info:
@@ -265,7 +265,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     "error": "",
                 }
             ],
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             "agy returned status=ERROR",
         ),
         (
@@ -285,7 +285,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     },
                 }
             ],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
             "aborted",
         ),
         (
@@ -295,7 +295,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                 {"type": "error", "error": {"message": "rate limit exceeded"}},
                 {"type": "error", "error": ""},
             ],
-            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "lionhub.providers.pi.cli.stream_pi_cli_events",
             "rate limit exceeded",
         ),
         (
@@ -309,7 +309,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     "errors": ["API Error: 429 rate limit exceeded"],
                 }
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
             "API Error: 429 rate limit exceeded",
         ),
         (
@@ -324,7 +324,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                     "errors": ["API Error: 429 rate limit exceeded"],
                 }
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
             "API Error: 429 rate limit exceeded",
         ),
         (
@@ -334,7 +334,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                 {"type": "error", "message": "rate limit exceeded"},
                 {"type": "turn.failed", "error": {}},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
             "rate limit exceeded",
         ),
         (
@@ -347,7 +347,7 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
                 },
                 {"type": "result", "result": "rate limit exceeded", "is_error": True},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
             "rate limit exceeded",
         ),
     ],
@@ -380,10 +380,10 @@ async def test_a_cli_failure_is_classified_on_the_text_that_names_it(
     _assert_failed_call(branch, error, said)
 
 
-_CODEX = "lionagi.providers.openai.codex.stream_codex_cli_events"
-_GEMINI = "lionagi.providers.google.gemini_code.stream_gemini_cli_events"
-_CLAUDE = "lionagi.providers.anthropic.claude_code.stream_cc_cli_events"
-_PI = "lionagi.providers.pi.cli.stream_pi_cli_events"
+_CODEX = "lionhub.providers.openai.codex.stream_codex_cli_events"
+_GEMINI = "lionhub.providers.google.gemini_code.stream_gemini_cli_events"
+_CLAUDE = "lionhub.providers.anthropic.claude_code.stream_cc_cli_events"
+_PI = "lionhub.providers.pi.cli.stream_pi_cli_events"
 
 
 def _agy(status: str, error: str) -> dict:
@@ -587,7 +587,7 @@ async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
 
     branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
     with patch(
-        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=events,
     ):
         with pytest.raises(ExecutionError) as info:
@@ -609,7 +609,7 @@ async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_te
             {"type": "item.completed", "item": {"type": "agent_message", "text": _ASSISTANT_TEXT}},
             {"type": "result", "is_error": True},
         ],
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
     )
 
     assert type(error.__cause__) is type(classify_provider_error("Codex session failed"))
@@ -628,7 +628,7 @@ async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_te
                 {"type": "thread.started", "thread_id": "thread-1"},
                 {"type": "turn.failed", "error": {"message": "rate limit exceeded"}},
             ],
-            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "lionhub.providers.openai.codex.stream_codex_cli_events",
             "thread-1",
         ),
         (
@@ -638,14 +638,14 @@ async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_te
                 {"type": "system", "subtype": "init", "session_id": "session-1"},
                 {"type": "result", "result": "rate limit exceeded", "is_error": True},
             ],
-            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
             "session-1",
         ),
         (
             "gemini_code",
             "gemini-4-argon",
             [{"conversation_id": "conv-1", "status": "ERROR", "error": "rate limit exceeded"}],
-            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "lionhub.providers.google.gemini_code.stream_gemini_cli_events",
             "conv-1",
         ),
     ],
@@ -671,7 +671,7 @@ async def test_a_cli_failed_call_keeps_the_provider_session_it_ran_in(
 async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
     """tail_repair callback is invoked on a malformed final JSON fragment and
     the repaired dict is yielded rather than silently dropped."""
-    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     malformed = b'{"type": "done", "missing_close":'
 
@@ -698,12 +698,12 @@ async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         async with __import__("contextlib").aclosing(
             ndjson_from_cli([sys.executable], tail_repair=_repair)
@@ -721,7 +721,7 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
     """Without tail_repair the malformed tail is logged and dropped (default)."""
     import logging
 
-    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     malformed = b'{"type": "bad"'
 
@@ -742,12 +742,12 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         with caplog.at_level(logging.ERROR):
             async with __import__("contextlib").aclosing(
@@ -763,8 +763,8 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
 @pytest.mark.asyncio
 async def test_claude_ndjson_uses_repair_callback():
     """_ndjson_from_cli in Claude models passes tail_repair to ndjson_from_cli."""
-    from lionagi.providers.anthropic import claude_code as cc_models
-    from lionagi.providers.anthropic import claude_code as cc_pkg
+    from lionhub.providers.anthropic import claude_code as cc_models
+    from lionhub.providers.anthropic import claude_code as cc_pkg
 
     call_kwargs: list[dict] = []
 
@@ -796,7 +796,7 @@ async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
     The Codex CLI already receives the workspace via '-C <repo>' in as_cmd_args().
     Passing cwd= as well causes a relative repo path to be resolved twice.
     """
-    from lionagi.providers.openai import codex as codex_models
+    from lionhub.providers.openai import codex as codex_models
 
     call_kwargs: list[dict] = []
 
@@ -826,7 +826,7 @@ async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
 
 def test_codex_as_cmd_args_contains_dash_c_flag(tmp_path):
     """Codex as_cmd_args() emits '-C <repo>' so the CLI handles the workspace itself."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     # repo must exist on disk (see comment in test_codex_ndjson_does_not_pass_cwd).
     req = CodexCodeRequest(prompt="hello", repo=tmp_path)
@@ -841,7 +841,7 @@ def test_codex_as_cmd_args_contains_dash_c_flag(tmp_path):
 async def test_gemini_ndjson_defaults_stdin_devnull():
     """agy runs headless print mode and reads nothing from stdin — gemini must
     NOT pass a stdin override, leaving ndjson_from_cli's DEVNULL default."""
-    from lionagi.providers.google import gemini_code as gemini_models
+    from lionhub.providers.google import gemini_code as gemini_models
 
     call_kwargs: list[dict] = []
 
@@ -869,8 +869,8 @@ async def test_gemini_ndjson_defaults_stdin_devnull():
 @pytest.mark.asyncio
 async def test_pi_ndjson_passes_inherit_stdin():
     """Pi _ndjson_from_cli must pass stdin=_INHERIT_STDIN to ndjson_from_cli."""
-    from lionagi.providers._cli_subprocess import _INHERIT_STDIN
-    from lionagi.providers.pi import cli as pi_models
+    from lionhub.providers._cli_subprocess import _INHERIT_STDIN
+    from lionhub.providers.pi import cli as pi_models
 
     call_kwargs: list[dict] = []
 
@@ -897,7 +897,7 @@ async def test_pi_ndjson_passes_inherit_stdin():
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
     """When stdin=_INHERIT_STDIN the helper must NOT pass stdin to create_subprocess_exec."""
-    from lionagi.providers._cli_subprocess import _INHERIT_STDIN, SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import _INHERIT_STDIN, SpawnedProcess, ndjson_from_cli
 
     captured_kwargs: list[dict] = []
 
@@ -918,12 +918,12 @@ async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         async with __import__("contextlib").aclosing(
             ndjson_from_cli([sys.executable], stdin=_INHERIT_STDIN)
@@ -942,7 +942,7 @@ async def test_ndjson_from_cli_inherit_stdin_omits_stdin_kwarg():
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_devnull_passes_stdin_devnull():
     """Default stdin=DEVNULL must be forwarded to create_subprocess_exec (Claude/Codex)."""
-    from lionagi.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
+    from lionhub.providers._cli_subprocess import SpawnedProcess, ndjson_from_cli
 
     captured_kwargs: list[dict] = []
 
@@ -963,12 +963,12 @@ async def test_ndjson_from_cli_devnull_passes_stdin_devnull():
     with (
         patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         patch(
-            "lionagi.providers._cli_subprocess.observe_spawned",
+            "lionhub.providers._cli_subprocess.observe_spawned",
             side_effect=lambda pid, *, expected_marker: SpawnedProcess(
                 pid=pid, pgid=pid, create_time=None
             ),
         ),
-        patch("lionagi.providers._cli_subprocess._group_has_members", return_value=False),
+        patch("lionhub.providers._cli_subprocess._group_has_members", return_value=False),
     ):
         async with __import__("contextlib").aclosing(ndjson_from_cli([sys.executable])) as stream:
             async for _ in stream:

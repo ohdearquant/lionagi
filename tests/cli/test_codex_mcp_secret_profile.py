@@ -16,7 +16,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import _write_codex_mcp_secret_profile
-from lionagi.providers.openai._codex_profile import (
+from lionhub.providers.openai._codex_profile import (
     CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
 )
 

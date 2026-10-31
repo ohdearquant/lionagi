@@ -827,7 +827,7 @@ async def test_resolved_cli_mcp_set_rejects_ambient_server_before_connection(tmp
 async def test_forward_mcp_populates_claude_code_request_mcp_servers(tmp_path):
     """Test plan item 5: claude_code leg + mcp_config_path -> ClaudeCodeRequest
     carries the same servers, and --mcp-config shows up in as_cmd_args()."""
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     mcp_path = _write_mcp_config(tmp_path, {"khive": {"command": "kkernel"}})
 
@@ -914,7 +914,7 @@ def test_codex_request_serializes_mcp_server_overrides():
     serialized as valid TOML (codex parses the `-c` value as TOML, not
     JSON -- see test_codex_request_serializes_config_override_values_as_toml
     for the dict/env case this distinction matters for)."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     req = CodexCodeRequest(
         prompt="hi",
@@ -939,7 +939,7 @@ def test_codex_request_serializes_config_override_values_as_toml():
     to prove it is valid TOML, not just string-matched."""
     import toml
 
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     req = CodexCodeRequest(
         prompt="hi",
@@ -1226,7 +1226,7 @@ async def test_forward_mcp_codex_empty_allowlist_ignores_the_ambient_config_too(
     config.mcp_servers = []  # explicit empty allowlist; no lionagi MCP config resolves
     branch = await create_agent(config, load_settings=False)
     api_call = await branch.chat_model.create_event(prompt="hi")
-    from lionagi.providers.openai.codex import _plain_request
+    from lionhub.providers.openai.codex import _plain_request
 
     request = api_call.payload["request"]
     args = request._cmd_args(_plain_request(request), request.cwd())
@@ -1261,7 +1261,7 @@ async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_u
     config.mcp_servers = []
     branch = await create_agent(config, load_settings=False)
     api_call = await branch.chat_model.create_event(prompt="hi")
-    from lionagi.providers.openai.codex import _plain_request
+    from lionhub.providers.openai.codex import _plain_request
 
     request = api_call.payload["request"]
     args = request._cmd_args(_plain_request(request), request.cwd())
@@ -1418,7 +1418,7 @@ async def test_forward_mcp_global_candidate_trusted_by_default(tmp_path, monkeyp
 
 async def test_forward_mcp_explicit_empty_allowlist_forces_zero_servers(tmp_path):
     """spec.mcp_servers=[] is an EXPLICIT empty selection, not 'no filter' -- the old `if spec.mcp_servers:` check treated an empty list like None and forwarded every server; it must forward zero and still emit `--mcp-config {"mcpServers": {}}` rather than silently omit the flag."""
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     mcp_path = _write_mcp_config(
         tmp_path,
@@ -1450,7 +1450,7 @@ async def test_forward_mcp_explicit_empty_allowlist_enforced_with_no_resolvable_
     tmp_path, monkeypatch
 ):
     """spec.mcp_servers=[] must be enforced even when no config file resolves -- previously an unresolvable mcp_path made `_forward_mcp_to_cli_request` return early, leaving mcp_servers unset and letting the claude CLI fall back to its own MCP discovery instead of honoring the explicit zero-server allowlist."""
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     config = AgentSpec.compose(
@@ -1782,7 +1782,7 @@ async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_
 
     monkeypatch.setattr("subprocess.run", _run)
     # The run starts the binary found on this process's PATH; the discovery starts the same one.
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
 
     monkeypatch.setattr(codex_mod, "CODEX_CLI", "/opt/bin/codex")
 
@@ -1794,7 +1794,7 @@ async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_
     assert calls == []
     overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
     assert overrides == {"mcp_servers.docs.command": "docs-mcp"}
-    from lionagi.providers.openai._codex_project_layers import project_mcp_server_names
+    from lionhub.providers.openai._codex_project_layers import project_mcp_server_names
 
     with pytest.raises(ConfigurationError, match="cannot be read or parsed"):
         project_mcp_server_names(tmp_path, {"CODEX_HOME": str(codex_home)}, {"docs"})
@@ -1819,7 +1819,7 @@ async def test_forward_mcp_codex_allowlist_builds_without_codex_binary_or_listin
         return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
 
     monkeypatch.setattr("subprocess.run", _run)
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
 
     monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
 
@@ -1837,7 +1837,7 @@ def test_forward_mcp_codex_allowlist_reads_child_env_at_launch_without_cli_fallb
     """The launch census names the child config and never runs a fallback CLI."""
     import subprocess
 
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
     from lionagi.agent.factory import apply_forwarded_mcp_servers
 
     codex_home = tmp_path / "codex_home"
@@ -1866,7 +1866,7 @@ def test_forward_mcp_codex_allowlist_reads_child_env_at_launch_without_cli_fallb
         kwargs, {}, provider="codex", exclusive=True, allowed_names=["docs"], env=env
     )
     assert kwargs["exclusive_mcp_names"] == ["docs"]
-    from lionagi.providers.openai._codex_project_layers import project_mcp_server_names
+    from lionhub.providers.openai._codex_project_layers import project_mcp_server_names
 
     with pytest.raises(ConfigurationError, match="cannot be read or parsed") as refusal:
         project_mcp_server_names(tmp_path, env, {"docs"})
@@ -1884,7 +1884,7 @@ def test_forward_mcp_codex_allowlist_refuses_a_process_codex_home_that_is_not_ab
 
     monkeypatch.setenv("CODEX_HOME", "~/x")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
 
     monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
     with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
@@ -1996,7 +1996,7 @@ async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_un
     config.mcp_servers = ["docs"]
     branch = await create_agent(config, load_settings=False)
     assert branch.chat_model.endpoint.config.kwargs["exclusive_mcp_names"] == ["docs"]
-    from lionagi.providers.openai._codex_project_layers import project_mcp_server_names
+    from lionhub.providers.openai._codex_project_layers import project_mcp_server_names
 
     with pytest.raises(ConfigurationError, match="cannot be read or parsed"):
         project_mcp_server_names(tmp_path, {"CODEX_HOME": str(codex_home)}, {"docs"})
@@ -2042,7 +2042,7 @@ async def test_an_anthropic_api_agent_names_an_output_limit(monkeypatch):
     before anything was sent. The payload the agent's endpoint builds validates against
     the real request model.
     """
-    from lionagi.providers.anthropic.messages import ANTHROPIC_DEFAULT_MAX_TOKENS
+    from lionhub.providers.anthropic.messages import ANTHROPIC_DEFAULT_MAX_TOKENS
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x" * 20)
     config = AgentSpec.compose("implementer", model="anthropic/claude-haiku-5-5")

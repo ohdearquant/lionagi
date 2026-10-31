@@ -28,7 +28,7 @@ import pytest
 # current main: none of these are pulled in by the lazy `_LAZY_MAP` +
 # `__getattr__` scheme in `lionagi/__init__.py`.
 _FORBIDDEN_MODULE_PREFIXES: tuple[str, ...] = (
-    "lionagi.providers.",
+    "lionhub.providers.",
     "lionagi.cli",
     "lionagi.operations.flow",
     # Plugin discovery/activation must stay opt-in: a bare `import lionagi`

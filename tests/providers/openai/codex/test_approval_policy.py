@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 import toml
 
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 
 def _config_values(args: list[str], key: str) -> list[object]:

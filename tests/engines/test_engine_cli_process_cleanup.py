@@ -15,8 +15,8 @@ from pathlib import Path
 import psutil
 import pytest
 
-from lionagi.providers._cli_subprocess import ndjson_from_cli
 from lionhub.orchestration.engines.engine import Engine, EngineRun
+from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 
 def _process_is_live(pid: int) -> bool:
@@ -116,7 +116,7 @@ async def test_deadline_reaps_cli_group_when_worker_swallows_cancel() -> None:
 async def test_cancel_without_cli_processes_signals_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     called = False
 
@@ -151,7 +151,7 @@ class _FakeProcess:
 
 
 def _tracked(run, pid: int, returncode: int | None = None) -> _FakeProcess:
-    from lionagi.providers._cli_subprocess import SpawnedProcess
+    from lionhub.providers._cli_subprocess import SpawnedProcess
 
     process = _FakeProcess(pid, returncode)
     run._track_cli_process(process, SpawnedProcess(pid=pid, pgid=pid, create_time=1.0))
@@ -170,7 +170,7 @@ async def test_a_reap_that_raises_is_counted_as_abandoned_not_merely_unreaped(
     """processes_reaped == 0 is ambiguous on its own: it is also what a run with
     nothing to reap reports. The failure path has to write its own count, or the
     record cannot say that the children are still running."""
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     async def always_fails(*args, **kwargs) -> None:
         raise OSError("kill refused")
@@ -193,7 +193,7 @@ async def test_a_reap_that_succeeds_is_not_counted_as_abandoned(
 ) -> None:
     """The must-not-match half: the abandoned count stays 0 on the happy path,
     so a non-zero value means what it says."""
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     async def succeeds(*args, **kwargs):
         return cli_subprocess._ChildGroupCleanup.CONFIRMED_EMPTY
@@ -215,7 +215,7 @@ async def test_a_reap_that_succeeds_is_not_counted_as_abandoned(
 async def test_unconfirmed_cleanup_remains_tracked_until_group_absence_is_confirmed(
     monkeypatch: pytest.MonkeyPatch, result_kind: str
 ) -> None:
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     cleanup_result = (
         cli_subprocess._ChildGroupCleanup.UNCONFIRMED if result_kind == "unconfirmed" else None
@@ -282,7 +282,7 @@ async def test_completed_cli_worker_is_not_signalled() -> None:
         def kill(self) -> None:  # pragma: no cover - must never run
             raise AssertionError("completed CLI worker was signalled")
 
-    from lionagi.providers._cli_subprocess import SpawnedProcess
+    from lionhub.providers._cli_subprocess import SpawnedProcess
 
     run = _StubEngine().new_run()
     run._track_cli_process(
@@ -396,7 +396,7 @@ async def test_a_spawn_arriving_after_the_run_drained_is_ended_not_tracked() -> 
         )
     )
 
-    from lionagi.providers._cli_subprocess import _observe_run_cli_spawns
+    from lionhub.providers._cli_subprocess import _observe_run_cli_spawns
 
     engine = Engine()
     run = engine.new_run()
@@ -440,7 +440,7 @@ async def test_a_late_spawn_whose_identity_was_not_captured_still_has_its_child_
     signal is sent; the direct child is still ours through its handle, and a
     late spawn must not be left running because its identity was never read.
     """
-    from lionagi.providers._cli_subprocess import SpawnedProcess, _observe_run_cli_spawns
+    from lionhub.providers._cli_subprocess import SpawnedProcess, _observe_run_cli_spawns
 
     captured: list[tuple[object, object]] = []
     pids: dict[str, int] = {}
@@ -496,7 +496,7 @@ async def test_a_spawn_during_the_final_cancel_reap_is_ended_not_left_tracked_an
     once cancellation had returned, which is the exact outcome the rescan
     exists to prevent.
     """
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     run = _StubEngineForTracking().new_run()
     ended: list[int] = []
@@ -556,7 +556,7 @@ async def test_a_spawn_given_a_reaped_handles_address_is_still_reaped(
     and a rescan comparing bare ids reads the newcomer as already tried and
     returns with it still tracked and running.
     """
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     ended: list[int] = []
     pids = iter(range(526000, 527000))
@@ -602,7 +602,7 @@ async def test_cancelling_leaves_tracking_open_for_the_partial_export(
     spawn observer, so its spawns are legitimate and still have to be tracked.
     A fix that simply left tracking shut would kill those instead.
     """
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
 
     run = _StubEngineForTracking().new_run()
     ended: list[int] = []
@@ -672,9 +672,9 @@ async def test_a_cli_started_by_the_partial_export_belongs_to_the_run(
 ) -> None:
     """The export that follows a budget or deadline stop still runs under the
     run's spawn tracking, so a CLI it leaves running is reaped with the run."""
-    import lionagi.providers._cli_subprocess as cli_subprocess
-    from lionagi.providers._cli_subprocess import SpawnedProcess
+    import lionhub.providers._cli_subprocess as cli_subprocess
     from lionhub.orchestration.engines.engine import EngineBudgetError
+    from lionhub.providers._cli_subprocess import SpawnedProcess
 
     reaped: list[int] = []
 
@@ -707,7 +707,7 @@ async def test_a_cli_still_running_at_a_budget_stop_is_reaped_before_the_partial
     not supposed to keep burning while it runs. A run-owned CLI that is still
     live when the budget stops the run is reaped before the export starts, even
     when no task is left to cancel."""
-    import lionagi.providers._cli_subprocess as cli_subprocess
+    import lionhub.providers._cli_subprocess as cli_subprocess
     from lionhub.orchestration.engines.engine import EngineBudgetError
 
     reaped: list[int] = []

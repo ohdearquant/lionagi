@@ -23,8 +23,8 @@ import sys
 
 import pytest
 
-from lionagi.providers._cli_subprocess import ndjson_from_cli
-from lionagi.providers.openai.codex import CODEX_MAX_TURN_INPUT_CHARS, CodexCodeRequest
+from lionhub.providers._cli_subprocess import ndjson_from_cli
+from lionhub.providers.openai.codex import CODEX_MAX_TURN_INPUT_CHARS, CodexCodeRequest
 
 # Larger than a pipe buffer on every platform we run on (64 KiB on Linux and
 # macOS), so both directions genuinely block and a sequential write-then-read
@@ -144,7 +144,7 @@ class TestPromptArrivesOverStdin:
     ):
         """End to end through the codex spawn helper: the prompt arrives on
         stdin and appears nowhere in the arguments the CLI was invoked with."""
-        from lionagi.providers.openai import codex as codex_mod
+        from lionhub.providers.openai import codex as codex_mod
 
         fake_cli = tmp_path / "fake-codex"
         fake_cli.write_text(f"#!{sys.executable}\n{ECHO_CHILD}")
@@ -171,13 +171,13 @@ class TestOtherProvidersUnchanged:
     the command line."""
 
     def test_claude_code_still_passes_the_prompt_in_argv(self, tmp_path):
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
         args = ClaudeCodeRequest(prompt="hello there", repo=tmp_path).as_cmd_args()
         assert "hello there" in args
 
     def test_gemini_still_passes_the_prompt_in_argv(self, tmp_path):
-        from lionagi.providers.google.gemini_code import GeminiCodeRequest
+        from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
         args = GeminiCodeRequest(prompt="hello there", repo=tmp_path).as_cmd_args()
         assert "hello there" in args
@@ -203,7 +203,7 @@ class TestOtherProvidersUnchanged:
 def test_prompt_join_still_shared_and_unchanged():
     """The prompt is still built by joining the non-system messages — this
     change is about how it is handed to codex, not how it is assembled."""
-    from lionagi.providers._cli_subprocess import validate_message_prompt
+    from lionhub.providers._cli_subprocess import validate_message_prompt
 
     data = validate_message_prompt(
         {

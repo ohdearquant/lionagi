@@ -849,7 +849,7 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     if not getattr(imodel, "is_cli", False):
         return
     from lionagi.agent.factory import _canonical_provider
-    from lionagi.providers.openai._codex_profile import (
+    from lionhub.providers.openai._codex_profile import (
         refuse_codex_profile_run_settings,
         resolve_codex_config_profile,
     )

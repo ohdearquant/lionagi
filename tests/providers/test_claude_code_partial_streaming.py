@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest, stream_claude_code_cli
 from lionagi.service.types import StreamChunk
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest, stream_claude_code_cli
 
 
 async def _chunks(events: list[dict]) -> list[StreamChunk]:
@@ -19,7 +19,7 @@ async def _chunks(events: list[dict]) -> list[StreamChunk]:
     out: list[StreamChunk] = []
     request = ClaudeCodeRequest(prompt="test", include_partial_messages=True)
     with patch(
-        "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+        "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_claude_code_cli(request):

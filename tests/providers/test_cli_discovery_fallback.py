@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.providers._cli_subprocess as sub
-from lionagi.providers._cli_subprocess import discover_cli
+import lionhub.providers._cli_subprocess as sub
+from lionhub.providers._cli_subprocess import discover_cli
 
 
 def _make_executable(path):
@@ -122,7 +122,7 @@ async def test_a_consumer_binds_the_fallback_resolved_path(tmp_path, monkeypatch
     reading the constant instead of calling the resolver spawns None here, which
     is precisely the defect being fenced.
     """
-    import lionagi.providers.anthropic.claude_code as cc
+    import lionhub.providers.anthropic.claude_code as cc
 
     fallback = tmp_path / "user-bin"
     fallback.mkdir()
@@ -152,7 +152,7 @@ async def test_a_consumer_binds_the_fallback_resolved_path(tmp_path, monkeypatch
 def test_a_resolver_miss_does_not_poison_a_later_hit(tmp_path, monkeypatch, empty_path):
     """A long-lived process that started before the CLI existed must recover
     once it is installed, instead of caching the negative for its lifetime."""
-    import lionagi.providers.anthropic.claude_code as cc
+    import lionhub.providers.anthropic.claude_code as cc
 
     fallback = tmp_path / "user-bin"
     fallback.mkdir()
@@ -179,7 +179,7 @@ def test_home_is_read_at_call_time_not_import_time(tmp_path, monkeypatch, empty_
 async def test_missing_claude_cli_error_names_where_it_looked(monkeypatch):
     """The old text prescribed an npm install — the wrong remedy on a machine
     whose install merely sits outside the process PATH."""
-    import lionagi.providers.anthropic.claude_code as cc
+    import lionhub.providers.anthropic.claude_code as cc
 
     monkeypatch.setattr(cc, "CLAUDE_CLI", None)
     # The guard re-discovers now, so a None constant on a machine that HAS the

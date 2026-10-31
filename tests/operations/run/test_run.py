@@ -794,7 +794,7 @@ async def test_run_strips_timeout_from_create_event_kwargs():
 
 async def test_run_derives_gemini_print_timeout_from_caller_timeout():
     """The shared run seam forwards its deadline to buffered Gemini CLI requests."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -810,7 +810,7 @@ async def test_run_derives_gemini_print_timeout_from_caller_timeout():
 
 async def test_run_rejects_gemini_timeout_at_provider_ceiling():
     """Reject a caller deadline that cannot have a later agy backstop."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -831,7 +831,7 @@ async def test_run_rejects_gemini_timeout_at_provider_ceiling():
 
 async def test_run_preserves_explicit_gemini_print_timeout():
     """An explicit provider cap wins over the timeout-derived default."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -852,7 +852,7 @@ async def test_run_preserves_explicit_gemini_print_timeout():
 async def test_run_without_timeout_sets_configured_gemini_print_timeout(monkeypatch):
     """The shared run seam supplies the configured cap without an outer deadline."""
     import lionagi.config as config_module
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     configured_cap = 3600.0
     monkeypatch.setattr(
@@ -879,7 +879,7 @@ async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(mon
     error, which is the failure this whole path exists to stop producing.
     """
     import lionagi.config as config_module
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     monkeypatch.setattr(
         config_module,
@@ -902,7 +902,7 @@ async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(mon
 
 async def test_run_preserves_explicit_gemini_print_timeout_without_timeout():
     """An explicit provider cap also wins when no outer deadline is configured."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -916,7 +916,7 @@ async def test_run_preserves_explicit_gemini_print_timeout_without_timeout():
 
 async def test_run_preserves_endpoint_gemini_print_timeout_without_timeout():
     """Endpoint configuration is explicit and must not receive a request default."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -937,7 +937,7 @@ async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout()
     above. This is the one where a derived value exists and could plausibly
     overwrite an explicit one, so it is the cell most worth pinning down.
     """
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     model.endpoint._request_model = GeminiCodeRequest
@@ -953,7 +953,7 @@ async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout()
 
 async def test_gemini_timeout_arms_produce_distinct_caps():
     """A caller deadline receives headroom; the configured default is the cap."""
-    from lionagi.providers.google.gemini_code import GeminiCodeRequest
+    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     async def captured_cap(imodel_kw):
         model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)

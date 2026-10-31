@@ -14,7 +14,7 @@ def _schema_files() -> list[Path]:
     return sorted(
         path
         for root in (
-            REPO_ROOT / "lionagi" / "providers",
+            REPO_ROOT / "lionhub" / "src" / "lionhub" / "providers",
             REPO_ROOT / "lionagi" / "service" / "connections",
         )
         for path in root.rglob("*.py")
@@ -23,7 +23,10 @@ def _schema_files() -> list[Path]:
 
 
 def _module_name(path: Path) -> str:
-    return ".".join(path.relative_to(REPO_ROOT).with_suffix("").parts)
+    source_root = (
+        REPO_ROOT / "lionhub" / "src" if path.is_relative_to(REPO_ROOT / "lionhub") else REPO_ROOT
+    )
+    return ".".join(path.relative_to(source_root).with_suffix("").parts)
 
 
 def _is_register_decorator(node: ast.expr) -> bool:
@@ -33,7 +36,9 @@ def _is_register_decorator(node: ast.expr) -> bool:
 
 def _run_fresh(script: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(REPO_ROOT), env.get("PYTHONPATH"))))
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(REPO_ROOT), str(REPO_ROOT / "lionhub" / "src"), env.get("PYTHONPATH")))
+    )
     return subprocess.run(
         [sys.executable, "-c", script],
         check=True,
@@ -48,9 +53,9 @@ def test_schema_only_modules_have_no_registration_decorators() -> None:
     observed = {path.relative_to(REPO_ROOT).as_posix() for path in files}
     expected = {
         "lionagi/service/connections/_chat_schemas.py",
-        "lionagi/providers/openai/_audio_schemas.py",
-        "lionagi/providers/exa/_schemas.py",
-        "lionagi/providers/firecrawl/_schemas.py",
+        "lionhub/src/lionhub/providers/openai/_audio_schemas.py",
+        "lionhub/src/lionhub/providers/exa/_schemas.py",
+        "lionhub/src/lionhub/providers/firecrawl/_schemas.py",
     }
     assert expected <= observed
 
@@ -87,7 +92,7 @@ from lionagi.service.connections.registry import EndpointRegistry
 assert EndpointRegistry._loaded is False
 assert EndpointRegistry._entries == []
 
-from lionagi.providers.ollama._config import OllamaConfigs
+from lionhub.providers.ollama._config import OllamaConfigs
 resolved = OllamaConfigs.CHAT.options
 
 assert resolved.__name__ == "OpenAIChatCompletionsRequest"

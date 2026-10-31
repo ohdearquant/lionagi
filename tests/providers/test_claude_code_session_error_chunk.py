@@ -22,12 +22,12 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.anthropic.claude_code import (
+from lionagi.service.types.cli_session import CLISession
+from lionagi.service.types.stream_chunk import StreamChunk
+from lionhub.providers.anthropic.claude_code import (
     ClaudeCodeCLIEndpoint,
     ClaudeCodeRequest,
 )
-from lionagi.service.types.cli_session import CLISession
-from lionagi.service.types.stream_chunk import StreamChunk
 
 
 def _result_event(**over) -> dict:
@@ -61,7 +61,7 @@ async def _endpoint_chunks(events: list[dict]) -> list[StreamChunk]:
     request = ClaudeCodeRequest(prompt="test", verbose_output=False)
     collected: list[StreamChunk] = []
     with patch(
-        "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+        "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         side_effect=fake_events,
     ):
         async for chunk in endpoint.stream({"request": request}):
@@ -132,7 +132,7 @@ async def test_a_failure_already_carrying_an_error_chunk_is_not_reported_twice()
     request = ClaudeCodeRequest(prompt="test", verbose_output=False)
     collected: list[StreamChunk] = []
     with patch(
-        "lionagi.providers.anthropic.claude_code.stream_claude_code_cli",
+        "lionhub.providers.anthropic.claude_code.stream_claude_code_cli",
         side_effect=only_the_session,
     ):
         async for chunk in endpoint.stream({"request": request}):

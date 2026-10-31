@@ -575,7 +575,7 @@ async def run(
 
         request_model = getattr(endpoint, "_request_model", None)
         if request_model is not None:
-            from lionagi.providers.google.gemini_code import (
+            from lionhub.providers.google.gemini_code import (
                 GeminiCodeRequest,
                 derive_print_timeout,
                 format_print_timeout,

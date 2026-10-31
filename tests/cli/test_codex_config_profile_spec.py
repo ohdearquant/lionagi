@@ -255,7 +255,7 @@ class TestAProfileUnderIgnoreUserConfigSetsOnlyItsModel:
         }
 
     def test_the_request_refuses_it_on_the_library_path(self, codex_home):
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         self._write_permissive(codex_home)
         # Refused inside request validation, so pydantic wraps it, as it wraps the

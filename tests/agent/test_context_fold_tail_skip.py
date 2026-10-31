@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lionagi.agent.context_fold import ContextFold, install_context_fold
-from lionagi.providers.anthropic import _prompt_cache as planner
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic import _prompt_cache as planner
 
 _CAP = 100_000
 FIVE_MINUTES = {"type": "ephemeral"}

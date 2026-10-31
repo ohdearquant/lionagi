@@ -26,7 +26,7 @@ class TestMatchEndpoint:
     """
 
     def test_openai_chat_endpoint(self):
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         endpoint = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
@@ -34,7 +34,7 @@ class TestMatchEndpoint:
         assert endpoint.config.provider == "openai"
 
     def test_anthropic_messages_endpoint(self):
-        from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
+        from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
         endpoint = match_endpoint(
             provider="anthropic",
@@ -47,7 +47,7 @@ class TestMatchEndpoint:
         assert endpoint.config.default_headers["anthropic-version"] == "2023-06-01"
 
     def test_perplexity_endpoint(self):
-        from lionagi.providers.perplexity.chat import PerplexityChatEndpoint
+        from lionhub.providers.perplexity.chat import PerplexityChatEndpoint
 
         endpoint = match_endpoint(
             provider="perplexity",
@@ -59,7 +59,7 @@ class TestMatchEndpoint:
         assert endpoint.config.provider == "perplexity"
 
     def test_ollama_endpoint(self):
-        from lionagi.providers.ollama.chat import OllamaChatEndpoint
+        from lionhub.providers.ollama.chat import OllamaChatEndpoint
 
         endpoint = match_endpoint(provider="ollama", endpoint="chat", model="llama2")
 
@@ -67,7 +67,7 @@ class TestMatchEndpoint:
         assert endpoint.config.provider == "ollama"
 
     def test_exa_search_endpoint(self):
-        from lionagi.providers.exa.search import ExaSearchEndpoint
+        from lionhub.providers.exa.search import ExaSearchEndpoint
 
         endpoint = match_endpoint(provider="exa", endpoint="search", query="test query")
 
@@ -187,14 +187,14 @@ class TestMatchEndpoint:
         assert endpoint.config.default_headers["anthropic-version"] == "2023-06-01"
 
     def test_endpoint_params_inheritance(self):
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         endpoint = match_endpoint(provider="openai", endpoint="chat")
 
         assert isinstance(endpoint, OpenaiChatEndpoint)
 
     def test_provider_case_insensitive_routing(self):
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         endpoint_lower = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
@@ -206,8 +206,8 @@ class TestMatchEndpoint:
         assert endpoint_lower.config.provider == endpoint_upper.config.provider == "openai"
 
     def test_multiple_providers_isolation(self):
-        from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         openai_endpoint = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
@@ -238,12 +238,12 @@ class TestMatchEndpoint:
         assert endpoint1.config is not endpoint2.config
 
     def test_match_endpoint_routes_firecrawl_tavily_and_cli_aliases(self):
-        from lionagi.providers.firecrawl.map import FirecrawlMapEndpoint
-        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
-        from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
-        from lionagi.providers.openai.codex import CodexCLIEndpoint
-        from lionagi.providers.pi.cli import PiCLIEndpoint
-        from lionagi.providers.tavily.search import TavilyExtractEndpoint
+        from lionhub.providers.firecrawl.map import FirecrawlMapEndpoint
+        from lionhub.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
+        from lionhub.providers.google.gemini_code import GeminiCLIEndpoint
+        from lionhub.providers.openai.codex import CodexCLIEndpoint
+        from lionhub.providers.pi.cli import PiCLIEndpoint
+        from lionhub.providers.tavily.search import TavilyExtractEndpoint
 
         cases = [
             ("firecrawl", "map", FirecrawlMapEndpoint),

@@ -107,19 +107,19 @@ class TestTheRequestModelBackstop:
     """
 
     def test_an_effortless_request_carries_the_clamped_global_default(self, global_ultra):
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", model="gpt-5.3-codex-spark")
         assert req.reasoning_effort == "xhigh"
 
     def test_an_explicit_request_effort_still_wins(self, global_ultra):
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", model="gpt-5.3-codex-spark", reasoning_effort="low")
         assert req.reasoning_effort == "low"
 
     def test_a_config_override_pin_is_left_to_the_cli(self, global_ultra):
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(
             prompt="hi",
@@ -131,7 +131,7 @@ class TestTheRequestModelBackstop:
     def test_no_global_default_means_no_derived_effort(self, tmp_path, monkeypatch):
         (tmp_path / "config.toml").write_text('model = "gpt-5.6-sol"\n')
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", model="gpt-5.3-codex-spark")
         assert req.reasoning_effort is None
@@ -146,7 +146,7 @@ class TestTheRequestModelBackstop:
         (childs_own / "config.toml").write_text('model = "gpt-5.6-sol"\n')
         monkeypatch.setenv("CODEX_HOME", str(ambient))
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         # The child reads its own empty-of-effort config: clamping against a
         # file it never opens would be an answer about the wrong process.
@@ -175,7 +175,7 @@ class TestTheRequestModelBackstop:
         (childs_own / "work.config.toml").write_text('model = "gpt-5.3-codex-spark"\n')
         monkeypatch.setenv("CODEX_HOME", str(ambient))
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", model="work", env={"CODEX_HOME": str(childs_own)})
         assert req.model == "gpt-5.3-codex-spark"
@@ -194,7 +194,7 @@ class TestTheRequestModelBackstop:
         (ambient / "work.config.toml").write_text('model = "gpt-5.6-sol"\n')
         monkeypatch.setenv("CODEX_HOME", str(ambient))
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         assert CodexCodeRequest(prompt="hi", model="work").model == "gpt-5.6-sol"
 
@@ -214,7 +214,7 @@ class TestTheRequestModelBackstop:
         (child / "codex" / "work.config.toml").write_text('model = "gpt-5.3-codex-spark"\n')
         monkeypatch.setenv("HOME", str(parent))
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(ValidationError, match="CODEX_HOME '~/codex' is not an absolute path"):
             CodexCodeRequest(
@@ -235,14 +235,14 @@ class TestTheRequestModelBackstop:
     def test_a_relative_home_in_the_childs_env_is_refused_rather_than_resolved(self):
         """A HOME that is not absolute names a different codex home depending on where it
         is resolved, so the model-spec lookup refuses it before reading a profile there."""
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(ValidationError, match="HOME 'rel' is not an absolute path"):
             CodexCodeRequest(prompt="hi", model="work", env={"HOME": "rel"})
 
     def test_a_codex_home_in_the_childs_env_wins_over_a_relative_home(self, tmp_path):
         """CODEX_HOME is the home when it is set; a HOME beside it is not read."""
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         (tmp_path / "work.config.toml").write_text('model = "gpt-5.5"\n')
         req = CodexCodeRequest(
@@ -254,7 +254,7 @@ class TestTheRequestModelBackstop:
         """The process case goes through the same refusal: an environment naming no
         CODEX_HOME reads its HOME, and a relative one names no fixed directory."""
         from lionagi._errors import ConfigurationError
-        from lionagi.providers.openai._codex_profile import codex_home_for_env
+        from lionhub.providers.openai._codex_profile import codex_home_for_env
 
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setenv("HOME", "rel")
@@ -273,7 +273,7 @@ class TestTheRequestModelBackstop:
         """
         import pydantic
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(pydantic.ValidationError):
             CodexCodeRequest(prompt="hi", model="gpt-5.3-codex-spark", reasoning_effort=0)
@@ -298,7 +298,7 @@ class TestTheRequestModelBackstop:
         (childs_own / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
         monkeypatch.setenv("CODEX_HOME", str(ambient))
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(
             prompt="hi",
@@ -319,7 +319,7 @@ class TestTheRequestModelBackstop:
         ambient_home.mkdir()
         monkeypatch.setenv("HOME", str(ambient_home))
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(
             prompt="hi",
@@ -345,7 +345,7 @@ class TestTheRequestModelBackstop:
         which would survive unclamped, so reading the wrong home is visible in
         the assertion rather than merely unproven.
         """
-        from lionagi.providers.openai import _codex_profile
+        from lionhub.providers.openai import _codex_profile
 
         account_home = tmp_path / "account"
         (account_home / ".codex").mkdir(parents=True)
@@ -359,7 +359,7 @@ class TestTheRequestModelBackstop:
         monkeypatch.setenv("HOME", str(decoy_home))
         monkeypatch.setattr(_codex_profile, "_account_home", lambda: account_home)
 
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", model="gpt-5.3-codex-spark", env={"A": "1"})
         assert req.reasoning_effort == "xhigh"
@@ -372,7 +372,7 @@ class TestTheRequestModelBackstop:
         — that is the whole point of the seam. What must never happen is an
         env VALUE appearing in the arguments.
         """
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         secret = "sk-not-a-real-key-91746"
         args = CodexCodeRequest(

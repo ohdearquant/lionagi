@@ -14,9 +14,9 @@ import math
 import pytest
 
 from lionagi._errors import InputTokenCapError
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.connections.api_calling import estimate_payload_input_tokens
 from lionagi.service.imodel import iModel, reported_input_tokens
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 
 def _haiku(cap: int | None) -> iModel:

@@ -25,14 +25,14 @@ import sys
 
 import pytest
 
-from lionagi.providers import _cli_subprocess as cs
-from lionagi.providers._cli_subprocess import (
+from lionagi.service.accounts import _secret_resolution
+from lionagi.service.accounts._secret_resolution import fill_declared_secrets
+from lionhub.providers import _cli_subprocess as cs
+from lionhub.providers._cli_subprocess import (
     _abandoned_without_output_note,
     _no_stderr_reason,
     ndjson_from_cli,
 )
-from lionagi.service.accounts import _secret_resolution
-from lionagi.service.accounts._secret_resolution import fill_declared_secrets
 
 
 def _cmd(script: str) -> list[str]:
@@ -135,7 +135,7 @@ _EMITS_THEN_HANGS = (
     "time.sleep(300)"
 )
 
-_MODULE_LOGGER = "lionagi.providers._cli_subprocess"
+_MODULE_LOGGER = "lionhub.providers._cli_subprocess"
 
 
 async def _abandon_then(agen, between) -> None:
@@ -762,9 +762,9 @@ class TestADrainThatDidNotFinishIsNotSilence:
 
 
 def _cli_request_models() -> tuple[type, ...]:
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-    from lionagi.providers.openai.codex import CodexCodeRequest
-    from lionagi.providers.pi.cli import PiCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.pi.cli import PiCodeRequest
 
     return (PiCodeRequest, ClaudeCodeRequest, CodexCodeRequest)
 

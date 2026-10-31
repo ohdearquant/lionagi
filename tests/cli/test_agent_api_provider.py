@@ -21,7 +21,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.cli._providers import AgentProfile
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 MODEL = "anthropic/claude-haiku-5-5"
 
@@ -1813,7 +1813,7 @@ async def test_profile_effort_persists_and_can_be_overridden_on_resume(leg):
 
 @pytest.mark.asyncio
 async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, monkeypatch):
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     profile = _profile(api_tools="read")
@@ -1865,8 +1865,8 @@ async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, 
 async def test_unsupported_profile_effort_does_not_break_api_leg(
     leg, monkeypatch, model, provider_class
 ):
-    from lionagi.providers.groq.chat import GroqChatEndpoint
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.groq.chat import GroqChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     monkeypatch.setenv("GROQ_API_KEY", "synthetic-key")
@@ -1929,7 +1929,7 @@ async def test_explicit_cli_effort_on_unsupported_api_is_refused(leg, monkeypatc
 async def test_api_model_suffix_origin_and_profile_precedence(
     leg, monkeypatch, profile_model, profile_effort, positional, expected
 ):
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     profile = _profile(api_tools="read")

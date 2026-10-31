@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.providers._cli_subprocess import resolve_cli_workspace
+from lionhub.providers._cli_subprocess import resolve_cli_workspace
 
 
 class TestResolveCliWorkspaceCwdValidation:
@@ -66,7 +66,7 @@ class TestProviderRequestsRejectNonexistentRepo:
     through resolve_cli_workspace."""
 
     def test_claude_code_request_cwd_rejects_nonexistent_repo(self, tmp_path):
-        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
         bad = tmp_path / "nonexistent-repo"
         req = ClaudeCodeRequest(prompt="hi", repo=bad)
@@ -74,7 +74,7 @@ class TestProviderRequestsRejectNonexistentRepo:
             req.cwd()
 
     def test_codex_request_cwd_rejects_nonexistent_repo(self, tmp_path):
-        from lionagi.providers.openai.codex import CodexCodeRequest
+        from lionhub.providers.openai.codex import CodexCodeRequest
 
         bad = tmp_path / "nonexistent-repo"
         req = CodexCodeRequest(prompt="hi", repo=bad)
@@ -82,7 +82,7 @@ class TestProviderRequestsRejectNonexistentRepo:
             req.cwd()
 
     def test_gemini_code_request_cwd_rejects_nonexistent_repo(self, tmp_path):
-        from lionagi.providers.google.gemini_code import GeminiCodeRequest
+        from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
         bad = tmp_path / "nonexistent-repo"
         req = GeminiCodeRequest(prompt="hi", repo=bad)

@@ -248,7 +248,7 @@ class TestGlobalEffortIsClampedToTheResolvedModel:
     ):
         from pathlib import Path
 
-        from lionagi.providers.openai._codex_profile import global_codex_reasoning_effort
+        from lionhub.providers.openai._codex_profile import global_codex_reasoning_effort
 
         config_path = codex_home / "config.toml"
         _write_global(codex_home, 'model_reasoning_effort = "high"\n')
@@ -272,7 +272,7 @@ class TestADeeplyNestedGlobalConfigReadsAsNoEffort:
     """
 
     def test_a_deeply_nested_config_answers_no_effort_without_raising(self, codex_home):
-        from lionagi.providers.openai._codex_profile import global_codex_reasoning_effort
+        from lionhub.providers.openai._codex_profile import global_codex_reasoning_effort
 
         _write_global(codex_home, "x = " + "[" * 3000 + "]" * 3000 + "\n")
 
