@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import atexit
 import logging
 import re
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -192,8 +192,68 @@ class Log(Element):
         return cls(content=content)
 
 
+class _PendingLogs:
+    """Automatic-save state independent of its logger."""
+
+    def __init__(self, logs: Pile, config: DataLoggerConfig) -> None:
+        self.logs = logs
+        self.config = config
+
+
+def _path_for_config(config: DataLoggerConfig) -> Path:
+    path_str = str(config.persist_dir)
+    if config.subfolder:
+        path_str = f"{path_str}/{config.subfolder}"
+    return create_path(
+        directory=path_str,
+        filename=config.file_prefix or "",
+        extension=config.extension,
+        timestamp=config.use_timestamp,
+        random_hash_digits=config.hash_digits,
+    )
+
+
+def _flush_pending(state: _PendingLogs) -> None:
+    """Save a snapshot without clearing entries if serialization or writing fails."""
+    pile = state.logs
+    config = state.config
+    count = 0
+    path: str | Path = config.persist_dir
+    try:
+        with pile._lock:
+            count = len(pile.progression)
+            if not count:
+                return
+            entries = {uid: pile.collections[uid] for uid in pile.progression}
+            records = pile._ordered_records()
+
+        path = _path_for_config(config)
+        suffix = path.suffix.lower()
+        if suffix not in (".csv", ".json", ".jsonl"):
+            raise ValueError(f"Unsupported file extension: {suffix}")
+        text = _serialize_records(records, "csv" if suffix == ".csv" else "json")
+        with open(path, "w", encoding="utf-8", newline="") as file:
+            if file.write(text) != len(text):
+                raise OSError("Incomplete log write")
+
+        if config.clear_after_dump:
+            with pile._lock:
+                written_ids = [
+                    uid for uid, entry in entries.items() if pile.collections.get(uid) is entry
+                ]
+                pile.progression.exclude(written_ids)
+                for uid in written_ids:
+                    pile.collections.pop(uid, None)
+    except Exception:
+        logger.warning("Failed to save %d pending log entries to %s", count, path)
+
+
 class DataLogger:
-    """Log collection with optional auto-dump to CSV/JSON at capacity or program exit."""
+    """Log collection with optional auto-dump at capacity, collection, or exit.
+
+    Log content that refers back to this logger, directly or through another
+    object such as a branch, can keep the logger alive until process exit.
+    """
 
     def __init__(
         self,
@@ -206,13 +266,30 @@ class DataLogger:
             _config = DataLoggerConfig(**kwargs)
 
         if isinstance(logs, dict):
-            self.logs = Pile.from_dict(logs)
+            pile = Pile.from_dict(logs)
         else:
-            self.logs = Pile(collections=logs, item_type=Log, strict_type=True)
-        self._config = _config
+            pile = Pile(collections=logs, item_type=Log, strict_type=True)
+        self._pending = _PendingLogs(pile, _config)
 
-        if self._config.auto_save_on_exit:
-            atexit.register(self.save_at_exit)
+        if _config.auto_save_on_exit:
+            # Payloads that refer back to this logger may still retain it until exit.
+            weakref.finalize(self, _flush_pending, self._pending)
+
+    @property
+    def logs(self) -> Pile:
+        return self._pending.logs
+
+    @logs.setter
+    def logs(self, value: Pile) -> None:
+        self._pending.logs = value
+
+    @property
+    def _config(self) -> DataLoggerConfig:
+        return self._pending.config
+
+    @_config.setter
+    def _config(self, value: DataLoggerConfig) -> None:
+        self._pending.config = value
 
     def log(self, log_: Any) -> None:
         """Add a log entry; auto-dumps to file if capacity is reached."""
@@ -326,28 +403,11 @@ class DataLogger:
 
     def _create_path(self) -> Path:
         """Build an output file path from the logger config."""
-        path_str = str(self._config.persist_dir)
-        if self._config.subfolder:
-            path_str = f"{path_str}/{self._config.subfolder}"
-        return create_path(
-            directory=path_str,
-            filename=self._config.file_prefix or "",
-            extension=self._config.extension,
-            timestamp=self._config.use_timestamp,
-            random_hash_digits=self._config.hash_digits,
-        )
+        return _path_for_config(self._config)
 
     def save_at_exit(self) -> None:
         """Dump logs on program exit."""
-        if self.logs:
-            try:
-                self.dump(clear=self._config.clear_after_dump)
-            except Exception as e:
-                # JSON serialization errors during exit are non-critical, log at debug
-                if "JSON serializable" in str(e):
-                    logger.debug(f"Could not serialize logs to JSON: {e}")
-                else:
-                    logger.error(f"Failed to save logs on exit: {e}")
+        _flush_pending(self._pending)
 
     @classmethod
     def from_config(cls, config: DataLoggerConfig, logs: Any = None) -> DataLogger:
