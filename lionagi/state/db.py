@@ -304,6 +304,29 @@ EXECUTED_RUN_STATUSES: tuple[str, ...] = ("running", *TERMINAL_RUN_STATUSES)
 
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
 
+_MESSAGE_UPSERT_FIELDS = (
+    "node_metadata",
+    "content",
+    "embedding",
+    "sender",
+    "recipient",
+    "channel",
+    "role",
+    "lion_class",
+)
+_MESSAGE_INSERT_SQL = """INSERT INTO messages (id, created_at, node_metadata, content,
+    embedding, sender, recipient, channel, role, lion_class)
+    VALUES (:id, :created_at, :node_metadata, :content,
+            :embedding, :sender, :recipient, :channel, :role, :lion_class)"""
+_MESSAGE_UPSERT_STMT = text(
+    _MESSAGE_INSERT_SQL
+    + " ON CONFLICT(id) DO UPDATE SET "
+    + ", ".join(f"{field} = excluded.{field}" for field in _MESSAGE_UPSERT_FIELDS)
+).bindparams(bindparam("node_metadata", type_=JSON), bindparam("content", type_=JSON))
+_MESSAGE_INSERT_IF_ABSENT_STMT = text(
+    _MESSAGE_INSERT_SQL + " ON CONFLICT(id) DO NOTHING"
+).bindparams(bindparam("node_metadata", type_=JSON), bindparam("content", type_=JSON))
+
 _SESSION_COLUMNS = frozenset(
     {
         "cc_session_id",
@@ -3219,10 +3242,10 @@ class StateDB:
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages.role must be a non-empty string; got {role!r}")
 
-    async def _insert_message_in_tx(self, conn, msg: dict[str, Any]) -> None:
+    async def _message_values_in_tx(self, conn, msg: dict[str, Any]) -> dict[str, Any]:
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
         type_id = await self._resolve_lion_class_in_tx(conn, lion_class_str)
-        values = {
+        return {
             "id": msg["id"],
             "created_at": msg["created_at"],
             "node_metadata": msg.get("node_metadata"),
@@ -3234,32 +3257,21 @@ class StateDB:
             "role": msg["role"],
             "lion_class": type_id,
         }
+
+    async def _insert_message_in_tx(self, conn, msg: dict[str, Any]) -> None:
+        values = await self._message_values_in_tx(conn, msg)
         if self._compat is not None:
             await self._write_message_compat(conn, values)
             return
 
         # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
-        await conn.execute(
-            text(
-                """INSERT INTO messages (id, created_at, node_metadata, content,
-                   embedding, sender, recipient, channel, role, lion_class)
-                   VALUES (:id, :created_at, :node_metadata, :content,
-                           :embedding, :sender, :recipient, :channel, :role, :lion_class)
-                   ON CONFLICT(id) DO UPDATE SET
-                     node_metadata = excluded.node_metadata,
-                     content       = excluded.content,
-                     embedding     = excluded.embedding,
-                     sender        = excluded.sender,
-                     recipient     = excluded.recipient,
-                     channel       = excluded.channel,
-                     role          = excluded.role,
-                     lion_class    = excluded.lion_class"""
-            ).bindparams(
-                bindparam("node_metadata", type_=JSON),
-                bindparam("content", type_=JSON),
-            ),
-            values,
-        )
+        await conn.execute(_MESSAGE_UPSERT_STMT, values)
+
+    async def _insert_import_message_if_absent_in_tx(self, conn, msg: dict[str, Any]) -> bool:
+        self._validate_message(msg)
+        values = await self._message_values_in_tx(conn, msg)
+        result = await conn.execute(_MESSAGE_INSERT_IF_ABSENT_STMT, values)
+        return bool(result.rowcount)
 
     async def _write_message_compat(self, conn, values: dict[str, Any]) -> None:
         # A message this run wrote is rewritten in place, as a re-emitted hook does natively, and
@@ -3423,27 +3435,36 @@ class StateDB:
             progression_id, collection, allow_none=True
         )
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
-                    "ON CONFLICT (id) DO NOTHING"
-                ),
-                {
-                    "id": progression_id,
-                    "ca": time.time(),
-                    "col": _to_json_column(collection or []),
-                },
-            )
+            await self._create_progression_in_tx(conn, progression_id, collection)
+
+    async def _create_progression_in_tx(
+        self, conn, progression_id: str, collection: list[str] | None = None
+    ) -> None:
+        collection = self._validate_progression_collection(
+            progression_id, collection, allow_none=True
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": progression_id, "ca": time.time(), "col": _to_json_column(collection or [])},
+        )
 
     async def set_progression(self, progression_id: str, collection: list[str]) -> None:
         """Replace a progression's collection wholesale, serializing the JSON here."""
         if self._compat is None:
             collection = self._validate_progression_collection(progression_id, collection)
         async with self._tx() as conn:
-            await conn.execute(
-                text("UPDATE progressions SET collection = :col WHERE id = :id"),
-                {"col": _to_json_column(collection or []), "id": progression_id},
-            )
+            await self._set_progression_in_tx(conn, progression_id, collection)
+
+    async def _set_progression_in_tx(
+        self, conn, progression_id: str, collection: list[str]
+    ) -> None:
+        await conn.execute(
+            text("UPDATE progressions SET collection = :col WHERE id = :id"),
+            {"col": _to_json_column(collection or []), "id": progression_id},
+        )
 
     async def get_progression(self, progression_id: str) -> list[str]:
         async with self._read() as conn:
@@ -3595,8 +3616,7 @@ class StateDB:
 
     # Sessions
 
-    @_operation("create_session")
-    async def create_session(self, session: dict[str, Any]) -> None:
+    def _prepare_session_insert(self, session: dict[str, Any]) -> tuple[dict[str, Any], float]:
         _validate_session_status(session.get("status"))
         _validate_enum(
             "invocation_kind",
@@ -3679,14 +3699,31 @@ class StateDB:
             "project_source": session.get("project_source"),
             "duration_ms": duration_ms,
         }
+        return params, now
+
+    @_operation("create_session")
+    async def create_session(self, session: dict[str, Any]) -> None:
+        params, now = self._prepare_session_insert(session)
         if self._compat is not None:
             params.pop("cli_worker_generation")
             await self._create_session_compat(session, params, now)
             return
         async with self._tx() as conn:
-            result = await conn.execute(
-                text(
-                    """INSERT INTO sessions (id, cc_session_id, run_id, cli_worker_generation, created_at, node_metadata, name, "user",
+            await self._create_session_in_tx(conn, session, params, now)
+
+        project_name = session.get("project")
+        if project_name:
+            await self.register_project(
+                project_name,
+                session.get("project_source") or "git_remote",
+            )
+
+    async def _create_session_in_tx(
+        self, conn, session: dict[str, Any], params: dict[str, Any], now: float
+    ) -> bool:
+        result = await conn.execute(
+            text(
+                """INSERT INTO sessions (id, cc_session_id, run_id, cli_worker_generation, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -3705,37 +3742,31 @@ class StateDB:
                                :model, :provider, :effort, :agent_hash,
                                :project, :project_source, :duration_ms)
                        ON CONFLICT (id) DO NOTHING"""
-                ).bindparams(
-                    bindparam("node_metadata", type_=JSON),
-                    bindparam("artifact_contract_json", type_=JSON),
-                    bindparam("artifact_verification_json", type_=JSON),
+            ).bindparams(
+                bindparam("node_metadata", type_=JSON),
+                bindparam("artifact_contract_json", type_=JSON),
+                bindparam("artifact_verification_json", type_=JSON),
+            ),
+            params,
+        )
+        # Only increment session_count when INSERT actually created a row.
+        if result.rowcount and session.get("status") is not None:
+            await self._initialize_managed_entity_in_tx(
+                conn,
+                entity_type="session",
+                entity_id=session["id"],
+                status=session["status"],
+                actor_id="create_session",
+            )
+        if session.get("invocation_id") and result.rowcount:
+            await conn.execute(
+                text(
+                    "UPDATE invocations SET session_count = session_count + 1, "
+                    "updated_at = :now WHERE id = :inv_id"
                 ),
-                params,
+                {"now": now, "inv_id": session["invocation_id"]},
             )
-            # Only increment session_count when INSERT actually created a row.
-            if result.rowcount and session.get("status") is not None:
-                await self._initialize_managed_entity_in_tx(
-                    conn,
-                    entity_type="session",
-                    entity_id=session["id"],
-                    status=session["status"],
-                    actor_id="create_session",
-                )
-            if session.get("invocation_id") and result.rowcount:
-                await conn.execute(
-                    text(
-                        "UPDATE invocations SET session_count = session_count + 1, "
-                        "updated_at = :now WHERE id = :inv_id"
-                    ),
-                    {"now": now, "inv_id": session["invocation_id"]},
-                )
-
-        project_name = session.get("project")
-        if project_name:
-            await self.register_project(
-                project_name,
-                session.get("project_source") or "git_remote",
-            )
+        return bool(result.rowcount)
 
     async def _create_session_compat(
         self, session: dict[str, Any], params: dict[str, Any], now: float
@@ -4633,34 +4664,54 @@ class StateDB:
 
         if fields:
             fields["updated_at"] = time.time()
-            merging_metadata = self._compat is not None and "node_metadata" in fields
-            sets = ", ".join(
-                f'"{k}" = {_set_if_null_expression(k, self.dialect)}'
-                if k in set_if_null
-                else f'"{k}" = :{k}'
-                for k in fields
-            )
-            params = dict(fields)
-            params["_id"] = session_id
-            clause, owner = self._owner_predicate("sessions")
+            set_if_null = frozenset(set_if_null)
             async with self._tx() as conn:
-                if self._compat is not None:
-                    await self._require_owned(conn, "sessions", session_id, "session")
-                    for link, table, what, _created in _SESSION_LINKS:
-                        if params.get(link) is not None:
-                            await self._require_owned(conn, table, params[link], what)
-                    if merging_metadata:
-                        params["node_metadata"] = await self._merged_node_metadata(
-                            conn,
-                            "sessions",
-                            session_id,
-                            params["node_metadata"],
-                            fill_only_if_absent="node_metadata" in set_if_null,
-                        )
-                await conn.execute(
-                    text(f"UPDATE sessions SET {sets} WHERE id = :_id{clause}"),  # noqa: S608
-                    {**params, **owner},
+                await self._update_session_fields_in_tx(conn, session_id, fields, set_if_null)
+
+    async def _update_session_fields_in_tx(
+        self, conn, session_id: str, fields: dict[str, Any], set_if_null: frozenset[str]
+    ) -> None:
+        merging_metadata = self._compat is not None and "node_metadata" in fields
+        sets = ", ".join(
+            f'"{k}" = {_set_if_null_expression(k, self.dialect)}'
+            if k in set_if_null
+            else f'"{k}" = :{k}'
+            for k in fields
+        )
+        params = dict(fields)
+        params["_id"] = session_id
+        clause, owner = self._owner_predicate("sessions")
+        if self._compat is not None:
+            await self._require_owned(conn, "sessions", session_id, "session")
+            for link, table, what, _created in _SESSION_LINKS:
+                if params.get(link) is not None:
+                    await self._require_owned(conn, table, params[link], what)
+            if merging_metadata:
+                params["node_metadata"] = await self._merged_node_metadata(
+                    conn,
+                    "sessions",
+                    session_id,
+                    params["node_metadata"],
+                    fill_only_if_absent="node_metadata" in set_if_null,
                 )
+        await conn.execute(
+            text(f"UPDATE sessions SET {sets} WHERE id = :_id{clause}"),  # noqa: S608
+            {**params, **owner},
+        )
+
+    async def _update_session_message_refs_in_tx(
+        self, conn, session_id: str, first_msg_id: str, last_msg_id: str
+    ) -> None:
+        await self._update_session_fields_in_tx(
+            conn,
+            session_id,
+            {
+                "first_msg_id": first_msg_id,
+                "last_msg_id": last_msg_id,
+                "updated_at": time.time(),
+            },
+            frozenset(),
+        )
 
     @staticmethod
     def _node_metadata_merge_ops(patch: dict[str, Any]) -> list[tuple[str, tuple[str, ...], Any]]:
@@ -7212,9 +7263,9 @@ class StateDB:
 
     # Branches
 
-    @_operation("create_branch")
-    async def create_branch(self, branch: dict[str, Any]) -> None:
-        values = {
+    @staticmethod
+    def _prepare_branch_insert(branch: dict[str, Any]) -> dict[str, Any]:
+        return {
             "id": branch["id"],
             "created_at": branch.get("created_at", time.time()),
             "node_metadata": branch.get("node_metadata"),
@@ -7227,6 +7278,10 @@ class StateDB:
             "provider": branch.get("provider"),
             "agent_name": branch.get("agent_name"),
         }
+
+    @_operation("create_branch")
+    async def create_branch(self, branch: dict[str, Any]) -> None:
+        values = self._prepare_branch_insert(branch)
         if self._compat is not None:
             # The session, progression and system message a branch links are rows this run
             # created, so they share its owner.
@@ -7240,16 +7295,23 @@ class StateDB:
                 )
             return
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    """INSERT INTO branches (id, created_at, node_metadata, "user", name,
-                       session_id, progression_id, system_msg_id, model, provider, agent_name)
-                       VALUES (:id, :created_at, :node_metadata, :user, :name,
-                               :session_id, :progression_id, :system_msg_id, :model, :provider, :agent_name)
-                       ON CONFLICT (id) DO NOTHING"""
-                ).bindparams(bindparam("node_metadata", type_=JSON)),
-                values,
-            )
+            await self._create_branch_values_in_tx(conn, values)
+
+    async def _create_branch_in_tx(self, conn, branch: dict[str, Any]) -> None:
+        values = self._prepare_branch_insert(branch)
+        await self._create_branch_values_in_tx(conn, values)
+
+    async def _create_branch_values_in_tx(self, conn, values: dict[str, Any]) -> None:
+        await conn.execute(
+            text(
+                """INSERT INTO branches (id, created_at, node_metadata, "user", name,
+                   session_id, progression_id, system_msg_id, model, provider, agent_name)
+                   VALUES (:id, :created_at, :node_metadata, :user, :name,
+                           :session_id, :progression_id, :system_msg_id, :model, :provider, :agent_name)
+                   ON CONFLICT (id) DO NOTHING"""
+            ).bindparams(bindparam("node_metadata", type_=JSON)),
+            values,
+        )
 
     async def get_branch(self, branch_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

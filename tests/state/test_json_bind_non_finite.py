@@ -176,17 +176,18 @@ async def test_import_writes_the_session_collection_through_the_db_operation(db,
     from lionagi.cli.state import _import_one_run
 
     calls: list[tuple[str, list[str]]] = []
-    real = db.set_progression
+    real = db._set_progression_in_tx
 
-    async def spy(progression_id, collection):
+    async def spy(conn, progression_id, collection):
         calls.append((progression_id, list(collection)))
-        await real(progression_id, collection)
+        await real(conn, progression_id, collection)
 
-    db.set_progression = spy
+    db._set_progression_in_tx = spy
 
     run_dir = _write_run_dir(tmp_path / "home", msg_id_literal='"m1"')
     _, branches, messages = await _import_one_run(db, "run-1", run_dir, {"kind": "agent"})
 
+    assert calls, "the transactional progression seam must run"
     assert (branches, messages) == (1, 1)
     assert len(calls) == 1, "the session collection must go through set_progression"
     session_prog_id, collection = calls[0]

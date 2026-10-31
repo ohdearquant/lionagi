@@ -155,7 +155,7 @@ async def test_import_uses_checked_snapshot_if_branch_changes_before_first_write
     second = branches / "second.json"
     _branch(second, "branch-2", [_message("checked-id", "checked")], stamp=2)
     async with StateDB(tmp_path / "state.db") as db:
-        original = db.create_progression
+        original = db._create_progression_in_tx
         changed = False
 
         async def replace_file_at_first_write(*args, **kwargs):
@@ -165,8 +165,9 @@ async def test_import_uses_checked_snapshot_if_branch_changes_before_first_write
                 _branch(second, "branch-2", [_message("replacement-id", "replacement")], stamp=2)
             return await original(*args, **kwargs)
 
-        monkeypatch.setattr(db, "create_progression", replace_file_at_first_write)
+        monkeypatch.setattr(db, "_create_progression_in_tx", replace_file_at_first_write)
         assert await state_mod._import_one_run(db, "run-4", run_dir, {"kind": "agent"}) == (1, 2, 2)
+        assert changed is True
         assert changed
         rows = await db.fetch_all("SELECT id FROM messages ORDER BY id")
         assert [row["id"] for row in rows] == ["checked-id", "valid-1"]

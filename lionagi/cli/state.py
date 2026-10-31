@@ -229,23 +229,118 @@ def _import_content_bytes(content: Any) -> str:
     return json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _import_message_fingerprint(raw: dict[str, Any]) -> str:
+    """Identify repeated input without inspecting fields the importer ignores."""
+    return json.dumps(_msg_from_collection_entry(raw), sort_keys=True, separators=(",", ":"))
+
+
 def _import_message_differences(existing: dict[str, Any], raw: dict[str, Any]) -> tuple[str, ...]:
     """Compare the fields the normal message upsert would replace."""
-    from lionagi.state.db import _pack_embedding
+    from lionagi.state.db import _MESSAGE_UPSERT_FIELDS, _pack_embedding
 
     incoming = _msg_from_collection_entry(raw)
     metadata = incoming["node_metadata"]
     lion_class = (metadata or {}).get("lion_class", "") or "__unknown__"
     stored_lion_class = existing["lion_class"] if existing["lion_class_id"] != 0 else "__unknown__"
     differences = []
-    for field in ("content", "node_metadata", "role", "sender", "recipient", "channel"):
-        if _import_content_bytes(existing[field]) != _import_content_bytes(incoming[field]):
+    # Preserve the established diagnostic order while using the upsert's
+    # authoritative field set.
+    order = (
+        "content",
+        "node_metadata",
+        "role",
+        "sender",
+        "recipient",
+        "channel",
+        "lion_class",
+        "embedding",
+    )
+    for field in sorted(_MESSAGE_UPSERT_FIELDS, key=order.index):
+        if field == "lion_class":
+            differs = _import_content_bytes(stored_lion_class) != _import_content_bytes(lion_class)
+        elif field == "embedding":
+            differs = _pack_embedding(existing[field]) != _pack_embedding(incoming[field])
+        else:
+            differs = _import_content_bytes(existing[field]) != _import_content_bytes(
+                incoming[field]
+            )
+        if differs:
             differences.append(field)
-    if _import_content_bytes(stored_lion_class) != _import_content_bytes(lion_class):
-        differences.append("lion_class")
-    if _pack_embedding(existing["embedding"]) != _pack_embedding(incoming["embedding"]):
-        differences.append("embedding")
     return tuple(differences)
+
+
+class _ImportAlreadyExistsError(Exception):
+    """Abort the transaction when another importer admitted this run first."""
+
+
+def _import_candidates_sql(dialect: str) -> str:
+    if dialect == "sqlite":
+        return "SELECT value AS id FROM json_each(:candidate_ids)"
+    if dialect == "postgresql":
+        return "SELECT value AS id FROM jsonb_array_elements_text(CAST(:candidate_ids AS jsonb))"
+    raise ValueError(f"Import message ownership checks do not support {dialect!r}")
+
+
+async def _shared_import_messages_in_tx(
+    conn: Any, dialect: str, run_id: str, message_ids: list[str]
+) -> dict[str, Any]:
+    """Read all shared candidates in this transaction with one membership expansion."""
+    from sqlalchemy import text
+
+    if not message_ids:
+        return {}
+    candidates = _import_candidates_sql(dialect)
+    members = (
+        "json_each(p.collection) AS members"
+        if dialect == "sqlite"
+        else "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
+    )
+    sql = (  # noqa: S608 -- fragments are selected above, values are bound
+        f"WITH candidates AS ({candidates}) "  # noqa: S608 -- fixed dialect fragments only
+        "SELECT m.id, CAST(m.content AS TEXT) AS content, "
+        "CAST(m.node_metadata AS TEXT) AS node_metadata, "
+        "m.role, m.sender, m.recipient, m.channel, m.embedding, "
+        "m.lion_class AS lion_class_id, mt.lion_class AS lion_class "
+        "FROM messages m LEFT JOIN message_types mt ON mt.type_id = m.lion_class "
+        "WHERE m.id IN (SELECT id FROM candidates) AND ("
+        "EXISTS (SELECT 1 FROM sessions s WHERE s.id != :run_id "
+        "AND (s.first_msg_id = m.id OR s.last_msg_id = m.id)) OR "
+        "EXISTS (SELECT 1 FROM branches b JOIN sessions s ON s.id = b.session_id "
+        "WHERE b.system_msg_id = m.id AND s.id != :run_id) OR "
+        "m.id IN (SELECT members.value FROM progressions p "
+        f"CROSS JOIN {members} "
+        "WHERE (EXISTS (SELECT 1 FROM sessions s "
+        "WHERE s.progression_id = p.id AND s.id != :run_id) OR "
+        "EXISTS (SELECT 1 FROM branches b JOIN sessions s ON s.id = b.session_id "
+        "WHERE b.progression_id = p.id AND s.id != :run_id)) "
+        "AND members.value IN (SELECT id FROM candidates)))"
+    )
+    rows = (
+        await conn.execute(text(sql), {"candidate_ids": json.dumps(message_ids), "run_id": run_id})
+    ).mappings()
+    shared = {}
+    for row in rows:
+        record = dict(row)
+        record["content"] = json.loads(record["content"])
+        metadata = record["node_metadata"]
+        record["node_metadata"] = None if metadata is None else json.loads(metadata)
+        shared[record["id"]] = record
+    return shared
+
+
+async def _lock_import_messages_in_tx(conn: Any, message_ids: list[str]) -> set[str]:
+    """Lock currently present PostgreSQL candidate rows in deterministic order."""
+    from sqlalchemy import text
+
+    if not message_ids:
+        return set()
+    candidates = _import_candidates_sql("postgresql")
+    sql = (  # noqa: S608 -- candidate SQL is fixed and IDs are bound
+        "SELECT m.id FROM messages m "  # noqa: S608 -- fixed SQL and bound candidate values
+        f'WHERE m.id IN ({candidates}) ORDER BY m.id COLLATE "C" FOR UPDATE OF m'
+    )
+    rows = await conn.execute(text(sql), {"candidate_ids": json.dumps(message_ids)})
+    return set(rows.scalars().all())
 
 
 async def _import_one_run(
@@ -254,8 +349,11 @@ async def _import_one_run(
     run_dir: Path,
     manifest: dict[str, Any],
 ) -> tuple[int, int, int]:
+    from sqlalchemy import text
+
     from lionagi.state.db import StateDB
 
+    db._refuse_in_compatibility("import_runs", "run import is not supported in compatibility mode")
     created_at = _mtime_as_float(run_dir)
     session_name = manifest.get("kind") or "agent"
 
@@ -292,94 +390,51 @@ async def _import_one_run(
                 raise ValueError(f"{branch_file.name}: message entry {index}: {exc}") from exc
         prepared_branches.append((branch_file, branch_data, [message for _, message in selected]))
 
-    # This is a preflight snapshot, not a concurrent-writer fence. A different
-    # session can attach a message after this read and before this import writes.
     selected_messages = [message for _, _, messages in prepared_branches for message in messages]
-    shared = await _shared_import_messages(
-        db, run_id, [message["id"] for message in selected_messages]
-    )
+    unique_messages: dict[str, dict[str, Any]] = {}
     for message in selected_messages:
-        message_id = message["id"]
-        if message_id in shared:
-            differences = _import_message_differences(shared[message_id], message)
-            if differences:
-                raise ImportMessageConflictError(message_id, differences)
-
-    await db.create_progression(session_prog_id)
+        unique_messages.setdefault(message["id"], message)
 
     raw_kind = (manifest.get("kind") or "").lower()
-    legacy_kind_map = {
-        "agent": "agent",
-        "play": "play",
-        "flow": "flow",
-        "fanout": "fanout",
-    }
-    invocation_kind = legacy_kind_map.get(raw_kind)
-
+    invocation_kind = {"agent": "agent", "play": "play", "flow": "flow", "fanout": "fanout"}.get(
+        raw_kind
+    )
     artifacts_path = manifest.get("artifact_root") or manifest.get("artifacts_path")
     if artifacts_path is None:
         candidate = run_dir / "artifacts"
         if candidate.exists():
             artifacts_path = str(candidate)
-
-    await db.create_session(
-        {
-            "id": run_id,
-            "created_at": created_at,
-            "node_metadata": None,
-            "name": session_name,
-            "user": None,
-            "progression_id": session_prog_id,
-            "first_msg_id": None,
-            "last_msg_id": None,
-            # Enriched provenance — written so imported rows are
-            # queryable by the same fields live runs use.
-            "invocation_kind": invocation_kind,
-            "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),
-            "agent_name": manifest.get("agent_name") or manifest.get("agent"),
-            "artifacts_path": artifacts_path,
-            "source_kind": "imported_fs",
-            "status": status,
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "ended_at_is_approximate": ended_at_is_approximate,
-        }
-    )
-
-    total_branches = 0
-    total_messages = 0
-    session_msg_ids: list[str] = []
-
+    session = {
+        "id": run_id,
+        "created_at": created_at,
+        "node_metadata": None,
+        "name": session_name,
+        "user": None,
+        "progression_id": session_prog_id,
+        "first_msg_id": None,
+        "last_msg_id": None,
+        "invocation_kind": invocation_kind,
+        "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),
+        "agent_name": manifest.get("agent_name") or manifest.get("agent"),
+        "artifacts_path": artifacts_path,
+        "source_kind": "imported_fs",
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "ended_at_is_approximate": ended_at_is_approximate,
+    }
+    session_params, session_now = db._prepare_session_insert(session)
+    branch_info = []
     for branch_file, branch_data, ordered_msgs in prepared_branches:
         branch_id = branch_data.get("id") or branch_file.stem
         branch_created_at = branch_data.get("created_at") or _mtime_as_float(branch_file)
-
-        system_msg_id: str | None = None
-        for raw_msg in ordered_msgs:
-            if raw_msg.get("role") == "system":
-                system_msg_id = raw_msg["id"]
-                break
-
-        branch_msg_ids: list[str] = []
-        for raw_msg in ordered_msgs:
-            msg = _msg_from_collection_entry(raw_msg)
-            # An identical shared row already belongs to another session;
-            # keep it intact rather than upserting it.
-            if msg["id"] not in shared:
-                await db.insert_message(msg)
-            branch_msg_ids.append(msg["id"])
-            total_messages += 1
-
-        # Create branch progression with ordered message IDs.
-        branch_prog_id = str(uuid.uuid4())
-        await db.create_progression(branch_prog_id, branch_msg_ids)
-
-        manifest_branch_meta = {}
-        for mb in manifest.get("branches", []):
-            if mb.get("id") == branch_id:
-                manifest_branch_meta = mb
-                break
-
+        system_msg_id = next(
+            (message["id"] for message in ordered_msgs if message.get("role") == "system"),
+            None,
+        )
+        manifest_branch_meta = next(
+            (item for item in manifest.get("branches", []) if item.get("id") == branch_id), {}
+        )
         node_meta: dict[str, Any] = {}
         provider = manifest_branch_meta.get("provider") or manifest.get("provider")
         model = manifest_branch_meta.get("model") or manifest.get("model")
@@ -387,35 +442,114 @@ async def _import_one_run(
             node_meta["provider"] = provider
         if model:
             node_meta["model"] = model
-        branch_name = manifest_branch_meta.get("name") or manifest.get("kind")
-
-        await db.create_branch(
-            {
-                "id": branch_id,
-                "created_at": branch_created_at,
-                "node_metadata": node_meta or None,
-                "user": branch_data.get("user"),
-                "name": branch_name,
-                "session_id": run_id,
-                "progression_id": branch_prog_id,
-                "system_msg_id": system_msg_id,
-            }
+        branch_info.append(
+            (
+                {
+                    "id": branch_id,
+                    "created_at": branch_created_at,
+                    "node_metadata": node_meta or None,
+                    "user": branch_data.get("user"),
+                    "name": manifest_branch_meta.get("name") or manifest.get("kind"),
+                    "session_id": run_id,
+                    "progression_id": str(uuid.uuid4()),
+                    "system_msg_id": system_msg_id,
+                },
+                ordered_msgs,
+            )
         )
 
-        session_msg_ids.extend(branch_msg_ids)
-        total_branches += 1
+    try:
+        async with db._tx() as conn:
+            reserved: set[str] = set()
+            existing: set[str] = set()
+            candidate_ids = sorted(unique_messages)
+            if db.dialect == "postgresql":
+                existing = await _lock_import_messages_in_tx(conn, candidate_ids)
+            found = await conn.execute(
+                text("SELECT id FROM sessions WHERE id = :id"), {"id": run_id}
+            )
+            if found.first() is not None:
+                raise _ImportAlreadyExistsError
 
-    if session_msg_ids:
-        # Through the DB operation rather than a local UPDATE: the ids come from
-        # an imported file, and a hand-rolled json.dumps here would hand the
-        # driver a finished string that no serializer gets to check.
-        await db.set_progression(session_prog_id, session_msg_ids)
-        await db.update_session(
-            run_id,
-            first_msg_id=session_msg_ids[0],
-            last_msg_id=session_msg_ids[-1],
-        )
+            shared_ids = sorted(existing) if db.dialect == "postgresql" else candidate_ids
+            shared = await _shared_import_messages_in_tx(conn, db.dialect, run_id, shared_ids)
+            compared: set[tuple[str, str]] = set()
 
+            def check_shared(rows: dict[str, Any]) -> None:
+                for message in selected_messages:
+                    message_id = message["id"]
+                    if message_id in rows:
+                        key = (message_id, _import_message_fingerprint(message))
+                        if key not in compared:
+                            differences = _import_message_differences(rows[message_id], message)
+                            if differences:
+                                raise ImportMessageConflictError(message_id, differences)
+                            compared.add(key)
+
+            check_shared(shared)
+
+            await db._create_progression_in_tx(conn, session_prog_id)
+            admitted = await db._create_session_in_tx(conn, session, session_params, session_now)
+            if not admitted:
+                raise _ImportAlreadyExistsError
+
+            if db.dialect == "postgresql":
+                conflicted = []
+                for message_id in candidate_ids:
+                    if message_id not in existing:
+                        inserted = await db._insert_import_message_if_absent_in_tx(
+                            conn, _msg_from_collection_entry(unique_messages[message_id])
+                        )
+                        if inserted:
+                            reserved.add(message_id)
+                        else:
+                            conflicted.append(message_id)
+                if conflicted:
+                    existing.update(await _lock_import_messages_in_tx(conn, conflicted))
+                    late_shared = await _shared_import_messages_in_tx(
+                        conn, db.dialect, run_id, conflicted
+                    )
+                    check_shared(late_shared)
+                    shared.update(late_shared)
+
+            session_msg_ids: list[str] = []
+            pending_reserved = set(reserved)
+            last_written: dict[str, str] = {}
+            for branch, ordered_msgs in branch_info:
+                branch_msg_ids: list[str] = []
+                for raw_msg in ordered_msgs:
+                    message_id = raw_msg["id"]
+                    if message_id not in shared:
+                        fingerprint = _import_message_fingerprint(raw_msg)
+                        if message_id in pending_reserved:
+                            pending_reserved.remove(message_id)
+                        elif last_written.get(message_id) != fingerprint:
+                            msg = _msg_from_collection_entry(raw_msg)
+                            if (
+                                message_id in reserved
+                                or message_id in existing
+                                or not await db._insert_import_message_if_absent_in_tx(conn, msg)
+                            ):
+                                db._validate_message(msg)
+                                await db._insert_message_in_tx(conn, msg)
+                            else:
+                                reserved.add(message_id)
+                        last_written[message_id] = fingerprint
+                    branch_msg_ids.append(message_id)
+                await db._create_progression_in_tx(conn, branch["progression_id"], branch_msg_ids)
+                await db._create_branch_in_tx(conn, branch)
+                session_msg_ids.extend(branch_msg_ids)
+
+            if session_msg_ids:
+                await db._set_progression_in_tx(conn, session_prog_id, session_msg_ids)
+                await db._update_session_message_refs_in_tx(
+                    conn, run_id, session_msg_ids[0], session_msg_ids[-1]
+                )
+    except _ImportAlreadyExistsError:
+        return 0, 0, 0
+
+    total_branches = len(branch_info)
+    total_messages = len(session_msg_ids)
     print(f"  imported {run_id}: {total_branches} branch(es), {total_messages} message(s)")
     return 1, total_branches, total_messages
 
@@ -1468,6 +1602,9 @@ async def _import_runs() -> dict[str, int]:
                 counts["errors"] += 1
                 continue
 
+            if not session_count:
+                counts["skipped"] += 1
+                continue
             counts["sessions"] += session_count
             counts["branches"] += branch_count
             counts["messages"] += msg_count
