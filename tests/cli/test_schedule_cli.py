@@ -2767,10 +2767,12 @@ def test_schedule_parsing_names_live_in_the_shared_module(name):
 
 
 def test_schedule_parsing_module_stays_below_the_command_layer():
-    """The shared parsing module imports no CLI command module and nothing from Studio at
-    module level; its only Studio imports are four scheduler names, each read inside the
-    function that uses it."""
+    """The shared parsing module imports no CLI command module and nothing from Studio, at
+    module level or inside a function. The chain-depth cap, the action-kind vocabulary and the
+    identifier check are defined here and the scheduler imports them back as the very same
+    objects."""
     import ast
+    import importlib
 
     import lionagi.cli
     from tests.cli._import_guard import command_module_imports, resolved_imports
@@ -2780,42 +2782,35 @@ def test_schedule_parsing_module_stays_below_the_command_layer():
 
     imported = resolved_imports(path, "lionagi.cli")
     assert command_module_imports(imported) == set()
-    assert all(
-        name.startswith("lionagi.studio.scheduler.")
-        for name in imported
-        if name.startswith("lionagi.studio")
-    )
+    assert [name for name in imported if name.startswith("lionagi.studio")] == []
 
-    def studio_imports(nodes):
-        found = set()
-        for node in nodes:
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.ImportFrom):
-                    if sub.module and sub.module.startswith("lionagi.studio"):
-                        found.update((sub.module, alias.name) for alias in sub.names)
-                elif isinstance(sub, ast.Import):
-                    found.update(
-                        (alias.name, None)
-                        for alias in sub.names
-                        if alias.name.startswith("lionagi.studio")
-                    )
-        return found
+    studio_imports = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level == 0 and (
+                module.startswith("lionagi.studio")
+                or (module == "lionagi" and any(a.name == "studio" for a in node.names))
+            ):
+                studio_imports.add((module, tuple(a.name for a in node.names)))
+            elif node.level >= 2 and module.startswith("studio"):
+                studio_imports.add(("." * node.level + module, tuple(a.name for a in node.names)))
+        elif isinstance(node, ast.Import):
+            studio_imports.update(
+                (alias.name, ()) for alias in node.names if alias.name.startswith("lionagi.studio")
+            )
+    assert studio_imports == set()
 
-    tree = ast.parse(path.read_text())
-    functions = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    module_level = [n for n in tree.body if n not in functions]
-    assert studio_imports(module_level) == set()
-    local = {fn.name: studio_imports([fn]) for fn in functions}
-    engine = "lionagi.studio.scheduler.engine"
-    subprocess = "lionagi.studio.scheduler.subprocess"
-    assert {name: found for name, found in local.items() if found} == {
-        "_parse_chain_action": {(engine, "_MAX_CHAIN_DEPTH")},
-        "build_create_body": {
-            (subprocess, "_ALIAS_ACTION_KINDS"),
-            (subprocess, "_validate_identifier"),
-        },
-        "add_schedule_subparser": {
-            (subprocess, "_ALIAS_ACTION_KINDS"),
-            (subprocess, "_VALID_ACTION_KINDS"),
-        },
-    }
+    parsing = importlib.import_module("lionagi.cli._schedule_parsing")
+    engine_module = importlib.import_module("lionagi.studio.scheduler.engine")
+    subprocess_module = importlib.import_module("lionagi.studio.scheduler.subprocess")
+    assert engine_module._MAX_CHAIN_DEPTH is parsing._MAX_CHAIN_DEPTH
+    for name in (
+        "_VALID_ACTION_KINDS",
+        "_ALIAS_ACTION_KINDS",
+        "_MODEL_RE",
+        "_IDENT_RE",
+        "_validate_identifier",
+    ):
+        assert getattr(subprocess_module, name) is getattr(parsing, name), name
+    assert parsing._validate_identifier.__module__ == "lionagi.cli._schedule_parsing"
