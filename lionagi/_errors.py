@@ -239,9 +239,11 @@ class InputTokenCapError(LionError):
 
 class FailedRoundError(LionError):
     """Raised when an API-model leg's tool loop keeps ending on a failed round: a response that
-    stopped at its output token limit with no text and no tool call, a reply that did not parse,
-    or an answer with no text. Raised once the loop has been continued past it as many times as it
-    may be, so the run fails instead of ending as finished work. ``details`` carries ``continued``.
+    stopped at its output token limit with no text and no tool call, a response the provider
+    refused, a reply that did not parse, or an answer with no text. Raised once the loop has been
+    continued past it as many times as it may be, so the run fails instead of ending as finished
+    work. ``details`` carries ``continued``, and ``stop_reason`` when the provider refused the
+    response.
     """
 
     default_message = "The agent loop ended on a failed round"
