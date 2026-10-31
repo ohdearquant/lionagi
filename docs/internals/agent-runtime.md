@@ -66,7 +66,9 @@ and one implementation.
   `request_carries_forwarded_mcp` off the request the spawn produced.
 - `exclusive` bounds the server set configured for the agent rather than
   adding to whatever the provider finds for itself. An explicit per-call MCP
-  option replaces that configuration for that call. An exclusive selection
+  option replaces that configuration for that call. A set the caller resolved from a
+  file named with `--mcp-config` is exclusive; a set found by the ambient `.mcp.json`
+  lookup is additive. An exclusive selection
   with no forwarded names and no allowed names means "no servers", including
   when `servers=None`, which is how `--no-mcp-config` arrives: the Claude CLI
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets

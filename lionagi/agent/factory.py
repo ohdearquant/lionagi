@@ -1548,8 +1548,11 @@ def _forward_mcp_to_cli_request(
         servers,
         provider=provider,
         # A caller handing over an empty set has declared the whole set, as
-        # build_chat_model reads it for a plain leg.
-        exclusive=spec.mcp_servers is not None or (caller_resolved and not servers),
+        # build_chat_model reads it for a plain leg. A caller that named its
+        # server file with --mcp-config has declared the set too, so it is
+        # exclusive; a set found by the ambient .mcp.json lookup stays additive.
+        exclusive=spec.mcp_servers is not None
+        or (caller_resolved and (not servers or resolved_servers_explicit)),
         allowed_names=spec.mcp_servers,
         # A CLI endpoint holds the child's env outside its config kwargs.
         env=getattr(forwarded.endpoint, "_runtime_state", {}).get("env"),

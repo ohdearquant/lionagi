@@ -1757,7 +1757,7 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty,
+                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
@@ -2078,9 +2078,11 @@ async def _run_agent(
                 cfg,
                 mcp_resolution.servers,
                 provider=provider,
-                # The persisted request carries the previous run's servers; only a declared set replaces
-                # them. A failed search leaves them, as it leaves a new leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty,
+                # A set named by a config file, or declared empty, is the whole set: the provider's
+                # own servers are left out too. A set found by search joins what the provider finds
+                # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
+                # leg to what its CLI finds.
+                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
             )
             missing_profile = _missing_generated_codex_profile(cfg)
             if missing_profile is not None:

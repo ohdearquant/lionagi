@@ -87,7 +87,9 @@ MCP servers are resolved once per launch, from the directory the command was run
 nearest `.mcp.json` at or above that directory is used. On `li o fanout` and `li o flow`, every
 worker the launch builds is handed that one result, so no worker starts with servers the run did
 not resolve; `li agent` resolves the same way and warns when it hands a leg no servers because no
-config was found.
+config was found. A set read from a file named with `--mcp-config` is exclusive: the agent
+starts with those servers and no others. A set found by the `.mcp.json` lookup is additive and
+joins the servers the provider already configures.
 
 **Model spec**: `provider/model[-effort]` — for example
 `claude/opus-4-7-high` or `codex/gpt-5.4-xhigh`. Current bare aliases include
