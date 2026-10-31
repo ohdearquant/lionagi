@@ -10,10 +10,9 @@ denylist, so wherever a trust source the user config does not carry marks the
 project trusted, that file adds MCP servers past an explicit set. Codex has no
 switch to drop the project layers, so a run under ``--ignore-user-config`` refuses
 one whose project layers declare ``mcp_servers``, before each process starts: every
-``codex exec`` reads its config afresh. A run that keeps the user config is not
-checked here: its set is exclusive only over the servers that config declares,
-each disabled by name, and a server a trusted project layer declares still loads
-(docs/internals/agent-runtime.md).
+``codex exec`` reads its config afresh. A run that keeps the user config checks
+the readable user and project layers and disables proven unselected servers by
+name, refusing when it cannot prove how a layer is loaded.
 
 The walk starts where Codex starts: the working directory as Codex resolves ``-C``
 (the logical path when an ancestor below the top level is a symlink, else the
@@ -34,7 +33,7 @@ import stat
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
-from lionagi._errors import ConfigurationError
+from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
 from lionagi.providers.openai._codex_profile import refuse_non_absolute_codex_home
 
 try:
@@ -47,10 +46,14 @@ __all__ = (
     "mcp_servers_declaration_line",
     "parse_failure",
     "project_layers",
+    "project_mcp_server_names",
+    "refuse_unsafe_exclusive_profile",
+    "system_mcp_server_names",
 )
 
 # How many candidate lines `mcp_servers_declaration_line` tries before naming the first.
 _LINES_TRIED = 8
+_SYSTEM_CONFIG = Path("/etc/codex/config.toml")
 _TOML_CODE_POINT = re.compile(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})|\\x([0-9A-Fa-f]{2})")
 
 
@@ -118,6 +121,319 @@ def declaring_project_layer(
         if found is not None:
             return path, *found
     return None
+
+
+def project_mcp_server_names(
+    cwd: str | os.PathLike[str],
+    env: Mapping[str, str],
+    allowed: set[str],
+    *,
+    include_user: bool = False,
+) -> set[str]:
+    """Find excluded servers only in project layers proven to load.
+
+    The readable system and user configs supply project markers and trust. The
+    effective managed and cloud layers are not available to this process.
+    """
+    from lionagi.providers.openai._codex_profile import _read_codex_config
+
+    def refuse(path: Path, names: set[str], reason: str) -> None:
+        suffix = f"; server names: {sorted(names)!r}" if names else ""
+        raise _ExclusiveMcpSelectionError(
+            f"Cannot enforce an exclusive Codex MCP selection: {path}: {reason}{suffix}."
+        )
+
+    configs: list[dict] = []
+    for path in (_SYSTEM_CONFIG, _codex_home(env) / "config.toml"):
+        try:
+            data = _read_codex_config(path)
+            if data is None and path.exists():
+                refuse(path, set(), "config is not a readable regular file")
+        except ValueError:
+            refuse(path, set(), "config cannot be read or parsed")
+        configs.append(data or {})
+
+    markers: object = [".git"]
+    projects: dict = {}
+    for config in configs:
+        if "project_root_markers" in config:
+            markers = config["project_root_markers"]
+        if "projects" in config:
+            table = config["projects"]
+            if not isinstance(table, dict):
+                refuse(_codex_home(env) / "config.toml", set(), "projects is not a table")
+            for key, record in table.items():
+                if not isinstance(record, dict) or record.get("trust_level") not in (
+                    None,
+                    "trusted",
+                    "untrusted",
+                ):
+                    refuse(_codex_home(env) / "config.toml", set(), "project trust is invalid")
+                projects[key] = {**projects.get(key, {}), **record}
+    if not isinstance(markers, list) or not all(
+        isinstance(marker, str) and marker and "/" not in marker and marker not in (".", "..")
+        for marker in markers
+    ):
+        refuse(_codex_home(env) / "config.toml", set(), "project root markers cannot be resolved")
+
+    run_cwd = _config_cwd(Path(os.path.abspath(cwd)))
+    directories = (run_cwd, *run_cwd.parents)
+    root = run_cwd
+    if markers:
+        for directory in directories:
+            for marker in markers:
+                try:
+                    marker_path = directory / marker
+                    marker_stat = marker_path.stat()
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                except OSError:
+                    refuse(directory / marker, set(), "project root marker cannot be inspected")
+                if marker == ".git" and stat.S_ISDIR(marker_stat.st_mode):
+                    try:
+                        (marker_path / "HEAD").stat()
+                    except (FileNotFoundError, NotADirectoryError):
+                        # Newer Codex skips this marker; older releases accepted it.
+                        refuse(marker_path, set(), "project root marker has no HEAD")
+                    except OSError:
+                        refuse(marker_path, set(), "project root marker cannot be inspected")
+                root = directory
+                break
+            else:
+                continue
+            break
+
+    repo_uncertain = False
+    for directory in directories:
+        git = directory / ".git"
+        try:
+            git.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            refuse(git, set(), "repository root cannot be inspected")
+        # Linked worktrees and nested repositories can name a different trust
+        # root, so the directory alone cannot prove a repository decision.
+        repo_uncertain = True
+        break
+
+    def trust(directory: Path) -> str | None:
+        # Codex checks the layer directory, then the project and repository roots.
+        # https://github.com/openai/codex/blob/55c099a142eb302188fee00ab9e9062f2db1c359/codex-rs/config/src/loader/mod.rs#L1083-L1125
+        for candidate in (directory, root):
+            for key in dict.fromkeys((str(_canonical(candidate)), str(candidate))):
+                level = projects.get(key, {}).get("trust_level")
+                if level is not None:
+                    return level
+        return None
+
+    names: set[str] = set()
+    if include_user:
+        user_path = _codex_home(env) / "config.toml"
+        user_servers: dict = {}
+        origins: dict[str, Path] = {}
+        for config_path, config in zip((_SYSTEM_CONFIG, user_path), configs, strict=True):
+            layer_servers = config.get("mcp_servers", {})
+            if not isinstance(layer_servers, dict):
+                refuse(config_path, set(), "mcp_servers is not a table")
+            for name, fields in layer_servers.items():
+                origins[name] = config_path
+                prior = user_servers.get(name)
+                if isinstance(prior, dict) and isinstance(fields, dict):
+                    user_servers[name] = {**prior, **fields}
+                else:
+                    user_servers[name] = fields
+        extra_user = set(user_servers) - allowed
+        for name in extra_user:
+            if re.fullmatch(r"[A-Za-z0-9_-]+", name) is None:
+                refuse(origins[name], {name}, "server names cannot be represented in an override")
+            if not isinstance(user_servers[name], dict) or not (
+                {"command", "url"} & user_servers[name].keys()
+            ):
+                refuse(origins[name], {name}, "server definitions cannot be proven complete")
+        names.update(extra_user)
+    for path, text in project_layers(cwd, env):
+        try:
+            parsed = _tomllib.loads(text)
+        except (_tomllib.TOMLDecodeError, RecursionError):
+            refuse(path, set(), "project config cannot be parsed")
+        servers = parsed.get("mcp_servers", {})
+        if not isinstance(servers, dict):
+            refuse(path, set(), "mcp_servers is not a table")
+        extra = set(servers) - allowed
+        if not extra:
+            continue
+        directory = path.parent.parent
+        if root not in (directory, *directory.parents):
+            refuse(path, extra, "project layer is above the proven project root")
+        level = trust(directory)
+        if level is None and repo_uncertain:
+            refuse(path, extra, "repository trust cannot be determined")
+        if level == "trusted":
+            if any(re.fullmatch(r"[A-Za-z0-9_-]+", name) is None for name in extra):
+                refuse(path, extra, "server names cannot be represented in an override")
+            if any(
+                not isinstance(servers[name], dict)
+                or not ({"command", "url"} & servers[name].keys())
+                for name in extra
+            ):
+                refuse(path, extra, "server definitions cannot be proven complete")
+            names.update(extra)
+        # A missing or explicitly untrusted decision skips the layer.
+    return names
+
+
+def refuse_unsafe_exclusive_profile(
+    cwd: Path, env: Mapping[str, str], allowed: set[str], profile: str | None
+) -> None:
+    """Check profile selectors and profile layers before an exclusive launch."""
+    from ._codex_profile import (
+        _read_codex_config,
+        codex_config_defining_profile,
+        is_generated_codex_profile,
+    )
+
+    def read(path: Path, *, required: bool = False) -> dict:
+        try:
+            data = _read_codex_config(path)
+            if data is None and (required or path.exists()):
+                raise ValueError
+        except ValueError:
+            raise _ExclusiveMcpSelectionError(
+                f"Cannot enforce an exclusive Codex MCP selection: profile config {path} "
+                "cannot be read or parsed."
+            ) from None
+        return data or {}
+
+    home = _codex_home(env)
+    user_path = home / "config.toml"
+    layers: list[tuple[Path, dict]] = [(path, read(path)) for path in (_SYSTEM_CONFIG, user_path)]
+    for path, text in project_layers(cwd, env):
+        try:
+            layers.append((path, _tomllib.loads(text)))
+        except (_tomllib.TOMLDecodeError, RecursionError):
+            raise _ExclusiveMcpSelectionError(
+                f"Cannot enforce an exclusive Codex MCP selection: project config {path} "
+                "cannot be parsed."
+            ) from None
+    for path, data in layers:
+        if "profile" in data:
+            raise _ExclusiveMcpSelectionError(
+                f"Cannot enforce an exclusive Codex MCP selection: {path} selects a root profile."
+            )
+
+    if profile is None:
+        return
+    if re.fullmatch(r"[A-Za-z0-9_-]+", profile) is None:
+        raise _ExclusiveMcpSelectionError(
+            "Cannot enforce an exclusive Codex MCP selection: the selected profile name "
+            "cannot be read safely."
+        )
+    # Legacy ConfigProfile has no MCP or project fields; -p also loads an entire
+    # profile config layer: https://github.com/openai/codex/blob/55c099a142eb302188fee00ab9e9062f2db1c359/codex-rs/config/src/profile_toml.rs#L20-L74
+    # https://github.com/openai/codex/blob/55c099a142eb302188fee00ab9e9062f2db1c359/codex-rs/config/src/loader/mod.rs#L293-L345
+    generated = is_generated_codex_profile(profile)
+    if generated:
+        for source, table in layers:
+            profiles = table.get("profiles", {})
+            if not isinstance(profiles, dict) or profile in profiles:
+                raise _ExclusiveMcpSelectionError(
+                    f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
+                    f"may also be defined in {source}."
+                )
+
+        try:
+            defined = codex_config_defining_profile(profile, env, cwd)
+        except ValueError:
+            raise _ExclusiveMcpSelectionError(
+                "Cannot enforce an exclusive Codex MCP selection: a profile table cannot be read."
+            ) from None
+        if defined is not None:
+            raise _ExclusiveMcpSelectionError(
+                f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
+                f"is also defined in {defined}."
+            )
+    path = home / f"{profile}.config.toml"
+    data = read(path, required=generated)
+    if generated:
+        unexpected = set(data) - {"mcp_servers"}
+        if unexpected:
+            raise _ExclusiveMcpSelectionError(
+                f"Cannot enforce an exclusive Codex MCP selection: profile {path} "
+                f"has unexpected keys {sorted(unexpected)!r}."
+            )
+        names = data.get("mcp_servers", {})
+        if not isinstance(names, dict) or set(names) - allowed:
+            raise _ExclusiveMcpSelectionError(
+                f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
+                f"at {path} names servers outside the selected set."
+            )
+        for name, fields in names.items():
+            if not isinstance(fields, dict):
+                raise _ExclusiveMcpSelectionError(
+                    f"Cannot enforce an exclusive Codex MCP selection: "
+                    f"profile {path} has invalid mcp_servers.{name}."
+                )
+            unexpected_fields = set(fields) - {"env", "http_headers"}
+            if unexpected_fields:
+                raise _ExclusiveMcpSelectionError(
+                    f"Cannot enforce an exclusive Codex MCP selection: profile {path} "
+                    f"has unexpected keys mcp_servers.{name}.{sorted(unexpected_fields)!r}."
+                )
+    else:
+        for source, table in [(path, data), *layers]:
+            profiles = table.get("profiles", {})
+            if source != path and not isinstance(profiles, dict):
+                raise _ExclusiveMcpSelectionError(
+                    f"Cannot enforce an exclusive Codex MCP selection: profiles in {source} "
+                    "are not a table."
+                )
+            profile_table = table if source == path else profiles.get(profile, {})
+            if not isinstance(profile_table, dict) or any(
+                key in profile_table for key in ("mcp_servers", "projects", "project_root_markers")
+            ):
+                raise _ExclusiveMcpSelectionError(
+                    f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
+                    f"at {source} changes MCP servers, project trust or root markers."
+                )
+
+
+def system_mcp_server_names(allowed: set[str]) -> set[str]:
+    """Names to disable from the system layer in an exclusive ignore-user run."""
+    from ._codex_profile import _read_codex_config
+
+    try:
+        data = _read_codex_config(_SYSTEM_CONFIG)
+        if data is None and _SYSTEM_CONFIG.exists():
+            raise ValueError
+    except ValueError:
+        raise _ExclusiveMcpSelectionError(
+            f"Cannot enforce an exclusive Codex MCP selection: system config {_SYSTEM_CONFIG} "
+            "cannot be read or parsed."
+        ) from None
+    data = data or {}
+    if "profile" in data:
+        raise _ExclusiveMcpSelectionError(
+            f"Cannot enforce an exclusive Codex MCP selection: {_SYSTEM_CONFIG} selects a root profile."
+        )
+    servers = data.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise _ExclusiveMcpSelectionError(
+            f"Cannot enforce an exclusive Codex MCP selection: {_SYSTEM_CONFIG} mcp_servers "
+            "is not a table."
+        )
+    extra = set(servers) - allowed
+    if any(
+        re.fullmatch(r"[A-Za-z0-9_-]+", name) is None
+        or not isinstance(servers[name], dict)
+        or not ({"command", "url"} & servers[name].keys())
+        for name in extra
+    ):
+        raise _ExclusiveMcpSelectionError(
+            f"Cannot enforce an exclusive Codex MCP selection: server names or definitions "
+            f"in {_SYSTEM_CONFIG} cannot be proven: {sorted(extra)!r}."
+        )
+    return extra
 
 
 def _codex_home(env: Mapping[str, str]) -> Path:

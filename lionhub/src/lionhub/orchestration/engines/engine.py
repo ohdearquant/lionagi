@@ -1982,12 +1982,15 @@ class Engine:
         """Return whether to expand an item, or raise when the judge cannot be trusted.
 
         With no judge configured this returns True; budget exhaustion returns False.
-        Judge failures fail open except for settings errors, a containment refusal on
-        the bounded exception chain, and failures under account containment. An
+        Judge failures fail open except for settings errors, a containment or exclusive MCP
+        selection refusal on the bounded exception chain, and failures under account containment. An
         ordinary error reporting a denial does not change that denial; an unreadable
         callback error chain or a containment or settings refusal still raises.
         """
-        from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
+        from lionagi._errors import (  # noqa: PLC0415
+            ContainmentRefusedError,
+            _ExclusiveMcpSelectionError,
+        )
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
         if not self.judge_model:
@@ -2020,7 +2023,8 @@ class Engine:
         except _AgentSettingError:
             raise
         except Exception as exc:
-            # The model layer wraps a provider's refusal in its own error, so the refusal is
+            # The model layer wraps containment and exclusive MCP selection refusals in its
+            # own error, so the refusal is
             # found on the error's chain: its cause, or its context when a wrapper raised
             # without `from`. It refuses every call this judge makes; read as a pass, it would
             # turn the gate off for the whole run. Whatever a link holds is followed, an object
@@ -2035,7 +2039,7 @@ class Engine:
                 if cause is None or id(cause) in seen:
                     continue
                 seen[id(cause)] = cause
-                if issubclass(type(cause), ContainmentRefusedError):
+                if issubclass(type(cause), (ContainmentRefusedError, _ExclusiveMcpSelectionError)):
                     raise cause from cause.__cause__
                 for name in ("__context__", "__cause__"):
                     # A read that fails ends that branch. An interrupt, an exit or a cancellation

@@ -164,6 +164,12 @@ class ConfigurationError(LionError, ValueError):
     __slots__ = ()
 
 
+class _ExclusiveMcpSelectionError(ConfigurationError):
+    """A Codex launch cannot enforce its explicit exclusive MCP selection."""
+
+    __slots__ = ()
+
+
 class CredentialMissingError(ConfigurationError):
     """A declared credential variable has no configured value at dispatch."""
 

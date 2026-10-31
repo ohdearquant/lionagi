@@ -14,7 +14,7 @@ import subprocess
 import unicodedata
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import shorten
 from typing import TYPE_CHECKING, Any, Literal, get_args
@@ -31,7 +31,12 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from lionagi._errors import CLIInputRefusedError, ConfigurationError, ContainmentRefusedError
+from lionagi._errors import (
+    CLIInputRefusedError,
+    ConfigurationError,
+    ContainmentRefusedError,
+    _ExclusiveMcpSelectionError,
+)
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -73,7 +78,14 @@ from ._codex_profile import (
     is_generated_codex_profile,
     project_codex_profile,
 )
-from ._codex_project_layers import declaring_project_layer, parse_failure, project_layers
+from ._codex_project_layers import (
+    declaring_project_layer,
+    parse_failure,
+    project_layers,
+    project_mcp_server_names,
+    refuse_unsafe_exclusive_profile,
+    system_mcp_server_names,
+)
 from ._config import CodexConfigs
 
 if TYPE_CHECKING:
@@ -721,6 +733,7 @@ class _PlainRequest:
     fast_mode: bool
     contain_account_integrations: bool
     ignore_user_config: bool
+    exclusive_mcp_names: list[str] | None
     account_connectors: list[str]
     output_schema: str | None
     output_last_message: str | None
@@ -840,6 +853,9 @@ def _plain_request(
         fast_mode=flag("fast_mode"),
         contain_account_integrations=flag("contain_account_integrations"),
         ignore_user_config=flag("ignore_user_config"),
+        exclusive_mcp_names=(
+            None if request.exclusive_mcp_names is None else texts("exclusive_mcp_names")
+        ),
         account_connectors=texts("account_connectors"),
         output_schema=paths["output_schema"],
         output_last_message=paths["output_last_message"],
@@ -1579,6 +1595,31 @@ class CodexCodeRequest(BaseModel):
         default_factory=dict,
         description="Config overrides as key=value pairs (-c flag)",
     )
+    exclusive_mcp_names: list[str] | None = Field(
+        default=None,
+        description=(
+            "When set, Codex keeps only these MCP server names from its user, system and project "
+            "configuration. Every other name those layers declare is disabled at launch, and "
+            "an MCP override naming an unselected server is refused. A layer that cannot "
+            "be checked refuses the run. None leaves Codex's own "
+            "loading unchanged."
+        ),
+    )
+
+    @field_validator("exclusive_mcp_names", mode="before")
+    @classmethod
+    def _normalize_exclusive_mcp_names(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, list):
+            items = list(list.__iter__(value))
+        elif isinstance(value, tuple):
+            items = list(tuple.__iter__(value))
+        else:
+            raise TypeError("exclusive_mcp_names must be a list of strings")
+        if any(not isinstance(item, str) for item in items):
+            raise TypeError("exclusive_mcp_names must be a list of strings")
+        return sorted({str.__str__(item) for item in items})
 
     # ── lionagi internal (no CLI flags) ───────────────────────────
     verbose_output: bool = Field(default=False, exclude=True)
@@ -1814,23 +1855,34 @@ class CodexCodeRequest(BaseModel):
         """Build the argument list for ``codex exec`` from one normalized snapshot.
 
         ``overrides`` is one read of ``config_overrides``; ``None`` reads it here. A
-        caller that already reduced the request (the spawn path) hands its snapshot in as
-        ``plain``, so that check and this render cannot read the fields twice. Either way
-        every check below and every rendered argument reads one plain snapshot, so a field
-        whose own methods answer differently on each read cannot be judged as one value and
-        rendered as another.
+        supplied ``plain`` snapshot is used for rendering, but the request is also checked
+        for an exclusive selection. Either snapshot naming an exclusive selection is refused:
+        only the endpoint's spawn path can perform the required launch-time check.
         """
+        request_snapshot = _plain_request(self, overrides)
+        if request_snapshot.exclusive_mcp_names is not None:
+            raise _ExclusiveMcpSelectionError(
+                "Exclusive MCP selection needs the launch-time configuration check "
+                "performed by the endpoint's spawn path."
+            )
         if plain is None:
-            plain = _plain_request(self, overrides)
+            plain = request_snapshot
+        if plain.exclusive_mcp_names is not None:
+            raise _ExclusiveMcpSelectionError(
+                "Exclusive MCP selection needs the launch-time configuration check "
+                "performed by the endpoint's spawn path."
+            )
+        return self._cmd_args(plain, self.cwd())
+
+    def _cmd_args(self, plain: _PlainRequest, cwd: Path) -> list[str]:
+        """Render a previously checked request and workspace snapshot."""
         _refuse_ambiguous_approval(plain)
         _refuse_light_escape(plain)
         light = plain.workload == "light"
         if light:
-            self._refuse_a_config_profile_for_light(plain)
+            self._refuse_a_config_profile_for_light(plain, cwd)
         args: list[str] = ["exec", "--json"]
-        cwd = self.cwd()
-
-        args.extend(self._build_declarative_args(plain))
+        args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
 
         # A light agent writes only its working directory, so a linked worktree's git
@@ -1978,7 +2030,7 @@ class CodexCodeRequest(BaseModel):
         """
         return _plain_request(self).argument_text_fields()
 
-    def _refuse_a_profile_under_containment(self, plain: _PlainRequest) -> None:
+    def _refuse_a_profile_under_containment(self, plain: _PlainRequest, cwd: Path) -> None:
         # `--disable` sets the features in the root config. Codex before 0.135 (read at
         # the 0.120.0 and 0.130.0 tags) applies the active profile's `[features]` after
         # it, so a profile can turn either one back on; the active profile is `-p`, else a
@@ -2019,7 +2071,7 @@ class CodexCodeRequest(BaseModel):
             # The profile lionagi writes is a file of its own, but codex before 0.135 reads `-p`
             # as a `[profiles.<name>]` table in the configs it merges, and one defined there under
             # this name could turn either feature back on.
-            defined = codex_config_defining_profile(plain.profile, plain.env, self.cwd())
+            defined = codex_config_defining_profile(plain.profile, plain.env, cwd)
             if defined is not None:
                 raise ValueError(
                     f"contain_account_integrations cannot be combined with profile={plain.profile!r} "
@@ -2028,7 +2080,7 @@ class CodexCodeRequest(BaseModel):
                 )
         else:
             sources = [("the codex config", configured_codex_profile(plain.env))]
-            project = project_codex_profile(self.cwd())
+            project = project_codex_profile(cwd)
             if project is not None:
                 sources.append((f"the project codex config {str(project[0])!r}", project[1]))
             for where, value in sources:
@@ -2045,7 +2097,7 @@ class CodexCodeRequest(BaseModel):
                     "its features after --disable (from 0.135 codex refuses the key itself)"
                 )
 
-    def _refuse_a_config_profile_for_light(self, plain: _PlainRequest) -> None:
+    def _refuse_a_config_profile_for_light(self, plain: _PlainRequest, cwd: Path) -> None:
         # A codex profile can set `sandbox_mode` and `sandbox_workspace_write`, and codex
         # before 0.135 applies the active one over the root config the light pins write to.
         # A config's `default_permissions` names a permissions profile codex applies in
@@ -2057,7 +2109,7 @@ class CodexCodeRequest(BaseModel):
         refusal = None
         try:
             if plain.profile is not None:
-                defined = codex_config_defining_profile(plain.profile, plain.env, self.cwd())
+                defined = codex_config_defining_profile(plain.profile, plain.env, cwd)
                 if defined is not None:
                     refusal = (
                         f"{str(defined)!r} defines a profile named {plain.profile!r}, "
@@ -2065,7 +2117,7 @@ class CodexCodeRequest(BaseModel):
                     )
             else:
                 sources = [("the codex config", configured_codex_profile(plain.env))]
-                project = project_codex_profile(self.cwd())
+                project = project_codex_profile(cwd)
                 if project is not None:
                     sources.append((f"the project codex config {str(project[0])!r}", project[1]))
                 for where, value in sources:
@@ -2076,7 +2128,7 @@ class CodexCodeRequest(BaseModel):
                         )
                         break
             if refusal is None:
-                found = codex_config_setting_default_permissions(plain.env, self.cwd())
+                found = codex_config_setting_default_permissions(plain.env, cwd)
                 if found is not None:
                     refusal = (
                         f"{str(found)!r} sets `default_permissions`, a permissions profile "
@@ -2090,11 +2142,11 @@ class CodexCodeRequest(BaseModel):
                 f"{refusal}. Declare the agent's workload 'heavy' instead."
             )
 
-    def _build_declarative_args(self, plain: _PlainRequest) -> list[str]:
+    def _build_declarative_args(self, plain: _PlainRequest, cwd: Path) -> list[str]:
         if not plain.contains_account_integrations():
             return build_declarative_cli_args(self._settled(plain))
         try:
-            self._refuse_a_profile_under_containment(plain)
+            self._refuse_a_profile_under_containment(plain, cwd)
         except ContainmentRefusedError:
             raise
         except (ValueError, OSError) as exc:
@@ -2578,15 +2630,118 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
 # --------------------------------------------------------------------------- NDJSON stream
 
 
-# TODO: migrate create_subprocess_exec + wait_for to anyio
-async def _ndjson_from_cli(request: CodexCodeRequest):
-    if CODEX_CLI is None:
-        raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
-    # model_copy(update=...) skips validation, so the request is reduced again here, where
-    # its inputs reach the process: every check below and the command line read one
-    # normalized snapshot, so a copied request cannot carry an object a check judges one
-    # way and the renderer another.
-    plain = _plain_request(request)
+def _exclusive_check(fn, *args, **kwargs):
+    """Translate shared layer-read failures only while enforcing an exclusive selection."""
+    try:
+        return fn(*args, **kwargs)
+    except (_ExclusiveMcpSelectionError, ContainmentRefusedError):
+        raise
+    except ConfigurationError as exc:
+        raise _ExclusiveMcpSelectionError(str(exc)) from exc
+
+
+def _exclusive_cmd_args(
+    request: CodexCodeRequest, plain: _PlainRequest, cwd: Path, child_env: dict[str, str]
+) -> list[str]:
+    """Check the final child environment and render argv immediately before spawn."""
+    plain = replace(plain, env=child_env)
+    if plain.exclusive_mcp_names is not None:
+        selected = set(plain.exclusive_mcp_names)
+        for key, value in plain.overrides:
+            raw_path = key.strip(_TRIMMED).split(".")
+            try:
+                decoded_path = _override_key_path(key, "config override")
+            except ValueError:
+                decoded_path = []
+            for path in (raw_path, decoded_path):
+                if not path or path[0] != "mcp_servers":
+                    continue
+                names = path[1:2] if len(path) > 1 else value
+                if (len(path) == 1 and not isinstance(names, Mapping)) or any(
+                    name not in selected for name in names
+                ):
+                    raise _ExclusiveMcpSelectionError(
+                        "Cannot enforce an exclusive Codex MCP selection: an override names "
+                        "an unselected server or does not provide a server table."
+                    )
+    codex_home = child_env.get("CODEX_HOME")
+    home = child_env.get("HOME")
+    error_type = (
+        _ExclusiveMcpSelectionError if plain.exclusive_mcp_names is not None else ConfigurationError
+    )
+    if codex_home and not os.path.isabs(codex_home):
+        raise error_type("CODEX_HOME must be an absolute path for this Codex launch.")
+    if not codex_home and home and not os.path.isabs(home):
+        raise error_type("HOME must be an absolute path for this Codex launch.")
+    if plain.exclusive_mcp_names is not None and not plain.ignore_user_config:
+        for key, _ in plain.overrides:
+            if key.strip(_TRIMMED).split(".")[0] in ("projects", "project_root_markers"):
+                raise _ExclusiveMcpSelectionError(
+                    "Cannot enforce an exclusive Codex MCP selection: a config override "
+                    "changes project trust or root markers."
+                )
+        flags = _command_line_layer(plain)
+        override_profile = flags.get("profile")
+        if override_profile is not None and not isinstance(override_profile, str):
+            raise _ExclusiveMcpSelectionError(
+                "Cannot enforce an exclusive Codex MCP selection: the profile override "
+                "is not a name."
+            )
+        if plain.profile is not None and override_profile not in (None, plain.profile):
+            raise _ExclusiveMcpSelectionError(
+                "Cannot enforce an exclusive Codex MCP selection: conflicting profile selectors."
+            )
+        selected_profile = plain.profile or override_profile
+        profiles = flags.get("profiles", {})
+        if not isinstance(profiles, dict):
+            raise _ExclusiveMcpSelectionError(
+                "Cannot enforce an exclusive Codex MCP selection: profiles override is not a table."
+            )
+        if selected_profile is not None and selected_profile in profiles:
+            selected_config = profiles[selected_profile]
+            if (
+                is_generated_codex_profile(selected_profile)
+                or not isinstance(selected_config, dict)
+                or any(
+                    key in selected_config
+                    for key in ("mcp_servers", "projects", "project_root_markers")
+                )
+            ):
+                raise _ExclusiveMcpSelectionError(
+                    "Cannot enforce an exclusive Codex MCP selection: selected profile "
+                    "override changes MCP servers, project trust or root markers."
+                )
+        _exclusive_check(
+            refuse_unsafe_exclusive_profile,
+            cwd,
+            child_env,
+            set(plain.exclusive_mcp_names),
+            selected_profile,
+        )
+        project_names = _exclusive_check(
+            project_mcp_server_names,
+            cwd,
+            child_env,
+            set(plain.exclusive_mcp_names),
+            include_user=True,
+        )
+        # The caller's own -c options retain their existing precedence.
+        plain = replace(
+            plain,
+            overrides=[
+                *((f"mcp_servers.{name}.enabled", False) for name in sorted(project_names)),
+                *plain.overrides,
+            ],
+        )
+    elif plain.exclusive_mcp_names is not None:
+        system_names = _exclusive_check(system_mcp_server_names, set(plain.exclusive_mcp_names))
+        plain = replace(
+            plain,
+            overrides=[
+                *((f"mcp_servers.{name}.enabled", False) for name in sorted(system_names)),
+                *plain.overrides,
+            ],
+        )
     _refuse_ambiguous_approval(plain)
     _refuse_light_escape(plain)
     _refuse_oversized_cli_inputs(
@@ -2597,11 +2752,43 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         contained=plain.contains_account_integrations(),
     )
     if plain.ignore_user_config:
-        # Every `codex exec` reads its project layers afresh, so a layer written since the
-        # request was built is checked here, where the process would start.
-        refuse_declaring_project_layer(plain, request.cwd())
-    cmd = [CODEX_CLI, *request.as_cmd_args(plain=plain)]
+        if plain.exclusive_mcp_names is not None:
+            _exclusive_check(refuse_declaring_project_layer, plain, cwd)
+        else:
+            refuse_declaring_project_layer(plain, cwd)
+    cmd = [CODEX_CLI, *request._cmd_args(plain, cwd)]
     _refuse_oversized_command(cmd)
+    return cmd
+
+
+# TODO: migrate create_subprocess_exec + wait_for to anyio
+async def _ndjson_from_cli(request: CodexCodeRequest):
+    if CODEX_CLI is None:
+        raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
+    # model_copy(update=...) skips validation, so the request is reduced again here, where
+    # its inputs reach the process: every check below and the command line read one
+    # normalized snapshot, so a copied request cannot carry an object a check judges one
+    # way and the renderer another.
+    plain = _plain_request(request)
+    cwd = request.cwd()
+    _refuse_ambiguous_approval(plain)
+    _refuse_light_escape(plain)
+    _refuse_oversized_cli_inputs(
+        plain.prompt,
+        plain.system_prompt,
+        plain.overrides,
+        text_fields=plain.argument_text_fields(),
+        contained=plain.contains_account_integrations(),
+    )
+    prepare_argv = None
+    if plain.ignore_user_config or plain.exclusive_mcp_names is not None:
+        cmd = [CODEX_CLI]
+
+        def prepare_argv(child_env):
+            return _exclusive_cmd_args(request, plain, cwd, child_env)
+    else:
+        cmd = [CODEX_CLI, *request._cmd_args(plain, cwd)]
+        _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
     async with contextlib.aclosing(
@@ -2614,6 +2801,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             on_spawn=request.on_spawn,
             engine="codex",
             workload=plain.workload,
+            **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:
         async for obj in stream:
@@ -3512,6 +3700,53 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     # Codex streams a "thread.started"/"system" event right after spawn —
     # see stream_codex_cli() above.
     streams_first_output_early = True
+
+    def _carried_runtime_state(self, request, req_dict: dict) -> dict:
+        carried = super()._carried_runtime_state(request, req_dict)
+        if isinstance(request, CodexCodeRequest):
+            for name in ("repo", "ws"):
+                if name not in req_dict:
+                    carried[name] = getattr(request, name)
+        return carried
+
+    def create_payload(self, request, **kwargs):
+        # A per-call MCP override replaces the endpoint's configured selection.
+        # Capture it before the generic handler folds request and endpoint config.
+        if "config_overrides" in kwargs:
+            per_call = kwargs["config_overrides"]
+        elif isinstance(request, Mapping) and request.get("exclusive_mcp_names") is not None:
+            per_call = None
+        elif isinstance(request, Mapping):
+            per_call = request.get("config_overrides")
+        elif isinstance(request, CodexCodeRequest) and request.exclusive_mcp_names is not None:
+            per_call = None
+        elif (
+            isinstance(request, CodexCodeRequest) and "config_overrides" in request.model_fields_set
+        ):
+            per_call = request.config_overrides
+        else:
+            per_call = None
+        is_mcp_override = isinstance(per_call, Mapping) and any(
+            isinstance(key, str) and key.strip(_TRIMMED).split(".")[0] == "mcp_servers"
+            for key in per_call
+        )
+        payload, metadata = super().create_payload(request, **kwargs)
+        obj = payload["request"]
+        if is_mcp_override and obj.exclusive_mcp_names is not None:
+            table = _command_line_layer(_plain_request(obj)).get("mcp_servers")
+            if not isinstance(table, Mapping):
+                raise ConfigurationError(
+                    "Cannot enforce an exclusive Codex MCP selection: "
+                    "the per-call MCP override is not a table."
+                )
+            names = sorted(table)
+            updates: dict[str, Any] = {"exclusive_mcp_names": names}
+            if not names:
+                updates.update(exclusive_mcp_names=[], ignore_user_config=True)
+                if is_generated_codex_profile(obj.profile):
+                    updates["profile"] = None
+            payload["request"] = obj.model_copy(update=updates)
+        return payload, metadata
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("codex_handlers", None)
