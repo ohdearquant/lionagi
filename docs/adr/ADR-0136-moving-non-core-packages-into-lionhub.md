@@ -249,7 +249,7 @@ belongs to the CLI's catalog and leaves the core with it (A4, step 3).
 - **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:16` imports 15 LNDL names. It is LNDL's opt-in
   Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
   `lionagi.operations.lndl_middle`.
-- **Root exports.** `lionagi/__init__.py:97-105` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
+- **Root exports.** `lionagi/__init__.py:86-94` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
   lazy compatibility names until 2.0, and their entries keep naming the old module paths, which the table
   serves. This is a stated exception, limited to these nine entries, to D4's rule that no repository module
   imports an old name and to D2's rule that the core initiates no hub import; it adds no hub name outside the
