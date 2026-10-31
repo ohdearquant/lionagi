@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li schedule` argument parsing and request-body building.
 
-Shared by the human command path and the machine one. The scheduler's own
-constants are imported inside the functions that need them, so importing this
-module does not load the Studio scheduler.
+Shared by the human command path and the machine one. The chain-depth cap, the
+action-kind vocabulary and the identifier check are defined here; the scheduler
+imports these names from this module, and this module imports nothing from
+lionagi.studio, so importing it does not load the Studio scheduler.
 """
 
 from __future__ import annotations
@@ -13,12 +14,50 @@ import argparse
 import contextlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
 from lionagi._log_channels import warn
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.ln import now_utc
+
+_MAX_CHAIN_DEPTH = 10
+
+# ADR-0070 defines the closed set of action kinds.  The CLI parser accepts
+# "playbook" as an alias for "play" for backward compatibility.
+# The "command" kind is an allow-listed executable spawned directly
+# (not through `li`), with templated argv rendered from trigger_context.
+_VALID_ACTION_KINDS = frozenset(
+    {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
+)
+_ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
+
+# action_model must be a safe model-spec token: alphanumerics, dots, slashes,
+# colons, hyphens and underscores only.  Values starting with '-' are rejected
+# unconditionally to block flag injection into the spawned li process (CWE-88).
+_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+\Z")
+
+# Identifier fields (action_agent, action_project, action_playbook) share the
+# same character set as model specs: they name agents, projects, and playbooks
+# and have no legitimate use for leading '-'.
+_IDENT_RE = _MODEL_RE
+
+
+def _validate_identifier(value: str, field_name: str) -> None:
+    """Raise ValueError if *value* starts with '-' — argparse would misinterpret it as a flag (CWE-88)."""
+    if not value:
+        return
+    if value.startswith("-"):
+        raise ValueError(
+            f"{field_name} {value!r} starts with '-' and is not a valid identifier. "
+            "Identifier fields must not begin with '-'."
+        )
+    if not _IDENT_RE.match(value):
+        raise ValueError(
+            f"{field_name} {value!r} contains characters not allowed in an identifier. "
+            "Allowed: letters, digits, '_', '.', '/', ':', '@', '-'."
+        )
 
 
 def _normalize_schedule_reason(value: str) -> str:
@@ -106,8 +145,6 @@ def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str
     except json.JSONDecodeError as exc:
         return None, f"{flag}: invalid JSON ({exc})"
 
-    from lionagi.studio.scheduler.engine import _MAX_CHAIN_DEPTH
-
     field = "on_success" if flag == "--on-success" else "on_fail"
     err = _validate_chain_action_node(
         parsed, flag, field, chain_depth=1, max_chain_depth=_MAX_CHAIN_DEPTH
@@ -158,8 +195,6 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
     # 'github' is a friendly alias; the DB CHECK and scheduler engine only
     # recognize the canonical 'github_poll' token.
     trigger_type = "github_poll" if args.trigger_type == "github" else args.trigger_type
-
-    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
 
     action_kind = _ALIAS_ACTION_KINDS.get(args.action_kind, args.action_kind)
     body: dict[str, Any] = {
@@ -241,7 +276,6 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
         # cascade). Any failure here must never block schedule creation.
         with contextlib.suppress(Exception):
             from lionagi.cli._project import detect_project
-            from lionagi.studio.scheduler.subprocess import _validate_identifier
 
             detected, _source = detect_project(Path.cwd())
             if detected:
@@ -296,11 +330,6 @@ def suggest_schedule_flag(token: str) -> str | None:
 
 def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register `li schedule` sub-command. Returns the `schedule` parser."""
-    from lionagi.studio.scheduler.subprocess import (
-        _ALIAS_ACTION_KINDS,
-        _VALID_ACTION_KINDS,
-    )
-
     sched = subparsers.add_parser(
         "schedule",
         help="Manage lionagi Studio schedules.",

@@ -2372,6 +2372,11 @@
       "layer": "root",
       "owner": "studio"
     },
+    "lionagi.studio.services._schedule_validation": {
+      "layer": "adapter",
+      "owner": "scheduler",
+      "target_owner": "lionhub.orchestration.schedule"
+    },
     "lionagi.studio.services._session_tail": {
       "layer": "root",
       "owner": "studio"

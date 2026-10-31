@@ -486,8 +486,9 @@ selection reads it: the D4 ledger.
      pending before the write is admitted, it stops the write; arriving during the worker wait, it
      returns to the caller at once and the write commits after (`messages.py:579-581`). Both hold
      for the two existing shields as well. A shielded write also waits without a timeout for a
-     thread-limiter token. D6's five-second bound (`ADR-0126.md:572-573`) covers the SQLite wait,
-     not admission, for the existing shields and for these three alike.
+     thread-limiter token. D6's five-second bound on the SQLite lock (`busy_timeout_s`) covers that
+     wait, not admission, for the existing shields and for these three alike. Amendment 6 adds a
+     separate admission bound.
    - The streamed adapter's `GeneratorExit` handler (`messages.py:1091-1096`) records `stream_error`
      when the stream carried an error event (`saw_error_event`, `:939`, `:959-962`) and
      `stream_closed` otherwise. Its end-of-stream branch already decides the error-event case the

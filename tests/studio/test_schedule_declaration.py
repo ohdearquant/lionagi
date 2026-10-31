@@ -717,7 +717,7 @@ def test_resolve_github_trigger_reuses_service_validators(tmp_path, monkeypatch)
     schedule_declaration imports and asserting they're actually called."""
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     calls = []
-    import lionagi.studio.services.schedules as svc
+    import lionagi.studio.services._schedule_validation as svc
 
     monkeypatch.setattr(svc, "_svc_validate_github_repo", lambda repo: calls.append(("repo", repo)))
     monkeypatch.setattr(svc, "_svc_validate_github_filter", lambda f: calls.append(("filter", f)))
@@ -2960,7 +2960,7 @@ def test_both_create_paths_hold_command_args_to_the_same_contract(tmp_path, monk
     returns a list. So the validator is replaced with a recorder and the call
     itself is what gets asserted.
     """
-    from lionagi.studio.services import schedules as schedules_svc
+    from lionagi.studio.services import _schedule_validation as schedules_svc
 
     seen: list[list[str]] = []
     real_validator = schedules_svc._svc_validate_command_args
