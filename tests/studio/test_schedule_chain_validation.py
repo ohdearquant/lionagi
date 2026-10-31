@@ -206,6 +206,76 @@ def test_cli_parser_and_service_agree(field, build, fragment):
         update_db.update_schedule.assert_not_called()
 
 
+# a value nested at the depth limit, and one level below it
+
+
+def _nest_at(field: str, depth: int, value) -> dict:
+    """A chain of ``depth`` actions whose deepest one carries ``value`` as its own ``field``."""
+    node: dict = {"prompt": "step", field: value}
+    for _ in range(depth - 1):
+        node = {"prompt": "step", field: node}
+    return node
+
+
+def _nest_label(field: str, depth: int) -> str:
+    """The label the validator gives the action at ``depth`` in a ``_nest_at`` chain."""
+    return _flag(field) + f".{field}" * (depth - 1)
+
+
+# (case id, builder from field name to the nested value, type name when it is not an object)
+NESTED_VALUE_CASES = [
+    ("empty-object", lambda f: {}, None),
+    ("empty-list", lambda f: [], "list"),
+    ("zero", lambda f: 0, "int"),
+    ("empty-string", lambda f: "", "str"),
+    ("false", lambda f: False, "bool"),
+    ("object", lambda f: {"prompt": "leaf", f: None}, None),
+]
+
+NESTED_VALUE_PARAMS = [pytest.param(c[1], c[2], id=c[0]) for c in NESTED_VALUE_CASES]
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("where", ["at-limit", "one-below"])
+@pytest.mark.parametrize("build, type_name", NESTED_VALUE_PARAMS)
+def test_nested_value_at_and_below_depth_limit(field, where, build, type_name):
+    """The engine fires a chain action only when its value is truthy, so a nested ``{}``
+    is accepted at the limit as it is below it; a nested value that is not an object is
+    refused as one at either depth; a non-empty object is refused only at the limit.
+    The service create, the service update and the command-line parser agree."""
+    depth = _MAX_CHAIN_DEPTH if where == "at-limit" else _MAX_CHAIN_DEPTH - 1
+    value = build(field)
+    chain = _nest_at(field, depth, value)
+    label = _nest_label(field, depth)
+
+    if type_name is not None:
+        expected = f"{label}.{field}: must be a JSON object, got {type_name}"
+    elif where == "at-limit" and value:
+        expected = (
+            f"{label}: {field} nests chain actions past the depth limit of {_MAX_CHAIN_DEPTH}"
+        )
+    else:
+        expected = None
+
+    parsed, cli_err = _parse_chain_action(json.dumps(chain), _flag(field))
+    create_db, create_err = _run_create(_create_data(**{field: chain}))
+    update_db, update_err = _run_update({field: chain})
+
+    if expected is None:
+        assert cli_err is None and parsed == chain
+        assert create_err is None and update_err is None
+        create_db.create_schedule.assert_awaited_once()
+        (written,), _kwargs = create_db.create_schedule.await_args
+        assert written[field] == chain
+        update_db.update_schedule.assert_awaited_once_with("sid-chain-1", **{field: chain})
+    else:
+        assert cli_err == expected
+        assert str(create_err) == expected
+        assert str(update_err) == expected
+        create_db.create_schedule.assert_not_called()
+        update_db.update_schedule.assert_not_called()
+
+
 # the chain-fire merge overlays only the keys a chain action may carry
 
 
