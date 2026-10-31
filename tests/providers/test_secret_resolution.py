@@ -570,6 +570,7 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
     proc.pid = 5151
     proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
     proc.wait = AsyncMock(return_value=-9)
+    proc.stdout.read = AsyncMock(return_value=b"")
     witnesses = ((5151, 16.0),)
     cleanup = AsyncMock()
 
@@ -598,6 +599,7 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
     monkeypatch.setattr(_secret_resolution, "aterminate_process_group", cleanup)
 
     assert await _secret_resolution._run_lookup(lookup, NAME) is None
+    proc.stdout.read.assert_awaited_once_with(65536)
     cleanup.assert_awaited_once_with(
         proc,
         grace=None,

@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +51,7 @@ _NAME_PLACEHOLDER = "{name}"
 # exceed this, which is deliberate: the prompt is answered once, out of band,
 # and the variable exported, rather than blocking every leg.
 _LOOKUP_TIMEOUT_SECONDS = 15.0
+_REAP_TIMEOUT_SECONDS = 2.0
 
 _ALLOWED_KEYS = frozenset({"argv", "names", "enabled"})
 
@@ -200,14 +201,96 @@ def resolve_secret_lookup_config(
     return SecretLookupResolution(lookup=ResolvedSecretLookup(argv=tuple(argv), names=tuple(names)))
 
 
-async def _terminate(proc: asyncio.subprocess.Process, leader_created: float | None) -> None:
+def _close_stdout_pipe(proc: asyncio.subprocess.Process) -> None:
+    """Close just stdout when the event loop exposes its pipe transport."""
+    try:
+        transport = getattr(proc, "_transport", None)
+        get_pipe = getattr(transport, "get_pipe_transport", None)
+        pipe = get_pipe(1) if callable(get_pipe) else None
+        close = getattr(pipe, "close", None)
+        is_closing = getattr(pipe, "is_closing", None)
+        if not callable(close) or (callable(is_closing) and is_closing()):
+            logger.debug("secret lookup stdout pipe is unavailable or already closed")
+            return
+        close()
+    except Exception:  # noqa: BLE001 -- transport details may contain command output
+        logger.debug("secret lookup stdout pipe could not be closed")
+
+
+async def _terminate_and_reap(
+    proc: asyncio.subprocess.Process,
+    leader_created: float | None,
+    *,
+    ignore_drain_failure: bool,
+) -> None:
     group_witnesses = (
         capture_group_witnesses(proc, expected_leader_created=leader_created)
         if leader_created is not None
         else ()
     )
     await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
-    await proc.wait()
+
+    async def drain() -> None:
+        # Waiting for process exit can also wait for stdout to close. Discard
+        # output concurrently so a full pipe cannot prevent the child reaping.
+        try:
+            if proc.stdout is not None:
+                while await proc.stdout.read(65536):
+                    pass
+        except Exception:  # noqa: BLE001 -- the ordinary path did not read stdout before
+            if not ignore_drain_failure:
+                raise
+            _close_stdout_pipe(proc)
+            logger.debug("secret lookup stdout drain failed")
+
+    tasks = {asyncio.create_task(drain()), asyncio.create_task(proc.wait())}
+    timed_out = False
+    cleanup_failed = False
+    try:
+        done, pending = await asyncio.wait(
+            tasks, timeout=_REAP_TIMEOUT_SECONDS, return_when=asyncio.FIRST_EXCEPTION
+        )
+        # Preserve an existing cleanup failure while still finalizing the other task.
+        for task in done:
+            task.result()
+        timed_out = bool(pending)
+    except BaseException:
+        cleanup_failed = True
+        raise
+    finally:
+        pending = {task for task in tasks if not task.done()}
+        for task in pending:
+            task.cancel()
+        if pending or cleanup_failed:
+            _close_stdout_pipe(proc)
+        await asyncio.gather(*tasks, return_exceptions=True)
+    if timed_out:
+        logger.warning("secret lookup cleanup exceeded its reap timeout")
+
+
+async def _terminate(proc: asyncio.subprocess.Process, leader_created: float | None) -> None:
+    await _terminate_and_reap(proc, leader_created, ignore_drain_failure=True)
+
+
+async def _await_cleanup(operation: Awaitable[None]) -> None:
+    # Shield cleanup from both task cancellation and cancellation scopes, while
+    # retaining a cancellation that arrives after cleanup has started.
+    cleanup = asyncio.ensure_future(operation)
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        with CancelScope(shield=True):
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:  # noqa: BLE001 -- preserve the caller's cancellation
+                    break
+        # A cleanup failure must not replace the caller's cancellation.
+        if not cleanup.cancelled():
+            cleanup.exception()
+        raise
 
 
 async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
@@ -241,15 +324,17 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
         )
     except asyncio.TimeoutError:
         if proc is not None:
-            with CancelScope(shield=True):
-                await _terminate(proc, leader_created)
+            await _await_cleanup(_terminate(proc, leader_created))
         logger.warning("secret lookup %s for %s timed out", program, name)
         return None
     except get_cancelled_exc_class():
-        # The child must still be reaped, and the scope is already cancelled.
         if proc is not None:
-            with CancelScope(shield=True):
-                await _terminate(proc, leader_created)
+            try:
+                await _await_cleanup(_terminate(proc, leader_created))
+            except get_cancelled_exc_class():
+                pass  # cleanup finished; retain the cancellation already in flight
+            except Exception:  # noqa: BLE001 -- cleanup must not replace cancellation
+                logger.warning("secret lookup cleanup failed during cancellation")
         raise
     except Exception as exc:  # noqa: BLE001 -- a lookup failure must never block a spawn
         # Only the exception type: a message can carry the argv, and the argv
@@ -268,14 +353,7 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
 async def _terminate_draining(
     proc: asyncio.subprocess.Process, leader_created: float | None
 ) -> None:
-    # Output left unread at the bound fills the pipe and pauses the reader, and an
-    # asyncio exit wait also waits for the pipe to close; so read to EOF while the
-    # group is stopped, or the wait never returns.
-    async def drain() -> None:
-        while await proc.stdout.read(65536):
-            pass
-
-    await asyncio.gather(drain(), _terminate(proc, leader_created))
+    await _terminate_and_reap(proc, leader_created, ignore_drain_failure=False)
 
 
 @dataclass(frozen=True)
@@ -346,21 +424,23 @@ async def lookup_one_name(
         out = await asyncio.wait_for(read_bounded(proc), timeout=_LOOKUP_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         if proc is not None:
-            with CancelScope(shield=True):
-                await _terminate_draining(proc, leader_created)
+            await _await_cleanup(_terminate_draining(proc, leader_created))
         return OneNameLookup(failure="timeout")
     except get_cancelled_exc_class():
         if proc is not None:
-            with CancelScope(shield=True):
-                await _terminate_draining(proc, leader_created)
+            try:
+                await _await_cleanup(_terminate_draining(proc, leader_created))
+            except get_cancelled_exc_class():
+                pass  # cleanup finished; retain the cancellation already in flight
+            except Exception:  # noqa: BLE001 -- cleanup must not replace cancellation
+                logger.warning("secret lookup cleanup failed during cancellation")
         raise
     except Exception:  # noqa: BLE001 -- the exception can carry argv; only the outcome leaves
         if proc is not None and proc.returncode is None:
-            with CancelScope(shield=True):
-                await _terminate_draining(proc, leader_created)
+            await _await_cleanup(_terminate_draining(proc, leader_created))
         return OneNameLookup(failure="failed_to_run")
     if out is None:
-        await _terminate_draining(proc, leader_created)
+        await _await_cleanup(_terminate_draining(proc, leader_created))
         return OneNameLookup(failure="too_long")
     if proc.returncode != 0:
         return OneNameLookup(failure="exit_nonzero")
