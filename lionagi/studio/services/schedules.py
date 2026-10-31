@@ -178,6 +178,29 @@ def _svc_validate_command_args(args: list | None) -> None:
         raise ValueError(f"action_command_args must be a list of strings, got {args!r}")
 
 
+def _svc_validate_chain_action(value: Any, field: str) -> None:
+    """Service-boundary check: an ``on_success`` / ``on_fail`` chain action must
+    follow the same rules as the ``li schedule`` flag of the same name -- a JSON
+    object whose keys the scheduler's chain-fire merge understands, nested no
+    deeper than the chain depth limit.
+
+    ``None`` means "no chain action" and is allowed. Errors read as the command
+    line reports them, so the label is the flag spelling (``--on-success``)."""
+    if value is None:
+        return
+    from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH, _validate_chain_action_node
+
+    err = _validate_chain_action_node(
+        value,
+        "--" + field.replace("_", "-"),
+        field,
+        chain_depth=1,
+        max_chain_depth=_MAX_CHAIN_DEPTH,
+    )
+    if err:
+        raise ValueError(err)
+
+
 def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None:
     """Service-boundary check: reject a syntactically invalid cron expression.
     `required=True` also rejects a missing/empty one — otherwise the schedule
@@ -1196,6 +1219,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_action_command(data.get("action_command"))
     _svc_validate_command_args(data.get("action_command_args"))
+    _svc_validate_chain_action(data.get("on_success"), "on_success")
+    _svc_validate_chain_action(data.get("on_fail"), "on_fail")
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
@@ -1307,6 +1332,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_action_command(fields["action_command"])
         if "action_command_args" in fields:
             _svc_validate_command_args(fields["action_command_args"])
+        if "on_success" in fields:
+            _svc_validate_chain_action(fields["on_success"], "on_success")
+        if "on_fail" in fields:
+            _svc_validate_chain_action(fields["on_fail"], "on_fail")
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
         if "github_filter" in fields:
