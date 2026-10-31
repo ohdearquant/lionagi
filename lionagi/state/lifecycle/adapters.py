@@ -11,13 +11,16 @@ the same class object. See docs/internals/runtime.md."""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Literal
 
+from . import LifecycleNotFoundError, LifecycleValidationError
 from .models import ActorRecord, OverrideRecord, ReasonRecord, TransitionCommand
 from .service import SQLAlchemyLifecycleService
 
 __all__ = (
     "TransitionRejectedError",
+    "run_cancel_session_if_worker_generation",
     "run_legacy_transition",
     "run_update_status",
 )
@@ -140,3 +143,37 @@ async def run_legacy_transition(
     return await service._transition(  # noqa: SLF001
         command, extra_guard=guard, enforce_edges=True, write_reason_columns=False
     )
+
+
+async def run_cancel_session_if_worker_generation(
+    service: SQLAlchemyLifecycleService,
+    *,
+    session_id: str,
+    generation_id: str | None,
+    expected_runner_identity: Mapping[str, Any],
+    reason_code: str,
+    reason_summary: str,
+    evidence: dict[str, Any],
+) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
+    """Bind cancellation to one execution, through the service's guarded transition.
+
+    ``already_terminal`` means the row observed by the guarded transition was
+    terminal and still carried the captured generation and runner identity.
+    Nothing is written; a later change to the row is not ruled out.
+    """
+    try:
+        outcome, terminal_same_execution = await service.guarded_cancel_session(
+            session_id=session_id,
+            generation_id=generation_id,
+            expected_runner_identity=expected_runner_identity,
+            reason=ReasonRecord(
+                code=reason_code, summary=reason_summary, evidence_refs=(dict(evidence),)
+            ),
+        )
+    except LifecycleNotFoundError:
+        return "missing"
+    except LifecycleValidationError:
+        return "rejected"
+    if outcome.result == "conflict" and terminal_same_execution:
+        return "already_terminal"
+    return outcome.result

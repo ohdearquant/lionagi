@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26 and 2026-10-28 (see Amendments 1 to 4)
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28 and 2026-10-30 (see Amendments 1 to 6)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -147,6 +147,666 @@ file; and of a name when a dotenv file cannot be read, with the value never show
 Its controls record the name when a credential variable holds a different value, and when a
 variable or a dotenv entry that is neither holds the same one.
 
+## Amendment 5 (2026-10-30) — a new conversation goes where its stable prefix is warm
+
+Purpose: raise the prompt-cache hit rate of a process that starts many short conversations sharing one system prompt; the provider's usage report for such a workload showed a hit rate of at most 28% (2026-10-27).
+
+D3 binds each conversation to one account for its whole life, because the Claude API keeps a
+separate prompt cache for each organization (P3). D3 orders a NEW scope's candidates by utilization
+alone (`_ratio_order`, `lionagi/service/accounts/_ledger.py:400`, applied at `:548`), without regard
+to cache warmth. A process that starts many short conversations sharing one system prompt therefore
+lands each new conversation on whichever account is furthest behind its budget pace. The first
+request of that conversation then writes the stable prefix again on that account, even when the
+same prefix was read on another account seconds earlier.
+
+Measured on one long-running service that starts a new Branch for each unit of work and shares a few
+system prompts across them. The records are its own request log; the account a call used is the
+cache record's `route`, the last of the call's attempts
+(`lionagi/service/_prompt_cache.py:447-449`). The prefix is identified by the certificate of the
+system block the placement marked for one hour, as each record logged it. Recomputed from each
+logged request body with `points()`, the certificate of the last tools or system block equals it on
+all 293, 447 and 1,353 logged requests that carry a system prompt, so on this service the one-hour
+mark sits on the last stable block and Decision 1's key is the logged one. The call totals and
+the cost ratios below cover every logged call with usage (333, 510 and 1,551). The write census
+covers only the 293, 447 and 1,353 records that carry a system prompt and a system-tier one-hour
+certificate. A record whose placement has no `landing` is a new scope's first request, and a read
+counts as a sighting of the prefix only at 1,000 tokens or more.
+
+- With one configured account: 333 calls, and no one-hour write of a prefix seen within the hour.
+- With seven configured accounts, of 510 and 1,551 calls: 54 and 59 of the records with a
+  certificate made a one-hour write, every one on the first request of a new scope.
+  - 46 and 55 of them wrote a prefix read or written less than an hour earlier on another account.
+    The other 8 and 4 wrote a prefix not seen within the hour.
+  - None wrote on an account where the prefix had been read or written within the hour.
+- Cost, in base-input equivalents: serving the 101 writes as reads would cut the two processes'
+  input cost by 28% and 13%. The cached-to-uncached cost ratio is 0.516 and 0.416, against 0.355
+  with one account.
+- Not all 101 are movable by this amendment. A row is written when the first scope's request
+  settles (Decision 3), so a second new scope that reserves before then sees no row. Counting a
+  write as a concurrent cold start when a same-prefix one-hour write, or a read of at least 1,000
+  tokens, on another account came less than 30 seconds earlier (an upper bound: reads count as
+  events), 5 and 17 are. Without the other 41 and 38 the ratio is 0.388 and 0.377; without all of
+  them, 0.373 and 0.360.
+- An idealized replay of the new-scope requests (396 and 1,196 of them, 9 and 4 distinct prefixes)
+  gives the scale of what affinity can recover: 9 and 9 one-hour writes, against the 54 and 59
+  new-scope one-hour writes measured. It holds every warm account admissible, makes a row visible
+  30 seconds after the request that writes it, extends the row on every new-scope call that arrives
+  while the row is visible, whatever that call read, and counts every new scope that finds no row as
+  a write. Three of these err toward fewer writes than this amendment would produce: a real pool
+  can refuse a warm account the replay admits; the extension is the any-read refresh the
+  Alternatives reject, which keeps rows alive on calls Decision 3's read arm does not count; and a
+  refresh takes effect at once, with no settle delay. Two err toward more: it models no account
+  pool, so a scope it counts as a write can land on an account where the prefix is warm, and a
+  concurrent cold start's write does not extend the row. Its figures are a scale, not a bound on a
+  real run, and they do not rank refresh rules against each other.
+
+The per-Branch prompt-cache rows (ADR-0127, `lionagi/service/_prompt_cache.py`) cannot carry this
+choice. A new Branch has no rows of its own, and the choice must be read inside D4's reservation
+transaction, across cooperating processes. The evidence has to live where every new scope's
+selection reads it: the D4 ledger.
+
+### Decision
+
+1. **The key.** A request's stable-prefix certificate is the certificate, as `points()` computes it
+   (`lionagi/providers/anthropic/_prompt_cache.py`), of the last markable tools-tier or system-tier
+   block (`Point.markable`, `_prompt_cache.py:138-142`: not blank text, not thinking) that carries a
+   one-hour mark (`cache_control` with `"ttl": "1h"`) in the body that is sent. It
+   names the longest one-hour entry the tools and system tiers of that body can hold.
+   - With the adapter's own placement that block is normally the stable one. The adapter writes
+     the system tier as blocks (`lionagi/providers/anthropic/messages.py:383-384`) and `place()`
+     puts the stable one-hour mark on the last markable block outside the messages (`stable`,
+     `_prompt_cache.py:257`, marked at `:305-315`).
+   - An earlier one-hour mark in those tiers (a caller's own, or the placement's read or probe of
+     an older one-hour entry, `:298`, `:322`) ends a shorter entry. When the stable block also carries a one-hour mark,
+     the stable block is the key. When the stable block's mark is refused or kept at five minutes
+     (`ttl_order:stable`, `:309-312`) or there is no mark left for it (`MAX_MARKS`, `:228-229`,
+     `:315`), the last earlier one-hour mark is the key. That is still the entry the provider holds
+     for an hour.
+   - A request with no one-hour mark in its tools or system tiers has no certificate and takes no
+     part in this amendment: it neither reads nor writes the index.
+   - `router.begin` computes it from the final payload it freezes, the dict `request_ttls` reads
+     (`lionagi/service/accounts/_router.py:123`), after parsing the frozen bytes back (next
+     bullet but one). It never comes from the placement record,
+     so a direct endpoint, a prebuilt event and a body a hook changed after placement are keyed by
+     the body that is sent. A standalone call takes part only when that body carries a one-hour mark
+     in its tools or system tiers. A string system prompt carries no mark, so such a call is keyed
+     by a one-hour mark on its last tool or not at all.
+   - `begin` also records `hour_after_key`: whether any block after the key block carries a
+     one-hour mark at any depth: on the block itself, or on any object its content reaches through
+     lists and dicts (a `tool_result`'s content, a `document` block's `source.content`, a
+     `search_result`'s content). `begin` walks the parsed body for it. `Point.nested` reads one
+     level of `content` only (`_prompt_cache.py:99-107`) and is not used for the flag. Who placed
+     the mark does not matter: a caller, or the placement's read or probe of an older one-hour entry
+     (`:298`, `:322`). It is also true when the sent body carries a top-level `cache_control` with
+     `"ttl": "1h"` and a markable block follows the key block: the provider's automatic caching then
+     puts a one-hour breakpoint on the last cacheable block, after the key block. When the key block
+     is the last markable block, that breakpoint is at the key block and the flag stays false. The
+     adapter never sends that field itself (`messages.py:1158-1160`, `:1170-1173`), so only a
+     direct or prebuilt body, or a hook, carries it. Decision 3 uses the flag.
+   - `begin` computes the key and `hour_after_key` from the frozen bytes parsed back
+     (`json.loads`), not from the dict. `points()` reads only lists as content
+     (`_prompt_cache.py:88`, `:101`), and serialization turns a tuple into the array the provider
+     receives, so parsing first counts a mark that a tuple carries.
+   - `points()` is unchanged.
+2. **The index.** The D4 ledger file gains one table, `warm_prefix`, one row per account and
+   certificate.
+
+   ```sql
+   CREATE TABLE IF NOT EXISTS warm_prefix (
+       provider      TEXT NOT NULL,
+       account       TEXT NOT NULL,
+       cert          TEXT NOT NULL,
+       stable_tokens INTEGER,        -- input tokens through the key block; NULL when unknown
+       expires_at    TEXT NOT NULL,  -- UTC ISO-8601 on the ledger clock, as attempt.created_at
+       PRIMARY KEY (provider, account, cert),
+       FOREIGN KEY (provider, account) REFERENCES account (provider, name)
+   );
+   ```
+
+   Every time the amendment reads or writes is parsed with `datetime.fromisoformat` and compared as
+   an aware datetime in Python, never by SQLite date functions or by text order. The ledger's own
+   values are `isoformat()` of UTC datetimes, and those sort in time order as text, zero microseconds
+   included. The parse is what keeps the comparison right for any other offset a stored value can
+   carry. A stored `expires_at` counts only when it is text and `fromisoformat` returns an aware
+   datetime. A value that is not text (the table is not STRICT), does not parse, or parses without
+   an offset makes its row absent everywhere: it is not in W, a read does not refresh it, and a
+   write replaces it. Nothing refuses because of it. Python 3.10 parses only the forms
+   `isoformat()` emits; 3.12 also accepts a `Z` suffix, colonless or hour-only offsets, other
+   fraction lengths and basic-format dates, so such a value is absent on 3.10 only. The ledger
+   writes only `isoformat()` of aware UTC datetimes.
+3. **Writing a row.** Settle writes only inside its open-to-settled branch (`_settle_sync`,
+   `_ledger.py:668-701`), only when the evidence is `CompleteUsage` (D5) with cost at or under the
+   ceiling, only when settle was given the certificate, and only when the account is not blocked
+   when that transaction reads it. The block is read in the branch where cost is at or under the
+   ceiling, so no later statement in the transaction sets one. Then:
+   - **Write arm.** `cache_write_1h_tokens > 0`: a one-hour entry was written on that account. The
+     ledger upserts the row. When the body carries no one-hour mark after the key block,
+     `stable_tokens` is `cache_read_input_tokens + cache_write_1h_tokens`. The read that precedes a
+     one-hour write ends inside the stable segment, so the sum is the token count through the key
+     block. That relies on the provider counting each input token once across `input_tokens`,
+     `cache_creation_input_tokens` and `cache_read_input_tokens`, as its usage documentation
+     states. Otherwise `stable_tokens` is NULL, because the write may include tokens past the key.
+     A request with a server tool (`_server_tools`, `_prompt_cache.py:184-189`) also stores NULL:
+     the provider sums usage over its internal iterations, so the sum is not a length. The
+     prompt-cache logger is blind to those requests for the same reason
+     (`service_prompt_cache.py:462`).
+   - **Read arm.** `cache_write_1h_tokens == 0`, a row exists for the account and certificate, its
+     `stable_tokens` is not NULL, and `cache_read_input_tokens == stable_tokens`: the request read
+     exactly the entry that ends at the key block, because a read is a prefix of the request, and the
+     only prefix of that length is the stable one. That holds when the stored count came from a
+     request with the same provider prefix through the key block. Two cases break it, and both are
+     disclosed under "What it guarantees, and what it does not": a certificate two differently cached
+     prefixes share, and a five-minute entry at the key block's position if the provider serves the
+     one-hour mark there as a read of it. The ledger refreshes that row's `expires_at`, whether or
+     not the row has lapsed: a read of exactly the stable length is evidence that an entry ending
+     at the key block is live. A
+     read of any other length refreshes nothing. That covers a cloned Branch's deeper read, a first
+     message several conversations share, and a shorter caller-marked entry. A read never creates a
+     row, and a request with a server tool refreshes nothing. The arm applies to every settled
+     attempt, new scope or bound.
+
+   `expires_at` is the attempt's `created_at` plus 3,600 seconds, and the upsert keeps the later of
+   the stored and the new value. The base is `created_at`, read in the same statement as the
+   attempt, because the provider's hour starts when it processes the request, which is after the
+   reservation: the row lapses no later than the entry would. An attempt whose `created_at` does
+   not parse as an aware datetime writes and refreshes nothing. A write-arm upsert sets
+   `stable_tokens` to the new value when it is not NULL and keeps the stored value otherwise. A
+   stored row that counts as absent under Decision 2 is replaced whole: the write sets both
+   fields, a NULL `stable_tokens` included.
+
+   No other outcome writes a row: not a repeated or conflicting settlement, not a ceiling block, not
+   an attempt settled without the certificate (an open attempt settled by another process), and not
+   an attempt on an account blocked when it settles. A stable prefix below the provider's minimum
+   cacheable length is never written for an hour by itself. It gets a row only when a one-hour
+   mark after the key block wrote a longer entry. That write stores NULL, so no read refreshes the
+   row unless an earlier write had stored a number. Each further deeper one-hour write on that
+   account extends the row by another hour. For as long as those writes keep coming, the row steers
+   new scopes there, with no cache benefit to them.
+4. **Clearing.** In the transaction that records the outcome, the ledger deletes every
+   `warm_prefix` row for the provider and account when it records:
+   - an `UnknownOutcome` on an open attempt with any reason but `cancelled` and `stream_closed` (the
+     still-open branch, `_ledger.py:644-651`), whether or not an earlier reason already stands:
+     `auth_required`, `rate_limited`, `provider_error`, `request_rejected`, `transport_error`,
+     `usage_incomplete`, `stream_error`, `stream_truncated`;
+   - a `ProvenNotSent` the caller did not cause, settled in the open-to-settled branch
+     (`:668-701`): an unresolved key in `begin` (`_router.py:132-134`) and a transport failure
+     before the request entered (`messages.py:619`, `:1083`). `ProvenNotSent`
+     (`lionagi/service/accounts/_types.py:141-143`) gains `caller_cancelled: bool = False`. It is
+     set by the two cancellation handlers (`messages.py:585`, `:1055`) and by `begin` when the
+     exception at `_router.py:140` is the cancellation class or `GeneratorExit` (a consumer that
+     closes its own stream during `begin`). The recorded outcome stays `not_sent`;
+   - a block: `settlement_conflict` (`_ledger.py:662`), `ceiling_exceeded` (`:697`) and every
+     `block()` (`_block_sync`, `:714`), `auth_required` included;
+   - `clear_block()` (`:968`) on an account whose `block_reason` is not NULL when that transaction
+     reads it. A process without this amendment can block an account without deleting its rows, so
+     the re-admission deletes them. A `clear_block()` on an account that is not blocked deletes
+     nothing, and a repeat of an adjustment already recorded returns before that read (`:983`) and
+     deletes nothing.
+
+   It does not clear on a complete settlement. It does not clear on `cancelled`, `stream_closed` or
+   a caller-cancelled `not_sent`, which say the caller ended the request and nothing about the
+   account. A consumer that closes the stream after the provider sent an error event records
+   `stream_error`, not `stream_closed` (item 8), so that failure clears. It does not clear on a
+   reconciliation (`_reconcile_sync`, `:772`), which prices an old attempt after the fact, or on a
+   settlement of an attempt already settled, which returns before any write (`:642-643` for
+   `UnknownOutcome`, `:659-660` for an identical repeat). A repeated `ProvenNotSent` whose
+   `caller_cancelled` differs from the first reads as identical, because the flag is not stored. It
+   returns `already_settled` and clears nothing.
+
+   The clear has to cover more than blocks. Only a 401 or 403 blocks an account
+   (`messages.py:516`, `:986`). A rate-limited account, or one whose credit is exhausted (a 400), stays a
+   candidate. Without the clear, its row would keep it first in W for every new scope with that
+   prefix, and a bound scope never moves. The clear removes that preference and nothing else: D3's
+   order still binds the failing account when it ranks first, as it does today. A `ProvenNotSent`
+   settles at cost zero (`_ledger.py:607-609`) and an unknown outcome keeps only its attempt's quote
+   open, so a failure need not move the account down that order. A request already in flight when
+   its account failed, whose complete settlement with a one-hour write commits after the failure's,
+   writes a row again. That settlement is evidence the account served the request, not that it
+   served it after the failure: the provider can have answered it first, and only the ledger commit
+   came later. The row then steers new scopes back to the account until the next failure there
+   clears it. A completion that only reads restores nothing, because a read
+   refreshes a row that exists and never creates one.
+   Clearing more than needed (a second reason on one attempt, an older failure deleting a fresher
+   row) costs only writes.
+5. **Selection for a new scope.** The candidate set is unchanged: configured, unblocked accounts
+   with room for the attempt (`_fits`, `_ledger.py:395-397`).
+   - Let W be the candidates holding a row for the request's certificate whose `expires_at` is later
+     than the reservation's now, and whose committed spend including this attempt satisfies
+     `10 * (spent + opened + ceiling) <= 9 * budget`. Equality is inside W. The values are the
+     Python integers `_fits` uses: `spent` and `opened` from `_spend_parts` (`:346`), the quote's
+     ceiling, and `spec.budget_nusd`, which equals the month row whenever one exists (`:473`).
+   - If W is non-empty, the scope binds the first of W under D3's order.
+   - Otherwise it binds the first of all candidates under D3's order, as before. A warm candidate
+     above the bound is not in W and stays a candidate under that order, so it is bound again when
+     it still ranks first there.
+   - A reservation without a certificate has an empty W.
+   - The reservation and the binding are still one D4 transaction, and they read the index inside
+     it.
+   - The bound keeps a tenth of a warm account's budget free beyond this attempt at the moment
+     affinity admits a new scope there. It does not promise that a bound conversation's later turns
+     fit: a bound scope never moves (item 6), and its later turns can still meet `budget_exhausted`,
+     as today. It stops affinity from filling an account that its own conversations still need.
+   - At a month boundary spend restarts at zero and rows keep their absolute expiry, because the
+     provider's cache does not follow the ledger's months.
+6. **Unchanged.** Everything else in D3 and D4 stands, except the three settlement shields, the
+   cancellation delivery point and the stream-close reason in item 8.
+   - A bound scope keeps its account and is never rebound. An absent or blocked bound account
+     refuses. A bound scope's reservation does not read the index.
+   - Selection never happens per HTTP retry or per shared model.
+   - A first chosen account with an unresolved key refuses without trying another.
+   - D3's order itself is unchanged: integer cross-multiplication of committed utilization, then
+     distinct scopes in flight, then account name. Unknown attempts remain open for ranking and
+     admission.
+7. **Schema.** `user_version` stays 1. The table is not added to `_TABLES`.
+   - The unlocked fast path in `_ensure_schema` (`_ledger.py:233-236`) returns only when the
+     version is 1 and `_TABLES | {"warm_prefix"}` is present.
+   - The locked version-0 branch, which a fresh file takes, creates the table beside the base
+     tables and before `PRAGMA user_version = 1` (`:343`), in the same transaction.
+   - The locked version-1 branch requires `_TABLES` as today and then runs the
+     `CREATE TABLE IF NOT EXISTS` statement before it returns. A version-1 file missing a base table
+     still refuses with `LEDGER_UNAVAILABLE`.
+   - So every connection `_connect` returns (`_ledger.py:200-218`) holds the table. Every connection
+     is opened writable, so the first open after an upgrade creates it under the lock, and no reader
+     needs a write it could not already make.
+   - An older lionagi opens a file that has the table, because its check admits a superset of
+     `_TABLES`, and it neither reads nor writes it. Its failures therefore clear nothing (see the
+     limits below).
+   - The index is never required: an empty table is the pre-amendment behaviour, and no reservation
+     refuses because of anything in the table or missing from it.
+8. **Operations.**
+   - D4's `reserve(scope, attempt_id, quote, accounts)` becomes
+     `reserve(scope, attempt_id, quote, accounts, *, cert=None)`; it reads the index when the
+     reservation inserts the scope's binding (`_ledger.py:551`). `Reservation` is unchanged: no
+     later step needs to know whether the scope was new, because the read arm applies to every
+     settled attempt.
+   - `settle(attempt_id, evidence)` becomes `settle(attempt_id, evidence, *, cert=None,
+     hour_after_key=False)`; it writes (Decision 3) and clears (Decision 4). `hour_after_key` is
+     the flag from Decision 1.
+   - `RouterAttempt` (`_router.py:62-67`, `@dataclass(slots=True)`, built positionally at `:143`)
+     gains `cert: str | None = None` and `hour_after_key: bool = False` after its four fields, so
+     positional construction is unchanged. `begin` computes both from the frozen payload (`:124`),
+     passes `cert` to `ledger.reserve` (`:129`) and builds the attempt with both (`:143`). Only the
+     two settlements that can carry `CompleteUsage` pass them on to `ledger.settle`:
+     `settle_response` (`:159-169`) and `settle_stream_end` (`:184-195`). `settle_unknown`
+     (`:171-172`) and the not-sent paths pass neither; nothing is lost, because only a
+     `CompleteUsage` settlement writes a row and a clear needs only the account.
+   - `ProvenNotSent` gains `caller_cancelled` (Decision 4). `AccountRouter.settle_reservation_not_sent`
+     (`_router.py:177-179`) gains `*, caller_cancelled: bool = False` and builds its `ProvenNotSent`
+     with it. `settle_not_sent` (`:174-175`), which delegates to it, gains the same keyword and
+     forwards it. The adapter's two cancellation handlers pass `True` at their `settle_not_sent`
+     calls (`messages.py:585`, `:1055`). `begin`'s bare `except BaseException` (`:140-142`) binds
+     the exception and passes `True` when it is the cancellation class or `GeneratorExit`, `False`
+     otherwise. Its `AccountRoutingError` handler (`:133-139`) passes nothing.
+   - `AccountRouter.settle_response` (`_router.py:159-169`), `AccountRouter.settle_unknown`
+     (`:171-172`) and `AccountRouter.block` (`:181-182`) run their ledger write under
+     `CancelScope(shield=True)`, as `settle_reservation_not_sent` and `settle_stream_end` already do
+     (`:177-179`, `:184-195`). `settle_response` records Decision 4's `usage_incomplete` and
+     `ceiling_exceeded` on the non-streamed path (`messages.py:573`), and the complete settlements
+     that D6 settles under cancellation (`ADR-0126.md:565`). A worker write that waits for admission
+     while an AnyIO scope cancellation is pending never starts
+     (`lionagi/ln/concurrency/utils.py:64-65`). Today, when a 401, 403, 429, 5xx or other non-200
+     status is being recorded (`messages.py:511-541`, `:981-1011`), the adapter's cancellation
+     handler then records `cancelled` instead: no clear, no block for a 401 or 403 whose cancellation
+     was already pending when `block` was called, and a held ceiling for a 200 whose settlement never
+     started. A
+     cancellation that arrives while `block` runs lets the block commit and stops `settle_unknown`.
+     With the shields, both writes commit.
+   - The adapter delivers a pending cancellation after the failure is recorded. The clauses that
+     re-raise a routed failure (`messages.py:591-599`, `:1066-1069`) and the two transport-failure
+     branches (`:615-620`, `:1079-1084`) call `await anyio.lowlevel.checkpoint()` before they raise.
+     Without it, the transport branch raises the routed failure with no checkpoint after its
+     shielded write, so a caller under `fail_after` receives the routing error instead of
+     `TimeoutError`, and a status-code branch delivers the cancellation only if closing the HTTP
+     session checkpoints. When the cancellation fires first, the cancellation handler's second
+     settlement records nothing: the first reason on an open attempt stands, and a settled attempt
+     is left as it is (`_ledger.py:642-650`). The comment at `messages.py:512-515` and `:982-985` is
+     rewritten: both writes are shielded, and the block still goes first because a ledger error on
+     the first write stops the second, and losing the attempt's reason only keeps its ceiling held.
+   - The shields hold against AnyIO scope cancellation only. A native `task.cancel()` is not held:
+     pending before the write is admitted, it stops the write; arriving during the worker wait, it
+     returns to the caller at once and the write commits after (`messages.py:578-580`). Both hold
+     for the two existing shields as well. A shielded write also waits without a timeout for a
+     thread-limiter token. D6's five-second bound (`ADR-0126.md:572-573`) covers the SQLite wait,
+     not admission, for the existing shields and for these three alike.
+   - The streamed adapter's `GeneratorExit` handler (`messages.py:1061-1065`) records `stream_error`
+     when the stream carried an error event (`saw_error_event`, `:935`, `:955-958`) and
+     `stream_closed` otherwise, as its end-of-stream branch already does (`:1045-1047`).
+   - In the streamed attempt every settlement sets `settled` before it awaits the router (the
+     status branches, `messages.py:986-1017`, and `:951`, `:1048`), and the transport-failure
+     branch (`:1079-1084`) settles only when `settled` is false; it still raises. Today a status
+     branch settles without setting the flag, and the transport branch has no guard, so a
+     `GeneratorExit` or an exception that the unwinding response or client raises after a
+     settlement leads the close handler or the transport branch to settle a second time. After
+     `CompleteUsage` that is `already_settled`; on an attempt still open (`usage_incomplete`, a
+     status outcome) a second clearing reason clears the account's rows again, a row another
+     request wrote in between included. A settlement whose ledger write raises leaves the attempt
+     open for reconciliation, as an unsettled attempt is today.
+   - The summary row "Assignment" reads: "D3: bind a conversation once; a new conversation prefers
+     an account where its stable prefix is warm, then ranks by committed budget utilization."
+
+### What it guarantees, and what it does not
+
+- Guaranteed: a new scope whose request has a certificate is bound to an account holding an
+  unexpired row for it whenever such an account is a candidate and stays within the 90% bound with
+  this attempt. Among several, D3's order decides. A warm account above the bound is not preferred,
+  and selection uses D3's order over all candidates, which can still choose it.
+- Guaranteed: a row exists only after a complete settlement with a one-hour write on that account,
+  and the read arm extends it only on a read whose length equals the stable entry's.
+- Guaranteed, among processes carrying this amendment: a failure outcome of Decision 4 deletes the
+  account's rows in the transaction that records it, and an AnyIO scope cancellation pending while
+  the failure is recorded does not replace it (Decision 8). A native `task.cancel()` pending before
+  the write is admitted still can.
+- Not guaranteed: that a streamed failure is seen as one. The close reason reads
+  `saw_error_event`, which is set only once the adapter has processed the error event. An error
+  event the redactors still hold when the consumer closes, or a cancellation that replaces
+  `GeneratorExit` while the stream unwinds, records `stream_closed` or `cancelled` and clears
+  nothing. A frame flagged `call_failed` before `message_stop` makes a close before `message_stop`
+  record `stream_error`, which clears the rows of an account that served the request. Both cost
+  steering only: the next failure there clears a missed row, and the next one-hour write restores
+  a cleared one.
+- Not guaranteed: the write arm's count when a live five-minute entry extends past the key block
+  (a bound conversation's message entry that outlived the key's one-hour entry). The sum assumes
+  the provider counts the read before the one-hour write. If it writes the hour at the key from
+  that entry and counts the rest as read, the stored count is longer than the key, no stable read
+  matches it, and only an exact read of that deeper entry refreshes the row. That costs steering
+  only. This amendment has not measured how the provider counts it.
+- Not guaranteed: that the provider still holds the entry. A row can outlive it through an early
+  eviction or a row written just before a crash. A five-minute entry at the key block's position
+  (written by a request whose stable mark was five-minute) can do the same, depending on how the
+  provider serves a one-hour mark that ends where a live five-minute entry ends. This amendment
+  has not measured that:
+  - If the provider serves it as a read of the five-minute entry and writes no one-hour entry, the
+    read arm refreshes the row for an hour while the entry lives five minutes. While those reads
+    arrive less than five minutes apart the row stays fresh with only a five-minute entry behind
+    it, and the first longer pause leaves the account cold under a live row.
+  - If the provider writes a one-hour entry there, the request takes the write arm and the row is
+    backed by a real one-hour entry.
+
+  In the first case, and for an evicted or crash-written row, until the next one-hour write there
+  settles or the row lapses, every new scope that reserves goes to that account, and each pays the
+  one write it would pay on a cold account today. A second account that is genuinely warm
+  can be passed over for that window. The index steers selection only; it never feeds placement,
+  which stays ADR-0127's per-process, per-Branch decision.
+- Not guaranteed: that the certificate matches the provider's cache key. `points()` seeds on the
+  model, thinking and effort and hashes raw values. Two requests the provider caches alike can
+  carry different certificates (an omitted option against its explicit default), and two it caches
+  apart can share one (`output_config` keys other than effort; a key on the last tool for requests
+  differing in `speed`, which `points()` hashes after the tools). `tool_choice` is hashed after the
+  system tier, which matches the provider: a `tool_choice` change keeps the tools and system caches.
+  A split certificate (one provider prefix, two certificates) costs one write per certificate, as
+  today. A shared certificate (two provider prefixes, one certificate) costs more. Each prefix's
+  one-hour write sets the row's `stable_tokens` to its own length, so the other prefix's stable
+  reads stop refreshing the row. The row then lapses an hour after the last write, every new scope
+  that finds no row writes on the account it lands on, and the cycle repeats while both prefixes
+  keep writing. A read of the other prefix that happens to have the stored length also refreshes
+  the row. While the row lives, written or refreshed by one prefix on an account where the other
+  prefix is cold, every new scope of the other prefix that reserves goes there, passing over an
+  account where that prefix is warm, and each pays a write until a one-hour write of that prefix
+  settles there or the row lapses. A prefix below the provider's minimum cacheable length that
+  shares a certificate is steered to the row's account while the row lives; it caches nowhere, so
+  that costs no write, only concentration.
+- Not guaranteed: that a row is as fresh as the entry. A first attempt that writes the entry and
+  then fails before its usage settles leaves no row: the failure clears the account's rows, and the
+  retry that then reads the entry cannot create one, because a read never creates a row. A stable
+  entry kept alive only by reads that also cover deeper entries does not refresh the row, and a row
+  whose `stable_tokens` is NULL is never refreshed by a read. In each case the row can lapse, or
+  never appear, while the entry is warm. New scopes with that prefix then go by D3's order, as
+  today, each paying a write on the cold account it lands on, until a one-hour write settles and
+  writes a row. A row that lapsed, rather than never appearing, also comes back with the next
+  stable-length read on its account. A failure after the attempt settled (a transport error after a
+  stream's final usage) clears nothing: the attempt is already settled (`_ledger.py:642-643`), and
+  the account served the request.
+- Not guaranteed: a key that names a shorter one-hour entry finds a row written under the longer
+  key that contains it. The row records the last one-hour block of the request that wrote it.
+- Spreading still happens, per prefix, whenever W is empty:
+  - at a prefix's first use, after its row lapses, or after a failure cleared it;
+  - when its warm account is blocked or out of room;
+  - when its warm account is above the 90% bound and another candidate ranks ahead of it under
+    D3's order. Above the bound the warm account can still rank first and be bound again. When the
+    prefix does move, each new scope that reserves before a row settles on the new account writes
+    on the account it lands on;
+  - for concurrent cold starts: a new scope that reserves before the first scope's request settles
+    sees no row and writes on its own account. Routing it to the same account would save nothing,
+    because the provider serves an entry only after the request that writes it.
+  So several system prompts still land on several accounts, and each stays warm where it landed.
+- Not guaranteed: even spend across accounts inside the month. A prefix that carries most of a
+  process's traffic stays on one account until the prefix leaves W there (the account fails or
+  passes the bound, or the row lapses) and another candidate ranks ahead of it under D3's order.
+  Measured: one system prompt carried 58% of one process's 1,353 calls. The
+  amendment adds no spend: total spend is what the requests cost, wherever they run. D3's
+  consequence "new work spreads by committed utilization" now reads "new prefixes spread by
+  committed utilization; a warm prefix stays on its account".
+- Rate limits concentrate: an account carrying a hot prefix takes its whole new-conversation rate,
+  unmeasured at this service's rate. The first 429 clears the account's rows (Decision 4). As
+  after any clearing failure, a request in flight there whose one-hour write settles afterwards
+  writes the row again, even when the provider answered it before the 429; one that only reads
+  restores nothing.
+- Shared across processes: the D4 ledger is one file for cooperating local processes. A prefix
+  warmed by one process is preferred by the next, which is correct because caches belong to the
+  organization, not to the process. A process without this amendment records its failures and
+  clears nothing, so for up to an hour, and longer while stable reads keep refreshing the row, a
+  process carrying it can prefer an account the older one found failing. A later `clear_block()` by
+  a process carrying it deletes the rows while the account is still blocked when it runs. Once a
+  process without the amendment has cleared the block, the rows stay until they lapse or the next
+  failure there. A re-admission after an accounting block that process set
+  (`settlement_conflict`, `ceiling_exceeded`) deletes rows of an account that served its requests.
+- An outer timeout that cancels the task (`asyncio.timeout`, `anyio.fail_after`) reaches the
+  adapter as the cancellation class: before the request is sent it records a caller-cancelled
+  `not_sent`, after it `cancelled`, and neither clears. A transport timeout inside the adapter on an
+  open attempt records `transport_error`, which clears; one after the attempt settled clears
+  nothing.
+
+### Alternatives considered
+
+- **Refresh on any new-scope read.** Rejected: a cloned Branch or a shared first
+  message reads a deeper entry, which does not refresh the stable one, so the row outlives the
+  entry and steers new scopes to a cold account. Comparing the read length with the stored stable
+  length keeps the refresh for the stable reads that a hot prefix's new scopes make.
+- **Refresh rows only on one-hour writes.** Not adopted. A hot prefix's provider entry stays warm
+  through reads while a write-only row lapses an hour after its write, after which new scopes fall
+  back to D3's order and pay a write on each cold account they land on. A replay put that cost above
+  the measured process, but it models no account pool and counts every scope without a row as a
+  write, so its figure does not decide the choice. The discriminating read arm removes the false
+  freshness that was the reason to consider it.
+- **Order writes after clears by a recorded clear time.** Rejected: a strict comparison fails on equal ticks and on a wall-clock step back, and it drops the rows of
+  healthy attempts reserved before an unrelated failure on the same account. A complete settlement
+  is evidence that the account served the request, at a time the ledger does not know and that can
+  precede a failure the ledger recorded first. Unless the account is blocked when it settles, one
+  with a one-hour write writes a row and a stable read refreshes a row that still exists. After a
+  clear only a one-hour write restores the row, and the next failure clears it again. Until then,
+  new scopes go to an account that has failed.
+- **Order writes by a ledger sequence number.** Not adopted: it needs a column on `attempt` (a base
+  table) for an ordering the evidence above already makes unnecessary.
+- **Key on the last stable block whatever its marks.** Rejected: a request whose stable mark is
+  five-minute or absent has no one-hour entry to steer toward, and a block nobody marked keys
+  requests whose entries end elsewhere.
+- **Key on the placement's first system-tier one-hour mark.** Rejected: the placement does not
+  exist on standalone and direct-endpoint calls and is stale after a hook changes the body, and a
+  caller's mark on an early system block keys requests whose later system blocks differ.
+- **Normalize containers inside `points()` instead of parsing the frozen body.** Rejected: the
+  placement calls `points()` and `_write` writes through what it returns, so the change would reach
+  every placement, while parsing the frozen bytes gives `begin` exactly the arrays the provider
+  receives and leaves `points()` as it is.
+- **Clear on every outcome that is not complete, cancellation included.** Rejected: a caller's
+  cancellation says nothing about the account, and a fanout that cancels its losers would keep
+  wiping the rows its winners wrote.
+- **Clear only on 429 and 5xx.** Rejected: an unresolved key, a 400 for exhausted credit, a
+  transport timeout and a failed stream each left the row, which kept the failing account first
+  for every new scope with that prefix even when another account ranked ahead under D3's order.
+- **Disclose the budget cost instead of the 90% bound.** Rejected: a bound conversation refused
+  with room on other accounts is an availability loss. When the bound trips and the prefix moves,
+  it costs one write for each new scope that binds before a row settles on its account.
+- **Yield when the warm account runs ahead of pace** by more than a threshold. Rejected for now:
+  each yield costs one one-hour write of the prefix, and a pace gap alone refuses nothing. Revisit
+  if a month-end measurement shows credit left unspent because of affinity.
+- **Use the per-Branch rows.** Rejected: a new scope has none.
+- **One account per process.** That is the one-account measurement, and it gives up spreading
+  entirely.
+
+### Verification
+
+Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
+
+- A new scope with an unexpired row on a candidate binds that account even when another candidate
+  is further behind pace (control: with the row removed, it binds the furthest-behind account).
+  With two warm candidates in W, the one first under D3's order binds.
+- A reservation without a certificate binds by D3's order with warm rows present and issues no
+  statement naming `warm_prefix` (asserted with `sqlite3.Connection.set_trace_callback` on the ledger
+  connection).
+- Expiry: a row whose `expires_at` is not later than now is ignored; `expires_at` is the attempt's
+  `created_at` plus an hour, not the settle time; an upsert never moves `expires_at` earlier; a
+  stored `expires_at` with a `+01:00` offset compares by time, where text order would misorder it;
+  a stored value without an offset and a stored value that is not ISO-8601 each count as absent:
+  not in W, not refreshed by a stable read, replaced by a write (a NULL `stable_tokens` included),
+  and nothing refuses. Both on Python 3.10 and 3.12. A stored value with a `Z` suffix counts as
+  absent on 3.10 and compares by time on 3.12; every value the ledger writes ends in `+00:00`.
+- Month boundary: a row written before a credit-month rollover stays in W after it, with the bound
+  computed on the new month's spend.
+- The bound: a warm candidate for which `10 * (spent + opened + ceiling) > 9 * budget` is excluded
+  from W and can still be chosen by D3's order; the equality case is in W.
+- A warm account that is blocked or has no room is skipped, and the order decides among the rest.
+- Write arm: a complete settlement with a one-hour write creates the row with `stable_tokens` equal
+  to read plus one-hour-write tokens; with a one-hour mark after the key block it stores NULL; an
+  upsert with NULL keeps a stored value, and a non-NULL upsert replaces a stored NULL; a streamed
+  request settled through `settle_stream_end` writes the same row as the non-streamed
+  `settle_response` path.
+- Read arm: a settlement with no one-hour write whose read equals `stable_tokens` refreshes the row
+  (new scope and bound scope alike), a row whose `expires_at` has passed included; a read one token
+  longer, one token shorter, a read with no row and a read on a NULL row refresh nothing and create
+  nothing. A retried first request, whose first attempt wrote the entry and failed, creates no row
+  with its read.
+- No write: a repeated settlement, a conflicting settlement, a ceiling block, a settlement without
+  a certificate, and a complete settlement on an account blocked before the settlement.
+- Each clearing outcome in Decision 4, `clear_block()` on a blocked account included, deletes that
+  account's rows; the next new scope falls back to the order. `clear_block()` on an account that is not
+  blocked deletes nothing. A consumer that closes the stream after an error event records `stream_error`
+  and clears; one that closes it without an error event records `stream_closed` and does not. A
+  transport failure after `settle_stream_end` recorded complete usage clears nothing. With an AnyIO
+  scope cancellation (`fail_after`) pending when the adapter records a 429, the attempt keeps
+  `rate_limited`, the rows are cleared and the caller receives `TimeoutError`; pending at a 401, the
+  account is blocked, the attempt keeps `auth_required`, the rows are cleared and the caller receives
+  `TimeoutError`; pending at a 5xx, the attempt keeps `provider_error`, the rows are cleared and the
+  caller receives `TimeoutError`; pending at a 400, the attempt keeps `request_rejected`, the rows are
+  cleared and the caller receives `TimeoutError`; pending at a transport failure after the request
+  entered, the attempt keeps
+  `transport_error`, the rows are cleared and the caller receives `TimeoutError`; pending at a 200 whose
+  usage is incomplete, the attempt keeps `usage_incomplete` and the rows are cleared; pending at a 200
+  that prices over the ceiling, the account is blocked with `ceiling_exceeded` and the rows are cleared.
+  A clearing `UnknownOutcome` on an open attempt that already recorded `cancelled` clears. A
+  non-cancellation exception at `begin`'s `except BaseException` settles a `not_sent` that clears.
+  `cancelled`, `stream_closed`, a caller-cancelled `not_sent` from either adapter cancellation handler
+  or from `begin` (cancellation class and `GeneratorExit`), a reconciliation, an `UnknownOutcome` on a
+  settled attempt and an identical repeat delete nothing. `ProvenNotSent(caller_cancelled=True)`
+  followed by `ProvenNotSent(caller_cancelled=False)` on one attempt returns `already_settled` and
+  clears nothing.
+- A request reserved before a clearing outcome that does not block its account, and completing
+  after it with a one-hour write, writes its row; one completing after it with a stable read writes
+  nothing; one completing after a block writes nothing.
+- Usage shapes: a request with a server tool stores NULL on a write and refreshes nothing on a matching
+  read; a one-hour mark inside a `document` block's `source.content` after the key block sets
+  `hour_after_key`; a top-level one-hour `cache_control` with no markable block after the key block
+  leaves it false; a caller's one-hour mark on a blank system text block is not the key; a non-text
+  `expires_at` counts as absent; an attempt with an unparsable `created_at` writes nothing; a
+  `GeneratorExit` or an exception while unwinding a stream that already settled (a status outcome or
+  `CompleteUsage`) settles nothing more; a repeated `clear_block()` with a recorded adjustment deletes
+  nothing.
+- The key: computed from the frozen body; a hook that changes the system text after placement
+  changes it; a direct endpoint call and a prebuilt event are keyed from the body they send; a
+  standalone call with a string system prompt and a one-hour mark on its last tool is keyed by that
+  tool; a request whose only tools/system one-hour mark is a caller's on an earlier block, with the
+  stable block at five minutes, is keyed by that earlier block; the same when `MAX_MARKS` leaves the
+  stable block unmarked; a request with no one-hour mark in those tiers has no key; with a caller
+  one-hour mark on an earlier system block and the adapter's on the last, the last is the key.
+- `hour_after_key` is true in each of these cases:
+  - a one-hour mark on a message block;
+  - a one-hour mark nested in a `tool_result` block's content;
+  - a placement probe mark on an older one-hour message entry;
+  - a one-hour mark carried by a message whose content is a tuple;
+  - a top-level `cache_control` with `"ttl": "1h"`.
+
+  It is false when the messages carry no one-hour mark. For the tuple case the key is the same as
+  for the list form of the same body. A mutation that computes `hour_after_key` from `Point.mark`
+  alone turns the nested arm red; one that skips the parse turns the tuple arm red.
+- In a fixture with a one-hour mark nested after the key block, the write stores NULL, not the
+  longer read-plus-write count. The `Point.mark`-only mutation turns this red, because that
+  mutation stores the longer count.
+- `points()` output is byte-identical before and after the change for every fixture in the
+  existing prompt-cache tests.
+- A bound scope's reservation is unchanged by any row and issues no statement naming `warm_prefix`
+  (the same trace callback).
+- `RouterAttempt` built positionally with four arguments still constructs, with `cert` None and
+  `hour_after_key` false.
+- A version-0 (fresh) file gains the table before `user_version` is set; a version-1 ledger without
+  it opens and gains it under the lock; a version-1 file missing a base table still refuses; an
+  older reader admits a file that has it.
+- Two router instances on one ledger file see each other's rows and clears.
+- Mutations: replacing the W preference with the plain order turns the first test red; dropping the
+  length comparison from the read arm turns the one-token-longer and one-token-shorter cases red;
+  dropping the block check turns the blocked-account no-write case red; dropping the server-tool check
+  turns the server-tool arm red; reading `Point.nested` for the flag turns the `source.content` arm red;
+  setting `settled` after a status-branch settlement instead of before turns the settled-stream arm red;
+  treating `GeneratorExit` like any other exception in `begin` (`_router.py:140`) turns `begin`'s
+  no-clear case red; comparing the stored and current `expires_at` as text turns the `+01:00` case red;
+  removing the shield from `settle_unknown` turns the pending-cancellation 429 case red; removing it
+  from `block` turns the pending-cancellation 401 case red; removing it from `settle_response` turns the
+  pending-cancellation `usage_incomplete` case red; removing the checkpoint from the transport branch
+  turns its `TimeoutError` arm red; ignoring the error event in the `GeneratorExit` handler turns the
+  close-after-error case red; dropping the `block_reason` read from `clear_block()` turns the
+  not-blocked case red.
+
+KPI: the same per-route census on the first process of that service started on code carrying this
+amendment. Like for like: new-scope one-hour writes, 54 and 59 measured, fall toward the replay's 9
+and 9, a scale whose errors run both ways (Context); one-hour writes of a prefix seen within the hour on another account fall
+from 46 and 55 toward the concurrent cold starts (at most 5 and 17); the cost ratio falls to about
+0.38 to 0.39 on those mixes. Each remaining first-on-account write is a first use, a lapsed row, a
+cleared row, a bound trip, a blocked or out-of-room warm account, a concurrent cold start, or a
+retried first request.
+
+## Amendment 6 (2026-10-30) — bound the ledger's thread-limiter admission wait
+
+Purpose: bound the wait for a worker thread that every ledger call takes before its SQLite work starts, so a shielded ledger call cannot wait without limit.
+
+### Context
+
+D6 says stream close and finalization shield an available settlement from caller cancellation, bounded by the ledger's five-second wait. That bound covers only the SQLite lock wait. Each ledger call runs its SQLite work through `CredentialLedger._run` in `lionagi/service/accounts/_ledger.py`. `_run` calls `run_sync` with no limiter, so the call first waits for a token from AnyIO's process-wide default thread limiter, which every other thread-offloaded call that names no limiter also shares. `busy_timeout_s` (default 5.0) is the sqlite3 connect timeout and `PRAGMA busy_timeout`, and it starts only once the worker thread runs. Nothing bounds the token wait. Inside `anyio.CancelScope(shield=True)`, the caller's deadline cannot reach that wait, so a shielded ledger write can wait without limit. Amendment 5, Decision 8 discloses this for the existing shields and for the three it adds. This amendment supplies the bound.
+
+### Decision
+
+1. Every ledger call bounds its admission wait with its own five-second bound, separate from `busy_timeout_s`. The worst case for one call is five seconds waiting for a token plus five seconds waiting for the SQLite lock.
+2. When the admission bound trips, the call raises `AccountRoutingError` with code `ledger_busy` (`RouterErrorCode.LEDGER_BUSY`), the outcome a SQLite lock timeout produces today. It never surfaces as a bare `TimeoutError`. The default retry exceptions in `lionagi/service/resilience.py` include `TimeoutError`, so a bare timeout would be retried as if the request had failed in transit. `AccountRoutingError` is not in that default set, so it is not retried.
+3. A caller of a routed request receives that `AccountRoutingError(ledger_busy)` unchanged and is not retried. The `begin` call in `_request_attempt` (`lionagi/providers/anthropic/messages.py`) sits after the try block that converts routing errors, and the handlers in `lionagi/service/connections/endpoint.py` convert only the internal routed-attempt classes, so the error passes through.
+4. The bound covers admission only. Once the worker thread has started the operation, the admission bound no longer applies, and the SQLite wait stays bounded by `busy_timeout_s`. A bound that also spanned the worker wait could expire after the write committed, and the caller would then be told the call failed while its ledger row exists. A test pins this rule.
+5. The same change adds an admission-wait timing record. For each ledger call, it records the time from requesting a token to the operation's first line in the worker, kept apart from the SQLite wait. The record is one structured log event per ledger call, described under Timing record. It adds no database column, because a schema change needs its own decision.
+6. Not decided here: a dedicated thread limiter for the ledger. It is new structure with no measurement behind it. It returns as its own amendment only if admission-wait numbers from real runs (p50 and p99, with the population named) show that the shared pool is the cause.
+
+### What it guarantees and what it does not
+
+- A shielded ledger call that cannot obtain a token raises `ledger_busy` within the admission bound plus a small margin. It never raises a bare timeout.
+- A call whose worker starts before the bound expires runs to its own SQLite bound and is reported by its actual outcome.
+- It does not change the native `task.cancel()` behavior that Amendment 5 describes.
+- It does not change the existing busy-timeout arm, which still raises `ledger_busy` when the SQLite lock is held past `busy_timeout_s`.
+- The admission bound is not a retry. The caller decides whether to retry.
+
+### Verification
+
+Each item is a test that fails without this change:
+
+- A shielded ledger call whose limiter is saturated raises `AccountRoutingError(ledger_busy)` within the admission bound plus a small margin, and never `TimeoutError`.
+- The caller of a routed request whose `begin` trips the admission bound receives `AccountRoutingError(ledger_busy)`, and the request is not retried.
+- A call admitted just before the bound whose operation commits is reported as committed. The bound never fires after the worker started, and the ledger row and the return value agree.
+- A SQLite lock held past the busy timeout still raises `ledger_busy`, as today.
+- Each ledger call emits exactly one DEBUG event carrying `admission_wait_s`, `sqlite_wait_s` and the outcome, including a call whose admission bound trips (with `sqlite_wait_s` absent) and a call whose SQLite lock times out.
+
+### Timing record
+
+Each ledger call emits one structured log event at DEBUG level, with three fields:
+
+- `admission_wait_s`: the time from requesting a worker thread token to the operation's first line in the worker. When the admission bound trips, it is the time waited until the trip.
+- `sqlite_wait_s`: the time from that first line to the operation's return, which includes any wait for the SQLite lock. It is absent when the operation never started.
+- the outcome: committed, `ledger_busy` from the admission bound, `ledger_busy` from the SQLite lock, or the class name of any other error.
+
+The event is the whole record. The change adds no state to `CredentialLedger` and no field to `RouterAttempt`, and nothing in the process reads the event back. Numbers across runs (p50 and p99, Decision 6) come from collecting these events from a run's logs. A run that does not keep DEBUG logs keeps no timing.
+
 ## Requirements
 
 The request this record answers, and where each part is carried:
@@ -175,7 +835,7 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
 (`lionagi/operations/chat/chat.py:103`, `lionagi/service/imodel.py:709`,
-`lionagi/service/connections/api_calling.py:285-292`). HTTP retry happens inside the
+`lionagi/service/connections/api_calling.py:329-338`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
 `lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
@@ -303,8 +963,8 @@ the CLI fill helpers' behavior. They currently validate global-only argv/names,
 run with a 15-second timeout and fill all missing declared names
 (`lionagi/providers/_secret_resolution.py:88`,
 `lionagi/providers/_secret_resolution.py:213`,
-`lionagi/providers/_secret_resolution.py:380`,
-`lionagi/providers/_secret_resolution.py:454`). Reusing the
+`lionagi/providers/_secret_resolution.py:389`,
+`lionagi/providers/_secret_resolution.py:463`). Reusing the
 whole environment filler is prohibited. The one-name helper uses a sanitized
 lookup-child environment without configured account-key variables, bounds output
 to 1,025 bytes and keeps the existing cancellation/process cleanup. It removes
@@ -570,7 +1230,10 @@ complete terminal evidence. HTTP usage is intercepted before generic stream
 projection and before yielding to consumers; the current generic projection keeps
 raw events (`lionagi/service/connections/endpoint.py:1143`). No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
-from caller cancellation, bounded by the ledger's five-second wait. If commit
+from caller cancellation; the shield waits at most five seconds for a worker thread
+token (admission) and at most five seconds for the SQLite lock (`busy_timeout_s`), a
+worst case of ten seconds, and a timeout in either wait raises `ledger_busy`
+(Amendment 6). If commit
 fails or the process dies, the durable ceiling remains. It must never report the
 accounting operation as committed when it was not.
 

@@ -27,7 +27,7 @@ never calls is `authorize`. So the three routes carry three different control se
 one route carrying controls and the others carrying none, and the missing control on the manager
 route is Session authorization specifically. Session authorization is reached only through the
 `_act` operation, whose sole operational caller in the package is
-`lionagi/operations/act/act.py:84-86`, while Agent factory paths attach tool preprocessors one
+`lionagi/operations/act/act.py:135-139`, while Agent factory paths attach tool preprocessors one
 registration at a time. A caller that holds an `ActionManager`, a fresh plugin Tool, or a callable
 can therefore select a path that does not pass every intended control.
 
@@ -803,3 +803,136 @@ typed capability/degradation report is the portable contract.
 
 Rejected because honest capability reporting permits useful execution now without overstating its
 guarantees, and provides the seam for stronger backends later.
+
+## Proposed amendment — D5 MCP grant declaration and authority
+
+This amendment specifies how an MCP grant declaration is resolved under D5. It remains Proposed
+with this ADR; it does not assert that the grant or its provider enforcement is implemented.
+
+The following table describes each declaration before composition with a parent policy. An
+explicit deny-all never falls back to ambient server discovery.
+
+| Declaration | Meaning |
+|---|---|
+| No `mcp` key | `Unset`: inherit the captured parent's MCP grant; without a captured parent, preserve today's ambient discovery. |
+| `mcp: {}` | Explicit deny-all. |
+| `mcp: {enabled: false}` | Explicit deny-all. |
+| `mcp: {servers: []}` | Explicit deny-all. |
+| `mcp: {enabled: false, servers: []}` | Explicit deny-all. |
+| `mcp: {servers: [name, ...]}` | Request the named servers, subject to the captured parent policy. |
+| `mcp: {enabled: true, servers: [name, ...]}` | Request the named servers, subject to the captured parent policy. |
+| `mcp: {enabled: false, servers: [name, ...]}` | A non-empty server list contradicts deny-all; refuse. |
+| `mcp: {enabled: true, servers: []}` | Explicit deny-all; the server list governs. |
+| `mcp: null` or `mcp: {servers: null}` | Malformed; refuse. |
+| `mcp: {enabled: true}` without `servers` | Refuse. |
+| Any other value | Malformed; refuse. |
+
+The table is closed: a declaration that matches none of its rows is malformed and refused with
+an error naming the layer and the value. That covers an `mcp` value that is not a mapping, a key
+other than `enabled` and `servers`, an `enabled` that is not `true` or `false` (including
+`null`), a `servers` value that is not a list, an entry that is not a non-empty string, and a
+name listed more than once. When `enabled` is absent, `servers` alone determines the meaning
+shown above. A requested name
+must match a server in the selected configuration exactly, case-sensitively and without normalization.
+
+A declaration or an MCP configuration read from a document that repeats a key within one
+mapping is refused before spawn, never resolved by the parser's last-value rule. This covers the
+`mcp` declaration, the selected configuration including its mapping from names to servers, and
+an inline configuration. The JSON and YAML parsers lionagi reads them with (`json`,
+`yaml.safe_load`) keep the last value silently, so `{servers: [a], servers: []}` parses as
+deny-all and two readers of one document could otherwise disagree on the grant or the transport.
+Keys are compared as the parser decodes them, after JSON escapes, so `"\u0073erver"` and
+`"server"` are one key; no Unicode normalization is applied, matching the parsers, which apply
+none and so never merge two spellings that normalize alike. A YAML merge key (`<<`) is refused in
+a declaration or a configuration, because a merge supplies keys that the mapping can override
+without repeating them; an alias used as a value copies its anchor's value and repeats no key.
+The refusal happens while the document is parsed, because the parsed result no longer carries
+the repeat.
+
+A profile supplies a default, not the parent authority. The captured run or engine policy is the
+parent. Resolution takes the first layer that declares an `mcp` key: the call, then the profile,
+then the captured parent. The table above gives the declared value its meaning, and a value the
+table refuses is refused at that layer; it never falls through to the next layer. Every layer
+that declares an `mcp` key is checked against the table, including a layer that an earlier one
+shadows, so a malformed profile value is refused even when the call declares a valid grant. Only
+the resolved grant is checked against the captured parent: a profile grant that a call replaces
+never reaches the exceeds-parent check. Because the
+profile is a default, a call's grant replaces a profile's deny-all, and a call's deny-all replaces
+a profile's grant; a call may select a narrower or wider grant than the profile default. A
+profile's explicit deny-all overrides the parent. If neither the call nor the profile declares an
+`mcp` key, inherit the captured parent's grant; with no captured parent, preserve today's ambient
+discovery, meaning the MCP servers the agent's provider or runtime finds today when nothing is
+declared, unchanged by this amendment. Deny-by-default therefore applies to declared and
+inherited grants only. A call or profile grant naming a server outside the captured parent's grant is refused
+before spawn, names the outside servers, and is never clamped to the parent. The resolved snapshot
+records the refusal with the layer that declared the grant, `source=call` or `source=profile`, and
+reason `exceeds-parent`. If there is no captured parent, as in a bare SDK `create_agent` call with
+no run or engine, there is no exceeds-parent check: the layer that resolved the grant is the
+authority, and the snapshot records that layer, `source=call` or `source=profile`. A captured
+parent that itself resolved to ambient discovery declares no grant, so a child that declares one
+is resolved as if no parent were captured, and a child that declares nothing keeps ambient
+discovery. D5's
+explicit-deny precedence and parent-policy constraints apply between the resolved grant and the
+captured parent.
+
+An implementation of this amendment ships conformance tests for every row of the table above and
+for each layering case in this section, including the closure cases, a shadowed malformed layer,
+a repeated key, a call that replaces a profile's `khive_injection` opt-in, and a
+`khive_injection` opt-in outside the resolved grant.
+
+Deny-all covers every model-visible MCP tool regardless of ingress, including servers discovered
+by a provider. The `khive_injection` agent option calls its server through the MCP connection pool
+and places the result in the model's context, so deny-all covers it as well. `khive_injection`
+is an agent option, not an `mcp` key: it takes its value from the first layer that sets it, the
+call and then the profile, and the captured parent supplies none. An opt-in that a call's value
+replaces is therefore not an opt-in, and whichever layer the effective opt-in comes from, the
+check runs against the resolved grant. An effective opt-in under a grant that resolves to
+deny-all is a contradiction and must be refused. Under a resolved grant that names servers, it is
+a request for its server like any other: the server is identified by the name its configuration
+has in the selected MCP configuration, and opting in is refused before spawn unless the resolved
+grant names that server and the captured parent permits it. The option's server configuration
+names a server in one of two ways, told apart by the test the connection pool itself applies
+(`lionagi/service/connections/mcp_wrapper.py:1686`, `:1860`): a mapping with a top-level
+`server` key is a reference, whatever else it carries, and any other mapping is an inline
+transport configuration. A reference names its server by the value of `server` alone, compared
+exactly, case-sensitively and without normalization. The pool resolves that name and ignores
+every other key of a reference, so the check ignores them too, and a `server` value that is not
+a string is refused. The check resolves the name against the configuration the pool resolves it
+against, so the two can never name different servers. An inline transport configuration names
+the entry of the selected
+configuration that is equal to it once both drop their top-level keys beginning with `_`; a
+nested key beginning with `_` is part of the transport and is compared. The top-level keys are lionagi's own annotations on a
+configuration. The connection pool drops
+every one of them, whatever its name, when it fingerprints a transport:
+`material = {k: v for k, v in config.items() if not k.startswith("_")}`
+(`lionagi/service/connections/mcp_wrapper.py:1630`), and a registered tool proxy drops them before
+it reconnects: `config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}`
+(`:2121`). When the pool builds a client it reads only the transport keys it names and ignores the
+rest (`:1960-2042`). The one such key read after a tool is built, `_original_tool_name`, names the
+tool that admission checks (`lionagi/protocols/action/manager.py:154`) and picks the tool to call
+on the server already chosen (`mcp_wrapper.py:2119`). It never selects the transport, so these keys
+are no part of it. Equal means the two have the same canonical form, compared exactly as text: the
+typed serialization that the pool's `_policy_key` builds with `server_name=None` before hashing it
+(`lionagi/service/connections/mcp_wrapper.py:1606-1631`). The form tags value types recursively,
+orders dictionary entries by their typed keys, preserves sequence order, and writes floats with
+`float.hex()`, so `1` and `1.0` differ, parsed `1e2` and `100.0` match, and a list and a tuple
+differ. A configuration holding a value with no JSON form at any depth, a float that is not finite
+or a dictionary key that is not a string, is refused before the comparison, as are a value of a
+type the form does not support, a cyclic container and a repeated key (above). That refusal is the
+check's own: the form accepts a non-finite float and a non-string key (`:1612-1613`,
+`:1622-1625`), and it orders two NaN keys by insertion.
+Nothing is expanded before the comparison: an entry is compared as the selected configuration
+declares it and an inline configuration as the option gives it, so an environment or secret
+reference and any placeholder are compared as the text they are written as. Two configurations
+that spell such a reference or a placeholder differently therefore do not match
+through their resolved values; the opt-in is refused instead. The comparison is not the pool's
+client-cache key, which also carries the effective security policy and, for a reference, the
+server name. An inline configuration's cache key does not depend on the mapping object's identity,
+so two equal inline configurations under one security policy share a client
+(`lionagi/service/connections/mcp_wrapper.py:1847-1869`). An inline
+configuration equal to more than one entry is refused as ambiguous.
+A `khive_injection` whose configuration matches no named server is permitted only under ambient
+discovery, never under a declared or inherited grant. Every requested
+server name that is unknown or absent must be
+refused. A required control that an adapter cannot enforce remains subject to D8's refusal before
+spawn.

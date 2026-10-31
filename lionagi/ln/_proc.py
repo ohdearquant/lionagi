@@ -4,14 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
+import logging
+import math
 import os
 import secrets
 import signal
-from collections.abc import Mapping, Sequence
+import socket
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, Literal, TypeVar
 
 from anyio.lowlevel import checkpoint_if_cancelled
 
@@ -22,6 +27,37 @@ from .concurrency import move_on_after, shield, sleep
 # LIVE reads of the same process must still compare exactly equal.
 CREATE_TIME_TOLERANCE = 0.1
 _PROCESS_GROUP_MARKER = "LIONAGI_INTERNAL_PROCESS_GROUP_TOKEN"
+logger = logging.getLogger(__name__)
+
+_SignalResult = TypeVar("_SignalResult")
+
+
+class SignalGate:
+    """Serialize release with synchronous identity checks and signal attempts.
+
+    Never await or re-enter this gate from an action. A blocking identity check
+    or signal can delay release; this gate provides ordering, not a deadline.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._released = False
+
+    def run(self, action: Callable[[], _SignalResult], *, skipped: _SignalResult) -> _SignalResult:
+        with self._lock:
+            if self._released:
+                return skipped
+            return action()
+
+    def release(self) -> None:
+        with self._lock:
+            self._released = True
+
+
+def _guard_signal(
+    gate: SignalGate | None, action: Callable[[], _SignalResult], *, skipped: _SignalResult
+) -> _SignalResult:
+    return action() if gate is None else gate.run(action, skipped=skipped)
 
 
 @dataclass(frozen=True)
@@ -397,6 +433,317 @@ def group_member_pids(pgid: int) -> tuple[list[int], bool]:
     return [pid for pid, _ in members], complete
 
 
+@dataclass(frozen=True)
+class _RecordedWorkerIdentity:
+    """The immutable local process identity recorded for one worker spawn."""
+
+    pid: int
+    pgid: int
+    pid_create_time: float
+    pid_host: str
+    pid_boot_time: float
+    process_identity_mode: str
+
+
+@dataclass(frozen=True)
+class _RecordedGroupWitness:
+    """Member identities captured while the recorded leader bracketed the read."""
+
+    identity: _RecordedWorkerIdentity
+    leader: tuple[int, float]
+    members: tuple[tuple[int, float], ...]
+
+
+@dataclass(frozen=True)
+class _RecordedGroupRefusal:
+    """Why recorded evidence did not establish authority over a worker group."""
+
+    reason: Literal[
+        "identity_mismatch",
+        "identity_unverifiable",
+        "host_mismatch",
+        "boot_mismatch",
+        "foreign_mode",
+        "leader_not_live",
+        "unsafe_group",
+        "unsupported_platform",
+    ]
+
+
+def _finite_process_time(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, ValueError):
+        return False
+
+
+# psutil's live process states across the supported POSIX backends. Some,
+# including ``wake-kill`` and ``suspended``, are not exported at psutil's
+# top level in every release. Unknown or dead states cannot authorize a signal.
+_RECORDED_LIVE_PROCESS_STATUSES = frozenset(
+    {
+        "running",
+        "sleeping",
+        "disk-sleep",
+        "stopped",
+        "tracing-stop",
+        "wake-kill",
+        "waking",
+        "idle",
+        "parked",
+        "locked",
+        "waiting",
+        "suspended",
+    }
+)
+
+
+def _recorded_process_create_time(
+    pid: int, *, expected_created: float | None = None
+) -> tuple[Literal["found", "gone", "zombie", "mismatch", "unknown"], float | None]:
+    """Read a recorded PID without discarding a zombie's birth identity.
+
+    The general-purpose ``process_create_time`` intentionally considers a
+    zombie gone. This narrower reader must first compare any readable birth:
+    a recycled PID remains a mismatch even when its new holder has exited.
+    """
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+    except psutil.ZombieProcess:
+        # ZombieProcess is a NoSuchProcess subclass, but still owns the PID.
+        return "unknown", None
+    except psutil.NoSuchProcess:
+        return "gone", None
+    except Exception:
+        return "unknown", None
+
+    try:
+        created = raw_create_time(proc)
+        if not _finite_process_time(created):
+            return "unknown", None
+        if expected_created is not None and not start_time_matches(created, expected_created):
+            return "mismatch", created
+        status = proc.status()
+        if status != psutil.STATUS_ZOMBIE:
+            if status in _RECORDED_LIVE_PROCESS_STATUSES:
+                return "found", created
+            return "unknown", None
+
+        # Linux caches a process handle's create time, so a new handle is
+        # required to catch PID reuse while bracketing the zombie observation.
+        again = psutil.Process(pid)
+        created_again = raw_create_time(again)
+        if not _finite_process_time(created_again):
+            return "unknown", None
+        if created_again != created:
+            return "mismatch", created_again
+        if again.status() != psutil.STATUS_ZOMBIE:
+            return "unknown", None
+        return "zombie", created
+    except Exception:
+        # Once an observation began, a reaped or unreadable zombie cannot be
+        # upgraded into proof that its recorded identity was the one seen.
+        return "unknown", None
+
+
+def _recorded_group_refusal(
+    identity: _RecordedWorkerIdentity,
+) -> _RecordedGroupRefusal | None:
+    """Validate recorded fields and the platform without looking up a process."""
+    if not isinstance(identity, _RecordedWorkerIdentity):
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if (
+        type(identity.pid) is not int
+        or type(identity.pgid) is not int
+        or identity.pid <= 1
+        or identity.pgid != identity.pid
+    ):
+        return _RecordedGroupRefusal("unsafe_group")
+    if not all(hasattr(os, name) for name in ("killpg", "getpgid", "getpgrp")):
+        return _RecordedGroupRefusal("unsupported_platform")
+    if (
+        not _finite_process_time(identity.pid_create_time)
+        or not _finite_process_time(identity.pid_boot_time)
+        or not isinstance(identity.pid_host, str)
+        or not identity.pid_host.strip()
+    ):
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if (
+        not isinstance(identity.process_identity_mode, str)
+        or identity.process_identity_mode != "local"
+    ):
+        return _RecordedGroupRefusal("foreign_mode")
+    try:
+        own_group = os.getpgrp()
+    except Exception:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if type(own_group) is not int:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if identity.pgid == own_group:
+        return _RecordedGroupRefusal("unsafe_group")
+    return None
+
+
+def _read_recorded_group_member(
+    pid: int, pgid: int, *, expected_created: float | None = None
+) -> tuple[Literal["found", "missing", "mismatch", "unreadable"], tuple[int, float] | None]:
+    """Bracket one group-membership read by two exact live birth-time reads."""
+    try:
+        state, created = _recorded_process_create_time(pid, expected_created=expected_created)
+        if state == "gone":
+            return "missing", None
+        if state == "mismatch":
+            return "mismatch", None
+        if state == "zombie":
+            if not _finite_process_time(created):
+                return "unreadable", None
+            if expected_created is not None and not start_time_matches(created, expected_created):
+                return "mismatch", None
+            return "missing", None
+        if state != "found" or not _finite_process_time(created):
+            return "unreadable", None
+        if expected_created is not None and not start_time_matches(created, expected_created):
+            return "mismatch", None
+        try:
+            group = os.getpgid(pid)
+        except ProcessLookupError:
+            return "missing", None
+        if type(group) is not int:
+            return "unreadable", None
+        again, created_again = _recorded_process_create_time(pid, expected_created=expected_created)
+    except Exception:
+        return "unreadable", None
+    if again == "gone":
+        return "missing", None
+    if again == "mismatch":
+        return "mismatch", None
+    if again == "zombie":
+        if not _finite_process_time(created_again):
+            return "unreadable", None
+        if created_again != created:
+            return "mismatch", None
+        return "missing", None
+    if again != "found" or not _finite_process_time(created_again):
+        return "unreadable", None
+    if created_again != created or group != pgid:
+        return "mismatch", None
+    return "found", (pid, created)
+
+
+def _admit_recorded_worker_group(
+    identity: _RecordedWorkerIdentity, *, boot_time_tolerance: float
+) -> _RecordedGroupWitness | _RecordedGroupRefusal:
+    """Freeze members between two identical observations of the recorded live leader."""
+    refusal = _recorded_group_refusal(identity)
+    if refusal is not None:
+        return refusal
+    if not _finite_process_time(boot_time_tolerance) or boot_time_tolerance < 0:
+        return _RecordedGroupRefusal("identity_unverifiable")
+
+    import psutil
+
+    try:
+        host = socket.gethostname()
+        boot = psutil.boot_time()
+    except Exception:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if not isinstance(host, str) or not host.strip() or not _finite_process_time(boot):
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if identity.pid_host != host:
+        return _RecordedGroupRefusal("host_mismatch")
+    if abs(identity.pid_boot_time - boot) > boot_time_tolerance:
+        return _RecordedGroupRefusal("boot_mismatch")
+
+    state, leader = _read_recorded_group_member(
+        identity.pid, identity.pgid, expected_created=identity.pid_create_time
+    )
+    if state == "missing":
+        return _RecordedGroupRefusal("leader_not_live")
+    if state == "mismatch":
+        return _RecordedGroupRefusal("identity_mismatch")
+    if state != "found" or leader is None:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    try:
+        members, _complete = _group_member_identities(identity.pgid)
+    except Exception:
+        members = []
+    again, leader_again = _read_recorded_group_member(
+        identity.pid, identity.pgid, expected_created=identity.pid_create_time
+    )
+    if again == "missing":
+        return _RecordedGroupRefusal("leader_not_live")
+    if again == "mismatch":
+        return _RecordedGroupRefusal("identity_mismatch")
+    if again != "found" or leader_again is None:
+        return _RecordedGroupRefusal("identity_unverifiable")
+    if leader_again != leader:
+        return _RecordedGroupRefusal("identity_mismatch")
+
+    # An incomplete census withholds unknown members, not the identities it pinned.
+    # Even when enumeration fails entirely, the two live leader reads remain evidence.
+    return _RecordedGroupWitness(identity, leader, tuple(sorted({leader, *members})))
+
+
+def _recorded_worker_group_matches(
+    witness: _RecordedGroupWitness,
+) -> Literal["matches", "missing", "unreadable"]:
+    """Re-read frozen members only; no new census or numeric liveness grants authority."""
+    if not isinstance(witness, _RecordedGroupWitness):
+        return "unreadable"
+    if _recorded_group_refusal(witness.identity) is not None:
+        return "unreadable"
+    unreadable = False
+    for expected in witness.members:
+        state, member = _read_recorded_group_member(
+            expected[0], witness.identity.pgid, expected_created=expected[1]
+        )
+        if state == "found" and member == expected:
+            return "matches"
+        if state == "unreadable":
+            unreadable = True
+    return "unreadable" if unreadable else "missing"
+
+
+def _recorded_worker_group_state(
+    identity: _RecordedWorkerIdentity,
+) -> Literal["empty", "present", "unreadable"]:
+    """Read kernel absence after admission has established runtime compatibility.
+
+    Call only after admission returned a witness or ``leader_not_live``: those
+    outcomes follow successful host, boot and mode checks. Other refusals forbid
+    settlement. This probe does not invent a boot-time tolerance or re-admit a group.
+    A live mismatched birth time is unreadable, never evidence that the group ended.
+    """
+    if _recorded_group_refusal(identity) is not None:
+        return "unreadable"
+    try:
+        state, created = _recorded_process_create_time(
+            identity.pid, expected_created=identity.pid_create_time
+        )
+    except Exception:
+        return "unreadable"
+    if state in ("found", "zombie"):
+        if not _finite_process_time(created) or not start_time_matches(
+            created, identity.pid_create_time
+        ):
+            return "unreadable"
+        if state == "found":
+            return "present"
+    elif state != "gone":
+        return "unreadable"
+    try:
+        os.killpg(identity.pgid, 0)
+    except ProcessLookupError:
+        return "empty"
+    except Exception:
+        return "unreadable"
+    return "present"
+
+
 def _child_is_reaped(proc: Any) -> bool:
     """Whether a subprocess-shaped handle has recorded a terminal return code."""
     return isinstance(getattr(proc, "returncode", None), int)
@@ -512,12 +859,12 @@ def capture_group_witnesses(
     )
 
 
-def signal_group_if_witnessed(
+def _signal_group_outcome(
     pgid: Any,
     witnesses: tuple[tuple[int, float], ...],
     sig: signal.Signals,
-) -> bool:
-    """Signal *pgid* only when a frozen member identity still matches.
+) -> Literal["sent", "missing", "denied", "unverifiable"]:
+    """Signal only a witnessed group, distinguishing absence and refusal.
 
     The marker is checked where the witnesses are captured, so it is not taken
     again here: by this point the witness set either proves the group is ours,
@@ -525,7 +872,7 @@ def signal_group_if_witnessed(
     """
     resolved = safe_pgid_value(pgid)
     if resolved is None or not witnesses:
-        return False
+        return "unverifiable"
     witnessed = _group_has_witness(resolved, witnesses)
     if not witnessed and getattr(witnesses, "group_anchor", False):
         # The live leader identity anchored this group when the scan turned out
@@ -542,13 +889,15 @@ def signal_group_if_witnessed(
         # ownership and the SIGKILL below lands on an unrelated group.
         leader = getattr(witnesses, "leader", None)
         if leader is None or _child_is_reaped(leader):
-            return False
+            return "unverifiable"
         # Still ours by identity; a positive liveness probe is the remaining
         # requirement before using the numeric PGID.
         try:
             os.killpg(resolved, 0)
-        except (ProcessLookupError, PermissionError, OSError):
-            return False
+        except ProcessLookupError:
+            return "missing"
+        except PermissionError:
+            return "denied"
         witnessed = True
     # A second liveness-probe escalation used to sit here, justified by process
     # enumeration being unavailable. It could not reach that case: witnesses
@@ -558,12 +907,26 @@ def signal_group_if_witnessed(
     # PGID free to be reissued -- and turned a bare liveness probe on that
     # number into authority to SIGKILL whoever now holds it.
     if not witnessed:
-        return False
+        return "unverifiable"
     try:
         os.killpg(resolved, sig)
-    except (ProcessLookupError, PermissionError, OSError):
+    except ProcessLookupError:
+        return "missing"
+    except PermissionError:
+        return "denied"
+    return "sent"
+
+
+def signal_group_if_witnessed(
+    pgid: Any,
+    witnesses: tuple[tuple[int, float], ...],
+    sig: signal.Signals,
+) -> bool:
+    """Signal a witnessed group, preserving the boolean caller contract."""
+    try:
+        return _signal_group_outcome(pgid, witnesses, sig) == "sent"
+    except OSError:
         return False
-    return True
 
 
 def safe_pgid_value(pgid: Any) -> int | None:
@@ -710,6 +1073,71 @@ async def _await_child_exit(proc: Any) -> None:
         delay = min(delay * 2, _POLL_MAX_SECONDS)
 
 
+def _attach_prior_group_error(later: BaseException, earlier: Exception) -> None:
+    """Retain an earlier group fault without overwriting or cycling a chain."""
+    if later is earlier:
+        return
+
+    def graph(root: BaseException) -> set[int] | None:
+        visited: set[int] = set()
+        active: set[int] = set()
+        pending = [(root, False)]
+        group_type = getattr(builtins, "BaseExceptionGroup", ())
+        try:
+            while pending:
+                error, leaving = pending.pop()
+                marker = id(error)
+                if leaving:
+                    active.remove(marker)
+                    continue
+                if marker in active:
+                    return None
+                if marker in visited:
+                    continue
+                visited.add(marker)
+                if len(visited) > 128:
+                    return None
+                active.add(marker)
+                pending.append((error, True))
+                children = [error.__cause__, error.__context__]
+                if group_type and isinstance(error, group_type):
+                    if len(error.exceptions) > 128 - len(visited):
+                        return None
+                    children.extend(error.exceptions)
+                elif not group_type and hasattr(error, "exceptions"):
+                    # Python 3.10 may use an exception-group backport whose
+                    # member contract is not known here.
+                    return None
+                if len(pending) + len(children) > 256:
+                    return None
+                pending.extend(
+                    (item, False) for item in children if isinstance(item, BaseException)
+                )
+        except Exception:  # noqa: BLE001 - an unreadable chain cannot be safely modified
+            return None
+        return visited
+
+    existing = graph(later)
+    prior = graph(earlier)
+    if existing is not None and id(earlier) in existing:
+        # The linked node may only be in a suppressed context or group member.
+        logger.warning("earlier process-group signal failed (%s)", type(earlier).__name__)
+        return
+    if (
+        existing is None
+        or prior is None
+        or id(later) in prior
+        or later.__cause__ is not None
+        or later.__context__ is not None
+    ):
+        logger.warning(
+            "earlier process-group signal failed (%s); could not safely attach its exception",
+            type(earlier).__name__,
+        )
+        return
+    later.__cause__ = earlier
+
+
 async def aterminate_process_group(
     proc: Any,
     *,
@@ -717,6 +1145,7 @@ async def aterminate_process_group(
     sig_first: signal.Signals = signal.SIGTERM,
     group_witnesses: tuple[tuple[int, float], ...] | None = None,
     expected_marker: str | None = None,
+    signal_gate: SignalGate | None = None,
 ) -> None:
     """End a child and, with spawn-bound witnesses, its process group.
 
@@ -728,6 +1157,10 @@ async def aterminate_process_group(
     read. The marker is verified where the witnesses are captured, so by the
     time it reaches here the witness set either proves the group is ours or
     nothing does; re-checking a name at signal time would add no authority.
+
+    When supplied, ``signal_gate`` serializes every group and direct-child
+    signal with release. It does not authorize a group without witnesses, and
+    it cannot bound blocking synchronous identity checks or signal calls.
     """
     pgid = _safe_pgid(proc)
     witnesses = group_witnesses or ()
@@ -736,57 +1169,75 @@ async def aterminate_process_group(
         # child's own signal does not depend on the group signal succeeding.
         try:
             if pgid is not None:
-                signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL)
+                _guard_signal(
+                    signal_gate,
+                    lambda: signal_group_if_witnessed(pgid, witnesses, signal.SIGKILL),
+                    skipped=False,
+                )
         finally:
             with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
+                _guard_signal(signal_gate, proc.kill, skipped=None)
         return
-    # A group signal that raises ends the group's part of the cycle: the group is
-    # neither waited on nor signalled again. The child still gets its grace and its
-    # forced kill, and the error is raised once the child is dealt with.
+    # A failed initial group signal does not remove the spawn-bound witnesses.
+    # Keep the child cleanup independent and retry an unexpected failure only
+    # after grace, with the same witnesses checked again at the signal boundary.
     group_error: Exception | None = None
     try:
-        signal_group_if_witnessed(pgid, witnesses, sig_first)
+        outcome = _guard_signal(
+            signal_gate,
+            lambda: _signal_group_outcome(pgid, witnesses, sig_first),
+            skipped="unverifiable",
+        )
     except Exception as exc:
         group_error = exc
+        outcome = "error"
     finally:
         # A terminate that fails leaves the forced kill below to end the child.
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.terminate()
-    group = pgid if group_error is None and witnesses else None
+        try:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                _guard_signal(signal_gate, proc.terminate, skipped=None)
+        except BaseException as exc:
+            if group_error is not None:
+                _attach_prior_group_error(exc, group_error)
+            raise
+    if outcome == "denied":
+        logger.warning("permission denied signalling process group %s", pgid)
+    group = pgid if outcome in {"sent", "error"} and witnesses else None
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
-    with move_on_after(grace) as scope:
-        await _await_child_exit(proc)
-        # The child is gone; the rest of grace belongs to whatever shared its
-        # process group. Waiting on the child alone is what keeps a pipe holder
-        # from deciding when the child's own status is known, but the forced
-        # kill below exists for group members that ignored the first signal, and
-        # reaching it by way of a stalled wait was incidental: that happened
-        # only where wait() is pipe-bound, and only when a survivor happened to
-        # be holding a pipe. Timing out here is what drives the escalation.
-        while group is not None and _group_has_members(group):
-            await sleep(_POLL_MAX_SECONDS)
-    if scope.cancelled_caught:
-        try:
-            if group is not None:
-                # A member captured while the live child anchored the group still
-                # matches immediately before the signal. The final identity-read to
-                # killpg gap cannot be closed with portable process-group APIs; see
-                # docs/internals/ln-primitives.md#signalling-a-group.
-                signal_group_if_witnessed(group, witnesses, signal.SIGKILL)
-        except Exception as exc:
-            group_error = exc
-        finally:
-            # The child's own kill does not depend on the group signal succeeding.
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-        # Bounded too: a caller that has already escalated to SIGKILL is done
-        # negotiating, and the same pipe holder that can stall the wait above
-        # can stall this one, with no timeout left to catch it.
-        with move_on_after(grace), contextlib.suppress(Exception):
+    try:
+        with move_on_after(grace) as scope:
             await _await_child_exit(proc)
+            # The child's exit does not prove its group is empty.
+            while group is not None and _group_has_members(group):
+                await sleep(_POLL_MAX_SECONDS)
+        if scope.cancelled_caught:
+            try:
+                if group is not None:
+                    # The original witnesses are rechecked before escalation.
+                    # The remaining check-to-signal race is documented in
+                    # docs/internals/ln-primitives.md#signalling-a-group.
+                    retry = _guard_signal(
+                        signal_gate,
+                        lambda: _signal_group_outcome(group, witnesses, signal.SIGKILL),
+                        skipped="unverifiable",
+                    )
+                    if retry == "denied":
+                        logger.warning("permission denied signalling process group %s", group)
+            except Exception as exc:
+                if group_error is not None:
+                    _attach_prior_group_error(exc, group_error)
+                group_error = exc
+            finally:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    _guard_signal(signal_gate, proc.kill, skipped=None)
+            with move_on_after(grace), contextlib.suppress(Exception):
+                await _await_child_exit(proc)
+    except BaseException as exc:
+        if group_error is not None:
+            _attach_prior_group_error(exc, group_error)
+        raise
     if group_error is not None:
         raise group_error
 

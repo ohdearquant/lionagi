@@ -130,6 +130,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("poller_consecutive_401", "INTEGER NOT NULL DEFAULT 0"),
         # New accounting starts at zero; prior HTTP/dispatch history is not inferred.
         ("poller_consecutive_cap_no_dispatch", "INTEGER NOT NULL DEFAULT 0"),
+        ("poller_last_capped_page_limit", "INTEGER"),
+        ("poller_target_generation", "INTEGER NOT NULL DEFAULT 0"),
         # Bounded retry for a fire that refuses before dispatching: which
         # event the streak applies to, and how many times it has refused.
         ("predispatch_refusal_event", "TEXT"),
@@ -278,6 +280,16 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
     "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
 )
 
+RECENT_VISIBLE_INDEXES = {
+    direction: (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_recent_visible "
+        f"ON sessions(updated_at {direction}) "
+        "WHERE node_metadata IS NULL OR NOT json_valid(node_metadata) "
+        "OR json_extract(node_metadata, '$.engine_parent_run_id') IS NULL"
+    )
+    for direction in ("ASC", "DESC")
+}
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
@@ -307,6 +319,10 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_invocations_reaper ON invocations(status, started_at, id)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
+        "CREATE INDEX IF NOT EXISTS idx_status_transitions_unclassified "
+        "ON status_transitions(id) WHERE delivery_eligible IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
+        "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
@@ -336,6 +352,10 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_invocations_reaper ON invocations(status, started_at, id)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
+        "CREATE INDEX IF NOT EXISTS idx_status_transitions_unclassified "
+        "ON status_transitions(id) WHERE delivery_eligible IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
+        "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
     ),
 }
 

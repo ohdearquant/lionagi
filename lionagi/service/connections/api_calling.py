@@ -18,6 +18,8 @@ from .._api_telemetry import (
     capture_request,
     is_collecting,
     mark_dispatch,
+    observe_cache_source,
+    record_cache_usage,
 )
 from .._prompt_cache import PromptCacheCall, activate_call, note_attempt
 from .._prompt_cache import current_call as current_prompt_cache_call
@@ -34,6 +36,30 @@ _input_chars: ContextVar[tuple[dict, list[int]] | None] = ContextVar(
 
 
 __all__ = ("APICalling", "estimate_payload_input_tokens")
+
+
+def _response_cache_usage(endpoint: Endpoint, response: Any) -> tuple[int | None, int | None]:
+    if not isinstance(response, dict) or not isinstance(response.get("usage"), dict):
+        return None, None
+    usage = response["usage"]
+    provider = endpoint.config.provider
+    if provider == "openai" and endpoint.config.endpoint in ("chat/completions", "responses"):
+        key = (
+            "prompt_tokens_details"
+            if endpoint.config.endpoint == "chat/completions"
+            else "input_tokens_details"
+        )
+        details = usage.get(key)
+        if not isinstance(details, dict):
+            return None, None
+        values = (details.get("cached_tokens"), details.get("cache_write_tokens"))
+    elif provider == "anthropic" and endpoint.config.endpoint == "messages":
+        values = (usage.get("cache_read_input_tokens"), usage.get("cache_creation_input_tokens"))
+    else:
+        return None, None
+    return tuple(
+        value if type(value) is int and 0 <= value <= 2**63 - 1 else None for value in values
+    )
 
 
 class APICalling(HookedEvent):
@@ -91,6 +117,7 @@ class APICalling(HookedEvent):
     _counted_input_tokens: int | None = PrivateAttr(default=None)
     _telemetry_initialized: bool = PrivateAttr(default=False)
     _telemetry_frame: RequestFrame | None = PrivateAttr(default=None)
+    _uncached_response: bool = PrivateAttr(default=False)
     # The prompt-cache call open where this request was built; the send runs in the
     # processor's context, so the attempt is recorded on this object, not on the ambient one.
     _prompt_cache_call: PromptCacheCall | None = PrivateAttr(default=None)
@@ -106,7 +133,11 @@ class APICalling(HookedEvent):
         if self.payload.get("stream") is True:
             self.streaming = True
 
-        if self.include_token_usage_to_model and self.endpoint.config.requires_tokens:
+        if (
+            self.include_token_usage_to_model
+            and self.endpoint.config.requires_tokens
+            and not self.endpoint.places_prompt_cache
+        ):
             if "messages" in self.payload and isinstance(self.payload["messages"][-1], dict):
                 required_tokens = self.required_tokens
                 content = self.payload["messages"][-1]["content"]
@@ -275,14 +306,29 @@ class APICalling(HookedEvent):
         if not (routed and routed()):
             note_attempt("direct")
 
+    async def _invoke(self):
+        response = await super()._invoke()
+        if self._uncached_response and not self.streaming:
+            try:
+                read, write = _response_cache_usage(self.endpoint, response)
+                record_cache_usage(self._telemetry_frame, read=read, write=write)
+            except Exception:
+                return response  # Optional observation cannot change the call result.
+        return response
+
     async def _core_invoke(self):
         scope_kwargs = (
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )
         mark_dispatch(self._telemetry_frame)
-        with activate_request(self._telemetry_frame), activate_call(self._prompt_cache_call):
+        with (
+            activate_request(self._telemetry_frame),
+            activate_call(self._prompt_cache_call),
+            observe_cache_source() as source,
+        ):
             self._note_direct_attempt()
-            return await self.endpoint.call(
+            endpoint_call = self.endpoint.call
+            response = await endpoint_call(
                 request=self.payload,
                 cache_control=self.cache_control,
                 skip_payload_creation=True,
@@ -290,6 +336,13 @@ class APICalling(HookedEvent):
                 **scope_kwargs,
                 **self.call_kwargs,
             )
+            self._uncached_response = (
+                source[0]
+                and type(self.endpoint).call is Endpoint.call
+                and getattr(endpoint_call, "__func__", None) is Endpoint.call
+                and getattr(endpoint_call, "__self__", None) is self.endpoint
+            )
+            return response
 
     async def _core_stream(self):
         """Yield the endpoint's chunks; a stream whose provider reported the call failed

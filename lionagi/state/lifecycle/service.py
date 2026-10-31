@@ -8,28 +8,36 @@ the ``_transition()`` adapter-only kwargs contract.
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Protocol, get_args
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, get_args
 
-from sqlalchemy import JSON, bindparam, text
+from sqlalchemy import JSON, Boolean, bindparam, text
 
 from lionagi.ln import short_id
+from lionagi.ln.concurrency import fail_after
 
 from ..compat import _quote
-from ..reasons import VALID_REASON_CODES
+from ..reasons import VALID_REASON_CODES, validate_reason_code
+from ..terminal_eligibility import (
+    HistoryWriteKind,
+    has_delivery_eligibility_column,
+    is_delivery_eligible,
+)
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
-    EXECUTION_ENTITY_KINDS,
     Correlation,
     EntityRef,
     RunTerminalEnvelope,
     TerminalCallbackRegistry,
 )
 from .models import (
+    ActorRecord,
     ActorType,
     InitialStateCommand,
     ReasonRecord,
@@ -42,14 +50,83 @@ from .schedules import ScheduleLifecycleAdapter
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection
 
+logger = logging.getLogger(__name__)
+
+
+class _HistoryWrite(NamedTuple):
+    transition_id: str
+    eligibility_stored: bool
+    eligibility_at_write: bool
+
+
+@dataclass
+class _GuardedCancelObservation:
+    """A private observation populated only by one guarded cancellation."""
+
+    terminal_same_execution: bool = False
+
+
+# Only these fields supplied the dead-runner evidence. An omitted key means
+# the snapshot lacked the key; unrelated metadata is intentionally not guarded.
+_RUNNER_IDENTITY_FIELDS = frozenset(
+    {"pid", "pid_create_time", "pid_host", "pid_boot_time", "process_identity_mode"}
+)
+
+
+def _same_runner_value(expected: Any, actual: Any) -> bool:
+    """Compare JSON values without treating booleans as numeric identities."""
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return type(expected) is bool and type(actual) is bool and expected is actual
+    if type(expected) in (int, float) and type(actual) in (int, float):
+        return expected == actual
+    if type(expected) is not type(actual):
+        return False
+    if isinstance(expected, list):
+        return len(expected) == len(actual) and all(
+            _same_runner_value(left, right) for left, right in zip(expected, actual, strict=True)
+        )
+    if isinstance(expected, dict):
+        return expected.keys() == actual.keys() and all(
+            _same_runner_value(expected[key], actual[key]) for key in expected
+        )
+    return expected == actual
+
+
+def _runner_identity_matches(captured: Mapping[str, Any], stored: Any, *, dialect: str) -> bool:
+    if isinstance(stored, str):
+        # SQLite returns raw JSON text; asyncpg has already decoded JSON once.
+        # A PostgreSQL string is a JSON scalar, even when it looks like an object.
+        if dialect != "sqlite":
+            return False
+        try:
+            stored = json.loads(stored)
+        except (ValueError, RecursionError):
+            return False
+    if not isinstance(stored := {} if stored is None else stored, dict):  # null: no keys
+        return False
+    for key in _RUNNER_IDENTITY_FIELDS:
+        if (key in captured) != (key in stored):
+            return False
+        if key in captured and not _same_runner_value(captured[key], stored[key]):
+            return False
+    return True
+
 
 class _TxProvider(Protocol):
     """Structural requirement satisfied by ``lionagi.state.db.StateDB``
     without importing it here (would be circular)."""
 
     dialect: str
+    mode: str
+    readonly: bool
 
     def _tx(self) -> Any: ...
+
+    def _read(self) -> Any: ...
+
+    def _refuse_in_compatibility(self, operation: str, reason: str) -> None: ...
+
+    def _owner_predicate(self, table: str) -> tuple[str, dict[str, str]]: ...
 
     def _owner_values(self, table: str) -> dict[str, str]: ...
 
@@ -186,6 +263,7 @@ class SQLAlchemyLifecycleService:
             entity_id=command.entity_id,
             previous_status=None,
             new_status=command.status,
+            write_kind="initialization",
             reason=command.reason,
             source=command.actor.type,
             actor=command.actor.id,
@@ -199,28 +277,52 @@ class SQLAlchemyLifecycleService:
         entity_id: str,
         previous_status: str | None,
         new_status: str,
+        write_kind: HistoryWriteKind,
         reason: ReasonRecord,
         source: str,
         actor: str | None,
         created_at: float | None = None,
+        _eligibility_column_present: bool | None = None,
+        _eligibility_at_write: bool | None = None,
     ) -> str:
         """Append one validated transition on its owning write connection."""
         transition_id = uuid.uuid4().hex
         now = time.time() if created_at is None else created_at
+        eligible = (
+            is_delivery_eligible(
+                entity_type,
+                previous_status,
+                new_status,
+                write_kind=write_kind,
+                registry=self._registry,
+            )
+            if _eligibility_at_write is None
+            else _eligibility_at_write
+        )
+        has_column = (
+            await has_delivery_eligibility_column(self._db, connection)
+            if _eligibility_column_present is None
+            else _eligibility_column_present
+        )
+        eligibility_column = ", delivery_eligible" if has_column else ""
+        eligibility_param = ", :delivery_eligible" if has_column else ""
         owner_columns, owner_params, owner_values = self._owner_insert("status_transitions")
+        statement = text(
+            "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
+            "(id, entity_type, entity_id, previous_status, status, "
+            " reason_code, reason_summary, evidence_refs, "
+            f" source, actor, created_at, metadata{eligibility_column}{owner_columns}) "
+            "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
+            " :reason_code, :reason_summary, :evidence_refs, "
+            f" :source, :actor, :created_at, :metadata{eligibility_param}{owner_params})"
+        ).bindparams(
+            bindparam("evidence_refs", type_=JSON),
+            bindparam("metadata", type_=JSON),
+        )
+        if has_column:
+            statement = statement.bindparams(bindparam("delivery_eligible", type_=Boolean))
         await connection.execute(
-            text(
-                "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, "
-                f" source, actor, created_at, metadata{owner_columns}) "
-                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
-                " :reason_code, :reason_summary, :evidence_refs, "
-                f" :source, :actor, :created_at, :metadata{owner_params})"
-            ).bindparams(
-                bindparam("evidence_refs", type_=JSON),
-                bindparam("metadata", type_=JSON),
-            ),
+            statement,
             {
                 "id": transition_id,
                 "entity_type": entity_type,
@@ -234,6 +336,7 @@ class SQLAlchemyLifecycleService:
                 "actor": actor,
                 "created_at": now,
                 "metadata": dict(reason.metadata),
+                **({"delivery_eligible": eligible} if has_column else {}),
                 **owner_values,
             },
         )
@@ -285,6 +388,62 @@ class SQLAlchemyLifecycleService:
             fill_only_if_absent=fill_only_if_absent,
         )
 
+    async def guarded_cancel_session(
+        self,
+        *,
+        session_id: str,
+        generation_id: str | None,
+        expected_runner_identity: Mapping[str, Any],
+        reason: ReasonRecord,
+    ) -> tuple[TransitionOutcome, bool]:
+        """Cancel one captured execution and report a matching terminal observation.
+
+        The second result is true only when the row observed in the guarded
+        transition was terminal and matched the captured generation and runner.
+        It describes that transaction's observation, not a later row state.
+        """
+        # The specialized entry point is callable independently of StateDB's
+        # facade, so it must enforce the same native-store and input guards.
+        self._db._refuse_in_compatibility(
+            "cancel_session_if_worker_generation", "worker cleanup requires native storage"
+        )
+        if self._db.readonly:
+            raise ValueError("worker cancellation requires a writable state handle")
+        # Import the facade's canonical validators lazily to avoid a module cycle
+        # and keep generation normalization and input policy in one place.
+        from ..db import (
+            _CLI_WORKER_OPERATION_TIMEOUT_SECONDS,
+            _validate_cli_worker_generation,
+            _validate_cli_worker_session_id,
+        )
+
+        session_id = _validate_cli_worker_session_id(session_id)
+        generation_id = _validate_cli_worker_generation(generation_id)
+        if not isinstance(expected_runner_identity, Mapping):
+            raise ValueError("expected_runner_identity must be a mapping")
+        expected_runner_identity = dict(expected_runner_identity)
+        validate_reason_code(reason.code)
+        command = TransitionCommand(
+            entity_type="session",
+            entity_id=session_id,
+            to_status="cancelled",
+            reason=reason,
+            actor=ActorRecord(type="admin", id="user"),
+            expected_statuses=frozenset({"running"}),
+            patch={"current_phase": None},
+        )
+        observation = _GuardedCancelObservation()
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            outcome = await self._transition(
+                command,
+                extra_guard={"cli_worker_generation": generation_id},
+                expected_runner_identity=expected_runner_identity,
+                enforce_edges=True,
+                undeclared_edge_mode="reject",
+                _guarded_cancel_observation=observation,
+            )
+        return outcome, observation.terminal_same_execution
+
     async def _emit_terminal_event(
         self,
         command: TransitionCommand,
@@ -292,14 +451,39 @@ class SQLAlchemyLifecycleService:
         previous_status: str | None,
         transition_id: str | None,
         occurred_at: float,
+        eligibility_stored: bool,
+        eligibility_at_write: bool,
     ) -> None:
-        if transition_id is None or previous_status == command.to_status:
+        if transition_id is None:
             return
-        policy = self._registry.get(command.entity_type)
-        if (
-            command.entity_type in EXECUTION_ENTITY_KINDS
-            and command.to_status in policy.terminal_statuses
-        ):
+        if not eligibility_stored or not eligibility_at_write:
+            # No column: use the decision made for that write, even if the foreign schema
+            # changes afterward. Written ineligible: never pushed, so no read is needed.
+            eligible = eligibility_at_write
+        else:
+            try:
+                async with self._db._read() as conn:
+                    owner_clause, owner_params = self._db._owner_predicate("status_transitions")
+                    row = (
+                        await conn.execute(
+                            text(
+                                "SELECT delivery_eligible FROM status_transitions "  # noqa: S608 -- owner column is quoted
+                                f"WHERE id = :id{owner_clause}"
+                            ),
+                            {"id": transition_id, **owner_params},
+                        )
+                    ).first()
+                    eligible = row is not None and bool(row[0])
+            except Exception:
+                # The transition already committed. Replay can repair a missed push;
+                # preserve the existing best-effort post-commit notification contract.
+                logger.warning(
+                    "could not read terminal delivery eligibility for %s",
+                    transition_id,
+                    exc_info=True,
+                )
+                return
+        if eligible:
             envelope = _build_terminal_envelope(
                 command,
                 previous_status=previous_status,
@@ -313,13 +497,34 @@ class SQLAlchemyLifecycleService:
         command: TransitionCommand,
         *,
         extra_guard: Mapping[str, Any] | None = None,
+        expected_runner_identity: Mapping[str, Any] | None = None,
         enforce_edges: bool = False,
         undeclared_edge_mode: str = "raise",
         raise_on_unguarded_conflict: bool = False,
         write_reason_columns: bool = True,
         fill_only_if_absent: frozenset[str] = frozenset(),
         owned_links: tuple[tuple[str, str, str], ...] = (),
+        _guarded_cancel_observation: _GuardedCancelObservation | None = None,
     ) -> TransitionOutcome:
+        if _guarded_cancel_observation is not None and (
+            command.entity_type != "session"
+            or command.to_status != "cancelled"
+            or command.expected_statuses != frozenset({"running"})
+            or command.expected_version is not None
+            or command.override is not None
+            or extra_guard is None
+            or set(extra_guard) != {"cli_worker_generation"}
+            or expected_runner_identity is None
+        ):
+            raise LifecycleValidationError("invalid guarded cancellation observation")
+        if expected_runner_identity is not None:
+            if command.entity_type != "session":
+                raise LifecycleValidationError("runner identity guard requires a session")
+            if not isinstance(expected_runner_identity, Mapping):
+                raise LifecycleValidationError("runner identity guard requires a mapping")
+            if set(expected_runner_identity) - _RUNNER_IDENTITY_FIELDS:
+                raise LifecycleValidationError("runner identity guard has unsupported fields")
+            expected_runner_identity = dict(expected_runner_identity)
         if command.entity_type == "schedule":
             if fill_only_if_absent or owned_links:
                 raise LifecycleValidationError("unsupported schedule transition companion fields")
@@ -393,6 +598,8 @@ class SQLAlchemyLifecycleService:
             # SELECT unique, but never let that guard disable the terminal-end
             # invariant itself.
             fetch_cols = list(dict.fromkeys(["status", "updated_at", *guard_cols]))
+            if expected_runner_identity is not None and "node_metadata" not in fetch_cols:
+                fetch_cols.append("node_metadata")
             if needs_duration_basis:
                 fetch_cols.extend(
                     col
@@ -414,6 +621,24 @@ class SQLAlchemyLifecycleService:
             if (
                 command.expected_statuses is not None
                 and previous_status not in command.expected_statuses
+            ):
+                if _guarded_cancel_observation is not None:
+                    _guarded_cancel_observation.terminal_same_execution = (
+                        previous_status in policy.terminal_statuses
+                        and row["cli_worker_generation"] == extra_guard["cli_worker_generation"]
+                        and expected_runner_identity is not None
+                        and _runner_identity_matches(
+                            expected_runner_identity, row["node_metadata"], dialect=self._db.dialect
+                        )
+                    )
+                return TransitionOutcome(
+                    result="conflict",
+                    previous_status=previous_status,
+                    current_status=previous_status,
+                    transition_id=None,
+                )
+            if expected_runner_identity is not None and not _runner_identity_matches(
+                expected_runner_identity, row["node_metadata"], dialect=self._db.dialect
             ):
                 return TransitionOutcome(
                     result="conflict",
@@ -599,7 +824,7 @@ class SQLAlchemyLifecycleService:
                 if patch != dict(command.patch):
                     command = replace(command, patch=patch)
 
-            transition_id = await self._write(
+            history_write = await self._write(
                 conn,
                 policy.table,
                 command,
@@ -608,7 +833,7 @@ class SQLAlchemyLifecycleService:
                 extra_guard=extra_guard,
                 write_reason_columns=write_reason_columns,
             )
-            if transition_id is None:
+            if history_write is None:
                 guarded = (
                     command.expected_statuses is not None
                     or command.expected_version is not None
@@ -659,14 +884,16 @@ class SQLAlchemyLifecycleService:
         await self._emit_terminal_event(
             command,
             previous_status=previous_status,
-            transition_id=transition_id,
+            transition_id=history_write.transition_id,
             occurred_at=now,
+            eligibility_stored=history_write.eligibility_stored,
+            eligibility_at_write=history_write.eligibility_at_write,
         )
         return TransitionOutcome(
             result="applied",
             previous_status=previous_status,
             current_status=command.to_status,
-            transition_id=transition_id,
+            transition_id=history_write.transition_id,
         )
 
     async def _write(
@@ -679,10 +906,10 @@ class SQLAlchemyLifecycleService:
         now: float,
         extra_guard: Mapping[str, Any],
         write_reason_columns: bool = True,
-    ) -> str | None:
+    ) -> _HistoryWrite | None:
         """The guarded UPDATE and its status_transitions append, factored out
         so both the ordinary and override paths share it. Returns the new
-        transition id, or ``None`` on a zero-row UPDATE (conflict).
+        transition id and write-time eligibility-column shape, or ``None`` on conflict.
         """
         # An invocation's cancellation records an observation: cleanup cannot
         # revise an end time or a reason another writer already recorded for the
@@ -756,14 +983,26 @@ class SQLAlchemyLifecycleService:
         if result.rowcount == 0:
             return None
 
-        return await self.append_history_in_transaction(
+        has_column = await has_delivery_eligibility_column(self._db, conn)
+        eligibility_at_write = is_delivery_eligible(
+            command.entity_type,
+            previous_status,
+            command.to_status,
+            write_kind="transition",
+            registry=self._registry,
+        )
+        transition_id = await self.append_history_in_transaction(
             conn,
             entity_type=command.entity_type,
             entity_id=command.entity_id,
             previous_status=previous_status,
             new_status=command.to_status,
+            write_kind="transition",
             reason=command.reason,
             source=command.actor.type,
             actor=command.actor.id,
             created_at=now,
+            _eligibility_column_present=has_column,
+            _eligibility_at_write=eligibility_at_write,
         )
+        return _HistoryWrite(transition_id, has_column, eligibility_at_write)

@@ -906,6 +906,10 @@ class iModel:  # noqa: N801
         ):
             registered = e1.config
             e1.config = endpoint.config
+            # A default dump omits the request model. Recover the registered model
+            # unless the stored config supplied a schema of its own.
+            if e1.config.request_options is None:
+                e1.config.request_options = registered.request_options
             # The registered endpoint is built without them; copy() keeps them too.
             e1.retry_config = endpoint.retry_config
             e1.circuit_breaker = endpoint.circuit_breaker

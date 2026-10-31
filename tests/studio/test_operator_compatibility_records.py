@@ -167,15 +167,15 @@ async def test_a_refused_teardown_fails_both_the_turn_and_its_run(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_the_native_path_records_the_turn_before_teardown(tmp_path, monkeypatch):
-    """Natively the turn record is written before teardown and keeps the turn's own status."""
+async def test_the_native_path_records_the_turn_after_teardown(tmp_path, monkeypatch):
+    """The native turn keeps its own status while waiting for teardown."""
     turn_status, run_status, order = await _drive(
         tmp_path, monkeypatch, compatibility=None, decided_status="failed"
     )
 
     assert run_status == "completed"
     assert turn_status == "completed"
-    assert order == [("finish_turn", "completed"), ("teardown", "completed")]
+    assert order == [("teardown", "completed"), ("finish_turn", "completed")]
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_a_store_stand_in_whose_compatibility_is_a_mock_takes_the_native_p
 
     assert run_status == "completed"
     assert turn_status == "completed"
-    assert order == [("finish_turn", "completed"), ("teardown", "completed")]
+    assert order == [("teardown", "completed"), ("finish_turn", "completed")]
 
 
 @pytest.mark.asyncio
@@ -394,16 +394,15 @@ async def test_a_failed_compatibility_turn_whose_teardown_refuses_fails_both(tmp
 
 
 @pytest.mark.asyncio
-async def test_a_native_cancelled_turn_records_cancelled_before_teardown(tmp_path, monkeypatch):
-    """Natively the record is still written as the cancellation lands, before teardown."""
+async def test_a_native_cancelled_turn_records_cancelled_after_teardown(tmp_path, monkeypatch):
+    """A native cancellation remains active until teardown completes."""
     turn_status, run_status, order = await _drive_interrupted(
         tmp_path, monkeypatch, compatibility=None, decided_status="failed"
     )
 
     assert turn_status == "cancelled"
     assert run_status == "cancelled"
-    assert order[0] == ("finish_turn", "cancelled")
-    assert order.index(("finish_turn", "cancelled")) < order.index(("teardown", "cancelled"))
+    assert order.index(("teardown", "cancelled")) < order.index(("finish_turn", "cancelled"))
 
 
 @pytest.mark.asyncio
@@ -688,7 +687,9 @@ async def test_a_refused_setup_records_a_store_refusal_not_a_retryable_model_fai
     assert errors[0]["payload"]["error"]["code"] == "store_refused"
     assert errors[0]["payload"]["error"]["message"] == str(refusal)
     assert errors[0]["payload"]["error"]["retryable"] is False
-    assert errors[0]["payload"]["error"]["details"] == {"runId": None}
+    # Recovery was refused, so the absence of an observed run is not evidence
+    # that no session row exists.
+    assert errors[0]["payload"]["error"]["details"] == {}
 
 
 @pytest.mark.asyncio
@@ -760,7 +761,7 @@ async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_
     (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
     assert turn["status"] == "failed"
     assert error["code"] == "store_refused"
-    assert error["message"] == str(refusal)
+    assert error["message"] == f"{refusal}; run recovery did not complete"
     assert error["retryable"] is False
 
 
@@ -807,7 +808,7 @@ async def test_a_setup_recovery_whose_native_open_is_refused_is_a_store_refusal(
     (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
     assert turn["status"] == "failed"
     assert error["code"] == "store_refused"
-    assert error["message"] == str(refused_open)
+    assert error["message"] == f"{refused_open}; run recovery did not complete"
     assert error["retryable"] is False
 
 
