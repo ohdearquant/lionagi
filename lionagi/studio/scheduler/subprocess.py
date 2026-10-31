@@ -21,7 +21,6 @@ from pathlib import Path
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.cli._schedule_parsing import (
     _ALIAS_ACTION_KINDS,
-    _IDENT_RE,  # noqa: F401
     _MODEL_RE,
     _VALID_ACTION_KINDS,
     _validate_identifier,

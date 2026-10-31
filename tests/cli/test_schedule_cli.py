@@ -2809,7 +2809,6 @@ def test_schedule_parsing_module_stays_below_the_command_layer():
         "_VALID_ACTION_KINDS",
         "_ALIAS_ACTION_KINDS",
         "_MODEL_RE",
-        "_IDENT_RE",
         "_validate_identifier",
     ):
         assert getattr(subprocess_module, name) is getattr(parsing, name), name
