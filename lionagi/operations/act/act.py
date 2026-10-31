@@ -12,6 +12,7 @@ from lionagi.ln import AlcallParams
 from lionagi.protocols.action.tool_hooks import ActionGovernanceDeniedError
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.messages import ActionRequest, ActionResponse
+from lionagi.protocols.messages.action_response import _OUTPUT_TOO_DEEP
 from lionagi.service._api_telemetry import record_guard_refusal
 
 from .._defaults import get_default_action_call as _get_default_call_params
@@ -37,7 +38,7 @@ def _result_text(result: object) -> str:
     try:
         return str(result)
     except RecursionError:
-        return "<output too deeply nested>"
+        return _OUTPUT_TOO_DEEP
 
 
 async def _act(

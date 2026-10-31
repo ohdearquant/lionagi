@@ -14,14 +14,18 @@ from sqlalchemy import text
 
 from lionagi.cli._runs import _make_message_handler
 from lionagi.protocols.messages.action_request import ActionRequest, ActionRequestContent
-from lionagi.protocols.messages.action_response import ActionResponse, ActionResponseContent
+from lionagi.protocols.messages.action_response import (
+    _OUTPUT_TOO_DEEP,
+    ActionResponse,
+    ActionResponseContent,
+)
 from lionagi.state.compat import StateCompatibilityRefused
 from lionagi.state.db import StateDB
 
 pytestmark = pytest.mark.asyncio
 
 _SECRET = "deep-output-private-leaf"
-_OUTPUT_MARKER = {"_lionagi_unserializable": {"field": "output", "exception": "TypeError"}}
+_GENUINE_MARKER = {"_lionagi_unserializable": {"field": "output", "exception": "TypeError"}}
 
 
 def _nested(depth: int):
@@ -83,6 +87,22 @@ async def _assert_progressions(db, expected):
     assert await db.get_progression("session-progression") == expected
 
 
+async def _shallow_metadata_control(db, metadata):
+    _, control = _linked_messages({"answer": "ordinary"}, metadata)
+    await db.insert_message(control.to_dict(mode="db"))
+    return control
+
+
+async def _stored_metadata_bytes(db, message_id):
+    async with db._read() as connection:
+        return (
+            await connection.execute(
+                text("SELECT node_metadata FROM messages WHERE id = :id"),
+                {"id": str(message_id)},
+            )
+        ).scalar_one()
+
+
 @pytest.mark.parametrize("shape", ["depth-300", "depth-50000", "cycle"])
 async def test_unserializable_output_keeps_linked_history_without_mutating_memory(
     history, caplog, shape
@@ -93,6 +113,7 @@ async def test_unserializable_output_keeps_linked_history_without_mutating_memor
     content_before = response.content
     output_before = response.content.output
     metadata_before = dict(response.metadata)
+    control = await _shallow_metadata_control(db, metadata_before)
     expected_ids = [str(request.id), str(response.id)]
 
     with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
@@ -105,9 +126,11 @@ async def test_unserializable_output_keeps_linked_history_without_mutating_memor
     assert response_row is not None
     assert request_row["content"]["action_response_id"] == str(response.id)
     assert response_row["content"]["action_request_id"] == str(request.id)
-    assert response_row["content"]["output"] == _OUTPUT_MARKER
-    assert response_row["node_metadata"]["lionagi_unserializable"] == ["output"]
-    assert response_row["node_metadata"]["owner"] == "kept"
+    assert _OUTPUT_TOO_DEEP == "<output too deeply nested>"
+    assert response_row["content"]["output"] == _OUTPUT_TOO_DEEP
+    assert await _stored_metadata_bytes(db, response.id) == await _stored_metadata_bytes(
+        db, control.id
+    )
     assert response.content is content_before
     assert response.content.output is output_before
     assert dict(response.metadata) == metadata_before
@@ -125,10 +148,10 @@ async def test_unserializable_output_keeps_linked_history_without_mutating_memor
     ("output", "metadata"),
     [
         ({"answer": [1, 2]}, {"owner": "kept"}),
-        (_OUTPUT_MARKER, {"owner": "kept"}),
+        (_GENUINE_MARKER, {"owner": "kept"}),
         ({"answer": "ordinary"}, {"lionagi_unserializable": ["user-value"]}),
     ],
-    ids=["ordinary", "genuine-marker", "reserved-key-on-normal-row"],
+    ids=["ordinary", "genuine-marker", "caller-key-on-normal-row"],
 )
 async def test_serializable_output_keeps_existing_stored_bytes(history, output, metadata):
     db, persist, added = history
@@ -163,33 +186,40 @@ async def test_serializable_output_keeps_existing_stored_bytes(history, output, 
     await _assert_progressions(db, [str(response.id)])
 
 
-async def test_unserializable_output_reserved_metadata_collision_is_projection_only(
-    history, caplog
-):
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"lionagi_unserializable": ["user-private-value"], "owner": "kept"},
+        {"owner": "kept", "details": {"source": "caller"}},
+    ],
+    ids=["caller-marker-key", "other-caller-keys"],
+)
+async def test_unserializable_output_preserves_caller_metadata(history, caplog, metadata):
     db, persist, added = history
-    metadata = {"lionagi_unserializable": ["user-private-value"], "owner": "kept"}
     _, response = _linked_messages(_nested(300), metadata)
     before = dict(response.metadata)
     output_before = response.content.output
+    control = await _shallow_metadata_control(db, before)
 
     with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
         await persist(response)
 
     row = await db.get_message(str(response.id))
     assert row is not None
-    assert row["content"]["output"] == _OUTPUT_MARKER
-    assert row["node_metadata"]["lionagi_unserializable"] == ["output"]
-    assert row["node_metadata"]["owner"] == "kept"
+    assert await _stored_metadata_bytes(db, response.id) == await _stored_metadata_bytes(
+        db, control.id
+    )
+    assert row["content"]["output"] == _OUTPUT_TOO_DEEP
     assert dict(response.metadata) == before
     assert response.content.output is output_before
-    assert len([r for r in caplog.records if "lionagi_unserializable" in r.getMessage()]) == 1
+    assert not any("lionagi_unserializable" in r.getMessage() for r in caplog.records)
     assert "user-private-value" not in caplog.text
     assert _SECRET not in caplog.text
     assert added == [str(response.id)]
     await _assert_progressions(db, [str(response.id)])
 
 
-async def test_deep_reserved_metadata_does_not_mark_a_shallow_output(history, caplog):
+async def test_deep_metadata_still_drops_unserializable_row(history, caplog):
     db, persist, added = history
     deep_metadata = _nested(300)
     _, response = _linked_messages(
@@ -222,6 +252,7 @@ async def test_recursion_error_at_serialization_marks_only_the_durable_output(
     content_before = response.content
     output_before = response.content.output
     metadata_before = dict(response.metadata)
+    control = await _shallow_metadata_control(db, metadata_before)
     serialize = ActionResponse.to_dict
 
     def fail_original_only(message, *args, **kwargs):
@@ -235,17 +266,49 @@ async def test_recursion_error_at_serialization_marks_only_the_durable_output(
 
     row = await db.get_message(str(response.id))
     assert row is not None
-    assert row["content"]["output"] == {
-        "_lionagi_unserializable": {"field": "output", "exception": "RecursionError"}
-    }
-    assert row["node_metadata"]["lionagi_unserializable"] == ["output"]
-    assert row["node_metadata"]["owner"] == "kept"
+    assert row["content"]["output"] == _OUTPUT_TOO_DEEP
+    assert await _stored_metadata_bytes(db, response.id) == await _stored_metadata_bytes(
+        db, control.id
+    )
     assert response.content is content_before
     assert response.content.output is output_before
     assert dict(response.metadata) == metadata_before
     assert _SECRET not in caplog.text
     assert added == [str(response.id)]
     await _assert_progressions(db, [str(response.id)])
+
+
+async def test_depth_fallback_serializes_the_projection_once(history, monkeypatch):
+    db, persist, added = history
+    _, response = _linked_messages(_nested(300), {"owner": "kept"})
+    serialize = ActionResponse.to_dict
+    projections = []
+
+    def count_projection(message, *args, **kwargs):
+        if message is not response:
+            projections.append(message)
+        return serialize(message, *args, **kwargs)
+
+    monkeypatch.setattr(ActionResponse, "to_dict", count_projection)
+    await persist(response)
+
+    assert await db.get_message(str(response.id)) is not None
+    assert len(projections) == 1
+    assert added == [str(response.id)]
+
+
+async def test_depth_fallback_with_deep_arguments_still_drops_row(history, caplog):
+    db, persist, added = history
+    _, response = _linked_messages(_nested(300), {"owner": "kept"})
+    response.content.arguments = {"input": _nested(300)}
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
+        await persist(response)
+
+    assert await db.get_message(str(response.id)) is None
+    assert added == []
+    await _assert_progressions(db, [])
+    assert any("live persist write failed" in record.getMessage() for record in caplog.records)
+    assert _SECRET not in caplog.text
 
 
 @pytest.mark.parametrize("failure", ["compatibility", "cancellation"])

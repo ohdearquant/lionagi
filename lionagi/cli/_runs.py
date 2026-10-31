@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 import warnings
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -1809,6 +1809,7 @@ def _live_message_dict(msg: Any) -> dict[str, Any]:
         ):
             raise
         from lionagi.protocols.messages.action_response import (  # noqa: PLC0415
+            _OUTPUT_TOO_DEEP,
             ActionResponse,
             ActionResponseContent,
         )
@@ -1818,32 +1819,11 @@ def _live_message_dict(msg: Any) -> dict[str, Any]:
         ):
             raise
 
-        # Build the projection without assigning through the tracked content:
-        # that assignment would recursively wrap the original value and mutate
-        # the live message. The normal path above remains unchanged.
-        marker = {
-            "_lionagi_unserializable": {
-                "field": "output",
-                "exception": "RecursionError" if isinstance(exc, RecursionError) else "TypeError",
-            }
-        }
-        content = object.__new__(type(msg.content))
-        for field in fields(msg.content):
-            value = marker if field.name == "output" else getattr(msg.content, field.name)
-            object.__setattr__(content, field.name, value)
-        # Verify that removing the output alone resolves the failure. In
-        # particular, a deeply nested reserved metadata value must not be
-        # overwritten and misreported as a failing output.
-        output_only = msg.model_copy(update={"content": content})
-        output_only.to_dict(mode="db")
-        metadata = dict(msg.metadata)
-        collision = "lionagi_unserializable" in metadata
-        metadata["lionagi_unserializable"] = ["output"]
-        projection = output_only.model_copy(update={"metadata": metadata})
-        snapshot = projection.to_dict(mode="db")
-        if collision:
-            _log.warning("live persist replaced reserved metadata key lionagi_unserializable")
-        return snapshot
+        # Build a detached projection, leaving the live message and its metadata
+        # untouched. Other unserializable fields still fail on serialization.
+        content = replace(msg.content, output=_OUTPUT_TOO_DEEP)
+        projection = msg.model_copy(update={"content": content})
+        return projection.to_dict(mode="db")
 
 
 def _make_message_handler(

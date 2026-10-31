@@ -6,6 +6,7 @@ import pytest
 
 from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.operations.act.act import _act
+from lionagi.protocols.messages.action_response import _OUTPUT_TOO_DEEP
 from lionagi.session.branch import Branch
 
 
@@ -72,8 +73,8 @@ async def test_unrenderable_return_is_tool_post_and_keeps_original_result(suppre
     assert pre["tool_name"] == post["tool_name"] == "tool"
     assert pre["call_id"] == post["call_id"]
     summary = post["result_summary"]
-    assert isinstance(summary, str)
-    assert 0 < len(summary) <= 200
+    assert _OUTPUT_TOO_DEEP == "<output too deeply nested>"
+    assert summary == _OUTPUT_TOO_DEEP
     assert secret not in summary
 
 
