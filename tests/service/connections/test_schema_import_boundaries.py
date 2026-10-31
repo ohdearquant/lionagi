@@ -13,7 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def _schema_files() -> list[Path]:
     return sorted(
         path
-        for path in (REPO_ROOT / "lionagi" / "providers").rglob("*.py")
+        for root in (
+            REPO_ROOT / "lionagi" / "providers",
+            REPO_ROOT / "lionagi" / "service" / "connections",
+        )
+        for path in root.rglob("*.py")
         if path.name == "_schemas.py" or path.name.endswith("_schemas.py")
     )
 
@@ -43,7 +47,7 @@ def test_schema_only_modules_have_no_registration_decorators() -> None:
     files = _schema_files()
     observed = {path.relative_to(REPO_ROOT).as_posix() for path in files}
     expected = {
-        "lionagi/providers/openai/_chat_schemas.py",
+        "lionagi/service/connections/_chat_schemas.py",
         "lionagi/providers/openai/_audio_schemas.py",
         "lionagi/providers/exa/_schemas.py",
         "lionagi/providers/firecrawl/_schemas.py",

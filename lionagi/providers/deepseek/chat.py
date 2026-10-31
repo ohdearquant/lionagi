@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from lionagi.ln.types import Undefined
-from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
+from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import DeepSeekConfigs

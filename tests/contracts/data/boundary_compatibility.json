@@ -247,7 +247,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -1109,9 +1109,6 @@
     "lionagi/providers/openai/_audio_schemas.py": [
       "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
     ],
-    "lionagi/providers/openai/_chat_schemas.py": [
-      "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
-    ],
     "lionagi/providers/openai/_codex_profile.py": [
       "__all__ = (\n    \"CODEX_MCP_PROFILE_PREFIX\",\n    \"codex_config_defining_profile\",\n    \"codex_config_setting_default_permissions\",\n    \"codex_home_for_env\",\n    \"configured_codex_profile\",\n    \"global_codex_reasoning_effort\",\n    \"is_generated_codex_profile\",\n    \"project_codex_profile\",\n    \"refuse_codex_profile_run_settings\",\n    \"refuse_non_absolute_codex_home\",\n    \"resolve_codex_config_profile\",\n)"
     ],
@@ -1241,6 +1238,9 @@
       "from .registry import (\n    EndpointMeta,\n    EndpointRegistry,\n    EndpointType,\n    ProviderAliasCollisionError,\n    ProviderNotFoundError,\n    register_endpoint,\n)",
       "__all__ = (\n    \"AgenticEndpoint\",\n    \"APICalling\",\n    \"CLIEndpoint\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HeaderFactory\",\n    \"match_endpoint\",\n    \"MCPConnectionPool\",\n    \"MCPSecurityConfig\",\n    \"create_mcp_tool\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"EndpointType\",\n    \"LazyType\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderConfig\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)",
       "def __getattr__(name: str):\n    if name == \"CLIEndpoint\":\n        warnings.warn(\n            \"CLIEndpoint is deprecated and will be removed in a future release. \"\n            \"Use AgenticEndpoint from lionagi.service.connections instead.\",\n            DeprecationWarning,\n            stacklevel=2,\n        )\n        # Cache to prevent double-fire from importlib _handle_fromlist.\n        import sys\n\n        sys.modules[__name__].__dict__[\"CLIEndpoint\"] = AgenticEndpoint\n        return AgenticEndpoint\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/service/connections/_chat_schemas.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
       "__all__ = (\"AgenticEndpoint\",)"
@@ -3163,30 +3163,6 @@
       "AudioSpeechRequest",
       "AudioTranscriptionRequest"
     ],
-    "lionagi/providers/openai/_chat_schemas.py": [
-      "AssistantMessage",
-      "ChatRole",
-      "DeveloperMessage",
-      "FunctionCall",
-      "FunctionDef",
-      "FunctionTool",
-      "ImageURLObject",
-      "ImageURLPart",
-      "JSONSchemaFormat",
-      "OpenAIChatCompletionsRequest",
-      "ResponseFormatJSONObject",
-      "ResponseFormatJSONSchema",
-      "ResponseFormatText",
-      "StreamOptions",
-      "SystemMessage",
-      "TextPart",
-      "ToolCall",
-      "ToolCallFunction",
-      "ToolChoiceFunction",
-      "ToolMessage",
-      "UserMessage",
-      "uses_developer_messages"
-    ],
     "lionagi/providers/openai/_codex_profile.py": [
       "codex_config_defining_profile",
       "codex_config_setting_default_permissions",
@@ -3390,6 +3366,30 @@
     ],
     "lionagi/service/broadcaster.py": [
       "Broadcaster"
+    ],
+    "lionagi/service/connections/_chat_schemas.py": [
+      "AssistantMessage",
+      "ChatRole",
+      "DeveloperMessage",
+      "FunctionCall",
+      "FunctionDef",
+      "FunctionTool",
+      "ImageURLObject",
+      "ImageURLPart",
+      "JSONSchemaFormat",
+      "OpenAIChatCompletionsRequest",
+      "ResponseFormatJSONObject",
+      "ResponseFormatJSONSchema",
+      "ResponseFormatText",
+      "StreamOptions",
+      "SystemMessage",
+      "TextPart",
+      "ToolCall",
+      "ToolCallFunction",
+      "ToolChoiceFunction",
+      "ToolMessage",
+      "UserMessage",
+      "uses_developer_messages"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
       "AgenticEndpoint"

@@ -297,6 +297,7 @@ MOVED_MODULES = (
     ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
     ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
     ("lionagi.providers._subagent_admission", "lionagi.service._subagent_admission"),
+    ("lionagi.providers.openai._chat_schemas", "lionagi.service.connections._chat_schemas"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -330,6 +331,31 @@ MOVED_MODULE_PUBLIC_NAMES = {
         "admit_subagent",
         "child_agent_depth",
         "refuse_nested_agent",
+    },
+    # The request model, every class it is built from, and the developer-message helper.
+    "lionagi.service.connections._chat_schemas": {
+        "AssistantMessage",
+        "ChatRole",
+        "DeveloperMessage",
+        "FunctionCall",
+        "FunctionDef",
+        "FunctionTool",
+        "ImageURLObject",
+        "ImageURLPart",
+        "JSONSchemaFormat",
+        "OpenAIChatCompletionsRequest",
+        "ResponseFormatJSONObject",
+        "ResponseFormatJSONSchema",
+        "ResponseFormatText",
+        "StreamOptions",
+        "SystemMessage",
+        "TextPart",
+        "ToolCall",
+        "ToolCallFunction",
+        "ToolChoiceFunction",
+        "ToolMessage",
+        "UserMessage",
+        "uses_developer_messages",
     },
 }
 
@@ -370,6 +396,21 @@ def test_an_old_module_name_is_served_while_its_old_package_stays_on_disk(old, n
     assert spec is not None
     assert spec.submodule_search_locations is None
     assert finder.find_spec("lionagi.providers") is None
+
+
+def test_a_lazy_type_naming_the_old_chat_schema_module_resolves_to_the_same_class():
+    # Provider configs name their request model as a "module:Class" string, which reaches the
+    # module through importlib, so a string written against the old name must keep working.
+    from lionagi.service.connections.provider_config import LazyType
+
+    old = "lionagi.providers.openai._chat_schemas"
+    new = "lionagi.service.connections._chat_schemas"
+    sys.modules.pop(old, None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resolved = LazyType(f"{old}:OpenAIChatCompletionsRequest").resolve()
+    assert resolved is importlib.import_module(new).OpenAIChatCompletionsRequest
+    assert any(issubclass(w.category, DeprecationWarning) and new in str(w.message) for w in caught)
 
 
 def test_reload_through_the_old_name_keeps_the_real_spec():

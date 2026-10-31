@@ -12,7 +12,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )

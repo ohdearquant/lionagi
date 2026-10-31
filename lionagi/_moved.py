@@ -62,6 +62,12 @@ MOVED: tuple[Moved, ...] = (
         "0.37.0",
         "2.0.0",
     ),
+    Moved(
+        "lionagi.providers.openai._chat_schemas",
+        "lionagi.service.connections._chat_schemas",
+        "0.37.0",
+        "2.0.0",
+    ),
 )
 
 

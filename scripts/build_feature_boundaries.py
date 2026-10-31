@@ -166,7 +166,6 @@ TARGET_RULES = {
     "lionagi.providers.anthropic.messages": "lionhub (destination not yet recorded)",
     "lionagi.providers.anthropic.claude_code": "lionhub (destination not yet recorded)",
     "lionagi.providers.openai.chat": "lionhub (destination not yet recorded)",
-    "lionagi.providers.openai._chat_schemas": "lionhub (destination not yet recorded)",
     "lionagi.providers.openai.response": "lionhub (destination not yet recorded)",
     "lionagi.providers.openai.codex": "lionhub (destination not yet recorded)",
     "lionagi.providers.openai._codex_profile": "lionhub (destination not yet recorded)",

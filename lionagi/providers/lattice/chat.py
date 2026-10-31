@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
+from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.types.stream_chunk import StreamChunk
 

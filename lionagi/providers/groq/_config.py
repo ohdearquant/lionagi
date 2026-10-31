@@ -9,7 +9,7 @@ class GroqConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest"),
         "https://api.groq.com/openai/v1",
         "bearer",
     )

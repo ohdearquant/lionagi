@@ -1753,11 +1753,6 @@
       "owner": "provider_openai",
       "target_owner": "lionhub (destination not yet recorded)"
     },
-    "lionagi.providers.openai._chat_schemas": {
-      "layer": "adapter",
-      "owner": "provider_openai",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
     "lionagi.providers.openai._codex_profile": {
       "layer": "adapter",
       "owner": "provider_openai",
@@ -1921,6 +1916,10 @@
       "owner": "model_invocation"
     },
     "lionagi.service.connections": {
+      "layer": "adapter",
+      "owner": "provider_connections"
+    },
+    "lionagi.service.connections._chat_schemas": {
       "layer": "adapter",
       "owner": "provider_connections"
     },

@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from lionagi.service.connections._chat_schemas import (
+    OpenAIChatCompletionsRequest,
+    uses_developer_messages,
+)
 from lionagi.service.connections.endpoint import Endpoint
 
-from ._chat_schemas import OpenAIChatCompletionsRequest, uses_developer_messages
 from ._config import OpenAIConfigs
 
 __all__ = ("OpenAIChatCompletionsRequest", "OpenaiChatEndpoint")

@@ -116,7 +116,7 @@ def test_three_source_derived_declarations_preserve_order_and_isolation():
         ("endpoint_type", "api"),
         (
             "options_reference",
-            "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+            "lionagi.service.connections._chat_schemas:OpenAIChatCompletionsRequest",
         ),
         ("implementation_reference", "lionagi.providers.openai.chat:OpenaiChatEndpoint"),
         ("base_url", "https://api.openai.com/v1"),
