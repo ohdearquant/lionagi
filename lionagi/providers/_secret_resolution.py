@@ -293,15 +293,6 @@ async def _await_cleanup(operation: Awaitable[None]) -> None:
         raise
 
 
-async def _cleanup_after_lookup_failure(
-    proc: asyncio.subprocess.Process, leader_created: float | None
-) -> None:
-    try:
-        await _await_cleanup(_terminate_draining(proc, leader_created))
-    except Exception:  # noqa: BLE001 -- cleanup errors may contain command arguments or output
-        logger.warning("secret lookup cleanup failed")
-
-
 async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     """Run the lookup for one variable, returning its value or None.
 
@@ -564,3 +555,12 @@ async def _fill_from_resolution(
 
     logger.debug("filled %s from the configured secret lookup", sorted(resolved))
     return {**source, **resolved}
+
+
+async def _cleanup_after_lookup_failure(
+    proc: asyncio.subprocess.Process, leader_created: float | None
+) -> None:
+    try:
+        await _await_cleanup(_terminate_draining(proc, leader_created))
+    except Exception:  # noqa: BLE001 -- cleanup errors may contain command arguments or output
+        logger.warning("secret lookup cleanup failed")
