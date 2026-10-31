@@ -691,7 +691,9 @@ def test_an_exclusive_set_leaves_no_emptied_override_map_behind(codex_home):
 def test_an_exclusive_set_drops_a_generated_profile_and_keeps_a_named_one(codex_home):
     """A generated profile holds nothing but a previous run's servers; a profile
     the caller named is theirs."""
-    from lionagi.agent.factory import _CODEX_MCP_PROFILE_PREFIX
+    from lionagi.providers.openai._codex_profile import (
+        CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
+    )
 
     codex_home.write_config({})
     generated = {"profile": _CODEX_MCP_PROFILE_PREFIX + "0" * 32}

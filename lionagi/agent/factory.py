@@ -15,18 +15,6 @@ from lionagi._errors import ConfigurationError
 from lionagi.ln import Unset
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.ln.types import UnsetType
-from lionagi.providers.openai._codex_profile import (
-    CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
-)
-from lionagi.providers.openai._codex_profile import (
-    codex_home_for_env as _codex_home_for_env,
-)
-from lionagi.providers.openai._codex_profile import (
-    is_generated_codex_profile as _is_generated_codex_profile,
-)
-from lionagi.providers.openai._codex_profile import (
-    refuse_non_absolute_codex_home as _refuse_non_absolute_codex_home,
-)
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
@@ -1243,6 +1231,7 @@ def apply_forwarded_mcp_servers(
         from lionagi.providers.openai._codex_profile import (
             codex_home_for_env,
             configured_codex_profile,
+            refuse_non_absolute_codex_home,
         )
         from lionagi.providers.openai.codex import _TRIMMED
 
@@ -1251,7 +1240,7 @@ def apply_forwarded_mcp_servers(
             if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
                 named_profile = value
         if named_profile is None:
-            _refuse_non_absolute_codex_home(os.environ if child_env is None else child_env)
+            refuse_non_absolute_codex_home(os.environ if child_env is None else child_env)
             try:
                 named_profile = configured_codex_profile(child_env)
             except ValueError:
@@ -1326,11 +1315,14 @@ def apply_forwarded_mcp_servers(
             "them. Drop `env` and `http_headers` from the server config."
         )
     if secret_fields and child_env is not None:
-        from lionagi.providers.openai._codex_profile import codex_home_for_env
+        from lionagi.providers.openai._codex_profile import (
+            codex_home_for_env,
+            refuse_non_absolute_codex_home,
+        )
 
         # The profile file is written under this process's codex home, and codex looks for
         # `-p <name>` under the home its own environment names.
-        _refuse_non_absolute_codex_home(child_env)
+        refuse_non_absolute_codex_home(child_env)
         if codex_home_for_env(child_env).resolve() != _codex_home().resolve():
             raise ConfigurationError(
                 f"MCP server(s) {sorted(secret_fields)!r} set `env` or `http_headers`, which "
@@ -1369,7 +1361,9 @@ def _drop_forwarded_mcp_servers(kwargs: dict[str, Any]) -> None:
             kwargs["config_overrides"] = kept
         else:
             kwargs.pop("config_overrides", None)
-    if _is_generated_codex_profile(kwargs.get("profile")):
+    from lionagi.providers.openai._codex_profile import is_generated_codex_profile
+
+    if is_generated_codex_profile(kwargs.get("profile")):
         kwargs.pop("profile", None)
 
 
@@ -1600,9 +1594,9 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
     import json
     import subprocess
 
-    from lionagi.providers.openai._codex_profile import _read_codex_config
+    from lionagi.providers.openai._codex_profile import _read_codex_config, codex_home_for_env
 
-    codex_home = _codex_home_for_env(env)
+    codex_home = codex_home_for_env(env)
     config_path = codex_home / "config.toml"
     try:
         # The reader the root `profile` key goes through. Its parser decodes a quoted key
@@ -1661,7 +1655,9 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
 
 
 def _codex_home() -> Path:
-    return _codex_home_for_env(None)
+    from lionagi.providers.openai._codex_profile import codex_home_for_env
+
+    return codex_home_for_env(None)
 
 
 def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:
@@ -1671,8 +1667,10 @@ def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:
     and is removed when the process that wrote it exits, so a resumed request
     still naming it would hand codex a profile whose file is gone.
     """
+    from lionagi.providers.openai._codex_profile import is_generated_codex_profile
+
     name = kwargs.get("profile")
-    if _is_generated_codex_profile(name) and not (_codex_home() / f"{name}.config.toml").is_file():
+    if is_generated_codex_profile(name) and not (_codex_home() / f"{name}.config.toml").is_file():
         return name
     return None
 
@@ -1693,8 +1691,10 @@ def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
     """
     import time
 
+    from lionagi.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
+
     cutoff = time.time() - _STALE_PROFILE_MAX_AGE_SECONDS
-    for stale in codex_home.glob(f"{_CODEX_MCP_PROFILE_PREFIX}*.config.toml"):
+    for stale in codex_home.glob(f"{CODEX_MCP_PROFILE_PREFIX}*.config.toml"):
         try:
             if stale.stat().st_mtime < cutoff:
                 stale.unlink(missing_ok=True)
@@ -1714,11 +1714,16 @@ def _write_codex_mcp_secret_profile(
 
     import toml
 
+    from lionagi.providers.openai._codex_profile import (
+        CODEX_MCP_PROFILE_PREFIX,
+        is_generated_codex_profile,
+    )
+
     # Only a caller-named profile is a conflict; a profile of our own
     # generated shape (from a resumed leg's persisted request) is a spent
     # one to replace, not a second profile to refuse.
     existing_profile = kwargs.get("profile")
-    if existing_profile and not _is_generated_codex_profile(existing_profile):
+    if existing_profile and not is_generated_codex_profile(existing_profile):
         raise ConfigurationError(
             "Cannot forward MCP server secret fields for codex: the request "
             f"already has an explicit profile={existing_profile!r}, and codex "
@@ -1743,7 +1748,7 @@ def _write_codex_mcp_secret_profile(
     codex_home = _codex_home()
     codex_home.mkdir(parents=True, exist_ok=True)
     _reap_stale_codex_mcp_profiles(codex_home)
-    profile_name = f"{_CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"
+    profile_name = f"{CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"
     profile_path = codex_home / f"{profile_name}.config.toml"
 
     profile_doc = {"mcp_servers": {name: dict(fields) for name, fields in secret_fields.items()}}
