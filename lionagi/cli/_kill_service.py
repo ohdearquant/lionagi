@@ -78,7 +78,7 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
         "use the Studio cancel for this run"
     ),
     "foreign_mode": "records a process identity this CLI does not manage",
-    # Membership here routes this signal through the early return in `_kill_one`, so no
+    # Membership here routes this signal through the early return in `kill_one`, so no
     # cancellation is written for a process that is demonstrably still running. The kernel
     # refused the signal, so it arrives from a different direction than its neighbours --
     # they are refusals this CLI decides before signalling, this one is a refusal it is
