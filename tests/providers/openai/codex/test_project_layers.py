@@ -219,7 +219,10 @@ def test_a_layer_that_is_not_a_regular_file_refuses_without_reading_it(tmp_path,
 def spawns(monkeypatch):
     started: list[list[str]] = []
 
-    async def spawned(cmd, **_kwargs):
+    async def spawned(cmd, **kwargs):
+        prepare = kwargs.get("_prepare_argv")
+        if prepare is not None:
+            cmd = prepare(dict(kwargs.get("env") or os.environ))
         started.append(cmd)
         return
         yield

@@ -205,9 +205,9 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.generic.pile:539:13": "a field attribute copied by name while copying",
     "lionagi.protocols.messages.instruction:101:17": "a declared field set by name",
     "lionagi.protocols.messages.instruction:147:17": "a declared field set by name",
-    "lionagi.protocols.messages.message:181:9": "a declared field set by name",
-    "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
-    "lionagi.providers.anthropic.claude_code:1143:17": "a runtime field copied by name",
+    "lionagi.protocols.messages.message:186:9": "a declared field set by name",
+    "lionagi.protocols.messages.message:198:13": "a render-input field set by name",
+    "lionagi.providers.anthropic.claude_code:1142:17": "a runtime field copied by name",
     "lionagi.service.connections.endpoint_config:258:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:86:9": "a probe attribute set on an exception",
     "lionagi.state.compat:1702:13": (
@@ -238,9 +238,10 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.generic.progression:139:28": "``Ordering[T]``, the ordering base on ``Element``",
     "lionagi.protocols.generic.progression:139:41": "``Generic[T]``, the typing generic base",
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
+    "lionagi.service.accounts._ledger:57:18": "``Generic[_T]``, the typing generic base",
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
-    "lionagi.service.connections.endpoint:96:36": "``httpx.ConnectError``, imported lazily",
+    "lionagi.service.connections.endpoint:97:36": "``httpx.ConnectError``, imported lazily",
     # A base reached through a submodule import (``import importlib.abc``), which the scan
     # does not resolve; each class is an import hook, not a model:
     "lionagi._moved:106:20": "``importlib.abc.Loader``, the import system's loader base",
@@ -271,7 +272,7 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",
-    "lionagi.service.accounts._router:608:13": (
+    "lionagi.service.accounts._router:712:13": (
         "a counter on a held character popped from a list, not a class attribute"
     ),
     "lionagi.studio.scheduler.signals:221:17": "a counter field on a dict-held object",

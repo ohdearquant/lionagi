@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import unicodedata
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -57,6 +59,74 @@ class _AgentSettingError(ConfigurationError):
     ``prompt_caching`` or ``max_tokens``."""
 
     __slots__ = ()
+
+
+def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = "explicit") -> dict:
+    """Map an explicitly requested effort to the provider's request fields.
+
+    Known non-reasoning OpenAI models and providers without an effort field are
+    refused for explicit effort; unlisted model IDs and values are validated by
+    the provider. OpenAI Chat native tool calling is restricted by model and
+    effort; for example, GPT-6 Luna accepts
+    it only at none, while GPT-6.1 Terra requires Responses for native tools.
+    Lionagi's agent tool loop renders tool descriptions in messages instead.
+    Some newer reasoning models also refuse temperature, top_p, or logprobs
+    with non-none effort; the provider's error is surfaced to the caller.
+    """
+    if origin == "default":
+        return {}
+    if provider == "anthropic":
+        return {"output_config": {"effort": effort}}
+    if provider == "openai":
+        from lionagi.providers.openai._chat_schemas import CHAT_MODELS, REASONING_MODELS
+
+        if model not in CHAT_MODELS or model in REASONING_MODELS:
+            return {"reasoning_effort": effort}
+    if origin in ("profile", "stored"):
+        if origin == "profile":
+            logger.debug(
+                "Ignoring profile effort %r for provider %r model %r", effort, provider, model
+            )
+        return {}
+    raise _AgentSettingError(
+        f"provider {provider!r}, model {model!r} cannot carry effort {effort!r}"
+    )
+
+
+def _set_api_effort(
+    config: dict, provider: str, model: str, effort: str, *, origin: str = "explicit"
+) -> bool:
+    update = _api_effort_kwargs(provider, model, effort, origin=origin)
+    if "output_config" in update and isinstance(config.get("output_config"), dict):
+        update["output_config"] = {**config["output_config"], **update["output_config"]}
+    config.update(update)
+    return bool(update)
+
+
+def _parse_agent_model_spec(value: str, *, origin: str = "explicit"):
+    """Translate an unsupported API effort suffix into the agent setting error."""
+    from lionagi.service.providers import (
+        PROVIDERS_NO_EFFORT,
+        ModelSpec,
+        normalize_effort,
+        parse_model_spec,
+        split_effort_suffix,
+    )
+
+    try:
+        return parse_model_spec(value)
+    except ValueError:
+        if "/" in value:
+            provider, model = value.split("/", 1)
+            split = split_effort_suffix(model)
+            canonical = _canonical_provider(provider)
+            if split and canonical in PROVIDERS_NO_EFFORT:
+                if origin == "profile":
+                    return ModelSpec(
+                        model=f"{provider}/{split[0]}", effort=normalize_effort(split[1])
+                    )
+                _api_effort_kwargs(canonical, split[0], normalize_effort(split[1]))
+        raise
 
 
 async def create_agent(
@@ -243,10 +313,11 @@ async def create_agent(
             PROVIDER_EFFORT_KWARG,
             PROVIDER_REPO_KWARG,
             PROVIDER_YOLO_KWARGS,
-            parse_model_spec,
         )
 
-        ms = parse_model_spec(spec.model)
+        spec_origin = getattr(spec, "_effort_origin", "explicit")
+        model_origin = getattr(spec, "_model_origin", "explicit")
+        ms = _parse_agent_model_spec(spec.model, origin=model_origin)
         if "/" in ms.model:
             provider, model_name = ms.model.split("/", 1)
         else:
@@ -259,7 +330,15 @@ async def create_agent(
         provider_key = _canonical_provider(provider)
 
         extra = {}
-        effort = spec.effort or ms.effort
+        default_effort = spec_origin == "default"
+        if provider_key not in CLI_PROVIDERS and default_effort:
+            effort = ms.effort
+            if effort:
+                spec_origin = model_origin
+        else:
+            effort = spec.effort or ms.effort
+            if not spec.effort and ms.effort:
+                spec_origin = model_origin
         derived = False
         if not effort and provider_key == "codex":
             # Unset is not "no opinion": codex would read the global config's
@@ -275,6 +354,10 @@ async def create_agent(
                 extra[kwarg] = effort
                 if derived:
                     derived_effort_kwarg = kwarg
+            elif provider_key not in CLI_PROVIDERS:
+                extra.update(
+                    _api_effort_kwargs(provider_key, model_name, effort, origin=spec_origin)
+                )
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider_key, {}))
         if spec.max_tokens is not None:
@@ -646,8 +729,15 @@ def _attach_hooks(
     canonical_name: str,
     *,
     _command_env_supplier: Callable[[], Mapping[str, str]] | None = None,
+    _editor_binding: tuple | None = None,
 ) -> Any:
     security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
+    if _editor_binding is not None:
+        from .hooks import _bind_email_header_editor_guard
+
+        security_hooks = [
+            _bind_email_header_editor_guard(hook, *_editor_binding) for hook in security_hooks
+        ]
     user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
     post_hooks = _tool_hooks(spec, "post", canonical_name)
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
@@ -679,10 +769,15 @@ def _register_tools(
             )
             branch.register_tools(tool)
         elif tool_spec == "editor":
-            from lionagi.tools.file.editor import EditorTool
+            from lionagi.tools.file.editor import EditorTool, _prepare_edit
 
+            editor = EditorTool()
             tool = _attach_hooks(
-                EditorTool().to_tool(), spec, "editor", _command_env_supplier=_command_env_supplier
+                editor.to_tool(),
+                spec,
+                "editor",
+                _command_env_supplier=_command_env_supplier,
+                _editor_binding=(_prepare_edit, editor.workspace_root),
             )
             branch.register_tools(tool)
         elif tool_spec == "bash":
@@ -818,7 +913,9 @@ def _register_coding_tools(
 ) -> None:
     from pathlib import Path
 
-    from lionagi.tools.coding import DEFAULT_CODING_TOOLS, CodingToolkit
+    from lionagi.tools.coding import DEFAULT_CODING_TOOLS, CodingToolkit, _prepare_edit_file
+
+    from .hooks import _bind_email_header_editor_guard
 
     workspace_root = Path(spec.cwd) if spec.cwd else Path.cwd()
     context_management = getattr(spec, "context_management", True)
@@ -843,6 +940,10 @@ def _register_coding_tools(
         phase, tool_name = parts
         for handler in handlers:
             if phase == "security_pre":
+                if tool_name in ("editor", "*"):
+                    handler = _bind_email_header_editor_guard(
+                        handler, _prepare_edit_file, toolkit.workspace_root
+                    )
                 toolkit.security_pre(tool_name, handler)
             elif phase == "pre":
                 toolkit.pre(tool_name, handler)
@@ -1036,9 +1137,11 @@ def apply_forwarded_mcp_servers(
     Returns whether *servers* reached the request (False: provider has no
     transport for a caller-resolved set). See
     docs/internals/agent-runtime.md#mcp-server-forwarding for what
-    *exclusive*/*allowed_names* mean. *env* is the environment the child will
-    run under when the model holds one outside *kwargs*; without it, an `env`
-    in *kwargs* is read, and without that, this process's.
+    *exclusive*/*allowed_names* mean. An exclusive set bounds the agent's
+    configuration; an explicit per-call option can replace it for that call.
+    *env* is the environment the child will run under when the model holds one
+    outside *kwargs*; without it, an `env` in *kwargs* is read, and without
+    that, this process's.
     """
     if servers is None and not exclusive:
         # No set and no claim to the whole set: the request is left as it was.
@@ -1054,10 +1157,46 @@ def apply_forwarded_mcp_servers(
     # Folded like the capability check above: a spelling that resolves to the
     # Claude CLI must not fall through to the codex override form.
     if _canonical_provider(provider) in _CLAUDE_PROVIDER_NAMES:
+        if exclusive and "mcp_config" in kwargs:
+            dropped_config = kwargs.pop("mcp_config")
+            if dropped_config is not None:
+                if isinstance(dropped_config, str):
+                    config_text = dropped_config
+                elif isinstance(dropped_config, os.PathLike):
+                    try:
+                        config_text = os.fsdecode(dropped_config)
+                    except (TypeError, ValueError, OSError):
+                        config_text = None
+                else:
+                    config_text = None
+                if config_text is None:
+                    description = "non-path config"
+                else:
+                    candidate = config_text.lstrip()
+                    while candidate.startswith("\ufeff"):
+                        candidate = candidate[1:].lstrip()
+                    if candidate.startswith(("{", "[", '"')):
+                        description = "inline JSON config"
+                    else:
+                        try:
+                            json.loads(candidate)
+                        except (TypeError, ValueError):
+                            unsafe = any(
+                                unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+                                or (unicodedata.category(char) == "Zs" and char != " ")
+                                for char in config_text
+                            )
+                            description = "non-path config" if unsafe else config_text
+                        else:
+                            description = "inline JSON config"
+                logger.warning(
+                    "Dropping mcp_config %s because an exclusive MCP server set was supplied",
+                    description,
+                )
         kwargs["mcp_servers"] = servers
         if exclusive:
-            # The handed set alone is merged with whatever the CLI discovers
-            # for itself. The strict flag is what makes it the entire set.
+            # Strict mode bounds discovery for the configured set. A caller
+            # may still explicitly replace MCP options for an individual call.
             kwargs["strict_mcp_config"] = True
         return True
 
@@ -1081,22 +1220,17 @@ def apply_forwarded_mcp_servers(
         except ValidationError:
             pass
 
-    # Discovered once: the allowlist check below and the by-name disables share it.
-    configured: set[str] | None = None
     flag = kwargs.get("ignore_user_config")
-    if exclusive and not servers and (flag is None or flag is False):
+    if exclusive and not servers and not allowed_names and (flag is None or flag is False):
         # The empty set is the hermetic codex run: the user config, and every server,
         # hook and profile it declares, is not loaded at all. Codex keeps its own
-        # authentication store under the flag. An allowlist naming a server codex's
-        # own config declares keeps that server, served from that config, so it is
-        # not this case; an allowlist naming none of them leaves nothing to serve.
+        # authentication store under the flag. An allowlist can name a server
+        # from any later-loaded config layer, so only an empty allowlist takes
+        # this path.
         # A profile the caller named is user config too, so under the flag the codex
         # provider refuses that request. A flag value the request refuses is not
         # replaced here: it is left for the request to refuse.
-        if allowed_names:
-            configured = _discover_ambient_codex_mcp_server_names(child_env)
-        if not allowed_names or not configured & set(allowed_names):
-            kwargs["ignore_user_config"] = True
+        kwargs["ignore_user_config"] = True
 
     # A generated profile was dropped above, so a profile still here is the caller's: on the
     # request, or selected by an override (`-c profile=...`), whose key codex trims and
@@ -1121,9 +1255,8 @@ def apply_forwarded_mcp_servers(
             try:
                 named_profile = configured_codex_profile(child_env)
             except ValueError:
-                # A file this parser cannot read is left to the discovery below, as before,
-                # which reads its server list with its own parser or, when that one cannot read
-                # it either, from `codex mcp list --json`; a root key in it is not seen here.
+                # A file this parser cannot read is left to the launch-time census,
+                # which refuses it before starting the process.
                 named_profile = None
             if named_profile is not None:
                 remedy = (
@@ -1177,20 +1310,10 @@ def apply_forwarded_mcp_servers(
                 overrides[f"mcp_servers.{server_name}.{field_key}"] = value
 
     if exclusive:
-        # codex has no wholesale "clear mcp_servers" override, so every
-        # server left out of the caller's set that codex would load on its own
-        # is disabled by name instead. Only names codex's own config declares:
-        # `mcp_servers.<name>.enabled=false` for any other name is a table with
-        # no server in it, and codex refuses to start with one.
-        # A run that ignores the user config loads none of its servers, and an
-        # `enabled=false` for one of them is then such a table too.
-        allowed = set(servers) if allowed_names is None else set(allowed_names)
-        if kwargs.get("ignore_user_config"):
-            configured = set()
-        elif configured is None:
-            configured = _discover_ambient_codex_mcp_server_names(child_env)
-        for excluded_name in sorted(configured - allowed):
-            overrides[f"mcp_servers.{excluded_name}.enabled"] = False
+        # Carry the set to each launch, where config is read afresh and only
+        # proven existing excluded servers are disabled by name.
+        allowed = set(servers) | set(allowed_names or ())
+        kwargs["exclusive_mcp_names"] = sorted(allowed)
 
     if secret_fields and kwargs.get("ignore_user_config"):
         # The secret fields travel in a generated `-p` profile, and `--ignore-user-config`
@@ -1234,6 +1357,7 @@ def _drop_forwarded_mcp_servers(kwargs: dict[str, Any]) -> None:
     """
     kwargs.pop("mcp_servers", None)
     kwargs.pop("strict_mcp_config", None)
+    kwargs.pop("exclusive_mcp_names", None)
     overrides = kwargs.get("config_overrides")
     if overrides:
         kept = {
@@ -1424,8 +1548,11 @@ def _forward_mcp_to_cli_request(
         servers,
         provider=provider,
         # A caller handing over an empty set has declared the whole set, as
-        # build_chat_model reads it for a plain leg.
-        exclusive=spec.mcp_servers is not None or (caller_resolved and not servers),
+        # build_chat_model reads it for a plain leg. A caller that named its
+        # server file with --mcp-config has declared the set too, so it is
+        # exclusive; a set found by the ambient .mcp.json lookup stays additive.
+        exclusive=spec.mcp_servers is not None
+        or (caller_resolved and (not servers or resolved_servers_explicit)),
         allowed_names=spec.mcp_servers,
         # A CLI endpoint holds the child's env outside its config kwargs.
         env=getattr(forwarded.endpoint, "_runtime_state", {}).get("env"),

@@ -7,22 +7,26 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-import threading
 from pathlib import Path
 
 import pytest
 
 from lionagi import Branch, Session
+from lionagi.cli._runs import register_branch_hook as _register_branch_hook
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     setup_orchestration_persist,
     start_live_persist,
     stop_live_persist,
 )
-from lionagi.cli.orchestrate._orchestration import (
-    register_branch_hook as _register_branch_hook,
-)
 from lionagi.state.db import StateDB
+from tests.cli._aiosqlite_threads import aiosqlite_threads, settled_new_aiosqlite_threads
+from tests.cli._import_guard import (
+    COMMAND_IMPORT_PROBES,
+    command_module_imports,
+    resolved_imports,
+    source_with_line,
+)
 
 # Fixtures
 
@@ -32,10 +36,6 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
-
-
-def _aiosqlite_thread_count() -> int:
-    return sum(1 for t in threading.enumerate() if t.name.startswith("sqlite"))
 
 
 def _minimal_env(orc_branch: Branch | None = None) -> OrchestrationEnv:
@@ -219,7 +219,7 @@ async def test_start_create_session_failure_closes_db(
     monkeypatch.setattr(StateDB, "create_session", fail)
 
     env = _minimal_env()
-    before = _aiosqlite_thread_count()
+    before = aiosqlite_threads()
 
     # Must NOT raise — start swallows the failure and logs it.
     await start_live_persist(env)
@@ -234,11 +234,7 @@ async def test_start_create_session_failure_closes_db(
         env.orc_branch._track_message_in_view,
     ]
 
-    for _ in range(20):
-        if _aiosqlite_thread_count() <= before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() <= before, (
+    assert not await settled_new_aiosqlite_threads(before), (
         "DB was not closed on start failure — aiosqlite worker leaked"
     )
 
@@ -503,6 +499,33 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
             blocker.rollback()
         blocker.close()
         await db.close()
+
+
+def test_register_branch_hook_lives_in_the_runs_module():
+    """The hook is defined beside the message handler it calls, the orchestration module re-exports
+    the same object, and the runs module imports no command module."""
+    from lionagi.cli import _runs
+    from lionagi.cli.orchestrate import _orchestration
+
+    assert _runs.register_branch_hook.__module__ == "lionagi.cli._runs"
+    assert _orchestration.register_branch_hook is _runs.register_branch_hook
+
+    imported = resolved_imports(_runs.__file__, "lionagi.cli")
+    assert command_module_imports(imported) == set()
+
+
+@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
+def test_register_branch_hook_guard_rejects_a_command_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str
+):
+    """The guard fails on a copy of the runs module that gains an import of a command module or
+    of the orchestrate package, whether the import is absolute, relative or by name."""
+    import importlib
+
+    module = importlib.import_module("lionagi.cli._runs")
+    monkeypatch.setattr(module, "__file__", str(source_with_line(module.__file__, probe, tmp_path)))
+    with pytest.raises(AssertionError):
+        test_register_branch_hook_lives_in_the_runs_module()
 
 
 # _register_branch_hook: lazy branch row + multi-message paths
@@ -986,6 +1009,8 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
 ):
     """If update_session raises during stop, the DB still closes via its own finally block (hang-fix invariant)."""
     env = _minimal_env()
+    # Taken before the connection opens, so its own worker counts as new.
+    before = aiosqlite_threads()
     await start_live_persist(env)
     db = env._live_persist["db"]
 
@@ -994,16 +1019,11 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
 
     monkeypatch.setattr(StateDB, "update_session", boom)
 
-    before = _aiosqlite_thread_count()
     await stop_live_persist(env, status="completed")  # MUST NOT raise
 
     # Connection was closed.
     assert db._engine is None
-    for _ in range(20):
-        if _aiosqlite_thread_count() <= before:
-            break
-        await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() <= before
+    assert not await settled_new_aiosqlite_threads(before)
 
 
 async def test_stop_does_not_claim_a_terminal_status_the_db_never_recorded(
@@ -1051,7 +1071,7 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
     """aiosqlite worker count returns to baseline after each start+multi-branch+stop cycle (orchestration hang guard)."""
     from lionagi.protocols.messages.manager import MessageManager
 
-    baseline = _aiosqlite_thread_count()
+    baseline = aiosqlite_threads()
 
     for _ in range(3):
         env = _minimal_env()
@@ -1068,11 +1088,7 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
         await hook(msg)
         await stop_live_persist(env, status="completed")
 
-        for _ in range(20):
-            if _aiosqlite_thread_count() <= baseline:
-                break
-            await asyncio.sleep(0.05)
-        assert _aiosqlite_thread_count() <= baseline, (
+        assert not await settled_new_aiosqlite_threads(baseline), (
             "aiosqlite worker thread leaked across orchestration start/stop"
         )
 
@@ -3565,8 +3581,8 @@ async def test_flow_timeout_shields_completed_branch_status_until_commit(
 ):
     from lionagi._errors import TimeoutError as LionTimeoutError
     from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli._runs import register_branch_hook
     from lionagi.cli.orchestrate import flow as flow_module
-    from lionagi.cli.orchestrate._orchestration import register_branch_hook
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted
     from lionhub.orchestration.engines import PlanningEngine

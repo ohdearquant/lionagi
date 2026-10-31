@@ -246,7 +246,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="li-engine-run-planning",
-        symbol="lionagi.cli.engine._KIND_META['planning']",
+        symbol="lionagi.cli._engine_definitions.KIND_META['planning']",
         location=None,
         role="alias",
         expected_target="PlanningEngine.run",
@@ -3238,7 +3238,7 @@ def _symbol_resolves(symbol: str) -> bool:
     studio-extra-gated module must still resolve here). Handles a dotted
     module.name or module.Class.method path, and one special case — a
     literal string subscript on a module-level dict, e.g.
-    ``pkg.mod._KIND_META['planning']`` — by checking the key is one of the
+    ``pkg.mod.KIND_META['planning']`` — by checking the key is one of the
     dict literal's own keys rather than merely that the dict exists."""
     match = _SYMBOL_RE.match(symbol)
     if not match:
@@ -3393,7 +3393,7 @@ def test_manifest_keys_and_symbols_are_unique():
     [
         "lionagi.session.session.Session.flow",
         "lionagi.cli.orchestrate.flow._resume_flow",
-        "lionagi.cli.engine._KIND_META['planning']",
+        "lionagi.cli._engine_definitions.KIND_META['planning']",
         "lionagi.operations.builder.OperationGraphBuilder",
     ],
 )
@@ -3410,7 +3410,7 @@ def test_symbol_resolves_accepts_real_symbols(symbol):
         "lionagi.session.session.Session.nonexistent_method",
         "lionagi.session.session.NonexistentClass.flow",
         "lionagi.nonexistent.module.thing",
-        "lionagi.cli.engine._KIND_META['nonexistent_kind']",
+        "lionagi.cli._engine_definitions.KIND_META['nonexistent_kind']",
         "not a symbol at all",
     ],
 )
@@ -3448,7 +3448,7 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
 ):
     """li-engine-run-planning: `_do_engine_run(kind="planning")` must resolve
     and drive the REAL PlanningEngine class (not merely whatever
-    `_import_engine_class` happens to return) and, with persistence enabled,
+    `import_engine_class` happens to return) and, with persistence enabled,
     leave a completed row behind in a real StateDB — replacing the prior
     free-form "tests/cli/engine" evidence string, which named a path that
     does not exist and was never checked. Only the LLM-touching
@@ -3476,14 +3476,14 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     monkeypatch.setattr(engine_mod.uuid, "uuid4", lambda: fixed_run_id)
 
     resolved_classes: list[type] = []
-    real_import = engine_mod._import_engine_class
+    real_import = engine_mod.import_engine_class
 
     def _spying_import(module, name):
         cls = real_import(module, name)
         resolved_classes.append(cls)
         return cls
 
-    monkeypatch.setattr(engine_mod, "_import_engine_class", _spying_import)
+    monkeypatch.setattr(engine_mod, "import_engine_class", _spying_import)
 
     async def fake_plan(self, run, prompt, max_ops=0):
         return [TaskAssignment(task="x", assignee="researcher")]
@@ -3545,16 +3545,16 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
 
 
 def test_engine_kind_planning_is_the_only_registered_graph_kind():
-    from lionagi.cli.engine import _KIND_META
+    from lionagi.cli._engine_definitions import KIND_META
 
-    assert _KIND_META["planning"]["cls_path"] == ("lionhub.orchestration.engines", "PlanningEngine")
+    assert KIND_META["planning"]["cls_path"] == ("lionhub.orchestration.engines", "PlanningEngine")
 
-    non_graph_kinds = set(_KIND_META) - {"planning"}
+    non_graph_kinds = set(KIND_META) - {"planning"}
     assert non_graph_kinds == {"research", "review", "coding", "hypothesis"}, (
         "a new `li engine run <kind>` was registered without a graph/non-graph decision here"
     )
     for kind in non_graph_kinds:
-        _module, cls_name = _KIND_META[kind]["cls_path"]
+        _module, cls_name = KIND_META[kind]["cls_path"]
         assert cls_name != "PlanningEngine"
 
 
@@ -4136,14 +4136,14 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    import lionagi.cli.engine as cli_engine
+    import lionagi.cli._engine_definitions as cli_engine
     from tests.apps_studio_server.test_workflow_run import _FakeEngine, _mock_chat_branch, _spec
 
     monkeypatch.setitem(
-        cli_engine._KIND_META,
+        cli_engine.KIND_META,
         "research",
         {
-            **cli_engine._KIND_META["research"],
+            **cli_engine.KIND_META["research"],
             "cls_path": ("tests.apps_studio_server.test_workflow_run", "_FakeEngine"),
         },
     )

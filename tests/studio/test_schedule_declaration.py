@@ -6,6 +6,7 @@ atomic validate/diff/apply service."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -716,7 +717,7 @@ def test_resolve_github_trigger_reuses_service_validators(tmp_path, monkeypatch)
     schedule_declaration imports and asserting they're actually called."""
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     calls = []
-    import lionagi.studio.services.schedules as svc
+    import lionagi.studio.services._schedule_validation as svc
 
     monkeypatch.setattr(svc, "_svc_validate_github_repo", lambda repo: calls.append(("repo", repo)))
     monkeypatch.setattr(svc, "_svc_validate_github_filter", lambda f: calls.append(("filter", f)))
@@ -2959,7 +2960,7 @@ def test_both_create_paths_hold_command_args_to_the_same_contract(tmp_path, monk
     returns a list. So the validator is replaced with a recorder and the call
     itself is what gets asserted.
     """
-    from lionagi.studio.services import schedules as schedules_svc
+    from lionagi.studio.services import _schedule_validation as schedules_svc
 
     seen: list[list[str]] = []
     real_validator = schedules_svc._svc_validate_command_args
@@ -3521,19 +3522,21 @@ async def test_adopt_and_reapply_preserve_github_poll_runtime_stagnation(
         )
         await db.update_schedule("legacy00001", **runtime)
         for _ in range(3):
-            assert await db.record_github_poll_stagnation("legacy00001", reset=False)
+            assert await db.record_github_poll_stagnation("legacy00001", reset=False, page_limit=5)
 
         adopted = await apply_schedule_set(db, doc, agent_profile, adopt=True)
         assert adopted.adopted == 1
         row = await db.get_schedule_by_name("demo/nightly")
         assert row["id"] == "legacy00001"
         assert row["poller_consecutive_cap_no_dispatch"] == 3
+        assert row["poller_last_capped_page_limit"] == 5
         assert {name: row[name] for name in runtime} == runtime
 
         unchanged = await apply_schedule_set(db, doc, agent_profile)
         assert unchanged.unchanged == 1
         row = await db.get_schedule_by_name("demo/nightly")
         assert row["poller_consecutive_cap_no_dispatch"] == 3
+        assert row["poller_last_capped_page_limit"] == 5
 
         edited = parse_schedule_set(
             _agent_manifest("nightly", cwd=agent_profile)
@@ -3546,7 +3549,115 @@ async def test_adopt_and_reapply_preserve_github_poll_runtime_stagnation(
         assert row["id"] == "legacy00001"
         assert row["action_prompt"] == "check things again"
         assert row["poller_consecutive_cap_no_dispatch"] == 3
+        assert row["poller_last_capped_page_limit"] == 5
         assert {name: row[name] for name in runtime} == runtime
+
+
+@pytest.mark.asyncio
+async def test_github_apply_target_change_fences_old_inflight_poll(
+    temp_db_path, agent_profile, monkeypatch
+):
+    from lionagi.studio.scheduler import github
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_github_poll_stagnation import _NOW, _Client, _reap, _Service
+
+    def doc(repo, limit):
+        trigger = (
+            f"      github:\n        repo: {repo}\n        filter:\n"
+            f"          event: pr_merged\n          merged_page_limit: {limit}\n"
+        )
+        return parse_schedule_set(
+            _agent_manifest("nightly", cwd=agent_profile).replace(_CRON_TRIGGER_BLOCK, trigger)
+        )
+
+    client = _Client()
+
+    async def token(**kwargs):
+        return "test-token"
+
+    monkeypatch.setattr(github, "_cached_token", None)
+    monkeypatch.setattr(github, "_get_gh_token", token)
+    monkeypatch.setattr(github, "_get_client", lambda: client)
+    monkeypatch.setattr(github, "_PER_PAGE", 2)
+    async with StateDB(temp_db_path) as db, StateDB(temp_db_path) as editor:
+        await apply_schedule_set(db, doc("acme/widgets", 5), agent_profile)
+        row = await db.get_schedule_by_name("demo/nightly")
+        sid = row["id"]
+        for _ in range(3):
+            assert await db.record_github_poll_stagnation(sid, reset=False, page_limit=5)
+        unchanged = await apply_schedule_set(editor, doc("acme/widgets", 5), agent_profile)
+        assert unchanged.unchanged == 1
+        row = await db.get_schedule(sid)
+        assert (
+            row["poller_consecutive_cap_no_dispatch"],
+            row["poller_last_capped_page_limit"],
+            row["poller_target_generation"],
+        ) == (3, 5, 0)
+        limit_edit = await apply_schedule_set(editor, doc("acme/widgets", 6), agent_profile)
+        assert limit_edit.updated == 1
+        row = await db.get_schedule(sid)
+        assert row["github_filter"]["merged_page_limit"] == 6
+        assert (
+            row["poller_consecutive_cap_no_dispatch"],
+            row["poller_last_capped_page_limit"],
+            row["poller_target_generation"],
+        ) == (3, 5, 0)
+
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def pause_first_page():
+            client.before_get = None
+            entered.set()
+            await release.wait()
+
+        client.before_get = pause_first_page
+        task = asyncio.create_task(SchedulerEngine(svc=_Service(db))._tick_github(row, _NOW))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            moved = await apply_schedule_set(editor, doc("other/repo", 6), agent_profile)
+            assert moved.updated == 1
+            after_apply = await db.get_schedule(sid)
+            assert (
+                after_apply["poller_consecutive_cap_no_dispatch"],
+                after_apply["poller_last_capped_page_limit"],
+                after_apply["poller_target_generation"],
+            ) == (0, None, 1)
+            release.set()
+            await asyncio.wait_for(task, timeout=5)
+        finally:
+            release.set()
+            await _reap([task])
+        row = await db.get_schedule(sid)
+        assert client.calls == 6
+        assert row["github_repo"] == "other/repo"
+        assert (
+            row["poller_consecutive_cap_no_dispatch"],
+            row["poller_last_capped_page_limit"],
+            row["poller_target_generation"],
+        ) == (0, None, 1)
+
+
+@pytest.mark.asyncio
+async def test_adopt_clearing_unused_github_target_clears_observed_progress(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, github_repo="old/repo")
+        )
+        await db.execute(
+            "UPDATE schedules SET poller_consecutive_cap_no_dispatch = 3, "
+            "poller_last_capped_page_limit = 5 WHERE id = 'legacy00001'"
+        )
+        assert (await apply_schedule_set(db, doc, agent_profile, adopt=True)).adopted == 1
+        row = await db.get_schedule("legacy00001")
+        assert row["github_repo"] is None
+        assert (
+            row["poller_consecutive_cap_no_dispatch"],
+            row["poller_last_capped_page_limit"],
+            row["poller_target_generation"],
+        ) == (0, None, 1)
 
 
 # ---------------------------------------------------------------------------

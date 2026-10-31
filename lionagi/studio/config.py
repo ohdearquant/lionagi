@@ -13,6 +13,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+# The preview limit is read in one place so the mirror service and the studio agree on it.
+from lionagi.cli._mirror_settings import MIRROR_PREVIEW_CHARS  # noqa: F401
+
 from ._timezone_rules import MAX_TZIF_BYTES, read_tzif, rules_equal, tzif_rules
 
 _logger = logging.getLogger(__name__)
@@ -515,6 +518,13 @@ SCHEDULE_RUN_STALE_HOURS: float = float(
 SHOW_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_SHOW_STALE_HOURS", "6.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
+# Seconds one terminal-notification reconciliation pass keeps reading pages of
+# owed deliveries. Checked between pages, so a pass can overrun it by up to one page
+# of four deliveries (docs/internals/runtime.md). Startup awaits the pass before
+# serving and the periodic pass runs inside the scheduler tick; both wait it out.
+TERMINAL_RECONCILE_BUDGET_SECONDS: float = float(
+    os.environ.get("LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS", "10")
+)
 
 # Scheduler cron timezone
 # Cron expressions (trigger_type="cron") are interpreted in this IANA timezone;
@@ -726,11 +736,9 @@ MIRROR_CODEX_ROOT: Path | None = _optional_mirror_root("LIONAGI_STUDIO_MIRROR_CO
 MIRROR_IMPORT_AMBIENT: bool = _env_flag(
     "LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", default=_mirror_import_ambient_default()
 )
-# Bounded display preview stored in messages.content for mirror-ingested rows
-# (Unicode code points, not bytes). 0 is valid (empty preview + pointer only).
-# Negative values are a configuration error — there is no "unbounded" sentinel.
-MIRROR_PREVIEW_CHARS: int = int(os.environ.get("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "500"))
-if MIRROR_PREVIEW_CHARS < 0:
-    raise ValueError(
-        f"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS must be >= 0, got {MIRROR_PREVIEW_CHARS}"
-    )
+
+# Durable replay of terminal notifications into the global settings notifier. Off by
+# default: the push path does not yet record what it delivered, so with this on a pass
+# replays every pushed notification and each configured notifier runs a second time.
+# The consumer API in lionagi.state.lifecycle is unaffected.
+TERMINAL_RECONCILE_ENABLED: bool = _env_flag("LIONAGI_STUDIO_TERMINAL_RECONCILE", default=False)

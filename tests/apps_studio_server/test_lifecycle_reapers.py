@@ -1336,6 +1336,11 @@ def test_entry_points_run_every_reaper_in_order_past_a_failing_one(
     monkeypatch.setattr(lifecycle, "reap_stale_plays", _fake("reap_stale_plays", 3))
     monkeypatch.setattr(lifecycle, "reap_stale_shows", _fake("reap_stale_shows", 4))
     monkeypatch.setattr(lifecycle, "reap_stale_schedule_runs", _fake("reap_stale_schedule_runs", 5))
+    from lionagi.studio.services import terminal_reconciliation
+
+    monkeypatch.setattr(
+        terminal_reconciliation, "run_terminal_reconciliation", _fake("terminal_reconciliation", 6)
+    )
 
     with caplog.at_level("ERROR", logger=lifecycle.__name__):
         results = run_async(getattr(lifecycle, entry)())
@@ -1347,6 +1352,7 @@ def test_entry_points_run_every_reaper_in_order_past_a_failing_one(
         "reap_stale_plays",
         "reap_stale_shows",
         "reap_stale_schedule_runs",
+        "terminal_reconciliation",
     ]
     assert results == {
         "phantom_sessions": 1,
@@ -1355,6 +1361,7 @@ def test_entry_points_run_every_reaper_in_order_past_a_failing_one(
         "stale_plays": 3,
         "stale_shows": 4,
         "stale_schedule_runs": 5,
+        "terminal_notifications": 6,
     }
     failures = [r for r in caplog.records if r.levelname == "ERROR"]
     assert [r.getMessage() for r in failures] == [f"{phase} null-status reaper failed"]
@@ -1392,3 +1399,38 @@ def test_phantom_reaper_writes_the_health_reason_code(
             return row["status_reason_code"] if row else None
 
     assert run_async(_reason_code()) == expected_code
+
+
+def test_terminal_consumer_import_failure_does_not_block_reapers(monkeypatch, caplog):
+    import builtins
+
+    from lionagi.studio.services import lifecycle
+
+    calls = []
+
+    async def reap():
+        calls.append("ran")
+        return 1
+
+    for name in (
+        "reap_phantom_sessions",
+        "reap_null_status_sessions",
+        "reap_stale_invocations",
+        "reap_stale_plays",
+        "reap_stale_shows",
+        "reap_stale_schedule_runs",
+    ):
+        monkeypatch.setattr(lifecycle, name, reap)
+    original_import = builtins.__import__
+
+    def unavailable(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "terminal_reconciliation" and level == 1:
+            raise ModuleNotFoundError("terminal reconciliation is unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", unavailable)
+    with caplog.at_level("ERROR", logger=lifecycle.__name__):
+        result = run_async(lifecycle.run_startup_reconciliation())
+    assert len(calls) == 6
+    assert result["terminal_notifications"] == 0
+    assert any("terminal notification reaper failed" in record.message for record in caplog.records)

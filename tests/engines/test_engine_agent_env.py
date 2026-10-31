@@ -809,27 +809,28 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
 ):
     """A CODEX_HOME config nested past the parser's limit must not read as a pass.
 
-    The allowlist names a server the run does not describe, so the ambient
-    servers have to be discovered. The discovery cannot parse the config, so it falls back to
-    `codex mcp list --json` (stubbed here, so no process starts); the containment
-    walk then reads the same config, cannot, and refuses. The judge raises that
-    refusal, and no CLI process is ever started."""
+    The launch-time selection check cannot parse the config and refuses. The
+    judge raises the refusal, and no CLI process is ever started."""
     import subprocess
 
     import lionagi.providers.openai.codex as codex_mod
-    from lionagi._errors import ContainmentRefusedError
+    from lionagi._errors import _ExclusiveMcpSelectionError
 
     home = tmp_path / "codex-home"
     home.mkdir()
     (home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
     monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/nonexistent/codex-cli")
+    fake_cli = tmp_path / "codex"
+    fake_cli.write_text("fake executable, never run\n")
+    fake_cli.chmod(0o755)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", str(fake_cli))
 
     calls: list[tuple] = []
 
     def _run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+        if argv[0] == str(fake_cli):
+            calls.append((argv, kwargs))
+        raise FileNotFoundError(argv[0])
 
     monkeypatch.setattr("subprocess.run", _run)
     started = _record_cli_spawns(monkeypatch)
@@ -845,12 +846,9 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
 
     monkeypatch.setattr(run, "make_agent", make_agent)
 
-    with pytest.raises(ContainmentRefusedError, match="cannot read the codex config"):
+    with pytest.raises(_ExclusiveMcpSelectionError, match="cannot be read or parsed"):
         await engine.judge(run, "e1", "a subject")
-    # The discovery reached its documented fallback rather than raising RecursionError.
-    assert [argv for argv, _ in calls if argv[1:2] == ["mcp"]] == [
-        ["/nonexistent/codex-cli", "mcp", "list", "--json"]
-    ]
+    assert calls == []
     assert started == []
 
 
@@ -983,14 +981,24 @@ async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_pat
     server: an empty one is the run that loads no user config and needs no discovery."""
     import subprocess
 
-    from lionagi._errors import ConfigurationError
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi._errors import _ExclusiveMcpSelectionError
 
     home = tmp_path / "codex-home"
     home.mkdir()
     (home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
     monkeypatch.setenv("CODEX_HOME", str(home))
+    fake_cli = tmp_path / "codex"
+    fake_cli.write_text("fake executable, never run\n")
+    fake_cli.chmod(0o755)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", str(fake_cli))
+    started = _record_cli_spawns(monkeypatch)
+
+    calls = []
 
     def _run(argv, **kwargs):
+        if argv[0] == str(fake_cli):
+            calls.append((argv, kwargs))
         raise FileNotFoundError(argv[0])
 
     monkeypatch.setattr(subprocess, "run", _run)
@@ -1004,6 +1012,35 @@ async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_pat
 
     monkeypatch.setattr(run, "make_agent", make_agent)
     with pytest.raises(
-        ConfigurationError, match="Cannot enforce the explicit codex MCP server allowlist"
+        _ExclusiveMcpSelectionError, match="Cannot enforce an exclusive Codex MCP selection"
     ):
         await engine.judge(run, "e1", "a subject")
+    assert started == []
+    assert calls == []
+
+
+async def test_unrelated_launch_configuration_error_still_reads_as_a_pass(tmp_path, monkeypatch):
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi._errors import ConfigurationError
+
+    fake_cli = tmp_path / "codex"
+    fake_cli.write_text("fake executable, never run\n")
+    fake_cli.chmod(0o755)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", str(fake_cli))
+    started = _record_cli_spawns(monkeypatch)
+
+    def refuse(*args, **kwargs):
+        raise ConfigurationError("unrelated launch error")
+
+    monkeypatch.setattr(codex_mod, "_exclusive_cmd_args", refuse)
+    engine = Engine(judge_model=_CLI_MODEL, agent_cwd=str(tmp_path))
+    run = engine.new_run()
+    monkeypatch.setattr(run, "notify", lambda kind, **kw: None)
+    real = run.make_agent
+
+    async def make_agent(*args, **kwargs):
+        return await real(*args, mcp_servers=["ambient"], **kwargs)
+
+    monkeypatch.setattr(run, "make_agent", make_agent)
+    assert await engine.judge(run, "e1", "a subject") is True
+    assert started == []

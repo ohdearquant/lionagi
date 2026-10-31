@@ -14,7 +14,7 @@ result are pinned here:
 The snapshot is keyed by table and holds every table the run leaves rows in,
 apart from ``schema_meta`` and ``message_types``: those are seeded when the
 schema is applied (``message_types`` by an ``ON CONFLICT DO NOTHING`` insert at
-``lionagi/state/db.py:1960-1971``), not written by the inputs above, so a schema
+``lionagi/state/db.py:1986-1997``), not written by the inputs above, so a schema
 bookkeeping change is not a row this fixture is about.
 
 Normalization is deliberately lossy, and the loss is the limit of what this
@@ -655,6 +655,15 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
         },
         {
             "id": "<id:20>",
+            "kind": "GateDenied",
+            "op_id": "",
+            "payload": {"created_at": "<t:number>", "metadata": {}, "schema_version": 1},
+            "seq": 8,
+            "session_id": "<id:3>",
+            "ts": "<t:number>",
+        },
+        {
+            "id": "<id:21>",
             "kind": "MessageAdded",
             "op_id": "",
             "payload": {
@@ -668,12 +677,12 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                 "metadata": {},
                 "schema_version": 1,
             },
-            "seq": 8,
+            "seq": 9,
             "session_id": "<id:3>",
             "ts": "<t:number>",
         },
         {
-            "id": "<id:21>",
+            "id": "<id:22>",
             "kind": "MessageAdded",
             "op_id": "",
             "payload": {
@@ -687,43 +696,23 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                 "metadata": {},
                 "schema_version": 1,
             },
-            "seq": 9,
+            "seq": 10,
             "session_id": "<id:3>",
             "ts": "<t:number>",
         },
         {
-            "id": "<id:22>",
+            "id": "<id:23>",
             "kind": "HookSignal",
             "op_id": "",
             "payload": {
                 "created_at": "<t:number>",
                 "kwargs": {
                     "args_summary": "{'a': 3, 'b': 4}",
-                    "call_id": "<id:23>",
+                    "call_id": "<id:24>",
                     "tool_name": "add",
                 },
                 "metadata": {},
                 "point": "tool.pre",
-                "schema_version": 1,
-            },
-            "seq": 10,
-            "session_id": "<id:3>",
-            "ts": "<t:number>",
-        },
-        {
-            "id": "<id:24>",
-            "kind": "HookSignal",
-            "op_id": "",
-            "payload": {
-                "created_at": "<t:number>",
-                "kwargs": {
-                    "call_id": "<id:23>",
-                    "duration": "<t:number>",
-                    "result_summary": "7",
-                    "tool_name": "add",
-                },
-                "metadata": {},
-                "point": "tool.post",
                 "schema_version": 1,
             },
             "seq": 11,
@@ -732,6 +721,26 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
         },
         {
             "id": "<id:25>",
+            "kind": "HookSignal",
+            "op_id": "",
+            "payload": {
+                "created_at": "<t:number>",
+                "kwargs": {
+                    "call_id": "<id:24>",
+                    "duration": "<t:number>",
+                    "result_summary": "7",
+                    "tool_name": "add",
+                },
+                "metadata": {},
+                "point": "tool.post",
+                "schema_version": 1,
+            },
+            "seq": 12,
+            "session_id": "<id:3>",
+            "ts": "<t:number>",
+        },
+        {
+            "id": "<id:26>",
             "kind": "MessageAdded",
             "op_id": "",
             "payload": {
@@ -745,12 +754,12 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                 "metadata": {},
                 "schema_version": 1,
             },
-            "seq": 12,
+            "seq": 13,
             "session_id": "<id:3>",
             "ts": "<t:number>",
         },
         {
-            "id": "<id:26>",
+            "id": "<id:27>",
             "kind": "MessageAdded",
             "op_id": "",
             "payload": {
@@ -759,12 +768,12 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                 "metadata": {},
                 "schema_version": 1,
             },
-            "seq": 13,
+            "seq": 14,
             "session_id": "<id:3>",
             "ts": "<t:number>",
         },
         {
-            "id": "<id:27>",
+            "id": "<id:28>",
             "kind": "HookSignal",
             "op_id": "",
             "payload": {
@@ -779,7 +788,7 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                 "point": "api.pre_call",
                 "schema_version": 1,
             },
-            "seq": 14,
+            "seq": 15,
             "session_id": "<id:3>",
             "ts": "<t:number>",
         },
@@ -792,7 +801,7 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
             "artifact_verification_json": "null",
             "artifacts_path": None,
             "cc_session_id": None,
-            "cli_worker_generation": "<id:28>",
+            "cli_worker_generation": "<id:29>",
             "created_at": "<t:number>",
             "current_phase": None,
             "duration_ms": None,
@@ -843,10 +852,11 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
         {
             "actor": "create_session",
             "created_at": "<t:number>",
+            "delivery_eligible": 0,
             "entity_id": "<id:3>",
             "entity_type": "session",
             "evidence_refs": [],
-            "id": "<id:29>",
+            "id": "<id:30>",
             "metadata": {},
             "previous_status": None,
             "reason_code": "run.started.ok",
@@ -965,19 +975,16 @@ async def test_an_allowed_act_turn_writes_the_tool_output_in_the_response_row(
     assert response["content"]["output"] == 7
 
 
-async def test_the_denied_gate_audit_writes_no_gate_denied_signal_row(
+async def test_the_denied_gate_audit_writes_one_redacted_gate_denied_signal_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The denial audit stays on the in-memory flow: no GateDenied row is written.
-
-    ``SessionObserver.authorize`` (the pre-invoke gate ``_act`` calls) records a
-    ``GateDenied`` onto ``observer.flow`` and never calls ``emit``, so
-    ``bind_db_persistence``'s subscriber, which only sees ``emit``, writes no row.
-    """
+    """The gate denial reaches persistence once without carrying the proposed action."""
     result = await _run_fixed_inputs(tmp_path, monkeypatch)
     snapshot = _snapshot(result["db_path"])
     assert result["gate_denied_on_flow"] == 1
-    assert [row["kind"] for row in _signals(snapshot)].count("GateDenied") == 0
+    denied = [row for row in _signals(snapshot) if row["kind"] == "GateDenied"]
+    assert len(denied) == 1
+    assert "data" not in denied[0]["payload"]
 
 
 async def test_an_emit_gate_denial_suppresses_the_message_added_signal_row(

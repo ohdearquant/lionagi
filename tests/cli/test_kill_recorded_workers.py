@@ -346,6 +346,30 @@ async def test_resume_race_cancellation_conflict_never_signals_workers(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_cancellation_deadline_is_reported_and_never_signals_workers(monkeypatch):
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+
+    async def deadline_passed(session_id, generation, **kwargs):
+        raise TimeoutError()
+
+    monkeypatch.setattr(db, "cancel_session_if_worker_generation", deadline_passed)
+    sent = _stub_recorded_groups(monkeypatch, module)
+    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    errors: list[str] = []
+    monkeypatch.setattr(module, "log_error", errors.append)
+    result = await module._try_recorded_worker_cleanup(
+        db, db.session, user_reason="", grace_seconds=0
+    )
+    assert result == 1
+    assert errors == ["session session-test cancellation did not finish before the deadline"]
+    assert db.session["status"] == "running"
+    assert sent == []
+    assert db.settled == []
+
+
+@pytest.mark.asyncio
 async def test_cancellation_captures_only_present_runner_markers(monkeypatch):
     import lionagi.cli.kill as module
 
@@ -778,6 +802,68 @@ async def test_running_dead_runner_boot_mismatch_preserves_original_refusal(monk
     assert db.cancelled == []
     assert db.settled == []
     assert any("last booted" in message for message in warnings)
+
+
+def _serve_db(monkeypatch, module, db):
+    """Make the kill command open ``db`` and resolve its one session."""
+
+    class Context:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *args):
+            return False
+
+    async def resolve(_db, _identifier):
+        return "sessions", "session", db.session
+
+    monkeypatch.setattr(db_mod, "StateDB", Context)
+    monkeypatch.setattr(module, "_resolve_entity", resolve)
+
+
+async def _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid):
+    """Run the kill command on a running session with recorded workers whose runner
+    pid is alive and whose boot time disagrees on Linux; return its db, exit code and
+    the worker groups that were signalled."""
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+    db.session["node_metadata"] = {"pid": runner_pid}
+    sent = _stub_recorded_groups(monkeypatch, module)
+    _serve_db(monkeypatch, module, db)
+    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: "boot_unverifiable")
+    monkeypatch.setattr(module, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        module, "_terminate_pid", lambda *args, **kwargs: pytest.fail("unexpected signal")
+    )
+    monkeypatch.setattr(module, "warn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_error", lambda *args, **kwargs: None)
+    code = await module._do_kill("session-test")
+    return db, code, sent
+
+
+@pytest.mark.asyncio
+async def test_direct_kill_of_a_live_runner_with_ambiguous_boot_cancels_nothing_and_signals_nothing(
+    monkeypatch,
+):
+    db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, 76543)
+    assert code == 1
+    assert db.session["status"] == "running"
+    assert db.cancelled == []
+    assert db.settled == []
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_direct_kill_with_a_reserved_runner_pid_and_ambiguous_boot_cancels_nothing_and_signals_nothing(
+    monkeypatch,
+):
+    db, code, sent = await _kill_runner_with_ambiguous_boot(monkeypatch, 1)
+    assert code == 1
+    assert db.session["status"] == "running"
+    assert db.cancelled == []
+    assert db.settled == []
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -1476,6 +1562,95 @@ async def test_native_running_marker_swap_after_snapshot_conflicts_before_signal
     assert session["node_metadata"] == {"pid": 76544}
     assert spawn["confirmed_empty_at"] is None
     assert after_history == history
+
+
+async def _runner_ends_before_cancel(monkeypatch, path, sid, generation):
+    """Record the runner's own end after the snapshot and before the guarded cancel."""
+    original_cancel = StateDB.cancel_session_if_worker_generation
+    outcomes = []
+
+    async def end_then_cancel(self, session_id, generation_id, **kwargs):
+        assert (session_id, generation_id) == (sid, generation)
+        async with StateDB(path) as other:
+            assert await other.update_status(
+                "session", sid, new_status="completed", reason_code="run.completed.ok"
+            )
+        outcome = await original_cancel(self, session_id, generation_id, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(StateDB, "cancel_session_if_worker_generation", end_then_cancel)
+    return outcomes
+
+
+@pytest.mark.asyncio
+async def test_native_runner_end_after_snapshot_still_stops_recorded_worker(
+    tmp_path, monkeypatch, capsys
+):
+    import lionagi.cli.kill as module
+
+    path, sid, generation, spawn_id, _markers, _history = await _seed_native_running_cleanup(
+        tmp_path, monkeypatch
+    )
+    signals, probes, unexpected, admissions = _mock_native_running_cleanup_processes(
+        monkeypatch, module
+    )
+    errors = []
+    monkeypatch.setattr(module, "log_error", errors.append)
+    outcomes = await _runner_ends_before_cancel(monkeypatch, path, sid, generation)
+    result = await module._do_kill(sid, grace_seconds=0)
+    assert outcomes == ["already_terminal"]
+    assert result == 0
+    assert probes == [76543]
+    assert admissions == [76541]
+    assert signals == [(76541, signal.SIGTERM)]
+    assert unexpected == []
+    assert errors == []
+    async with StateDB(path) as db:
+        session = await db.get_session(sid)
+        spawn = await db.fetch_one(
+            "SELECT * FROM cli_worker_spawns WHERE spawn_id = ?", (spawn_id,)
+        )
+        statuses = [
+            row["status"]
+            for row in await db.fetch_all(
+                "SELECT status FROM status_transitions WHERE entity_id = ? ORDER BY created_at",
+                (sid,),
+            )
+        ]
+    assert session["status"] == "completed"
+    assert spawn["confirmed_empty_at"] is not None
+    assert "cancelled" not in statuses
+    output = capsys.readouterr().out
+    assert "terminal status remains 'completed'" in output
+
+
+@pytest.mark.asyncio
+async def test_native_runner_end_after_snapshot_without_workers_reports_nothing_to_kill(
+    tmp_path, monkeypatch
+):
+    import lionagi.cli.kill as module
+
+    path, sid, generation, spawn_id, _markers, _history = await _seed_native_running_cleanup(
+        tmp_path, monkeypatch
+    )
+    async with StateDB(path) as db:
+        await db.execute("DELETE FROM cli_worker_spawns WHERE spawn_id = ?", (spawn_id,))
+    signals, probes, unexpected, admissions = _mock_native_running_cleanup_processes(
+        monkeypatch, module
+    )
+    errors = []
+    monkeypatch.setattr(module, "log_error", errors.append)
+    outcomes = await _runner_ends_before_cancel(monkeypatch, path, sid, generation)
+    result = await module._do_kill(sid, grace_seconds=0)
+    assert outcomes == ["already_terminal"]
+    assert result == 1
+    assert signals == [] and admissions == [] and unexpected == []
+    assert errors == [
+        f"session {sid[:12]} is already in terminal state: 'completed' — nothing to kill"
+    ]
+    async with StateDB(path) as db:
+        assert (await db.get_session(sid))["status"] == "completed"
 
 
 @pytest.mark.asyncio

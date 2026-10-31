@@ -121,7 +121,7 @@ Code anchors: `lionagi/state/db.py`; `lionagi/state/reasons.py`;
 - The schedule-run declarations are reconciled through the lifecycle policy registry. Both the
   `StateDB.update_status()` validator and the guarded adapter source the nine-value vocabulary and
   the five-value terminal set (which includes `timed_out`) from the registered policy
-  (`lionagi/state/db.py:447-501`, `lionagi/state/lifecycle/policy.py:288-301`); `pending` is not
+  (`lionagi/state/db.py:472-526`, `lionagi/state/lifecycle/policy.py:288-301`); `pending` is not
   admitted by either surface.
 - The registered schedule-run edge graph declares `queued -> {waiting_dependency, running, skipped,
   cancelled}`, `waiting_dependency -> {queued, cancelled}`, `running -> {completed, failed,

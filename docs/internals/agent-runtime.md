@@ -64,22 +64,23 @@ and one implementation.
   takes it as `-c mcp_servers.<name>.<field>` overrides) — not whether a
   given spawn actually handed anything over. For that, read
   `request_carries_forwarded_mcp` off the request the spawn produced.
-- `exclusive` is the caller stating that the servers dict is the whole set
-  rather than an addition to whatever the provider finds for itself. It
-  makes an empty set mean "no servers", and so does no set at all
-  (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
+- `exclusive` bounds the server set configured for the agent rather than
+  adding to whatever the provider finds for itself. An explicit per-call MCP
+  option replaces that configuration for that call. A set the caller resolved from a
+  file named with `--mcp-config` is exclusive; a set found by the ambient `.mcp.json`
+  lookup is additive. An exclusive selection
+  with no forwarded names and no allowed names means "no servers", including
+  when `servers=None`, which is how `--no-mcp-config` arrives: the Claude CLI
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
   `ignore_user_config` (`--ignore-user-config`), so the user config and every
   server, hook and profile it declares are not loaded at all (a profile a `codex/<name>`
   model string names is read by lionagi itself, and under the flag only its model
-  settings may apply; see providers.md). A codex request that
+  settings may apply; see providers.md). The factory refuses a codex request that
   hands an exclusive set and names a profile, or whose config overrides select one
-  (`profile`), is refused whichever form the set takes: under the flag the codex
+  (`profile`): under the flag the codex
   provider refuses it, since the profile is user config too, which the flag drops;
   without the flag (a non-empty set, or an allowlist that keeps a server codex's
-  config declares) the factory refuses it, since the by-name disables below take
-  their server list from `config.toml` (or from `codex mcp list --json` when that
-  file cannot be read) and a server only the profile declares would load. Without
+  config declares) the factory refuses it. Without
   the flag the factory refuses a root `profile` key in that `config.toml` the same
   way, since codex before 0.135 makes it the active profile when no `-p` is given;
   a key in a `config.toml` its TOML parser cannot read is not seen. The key and
@@ -92,9 +93,8 @@ and one implementation.
   lock file pins, accepts it, as `tomli` does from 2.4.0, and `tomli` 2.0.1, the
   declared floor, refuses it.
   `tomllib` and `tomli` both refuse a leading byte-order mark. A root `profile`
-  key in a file the parser refuses is not seen here, and such a file takes its
-  server list from the fallback; whether that list holds a server only a profile
-  declares is codex's, unchecked here. Under `--ignore-user-config` a user config
+  key in a file the factory parser refuses is not seen there; the launch-time
+  census refuses the unreadable file. Under `--ignore-user-config` a user config
   the parser refuses stops the run instead, and two checks read the project
   layers. Every such request is refused when a project layer declares
   `mcp_servers`: the parse decides it, and a layer the parser refuses is read
@@ -112,48 +112,58 @@ and one implementation.
   codex reads TOML 1.1 forms. A
   user config nested deeper than the parser can follow is refused with a
   `ConfigurationError` that gives Python's "maximum recursion depth exceeded".
-  These reads and the fallback use the codex home named by the environment the
+  These reads use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's);
   an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's
   home. A `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an
-  absolute path is refused before these reads and the fallback, from either
+  absolute path is refused before these reads, from either
   environment, with one `ConfigurationError` naming the variable. A run that
   makes none of these reads is not checked here; one that contains account
   integrations (`contain_account_integrations`) is refused the same way when the
-  codex provider reads that `config.toml` for its root `profile` key. The
-  fallback runs the codex binary the run itself starts; with no codex binary
-  found the allowlist is refused rather than listed with another. A
-  `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at
-  spawn is not seen by these reads, which run before the fill: set it in the
-  model's `env` or in this process's environment. A set whose
+  codex provider reads that `config.toml` for its root `profile` key. A
+  `CODEX_HOME` that a `secrets.lookup` fill adds at spawn is not seen by the
+  factory-time reads, but the launch-time census uses the filled child
+  environment. A set whose
   `env` or `http_headers` need a generated profile is refused when that home is
   not this process's, since the profile file is written here.
-  Those disables do not reach a server only
-  a project layer (`.codex/config.toml`) declares either, and only a run under the
-  flag has its project layers checked, so a run that keeps the user config is
-  exclusive only over the servers `config.toml` declares. A non-empty
-  exclusive codex set instead needs each server its own config declares, and
-  the set leaves out, disabled by name (see
-  `_discover_ambient_codex_mcp_server_names`, which raises
-  `ConfigurationError` if it can't enumerate them — an allowlist that can't
-  be enforced over those servers must fail closed, never silently pass every ambient server
-  through). Only those names, and none when the request ignores the user
-  config: `mcp_servers.<name>.enabled=false` for a name codex has no table
-  for is a table with no server in it, and codex refuses to start with one.
-  An exclusive set also replaces whatever set the
-  request already carries — a resumed leg's request is the persisted one —
-  so the Claude `mcp_servers` map, codex `mcp_servers.*` overrides (a whole
-  `mcp_servers` table included) and a generated codex profile are dropped
-  first; a profile the caller named is not dropped, and is refused as above.
+  An exclusive codex selection is carried as `exclusive_mcp_names`.
+  Immediately before each launch, lionagi reads the child environment's user
+  config, system config and project layers, then disables unselected servers by name only
+  where their declarations and project trust are proven. A layer or trust
+  decision it cannot check refuses the run. The check cannot be atomic with
+  Codex's later config reads: removing a system server in between can make
+  Codex refuse to start, while adding one can let it load unselected. An
+  exclusive selection covers the user, system and project configuration lionagi can
+  read; servers enabled by managed or cloud configuration are outside it.
+  An explicit per-call MCP override replaces the configured selection for that
+  call; servers declared only in project configuration stay disabled unless
+  that override names them. Selected servers can still merge fields from a
+  same-name project definition.
+  A request carrying an exclusive selection may configure only selected servers;
+  an MCP override naming another server is refused at launch.
+  An exclusive selection also replaces the MCP configuration already carried
+  by the agent — a resumed leg's configuration is the persisted one — so the
+  Claude `mcp_servers` map and `mcp_config` option, codex `mcp_servers.*`
+  overrides (a whole `mcp_servers` table included) and a generated codex
+  profile are dropped first; a profile the caller named is not dropped, and is
+  refused as above. A per-call Claude `mcp_config` or `mcp_servers` can replace
+  that call's configured set (`lionagi/providers/_agentic_handlers.py:162`);
+  `mcp_config` takes precedence over the server map
+  (`lionagi/providers/anthropic/claude_code.py:623-628`). When a Claude
+  `mcp_config` is dropped, a value is logged as the path the CLI would read if
+  it contains no control, format, surrogate, line or paragraph separator, or
+  non-space whitespace characters, does not parse as JSON, and does not start
+  like a JSON object, array or string after leading whitespace and BOMs are
+  removed. Inline JSON and other non-path values are
+  identified without their contents; `None` is dropped silently.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters
   under `exclusive`. An empty set with an allowlist that names a server
-  codex's own config declares is therefore not the no-servers case: codex
-  keeps loading that config, so the allowed server is still there, and only
-  the names left out are disabled. An allowlist naming none of the declared
-  servers leaves nothing to serve, so the request gets `--ignore-user-config`
-  as the empty set does. A request that already carries
+  codex's own config declares is therefore not the no-servers case. A nonempty
+  allowlist keeps loading the config even if the allowed name is absent there,
+  because it may occur in a project layer. Only names the loaded layers declare
+  and the caller leaves out are disabled. A request that already carries
   `--ignore-user-config` keeps it, since a worker is isolated before its
   hand-off on purpose; a server that only codex's config would serve cannot
   load on such a request.

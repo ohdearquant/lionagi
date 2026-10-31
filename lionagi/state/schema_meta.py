@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Column,
     Float,
@@ -236,6 +237,14 @@ Index("idx_sessions_first_msg_id", sessions.c.first_msg_id)
 Index("idx_sessions_last_msg_id", sessions.c.last_msg_id)
 Index("idx_sessions_progression_id", sessions.c.progression_id)
 Index("idx_sessions_updated", sessions.c.updated_at)
+Index(
+    "idx_sessions_recent_visible",
+    sessions.c.updated_at.asc(),
+    sqlite_where=text(
+        "node_metadata IS NULL OR NOT json_valid(node_metadata) "
+        "OR json_extract(node_metadata, '$.engine_parent_run_id') IS NULL"
+    ),
+).ddl_if(dialect="sqlite")
 Index("idx_sessions_status_updated", sessions.c.status, sessions.c.updated_at)
 Index(
     "idx_sessions_status_last_msg",
@@ -622,6 +631,8 @@ schedules = Table(
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
     # Settled capped reads without dispatch or an engine-held batch; see schema.sql.
     Column("poller_consecutive_cap_no_dispatch", Integer, nullable=False, server_default="0"),
+    Column("poller_last_capped_page_limit", Integer),
+    Column("poller_target_generation", Integer, nullable=False, server_default="0"),
     # Bounded retry for a pre-dispatch refusal; see schema.sql.
     Column("predispatch_refusal_event", Text),
     Column("predispatch_refusal_count", Integer, nullable=False, server_default="0"),
@@ -902,6 +913,7 @@ status_transitions = Table(
     Column("actor", Text),
     Column("created_at", Float, nullable=False),
     Column("metadata", JSON),
+    Column("delivery_eligible", Boolean),
 )
 
 Index(
@@ -916,6 +928,29 @@ Index(
     status_transitions.c.created_at,
 )
 Index("idx_status_transitions_created", status_transitions.c.created_at)
+Index(
+    "idx_status_transitions_unclassified",
+    status_transitions.c.id,
+    sqlite_where=text("delivery_eligible IS NULL"),
+    postgresql_where=text("delivery_eligible IS NULL"),
+)
+Index(
+    "idx_status_transitions_eligible_order",
+    status_transitions.c.created_at,
+    status_transitions.c.id,
+    sqlite_where=text("delivery_eligible IS TRUE"),
+    postgresql_where=text("delivery_eligible IS TRUE"),
+)
+
+# terminal_consumers
+
+terminal_consumers = Table(
+    "terminal_consumers",
+    metadata,
+    Column("name", Text, primary_key=True),
+    Column("registered_at", Float, nullable=False),
+    Column("retired_at", Float),
+)
 
 # terminal_deliveries
 # Reconciliation-consumer acknowledgment ledger; see

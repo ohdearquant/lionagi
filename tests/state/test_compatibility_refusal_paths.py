@@ -149,7 +149,7 @@ async def test_a_refused_orchestration_admission_fails_the_run(tmp_path: Path, m
     # The run-identity markers read host process facts a restricted environment can deny; fix
     # them so the admission write, not the marker read, is what the store refuses.
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 1,
             "pid_create_time": 1.0,
@@ -199,7 +199,7 @@ async def test_a_refused_admission_without_a_manifest_leaves_run_json_as_it_was(
     monkeypatch.setattr(_orchestration, "_open_shared_db", lambda **_: _resolved(handle))
     monkeypatch.setattr(_orchestration, "_SQLITE_ADMISSION_RETRY_DELAYS", (0.0, 0.0))
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 1,
             "pid_create_time": 1.0,
@@ -277,7 +277,7 @@ async def test_orchestration_admission_leaves_the_registered_shared_handle_in_pl
     store = tmp_path / "orch.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 1,
             "pid_create_time": 1.0,

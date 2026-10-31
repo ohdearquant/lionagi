@@ -114,13 +114,13 @@ async def _wait_for_session_count(db_path: Path, expected: int) -> list[dict]:
 
 def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
     """A fresh transcript is mirrored to a live (running) session; stop ends the loop."""
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     root = tmp_path / "claude_projects"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
 
     uid = "11111111-2222-3333-4444-555555555555"
     # Near-now timestamps so the session reconciles as live (running), not idle.
@@ -137,7 +137,7 @@ def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
         async with StateDB(db_path) as db:
             stop = asyncio.Event()
             task = asyncio.create_task(
-                mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02)
+                service_mod.mirror_forever(stop, root=root, since=None, interval=0.02)
             )
             row = None
             try:
@@ -184,12 +184,12 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
     selector a test (or any embedder) that carefully points the mirror at its own
     directory would still walk the machine's whole codex rollout corpus.
     """
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
 
     visited: list[str] = []
     claude_passes = 0
@@ -203,8 +203,8 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
         claude_passes += 1
         return 0
 
-    monkeypatch.setattr(mirror_mod, "_codex_pass", _spy_codex_pass)
-    monkeypatch.setattr(mirror_mod, "_one_pass", _spy_claude_pass)
+    monkeypatch.setattr(service_mod, "_codex_pass", _spy_codex_pass)
+    monkeypatch.setattr(service_mod, "_one_pass", _spy_claude_pass)
 
     root = tmp_path / "claude_projects"
     _write_transcript(
@@ -222,7 +222,7 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
         """
         stop = asyncio.Event()
         task = asyncio.create_task(
-            mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02, **kwargs)
+            service_mod.mirror_forever(stop, root=root, since=None, interval=0.02, **kwargs)
         )
         failure: str | None = None
         try:
@@ -293,7 +293,7 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
         seen.update(kwargs)
         await stop.wait()
 
-    monkeypatch.setattr("lionagi.cli.mirror.mirror_forever", _fake_forever)
+    monkeypatch.setattr("lionagi.cli._mirror_service.mirror_forever", _fake_forever)
 
     async def _on() -> None:
         stop, task = app_mod._start_claude_mirror()
@@ -312,7 +312,7 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     makes both decoys land in the fresh profile DB, even though the lower-level
     mirror already supports scoped roots.
     """
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
@@ -335,9 +335,9 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
 
     monkeypatch.setenv("LIONAGI_HOME", str(isolated_home))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
-    monkeypatch.setattr(mirror_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
-    monkeypatch.setattr(mirror_mod, "CODEX_SESSIONS_DIR", ambient_codex)
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
+    monkeypatch.setattr(service_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
+    monkeypatch.setattr(service_mod, "CODEX_SESSIONS_DIR", ambient_codex)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", None)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_INTERVAL", 0.01)
@@ -364,7 +364,7 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
 
 def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     """Custom Claude and Codex roots remain an explicit isolated-profile opt-in."""
-    import lionagi.cli.mirror as mirror_mod
+    import lionagi.cli._mirror_service as service_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
@@ -408,9 +408,9 @@ def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT", str(custom_claude))
     monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_CODEX_ROOT", str(custom_codex))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
-    monkeypatch.setattr(mirror_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
-    monkeypatch.setattr(mirror_mod, "CODEX_SESSIONS_DIR", ambient_codex)
+    monkeypatch.setattr(service_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
+    monkeypatch.setattr(service_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
+    monkeypatch.setattr(service_mod, "CODEX_SESSIONS_DIR", ambient_codex)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", None)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_INTERVAL", 0.01)
@@ -458,7 +458,7 @@ def test_studio_mirror_startup_error_does_not_expose_transcript_data(tmp_path, m
     async def _boom(stop, **kwargs):
         raise RuntimeError(f"{secret_path}: {secret_content}")
 
-    monkeypatch.setattr("lionagi.cli.mirror.mirror_forever", _boom)
+    monkeypatch.setattr("lionagi.cli._mirror_service.mirror_forever", _boom)
 
     async def _body() -> None:
         stop, task = app_mod._start_claude_mirror()

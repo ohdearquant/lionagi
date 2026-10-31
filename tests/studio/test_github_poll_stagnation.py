@@ -196,6 +196,284 @@ async def test_repeated_actual_capped_polls_count_without_downgrading_http_healt
 
 
 @pytest.mark.asyncio
+async def test_capped_poll_health_explains_recovery(stores, client):
+    db, _, reader = stores
+    await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
+    engine = SchedulerEngine(svc=_Service(db))
+    for attempt in range(3):
+        await engine._tick_github(await _row(db), _NOW + attempt * 2)
+    row = await _row(reader)
+    health = compute_schedule_health(row, {}, now=_NOW + 6)
+    assert health["health_state"] == "overdue"
+    assert health["health_cause"] == "page_limit_reached"
+    assert "raise" in health["health_recovery"].lower()
+    assert row["poller_last_capped_page_limit"] == 5
+    await db.update_schedule("poll", github_filter={"event": "pr_merged", "merged_page_limit": 100})
+    row = await _row(reader)
+    health = compute_schedule_health(row, {}, now=_NOW + 6)
+    assert health["health_state"] == "overdue"
+    assert "5" in health["health_recovery"] and "raise" in health["health_recovery"].lower()
+    assert "insufficient" not in health["health_recovery"].lower()
+    await engine._tick_github(await _row(db), _NOW + 8)
+    row = await _row(reader)
+    assert row["poller_last_capped_page_limit"] == 100
+    health = compute_schedule_health(row, {}, now=_NOW + 8)
+    assert "insufficient" in health["health_recovery"].lower()
+    assert "reconcil" in health["health_recovery"].lower()
+    await db.update_schedule("poll", github_filter={"event": "pr_opened"})
+    row = await _row(reader)
+    health = compute_schedule_health(row, {}, now=_NOW + 10)
+    assert row[_COUNTER] == 0
+    assert row["poller_last_capped_page_limit"] is None
+    assert "health_cause" not in health and "health_recovery" not in health
+
+
+@pytest.mark.asyncio
+async def test_capped_poll_records_limit_from_start_despite_concurrent_edit(
+    stores, client, monkeypatch
+):
+    from lionagi.studio.services import schedules
+
+    db, editor, reader = stores
+    await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
+
+    @asynccontextmanager
+    async def edit_context():
+        yield editor
+
+    monkeypatch.setattr(schedules, "StateDB", edit_context)
+
+    async def change_limit():
+        client.before_get = None
+        await schedules.update_schedule(
+            "poll", {"github_filter": {"event": "pr_merged", "merged_page_limit": 100}}
+        )
+
+    client.before_get = change_limit
+    await SchedulerEngine(svc=_Service(db))._tick_github(await _row(db), _NOW)
+    row = await _row(reader)
+    assert client.calls == 5
+    assert row["github_filter"]["merged_page_limit"] == 100
+    assert (row[_COUNTER], row["poller_last_capped_page_limit"]) == (1, 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("patch", "retained"),
+    [
+        ({"github_repo": "other/repo"}, False),
+        ({"github_cursor": "2026-10-24T10:00:00Z"}, False),
+        ({"github_filter": {"event": "pr_opened"}}, False),
+        ({"github_filter": {"event": "pr_merged", "base": "dev"}}, False),
+        ({"github_filter": {"event": "pr_merged", "merged_page_limit": 6}}, True),
+        ({"github_repo": "owner/repo"}, True),
+    ],
+)
+async def test_target_patch_clears_stagnation_but_limit_only_preserves_it(
+    stores, client, monkeypatch, patch, retained
+):
+    from lionagi.studio.services import schedules
+
+    db, editor, reader = stores
+    await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
+    engine = SchedulerEngine(svc=_Service(db))
+    for attempt in range(3):
+        await engine._tick_github(await _row(db), _NOW + attempt * 2)
+    assert compute_schedule_health(await _row(reader), {}, now=_NOW + 6)["health_cause"] == (
+        "page_limit_reached"
+    )
+
+    @asynccontextmanager
+    async def edit_context():
+        yield editor
+
+    monkeypatch.setattr(schedules, "StateDB", edit_context)
+    assert await schedules.update_schedule("poll", patch)
+    row = await _row(reader)
+    assert (row[_COUNTER], row["poller_last_capped_page_limit"]) == (
+        (3, 5) if retained else (0, None)
+    )
+    assert row["poller_target_generation"] == (0 if retained else 1)
+    if not retained:
+        assert "health_cause" not in compute_schedule_health(row, {}, now=_NOW + 6)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_old_target", [False, True], ids=["changed", "changed_back"])
+async def test_old_inflight_poll_cannot_restore_stagnation_after_target_patch(
+    stores, client, monkeypatch, restore_old_target
+):
+    from lionagi.studio.services import schedules
+
+    db, editor, reader = stores
+    schedule = await _schedule(
+        db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5}
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def pause_first_page():
+        client.before_get = None
+        entered.set()
+        await release.wait()
+
+    @asynccontextmanager
+    async def edit_context():
+        yield editor
+
+    client.before_get = pause_first_page
+    monkeypatch.setattr(schedules, "StateDB", edit_context)
+    task = asyncio.create_task(SchedulerEngine(svc=_Service(db))._tick_github(schedule, _NOW))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert await schedules.update_schedule("poll", {"github_repo": "other/repo"})
+        if restore_old_target:
+            assert await schedules.update_schedule("poll", {"github_repo": "owner/repo"})
+        release.set()
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        release.set()
+        await _reap([task])
+    row = await _row(reader)
+    assert client.calls == 5
+    assert (row[_COUNTER], row["poller_last_capped_page_limit"]) == (0, None)
+    assert row["poller_target_generation"] == (2 if restore_old_target else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_scan_complete", [False, True], ids=["capped", "complete"])
+async def test_inflight_limit_and_cursor_change_preserves_cursor_and_next_poll(
+    stores, client, process, first_scan_complete
+):
+    db, editor, reader = stores
+    initial = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
+    advanced = github_module._cursor_for("2026-10-24T10:07:00Z", 0)
+    newer = github_module._cursor_for("2026-10-24T10:10:00Z", 2)
+    schedule = await _schedule(
+        db,
+        streak=0,
+        github_cursor=initial,
+        github_filter={"event": "pr_merged", "merged_page_limit": 5},
+    )
+    older_pr = _pr(1)
+    newer_pr = _pr(2, safe=False)
+    newer_pr["updated_at"] = "2026-10-24T10:20:00Z"
+    filler = _pr(3)
+    filler.update(updated_at="2026-10-24T10:20:00Z", merged_at=None)
+    first_pages = [
+        _Response([older_pr, newer_pr], more=True),
+        *[_Response([filler, filler], more=True) for _ in range(3)],
+        _Response([filler] if first_scan_complete else [filler, filler], more=True),
+    ]
+    next_pages = [
+        _Response([older_pr, newer_pr], more=True),
+        *[_Response([filler, filler], more=True) for _ in range(4)],
+        _Response([filler]),
+    ]
+    client.responses = first_pages + next_pages
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def pause_first_page():
+        client.before_get = None
+        entered.set()
+        await release.wait()
+
+    client.before_get = pause_first_page
+    engine = SchedulerEngine(svc=_Service(db))
+    task = asyncio.create_task(engine._tick_github(schedule, _NOW))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await editor.update_schedule(
+            "poll",
+            github_cursor=advanced,
+            github_filter={"event": "pr_merged", "merged_page_limit": 6},
+        )
+        release.set()
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        release.set()
+        await _reap([task])
+
+    row = await _row(reader)
+    assert client.calls == 5
+    assert row["github_cursor"] == advanced
+    assert row["github_filter"]["merged_page_limit"] == 6
+    assert await reader.list_schedule_runs("poll") == []
+
+    await engine._tick_github(await _row(db), _NOW + 2)
+    row = await _row(reader)
+    assert client.calls == 11
+    assert row["github_cursor"] == newer
+    runs = await reader.list_schedule_runs("poll")
+    assert [run["trigger_context"]["github_events"][0]["pr_number"] for run in runs] == [2]
+
+
+@pytest.mark.asyncio
+async def test_raised_limit_recovers_ordered_events_after_restart(
+    stores, client, process, monkeypatch
+):
+    db, _, reader = stores
+    cursor = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
+    await _schedule(db, streak=0, github_cursor=cursor)
+    monkeypatch.setattr(github_module, "_MERGED_MODE_MAX_PAGES", 5)
+    pages = []
+    for index in range(5):
+        items = []
+        for number in (100 + index * 2, 101 + index * 2):
+            item = _pr(number)
+            item.update(updated_at="2026-10-24T10:20:00Z", merged_at=None)
+            items.append(item)
+        pages.append(items)
+    newer = _pr(1)
+    newer.update(updated_at="2026-10-24T10:20:00Z", merged_at="2026-10-24T10:10:00Z")
+    pages[0][0] = newer
+    older = _pr(2)
+    older.update(updated_at="2026-10-24T10:15:00Z", merged_at="2026-10-24T10:05:00Z")
+    pages.append([older])
+
+    class Pages:
+        index = 0
+
+        async def get(self, url, headers=None, params=None):
+            if params is not None:
+                self.index = 0
+            index = self.index
+            self.index += 1
+            return _Response(pages[index], more=index + 1 < len(pages))
+
+    monkeypatch.setattr(github_module, "_get_client", lambda: Pages())
+    service = _Service(db)
+    fired = []
+    original = service.create_schedule_run_and_advance
+
+    async def record(payload, **kwargs):
+        result = await original(payload, **kwargs)
+        if result:
+            fired.append(payload["trigger_context"]["github_events"][0]["pr_number"])
+        return result
+
+    monkeypatch.setattr(service, "create_schedule_run_and_advance", record)
+    engine = SchedulerEngine(svc=service)
+    for index in range(3):
+        await engine._tick_github(await _row(db), _NOW + index * 2)
+    row = await _row(reader)
+    assert row["github_cursor"] == cursor and row[_COUNTER] == 3
+    assert compute_schedule_health(row, {}, now=_NOW + 6)["health_cause"] == "page_limit_reached"
+    assert fired == []
+    await db.update_schedule("poll", github_filter={"event": "pr_merged", "merged_page_limit": 6})
+    engine = SchedulerEngine(svc=service)
+    await engine._tick_github(await _row(db), _NOW + 6)
+    row = await _row(reader)
+    assert fired == [2, 1]
+    assert row[_COUNTER] == 0
+    assert row["github_cursor"] == github_module._cursor_for("2026-10-24T10:10:00Z", 1)
+    assert "health_cause" not in compute_schedule_health(row, {}, now=_NOW + 6)
+    await SchedulerEngine(svc=service)._tick_github(await _row(db), _NOW + 8)
+    assert fired == [2, 1]
+    runs = await reader.list_schedule_runs("poll")
+    assert sorted(run["trigger_context"]["github_events"][0]["pr_number"] for run in runs) == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_capped_ok_recovers_auth_streak_before_next_401(stores, client):
     db, _, reader = stores
     await _schedule(db)
@@ -218,14 +496,44 @@ async def test_capped_ok_recovers_auth_streak_before_next_401(stores, client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [200, 304])
-async def test_complete_empty_poll_resets_without_dispatch(stores, client, status):
+@pytest.mark.parametrize(("event", "status"), [("pr_merged", 200), ("pr_opened", 304)])
+async def test_complete_empty_poll_resets_without_dispatch(stores, client, event, status):
     db, _, reader = stores
-    schedule = await _schedule(db)
+    schedule = await _schedule(db, github_filter={"event": event})
     client.response = _Response(status=status)
     await SchedulerEngine(svc=_Service(db))._tick_github(schedule, _NOW)
     assert (await _row(reader))[_COUNTER] == 0
     assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_unconditional_merged_304_keeps_progress_and_http_health(stores, client, monkeypatch):
+    db, _, reader = stores
+    cursor = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
+    await _schedule(db, streak=2, github_cursor=cursor)
+    await db.record_github_poll_stagnation("poll", reset=False, page_limit=5)
+    await db.update_schedule("poll", last_healthy_poll_at=_NOW - 10)
+    client.response = _Response(status=304)
+    results = []
+    real_poll = github_module.github_poll
+
+    async def observe(schedule):
+        result = await real_poll(schedule)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(github_module, "github_poll", observe)
+    await SchedulerEngine(svc=_Service(db))._tick_github(await _row(db), _NOW)
+    row = await _row(reader)
+    assert len(results) == 1
+    assert results[0].items == []
+    assert results[0].scan_complete is False
+    assert results[0].poll_status == "error"
+    assert row[_COUNTER] == 3
+    assert row["poller_last_capped_page_limit"] == 5
+    assert row["github_cursor"] == cursor
+    assert row["last_healthy_poll_at"] == _NOW - 10
+    assert await reader.list_schedule_runs("poll") == []
 
 
 @pytest.mark.asyncio
@@ -359,10 +667,38 @@ async def test_stale_batch_uses_actual_fresh_complete_poll(stores, client, proce
     finally:
         holder.release()
     await db.update_schedule("poll", github_cursor="2026-10-25T00:00:00Z")
-    client.response = _Response(status=304)
+    client.response = _Response(status=200)
     await engine._tick_github(await _row(db), _NOW + 2)
     assert (await _row(reader))[_COUNTER] == 0
     assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_limit_change_keeps_held_batch_without_skipping(stores, client, process, monkeypatch):
+    import lionagi.studio.config as config
+
+    db, _, reader = stores
+    await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    client.response = _Response([_pr(1)])
+    engine = SchedulerEngine(svc=_Service(db))
+    _, holder = await engine._reserve_global_slot("other", path="scheduled")
+    try:
+        await engine._tick_github(await _row(db), _NOW)
+        assert "poll" in engine._github_batches
+        assert (await _row(reader))["github_cursor"] is None
+        await db.update_schedule(
+            "poll", github_filter={"event": "pr_merged", "merged_page_limit": 6}
+        )
+    finally:
+        holder.release()
+    await engine._tick_github(await _row(db), _NOW + 2)
+    assert client.calls == 1
+    assert "poll" not in engine._github_batches
+    runs = await reader.list_schedule_runs("poll")
+    completed = [run for run in runs if run["status"] == "completed"]
+    assert len(completed) == 1
+    assert completed[0]["trigger_context"]["github_events"][0]["pr_number"] == 1
 
 
 @pytest.mark.asyncio
@@ -614,11 +950,16 @@ async def test_independent_producers_account_in_commit_order(
         transaction = db._tx
         accounting = False
 
-        async def observe(schedule_id, *, reset):
+        async def observe(schedule_id, *, reset, page_limit=None, expected_target_generation=None):
             nonlocal accounting
             accounting = True
             try:
-                return await record(schedule_id, reset=reset)
+                return await record(
+                    schedule_id,
+                    reset=reset,
+                    page_limit=page_limit,
+                    expected_target_generation=expected_target_generation,
+                )
             finally:
                 accounting = False
 
@@ -647,7 +988,7 @@ async def test_independent_producers_account_in_commit_order(
         await asyncio.wait_for(tasks[0], timeout=5)
         assert (await _row(reader))[_COUNTER] == 3
         if reset_between:
-            client.response = _Response(status=304)
+            client.response = _Response(status=200)
             await SchedulerEngine(svc=_Service(reader))._tick_github(await _row(reader), _NOW + 2)
             assert (await _row(reader))[_COUNTER] == 0
         release[1].set()

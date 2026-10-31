@@ -1352,3 +1352,621 @@ def test_a_response_cut_off_with_nothing_is_read_in_each_provider_shape(response
     import lionagi.cli.agent as agent_mod
 
     assert agent_mod._stopped_at_output_limit_with_nothing(response) is expected
+
+
+# ── a response the provider refused ──────────────────────────────────────
+
+
+def _refused(*blocks: dict, output_tokens: int = 0) -> dict:
+    """A response the provider stopped as a refusal, carrying only ``blocks`` (none: empty)."""
+    reply = _reply({})
+    reply["content"] = list(blocks)
+    reply["stop_reason"] = "refusal"
+    reply["usage"] = {"input_tokens": 1, "output_tokens": output_tokens}
+    return reply
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_refused(), "refusal"),
+        (_refused({"type": "text", "text": "I can"}, output_tokens=3), "refusal"),
+        ({**_refused(), "stop_reason": "end_turn"}, None),
+        (_cut_off(_THINKING), None),
+        (
+            {"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]},
+            "content_filter",
+        ),
+        (
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": None, "refusal": "I cannot help with that."},
+                    }
+                ]
+            },
+            "refusal",
+        ),
+        (
+            {"choices": [{"finish_reason": "stop", "message": {"content": "ok", "refusal": ""}}]},
+            None,
+        ),
+        (
+            {"choices": [{"finish_reason": "stop", "message": {"content": "ok", "refusal": None}}]},
+            None,
+        ),
+        ({"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}, None),
+        ({"choices": [{"finish_reason": "length", "message": {"content": ""}}]}, None),
+        (
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "refusal", "refusal": "I cannot help with that."}],
+                    }
+                ],
+            },
+            "refusal",
+        ),
+        (
+            {
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "fine"}]}
+                ],
+            },
+            None,
+        ),
+        ([_refused()], None),
+        ("not a response", None),
+    ],
+)
+def test_a_refused_response_is_read_in_each_provider_shape(response, expected):
+    import lionagi.cli.agent as agent_mod
+
+    assert agent_mod._provider_refusal(response) == expected
+
+
+class _Reply:
+    """Stands in for an assistant message: an id and the raw provider response."""
+
+    def __init__(self, response):
+        self.id = object()
+        self.model_response = response
+
+
+def _window(monkeypatch, *responses):
+    """A branch whose messages are ``responses``, as the failed-round check reads them."""
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "AssistantResponse", _Reply)
+    return SimpleNamespace(msgs=SimpleNamespace(messages=[_Reply(r) for r in responses]))
+
+
+_REFUSED_REASON = "the provider refused the response (stop reason: refusal)"
+
+
+def test_the_refusal_prompt_says_the_provider_stopped_the_response():
+    import lionagi.cli.agent as agent_mod
+
+    prompt = agent_mod._API_REFUSED_RESUME_PROMPT
+    assert "stopped by the provider before it finished" in prompt
+    assert "Continue the task from where" in prompt
+    assert "could not be read" not in prompt
+    assert "format" not in prompt
+
+
+@pytest.mark.parametrize(
+    "refused", [_refused(), _refused({"type": "text", "text": "I can"}, output_tokens=3)]
+)
+def test_a_refused_response_ends_the_round_with_the_refusal_prompt(refused, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    branch = _window(monkeypatch, _last_round(), refused)
+
+    assert agent_mod._failed_round(branch, set(), []) == (
+        agent_mod._API_REFUSED_RESUME_PROMPT,
+        _REFUSED_REASON,
+    )
+
+
+@pytest.mark.parametrize("capped_last", [True, False])
+def test_a_refusal_beside_an_output_limit_stop_is_reported_as_the_refusal(capped_last, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    pair = [_refused(), _cut_off()]
+    branch = _window(monkeypatch, *(pair if capped_last else reversed(pair)))
+
+    assert agent_mod._failed_round(branch, set(), []) == (
+        agent_mod._API_REFUSED_RESUME_PROMPT,
+        _REFUSED_REASON,
+    )
+
+
+def test_a_refusal_prints_its_stop_reason_and_output_tokens(monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    hints = _capture_hints(monkeypatch)
+    agent_mod._failed_round(_window(monkeypatch, _last_round(), _refused()), set(), [])
+    assert hints == ["[api] refused: stop reason refusal, 0 output token(s)"]
+
+    hints.clear()
+    filtered = {"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]}
+    agent_mod._failed_round(_window(monkeypatch, _last_round(), filtered), set(), [])
+    assert hints == ["[api] refused: stop reason content_filter"]
+
+    hints.clear()
+    agent_mod._failed_round(_window(monkeypatch, _last_round(), _cut_off()), set(), [])
+    assert hints == []
+
+    # A refusal earlier than the pass's last two responses is not the one that ended it.
+    hints.clear()
+    older = _window(monkeypatch, _refused(), _last_round(), _answer("x"))
+    agent_mod._failed_round(older, set(), [])
+    assert hints == []
+
+
+_REFUSED_PASSES = [
+    pytest.param(lambda: [_last_round(), _refused()], id="answer-turn"),
+    pytest.param(lambda: [_refused(), _answer("half an answer")], id="round"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("one_pass", _REFUSED_PASSES)
+async def test_a_provider_that_keeps_refusing_fails_the_turn_as_a_refusal(
+    one_pass, leg, monkeypatch
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    hints = _capture_hints(monkeypatch)
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend(one_pass())
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert "did not parse" not in str(raised.value)
+    assert raised.value.details == {
+        "continued": agent_mod._API_ROUND_RESUMES,
+        "stop_reason": "refusal",
+    }
+    assert leg.replies == []
+    assert leg.status == "failed"
+    resumed = _last_user_text(leg.payloads[2])
+    assert "stopped by the provider before it finished" in resumed
+    assert "could not be read" not in resumed
+    assert not any(
+        agent_mod._API_UNPARSED_RESUME_PROMPT.split("{")[0] in _last_user_text(p)
+        for p in leg.payloads
+    )
+    assert [h for h in hints if h.startswith("[api] refused:")] == [
+        "[api] refused: stop reason refusal, 0 output token(s)"
+    ] * (agent_mod._API_ROUND_RESUMES + 1)
+
+
+def _run_record(tmp_path) -> dict:
+    [path] = list((tmp_path / "runs").glob("*/run.json"))
+    return json.loads(path.read_text())
+
+
+@pytest.mark.asyncio
+async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _refused()])
+
+    with pytest.raises(FailedRoundError):
+        await leg.run(_profile(api_tools="read"))
+
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == "refusal"
+    assert "the provider refused the response" in manifest["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_run_record_of_another_failed_round_has_no_stop_reason(leg, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _text("")])
+
+    with pytest.raises(FailedRoundError, match="the answer had no text"):
+        await leg.run(_profile(api_tools="read"))
+
+    manifest = _run_record(tmp_path)
+    assert "stop_reason" not in manifest
+    assert "the answer had no text" in manifest["error"]
+
+
+class _OfflineEncoding:
+    """A stand-in for the tiktoken encoding: about one token per four characters."""
+
+    def encode(self, text, **_kwargs):
+        return [0] * (len(text) // 4 + 1)
+
+
+@pytest.fixture
+def offline_tokens(monkeypatch):
+    """Count request tokens without fetching the encoding file from the network."""
+    import tiktoken
+
+    monkeypatch.setattr(tiktoken, "get_encoding", lambda _name: _OfflineEncoding())
+
+
+_STOP_DETAILS = {
+    "type": "refusal",
+    "category": "cyber",
+    "explanation": "declined by the provider's policy",
+}
+
+
+def _refused_with(**fields) -> dict:
+    """A refused Anthropic response that also carries ``fields``."""
+    return {**_refused(), **fields}
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+async def test_a_refused_turn_with_stop_details_fails_as_a_nonretryable_provider_refusal(
+    leg, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.providers._provider_errors import ProviderSafetyError
+    from lionagi.state.reasons import RunReasons
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _refused_with(stop_details=_STOP_DETAILS)])
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert isinstance(raised.value.__cause__, ProviderSafetyError)
+    assert str(raised.value.__cause__) == _REFUSED_REASON
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert summary == f"ProviderSafetyError: {_REFUSED_REASON}"
+    assert raised.value.details == {
+        "continued": agent_mod._API_ROUND_RESUMES,
+        "stop_reason": "refusal",
+        "stop_details": _STOP_DETAILS,
+    }
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == "refusal"
+    assert manifest["stop_details"] == _STOP_DETAILS
+    assert "ProviderSafetyError" in manifest["error"]
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"stop_details": None}, {"stop_details": "declined"}, {"stop_details": {}}],
+    ids=["absent", "null", "not-an-object", "empty-object"],
+)
+async def test_a_refused_turn_without_stop_details_has_the_same_reason_and_no_such_field(
+    extra, leg, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _refused_with(**extra)])
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert summary == f"ProviderSafetyError: {_REFUSED_REASON}"
+    assert raised.value.details == {
+        "continued": agent_mod._API_ROUND_RESUMES,
+        "stop_reason": "refusal",
+    }
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == "refusal"
+    assert "stop_details" not in manifest
+    assert "refusal" not in manifest
+
+
+_OPENAI_CHAT_REFUSAL = {
+    "choices": [
+        {
+            "finish_reason": "stop",
+            "message": {"content": None, "refusal": "I cannot help with that."},
+        }
+    ]
+}
+_OPENAI_RESPONSES_REFUSAL = {
+    "status": "completed",
+    "output": [
+        {
+            "type": "message",
+            "content": [{"type": "refusal", "refusal": "I cannot help with that."}],
+        }
+    ],
+}
+_OPENAI_CONTENT_FILTER = {
+    "choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]
+}
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "marker", "detail"),
+    [
+        (_OPENAI_CHAT_REFUSAL, "refusal", "I cannot help with that."),
+        (_OPENAI_RESPONSES_REFUSAL, "refusal", "I cannot help with that."),
+        (_OPENAI_CONTENT_FILTER, "content_filter", None),
+    ],
+    ids=["chat-refusal", "responses-refusal", "content-filter"],
+)
+async def test_an_openai_refusal_carries_its_text_beside_the_stop_reason(
+    response, marker, detail, leg, monkeypatch, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    # The scripted endpoint speaks the Anthropic wire, so the pass's raw responses are
+    # swapped for the OpenAI-shaped one the failed-round check reads.
+    monkeypatch.setattr(agent_mod, "_pass_responses", lambda branch, before: [response])
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _answer("half an answer")])
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert summary == (
+        f"ProviderSafetyError: the provider refused the response (stop reason: {marker})"
+    )
+    expected = {"continued": agent_mod._API_ROUND_RESUMES, "stop_reason": marker}
+    if detail is not None:
+        expected["refusal"] = detail
+    assert raised.value.details == expected
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == marker
+    assert manifest.get("refusal") == detail
+    assert "stop_details" not in manifest
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+async def test_a_failed_round_that_is_not_a_refusal_keeps_the_exception_reason_and_no_detail(
+    leg, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _text("")])
+
+    with pytest.raises(FailedRoundError, match="the answer had no text") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert raised.value.__cause__ is None
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_EXCEPTION
+    assert summary.startswith("FailedRoundError: ")
+    assert raised.value.details == {"continued": agent_mod._API_ROUND_RESUMES}
+    manifest = _run_record(tmp_path)
+    assert "stop_details" not in manifest
+    assert "refusal" not in manifest
+
+
+@pytest.mark.asyncio
+async def test_profile_effort_reaches_anthropic_wire_payload(leg, monkeypatch):
+    profile = _profile(api_tools="read")
+    profile.effort = "max"
+    seen_payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payload, _ = self.create_payload(request, **kwargs)
+        seen_payloads.append(payload)
+        return leg.replies.pop(0)
+
+    monkeypatch.setattr(AnthropicMessagesEndpoint, "call", call)
+    leg.replies = [_last_round(), _answer("done")]
+    _, _, _, status, _ = await leg.run(profile)
+    assert status == "completed"
+    assert seen_payloads
+    assert all(payload["output_config"]["effort"] == "max" for payload in seen_payloads)
+
+
+@pytest.mark.asyncio
+async def test_profile_effort_persists_and_can_be_overridden_on_resume(leg):
+    profile = _profile(api_tools="read")
+    profile.effort = "max"
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, status, _ = await leg.run(profile)
+    assert status == "completed"
+    assert all(p["output_config"]["effort"] == "max" for p in leg.payloads)
+
+    leg.payloads.clear()
+    leg.replies = [_last_round(), _answer("second")]
+    _, _, _, status, _ = await leg.run(_profile(api_tools="read"), resume=branch_id)
+    assert status == "completed"
+    assert all(p["output_config"]["effort"] == "max" for p in leg.payloads)
+
+    leg.payloads.clear()
+    leg.replies = [_last_round(), _answer("third")]
+    _, _, _, status, _ = await leg.run(_profile(api_tools="read"), resume=branch_id, effort="low")
+    assert status == "completed"
+    assert all(p["output_config"]["effort"] == "low" for p in leg.payloads)
+
+
+@pytest.mark.asyncio
+async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, monkeypatch):
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    profile = _profile(api_tools="read")
+    profile.effort = "high"
+    replies = [
+        {
+            "analysis": "done",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "done"},
+        },
+        {"answer": "done"},
+    ]
+    payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payloads.append(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-6-luna",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": json.dumps(replies.pop(0))},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "call", call)
+    result, _, _, status, _ = await leg.run(profile, model="openai/gpt-6-luna")
+    assert (result, status) == ("done", "completed")
+    assert payloads
+    assert all(p["reasoning_effort"] == "high" and "tools" not in p for p in payloads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,provider_class",
+    [
+        ("openai/gpt-4.1", "openai"),
+        ("groq/example-model", "groq"),
+    ],
+)
+async def test_unsupported_profile_effort_does_not_break_api_leg(
+    leg, monkeypatch, model, provider_class
+):
+    from lionagi.providers.groq.chat import GroqChatEndpoint
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-key")
+    profile = _profile(api_tools="read")
+    profile.effort = "high"
+    replies = [
+        {
+            "analysis": "done",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "done"},
+        },
+        {"answer": "done"},
+    ]
+    payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payloads.append(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": model.split("/", 1)[1],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": json.dumps(replies.pop(0))},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    cls = OpenaiChatEndpoint if provider_class == "openai" else GroqChatEndpoint
+    monkeypatch.setattr(cls, "call", call)
+    result, _, _, status, _ = await leg.run(profile, model=model)
+    assert (result, status) == ("done", "completed")
+    assert payloads and all("reasoning_effort" not in p for p in payloads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["openai/gpt-4.1", "groq/example-model", "gemini/example-model"])
+async def test_explicit_cli_effort_on_unsupported_api_is_refused(leg, monkeypatch, model):
+    for key in ("OPENAI_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.setenv(key, "synthetic-key")
+    with pytest.raises(ConfigurationError, match="model.*high"):
+        await leg.run(_profile(api_tools="read"), model=model, effort="high")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile_model,profile_effort,positional,expected",
+    [
+        ("openai/gpt-4.1-high", None, None, None),
+        ("openai/gpt-6-luna-xhigh", None, None, "xhigh"),
+        (None, "high", "openai/gpt-6-luna-xhigh", "high"),
+    ],
+)
+async def test_api_model_suffix_origin_and_profile_precedence(
+    leg, monkeypatch, profile_model, profile_effort, positional, expected
+):
+    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    profile = _profile(api_tools="read")
+    profile.model = profile_model
+    profile.effort = profile_effort
+    replies = [
+        {
+            "analysis": "done",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "done"},
+        },
+        {"answer": "done"},
+    ]
+    payloads = []
+
+    async def call(self, request, *args, **kwargs):
+        payloads.append(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": request["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": json.dumps(replies.pop(0))},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(OpenaiChatEndpoint, "call", call)
+    result, _, _, status, _ = await leg.run(profile, model=positional)
+    assert (result, status) == ("done", "completed")
+    assert payloads and all(p.get("reasoning_effort") == expected for p in payloads)
+    if expected is None:
+        assert all("reasoning_effort" not in p for p in payloads)

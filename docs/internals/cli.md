@@ -128,8 +128,10 @@ from the record, searching from the launch directory, so the directory the resum
 not decide what is found. A flag given on the resume is used for that leg instead of the record.
 Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
 codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
-them: a non-empty set is handed to a resumed leg as it is to a new one, without
-`--strict-mcp-config`. A recorded config is read from the launch directory when its path is
+them. The set is handed to a resumed leg as it is to a new one: a set named by a config file,
+on the resume or in the record, is the whole set (Claude gets `--strict-mcp-config`, and codex
+is given only those servers), while a set found by searching the launch directory adds to the
+servers the provider finds for itself. A recorded config is read from the launch directory when its path is
 relative; one that is missing or can no longer be read refuses the resume, naming that config
 and the flags to resume with instead. A branch created before the choice was recorded resolves
 nothing new, and its request keeps the servers its earlier run was handed.
@@ -1003,7 +1005,7 @@ so other surfaces can await completion without shelling out; `run_wait()` is the
 that resolves argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
 
 **`_resolve_wait_target`** — any-kind resolver order: session, invocation, play
-(`_resolve_any_target`, which also falls back to a branch_id), then schedule_run.
+(`resolve_any_target` in `lionagi/cli/_inspection.py`, which also falls back to a branch_id), then schedule_run.
 Terminal-state definitions live in `TERMINAL_STATUSES_BY_ENTITY_TYPE`
 (`lionagi/state/db.py`, ADR-0035).
 
@@ -1299,6 +1301,15 @@ label or one overlapping the resolved credential is omitted. Keys, headers, cred
 references and prompt text are excluded from this section. The model is the requested
 model, not a claim about the model the provider served.
 
+Each request also records `cache_read_tokens` and `cache_write_tokens` from the final
+successful non-streaming response, when supplied by OpenAI or Anthropic. `null` means
+unknown; zero means the response reported zero. Hits in the built-in local response cache,
+incomplete, failed or cancelled calls, and calls whose endpoint overrides the cache dispatch
+method remain unknown. A custom transport or proxy can return a cached response that this
+observer cannot distinguish from a fresh one. These values describe the final observed
+response, not a sum of retry attempts or a statement of billed usage. Counts outside the
+non-negative signed 64-bit range are unknown.
+
 `guard_refusal_count`, with coverage `act_policy_denial_v1`, counts explicit session
 authorization refusals and direct typed governance errors caught by action execution.
 These include tool-pre-hook `deny` and `ask` decisions, unsupported decisions or return
@@ -1516,6 +1527,12 @@ installs a fresh generation in the same guarded status write.
 
 ## `mirror.py` — Claude transcript mirroring into StateDB
 
+The state, passes and `mirror_forever` described below are defined in
+`lionagi/cli/_mirror_service.py`, and the preview-size setting in
+`lionagi/cli/_mirror_settings.py`. `mirror.py` keeps the `li mirror` parser, its
+`_run` loop and `run_mirror`, and imports the service names back for callers that
+read them from `lionagi.cli.mirror`.
+
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
 conversation opens a fresh transcript whose first message points — via `parentUuid` — at the
 last message of the session it continues. `_Lineage` indexes each file's current leaf uuid and,
@@ -1638,9 +1655,10 @@ actually touches those rows reports their size directly instead.
 
 **`_prune_candidates` / `_null_content_candidates`** — both re-run their operation's own
 selection predicate outside the operation's transaction, and print the recount beside the
-result as a cross-check: after a real run it must read zero, after a `--dry-run` preview it
-must match what the preview reported. Running inside the same transaction would read the
-operation's own uncommitted rows and agree by construction, so it deliberately runs outside it.
+result as a cross-check. After a prune, sessions still referenced by retained records remain
+selected and are reported as skipped; after a `--dry-run` preview, both the would-delete and
+skipped sessions remain selected. Running inside the same transaction would read the operation's
+own uncommitted rows and agree by construction, so it deliberately runs outside it.
 
 **`_null_content`** — replaces old message *bodies* with a size-preserving marker; it exists
 because `li state prune` can't reach this content. Prune selects and deletes **sessions**, but

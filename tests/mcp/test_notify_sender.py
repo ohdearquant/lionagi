@@ -366,7 +366,13 @@ def test_the_fallback_does_not_promise_delivery_when_notifications_are_off(
     )
 
     assert without == {"attempted": False}
-    assert with_sender == without, "the sender does not change this result"
+    assert with_sender == {
+        "attempted": False,
+        "ok": False,
+        "exit_code": None,
+        "error": "no_delivery_command",
+        "command": None,
+    }, "a sender asks for a notice, so having nothing to deliver it is reported"
 
     def fail_resolution(_cwd):
         raise jobs.NotifySenderResolutionError("identity resolution timed out")

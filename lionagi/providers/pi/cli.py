@@ -46,7 +46,6 @@ from ._config import PiConfigs
 
 HAS_PI_CLI, PI_CLI = discover_cli("pi")
 
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pi-cli")
 
 

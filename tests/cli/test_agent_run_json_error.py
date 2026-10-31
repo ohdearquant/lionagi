@@ -42,7 +42,6 @@ def test_durable_operations_scopes_manifest_error_to_agent_runs():
 
 
 def _run(monkeypatch, tmp_path) -> RunDir:
-    import lionagi.cli._runs as runs_mod
     import lionagi.cli.agent as agent_mod
 
     run = RunDir(
@@ -51,10 +50,7 @@ def _run(monkeypatch, tmp_path) -> RunDir:
     run.ensure_state_dirs()
     monkeypatch.setattr(agent_mod, "allocate_run", lambda: run)
     process_markers = {"pid": 1, "pid_create_time": 1.0}
-    monkeypatch.setattr(
-        runs_mod, "current_pid_markers", lambda: dict(process_markers), raising=False
-    )
-    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(process_markers))
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(process_markers))
     return run
 
 

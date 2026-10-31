@@ -154,29 +154,26 @@ async def run_cancel_session_if_worker_generation(
     reason_code: str,
     reason_summary: str,
     evidence: dict[str, Any],
-) -> Literal["applied", "conflict", "missing", "rejected"]:
-    """Bind cancellation to one execution without owning a second transaction."""
-    command = TransitionCommand(
-        entity_type="session",
-        entity_id=session_id,
-        to_status="cancelled",
-        reason=ReasonRecord(
-            code=reason_code, summary=reason_summary, evidence_refs=(dict(evidence),)
-        ),
-        actor=ActorRecord(type="admin", id="user"),
-        expected_statuses=frozenset({"running"}),
-        patch={"current_phase": None},
-    )
+) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
+    """Bind cancellation to one execution, through the service's guarded transition.
+
+    ``already_terminal`` means the row observed by the guarded transition was
+    terminal and still carried the captured generation and runner identity.
+    Nothing is written; a later change to the row is not ruled out.
+    """
     try:
-        outcome = await service._transition(  # noqa: SLF001 -- same-package adapter seam
-            command,
-            extra_guard={"cli_worker_generation": generation_id},
+        outcome, terminal_same_execution = await service.guarded_cancel_session(
+            session_id=session_id,
+            generation_id=generation_id,
             expected_runner_identity=expected_runner_identity,
-            enforce_edges=True,
-            undeclared_edge_mode="reject",
+            reason=ReasonRecord(
+                code=reason_code, summary=reason_summary, evidence_refs=(dict(evidence),)
+            ),
         )
     except LifecycleNotFoundError:
         return "missing"
     except LifecycleValidationError:
         return "rejected"
+    if outcome.result == "conflict" and terminal_same_execution:
+        return "already_terminal"
     return outcome.result

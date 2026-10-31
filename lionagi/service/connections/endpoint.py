@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, SecretStr, ValidationError
 
+from lionagi.service._api_telemetry import claim_cache_source, mark_uncached_response
 from lionagi.service.resilience import (
     APIClientError,
     CircuitBreaker,
@@ -697,12 +698,15 @@ class Endpoint:
         _routing_scope: Any = None,
         **kwargs,
     ):
+        cache_source = claim_cache_source()
         routed = self._account_routing_enabled()
         self._require_api_key()
         # Only a routed call hands the scope down: an unrouted endpoint's _call never
         # receives a keyword its signature may not take.
         scope_kwargs = {"_routing_scope": self._account_scope(_routing_scope)} if routed else {}
         use_cache = cache_control and not routed
+        if not use_cache:
+            mark_uncached_response(cache_source)
         extra_headers = kwargs.pop("extra_headers", None)
 
         payload, headers = None, None
@@ -780,6 +784,7 @@ class Endpoint:
 
             @cached(**settings.aiocache_config.as_kwargs())
             async def _cached_call(payload: dict, headers: dict, **kwargs):
+                mark_uncached_response(cache_source)
                 if self.circuit_breaker and self.retry_config:
                     return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
                 if self.circuit_breaker:

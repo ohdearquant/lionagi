@@ -19,6 +19,12 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionagi.cli._schedule_parsing import (
+    _ALIAS_ACTION_KINDS,
+    _MODEL_RE,
+    _VALID_ACTION_KINDS,
+    _validate_identifier,
+)
 from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
@@ -37,28 +43,10 @@ _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 # should prefer the absolute prefix from resolve_li_executable() instead.
 _DEFAULT_LI_PREFIX: tuple[str, ...] = ("uv", "run", "li")
 
-# ADR-0070 defines the closed set of action kinds.  The CLI parser accepts
-# "playbook" as an alias for "play" for backward compatibility.
-# The "command" kind is an allow-listed executable spawned directly
-# (not through `li`), with templated argv rendered from trigger_context.
-_VALID_ACTION_KINDS = frozenset(
-    {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
-)
-_ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 # Names `li play` reads as its own subcommands before any playbook name (cli/main.py
 # _handle_play_shortcut): a play launch whose first word after `li play` is one of them, as its
 # playbook or, with no playbook, as its first extra argument, runs that subcommand and no playbook.
 _PLAY_SUBCOMMANDS: frozenset[str] = frozenset({"list", "check", "status"})
-
-# action_model must be a safe model-spec token: alphanumerics, dots, slashes,
-# colons, hyphens and underscores only.  Values starting with '-' are rejected
-# unconditionally to block flag injection into the spawned li process (CWE-88).
-_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+\Z")
-
-# Identifier fields (action_agent, action_project, action_playbook) share the
-# same character set as model specs: they name agents, projects, and playbooks
-# and have no legitimate use for leading '-'.
-_IDENT_RE = _MODEL_RE
 
 
 def _validate_action_model(model: str) -> None:
@@ -74,22 +62,6 @@ def _validate_action_model(model: str) -> None:
         raise ValueError(
             f"action_model {model!r} contains characters not allowed in a model "
             "identifier. Allowed: letters, digits, '_', '.', '/', ':', '@', '-'."
-        )
-
-
-def _validate_identifier(value: str, field_name: str) -> None:
-    """Raise ValueError if *value* starts with '-' — argparse would misinterpret it as a flag (CWE-88)."""
-    if not value:
-        return
-    if value.startswith("-"):
-        raise ValueError(
-            f"{field_name} {value!r} starts with '-' and is not a valid identifier. "
-            "Identifier fields must not begin with '-'."
-        )
-    if not _IDENT_RE.match(value):
-        raise ValueError(
-            f"{field_name} {value!r} contains characters not allowed in an identifier. "
-            "Allowed: letters, digits, '_', '.', '/', ':', '@', '-'."
         )
 
 
@@ -276,7 +248,7 @@ def _reserved_flow_flags() -> frozenset[str]:
     if _RESERVED_FLOW_FLAGS is None:
         import argparse
 
-        from lionagi.cli.orchestrate import add_orchestrate_subparser
+        from lionagi.cli._orchestrate_parsing import add_orchestrate_subparser
 
         probe = argparse.ArgumentParser(prog="li", add_help=False)
         flow = add_orchestrate_subparser(probe.add_subparsers(dest="command"))["flow"]

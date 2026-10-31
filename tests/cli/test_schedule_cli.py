@@ -1521,7 +1521,7 @@ def test_schedule_create_on_success_unknown_key_rejected(monkeypatch, capsys):
 def test_schedule_create_on_success_missing_explicit_key_warns(monkeypatch):
     """A nested chain_action that omits its own on_success key triggers the
     re-fire warning (shallow-merge inheritance gotcha)."""
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1537,7 +1537,7 @@ def test_schedule_create_on_success_missing_explicit_key_warns(monkeypatch):
 def test_schedule_create_on_fail_missing_explicit_key_warns(monkeypatch):
     """A nested chain_action that omits its own on_fail key triggers the
     re-fire warning (shallow-merge inheritance gotcha)."""
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1552,7 +1552,7 @@ def test_schedule_create_on_fail_missing_explicit_key_warns(monkeypatch):
 
 def test_schedule_create_on_success_explicit_null_no_warning(monkeypatch):
     """Explicitly setting on_success: null in the chain_action suppresses the warning."""
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1653,7 +1653,7 @@ def test_schedule_create_nested_on_success_non_dict_rejected(monkeypatch, capsys
 def test_schedule_create_nested_chain_explicit_null_accepted_no_warning(monkeypatch):
     """A valid 2-level chain where the innermost level explicitly nulls out
     its own on_success is accepted with no warnings at any depth."""
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1678,7 +1678,7 @@ def test_schedule_create_nested_chain_missing_on_success_warns(monkeypatch):
     """The top level sets its own on_success (to the nested dict), so it does
     not warn — but the nested dict itself omits its own on_success key, which
     does trigger the re-fire warning, scoped to that nested path."""
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1810,7 +1810,7 @@ def test_schedule_list_shows_remaining_runs(monkeypatch, capsys):
 
 def test_warn_if_cron_far_out_warns_beyond_360_days(monkeypatch):
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1825,7 +1825,7 @@ def test_warn_if_cron_far_out_warns_beyond_360_days(monkeypatch):
 
 def test_warn_if_cron_far_out_silent_when_near(monkeypatch):
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     warnings: list[str] = []
     monkeypatch.setattr(sched_mod, "warn", warnings.append)
@@ -1840,7 +1840,7 @@ def test_warn_if_cron_far_out_no_croniter_is_noop(monkeypatch):
     """Missing the optional `studio` extra's croniter dep must never break create."""
     import builtins
 
-    import lionagi.studio.cli as sched_mod
+    import lionagi.cli._schedule_parsing as sched_mod
 
     real_import = builtins.__import__
 
@@ -2742,3 +2742,74 @@ def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel
     # The refused line is not duplicated onto stdout, and the plan summary stays there.
     assert "ERROR      " not in out
     assert "Plan: 0 create, 0 update, 0 unchanged, 0 disable" in out
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "build_create_body",
+        "add_schedule_subparser",
+        "suggest_schedule_flag",
+        "_normalize_schedule_reason",
+    ],
+)
+def test_schedule_parsing_names_live_in_the_shared_module(name):
+    """The shared schedule command parsing is defined in its own CLI module, and the
+    Studio command module still exposes the very same objects under the same names."""
+    import importlib
+
+    import lionagi.studio.cli as studio_cli
+
+    shared = importlib.import_module("lionagi.cli._schedule_parsing")
+    obj = getattr(shared, name)
+    assert obj.__module__ == "lionagi.cli._schedule_parsing"
+    assert getattr(studio_cli, name) is obj
+
+
+def test_schedule_parsing_module_stays_below_the_command_layer():
+    """The shared parsing module imports no CLI command module and nothing from Studio, at
+    module level or inside a function. The chain-depth cap, the action-kind vocabulary and the
+    identifier check are defined here and the scheduler imports them back as the very same
+    objects."""
+    import ast
+    import importlib
+
+    import lionagi.cli
+    from tests.cli._import_guard import command_module_imports, resolved_imports
+
+    path = Path(lionagi.cli.__file__).resolve().parent / "_schedule_parsing.py"
+    assert path.is_file()
+
+    imported = resolved_imports(path, "lionagi.cli")
+    assert command_module_imports(imported) == set()
+    assert [name for name in imported if name.startswith("lionagi.studio")] == []
+
+    studio_imports = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level == 0 and (
+                module.startswith("lionagi.studio")
+                or (module == "lionagi" and any(a.name == "studio" for a in node.names))
+            ):
+                studio_imports.add((module, tuple(a.name for a in node.names)))
+            elif node.level >= 2 and module.startswith("studio"):
+                studio_imports.add(("." * node.level + module, tuple(a.name for a in node.names)))
+        elif isinstance(node, ast.Import):
+            studio_imports.update(
+                (alias.name, ()) for alias in node.names if alias.name.startswith("lionagi.studio")
+            )
+    assert studio_imports == set()
+
+    parsing = importlib.import_module("lionagi.cli._schedule_parsing")
+    engine_module = importlib.import_module("lionagi.studio.scheduler.engine")
+    subprocess_module = importlib.import_module("lionagi.studio.scheduler.subprocess")
+    assert engine_module._MAX_CHAIN_DEPTH is parsing._MAX_CHAIN_DEPTH
+    for name in (
+        "_VALID_ACTION_KINDS",
+        "_ALIAS_ACTION_KINDS",
+        "_MODEL_RE",
+        "_validate_identifier",
+    ):
+        assert getattr(subprocess_module, name) is getattr(parsing, name), name
+    assert parsing._validate_identifier.__module__ == "lionagi.cli._schedule_parsing"

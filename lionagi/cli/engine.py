@@ -14,54 +14,18 @@ from typing import TYPE_CHECKING, Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
-from lionagi.ln import compute_hash, import_module
+from lionagi.ln import compute_hash
 from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
+from ._engine_definitions import KIND_META, import_engine_class
 from ._logging import log_error, progress, warn
 
 if TYPE_CHECKING:
     from lionagi.state.cli_workers import _WorkerSpawnOwner
 
-# ── Engine kind registry ───────────────────────────────────────────────────
-# Maps the CLI kind name to the class import path and the main positional
-# argument name and help text.  Adding a new kind means adding one entry here.
-
-_KIND_META: dict[str, dict[str, Any]] = {
-    "research": {
-        "cls_path": ("lionhub.orchestration.engines", "ResearchEngine"),
-        "pos_arg": "topic",
-        "pos_help": "Research topic or question.",
-    },
-    "review": {
-        "cls_path": ("lionhub.orchestration.engines", "ReviewEngine"),
-        "pos_arg": "artifact",
-        "pos_help": "Artifact text or path to review.",
-    },
-    "coding": {
-        "cls_path": ("lionhub.orchestration.engines", "CodingEngine"),
-        "pos_arg": "spec",
-        "pos_help": "Coding specification (natural-language or JSON string).",
-    },
-    "hypothesis": {
-        "cls_path": ("lionhub.orchestration.engines", "HypothesisEngine"),
-        "pos_arg": "findings",
-        "pos_help": "Research findings or background text for hypothesis generation.",
-    },
-    "planning": {
-        "cls_path": ("lionhub.orchestration.engines", "PlanningEngine"),
-        "pos_arg": "prompt",
-        "pos_help": "Goal or task description to plan and execute.",
-    },
-}
-
 ENGINE_OUTCOME_BYTE_CAP = 16 * 1024
 _OUTCOME_TEXT_CAP = 512
 _OUTCOME_LIST_CAP = 64
-
-
-def _import_engine_class(module: str, name: str) -> type:
-    mod = import_module(module)
-    return getattr(mod, name)
 
 
 # ── Subparser builder ──────────────────────────────────────────────────────
@@ -89,7 +53,7 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     engine_sub = engine_parser.add_subparsers(dest="engine_command", required=True)
 
-    kinds_str = ", ".join(sorted(_KIND_META))
+    kinds_str = ", ".join(sorted(KIND_META))
     run_parser = engine_sub.add_parser(
         "run",
         help=f"Run an engine. Kinds: {kinds_str}.",
@@ -103,7 +67,7 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     run_parser.add_argument(
         "kind",
-        choices=list(_KIND_META),
+        choices=list(KIND_META),
         metavar="kind",
         help=f"Engine kind to run. One of: {kinds_str}.",
     )
@@ -246,7 +210,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
 
     kind = args.kind
     spec = args.spec
-    meta = _KIND_META[kind]
+    meta = KIND_META[kind]
 
     if kind == "coding" and not args.test_cmd:
         log_error("the 'coding' engine requires --test-cmd (e.g. --test-cmd 'pytest tests/')")
@@ -325,7 +289,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
             if await db.get_session(run_id) is not None:
                 warn(f"sessions row {run_id} already exists; skipping signal binding")
             else:
-                from lionagi.cli.kill import current_pid_markers
+                from lionagi.ln._proc import current_pid_markers
 
                 generation_id = str(uuid.uuid4())
                 prog_id = f"{run_id}-prog"
@@ -389,7 +353,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
     # until actually needed).
     try:
         module, cls_name = meta["cls_path"]
-        engine_class = _import_engine_class(module, cls_name)
+        engine_class = import_engine_class(module, cls_name)
     except Exception as exc:
         log_error(f"failed to import engine class for kind {kind!r}: {exc}")
         await _finish_engine_run(

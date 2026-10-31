@@ -127,7 +127,12 @@ _NOTIFY_COMMAND = {
 
 _NOTIFY_SEAT = {
     "type": "string",
-    "description": "Fills the {target} placeholder in the delivery command.",
+    "description": (
+        "Fills the {target} placeholder in the delivery command. Without a "
+        "delivery command (notify_command, LIONAGI_MCP_NOTIFY_COMMAND or the "
+        "notify.on_terminal setting) nothing is sent, and the submit handle "
+        "says so in notify_warning."
+    ),
     "x-server-owned": True,
 }
 
@@ -741,6 +746,13 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Store and write-ahead-log size, per-table row counts, session status spread.",
         executor="machine",
         cli_path="state stats",
+        admits=(),
+    ),
+    Verb(
+        name="state.terminal-consumer.list",
+        summary="Registered terminal consumers and their outstanding deliveries.",
+        executor="machine",
+        cli_path="state terminal-consumer list",
         admits=(),
     ),
     Verb(

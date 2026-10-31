@@ -5,20 +5,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from pathlib import Path
-from typing import TypeVar
+from typing import Generic, TypeVar, cast
 from uuid import UUID
 
 from lionagi.ln import now_utc
-from lionagi.ln.concurrency import run_sync
+from lionagi.ln.concurrency import move_on_after, run_sync
 from lionagi.service.accounts._types import (
     INT64_MAX,
     AccountRoutingError,
@@ -43,6 +45,39 @@ _MONTH_RE = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])\Z")
 _INT64_MIN = -(INT64_MAX + 1)
 _TABLES = {"account", "month", "binding", "attempt", "adjustment"}
 _T = TypeVar("_T")
+_LOGGER = logging.getLogger(__name__)
+# How long one ledger call waits for a worker thread before it is refused as busy. The
+# bound covers admission only; the SQLite lock wait is set by busy_timeout_s.
+_ADMISSION_BOUND_S = 5.0
+# Expired rows are deleted by text order with a margin wider than an offset moves the text (a day),
+# so an isoformat() row goes only after it expired; a row lost early only loses a routing hint.
+_WARM_PURGE_MARGIN = timedelta(hours=25)
+
+
+class _TimedCall(Generic[_T]):
+    """Run an operation in a worker thread and record when it started and finished.
+
+    The operation's result or error is kept here and the call itself returns normally,
+    so a caller whose wait was cancelled can still read the outcome of a write that ran.
+    """
+
+    __slots__ = ("operation", "started_at", "finished_at", "result", "error")
+
+    def __init__(self, operation: Callable[[], _T]) -> None:
+        self.operation = operation
+        self.started_at: float | None = None
+        self.finished_at: float | None = None
+        self.result: _T | None = None
+        self.error: Exception | None = None
+
+    def __call__(self) -> None:
+        self.started_at = time.monotonic()
+        try:
+            self.result = self.operation()
+        except Exception as exc:
+            self.error = exc
+        finally:
+            self.finished_at = time.monotonic()
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +159,107 @@ def _month_and_iso(clock: Callable[[], datetime]) -> tuple[str, str]:
     return (value + timedelta(days=1)).strftime("%Y-%m"), value.isoformat()
 
 
+def _aware_instant(value: object) -> datetime | None:
+    """Parse stored text as an instant; None unless it is ISO text carrying an offset."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _clear_warm_prefix(connection: sqlite3.Connection, provider: str, account: str) -> None:
+    """Forget every warm-prefix record of one account."""
+    connection.execute(
+        "DELETE FROM warm_prefix WHERE provider = ? AND account = ?",
+        (provider, account),
+    )
+
+
+def _warm_accounts(
+    connection: sqlite3.Connection, provider: str, cert: str, now: datetime
+) -> set[str]:
+    """Return the accounts holding an unexpired warm-prefix record for ``cert``.
+
+    A record whose expiry is not offset-carrying ISO text counts as absent.
+    """
+    rows = connection.execute(
+        "SELECT account, expires_at FROM warm_prefix WHERE provider = ? AND cert = ?",
+        (provider, cert),
+    ).fetchall()
+    names: set[str] = set()
+    for name, expires_at in rows:
+        expiry = _aware_instant(expires_at)
+        if expiry is not None and expiry > now:
+            names.add(name)
+    return names
+
+
+def _record_warm_prefix(
+    connection: sqlite3.Connection,
+    provider: str,
+    account: str,
+    cert: str,
+    usage: CompleteUsage,
+    created_at: object,
+    hour_after_key: bool,
+    server_tools: bool,
+) -> None:
+    """Record or refresh the warm prefix a completed attempt shows for its account.
+
+    A one-hour cache write stores the stable prefix length (unknown when the request
+    carried a later cache point or server tools); a request with no write whose cache
+    read equals the stored length refreshes the expiry. Nothing is recorded for a
+    blocked account or an attempt time that is not an aware instant.
+    """
+    state = connection.execute(
+        "SELECT block_reason FROM account WHERE provider = ? AND name = ?",
+        (provider, account),
+    ).fetchone()
+    if state is None or state[0] is not None:
+        return
+    started = _aware_instant(created_at)
+    if started is None:
+        return
+    expires = started + timedelta(hours=1)
+    stored = connection.execute(
+        "SELECT stable_tokens, expires_at FROM warm_prefix "
+        "WHERE provider = ? AND account = ? AND cert = ?",
+        (provider, account, cert),
+    ).fetchone()
+    stored_expiry = _aware_instant(stored[1]) if stored is not None else None
+    if stored_expiry is None:
+        stored = None
+    if usage.cache_write_1h_tokens > 0:
+        new_stable: int | None = None
+        if not (hour_after_key or server_tools):
+            new_stable = usage.cache_read_input_tokens + usage.cache_write_1h_tokens
+        if stored is None:
+            stable, expiry = new_stable, expires
+        else:
+            stable = new_stable if new_stable is not None else stored[0]
+            expiry = max(stored_expiry, expires)
+    else:
+        if server_tools or stored is None or stored[0] is None:
+            return
+        if usage.cache_read_input_tokens != stored[0]:
+            return
+        stable, expiry = stored[0], max(stored_expiry, expires)
+    connection.execute(
+        "DELETE FROM warm_prefix WHERE provider = ? AND expires_at < ?",
+        (provider, (started - _WARM_PURGE_MARGIN).astimezone(timezone.utc).isoformat()),
+    )
+    connection.execute(
+        "INSERT OR REPLACE INTO warm_prefix(provider, account, cert, stable_tokens, expires_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (provider, account, cert, stable, expiry.isoformat()),
+    )
+
+
 def _validate_quote(quote: Quote) -> None:
     if not isinstance(quote, Quote):
         raise AccountRoutingError(RouterErrorCode.UNSUPPORTED_PRICING)
@@ -187,15 +323,52 @@ class CredentialLedger:
         self._clock = clock or (lambda: now_utc())
 
     async def _run(self, operation: Callable[[], _T]) -> _T:
+        """Run one ledger operation in a worker thread.
+
+        The wait for a worker thread is bounded by _ADMISSION_BOUND_S. If the operation never
+        started when the bound fires, the call is refused as ledger_busy. If it started, its
+        result or error is returned as usual, even when the bound fired while it ran. Each
+        call emits one DEBUG event with its admission wait, SQLite wait and outcome.
+        """
+        call = _TimedCall(operation)
+        requested_at = time.monotonic()
+        outcome = "committed"
         try:
-            return await run_sync(operation)
-        except sqlite3.OperationalError as exc:
-            message = str(exc).lower()
-            if "locked" in message or "busy" in message:
-                raise _routing_error(RouterErrorCode.LEDGER_BUSY) from None
-            raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
-        except (sqlite3.DatabaseError, OSError):
-            raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+            with move_on_after(_ADMISSION_BOUND_S):
+                await run_sync(call)
+            if call.started_at is None:
+                outcome = "ledger_busy"
+                raise _routing_error(RouterErrorCode.LEDGER_BUSY)
+            try:
+                if call.error is not None:
+                    raise call.error
+                return cast(_T, call.result)
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" in message or "busy" in message:
+                    outcome = "ledger_busy"
+                    raise _routing_error(RouterErrorCode.LEDGER_BUSY) from None
+                outcome = type(exc).__name__
+                raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+            except (sqlite3.DatabaseError, OSError) as exc:
+                outcome = type(exc).__name__
+                raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+        except BaseException as exc:
+            if outcome == "committed":
+                outcome = type(exc).__name__
+            raise
+        finally:
+            now = time.monotonic()
+            fields: dict[str, object] = {
+                "admission_wait_s": (call.started_at if call.started_at is not None else now)
+                - requested_at,
+                "outcome": outcome,
+            }
+            if call.started_at is not None:
+                fields["sqlite_wait_s"] = (
+                    call.finished_at if call.finished_at is not None else now
+                ) - call.started_at
+            _LOGGER.debug("credential ledger call finished", extra=fields)
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -226,14 +399,43 @@ class CredentialLedger:
             )
         }
 
+    @staticmethod
+    def _index_names(connection: sqlite3.Connection) -> set[str]:
+        return {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
-        # Unlocked, these two reads can straddle another process's schema commit, so
-        # they only let a complete ledger through; every other answer is read again,
-        # together, under the write lock before anything is refused or created.
-        if connection.execute("PRAGMA user_version").fetchone()[0] == 1 and _TABLES.issubset(
-            self._table_names(connection)
+        # Unlocked, these reads can straddle another process's schema commit, so
+        # they only let a complete ledger through, warm-prefix indexes included; every
+        # other answer is read again, together, under the write lock before anything
+        # is refused or created.
+        if (
+            connection.execute("PRAGMA user_version").fetchone()[0] == 1
+            and (_TABLES | {"warm_prefix"}).issubset(self._table_names(connection))
+            and {"warm_prefix_cert", "warm_prefix_expiry"}.issubset(self._index_names(connection))
         ):
             return
+
+        # A ledger written before warm-prefix tracking is still version 1 and has none
+        # of this table, so the table is added whenever it is missing and a reader that
+        # predates it never needs it.
+        warm_prefix_ddl = """
+            CREATE TABLE IF NOT EXISTS warm_prefix (
+                provider TEXT NOT NULL,
+                account TEXT NOT NULL,
+                cert TEXT NOT NULL,
+                stable_tokens INTEGER,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY (provider, account, cert),
+                FOREIGN KEY (provider, account) REFERENCES account(provider, name)
+            )
+            """
+        warm_prefix_indexes = (
+            "CREATE INDEX IF NOT EXISTS warm_prefix_cert ON warm_prefix (provider, cert)",
+            "CREATE INDEX IF NOT EXISTS warm_prefix_expiry ON warm_prefix (provider, expires_at)",
+        )
 
         with _transaction(connection):
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -241,6 +443,9 @@ class CredentialLedger:
             if version == 1:
                 if not _TABLES.issubset(tables):
                     raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
+                connection.execute(warm_prefix_ddl)
+                for statement in warm_prefix_indexes:
+                    connection.execute(statement)
                 return
             if version != 0 or tables:
                 raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
@@ -340,6 +545,9 @@ class CredentialLedger:
                 "CREATE INDEX adjustment_by_account_month "
                 "ON adjustment(provider, account, month_utc)"
             )
+            connection.execute(warm_prefix_ddl)
+            for statement in warm_prefix_indexes:
+                connection.execute(statement)
             connection.execute("PRAGMA user_version = 1")
 
     @staticmethod
@@ -420,6 +628,7 @@ class CredentialLedger:
         attempt_id: UUID,
         quote: Quote,
         accounts: Sequence[AccountSpec],
+        cert: str | None = None,
     ) -> Reservation:
         with closing(self._connect()) as connection:
             with _transaction(connection):
@@ -545,7 +754,24 @@ class CredentialLedger:
                             RouterErrorCode.BUDGET_EXHAUSTED,
                             attempt_id=attempt_id,
                         )
-                    selected = sorted(candidates, key=cmp_to_key(self._ratio_order))[0][0]
+                    ordered = sorted(candidates, key=cmp_to_key(self._ratio_order))
+                    pool = ordered
+                    if cert is not None:
+                        # Prefer an account that holds a live warm prefix for this credential
+                        # and stays within nine tenths of its budget after this reservation.
+                        warm_names = _warm_accounts(
+                            connection, provider, cert, datetime.fromisoformat(created_at)
+                        )
+                        warm = [
+                            entry
+                            for entry in ordered
+                            if entry[0].name in warm_names
+                            and 10 * (entry[1] + entry[2] + quote.ceiling_nusd)
+                            <= 9 * entry[0].budget_nusd
+                        ]
+                        if warm:
+                            pool = warm
+                    selected = pool[0][0]
                     connection.execute(
                         """
                         INSERT INTO binding(scope_kind, scope_id, provider, account)
@@ -591,11 +817,24 @@ class CredentialLedger:
         attempt_id: UUID,
         quote: Quote,
         accounts: Sequence[AccountSpec],
+        *,
+        cert: str | None = None,
     ) -> Reservation:
-        """Reserve a quote and bind its scope before a provider request is sent."""
-        return await self._run(lambda: self._reserve_sync(scope, attempt_id, quote, accounts))
+        """Reserve a quote and bind its scope before a provider request is sent.
 
-    def _settle_sync(self, attempt_id: UUID, evidence: Evidence) -> SettleResult:
+        An unbound scope prefers an eligible account that holds a live warm prefix for
+        ``cert``; a bound scope keeps its account and never reads warm-prefix state.
+        """
+        return await self._run(lambda: self._reserve_sync(scope, attempt_id, quote, accounts, cert))
+
+    def _settle_sync(
+        self,
+        attempt_id: UUID,
+        evidence: Evidence,
+        cert: str | None = None,
+        hour_after_key: bool = False,
+        server_tools: bool = False,
+    ) -> SettleResult:
         usage_json: str | None = None
         request_id: str | None = None
         cost_nusd: int
@@ -620,7 +859,7 @@ class CredentialLedger:
                 row = connection.execute(
                     """
                     SELECT provider, account, month_utc, ceiling_nusd, state, cost_nusd,
-                           usage_json, request_id, outcome
+                           usage_json, request_id, outcome, created_at
                     FROM attempt WHERE id = ?
                     """,
                     (str(attempt_id),),
@@ -637,6 +876,7 @@ class CredentialLedger:
                     old_usage,
                     old_request,
                     old_outcome,
+                    created_at,
                 ) = row
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
@@ -648,6 +888,8 @@ class CredentialLedger:
                         "WHERE id = ? AND state = 'open' AND outcome IS NULL",
                         (outcome, str(attempt_id)),
                     )
+                    if outcome not in ("cancelled", "stream_closed"):
+                        _clear_warm_prefix(connection, provider, account)
                     result = "still_open"
                 elif state == "settled":
                     identical = (
@@ -663,6 +905,7 @@ class CredentialLedger:
                         "WHERE provider = ? AND name = ?",
                         (provider, account),
                     )
+                    _clear_warm_prefix(connection, provider, account)
                     conflict = (account, str(attempt_id))
                     result = "settled"
                 else:
@@ -698,6 +941,21 @@ class CredentialLedger:
                             "WHERE provider = ? AND name = ?",
                             (provider, account),
                         )
+                        _clear_warm_prefix(connection, provider, account)
+                    elif isinstance(evidence, CompleteUsage):
+                        if cert is not None:
+                            _record_warm_prefix(
+                                connection,
+                                provider,
+                                account,
+                                cert,
+                                evidence,
+                                created_at,
+                                hour_after_key,
+                                server_tools,
+                            )
+                    elif isinstance(evidence, ProvenNotSent) and not evidence.caller_cancelled:
+                        _clear_warm_prefix(connection, provider, account)
                     result = "settled"
             if conflict is not None:
                 raise _routing_error(
@@ -707,9 +965,24 @@ class CredentialLedger:
                 ) from None
         return result
 
-    async def settle(self, attempt_id: UUID, evidence: Evidence) -> SettleResult:
-        """Apply evidence to an attempt using its stored account and month."""
-        return await self._run(lambda: self._settle_sync(attempt_id, evidence))
+    async def settle(
+        self,
+        attempt_id: UUID,
+        evidence: Evidence,
+        *,
+        cert: str | None = None,
+        hour_after_key: bool = False,
+        server_tools: bool = False,
+    ) -> SettleResult:
+        """Apply evidence to an attempt using its stored account and month.
+
+        With ``cert``, complete usage within the ceiling records or refreshes the
+        account's warm prefix; ``hour_after_key`` and ``server_tools`` mark a request
+        whose cached prefix length cannot be inferred from its token counts.
+        """
+        return await self._run(
+            lambda: self._settle_sync(attempt_id, evidence, cert, hour_after_key, server_tools)
+        )
 
     def _block_sync(self, provider: str, account: str, reason: str) -> None:
         reason = _validate_reason(reason)
@@ -721,6 +994,7 @@ class CredentialLedger:
                 )
                 if cursor.rowcount == 0:
                     raise LookupError(account)
+                _clear_warm_prefix(connection, provider, account)
 
     async def block(self, provider: str, account: str, reason: str) -> None:
         """Mark an existing account unavailable for new reservations."""
@@ -995,10 +1269,16 @@ class CredentialLedger:
                     source_ref,
                     created_at,
                 )
+                blocked = connection.execute(
+                    "SELECT block_reason FROM account WHERE provider = ? AND name = ?",
+                    (provider, account),
+                ).fetchone()
                 connection.execute(
                     "UPDATE account SET block_reason = NULL WHERE provider = ? AND name = ?",
                     (provider, account),
                 )
+                if blocked is not None and blocked[0] is not None:
+                    _clear_warm_prefix(connection, provider, account)
 
     async def clear_block(
         self,

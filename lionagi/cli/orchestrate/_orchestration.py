@@ -49,11 +49,11 @@ from .._providers import (
 )
 from .._runs import (
     RunDir,
-    _make_message_handler,
     _open_shared_db,
     _record_persistence_degraded,
     _resolve_project,
     allocate_run,
+    register_branch_hook,
     save_last_branch_pointer,
     teardown_persist,
 )
@@ -1990,7 +1990,7 @@ async def setup_orchestration_persist(
 
         session_prog_id = str(uuid.uuid4())
         _proj, _proj_src = _resolve_project(project)
-        from lionagi.cli.kill import current_pid_markers as _pid_markers
+        from lionagi.ln._proc import current_pid_markers as _pid_markers
 
         _identity_markers = _pid_markers()
         _node_meta = {
@@ -2182,87 +2182,6 @@ async def setup_orchestration_persist(
             # Re-raised as it arrived: a refusal inside an exception group keeps its siblings.
             raise
         return None
-
-
-def register_branch_hook(ctx: dict[str, Any], branch: Any) -> None:
-    from lionagi.ln.concurrency import Lock
-
-    db = ctx["db"]
-    session_id = ctx["session_id"]
-    session_prog_id = ctx["session_prog_id"]
-    branch_id = str(branch.id)
-
-    branch_prog_id = str(uuid.uuid4())
-    ctx["branch_prog_ids"][branch_id] = branch_prog_id
-    initialized = {"done": False}
-    init_lock = Lock()
-
-    async def _ensure_branch_row():
-        if initialized["done"]:
-            return
-        async with init_lock:
-            if initialized["done"]:
-                return
-
-            await db.create_progression(branch_prog_id)
-
-            branch_dict = branch.to_dict(mode="db")
-            node_meta = branch_dict.get("node_metadata") or {}
-            if isinstance(node_meta, str):
-                node_meta = json.loads(node_meta)
-            if "chat_model" in branch_dict:
-                node_meta["chat_model"] = branch_dict["chat_model"]
-            node_meta = json.loads(json.dumps(node_meta, default=str))
-
-            system_msg_id = None
-            if branch.system:
-                sys_dict = branch.system.to_dict(mode="db")
-                system_msg_id = sys_dict["id"]
-                await db.insert_message(sys_dict)
-
-            br_model: str | None = None
-            br_provider: str | None = None
-            try:
-                from lionagi.state import provenance as _provenance
-
-                ep_cfg = branch.chat_model.endpoint.config
-                br_provider = getattr(ep_cfg, "provider", None)
-                br_model_raw = (ep_cfg.kwargs or {}).get("model")
-                br_model = _provenance.resolve_model_spec(br_provider, br_model_raw)
-            except Exception as _prov_exc:
-                _log_orch.debug("branch provenance lookup failed for %s: %s", branch_id, _prov_exc)
-
-            await db.create_branch(
-                {
-                    "id": branch_id,
-                    "created_at": branch_dict["created_at"],
-                    "node_metadata": node_meta,
-                    "user": branch_dict.get("user"),
-                    "name": branch_dict.get("name"),
-                    "session_id": session_id,
-                    "progression_id": branch_prog_id,
-                    "system_msg_id": system_msg_id,
-                    "model": br_model,
-                    "provider": br_provider,
-                    "agent_name": branch_dict.get("name"),
-                }
-            )
-            initialized["done"] = True
-
-    _on_message = _make_message_handler(
-        db,
-        branch_id,
-        session_id,
-        branch_prog_id,
-        session_prog_id,
-        on_first_msg=_ensure_branch_row,
-        message_retry_queues=ctx["message_retry_queues"],
-    )
-
-    from lionagi.hooks import route_message_persistence
-
-    handler = route_message_persistence(ctx["session"], branch, _on_message)
-    ctx["hooks"].append((branch, handler))
 
 
 async def start_live_persist(

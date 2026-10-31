@@ -434,7 +434,7 @@ def _run(argv: list[str] | None = None) -> int:
             return _load_studio().run_schedule_quick_create(_argv[2], _argv[3:])
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
         if extras:
-            from lionagi.studio.cli import suggest_schedule_flag
+            from lionagi.cli._schedule_parsing import suggest_schedule_flag
 
             # Did-you-mean only applies to dash-prefixed tokens; a bare
             # positional has no "real flag" to guess.

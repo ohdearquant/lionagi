@@ -19,7 +19,6 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 @pytest_asyncio.fixture(loop_scope="function")
 async def engine_workers(monkeypatch):
     import lionagi.cli.engine as cli
-    import lionagi.cli.kill as kill_module
     import lionagi.session.session as session_module
     import lionagi.state.cli_workers as worker_module
     import lionagi.state.db as db_module
@@ -180,14 +179,14 @@ async def engine_workers(monkeypatch):
             raise ImportError("scripted engine import failure")
         return Engine
 
-    monkeypatch.setattr(cli, "_import_engine_class", load_engine)
+    monkeypatch.setattr(cli, "import_engine_class", load_engine)
     state.engine_class = Engine
     state.owner_class = Owner
     state.real_owner_class = worker_module._WorkerSpawnOwner
     monkeypatch.setattr(cli, "progress", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "log_error", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "warn", state.warnings.append)
-    monkeypatch.setattr(kill_module, "current_pid_markers", lambda: {"runner": "fixture"})
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"runner": "fixture"})
     monkeypatch.setattr(db_module, "StateDB", lambda: state.db)
     monkeypatch.setattr(worker_module, "_WorkerSpawnOwner", Owner)
     monkeypatch.setattr(session_module, "Session", RuntimeSession)
@@ -405,7 +404,7 @@ async def test_cancellation_during_real_owner_drain_terminalizes_then_closes(
             h.tasks.append(task)
 
     monkeypatch.setattr(worker_module, "_WorkerSpawnOwner", ObservedOwner)
-    monkeypatch.setattr(h.cli, "_import_engine_class", lambda _module, _name: AdmittedEngine)
+    monkeypatch.setattr(h.cli, "import_engine_class", lambda _module, _name: AdmittedEngine)
     call = asyncio.create_task(h.cli._do_engine_run(_args()))
     try:
         await asyncio.wait_for(h.registration_started.wait(), 1)

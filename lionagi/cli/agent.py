@@ -34,7 +34,7 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+from lionagi.providers._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi.providers._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
@@ -80,7 +80,6 @@ from ._providers import (
     build_deadline_preamble,
     load_agent_profile,
     normalize_effort,
-    parse_model_spec,
     resolve_persisted_effort,
 )
 from ._runs import (
@@ -174,8 +173,9 @@ _API_FOLD_RESUME_PROMPT = (
     "and how to list or restore it. Continue the task from where you stopped."
 )
 # How many times one turn continues after a pass of the ReAct loop ended on a failed round: a
-# response cut off at its output limit before it wrote any text or tool call, or a reply that did
-# not parse. An LNDL turn repairs such a round inside its own round budget.
+# response cut off at its output limit before it wrote any text or tool call, a response the
+# provider refused, or a reply that did not parse. An LNDL turn repairs such a round inside its
+# own round budget.
 _API_ROUND_RESUMES = 2
 _API_CAPPED_RESUME_PROMPT = (
     "Your last response reached its output token limit before it wrote any text or tool call, "
@@ -190,6 +190,10 @@ _API_UNPARSED_RESUME_PROMPT = (
     "Your last reply could not be read in the required response format ({reason}), so none of "
     "the actions in it ran. The task instruction above is unchanged. Continue the task from "
     "where you stopped, and send the actions again in the required format."
+)
+_API_REFUSED_RESUME_PROMPT = (
+    "Your last response was stopped by the provider before it finished, so nothing in it was "
+    "used. The task instruction above is unchanged. Continue the task from where you stopped."
 )
 # The output limit, thinking included, an Anthropic API leg's requests send when its model names
 # none; the provider's own default is 8,192. Claude Haiku 5.5 thinks by default, and at 8,192 a
@@ -813,11 +817,21 @@ async def _run_api_turn(
     if refusal is not None:
         raise refusal
     if failed is not None:
-        raise FailedRoundError(
+        details: dict[str, Any] = {"continued": round_resumes}
+        refused = _first_refusal(_pass_responses(branch, before))
+        if refused is not None:
+            details["stop_reason"] = refused[0]
+            details.update(_refusal_details(refused[1]))
+        failure = FailedRoundError(
             f"{round_resumes + 1} passes of the tool loop in a row ended on a failed round: "
             f"{failed[1]}",
-            details={"continued": round_resumes},
+            details=details,
         )
+        if refused is not None:
+            # A provider refusal is a provider failure that retrying the same request will not
+            # clear, so the run records it as one rather than as a generic exception.
+            raise failure from ProviderSafetyError(failed[1])
+        raise failure
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
 
@@ -828,15 +842,27 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
 
     ``before`` holds the ids of the branch's messages before the pass, and ``rounds`` is what the
     pass returned with ``return_analysis=True``: each round's analysis, then the answer. The
-    responses checked against the output limit are the pass's last two, the round that ended the
-    loop and the answer turn after it; an answer with no text fails the pass whatever its stop.
+    responses checked for a refusal and then against the output limit are the pass's last two,
+    the round that ended the loop and the answer turn after it. A refused response (see
+    ``_provider_refusal``) wins over an output-limit stop in that window and prints one
+    ``[api] refused`` line; an answer with no text fails the pass whatever its stop.
     """
     from lionagi.operations.types import UnparsedResponse
 
-    added = [
-        m for m in branch.msgs.messages if m.id not in before and isinstance(m, AssistantResponse)
-    ]
-    if any(_stopped_at_output_limit_with_nothing(m.model_response) for m in added[-2:]):
+    window = _pass_responses(branch, before)
+    refused = _first_refusal(window)
+    if refused is not None:
+        marker, response = refused
+        tokens = _output_tokens(response)
+        hint(
+            f"[api] refused: stop reason {marker}"
+            + ("" if tokens is None else f", {tokens} output token(s)")
+        )
+        return (
+            _API_REFUSED_RESUME_PROMPT,
+            f"the provider refused the response (stop reason: {marker})",
+        )
+    if any(_stopped_at_output_limit_with_nothing(response) for response in window):
         return (
             _API_CAPPED_RESUME_PROMPT,
             "a response stopped at its output token limit with no text and no tool call",
@@ -897,6 +923,96 @@ def _stopped_at_output_limit_with_nothing(response: Any) -> bool:
                 return False
         return True
     return False
+
+
+def _pass_responses(branch, before: set) -> list:
+    """The raw provider responses a pass ended on: the last two it added, the round that ended
+    the loop and the answer turn after it. ``before`` holds the ids of the branch's messages
+    before the pass."""
+    added = [
+        m for m in branch.msgs.messages if m.id not in before and isinstance(m, AssistantResponse)
+    ]
+    return [m.model_response for m in added[-2:]]
+
+
+def _first_refusal(responses: list) -> tuple[str, Any] | None:
+    """The refusal marker and the raw response of the first refused response in ``responses``,
+    or None when none was refused."""
+    for response in responses:
+        marker = _provider_refusal(response)
+        if marker is not None:
+            return marker, response
+    return None
+
+
+def _refusal_details(response: Any) -> dict[str, Any]:
+    """The provider's own account of a refusal, copied verbatim from a raw response: an Anthropic
+    Messages response's ``stop_details`` when it is a non-empty JSON object, as ``stop_details``;
+    an OpenAI chat completion's non-empty ``message.refusal`` string, or the first non-empty text
+    of an OpenAI Responses ``refusal`` content part, as ``refusal``. Empty when the response
+    carries none of these (a ``content_filter`` stop has no detail), so the key is then absent."""
+    if not isinstance(response, dict):
+        return {}
+    if "stop_reason" in response:
+        stop_details = response.get("stop_details")
+        if isinstance(stop_details, dict) and stop_details:
+            return {"stop_details": stop_details}
+        return {}
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return {"refusal": refusal} if isinstance(refusal, str) and refusal else {}
+    for item in response.get("output") or []:
+        if isinstance(item, dict) and item.get("type") == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "refusal":
+                    text = part.get("refusal")
+                    if isinstance(text, str) and text:
+                        return {"refusal": text}
+    return {}
+
+
+def _provider_refusal(response: Any) -> str | None:
+    """The provider's refusal marker of a raw response, or None when it was not refused. Reads
+    the Anthropic Messages (``stop_reason`` ``refusal``), OpenAI chat completions
+    (``finish_reason`` ``content_filter``, or a non-empty ``message.refusal``) and OpenAI
+    Responses (a ``message`` output item with a ``refusal`` content part) shapes; any other
+    shape, a list of responses included, reads None."""
+    if not isinstance(response, dict):
+        return None
+    if "stop_reason" in response:
+        return "refusal" if response["stop_reason"] == "refusal" else None
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        if choices[0].get("finish_reason") == "content_filter":
+            return "content_filter"
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return "refusal" if isinstance(refusal, str) and refusal else None
+    for item in response.get("output") or []:
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "message"
+            and any(
+                isinstance(part, dict) and part.get("type") == "refusal"
+                for part in item.get("content") or []
+            )
+        ):
+            return "refusal"
+    return None
+
+
+def _output_tokens(response: Any) -> int | None:
+    """The output token count a raw provider response carries in its ``usage``, or None."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    for key in ("output_tokens", "completion_tokens"):
+        count = usage.get(key)
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    return None
 
 
 async def _api_loop_pass(
@@ -1497,6 +1613,8 @@ async def _run_agent(
             else dict(_injection_totals)
         )
         effort = normalize_effort(effort)
+        effort_origin = "explicit" if effort is not None else "default"
+        model_origin = "explicit" if model_str is not None else "default"
         # Fail fast before any run is allocated: a nonexistent --cwd must not spawn
         # into a provider-created dir. Forward the tilde-expanded path — providers
         # never expand `~`.
@@ -1560,8 +1678,10 @@ async def _run_agent(
             profile = load_agent_profile(agent_name)
             if profile.model and model_str is None:
                 model_str = profile.model
+                model_origin = "profile"
             if profile.effort and effort is None:
                 effort = normalize_effort(profile.effort)
+                effort_origin = "profile"
             if profile.yolo and not yolo:
                 yolo = True
             if profile.bypass and not bypass:
@@ -1690,7 +1810,9 @@ async def _run_agent(
                 )
 
         if model_str is not None:
-            ms = parse_model_spec(model_str)
+            from lionagi.agent.factory import _parse_agent_model_spec
+
+            ms = _parse_agent_model_spec(model_str, origin=model_origin)
             if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
                 # A bare token that isn't a known backend name is almost always a
                 # mangled command (e.g. a --resume id split across two argv tokens).
@@ -1708,6 +1830,7 @@ async def _run_agent(
                 provider, model = ms.model, ms.model
             if ms.effort and not effort:
                 effort = ms.effort
+                effort_origin = "profile" if model_origin == "profile" else "explicit"
         elif branch is not None:
             ep_cfg = branch.chat_model.endpoint.config
             provider = ep_cfg.provider
@@ -1751,11 +1874,12 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty,
+                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
             )
+            requested_effort = effort
             effort = resolve_persisted_effort(provider, chat_model, effort)
             if not isinstance(chat_model, str) and not chat_model.is_cli:
                 # build_chat_model's options are CLI options, and the model it builds
@@ -1767,6 +1891,28 @@ async def _run_agent(
                 from lionagi.service.imodel import iModel
 
                 chat_model = iModel(model=chat_model)
+            if not chat_model.is_cli and effort is not None:
+                from lionagi.agent.factory import _set_api_effort
+
+                if not _set_api_effort(
+                    chat_model.endpoint.config.kwargs,
+                    canonical,
+                    model,
+                    effort,
+                    origin=effort_origin,
+                ):
+                    effort = None
+            elif not chat_model.is_cli and requested_effort is not None:
+                from lionagi.agent.factory import _set_api_effort
+
+                if _set_api_effort(
+                    chat_model.endpoint.config.kwargs,
+                    canonical,
+                    model,
+                    requested_effort,
+                    origin=effort_origin,
+                ):
+                    effort = requested_effort
             # An API model runs lionagi's own tool loop, only for a profile that declares it.
             api_launch = None if chat_model.is_cli else _profile_api_launch(profile)
             if api_launch is not None and preset == "coding":
@@ -1918,8 +2064,56 @@ async def _run_agent(
                 )
         else:
             cfg = branch.chat_model.endpoint.config.kwargs
+            on_tool_loop = (
+                not getattr(branch.chat_model, "is_cli", False)
+                and _API_LAUNCH_KEY in branch.metadata
+            )
+            candidate = None
+            if on_tool_loop:
+                from lionagi.agent.factory import _set_api_effort
+
+                actual_provider = _canonical_provider(branch.chat_model.endpoint.config.provider)
+                if model_str is not None and canonical != actual_provider:
+                    raise ConfigurationError(
+                        f"cannot resume {actual_provider!r} API endpoint as {canonical!r}; "
+                        "start a new branch to change providers."
+                    )
+                candidate = dict(cfg)
+                candidate_model = model if model_str is not None else cfg.get("model")
+                stored_effort = (
+                    (cfg.get("output_config") or {}).get("effort")
+                    if actual_provider == "anthropic"
+                    else cfg.get("reasoning_effort")
+                )
+                if effort is not None or stored_effort is not None:
+                    selected_effort = effort or stored_effort
+                    selected_origin = (
+                        effort_origin
+                        if effort is not None
+                        else "stored"
+                        if actual_provider == "openai"
+                        else "explicit"
+                    )
+                    if effort is None and actual_provider == "anthropic":
+                        selected_effort = _clamp_claude_effort(stored_effort, candidate_model)
+                    applied = _set_api_effort(
+                        candidate,
+                        actual_provider,
+                        candidate_model,
+                        selected_effort,
+                        origin=selected_origin,
+                    )
+                    if not applied:
+                        effort = None
+                        if actual_provider == "openai":
+                            candidate.pop("reasoning_effort", None)
+                if model_str is not None:
+                    candidate["model"] = model
+            old_model = cfg.get("model")
+            if candidate is not None:
+                cfg.clear()
+                cfg.update(candidate)
             if model_str is not None:
-                old_model = cfg.get("model")
                 if model != old_model:
                     from lionagi.cli._logging import warn
 
@@ -1938,17 +2132,15 @@ async def _run_agent(
             # The display flags are CLI endpoint options; an API model sends its
             # config's kwargs with each request, so a branch on the tool loop is
             # handed neither.
-            on_tool_loop = (
-                not getattr(branch.chat_model, "is_cli", False)
-                and _API_LAUNCH_KEY in branch.metadata
-            )
             if verbose and not on_tool_loop:
                 cfg["verbose_output"] = True
             if theme is not None and not on_tool_loop:
                 cfg["cli_display_theme"] = theme
             if effort is not None:
                 kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
-                if kwarg:
+                if on_tool_loop:
+                    pass  # The candidate above has already validated and applied it.
+                elif kwarg:
                     if canonical == "codex":
                         effort = _clamp_codex_effort(effort, cfg.get("model"))
                     elif canonical in _CLAUDE_PROVIDER_NAMES:
@@ -2003,9 +2195,11 @@ async def _run_agent(
                 cfg,
                 mcp_resolution.servers,
                 provider=provider,
-                # The persisted request carries the previous run's servers; only a declared set replaces
-                # them. A failed search leaves them, as it leaves a new leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty,
+                # A set named by a config file, or declared empty, is the whole set: the provider's
+                # own servers are left out too. A set found by search joins what the provider finds
+                # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
+                # leg to what its CLI finds.
+                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
             )
             missing_profile = _missing_generated_codex_profile(cfg)
             if missing_profile is not None:
@@ -2231,8 +2425,7 @@ async def _run_agent(
             # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
             # says how to stop it (ADR-0104 Amendment 2).
             from lionagi.cli._logging import warn
-
-            from .kill import current_pid_markers
+            from lionagi.ln._proc import current_pid_markers
 
             run_manifest.update(current_pid_markers())
             _write_run_manifest(run_manifest)
@@ -2653,6 +2846,13 @@ async def _run_agent(
                     run_manifest["error"] = (
                         _error or "The run failed; no reason was recorded for it."
                     )
+                    if isinstance(_terminal_exc, FailedRoundError):
+                        _stop_reason = _terminal_exc.details.get("stop_reason")
+                        if _stop_reason:
+                            run_manifest["stop_reason"] = _stop_reason
+                        for _detail in ("stop_details", "refusal"):
+                            if _terminal_exc.details.get(_detail):
+                                run_manifest[_detail] = _terminal_exc.details[_detail]
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
                 # Only when an exception is on its way out, because then this is

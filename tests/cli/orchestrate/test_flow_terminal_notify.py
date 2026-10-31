@@ -703,7 +703,7 @@ async def test_flow_finalize_after_kill_keeps_the_kill_outcome(
     is logged. The stored reason and end time stand either way.
     """
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {"pid": 1234, "process_identity_mode": "local"},
     )
     env = _make_env(tmp_path)
