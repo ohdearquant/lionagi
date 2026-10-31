@@ -1287,3 +1287,18 @@ def test_changelog_names_every_move():
     for row in _moved.MOVED:
         line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
         assert line in changelog, row
+
+
+def test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files():
+    import lionagi
+    from lionagi.ln import _lazy_init
+
+    # A root lazy export reaches a moved module through these two frames.
+    assert _moved._is_import_machinery(lionagi.__getattr__.__code__)
+    assert _moved._is_import_machinery(_lazy_init.lazy_import.__code__)
+    # Other code in the same files is still the caller's code.
+    assert not _moved._is_import_machinery(_lazy_init.LazyInit.ensure.__code__)
+    assert not _moved._is_import_machinery(
+        test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files.__code__
+    )
+
