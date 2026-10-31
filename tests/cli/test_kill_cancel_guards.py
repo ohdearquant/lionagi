@@ -138,6 +138,44 @@ async def test_no_pid_kill_refuses_when_runner_identity_changes_in_same_generati
 
 
 @pytest.mark.asyncio
+async def test_guard_deadline_is_reported_and_leaves_the_session_running(
+    tmp_path, monkeypatch, capsys, caplog
+):
+    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    async with StateDB(tmp_path / "state.db") as db:
+        sid = await _session(db, generation=str(uuid.uuid4()), metadata={})
+        row = await db.get_session(sid)
+
+        async def deadline_passed(session_id, generation, **kwargs):
+            raise TimeoutError()
+
+        monkeypatch.setattr(db, "cancel_session_if_worker_generation", deadline_passed)
+
+        @asynccontextmanager
+        async def existing_db():
+            yield db
+
+        monkeypatch.setattr(db_mod, "StateDB", existing_db)
+        monkeypatch.setattr(
+            kill_mod, "_resolve_entity", AsyncMock(return_value=("sessions", "session", row))
+        )
+        monkeypatch.setattr(kill_mod, "_try_recorded_worker_cleanup", AsyncMock(return_value=None))
+
+        rc = await kill_mod._do_kill(sid, recursive=False)
+
+        output = capsys.readouterr()
+        text = output.out + output.err + caplog.text
+        assert rc == 1
+        assert "session cancellation did not finish before the deadline" in text
+        after = await db.get_session(sid)
+        assert after["status"] == "running"
+        assert not await db.fetch_all(
+            "SELECT status FROM status_transitions WHERE entity_id = ? AND source = 'admin'",
+            (sid,),
+        )
+
+
+@pytest.mark.asyncio
 async def test_ended_execution_with_a_replaced_runner_is_still_a_conflict(tmp_path, monkeypatch):
     monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
     async with StateDB(tmp_path / "state.db") as db:

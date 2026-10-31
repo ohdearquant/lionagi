@@ -18,6 +18,7 @@ _CLI_LOGGERS = (
     "lionagi.cli.error",
     "claude-cli",
     "codex-cli",
+    "pi-cli",
     "gemini-cli",
     "lionagi",
 )
@@ -29,13 +30,23 @@ def _restore_cli_logging():
     saved = {}
     for name in _CLI_LOGGERS:
         logger = logging.getLogger(name)
-        saved[name] = (logger.level, logger.propagate, list(logger.handlers))
+        saved[name] = (
+            logger.level,
+            logger.propagate,
+            list(logger.handlers),
+            getattr(logger, "_lionagi_cli_fallback_level", None),
+        )
     yield
-    for name, (level, propagate, handlers) in saved.items():
+    for name, (level, propagate, handlers, fallback_level) in saved.items():
         logger = logging.getLogger(name)
         logger.setLevel(level)
         logger.propagate = propagate
         logger.handlers[:] = handlers
+        if fallback_level is None:
+            if hasattr(logger, "_lionagi_cli_fallback_level"):
+                del logger._lionagi_cli_fallback_level
+        else:
+            logger._lionagi_cli_fallback_level = fallback_level
 
 
 @pytest.fixture(autouse=True)

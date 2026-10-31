@@ -8,14 +8,18 @@ from __future__ import annotations
 import logging
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import wraps
 from pathlib import Path
+from types import FunctionType
+from weakref import WeakKeyDictionary
 
 from lionagi.libs.path_safety import is_protected_name, resolve_workspace_path
 
 __all__ = (
     "auto_format_python",
     "guard_destructive",
+    "guard_email_in_headers",
     "guard_paths",
     "log_tool_call",
     "log_tool_use",
@@ -48,6 +52,142 @@ async def guard_destructive(tool_name: str, action: str, args: dict) -> dict | N
             "If you need this, explain why and ask the user to run it manually."
         )
     return None
+
+
+async def guard_email_in_headers(
+    tool_name: str,
+    action: str,
+    args: dict,
+    *,
+    allow: frozenset[str] = frozenset(),
+    note: str | None = None,
+) -> dict | None:
+    """Refuse an email in an outbound header in a command or file write.
+
+    An editor edit is refused unless this guard was installed through the agent
+    bound to that editor, because the resulting file cannot otherwise be checked.
+    Editor writes and bash commands are checked directly.
+    """
+    return await _guard_email_in_headers(tool_name, action, args, allow=allow, note=note)
+
+
+async def _guard_email_in_headers(
+    tool_name: str,
+    action: str,
+    args: dict,
+    *,
+    allow: frozenset[str],
+    note: str | None,
+    edit_preparer: Callable[..., object] | None = None,
+    workspace_root: Path | None = None,
+) -> dict | None:
+    from ._email_in_headers import find_leak_with_allowed
+
+    if tool_name in ("editor", "editor_tool") and action == "edit" and edit_preparer is None:
+        raise PermissionError("Cannot check the resulting file for an unbound editor.")
+    if tool_name in ("bash", "bash_tool"):
+        text = args.get("command", "")
+    elif tool_name in ("editor", "editor_tool") and action == "edit" and edit_preparer:
+        from pydantic import ValidationError
+
+        from lionagi.ln.concurrency import run_sync
+        from lionagi.tools.file.editor import EditorRequest
+
+        try:
+            request = EditorRequest.model_validate(args)
+        except ValidationError:
+            return None
+        if request.old_string is None or request.new_string is None:
+            return None
+        # The editor reads again when it applies the edit; a concurrent change
+        # between these reads is not covered by this preview.
+        try:
+            prepared = await run_sync(
+                edit_preparer,
+                request.file_path,
+                request.old_string,
+                request.new_string,
+                request.replace_all,
+                workspace_root,
+            )
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if not isinstance(prepared, tuple):
+            return None
+        text = prepared[1]
+    elif tool_name in ("editor", "editor_tool") and action == "write":
+        text = args.get("content", "")
+    else:
+        return None
+    if not isinstance(text, str):
+        return None
+    hit = find_leak_with_allowed(text, allow)
+    if hit is not None:
+        address, token = hit
+        masked = address[:3] + "…@" + address.split("@", 1)[1]
+        message = f"Blocked an email address ({masked}) in an outbound HTTP header after {token!r}."
+        if action == "edit" and edit_preparer:
+            message += " The resulting file contains the header."
+        if note:
+            message += f" {note}"
+        raise PermissionError(message)
+    return None
+
+
+_email_header_guards = WeakKeyDictionary({guard_email_in_headers: (frozenset(), None)})
+
+
+def _email_header_guard_from_settings(settings: Mapping):
+    """Bind the global email-header policy to one agent's guard."""
+    from ._email_in_headers import EMAIL_RE
+
+    guards = settings.get("guards", {})
+    if not isinstance(guards, Mapping):
+        raise ValueError("guards must be a mapping")
+    policy = guards.get("email_in_headers", {})
+    if not isinstance(policy, Mapping):
+        raise ValueError("guards.email_in_headers must be a mapping")
+    addresses = policy.get("allow", [])
+    if not isinstance(addresses, list) or any(
+        not isinstance(address, str) or EMAIL_RE.fullmatch(address) is None for address in addresses
+    ):
+        raise ValueError("guards.email_in_headers.allow must be a list of email addresses")
+    note = policy.get("note")
+    if note is not None and not isinstance(note, str):
+        raise ValueError("guards.email_in_headers.note must be text")
+    allowed = frozenset(address.lower() for address in addresses)
+    if not allowed and not note:
+        return guard_email_in_headers
+
+    @wraps(guard_email_in_headers)
+    async def configured_guard(tool_name: str, action: str, args: dict) -> dict | None:
+        return await guard_email_in_headers(tool_name, action, args, allow=allowed, note=note)
+
+    _email_header_guards[configured_guard] = (allowed, note)
+    return configured_guard
+
+
+def _bind_email_header_editor_guard(handler, preparer, workspace_root: Path):
+    """Bind an installed guard to the editor instance, leaving other handlers alone."""
+    # Only functions made by this module are registered. Function equality is identity;
+    # arbitrary callable equality and attributes do not select a security control.
+    if not isinstance(handler, FunctionType) or handler not in _email_header_guards:
+        return handler
+    allowed, note = _email_header_guards[handler]
+
+    @wraps(handler)
+    async def bound(tool_name: str, action: str, args: dict) -> dict | None:
+        return await _guard_email_in_headers(
+            tool_name,
+            action,
+            args,
+            allow=allowed,
+            note=note,
+            edit_preparer=preparer,
+            workspace_root=workspace_root,
+        )
+
+    return bound
 
 
 def _is_hard_floor_error(exc: PermissionError) -> bool:

@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Provider exception types are available from `lionagi.providers.errors`, so
+  applications can catch them without importing a private module.
+
+- A checked feature ownership inventory and static import report expose
+  dependencies across package layers while keeping existing boundary debt
+  report-only.
+
+- Secure coding agents refuse email addresses in outbound HTTP headers in bash commands and editor writes.
+
+- Merged pull-request schedules can persist a page limit from 5 to 100. When
+  repeated scans hit the limit, schedule health explains how to recover.
+
 - API run manifests now include response-reported cache read and write token
   counts per request when a supported non-streaming response supplies them.
   Unknown counts remain `null`; built-in local cache hits are not counted again.
@@ -102,6 +114,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Session gate denials now store a redacted `GateDenied` signal and deliver it
+  to a bound persistence subscriber before observation callbacks; the proposed
+  action is no longer retained in the denial's Flow copy.
+
+- A session tool gate sees arguments bound to a registered callable's
+  signature with defaults applied when inspection and binding succeed; otherwise
+  it sees the supplied arguments. Supplied arguments passed to the tool are
+  structurally copied: exact `dict`, `list` and `tuple` values are copied,
+  while other objects are shared by reference. Callable defaults remain the
+  callable's own values, and later hooks can still change arguments. Arguments
+  too deeply nested to copy are denied without running the tool.
+
+- A `SessionObserver` gate must return a `bool` or `GateResult`. Other values,
+  including `1` and `"yes"`, deny routing and subscriber delivery while the
+  event is still recorded.
+
+- Merged pull-request scans no longer send conditional requests: a first-page
+  cache hit cannot establish that later pages are unchanged.
+
 - `ReviewEngine` with `prompt_caching=True` sends the artifact once, in a turn of
   its own, before the dimension reviewers start; each dimension's request
   begins with a copy of that turn and adds its own task after it, so the
@@ -112,6 +143,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   artifact before the task. If the artifact turn fails or its reply is not the
   requested word, each dimension sends the artifact with its own task, and the
   run reports `artifact_turn_failed` or `artifact_turn_unused`.
+
+- MCP tools registered by server name now bind to the transport and effective
+  security policy selected at registration, so later configuration reloads or
+  policy changes cannot redirect them or change their policy. With an explicit
+  configuration file, missing server names are refused before any tools are
+  registered. Metadata-free registration also resolves names at registration,
+  including from the default configuration file; an unknown name is refused,
+  and a missing default `.mcp.json` raises `FileNotFoundError`. Registering
+  again picks up changed configuration or policy. Superseded cached clients
+  remain available to be closed by `cleanup()`.
+
+  Inline transport identity accepts exact built-in `None`, `bool`, `int`,
+  `float`, `str`, `list`, `tuple`, and `dict` values recursively; lists and
+  tuples have distinct identities. Nested dictionary keys may be any of those
+  types that Python permits as keys; transport fields may impose stricter rules.
+  Other values, including `Path` and built-in subclasses, and cyclic structures
+  raise `ValueError`. Convert unsupported values to strings where appropriate
+  and remove cycles first. A name absent from the default configuration raises
+  the loader's "not declared in the selected config" error.
+
 - Coding commands (bash, search, check, AST search, sandbox Git, engine gates,
   repairs and auto-repair commands, and the formatter hook) remove declared
   credential names, shared sensitive-name patterns, and `BASH_ENV`/`ENV` from
@@ -144,6 +195,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   default. Broadcaster passes the coroutine-only classifier, so its dispatch is
   unchanged: it awaits a returned coroutine and leaves returned Futures and Tasks to
   the subscriber.
+- Recent Studio session pages with no filter or an empty filter use the existing
+  timestamp index directly, avoiding a second sort of the selected page.
+
+- Single-branch Studio session statistics reuse captured membership JSON for
+  unescaped ASCII string collections within the canonical-size bound, avoiding
+  two JSON encodes while retaining full-history SQL scans and fallback behavior.
 
 - Security-control contracts and settings reading live in core modules; existing agent imports
   remain aliases, old pickle names still load, and new pickles name the core definitions.
@@ -211,6 +268,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Deprecated
 
+- Filtering emitted events through a Session gate is deprecated. Use route
+  predicates or subscribers to filter observations, and `authorize` for
+  decisions before an operation runs.
+
 - `Session.remove_branch(delete=...)`, and `exclude_clone` and `exclude_load` on
   `Session.to_df()` and `Session.concat_messages()`, now emit a `DeprecationWarning` when
   passed. None of them changed the result: `remove_branch()` leaves the branch object with the caller
@@ -233,6 +294,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   drop their `synonyms_removed_after` field.
 
 ### Fixed
+
+- Importing the Claude Code, Codex, and Pi providers no longer configures the
+  application's root logger.
+
+- Successful structured-response repairs on API models now replace the invalid
+  assistant text in later conversation history and run-level live persistence.
+  The original text remains available in the message metadata. A branch using
+  the `persist_message` hook keeps the original stored text.
+
+- Recent Studio session pages on SQLite avoid scanning newer hidden engine
+  transcripts when a compatible optional index is available. Opening an existing
+  store builds the index when its session-time index has the expected shape; a
+  store where it cannot be built keeps the previous listing path. The build holds
+  the SQLite write lock until it completes.
+
+- The email-in-header guard runs in linear time on long hyphenated text.
+
+- A failed or cancelled Operator setup now makes a bounded attempt to close a
+  session created before admission and logs when cleanup did not complete.
+  Cancellation during cleanup still cancels the run unless the store refused a
+  write, in which case the refusal is raised.
+  A failed Operator turn reports an incomplete recovery lookup in its error.
+  The attempt requires a recorded worker generation and a timestamp fence;
+  compatibility stores without that generation cannot close this pre-admission
+  candidate. A concurrent replacement or update that preserves the same timestamp
+  can defeat the fence.
+
+- Adapter error details now fully redact credential-named strings even when
+  they look like URLs; location fields retain their existing URL sanitization.
+
+- ReAct no longer sends an internal display setting in API requests.
+
+- Restored API models use their registered request schema when a snapshot omits it, validating
+  and coercing requests as fresh models do. A formerly unvalidated payload may now be refused,
+  and fields outside that schema are filtered. On restored Anthropic models using the registered
+  schema, with account routing and prompt caching off, `cache_control=True` no longer adds a
+  five-minute mark to the last message, matching fresh models.
 
 - Factory-built Anthropic and OpenAI agent models now carry a declared reasoning effort.
   A caller-supplied chat model keeps its own settings.

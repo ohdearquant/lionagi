@@ -217,16 +217,13 @@ def _write_file_sync(
     }
 
 
-def _edit_file_sync(
+def _prepare_edit_file(
     file_path: str,
     old_string: str,
     new_string: str,
     replace_all: bool,
     workspace_root: Path,
-    seatbelt: SeatbeltPolicy | None = None,
-    *,
-    _command_env: Mapping[str, str] | None = None,
-) -> dict:
+) -> tuple[Path, str, int] | dict:
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -265,6 +262,23 @@ def _edit_file_sync(
         }
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+    return p, updated, count
+
+
+def _edit_file_sync(
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool,
+    workspace_root: Path,
+    seatbelt: SeatbeltPolicy | None = None,
+    *,
+    _command_env: Mapping[str, str] | None = None,
+) -> dict:
+    prepared = _prepare_edit_file(file_path, old_string, new_string, replace_all, workspace_root)
+    if isinstance(prepared, dict):
+        return prepared
+    p, updated, count = prepared
 
     if seatbelt is not None:
         refused = seatbelt.write_text(p, updated, _command_env=_command_env)
@@ -421,7 +435,10 @@ class CodingToolkit(LionTool):
         self._bound_nudge_engine: NudgeEngine | None = None
 
     def bind(
-        self, branch: Branch, *, _command_env_names: frozenset[str] | None = None
+        self,
+        branch: Branch,
+        *,
+        _command_env_names: frozenset[str] | None = None,
     ) -> list[Tool]:
         from lionagi.protocols.messages import ActionResponse
 

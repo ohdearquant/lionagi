@@ -12,17 +12,21 @@ from pathlib import Path
 import pytest
 
 from lionagi import Branch, Session
+from lionagi.cli._runs import register_branch_hook as _register_branch_hook
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     setup_orchestration_persist,
     start_live_persist,
     stop_live_persist,
 )
-from lionagi.cli.orchestrate._orchestration import (
-    register_branch_hook as _register_branch_hook,
-)
 from lionagi.state.db import StateDB
 from tests.cli._aiosqlite_threads import aiosqlite_threads, settled_new_aiosqlite_threads
+from tests.cli._import_guard import (
+    COMMAND_IMPORT_PROBES,
+    command_module_imports,
+    resolved_imports,
+    source_with_line,
+)
 
 # Fixtures
 
@@ -495,6 +499,36 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
             blocker.rollback()
         blocker.close()
         await db.close()
+
+
+def test_register_branch_hook_lives_in_the_runs_module():
+    """The hook is defined beside the message handler it calls, the orchestration module re-exports
+    the same object, and the runs module imports no orchestration module."""
+    from lionagi.cli import _runs
+    from lionagi.cli.orchestrate import _orchestration
+
+    assert _runs.register_branch_hook.__module__ == "lionagi.cli._runs"
+    assert _orchestration.register_branch_hook is _runs.register_branch_hook
+
+    imported = resolved_imports(_runs.__file__, "lionagi.cli")
+    orchestrate_imports = {
+        name for name in command_module_imports(imported) if name.split(".")[2] == "orchestrate"
+    }
+    assert orchestrate_imports == set()
+
+
+@pytest.mark.parametrize("probe", [p for p in COMMAND_IMPORT_PROBES if "orchestrate" in p])
+def test_register_branch_hook_guard_rejects_a_command_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str
+):
+    """The guard fails on a copy of the runs module that gains an orchestrate import, whether
+    the import is absolute, relative or by name."""
+    import importlib
+
+    module = importlib.import_module("lionagi.cli._runs")
+    monkeypatch.setattr(module, "__file__", str(source_with_line(module.__file__, probe, tmp_path)))
+    with pytest.raises(AssertionError):
+        test_register_branch_hook_lives_in_the_runs_module()
 
 
 # _register_branch_hook: lazy branch row + multi-message paths
@@ -3550,8 +3584,8 @@ async def test_flow_timeout_shields_completed_branch_status_until_commit(
 ):
     from lionagi._errors import TimeoutError as LionTimeoutError
     from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli._runs import register_branch_hook
     from lionagi.cli.orchestrate import flow as flow_module
-    from lionagi.cli.orchestrate._orchestration import register_branch_hook
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted
     from lionhub.orchestration.engines import PlanningEngine

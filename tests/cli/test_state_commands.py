@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+import psutil
 import pytest
 
 from lionagi.cli.state import (
@@ -740,10 +741,66 @@ async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_p
     assert row["status"] == "running"
 
 
-async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path):
+@pytest.mark.parametrize("reason", ["permission_denied", "identity_unknown"])
+async def test_doctor_keeps_an_imported_degraded_run_whose_identity_cannot_be_checked(
+    tmp_path, temp_db_path, monkeypatch, reason
+):
+    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+
+    old = time.time() - (48 * 3600)
+    run_id = str(uuid.uuid4())
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "status": "running",
+                PERSISTENCE_DEGRADED_REASON_FIELD: "database unavailable",
+                "pid": 12345,
+                "pid_create_time": 1.0,
+            }
+        )
+    )
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda _pid: True)
+
+    def cannot_check(*args, _reason_out=None, **kwargs):
+        _reason_out.append(reason)
+        return "unverifiable"
+
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", cannot_check)
+
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "running",
+                "started_at": old,
+                "node_metadata": None,
+                "source_kind": "imported_fs",
+            }
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    assert result == {"running": 1, "swept": 0, "skipped": 1}
+    async with StateDB() as db:
+        row = await db.get_session(run_id)
+    assert row["status"] == "running"
+
+
+async def test_doctor_sweeps_a_session_whose_pid_was_recycled(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """A live PID is not proof on its own. The OS hands a dead session's number
     to an unrelated process eventually, and a sweep that stopped there would
     protect a genuinely stuck row for as long as that process lived."""
+    monkeypatch.setattr(psutil, "LINUX", False)
     old = time.time() - (48 * 3600)
     async with StateDB() as db:
         sid = await _seed_session(db, status="running")
@@ -758,6 +815,34 @@ async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path
 
     async with StateDB() as db:
         assert (await db.get_session(sid))["status"] == "aborted"
+
+
+@pytest.mark.parametrize("linux", [False, True])
+async def test_doctor_create_time_mismatch_is_platform_specific(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, linux: bool
+):
+    from lionagi.cli import _util
+    from lionagi.cli import kill as kill_mod
+
+    monkeypatch.setattr(psutil, "LINUX", linux)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: object())
+    monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 100.0)
+    monkeypatch.setattr(_util, "pid_alive", lambda _pid: True)
+    signals = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.execute(
+            "UPDATE sessions SET started_at = ?, node_metadata = ? WHERE id = ?",
+            (time.time() - 48 * 3600, json.dumps({"pid": 4242, "pid_create_time": 1.0}), sid),
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    assert result == {"running": 1, "swept": 0 if linux else 1, "skipped": 1 if linux else 0}
+    assert signals == []
+    async with StateDB() as db:
+        assert (await db.get_session(sid))["status"] == ("running" if linux else "aborted")
 
 
 async def test_doctor_handles_null_started_at_as_stale(temp_db_path: Path):

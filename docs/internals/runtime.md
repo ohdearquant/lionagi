@@ -988,9 +988,10 @@ propertyNames) deny by default for executor-signaling tools instead of admitting
 `GateResult` is the one immutable verdict shape every tool-invocation security control
 produces (ADR-0086 delta row 1); adapters convert PermissionPolicy, guard_destructive/
 guard_paths, and the session-level gate into that shape. Legacy hooks signal denial by raising
-`PermissionError` and an argument rewrite by returning a `dict`; any other exception is
-treated as an evaluator failure and turned into a fail-closed deny rather than propagating
-uncaught.
+`PermissionError`, an argument rewrite by returning a `dict`, and an unchanged allow by
+returning `None`. A hook may also return a well-formed `GateResult`, preserving its decision
+and argument rewrite. Unknown results, malformed or contradictory verdicts, and other
+exceptions are evaluator failures and produce a fail-closed deny.
 
 A control that cannot reach a verdict at all — misconfigured, or its backend unreachable —
 raises `ControlUnavailableError`, which subclasses `PermissionError` so existing callers keep
@@ -1010,6 +1011,32 @@ location falls under *any* configured root, not only the first. A symlink or pro
 basename denial fails identically against every root and always surfaces over a generic
 denial. `guard_paths` validation is check-time only — a TOCTOU race (swapping a validated file
 for a symlink after the check passes) is explicitly out of scope.
+
+`guard_email_in_headers()` checks bash commands, editor write content and the resulting text of an
+editor edit for an email address in an outbound HTTP header. An existing header can therefore block
+an unrelated edit, while an edit that removes the address can pass. Documentation-domain examples
+pass by default. It examines raw text, so a quoted example may be refused. Dynamically assembled
+headers and static forms outside the token list may not be detected. If the guard cannot read or
+decode the file, or cannot prepare the edit, it allows the call and the editor reports its own error
+when it reads and prepares the edit. The edit check resolves and reads the file before the editor reads and
+writes it; a concurrent change can occur between those operations, and the read is not an atomic
+no-follow read. For toolkit edits, the guard runs before the read-before-edit check; when both
+would refuse, the guard's refusal is reported. Tools registered outside the agent factory do not
+receive this guard. Wrapping the email guard in another hook prevents the factory from binding it;
+an unbound guard refuses every edit without inspecting the file. CLI-backed providers such as Claude
+Code, Codex, Gemini and Antigravity execute their own tools; their tool calls do not pass through
+this guard.
+Additional allowed addresses and an optional refusal note come from the global settings file:
+
+```yaml
+guards:
+  email_in_headers:
+    allow: [contact@project.example]
+    note: Use the approved contact only when necessary.
+```
+
+Project settings cannot add allowed addresses or change this note.
+The global settings file is not protected from the agent's own commands.
 
 ### `agent/nudge.py`
 

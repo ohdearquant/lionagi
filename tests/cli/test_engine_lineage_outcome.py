@@ -71,7 +71,7 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
         async def run(self, _spec, **_kwargs):
             return result
 
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda *_a: FakeEngine)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda *_a: FakeEngine)
     args = argparse.Namespace(
         command="engine",
         engine_command="run",
@@ -117,7 +117,7 @@ async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
 
 
 async def test_workflow_engine_nodes_return_distinct_span_ids(monkeypatch) -> None:
-    import lionagi.cli.engine as engine_mod
+    import lionagi.cli._engine_definitions as engine_mod
     from lionagi.studio.services.workflow_compile import make_engine_operation
     from lionhub.orchestration.engines.engine import EngineResult
 
@@ -140,7 +140,7 @@ async def test_workflow_engine_nodes_return_distinct_span_ids(monkeypatch) -> No
                 run=SimpleNamespace(run_id=self.span_id),
             )
 
-    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda *_a: FakeEngine)
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda *_a: FakeEngine)
     operation = make_engine_operation(MagicMock())
 
     first = await operation(context={"input": "one"}, engine_kind="research")

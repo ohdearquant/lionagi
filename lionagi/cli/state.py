@@ -1481,7 +1481,7 @@ async def _import_teams() -> dict[str, int]:
 
     from lionagi.state.db import StateDB
 
-    from .team import read_team_json
+    from ._team_service import read_team_json
 
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
     counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}
@@ -1601,6 +1601,21 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         description="Manage the lionagi SQLite state database.",
     )
     state_sub = state.add_subparsers(dest="state_command", required=True)
+
+    consumers = state_sub.add_parser(
+        "terminal-consumer",
+        help="Inspect durable terminal notification consumers.",
+        description="Inspect registered terminal consumers and their outstanding deliveries.",
+    )
+    consumer_sub = consumers.add_subparsers(dest="terminal_consumer_command", required=True)
+    consumer_list = consumer_sub.add_parser(
+        "list",
+        help="List consumers and outstanding deliveries.",
+        description="Show registered and retired consumers. Use --machine for JSON output.",
+    )
+    consumer_list.add_argument(
+        "--machine", action="store_true", help="Emit the versioned machine-readable result."
+    )
 
     # li state import
     state_sub.add_parser(
@@ -1825,6 +1840,25 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
 def run_state(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 
+    if args.state_command == "terminal-consumer":
+        from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
+
+        from ._logging import log_error
+
+        try:
+            result = run_async(_terminal_consumer_list_data())
+        except ConsumerInspectionBackendError as exc:
+            log_error(str(exc))
+            return 1
+        if not result["consumers"]["available"]:
+            log_error(result["consumers"]["detail"] or "Terminal consumer inspection unavailable.")
+            return 1
+        print("name\tregistered_at\tretired_at\towed")
+        for row in result["consumers"]["value"]:
+            retired_at = row["retired_at"] if row["retired_at"] is not None else "-"
+            print(f"{row['name']}\t{row['registered_at']}\t{retired_at}\t{row['owed']}")
+        return 0
+
     if args.state_command == "import":
         counts = run_async(_import_runs())
         print(
@@ -2014,6 +2048,42 @@ async def _machine_stats_data() -> dict[str, Any]:
     return result
 
 
+async def _terminal_consumer_list_data() -> dict[str, Any]:
+    from dataclasses import asdict
+
+    from lionagi.state.db import StateDB, read_only_open_supported
+    from lionagi.state.lifecycle.consumer_inspection import (
+        ConsumerInspectionBackendError,
+        list_consumers,
+    )
+
+    from .machine import available, readonly_state_db
+
+    # The shared machine helper can fall back to a writable open on backends
+    # without read-only support. Inspection must never migrate or create a store.
+    if not read_only_open_supported():
+        # Constructing the handle identifies the backend without opening a connection.
+        raise ConsumerInspectionBackendError(StateDB().dialect)
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            return {"consumers": why}
+        return {"consumers": available([asdict(row) for row in await list_consumers(db)])}
+
+
+def _machine_terminal_consumer(argv: list[str]) -> dict[str, Any]:
+    from lionagi.ln.concurrency import run_async
+    from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
+
+    from .machine import MachineError
+
+    if argv != ["list"]:
+        raise MachineError("invalid_input", "li state terminal-consumer requires list")
+    try:
+        return run_async(_terminal_consumer_list_data())
+    except ConsumerInspectionBackendError as exc:
+        raise MachineError("unavailable", str(exc)) from exc
+
+
 def _machine_ls(argv: list[str]) -> dict[str, Any]:
     from lionagi.ln.concurrency import run_async
 
@@ -2049,7 +2119,11 @@ def machine_result(argv: list[str]) -> dict[str, Any]:
     return machine_subcommand(
         "state",
         argv,
-        {"ls": _machine_ls, "stats": _machine_stats},
+        {
+            "ls": _machine_ls,
+            "stats": _machine_stats,
+            "terminal-consumer": _machine_terminal_consumer,
+        },
         without_seam={
             "import": "it loads run directories into the store, which is a write",
             "import-teams": "it loads team files into the store, which is a write",

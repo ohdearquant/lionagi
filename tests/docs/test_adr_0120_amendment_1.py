@@ -103,12 +103,93 @@ def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
-    body = _span("lionagi/session/observer.py", 365, 374)
+    # This checks the current method's behavior; the record's cited line range
+    # must be checked separately when the method moves.
+    relpath = "lionagi/session/observer.py"
+    source = (ROOT / relpath).read_text(encoding="utf-8")
+    emit = _method(_class(ast.parse(source), "SessionObserver"), "emit")
+    body = ast.get_source_segment(source, emit)
+    assert body is not None
     assert "allowed = True" in body
     assert "except Exception" in body
     assert "allowed = False" in body
     assert "if not allowed:" in body
     assert "return []" in body
+
+    # Check the gate and its refusal branch in emit itself, not a helper or
+    # adjacent method that happens to contain the same strings.
+    gate = next(
+        stmt
+        for stmt in emit.body
+        if isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.Compare)
+        and isinstance(stmt.test.left, ast.Attribute)
+        and isinstance(stmt.test.left.value, ast.Name)
+        and stmt.test.left.value.id == "self"
+        and stmt.test.left.attr == "_gate"
+        and len(stmt.test.ops) == 1
+        and isinstance(stmt.test.ops[0], ast.IsNot)
+        and len(stmt.test.comparators) == 1
+        and isinstance(stmt.test.comparators[0], ast.Constant)
+        and stmt.test.comparators[0].value is None
+    )
+    gate_try = next(stmt for stmt in gate.body if isinstance(stmt, ast.Try))
+    decision = next(
+        stmt.value
+        for stmt in gate_try.body
+        if isinstance(stmt, ast.Assign)
+        and len(stmt.targets) == 1
+        and isinstance(stmt.targets[0], ast.Name)
+        and stmt.targets[0].id == "allowed"
+    )
+    assert isinstance(decision, ast.Attribute) and decision.attr == "allowed"
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and node.func.attr == "_gate"
+        for node in ast.walk(decision)
+    )
+    assert any(
+        isinstance(handler.type, ast.Name)
+        and handler.type.id == "Exception"
+        and any(
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id == "allowed"
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is False
+            for stmt in handler.body
+        )
+        for handler in gate_try.handlers
+    )
+    refused = next(
+        stmt
+        for stmt in emit.body
+        if isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.UnaryOp)
+        and isinstance(stmt.test.op, ast.Not)
+        and isinstance(stmt.test.operand, ast.Name)
+        and stmt.test.operand.id == "allowed"
+    )
+    assert any(
+        isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.List) and not stmt.value.elts
+        for stmt in refused.body
+    )
+    dispatch = next(
+        stmt
+        for stmt in emit.body
+        if isinstance(stmt, ast.Return)
+        and isinstance(stmt.value, ast.Await)
+        and isinstance(stmt.value.value, ast.Call)
+        and isinstance(stmt.value.value.func, ast.Attribute)
+        and isinstance(stmt.value.value.func.value, ast.Name)
+        and stmt.value.value.func.value.id == "self"
+        and stmt.value.value.func.attr == "_dispatch"
+    )
+    assert emit.body.index(gate) < emit.body.index(refused) < emit.body.index(dispatch)
 
 
 REVIEW = "lionhub/src/lionhub/orchestration/engines/review.py"
@@ -166,7 +247,7 @@ def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> N
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _line("lionagi/state/schema.sql", 487)
+    assert "github_cursor" in _line("lionagi/state/schema.sql", 493)
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
@@ -190,11 +271,11 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5921)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7762)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7787)
-    assert "limit: int = 500" in _line("lionagi/state/db.py", 7792)
-    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6053)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 6025)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7871)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7896)
+    assert "limit: int = 500" in _line("lionagi/state/db.py", 7901)
+    assert "guard_cursor_forward=True" in _line("lionagi/state/db.py", 6161)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -213,13 +294,13 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:835-839" in flat
-    assert "lionagi/state/db.py:7762-7772" in flat
-    assert "lionagi/state/db.py:7787-7804" in flat
-    assert "(`:7792`)" in flat
+    assert "lionagi/state/schema.sql:845-849" in flat
+    assert "lionagi/state/db.py:7871-7881" in flat
+    assert "lionagi/state/db.py:7896-7913" in flat
+    assert "(`:7901`)" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
-    assert "whose forward read defaults to 500 rows" in flat
+    assert "whose forward read defaults to 500 rows (`:7901`)" in flat
     assert "`emitter_role`, versioned payload type" in flat
     assert "filter-required data without destructive truncation; every page is read" in flat
     assert "read through a frozen closure cutoff" in flat
@@ -234,7 +315,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "lionagi/session/branch.py:479-507" in flat
     assert "lionagi/operations/run/run.py:835-846" in flat
     assert "`unbind_db_persistence`" in flat
-    assert "lionagi/session/observer.py:597-614" in flat
+    assert "lionagi/session/observer.py:599-616" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
     assert "keeps its tail pending for the life of the session" in flat
     assert "no timeout and no new setting" in flat
@@ -292,8 +373,8 @@ def test_phase_two_is_a_target_and_the_gate_is_cited_where_it_still_runs() -> No
     flat = _flat()
     assert "Phase 2 already makes" not in text
     assert "Phase 2's target is to make `SessionObservation` signal-only" in flat
-    assert "lionagi/session/observer.py:365-374" in flat
-    assert "lionagi/session/observer.py:369-370`) and then returns at `:374" in flat
+    assert "lionagi/session/observer.py:365-376" in flat
+    assert "lionagi/session/observer.py:371-372`) and then returns at `:376" in flat
     assert "lionagi/session/observer.py:235-236" not in flat
 
 
@@ -351,9 +432,9 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1597" in flat
-    assert "lionagi/state/schema.sql:487" in flat
-    assert "lionagi/state/db.py:5921-5923" in flat
-    assert "`:6053`" in flat
+    assert "lionagi/state/schema.sql:493" in flat
+    assert "lionagi/state/db.py:6025-6027" in flat
+    assert "`:6161`" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )
@@ -510,7 +591,7 @@ def test_amendment_citations_match_the_head_line_ranges() -> None:
     assert "already-committed source fact (`:493-498`)" in flat
     assert "durable delivery state (`:493-498`)" in flat
     assert "ADR-0125:495-499" in flat
-    assert "lionagi/session/branch.py:479-507`, `:1210-1263" in flat
+    assert "lionagi/session/branch.py:479-507`, `:1210-1262" in flat
     assert "branch.py:477-505" not in flat
     assert "`:1197-1250" not in flat
     assert ":487-494" not in flat

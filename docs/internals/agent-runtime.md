@@ -64,8 +64,9 @@ and one implementation.
   takes it as `-c mcp_servers.<name>.<field>` overrides) — not whether a
   given spawn actually handed anything over. For that, read
   `request_carries_forwarded_mcp` off the request the spawn produced.
-- `exclusive` is the caller stating that the servers dict is the whole set
-  rather than an addition to whatever the provider finds for itself. It
+- `exclusive` bounds the server set configured for the agent rather than
+  adding to whatever the provider finds for itself. An explicit per-call MCP
+  option replaces that configuration for that call. An exclusive selection
   makes an empty set mean "no servers", and so does no set at all
   (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
@@ -140,11 +141,21 @@ and one implementation.
   through). Only those names, and none when the request ignores the user
   config: `mcp_servers.<name>.enabled=false` for a name codex has no table
   for is a table with no server in it, and codex refuses to start with one.
-  An exclusive set also replaces whatever set the
-  request already carries — a resumed leg's request is the persisted one —
-  so the Claude `mcp_servers` map, codex `mcp_servers.*` overrides (a whole
-  `mcp_servers` table included) and a generated codex profile are dropped
-  first; a profile the caller named is not dropped, and is refused as above.
+  An exclusive selection also replaces the MCP configuration already carried
+  by the agent — a resumed leg's configuration is the persisted one — so the
+  Claude `mcp_servers` map and `mcp_config` option, codex `mcp_servers.*`
+  overrides (a whole `mcp_servers` table included) and a generated codex
+  profile are dropped first; a profile the caller named is not dropped, and is
+  refused as above. A per-call Claude `mcp_config` or `mcp_servers` can replace
+  that call's configured set (`lionagi/providers/_agentic_handlers.py:162`);
+  `mcp_config` takes precedence over the server map
+  (`lionagi/providers/anthropic/claude_code.py:623-628`). When a Claude
+  `mcp_config` is dropped, a value is logged as the path the CLI would read if
+  it contains no control, format, surrogate, line or paragraph separator, or
+  non-space whitespace characters, does not parse as JSON, and does not start
+  like a JSON object, array or string after leading whitespace and BOMs are
+  removed. Inline JSON and other non-path values are
+  identified without their contents; `None` is dropped silently.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters

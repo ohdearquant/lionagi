@@ -71,6 +71,8 @@ jobs:
         uv sync --all-extras
     - name: Lint Python
       run: scripts/ci.sh lint-python
+    - name: Check feature-boundary inventory
+      run: uv run --no-sync python scripts/check_feature_boundaries.py
     - name: Enforce pytest quarantine cap
       run: scripts/ci.sh lint-quarantine
     - name: Install ripgrep
