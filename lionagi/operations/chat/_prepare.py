@@ -459,7 +459,7 @@ def _prepare_run_kwargs(
     # outgoing instruction. A plain-content instruction ignores guidance, so
     # it also needs this fold when a system message is present.
     pending_blocks = "\n".join(context_blocks or ()) if not places_cache else ""
-    needs_block_fold = bool(pending_blocks) and not branch.msgs.system
+    needs_block_fold = bool(pending_blocks)
     for i, entry in enumerate(_contents):
         # The stored message this entry renders, when it renders one: a note or a round member.
         source = entry.source
@@ -504,6 +504,9 @@ def _prepare_run_kwargs(
             and isinstance(entry.base_content, InstructionContent)
             and bool(entry.base_content.plain_content)
         )
+        if branch.msgs.system and i == 0 and not is_first_plain:
+            # The system/guidance fold already included these blocks.
+            needs_block_fold = False
         if (needs_block_fold or is_first_plain) and isinstance(
             entry.base_content, InstructionContent
         ):
@@ -569,6 +572,9 @@ def _prepare_run_kwargs(
             "The instruction content was lost or filtered during message "
             "assembly — this is a bug, not a valid empty-prompt call."
         )
+
+    if needs_block_fold:
+        chat_msgs.append({"role": "user", "content": pending_blocks})
 
     kw["messages"] = chat_msgs
     return ins, kw

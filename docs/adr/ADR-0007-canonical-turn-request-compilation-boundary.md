@@ -562,9 +562,9 @@ lines:
   (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
   (`lionagi/operations/chat/_prepare.py:208`), and joined into the first instruction's guidance,
-  or prefixed to its plain content, with no marker (`:391-392`, `:500-525`); with ADR-0127's
+  or prefixed to its plain content, with no marker (`:391-392`, `:500-528`); with ADR-0127's
   prompt-cache option on, they are kept on the turn's instruction and sent after it as one more
-  block (`:232-233`, `:526-527`). The prompt therefore shows the kept
+  block (`:232-233`, `:529-530`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
   and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
@@ -595,10 +595,10 @@ lines:
   first retained message under a system message is not an Instruction
   (`lionagi/operations/chat/_prepare.py:408`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:558-571`). That guard tests the current turn, the last entry appended to the
+  or images (`:561-574`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
   `_last_index` (`:450-451`, `:496-497`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:612-625`). No section boundary refuses
+  the guidance and prompt context this module injects (`:618-631`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action

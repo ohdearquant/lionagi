@@ -518,6 +518,120 @@ def test_without_the_placement_context_blocks_are_shown_once_and_not_kept():
     assert "context_blocks" not in ins.metadata
 
 
+def test_uncached_blocks_only_with_native_empty_current_are_sent():
+    from lionagi.protocols.messages import Instruction
+
+    ins = Instruction(content=InstructionContent(), sender="user")
+    original = ins.to_dict()
+
+    _, request = _prepare_run_kwargs(
+        Branch(), None, ChatParam(), ins=ins, imodel=_Model(False), context_blocks=["BLOCK"]
+    )
+
+    assert len(request["messages"]) == 1
+    assert request["messages"][0]["role"] == "user"
+    assert str(request["messages"]).count("BLOCK") == 1
+    assert ins.to_dict() == original
+
+
+def test_uncached_blocks_only_request_without_system_is_sent(monkeypatch):
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch()
+    ins = Instruction(content=InstructionContent(), sender="user")
+    render = InstructionContent.rendered.fget
+    monkeypatch.setattr(
+        InstructionContent,
+        "rendered",
+        property(
+            lambda content: (
+                "" if not content.instruction and not content.guidance else render(content)
+            )
+        ),
+    )
+
+    _, request = _prepare_run_kwargs(
+        branch,
+        None,
+        ChatParam(),
+        ins=ins,
+        imodel=_Model(False),
+        context_blocks=["BLOCK-ONE", "BLOCK-TWO"],
+    )
+
+    assert request["messages"] == [{"role": "user", "content": "BLOCK-ONE\nBLOCK-TWO"}]
+    assert "context_blocks" not in ins.metadata
+    assert ins.content.plain_content is None
+
+
+def test_uncached_blocks_with_system_and_empty_plain_current_are_sent_once():
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch(system="SYSTEM-POLICY")
+    ins = Instruction(content=InstructionContent(plain_content=""), sender="user")
+    original = ins.to_dict()
+
+    _, request = _prepare_run_kwargs(
+        branch, None, ChatParam(), ins=ins, imodel=_Model(False), context_blocks=["BLOCK"]
+    )
+
+    assert len(request["messages"]) == 1
+    assert request["messages"][0]["role"] == "user"
+    assert str(request["messages"]).count("BLOCK") == 1
+    assert "SYSTEM-POLICY" in str(request["messages"])
+    assert ins.to_dict() == original
+
+
+def test_uncached_blocks_with_empty_current_stay_on_prior_instruction(monkeypatch):
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch()
+    branch.msgs.add_message(instruction="PREVIOUS-INSTRUCTION")
+    branch.msgs.add_message(assistant_response="PREVIOUS-RESPONSE")
+    ins = Instruction(content=InstructionContent(), sender="user")
+    render = InstructionContent.rendered.fget
+    monkeypatch.setattr(
+        InstructionContent,
+        "rendered",
+        property(
+            lambda content: (
+                "" if not content.instruction and not content.guidance else render(content)
+            )
+        ),
+    )
+
+    _, request = _prepare_run_kwargs(
+        branch, None, ChatParam(), ins=ins, imodel=_Model(False), context_blocks=["BLOCK"]
+    )
+
+    assert len(request["messages"]) == 2
+    assert "PREVIOUS-INSTRUCTION" in request["messages"][0]["content"]
+    assert "BLOCK" in request["messages"][0]["content"]
+    assert str(request["messages"]).count("BLOCK") == 1
+    assert request["messages"][1]["role"] == "assistant"
+    assert "context_blocks" not in ins.metadata
+
+
+def test_uncached_blocks_move_past_an_empty_system_plain_instruction():
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch(system="SYSTEM-POLICY")
+    earlier = Instruction(content={"plain_content": " \t "}, sender="user")
+    branch.msgs.add_message(instruction=earlier)
+    branch.msgs.add_message(assistant_response="PREVIOUS-RESPONSE")
+
+    _, request = _prepare_run_kwargs(
+        branch, "CURRENT-TASK", ChatParam(), imodel=_Model(False), context_blocks=["BLOCK"]
+    )
+
+    assert len(request["messages"]) == 2
+    assert request["messages"][0]["role"] == "assistant"
+    assert request["messages"][1]["role"] == "user"
+    assert "CURRENT-TASK" in request["messages"][1]["content"]
+    assert "BLOCK" in request["messages"][1]["content"]
+    assert str(request["messages"]).count("BLOCK") == 1
+
+
 @pytest.mark.parametrize("with_system", [False, True], ids=["no-system", "system"])
 @pytest.mark.parametrize("with_history", [False, True], ids=["no-history", "history"])
 def test_uncached_context_blocks_are_sent_once_in_first_instruction(with_system, with_history):
