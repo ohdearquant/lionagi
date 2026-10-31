@@ -47,13 +47,7 @@ def _branch_with_tool(output):
     return branch, calls, events
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("suppress_errors", [False, True])
-async def test_unrenderable_return_is_tool_post_and_keeps_original_result(suppress_errors):
-    secret = "deep-output-sensitive-leaf"
-    output = _nested_output(50_000, secret)
-    with pytest.raises(RecursionError):
-        str(output)
+async def _tool_post_summary(output, suppress_errors):
     branch, calls, events = _branch_with_tool(output)
 
     try:
@@ -72,9 +66,41 @@ async def test_unrenderable_return_is_tool_post_and_keeps_original_result(suppre
     pre, post = events[0][1], events[1][1]
     assert pre["tool_name"] == post["tool_name"] == "tool"
     assert pre["call_id"] == post["call_id"]
-    summary = post["result_summary"]
+    return post["result_summary"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suppress_errors", [False, True])
+async def test_unrenderable_return_is_tool_post_and_keeps_original_result(suppress_errors):
+    secret = "deep-output-sensitive-leaf"
+
+    class UnrenderableResult:
+        def __str__(self):
+            raise RecursionError(secret)
+
+        def __repr__(self):
+            raise RecursionError(secret)
+
+    output = UnrenderableResult()
+    summary = await _tool_post_summary(output, suppress_errors)
     assert _OUTPUT_TOO_DEEP == "<output too deeply nested>"
     assert summary == _OUTPUT_TOO_DEEP
+    assert secret not in summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suppress_errors", [False, True])
+async def test_deep_return_uses_the_rendered_summary_when_available(suppress_errors):
+    secret = "deep-output-sensitive-leaf"
+    output = _nested_output(50_000, secret)
+    try:
+        expected = str(output)[:200]
+    except RecursionError:
+        expected = _OUTPUT_TOO_DEEP
+
+    summary = await _tool_post_summary(output, suppress_errors)
+
+    assert summary == expected
     assert secret not in summary
 
 
