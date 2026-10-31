@@ -400,17 +400,17 @@ async def test_stale_sweep_counts_identity_unknown(tmp_path, monkeypatch, capsys
 
 
 @pytest.mark.parametrize(
-    ("manifest", "expected"),
+    ("manifest", "expected", "expected_reason"),
     [
-        ('{"status": "running"}', "not_ours"),
-        ('{"status": "completed"}', "not_ours"),
-        ('{"status":', "not_ours"),
-        (None, "not_ours"),
+        ('{"status": "running"}', "unverifiable", "no_recorded_process"),
+        ('{"status": "completed"}', "not_ours", None),
+        ('{"status":', "unverifiable", "manifest_unreadable"),
+        (None, "not_ours", None),
     ],
     ids=["ordinary-running", "ordinary-completed", "unreadable", "missing"],
 )
 def test_ordinary_and_unreadable_imported_manifests_are_distinct(
-    tmp_path, monkeypatch, manifest, expected
+    tmp_path, monkeypatch, manifest, expected, expected_reason
 ):
     from lionagi.cli import _runs
 
@@ -420,8 +420,8 @@ def test_ordinary_and_unreadable_imported_manifests_are_distinct(
         run_dir = root / "test-run"
         run_dir.mkdir(parents=True)
         (run_dir / "run.json").write_text(manifest)
-    verdict, _ = kill_mod._imported_degraded_process_identity("test-run")
-    assert verdict == expected
+    verdict, reason = kill_mod._imported_degraded_process_identity("test-run")
+    assert (verdict, reason) == (expected, expected_reason)
     assert kill_service.imported_degraded_process_is_live("test-run") is (
         expected == "unverifiable"
     )
@@ -563,7 +563,7 @@ def test_matching_session_marker_without_start_keeps_legacy_positive(monkeypatch
     )
 
 
-@pytest.mark.parametrize("kind", ["missing_identity", "missing_manifest", "ordinary", "gone"])
+@pytest.mark.parametrize("kind", ["missing_manifest", "ordinary", "gone"])
 @pytest.mark.asyncio
 async def test_imported_non_epoch_gaps_keep_legacy_sweep_behavior(tmp_path, monkeypatch, kind):
     from lionagi.cli import _runs
@@ -579,6 +579,7 @@ async def test_imported_non_epoch_gaps_keep_legacy_sweep_behavior(tmp_path, monk
     patched_pid_alive = lambda _pid: kind != "gone"
     monkeypatch.setattr(kill_mod, "_pid_alive", patched_pid_alive)
     monkeypatch.setattr(kill_service, "_pid_alive", patched_pid_alive)
+    monkeypatch.setattr(kill_service, "check_pid_identity", lambda *_args, **_kwargs: "not_ours")
     sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
     manifest = {
         "status": "running",
@@ -587,8 +588,6 @@ async def test_imported_non_epoch_gaps_keep_legacy_sweep_behavior(tmp_path, monk
         "pid_create_time": 1005.0,
         "pid_boot_time": 1000.0,
     }
-    if kind == "missing_identity":
-        del manifest["pid_create_time"]
     if kind == "ordinary":
         del manifest[_runs.PERSISTENCE_DEGRADED_REASON_FIELD]
     if kind != "missing_manifest":
@@ -610,6 +609,228 @@ async def test_imported_non_epoch_gaps_keep_legacy_sweep_behavior(tmp_path, monk
     assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
     async with StateDB(path) as db:
         assert (await db.get_session(sid))["status"] == "cancelled"
+
+
+def _imported_run_manifest(**overrides) -> str:
+    """A running manifest recording a live process; a ``None`` override drops that field."""
+    manifest = {
+        "status": "running",
+        "pid": 4242,
+        "pid_create_time": 1005.0,
+        "pid_boot_time": 1000.0,
+    }
+    manifest.update(overrides)
+    return json.dumps({key: value for key, value in manifest.items() if value is not None})
+
+
+async def _seed_stale_imported_session(
+    tmp_path, monkeypatch, *, manifest_text, alive, identity, via_import=False
+):
+    """Seed one stale imported session whose run.json holds ``manifest_text``.
+
+    The pid probe and the process identity check are stubbed; ``identity`` is the
+    ``(result, reason)`` pair the identity check answers. With ``via_import`` the session row is
+    created by importing the run, as ``li state import`` does; otherwise it is inserted directly
+    with a start time two hours old. Returns the state db path and session id.
+    """
+    from lionagi.cli import _runs
+
+    path, runs_root = tmp_path / "state.db", tmp_path / "runs"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
+    )
+    monkeypatch.setattr(_runs, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(psutil, "LINUX", True)
+    monkeypatch.setattr(psutil, "boot_time", lambda: 1000.0)
+    patched_pid_alive = lambda _pid: alive
+    monkeypatch.setattr(kill_mod, "_pid_alive", patched_pid_alive)
+    monkeypatch.setattr(kill_service, "_pid_alive", patched_pid_alive)
+
+    def patched_identity(_pid, _cmd, **kwargs):
+        if identity[1] is not None and kwargs.get("_reason_out") is not None:
+            kwargs["_reason_out"].append(identity[1])
+        return identity[0]
+
+    monkeypatch.setattr(kill_mod, "check_pid_identity", patched_identity)
+    monkeypatch.setattr(kill_service, "check_pid_identity", patched_identity)
+    sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
+    run_dir = runs_root / sid
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(manifest_text)
+    async with StateDB(path) as db:
+        if via_import:
+            from lionagi.cli.state import _import_one_run
+
+            await _import_one_run(db, sid, run_dir, json.loads(manifest_text))
+        else:
+            await db.create_progression(progression)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": progression,
+                    "status": "running",
+                    "source_kind": "imported_fs",
+                    "started_at": time.time() - 7200,
+                }
+            )
+    return path, sid
+
+
+@pytest.mark.parametrize(
+    ("manifest_text", "alive", "identity", "expected_status", "expected_counter"),
+    [
+        pytest.param(
+            _imported_run_manifest(),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_live_pid=1",
+            id="live-process-ours",
+        ),
+        pytest.param(
+            _imported_run_manifest(),
+            True,
+            ("unverifiable", "start_mismatch"),
+            "running",
+            "skipped_linux_start_mismatch=1",
+            id="live-process-start-mismatch",
+        ),
+        pytest.param(
+            _imported_run_manifest(),
+            True,
+            ("unverifiable", "permission_denied"),
+            "running",
+            "skipped_permission_denied=1",
+            id="live-process-permission-denied",
+        ),
+        pytest.param(
+            _imported_run_manifest(pid_boot_time=900.0),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_linux_boot_disagreement=1",
+            id="live-process-boot-disagreement",
+        ),
+        pytest.param(
+            _imported_run_manifest(pid_create_time=None),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="live-process-without-start-time",
+        ),
+        pytest.param(
+            _imported_run_manifest(pid=None, pid_create_time=None),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="no-recorded-process",
+        ),
+        pytest.param(
+            '{"status":',
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="unreadable-manifest",
+        ),
+        pytest.param(
+            "[]",
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="manifest-not-an-object",
+        ),
+        pytest.param(
+            _imported_run_manifest(),
+            True,
+            ("not_ours", None),
+            "cancelled",
+            "skipped_unverifiable_pid=0",
+            id="live-process-not-ours",
+        ),
+        pytest.param(
+            _imported_run_manifest(),
+            False,
+            ("ours", None),
+            "cancelled",
+            "skipped_unverifiable_pid=0",
+            id="dead-process",
+        ),
+        pytest.param(
+            _imported_run_manifest(status="completed"),
+            True,
+            ("ours", None),
+            "cancelled",
+            "skipped_unverifiable_pid=0",
+            id="finished-run",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sweep_judges_imported_run_by_its_recorded_process(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    manifest_text,
+    alive,
+    identity,
+    expected_status,
+    expected_counter,
+):
+    path, sid = await _seed_stale_imported_session(
+        tmp_path, monkeypatch, manifest_text=manifest_text, alive=alive, identity=identity
+    )
+    assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
+    assert expected_counter in capsys.readouterr().out
+    async with StateDB(path) as db:
+        assert (await db.get_session(sid))["status"] == expected_status
+
+
+@pytest.mark.parametrize("kind", ["traversal", "linked"])
+def test_imported_manifest_outside_its_run_directory_is_not_ours(tmp_path, monkeypatch, kind):
+    from lionagi.cli import _runs
+
+    root, outside = tmp_path / "runs", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "run.json").write_text(_imported_run_manifest(pid=None))
+    if kind == "linked":
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(_runs, "RUNS_ROOT", root)
+    run_id = "../outside" if kind == "traversal" else "linked"
+    assert kill_mod._imported_degraded_process_identity(run_id) == ("not_ours", None)
+
+
+@pytest.mark.asyncio
+async def test_sweep_probes_the_process_of_an_imported_running_run(tmp_path, monkeypatch, capsys):
+    """A running manifest without the degraded marker is still judged by its recorded process."""
+    path, sid = await _seed_stale_imported_session(
+        tmp_path,
+        monkeypatch,
+        manifest_text=_imported_run_manifest(started_at=time.time() - 7200),
+        alive=True,
+        identity=("ours", None),
+        via_import=True,
+    )
+    probed: list[int] = []
+
+    def alive_spy(pid):
+        probed.append(pid)
+        return True
+
+    monkeypatch.setattr(kill_mod, "_pid_alive", alive_spy)
+    monkeypatch.setattr(kill_service, "_pid_alive", alive_spy)
+
+    assert await kill_mod._do_kill_all_stale(threshold_seconds=3600) == 0
+
+    assert set(probed) == {4242}
+    assert "skipped_live_pid=1" in capsys.readouterr().out
+    async with StateDB(path) as db:
+        assert (await db.get_session(sid))["status"] == "running"
 
 
 @pytest.mark.parametrize("pid", [None, 4242])
