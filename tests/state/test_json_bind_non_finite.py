@@ -189,7 +189,7 @@ async def test_import_writes_the_session_collection_through_the_db_operation(db,
 
     assert calls, "the transactional progression seam must run"
     assert (branches, messages) == (1, 1)
-    assert len(calls) == 1, "the session collection must go through set_progression"
+    assert len(calls) == 1, "the session collection must go through _set_progression_in_tx"
     session_prog_id, collection = calls[0]
     assert collection == ["m1"]
     assert await db.get_progression(session_prog_id) == ["m1"]
