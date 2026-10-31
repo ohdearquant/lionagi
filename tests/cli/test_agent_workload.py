@@ -355,9 +355,9 @@ async def test_a_leg_at_the_cap_is_refused_through_the_real_provider_path(
     ``li agent`` as itself, and the codex binary is never started."""
     from lionagi import Branch, _paths
     from lionagi.cli.agent import _run_agent
-    from lionagi.providers.openai import codex as codex_mod
     from lionagi.service import _subagent_admission as admission
     from lionagi.service._subagent_admission import admit_subagent
+    from lionhub.providers.openai import codex as codex_mod
 
     real_operate = Branch.operate
     _wire_agent_stubs(monkeypatch, tmp_path)

@@ -20,7 +20,6 @@ import pytest
 from pydantic import SecretStr
 
 import lionagi.service.accounts._router as router_module
-from lionagi.providers.anthropic._prompt_cache import place, points
 from lionagi.service.accounts._ledger import CredentialLedger
 from lionagi.service.accounts._pricing import CURRENT_REVISION
 from lionagi.service.accounts._router import AccountRouter, RouterAttempt
@@ -35,6 +34,7 @@ from lionagi.service.accounts._types import (
     Scope,
     UnknownOutcome,
 )
+from lionhub.providers.anthropic._prompt_cache import place, points
 
 pytestmark = pytest.mark.asyncio
 

@@ -4,7 +4,7 @@ import io
 
 import pytest
 
-from lionagi.providers._multipart import _replayable_file_factory
+from lionhub.providers._multipart import _replayable_file_factory
 
 
 class NonSeekable:

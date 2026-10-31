@@ -18,8 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest, stream_claude_code_cli
 from lionagi.service.types.stream_chunk import StreamChunk
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest, stream_claude_code_cli
 
 
 def _make_request() -> ClaudeCodeRequest:
@@ -33,7 +33,7 @@ async def _chunks_from_events(events: list[dict]) -> list[StreamChunk]:
 
     collected = []
     with patch(
-        "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+        "lionhub.providers.anthropic.claude_code.stream_cc_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_claude_code_cli(_make_request()):

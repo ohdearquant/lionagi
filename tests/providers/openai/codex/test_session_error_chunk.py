@@ -24,8 +24,8 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.openai.codex import CodexCLIEndpoint, CodexCodeRequest, stream_codex_cli
 from lionagi.service.types.stream_chunk import StreamChunk
+from lionhub.providers.openai.codex import CodexCLIEndpoint, CodexCodeRequest, stream_codex_cli
 
 # These tests run on asyncio only: the codex CLI stream reads the event loop's
 # clock through asyncio.get_running_loop().
@@ -41,7 +41,7 @@ def _fake_events(events: list[dict]):
             yield event
 
     return patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     )
 

@@ -13,13 +13,13 @@ from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.edge import Edge
 from lionagi.protocols.graph.graph import Graph
 from lionagi.protocols.messages import Instruction
-from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionhub.providers.openai.chat import OpenAIChatCompletionsRequest
 
 
 def _get_oai_config(

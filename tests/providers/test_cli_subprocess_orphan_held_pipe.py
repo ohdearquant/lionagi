@@ -18,8 +18,8 @@ import time
 
 import pytest
 
-import lionagi.providers._cli_subprocess as cli_subprocess
-from lionagi.providers._cli_subprocess import ndjson_from_cli
+import lionhub.providers._cli_subprocess as cli_subprocess
+from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 # Emits one event carrying its orphan's pid, leaks stdout into a 30s grandchild,
 # exits 0. Without a post-exit bound the stream hangs ~30s; with it, it ends

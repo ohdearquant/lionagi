@@ -15,9 +15,9 @@ import pytest
 
 from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
 from lionagi.agent.factory import apply_forwarded_mcp_servers
-from lionagi.providers.openai import _codex_project_layers as project_layers
-from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.openai import _codex_project_layers as project_layers
+from lionhub.providers.openai import codex as codex_mod
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 
 def _forbid(*_args, **_kwargs):
@@ -111,7 +111,7 @@ async def _run(request):
 
 @pytest.mark.asyncio
 async def test_missing_cli_refuses_before_secret_fill_or_census(tmp_path, monkeypatch):
-    import lionagi.providers._cli_subprocess as cli_sub
+    import lionhub.providers._cli_subprocess as cli_sub
 
     seen = []
 

@@ -32,14 +32,14 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.openai.codex import (
+from lionagi.service.types.cli_session import CLISession
+from lionagi.service.types.stream_chunk import StreamChunk
+from lionhub.providers.openai.codex import (
     _CALL_ITEM_TYPES,
     CodexCLIEndpoint,
     CodexCodeRequest,
     stream_codex_cli,
 )
-from lionagi.service.types.cli_session import CLISession
-from lionagi.service.types.stream_chunk import StreamChunk
 
 # U+FF5C FULLWIDTH VERTICAL LINE, written as an escape so the source stays
 # ASCII: the separators the model emits are not the ASCII `|`.
@@ -67,7 +67,7 @@ async def _parse(events: list[dict]) -> tuple[list[StreamChunk], object]:
     chunks: list[StreamChunk] = []
     session = None
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_codex_cli(_request()):
@@ -281,7 +281,7 @@ async def test_a_benign_sentinel_leaves_the_returned_session_clean():
             yield event
 
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
         out = await CodexCLIEndpoint()._call({"request": _request()}, {})
@@ -307,7 +307,7 @@ async def test_a_non_streamed_call_raises_for_the_failed_session():
             yield event
 
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
         with pytest.raises(ProviderError) as info:
@@ -749,7 +749,7 @@ async def _stop_at_the_sentinel(events: list[dict]) -> tuple[list[StreamChunk], 
     chunks: list[StreamChunk] = []
     session = CLISession()
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake_events,
     ):
         async with contextlib.aclosing(stream_codex_cli(_request(), session)) as gen:
@@ -816,7 +816,7 @@ async def test_a_non_streamed_call_markup_then_sentinel_raises():
             yield event
 
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
         with pytest.raises(ProviderError) as info:
@@ -852,7 +852,7 @@ async def test_a_real_run_raises_on_markup_before_the_sentinel():
     branch.chat_model = model
 
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
         raised: Exception | None = None
@@ -1041,7 +1041,7 @@ async def test_endpoint_stream_reports_a_failed_legacy_result_before_the_sentine
             yield event
 
     with patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
         chunks = [c async for c in CodexCLIEndpoint().stream({"request": _request()})]
@@ -1453,7 +1453,7 @@ async def test_a_line_that_is_a_block_of_its_own_pairs_no_backtick_after_it(text
 
 @pytest.mark.parametrize(("padding", "fails"), [(0, True), (1, False)], ids=["at", "past"])
 def test_a_message_past_the_length_limit_is_not_read(padding, fails):
-    from lionagi.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
+    from lionhub.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
 
     tail = f"\n\n{INVOKE}"
     text = "x" * (_MARKUP_CHECK_MAX_CHARS - len(tail) + padding) + tail
@@ -1489,7 +1489,7 @@ def test_a_message_past_the_length_limit_is_not_read(padding, fails):
     ],
 )
 def test_a_message_at_the_length_limit_is_read_in_bounded_time(unit):
-    from lionagi.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
+    from lionhub.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
 
     text = (unit * (_MARKUP_CHECK_MAX_CHARS // len(unit) + 1))[:_MARKUP_CHECK_MAX_CHARS]
     started = time.perf_counter()
@@ -1498,7 +1498,7 @@ def test_a_message_at_the_length_limit_is_read_in_bounded_time(unit):
 
 
 def test_code_spans_cost_stays_near_linear_in_the_runs():
-    from lionagi.providers.openai.codex import _has_tool_call_markup
+    from lionhub.providers.openai.codex import _has_tool_call_markup
 
     segment = "\\`` " * 40_000
     started = time.perf_counter()

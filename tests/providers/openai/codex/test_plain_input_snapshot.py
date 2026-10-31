@@ -24,8 +24,8 @@ import pydantic
 import pytest
 
 from lionagi._errors import CLIInputRefusedError
-from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai.codex import CodexCodeRequest, toml_override_value
+from lionhub.providers.openai import codex as codex_mod
+from lionhub.providers.openai.codex import CodexCodeRequest, toml_override_value
 
 SECRET = "sk-PLAIN-SNAPSHOT-SECRET"
 # The answer every hostile value gives when read by its own methods instead of its text.
@@ -629,7 +629,7 @@ def test_an_env_value_whose_encoder_raises_is_refused_by_position(tmp_path):
 def test_an_env_value_whose_encoder_raises_is_refused_by_position_at_the_spawn_copy():
     """The spawn's own copy refuses the same entry by position and type, with no error held
     as its context and no part of the value on it."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     with pytest.raises(ValueError) as refused:
         _cli_subprocess.env_as_the_spawn_encodes_it(
@@ -783,7 +783,7 @@ def test_an_env_value_whose_class_answers_str_is_refused_at_construction(tmp_pat
 def test_the_claude_code_env_refuses_a_value_whose_class_answers_str():
     """The shared env check refuses the same value at construction for the Claude Code
     request, so neither provider hands pydantic an object it would quote."""
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     with pytest.raises(TypeError) as refused:
         ClaudeCodeRequest(prompt="hi", env={"HOME": "/h", "K": _ValueWhoseClassAnswersStr()})
@@ -867,7 +867,7 @@ def test_a_codex_env_value_that_is_a_plain_str_subclass_is_stored_as_plain_text(
 
 def test_a_claude_code_env_value_that_is_a_plain_str_subclass_is_stored_as_plain_text():
     """The shared env reduction returns plain text for the Claude Code request too."""
-    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
     escaped = SECRET + os.fsdecode(b"\xff")
     request = ClaudeCodeRequest(prompt="hi", env={"K": _SubText(escaped)})
@@ -1220,7 +1220,7 @@ def test_the_check_and_spawn_path_read_the_snapshot_and_no_raw_field():
     in the same pass: it reads raw fields, so a detector that finds nothing anywhere fails
     rather than passing quietly.
     """
-    import lionagi.providers._cli_subprocess as subproc_mod
+    import lionhub.providers._cli_subprocess as subproc_mod
 
     files = {"codex.py": Path(codex_mod.__file__), "_cli_subprocess.py": Path(subproc_mod.__file__)}
     checked = 0

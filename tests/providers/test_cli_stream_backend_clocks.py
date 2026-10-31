@@ -21,13 +21,13 @@ def test_cli_parser_reports_elapsed_duration_on_trio(monkeypatch, provider):
     async def scenario():
         assert sniffio.current_async_library() == "trio"
         if provider == "gemini":
-            module = import_module("lionagi.providers.google.gemini_code")
+            module = import_module("lionhub.providers.google.gemini_code")
             request = module.GeminiCodeRequest(prompt="Hello", verbose_output=False)
             stream = module.stream_gemini_cli
             transport = "stream_gemini_cli_events"
             events = [{"status": "SUCCESS", "response": "Hello"}]
         elif provider == "codex":
-            module = import_module("lionagi.providers.openai.codex")
+            module = import_module("lionhub.providers.openai.codex")
             request = module.CodexCodeRequest(prompt="Hello", verbose_output=False)
             stream = module.stream_codex_cli
             transport = "stream_codex_cli_events"
@@ -36,7 +36,7 @@ def test_cli_parser_reports_elapsed_duration_on_trio(monkeypatch, provider):
                 {"type": "done"},
             ]
         else:
-            module = import_module("lionagi.providers.pi.cli")
+            module = import_module("lionhub.providers.pi.cli")
             request = module.PiCodeRequest(prompt="Hello", verbose_output=False)
             stream = module.stream_pi_cli
             transport = "stream_pi_cli_events"

@@ -155,7 +155,7 @@ AG2GroupChatEndpoint is stream-only — it yields `StreamChunk` events for each 
 
 ```python
 # requires: pip install lionagi[ag2]
-from lionagi.providers.ag2 import AG2GroupChatEndpoint
+from lionhub.providers.ag2 import AG2GroupChatEndpoint
 
 endpoint = AG2GroupChatEndpoint(
     agent_configs=[
@@ -171,11 +171,11 @@ async for chunk in endpoint.stream({"prompt": "Build a Fibonacci function"}):
 
 ## Provider folder structure
 
-Each provider is a directory under `lionagi/providers/{company}/`. The endpoint files
+Each provider is a directory under `lionhub/src/lionhub/providers/{company}/`. The endpoint files
 (one `{endpoint}.py` per capability) are the capability map — the file listing names the capabilities.
 
 ```text
-lionagi/providers/
+lionhub/src/lionhub/providers/
 ├── openai/
 │   ├── _config.py          # OpenAIConfigs + CodexConfigs enums
 │   ├── chat.py             # chat/completions endpoint
@@ -252,12 +252,12 @@ Each provider's `__init__.py` lazily re-exports every endpoint and request class
 import collapses to two layers and loads nothing until first access:
 
 ```python
-from lionagi.providers.openai import OpenaiChatEndpoint
-from lionagi.providers.anthropic import AnthropicMessagesEndpoint
+from lionhub.providers.openai import OpenaiChatEndpoint
+from lionhub.providers.anthropic import AnthropicMessagesEndpoint
 ```
 
 Touching a name imports only that endpoint's module (plus the provider `_config`); the
-other endpoints in the folder stay unloaded. `dir(lionagi.providers.openai)` lists the
+other endpoints in the folder stay unloaded. `dir(lionhub.providers.openai)` lists the
 full export set without triggering any import.
 
 ## Adding a new provider
@@ -265,7 +265,7 @@ full export set without triggering any import.
 **Step 1 — create the folder tree**
 
 ```text
-lionagi/providers/{name}/
+lionhub/src/lionhub/providers/{name}/
     __init__.py     # lazy re-export map (see existing providers)
     _config.py
     chat.py         # one file per endpoint: Endpoint subclass + request/response models
@@ -283,7 +283,7 @@ class MyProviderConfigs(ProviderConfig, Enum):
         "chat/completions",          # endpoint path
         ["chat"],                    # aliases
         EndpointType.API,
-        LazyType("lionagi.providers.myprovider.chat:MyChatRequest"),
+        LazyType("lionhub.providers.myprovider.chat:MyChatRequest"),
         "https://api.myprovider.com/v1",
         "bearer",                    # auth_type
     )
@@ -327,7 +327,7 @@ In `lionagi/service/connections/registry.py`, add the module to `_modules` insid
 def _import_all_providers():
     _modules: list[str] = [
         # ... existing entries ...
-        "lionagi.providers.myprovider.chat",
+        "lionhub.providers.myprovider.chat",
     ]
     for mod in _modules:
         _import_provider_module(mod)

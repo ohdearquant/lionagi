@@ -151,7 +151,7 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
     variable stamped here reaches the child with zero endpoint changes."""
     import asyncio
 
-    from lionagi.providers._cli_subprocess import ndjson_from_cli
+    from lionhub.providers._cli_subprocess import ndjson_from_cli
 
     # As a run inside an agent inherits it from that agent's process group.
     monkeypatch.setenv(_PROCESS_GROUP_MARKER, "inherited-group-token")

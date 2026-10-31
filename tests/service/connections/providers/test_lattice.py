@@ -16,18 +16,18 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from lionagi._errors import ProviderStreamError
-from lionagi.providers.lattice._config import LATTICE_DEFAULT_BASE_URL
-from lionagi.providers.lattice.chat import (
-    LatticeChatCompletionsRequest,
-    LatticeChatEndpoint,
-    LatticeLoraSelection,
-)
-from lionagi.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel
 from lionagi.service.resilience import APIClientError
+from lionhub.providers.lattice._config import LATTICE_DEFAULT_BASE_URL
+from lionhub.providers.lattice.chat import (
+    LatticeChatCompletionsRequest,
+    LatticeChatEndpoint,
+    LatticeLoraSelection,
+)
+from lionhub.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
 
 MODEL = "qwen3.5-0.8b"
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -133,7 +133,7 @@ def test_a_fresh_process_resolves_lattice_without_importing_it_first():
 import sys
 from lionagi.service.connections.match_endpoint import match_endpoint
 
-assert not any(name.startswith("lionagi.providers.lattice") for name in sys.modules)
+assert not any(name.startswith("lionhub.providers.lattice") for name in sys.modules)
 for endpoint, cls in (("chat", "LatticeChatEndpoint"), ("embed", "LatticeEmbedEndpoint")):
     resolved = match_endpoint(provider="lattice", endpoint=endpoint, model="m")
     assert type(resolved).__name__ == cls, (endpoint, type(resolved))

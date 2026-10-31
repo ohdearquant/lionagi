@@ -16,18 +16,18 @@ _DEFAULT_CONTEXT_WINDOW = 128_000
 _provider_cache: dict[str, dict[str, int]] = {}
 
 _PROVIDER_MODULES: dict[str, str] = {
-    "openai": "lionagi.providers.openai._config",
-    "anthropic": "lionagi.providers.anthropic.messages",
-    "claude_code": "lionagi.providers.anthropic.claude_code",
-    "codex": "lionagi.providers.openai.codex",
-    "deepseek": "lionagi.providers.deepseek.chat",
-    "nvidia_nim": "lionagi.providers.nvidia_nim.chat",
-    "perplexity": "lionagi.providers.perplexity.chat",
-    "gemini_code": "lionagi.providers.google.gemini_code",
-    "pi": "lionagi.providers.pi.cli",
-    "groq": "lionagi.providers.groq.chat",
-    "gemini": "lionagi.providers.google.chat",
-    "openrouter": "lionagi.providers.openrouter.chat",
+    "openai": "lionhub.providers.openai._config",
+    "anthropic": "lionhub.providers.anthropic.messages",
+    "claude_code": "lionhub.providers.anthropic.claude_code",
+    "codex": "lionhub.providers.openai.codex",
+    "deepseek": "lionhub.providers.deepseek.chat",
+    "nvidia_nim": "lionhub.providers.nvidia_nim.chat",
+    "perplexity": "lionhub.providers.perplexity.chat",
+    "gemini_code": "lionhub.providers.google.gemini_code",
+    "pi": "lionhub.providers.pi.cli",
+    "groq": "lionhub.providers.groq.chat",
+    "gemini": "lionhub.providers.google.chat",
+    "openrouter": "lionhub.providers.openrouter.chat",
 }
 
 

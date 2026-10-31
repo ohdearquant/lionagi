@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from lionagi.providers.ag2 import nlip as nlip_mod
+from lionhub.providers.ag2 import nlip as nlip_mod
 
 
 class _FakeResponse:

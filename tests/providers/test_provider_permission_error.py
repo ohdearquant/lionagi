@@ -26,7 +26,7 @@ from lionagi._provider_errors import (
 )
 from lionhub.serve.mcp._terminal_cause import allowed_cause_classes, read_terminal_cause
 
-# Verbatim from lionagi/providers/google/gemini_code.py, where it is raised.
+# Verbatim from lionhub/src/lionhub/providers/google/gemini_code.py, where it is raised.
 AUTO_DENY = (
     "agy reported status=SUCCESS with no response content. "
     "A tool call was most likely auto-denied, because headless "

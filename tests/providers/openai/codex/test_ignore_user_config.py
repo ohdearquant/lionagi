@@ -24,8 +24,8 @@ import sys
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.providers.openai import _codex_project_layers
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.openai import _codex_project_layers
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 if sys.version_info >= (3, 11):
     import tomllib

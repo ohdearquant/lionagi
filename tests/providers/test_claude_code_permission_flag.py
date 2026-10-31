@@ -13,7 +13,7 @@ from typing import get_args
 
 import pytest
 
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest, ClaudePermissionMode
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest, ClaudePermissionMode
 
 _FLAGS = ("--permission-mode", "--dangerously-skip-permissions")
 

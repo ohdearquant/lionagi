@@ -24,13 +24,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from lionagi.providers._cli_subprocess import ndjson_from_cli
 from lionagi.service.accounts import _secret_resolution
 from lionagi.service.accounts._secret_resolution import (
     fill_declared_secrets,
     fill_declared_secrets_and_names,
     resolve_secret_lookup_config,
 )
+from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 NAME = "LIONAGI_TEST_SECRET"
 OTHER = "LIONAGI_TEST_SECRET_TWO"

@@ -61,7 +61,7 @@ async def test_a_claude_cli_refusal_reaches_run_json_and_the_reason_as_a_quota_e
     """The whole path from the CLI's exit through the model's stream to the run directory: only
     the CLI is a stand-in, printing the refusal and exiting 1 as the real one does."""
     from lionagi import Branch
-    from lionagi.providers.anthropic import claude_code as cc
+    from lionhub.providers.anthropic import claude_code as cc
 
     operate = Branch.operate
     _wire_agent_stubs(monkeypatch, tmp_path)

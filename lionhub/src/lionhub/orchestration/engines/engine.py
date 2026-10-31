@@ -38,8 +38,8 @@ from lionagi.session.signal import Signal
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
-    from lionagi.providers._cli_subprocess import SpawnedProcess
     from lionagi.session.branch import Branch
+    from lionhub.providers._cli_subprocess import SpawnedProcess
 
 logger = logging.getLogger("lionagi.engines")
 EventCallback = Callable[[dict[str, Any]], Any]
@@ -1185,7 +1185,7 @@ class EngineRun:
         still ours, but the direct child is killed through its own handle.
         """
 
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _end_group_with_evidence,
             _witnesses_for_spawn,
         )
@@ -1213,7 +1213,7 @@ class EngineRun:
         can end the survivors ever ran. The group's own membership is therefore
         what decides: no surviving witness means there is nothing left to end.
         """
-        from lionagi.providers._cli_subprocess import _witnesses_for_spawn  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import _witnesses_for_spawn  # noqa: PLC0415
 
         live: list[_TrackedCLIProcess] = []
         dead: list[int] = []
@@ -1249,7 +1249,7 @@ class EngineRun:
         exited on its own.
         """
 
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _ChildGroupCleanup,
             end_child_group,
         )
@@ -2163,7 +2163,7 @@ class Engine:
         # asyncio.shield keeps the export running outside the cancelled scope;
         # the hard timeout bounds it so a hung synthesis call can't extend the run.
         partial_coro = self._partial_export(run, *args, **kwargs)
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _observe_run_cli_spawns,
         )
 
@@ -2230,7 +2230,7 @@ class Engine:
             watchdog = asyncio.ensure_future(run._deadline_watchdog())
         # Wrapping _run() in a task lets the deadline bound *all* in-flight work —
         # sequential awaits inside _run(), not just spawned background tasks.
-        from lionagi.providers._cli_subprocess import (  # noqa: PLC0415
+        from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
             _observe_run_cli_spawns,
         )
 

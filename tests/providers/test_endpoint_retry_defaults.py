@@ -8,19 +8,19 @@ from importlib import import_module
 import pytest
 
 ENDPOINTS = [
-    ("lionagi.providers.exa.contents", "ExaContentsEndpoint"),
-    ("lionagi.providers.exa.find_similar", "ExaFindSimilarEndpoint"),
-    ("lionagi.providers.exa.search", "ExaSearchEndpoint"),
-    ("lionagi.providers.firecrawl.crawl", "FirecrawlCrawlEndpoint"),
-    ("lionagi.providers.firecrawl.map", "FirecrawlMapEndpoint"),
-    ("lionagi.providers.firecrawl.scrape", "FirecrawlScrapeEndpoint"),
-    ("lionagi.providers.groq.audio_transcription", "GroqAudioTranscriptionEndpoint"),
-    ("lionagi.providers.openai.audio", "OpenaiAudioSpeechEndpoint"),
-    ("lionagi.providers.openai.audio", "OpenaiAudioTranscriptionEndpoint"),
-    ("lionagi.providers.openai.images", "OpenaiImageGenerationEndpoint"),
-    ("lionagi.providers.openai.images", "OpenaiImageEditEndpoint"),
-    ("lionagi.providers.tavily.search", "TavilySearchEndpoint"),
-    ("lionagi.providers.tavily.search", "TavilyExtractEndpoint"),
+    ("lionhub.providers.exa.contents", "ExaContentsEndpoint"),
+    ("lionhub.providers.exa.find_similar", "ExaFindSimilarEndpoint"),
+    ("lionhub.providers.exa.search", "ExaSearchEndpoint"),
+    ("lionhub.providers.firecrawl.crawl", "FirecrawlCrawlEndpoint"),
+    ("lionhub.providers.firecrawl.map", "FirecrawlMapEndpoint"),
+    ("lionhub.providers.firecrawl.scrape", "FirecrawlScrapeEndpoint"),
+    ("lionhub.providers.groq.audio_transcription", "GroqAudioTranscriptionEndpoint"),
+    ("lionhub.providers.openai.audio", "OpenaiAudioSpeechEndpoint"),
+    ("lionhub.providers.openai.audio", "OpenaiAudioTranscriptionEndpoint"),
+    ("lionhub.providers.openai.images", "OpenaiImageGenerationEndpoint"),
+    ("lionhub.providers.openai.images", "OpenaiImageEditEndpoint"),
+    ("lionhub.providers.tavily.search", "TavilySearchEndpoint"),
+    ("lionhub.providers.tavily.search", "TavilyExtractEndpoint"),
 ]
 
 

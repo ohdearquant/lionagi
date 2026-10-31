@@ -6,7 +6,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from lionagi.providers.openai.codex import CodexCodeRequest, toml_override_value
+from lionhub.providers.openai.codex import CodexCodeRequest, toml_override_value
 
 
 def _git(cwd: Path, *args: str) -> str:

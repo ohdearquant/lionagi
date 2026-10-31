@@ -113,7 +113,7 @@ async def test_fold_summary_sends_projected_tool_source_through_real_endpoint(mo
 
     import yaml
 
-    from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
+    from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
     from tests.cli.test_agent_api_provider import _last_user_text, _text
 
     hidden = "HIDDEN-MIDDLE-ONLY-7f1f0c"
@@ -390,8 +390,8 @@ async def test_bounded_sixteen_undelivered_results_reach_one_real_request(monkey
     from lionagi.agent.context_fold import install_context_fold
     from lionagi.cli.agent import _tool_results
     from lionagi.protocols.messages import ActionResponse
-    from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
     from lionagi.service.connections.api_calling import estimate_payload_input_tokens
+    from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
     from tests.cli.test_agent_api_provider import _text
     from tests.cli.test_api_leg_bounded_results import _check_output, _sent_results
 
@@ -685,8 +685,8 @@ async def test_bounded_forecast_differs_from_long_actual_instruction_without_cut
     from lionagi.agent.context_fold import install_context_fold
     from lionagi.operations.chat._prepare import _prepare_run_kwargs
     from lionagi.operations.types import ChatParam
-    from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
     from lionagi.service.connections.api_calling import estimate_payload_input_tokens
+    from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
     from tests.cli.test_api_leg_bounded_results import _check_output, _sent_results
     from tests.cli.test_api_leg_unset_payload_identity import _payload_text
 
@@ -761,8 +761,8 @@ async def test_bounded_unrenderable_value_refuses_before_any_clip(monkeypatch):
 @pytest.mark.asyncio
 async def test_bounded_recovery_page_is_clip_protected_until_main_completion(monkeypatch):
     from lionagi.agent.context_fold import install_context_fold
-    from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
     from lionagi.tools.context.context import ContextTool
+    from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
     from tests.cli.test_agent_api_provider import _text
     from tests.cli.test_api_leg_bounded_results import _sent_results
 

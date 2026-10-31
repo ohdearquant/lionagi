@@ -453,7 +453,7 @@ class TestiModel:
         imodel = base_imodel
 
         # NOTE: request_options removed due to incorrect role literals in generated models
-        from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
+        from lionhub.providers.openai.chat import OpenAIChatCompletionsRequest
 
         assert imodel.request_options == OpenAIChatCompletionsRequest
 

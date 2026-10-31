@@ -24,10 +24,10 @@ import lionagi.cli.orchestrate._orchestration as orch_mod
 from lionagi.cli._providers import AgentProfile
 from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-from lionagi.providers.openai import _codex_project_layers as project_layers
-from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+from lionhub.providers.openai import _codex_project_layers as project_layers
+from lionhub.providers.openai import codex as codex_mod
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 
 @pytest.fixture
@@ -718,7 +718,7 @@ async def test_a_codex_synthesis_branch_handed_an_empty_set_takes_no_effort_from
 @pytest.mark.asyncio
 async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(tmp_run, codex_home):
     from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     codex_home.write_config({})
     env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")

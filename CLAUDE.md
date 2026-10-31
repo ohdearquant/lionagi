@@ -50,7 +50,7 @@ Override: `branch.operate(instruction=..., middle=my_callable)`. Force stream: `
 
 ### Service Layer (`service/`)
 
-**iModel** wraps any provider via `service/connections/match_endpoint.py`. Providers live in `lionagi/providers/`, one package each: chat/model — `openai`, `anthropic`, `google`, `deepseek`, `groq`, `openrouter`, `ollama`, `lattice`, `nvidia_nim`, `perplexity`; search/retrieval — `exa`, `tavily`, `firecrawl`; framework and CLI integrations — `ag2`, `pi`.
+**iModel** wraps any provider via `service/connections/match_endpoint.py`. Providers live in `lionhub/src/lionhub/providers/`, one package each: chat/model — `openai`, `anthropic`, `google`, `deepseek`, `groq`, `openrouter`, `ollama`, `lattice`, `nvidia_nim`, `perplexity`; search/retrieval — `exa`, `tavily`, `firecrawl`; framework and CLI integrations — `ag2`, `pi`.
 
 ### Operations (`operations/`)
 

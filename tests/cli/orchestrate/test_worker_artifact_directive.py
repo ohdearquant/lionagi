@@ -247,7 +247,7 @@ def _codex_worker_kwargs(tmp_path, *, team_data=None, light=False, provider="cod
 
 
 def _codex_worker_args(tmp_path, *, team_data=None, light=False, provider="codex") -> list[str]:
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     kwargs = _codex_worker_kwargs(tmp_path, team_data=team_data, light=light, provider=provider)
     request = CodexCodeRequest(prompt="work", **kwargs)
@@ -880,7 +880,7 @@ async def _spawned_branch_kwargs(
 async def test_a_spawned_light_codex_worker_gets_no_extra_writable_root_and_starts(
     tmp_path, monkeypatch
 ):
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, "light")
 
@@ -924,7 +924,7 @@ async def test_an_unassigned_spawn_of_a_light_orchestrator_runs_heavy(
     orchestrator itself, is cloned from the orchestrator's branch. The orchestrator's class
     confines only its own process, so the spawn runs as a bare worker: heavy, with the
     project root."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     kwargs = await _spawned_branch_kwargs(
         tmp_path, monkeypatch, "light", from_orchestrator=True, emitted_by=emitted_by
@@ -940,7 +940,7 @@ async def test_an_independent_spawn_a_light_worker_asks_for_stays_light(tmp_path
     """An independent request naming no assignee is cloned from the orchestrator's branch,
     here a heavy one. The worker that asked is light, so the spawn is light too: asking for
     an agent is not a way out of the asking worker's class."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     kwargs = await _spawned_branch_kwargs(
         tmp_path, monkeypatch, DEFAULT_WORKLOAD, emitted_by="light"
@@ -954,7 +954,7 @@ async def test_an_independent_spawn_a_light_worker_asks_for_stays_light(tmp_path
 async def test_an_independent_spawn_a_heavy_worker_asks_for_runs_heavy(tmp_path, monkeypatch):
     """The same request from a heavy worker under a light orchestrator runs heavy, with the
     project root: the orchestrator's class does not reach the agents its workers ask for."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     kwargs = await _spawned_branch_kwargs(
         tmp_path, monkeypatch, "light", emitted_by=DEFAULT_WORKLOAD
@@ -1042,7 +1042,7 @@ async def test_a_dependent_spawn_a_light_worker_asks_for_on_another_engine_runs_
     """A dependent request naming no assignee is cloned from the branch of the worker that
     asked, so under a Claude Code orchestrator a light codex worker's request runs as a
     light codex agent and is not refused."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     kwargs = await _spawned_branch_kwargs(
         tmp_path,
@@ -1319,7 +1319,7 @@ async def test_a_spawned_light_codex_team_worker_is_refused_before_it_starts(tmp
     for a reactive spawn as for a planned worker."""
     from lionagi._errors import CLIInputRefusedError
     from lionagi.cli import team as team_module
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     teams_dir = tmp_path / "state" / "teams"
     teams_dir.mkdir(parents=True)

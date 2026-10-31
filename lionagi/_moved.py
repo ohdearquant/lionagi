@@ -49,6 +49,7 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.dispatch", "lionhub.orchestration.dispatch", "0.37.0", "2.0.0"),
     Moved("lionagi.work", "lionhub.orchestration.work", "0.37.0", "2.0.0"),
     Moved("lionagi.mcp", "lionhub.serve.mcp", "0.37.0", "2.0.0"),
+    Moved("lionagi.providers", "lionhub.providers", "0.37.0", "2.0.0"),
     Moved("lionagi.providers._provider_errors", "lionagi._provider_errors", "0.37.0", "2.0.0"),
     Moved(
         "lionagi.providers._secret_resolution",
@@ -59,6 +60,12 @@ MOVED: tuple[Moved, ...] = (
     Moved(
         "lionagi.providers._subagent_admission",
         "lionagi.service._subagent_admission",
+        "0.37.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.providers.openai._chat_schemas",
+        "lionagi.service.connections._chat_schemas",
         "0.37.0",
         "2.0.0",
     ),

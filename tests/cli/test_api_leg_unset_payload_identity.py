@@ -26,15 +26,15 @@ from lionagi.cli.agent import _api_loop_pass, _install_api_input_cap, _profile_a
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages import ActionResponse, Instruction, Message
-from lionagi.providers.anthropic.messages import (
-    AnthropicMessagesEndpoint,
-    CreateMessageRequest,
-)
 from lionagi.service._prompt_cache import cache_anchors, protection
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import CodingToolkit
 from lionagi.tools.context.context import _result_text
+from lionhub.providers.anthropic.messages import (
+    AnthropicMessagesEndpoint,
+    CreateMessageRequest,
+)
 from tests.cli.test_agent_api_provider import (
     _LNDL_READ,
     _answer,
@@ -79,7 +79,7 @@ _SOURCE_PATHS = (
     "lionagi/protocols/action/function_calling.py",
     "lionagi/tools/file/reader.py",
     "lionagi/service/imodel.py",
-    "lionagi/providers/anthropic/messages.py",
+    "lionhub/src/lionhub/providers/anthropic/messages.py",
     "lionagi/tools/coding.py",
     "lionagi/tools/context/context.py",
     "tests/cli/test_agent_api_provider.py",

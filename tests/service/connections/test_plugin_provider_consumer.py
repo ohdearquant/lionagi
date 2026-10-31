@@ -783,7 +783,7 @@ class TestPluginProviderStaleSnapshotRegression:
 
 class TestBuiltinProviderRestoration:
     def test_builtin_endpoint_remains_registered_after_plugin_provider_tests(self):
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         result = match_endpoint(provider="openai", endpoint="chat")
 
@@ -798,7 +798,7 @@ class TestPluginProviderBuiltinCollision:
     def test_builtin_wins_when_a_plugin_declares_the_same_provider(self, write_plugin, caplog):
         import logging
 
-        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+        from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
         # "openai" collides with a built-in; the plugin also declares an
         # unrelated provider so a genuine miss (below) triggers import of

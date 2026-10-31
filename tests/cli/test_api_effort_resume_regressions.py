@@ -14,7 +14,7 @@ from tests.cli.test_agent_api_provider import leg as leg
 async def test_profile_effort_drop_removes_persisted_effort_from_resumed_payload(leg, monkeypatch):
     from lionagi import Branch
     from lionagi.cli._runs import find_branch
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     profile = _profile(api_tools="read")
@@ -125,7 +125,7 @@ async def test_openai_resume_on_non_reasoning_model_handles_stored_effort(
     from lionagi import Branch
     from lionagi._errors import ConfigurationError
     from lionagi.cli._runs import find_branch
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     payloads = []

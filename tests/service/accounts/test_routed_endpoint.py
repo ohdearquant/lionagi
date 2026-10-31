@@ -23,7 +23,6 @@ import lionagi.config as config_module
 import lionagi.service.accounts._ledger as ledger_module
 import lionagi.service.accounts._router as router_module
 from lionagi.config import AppSettings
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.accounts._credentials import CredentialSources
 from lionagi.service.accounts._ledger import CredentialLedger
 from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode, Scope
@@ -32,6 +31,7 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import _branch_routing_context, iModel
 from lionagi.service.resilience import RetryConfig
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 KEY_NAME = "LIONAGI_ROUTER_CANARY"
 CANARY = "sk-ant-api03-canary-0123456789"
@@ -3994,8 +3994,8 @@ def test_renaming_many_masked_names_rebuilds_the_object_once():
     another would number it, and the object is rebuilt once, not once per name."""
     from pydantic import SecretStr
 
-    from lionagi.providers.anthropic.messages import _rename_masked_names
     from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.messages import _rename_masked_names
 
     key = SecretStr("sk-ant-api03-ab34567890123cd")
     run = "34567890123c"
@@ -4087,8 +4087,8 @@ def test_a_masked_name_taking_a_recorded_place_still_masks_its_value():
     such name, is no exemption: the value of the renamed entry is still masked."""
     from pydantic import SecretStr
 
-    from lionagi.providers.anthropic.messages import _mask_key_runs_in_strings
     from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.messages import _mask_key_runs_in_strings
 
     key = SecretStr(CANARY)
     run = CANARY[4:20]
@@ -4702,7 +4702,7 @@ REWRITTEN_SYSTEM = "Replacement instructions written after the marks were placed
 
 def _system_certificate(body) -> str:
     """The certificate of the last one-hour system block in a request body."""
-    from lionagi.providers.anthropic._prompt_cache import points
+    from lionhub.providers.anthropic._prompt_cache import points
 
     blocks, _ = points(body)
     keyed = [p for p in blocks if p.tier == "system" and p.markable and p.mark == "1h"]

@@ -9,10 +9,10 @@ from urllib.parse import urlsplit
 import pytest
 
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.google.chat import GeminiChatEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel
+from lionhub.providers.google.chat import GeminiChatEndpoint
 
 
 def _get_gemini_config(**overrides) -> EndpointConfig:
