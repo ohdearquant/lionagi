@@ -554,6 +554,11 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.runs"
     },
+    "lionagi.cli._schedule_parsing": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.schedule.parsing"
+    },
     "lionagi.cli._team_service": {
       "layer": "root",
       "owner": "cli",

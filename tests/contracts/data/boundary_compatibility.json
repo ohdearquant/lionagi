@@ -1867,6 +1867,11 @@
       "teardown_orchestration_persist",
       "teardown_persist"
     ],
+    "lionagi/cli/_schedule_parsing.py": [
+      "add_schedule_subparser",
+      "build_create_body",
+      "suggest_schedule_flag"
+    ],
     "lionagi/cli/_team_service.py": [
       "read_team_json"
     ],
@@ -3774,14 +3779,11 @@
       "validate_host_header"
     ],
     "lionagi/studio/cli.py": [
-      "add_schedule_subparser",
       "add_studio_subparser",
-      "build_create_body",
       "build_quick_create_parser",
       "run_schedule",
       "run_schedule_quick_create",
-      "run_studio",
-      "suggest_schedule_flag"
+      "run_studio"
     ],
     "lionagi/studio/config.py": [
       "OperatorExecutionRootResolution",
