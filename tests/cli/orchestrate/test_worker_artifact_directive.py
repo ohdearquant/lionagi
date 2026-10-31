@@ -19,7 +19,7 @@ from lionagi.cli.orchestrate._orchestration import (
     _emit_worker_artifact_report,
     collect_worker_artifacts,
 )
-from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
+from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 
 # Half 1: the prompt names the directory
 

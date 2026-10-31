@@ -186,7 +186,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 # Enforce shared helpers only in the migrated import and concurrency modules.
-"!lionagi/{_auto,agent/settings,_class_registry,cli/engine,cli/machine,cli/main,cli/monitor,cli/orchestrate/_notify,providers/_subagent_admission,service/connections/provider_config,service/connections/registry,state/lifecycle/callbacks,state/lifecycle/notify_settings,studio/registry,studio/scheduler/engine,studio/services/admin}.py" = ["TID251"]
+"!lionagi/{_auto,agent/settings,_class_registry,cli/engine,cli/machine,cli/main,cli/monitor,cli/orchestrate/_notify,service/_subagent_admission,service/connections/provider_config,service/connections/registry,state/lifecycle/callbacks,state/lifecycle/notify_settings,studio/registry,studio/scheduler/engine,studio/services/admin}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)

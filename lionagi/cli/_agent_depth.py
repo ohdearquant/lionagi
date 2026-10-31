@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from lionagi.providers._subagent_admission import (
+from lionagi.service._subagent_admission import (
     AGENT_DEPTH_ENV,
     refuse_nested_agent,
     set_child_agent_depth,

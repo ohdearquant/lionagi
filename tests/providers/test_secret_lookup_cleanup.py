@@ -11,7 +11,7 @@ import sys
 import anyio
 import pytest
 
-from lionagi.providers import _secret_resolution as secret_lookup
+from lionagi.service.accounts import _secret_resolution as secret_lookup
 
 pytestmark = pytest.mark.asyncio
 
@@ -208,7 +208,7 @@ async def test_cleanup_bounds_wait_and_drain_and_closes_pipe(
     install_fake, caplog, path, overflow, stall_read, stall_wait, failure
 ):
     proc = install_fake(_Child(stall_read=stall_read, stall_wait=stall_wait, overflow=overflow))
-    caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
 
     result = await asyncio.wait_for(_lookup(path, proc), timeout=0.75)
 
@@ -237,7 +237,7 @@ async def test_missing_or_closed_stdout_transport_is_safe(install_fake, caplog, 
     proc = install_fake(
         _Child(stall_read=True, stall_wait=False, overflow=True, pipe_kind=pipe_kind)
     )
-    caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
 
     result = await asyncio.wait_for(_lookup("strict", proc), timeout=0.75)
 
@@ -272,7 +272,7 @@ async def test_wait_and_drain_run_concurrently_without_cleanup_timeout(install_f
             rendezvous=True,
         )
     )
-    caplog.set_level(logging.WARNING, logger=secret_lookup.__name__)
+    caplog.set_level(logging.WARNING, logger=secret_lookup.logger.name)
 
     result = await asyncio.wait_for(_lookup(path, proc), timeout=0.75)
 
@@ -359,7 +359,7 @@ async def test_active_cancellation_survives_cleanup_failure_without_leaking_task
     proc = install_fake(
         _Child(stall_read=fail_on == "wait", stall_wait=fail_on == "drain", fail_on=fail_on)
     )
-    caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
     existing_tasks = asyncio.all_tasks()
     task = asyncio.create_task(_lookup(path, proc))
     await asyncio.wait_for(proc.active_started.wait(), timeout=0.5)
@@ -390,7 +390,7 @@ async def test_cancellation_during_cleanup_survives_later_cleanup_failure(
             hold_failure=True,
         )
     )
-    caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
     existing_tasks = asyncio.all_tasks()
     task = asyncio.create_task(_lookup(path, proc))
     await asyncio.wait_for(proc.killed.wait(), timeout=0.5)
@@ -436,7 +436,7 @@ async def test_cleanup_failure_returns_lookup_outcome_and_finalizes_sibling(
             initial_failure=outcome == "failed_to_run",
         )
     )
-    caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
     existing_tasks = asyncio.all_tasks()
 
     result = await asyncio.wait_for(_lookup(path, proc), timeout=1.5)
@@ -474,7 +474,7 @@ async def test_drain_failure_after_wait_finishes_closes_stdout(
             fail_on="drain-after-wait",
         )
     )
-    caplog.set_level(logging.DEBUG, logger=secret_lookup.__name__)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
     existing_tasks = asyncio.all_tasks()
 
     result = await asyncio.wait_for(_lookup(path, proc), timeout=1.5)

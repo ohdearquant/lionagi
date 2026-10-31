@@ -21,7 +21,7 @@ from lionagi.cli._agent_depth import (
     stamp_agent_depth,
     stamp_worker_depth,
 )
-from lionagi.providers import _subagent_admission as admission
+from lionagi.service import _subagent_admission as admission
 
 
 @pytest.fixture(autouse=True)

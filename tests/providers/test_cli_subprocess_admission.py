@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.providers import _subagent_admission as admission
 from lionagi.providers._cli_subprocess import ndjson_from_cli
-from lionagi.providers._subagent_admission import (
+from lionagi.service import _subagent_admission as admission
+from lionagi.service._subagent_admission import (
     SubagentAdmissionRefusedError,
     subagent_admission_status,
 )

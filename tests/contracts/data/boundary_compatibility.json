@@ -43,12 +43,12 @@
     "lionagi/operations/flow.py": [
       "os.environ.get:\"LIONAGI_MAX_CONCURRENCY\""
     ],
-    "lionagi/providers/_subagent_admission.py": [
-      "os.environ.get:AGENT_DEPTH_ENV",
-      "os.environ:AGENT_DEPTH_ENV"
-    ],
     "lionagi/providers/anthropic/claude_code.py": [
       "os.environ.get:'PATH'"
+    ],
+    "lionagi/service/_subagent_admission.py": [
+      "os.environ.get:AGENT_DEPTH_ENV",
+      "os.environ:AGENT_DEPTH_ENV"
     ],
     "lionagi/service/accounts/_credentials.py": [
       "os.environ:key_env"
@@ -247,7 +247,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -449,7 +449,7 @@
       "from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS",
       "from lionagi.libs.path_safety import validate_path_component as validate_path_component",
       "from lionagi.ln.concurrency import is_cancelled, run_async",
-      "from lionagi.providers._subagent_admission import refuse_nested_agent",
+      "from lionagi.service._subagent_admission import refuse_nested_agent",
       "from .._logging import hint, log_error",
       "from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args",
       "from .._orchestrate_parsing import add_orchestrate_subparser as add_orchestrate_subparser",
@@ -932,12 +932,6 @@
     "lionagi/providers/_multipart.py": [
       "__all__ = (\"_replayable_file_factory\",)"
     ],
-    "lionagi/providers/_secret_resolution.py": [
-      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
-    ],
-    "lionagi/providers/_subagent_admission.py": [
-      "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
-    ],
     "lionagi/providers/ag2/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AG2AgentRequest\": (\"agent\", None),\n    \"AG2BetaEndpoint\": (\"agent\", None),\n    \"AG2GroupChatEndpoint\": (\"groupchat\", None),\n    \"AG2GroupChatRequest\": (\"groupchat\", None),\n    \"AG2NlipEndpoint\": (\"nlip\", None),\n    \"AG2NlipRequest\": (\"nlip\", None),\n    \"AgentConfig\": (\"agent\", None),\n    \"AgentSpec\": (\"groupchat\", None),\n    \"GroupChatSpec\": (\"groupchat\", None),\n    \"HandoffCondition\": (\"groupchat\", None),\n    \"ResearchPlan\": (\"groupchat\", None),\n    \"_assert_nlip_url_safe\": (\"nlip\", None),\n    \"build_group_chat\": (\"groupchat\", None),\n    \"call_nlip_remote\": (\"nlip\", None),\n    \"run_beta_agent\": (\"agent\", None),\n    \"stream_group_chat\": (\"groupchat\", None),\n}",
@@ -1204,6 +1198,9 @@
     "lionagi/service/_prompt_cache.py": [
       "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
     ],
+    "lionagi/service/_subagent_admission.py": [
+      "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
+    ],
     "lionagi/service/accounts/__init__.py": [
       "__all__ = ()"
     ],
@@ -1221,6 +1218,9 @@
     ],
     "lionagi/service/accounts/_scope.py": [
       "__all__ = (\"current_scope\", \"routing_scope\")"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
     ],
     "lionagi/service/accounts/_types.py": [
       "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
@@ -2984,24 +2984,6 @@
       "unencodable_env_entry",
       "validate_message_prompt"
     ],
-    "lionagi/providers/_secret_resolution.py": [
-      "OneNameLookup",
-      "ResolvedSecretLookup",
-      "SecretLookupResolution",
-      "fill_declared_secrets",
-      "fill_declared_secrets_and_names",
-      "lookup_one_name",
-      "resolve_secret_lookup_config"
-    ],
-    "lionagi/providers/_subagent_admission.py": [
-      "SubagentLease",
-      "admit_subagent",
-      "child_agent_depth",
-      "engine_cap_env",
-      "refuse_nested_agent",
-      "set_child_agent_depth",
-      "subagent_admission_status"
-    ],
     "lionagi/providers/ag2/_config.py": [
       "AG2Configs"
     ],
@@ -3338,6 +3320,15 @@
       "protection",
       "settle"
     ],
+    "lionagi/service/_subagent_admission.py": [
+      "SubagentLease",
+      "admit_subagent",
+      "child_agent_depth",
+      "engine_cap_env",
+      "refuse_nested_agent",
+      "set_child_agent_depth",
+      "subagent_admission_status"
+    ],
     "lionagi/service/accounts/_credentials.py": [
       "CredentialSources",
       "resolve_account_key"
@@ -3376,6 +3367,15 @@
     "lionagi/service/accounts/_scope.py": [
       "current_scope",
       "routing_scope"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "OneNameLookup",
+      "ResolvedSecretLookup",
+      "SecretLookupResolution",
+      "fill_declared_secrets",
+      "fill_declared_secrets_and_names",
+      "lookup_one_name",
+      "resolve_secret_lookup_config"
     ],
     "lionagi/service/accounts/_types.py": [
       "AccountRoutingError",

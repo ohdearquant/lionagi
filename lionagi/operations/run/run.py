@@ -25,7 +25,7 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.providers._subagent_admission import _on_subagent_admission
+from lionagi.service._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
@@ -207,7 +207,7 @@ async def _stream_with_liveness(
                 is_liveness_boundary, wait_for = first_output_bound(current_time())
 
                 def _time_from_admission(admitted: bool) -> None:
-                    # Called by the CLI spawn (lionagi.providers._subagent_admission, through
+                    # Called by the CLI spawn (lionagi.service._subagent_admission, through
                     # the context set below) when a worker starts waiting for a machine-wide
                     # slot and when it is admitted. Only the caller's own deadline runs during
                     # the wait; the window for the first output opens at admission, and so does

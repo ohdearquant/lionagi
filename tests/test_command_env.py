@@ -131,7 +131,7 @@ def test_unsupported_settings_name_translations_are_explicitly_refused(shape):
 def test_owned_sources_supply_names_without_constructing_or_resolving_secrets(monkeypatch):
     import lionagi._settings as settings_source
     import lionagi.config as config
-    import lionagi.providers._secret_resolution as secret_resolution
+    import lionagi.service.accounts._secret_resolution as secret_resolution
     from lionagi._command_env_metadata import configured_command_env_names
     from lionagi.service.connections.registry import EndpointRegistry
 

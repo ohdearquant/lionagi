@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from lionagi.providers import _secret_resolution as lookup_module
+from lionagi.service.accounts import _secret_resolution as lookup_module
 
 pytestmark = pytest.mark.asyncio
 
