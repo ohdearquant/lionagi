@@ -3,6 +3,8 @@
 
 """Tests for lionagi/operations/chat/_prepare.py::_prepare_run_kwargs."""
 
+import re
+
 import pytest
 from pydantic import BaseModel
 
@@ -514,6 +516,160 @@ def test_without_the_placement_context_blocks_are_shown_once_and_not_kept():
     assert "RECALLED" in first["messages"][0]["content"]
     assert "RECALLED" not in str(second["messages"])
     assert "context_blocks" not in ins.metadata
+
+
+@pytest.mark.parametrize("with_system", [False, True], ids=["no-system", "system"])
+@pytest.mark.parametrize("with_history", [False, True], ids=["no-history", "history"])
+def test_uncached_context_blocks_are_sent_once_in_first_instruction(with_system, with_history):
+    branch = Branch(system="SYSTEM-POLICY") if with_system else Branch()
+    if with_history:
+        branch.msgs.add_message(instruction="EARLIER-INSTRUCTION")
+        branch.msgs.add_message(assistant_response="EARLIER-RESPONSE")
+
+    ins, request = _prepare_run_kwargs(
+        branch,
+        "CURRENT-INSTRUCTION",
+        ChatParam(),
+        imodel=_Model(False),
+        context_blocks=["CONTEXT-BLOCK-1", "CONTEXT-BLOCK-2"],
+    )
+
+    messages = request["messages"]
+    assert messages[0]["role"] == "user"
+    first = str(messages[0]["content"])
+    assert "CONTEXT-BLOCK-1" in first
+    assert "CONTEXT-BLOCK-2" in first
+    assert str(messages).count("CONTEXT-BLOCK-1") == 1
+    assert str(messages).count("CONTEXT-BLOCK-2") == 1
+    assert "CURRENT-INSTRUCTION" in str(messages[-1]["content"])
+    if with_history:
+        assert "EARLIER-INSTRUCTION" in first
+        assert "EARLIER-RESPONSE" in str(messages)
+    if with_system:
+        assert "SYSTEM-POLICY" in first
+    assert "context_blocks" not in ins.metadata
+
+
+@pytest.mark.parametrize("with_system", [False, True], ids=["no-system", "system"])
+def test_uncached_context_blocks_do_not_leak_into_later_turns(with_system):
+    branch = Branch(system="SYSTEM-POLICY") if with_system else Branch()
+    first_ins, first = _prepare_run_kwargs(
+        branch, "FIRST-TASK", ChatParam(), imodel=_Model(False), context_blocks=["FIRST-BLOCK"]
+    )
+    branch.msgs.add_message(instruction=first_ins)
+    branch.msgs.add_message(assistant_response="FIRST-ANSWER")
+
+    second_ins, second = _prepare_run_kwargs(
+        branch, "SECOND-TASK", ChatParam(), imodel=_Model(False), context_blocks=["SECOND-BLOCK"]
+    )
+    branch.msgs.add_message(instruction=second_ins)
+    branch.msgs.add_message(assistant_response="SECOND-ANSWER")
+    _, third = _prepare_run_kwargs(branch, "THIRD-TASK", ChatParam(), imodel=_Model(False))
+
+    assert "FIRST-BLOCK" in str(first["messages"][0]["content"])
+    assert "FIRST-BLOCK" not in str(second["messages"])
+    assert "SECOND-BLOCK" in str(second["messages"][0]["content"])
+    assert "FIRST-BLOCK" not in str(third["messages"])
+    assert "SECOND-BLOCK" not in str(third["messages"])
+    assert "context_blocks" not in first_ins.metadata
+    assert "context_blocks" not in second_ins.metadata
+    assert "FIRST-TASK" in str(third["messages"])
+    assert "SECOND-TASK" in str(third["messages"])
+
+
+@pytest.mark.parametrize("with_system", [False, True], ids=["no-system", "system"])
+@pytest.mark.parametrize("with_history", [False, True], ids=["current", "historical"])
+@pytest.mark.parametrize("with_image", [False, True], ids=["text", "image"])
+def test_uncached_context_blocks_with_plain_content_preserve_rendering(
+    with_system, with_history, with_image
+):
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch(system="SYSTEM-POLICY") if with_system else Branch()
+    content = {"plain_content": "PLAIN-TEXT"}
+    if with_image:
+        content.update(images=["data:image/png;base64,YWJj"], image_detail="high")
+    ins = Instruction(content=content, sender="user", recipient="assistant")
+    original = ins.to_dict()
+    if with_history:
+        branch.msgs.add_message(instruction=ins)
+        branch.msgs.add_message(assistant_response="EARLIER-RESPONSE")
+        _, request = _prepare_run_kwargs(
+            branch, "CURRENT-TASK", ChatParam(), imodel=_Model(False), context_blocks=["BLOCK"]
+        )
+        assert "CURRENT-TASK" in str(request["messages"][-1]["content"])
+    else:
+        _, request = _prepare_run_kwargs(
+            branch, None, ChatParam(), ins=ins, imodel=_Model(False), context_blocks=["BLOCK"]
+        )
+
+    first = str(request["messages"][0]["content"])
+    assert "PLAIN-TEXT" in first
+    assert "BLOCK" in first
+    assert str(request["messages"]).count("BLOCK") == 1
+    if with_image:
+        assert "data:image/png;base64,YWJj" in first
+        assert "high" in first
+    assert ins.to_dict() == original
+
+
+@pytest.mark.parametrize("with_system", [False, True], ids=["no-system", "system"])
+def test_uncached_blocks_do_not_mask_empty_current_instruction(monkeypatch, with_system):
+    branch = Branch(system="SYSTEM-POLICY") if with_system else Branch()
+    branch.msgs.add_message(instruction="EARLIER-TASK")
+    branch.msgs.add_message(assistant_response="EARLIER-RESPONSE")
+    monkeypatch.setattr(InstructionContent, "rendered", property(lambda self: ""))
+
+    with pytest.raises(EmptyOutgoingContentError, match="instruction_len="):
+        _prepare_run_kwargs(
+            branch, "CURRENT-TASK", ChatParam(), imodel=_Model(False), context_blocks=["BLOCK"]
+        )
+
+
+def test_uncached_blocks_follow_history_that_starts_with_an_assistant_message():
+    branch = Branch()
+    branch.msgs.add_message(assistant_response="PREVIOUS-ANSWER")
+
+    _, request = _prepare_run_kwargs(
+        branch, "CURRENT-TASK", ChatParam(), imodel=_Model(False), context_blocks=["BLOCK"]
+    )
+
+    messages = request["messages"]
+    assert messages[0]["role"] == "assistant"
+    assert "PREVIOUS-ANSWER" in str(messages[0]["content"])
+    instructions = [message for message in messages if message["role"] == "user"]
+    assert len(instructions) == 1
+    assert "CURRENT-TASK" in str(instructions[0]["content"])
+    assert "BLOCK" in str(instructions[0]["content"])
+    assert "BLOCK" not in str(messages[0]["content"])
+
+
+def test_uncached_blocks_preserve_structured_historical_guidance():
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch()
+    historical = Instruction(
+        content={"instruction": "EARLIER-TASK", "guidance": {"rule": "KEEP-GUIDANCE"}},
+        sender="user",
+        recipient="assistant",
+    )
+    original = historical.to_dict()
+    branch.msgs.add_message(instruction=historical)
+    branch.msgs.add_message(assistant_response="EARLIER-ANSWER")
+
+    _, request = _prepare_run_kwargs(
+        branch,
+        "CURRENT-TASK",
+        ChatParam(),
+        imodel=_Model(False),
+        context_blocks=["BLOCK-ONE", "BLOCK-TWO"],
+    )
+
+    first = str(request["messages"][0]["content"])
+    assert "EARLIER-TASK" in first
+    assert "KEEP-GUIDANCE" in first
+    assert re.search(r"BLOCK-ONE\s*\n\s*BLOCK-TWO\s*\n\s*rule:\s*KEEP-GUIDANCE", first)
+    assert historical.to_dict() == original
 
 
 def test_a_history_instruction_names_a_tool_registered_after_it_was_sent():
