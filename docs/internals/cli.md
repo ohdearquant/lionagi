@@ -1352,8 +1352,8 @@ and `li o` report on one line with exit `1`.
 
 The process identity, signalling and recorded-worker cleanup helpers are defined in
 `lionagi/cli/_kill_service.py`. `kill.py` keeps the `li kill` parser, `_do_kill`, the
-`--all-stale` sweep and `run_kill`, and imports the helpers it uses back under their old
-names. The Studio cancel path and `li state doctor` import `kill_one`,
+`--all-stale` sweep and `run_kill`, and imports the helpers it uses from there under their
+public names. The Studio cancel path and `li state doctor` import `kill_one`,
 `list_running_children`, `check_pid_identity` and the related helpers from the new module.
 
 No standalone entries beyond the general ADR-0035 CAS-guard pattern documented under
