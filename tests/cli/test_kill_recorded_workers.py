@@ -346,6 +346,30 @@ async def test_resume_race_cancellation_conflict_never_signals_workers(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_cancellation_deadline_is_reported_and_never_signals_workers(monkeypatch):
+    import lionagi.cli.kill as module
+
+    db = _CleanupDB(status="running")
+
+    async def deadline_passed(session_id, generation, **kwargs):
+        raise TimeoutError()
+
+    monkeypatch.setattr(db, "cancel_session_if_worker_generation", deadline_passed)
+    sent = _stub_recorded_groups(monkeypatch, module)
+    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    errors: list[str] = []
+    monkeypatch.setattr(module, "log_error", errors.append)
+    result = await module._try_recorded_worker_cleanup(
+        db, db.session, user_reason="", grace_seconds=0
+    )
+    assert result == 1
+    assert errors == ["session session-test cancellation did not finish before the deadline"]
+    assert db.session["status"] == "running"
+    assert sent == []
+    assert db.settled == []
+
+
+@pytest.mark.asyncio
 async def test_cancellation_captures_only_present_runner_markers(monkeypatch):
     import lionagi.cli.kill as module
 

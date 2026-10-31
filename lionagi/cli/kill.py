@@ -675,6 +675,9 @@ async def _kill_one(
                     reason_summary=reason_summary,
                     evidence=evidence,
                 )
+            except TimeoutError:
+                cancel_status = "unavailable"
+                cancel_error = "session cancellation did not finish before the deadline"
             except Exception as exc:
                 cancel_status = "unavailable"
                 cancel_error = f"guarded cancellation unavailable: {exc}"
@@ -1025,6 +1028,9 @@ async def _try_recorded_worker_cleanup(
                     key: meta[key] for key in _RUNNER_IDENTITY_FIELDS if key in meta
                 },
             )
+        except TimeoutError:
+            log_error(f"session {sid[:12]} cancellation did not finish before the deadline")
+            return 1
         except Exception as exc:
             warn(f"  session {sid[:12]}: cancellation could not be confirmed ({exc})")
             return 1
