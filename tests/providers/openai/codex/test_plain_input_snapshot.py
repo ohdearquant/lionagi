@@ -317,7 +317,17 @@ FIELD_CASES: dict[str, tuple[object, object, object]] = {
 # by construction and one carried by a copy: pydantic coerces an ``env`` mapping (and its
 # keys and values) to plain text at construction, so a hostile value only reaches the
 # reduction through ``model_copy``. Each has its own test below.
-EXTRA_REDUCED_FIELDS: tuple[str, ...] = ("env",)
+EXTRA_REDUCED_FIELDS: tuple[str, ...] = ("env", "exclusive_mcp_names")
+
+
+def test_exclusive_names_reduce_hostile_copy_values(tmp_path):
+    request = _contained(tmp_path).model_copy(
+        update={"exclusive_mcp_names": [_TextWhoseStrLies("kept")]}
+    )
+    assert codex_mod._plain_request(request).exclusive_mcp_names == ["kept"]
+    request = request.model_copy(update={"exclusive_mcp_names": [1]})
+    with pytest.raises(TypeError, match="exclusive_mcp_names entry 0"):
+        codex_mod._plain_request(request)
 
 
 # A bool cannot be subclassed, so the hostile for a bool field is a non-bool value: the

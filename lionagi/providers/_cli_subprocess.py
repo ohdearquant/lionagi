@@ -24,6 +24,12 @@ from typing import Any
 from urllib.parse import unquote
 
 from lionagi._cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
+from lionagi._errors import (
+    CLIInputRefusedError,
+    ConfigurationError,
+    ContainmentRefusedError,
+    _ExclusiveMcpSelectionError,
+)
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
@@ -1291,6 +1297,7 @@ async def ndjson_from_cli(
     on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
     engine: str | None = None,
     workload: str = DEFAULT_WORKLOAD,
+    _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
     malformed final chunks. ``stdin_data`` overrides ``stdin`` and is written
@@ -1308,6 +1315,8 @@ async def ndjson_from_cli(
     # A request copied with model_copy(update=...) skips validation, and the spawn's own
     # encode error would hold the whole key or value, so the environment is read and
     # checked here, once, and that copy is what the fill and the spawn receive.
+    if _prepare_argv is not None and env is None:
+        env = dict(os.environ)
     if env is not None:
         env = env_as_the_spawn_encodes_it(env)
     # Every CLI provider spawns through here, so a secret the child must read
@@ -1360,6 +1369,7 @@ async def ndjson_from_cli(
     spawn_permitted = asyncio.Event()
 
     async def _spawn_and_register() -> tuple[asyncio.subprocess.Process, SpawnedProcess]:
+        nonlocal redaction_env, opaque_env, bounded_env
         child = None
         observed = None
         attempted = False
@@ -1367,6 +1377,34 @@ async def ndjson_from_cli(
             # Even an eager task factory cannot start the OS attempt before
             # the task is strongly retained by its admission and local owner.
             await spawn_permitted.wait()
+            if _prepare_argv is not None:
+                refusal = None
+                try:
+                    cmd[:] = _prepare_argv(spawn_env)
+                except Exception as exc:
+                    safe_types = (
+                        CLIInputRefusedError,
+                        ConfigurationError,
+                        ContainmentRefusedError,
+                        _ExclusiveMcpSelectionError,
+                        TypeError,
+                        ValueError,
+                    )
+                    error_type = type(exc) if type(exc) in safe_types else RuntimeError
+                    refusal = error_type(
+                        _redact_secrets_for_log(str(exc), redaction_env, opaque_env, bounded_env)
+                    )
+                if refusal is not None:
+                    # Raise outside the handler so the original exception and any
+                    # secret-bearing context do not escape on the exception chain.
+                    raise refusal
+                _require_cli_executable(cmd, cwd=cwd, env=spawn_env)
+                redaction_env = {
+                    **_secret_candidates(spawn_env, declared),
+                    **_cmd_secret_values(cmd),
+                }
+                opaque_env = _opaque_env_values(spawn_env, redaction_env)
+                bounded_env = _bounded_env_values(spawn_env, redaction_env)
             attempted = True
             child = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             try:
