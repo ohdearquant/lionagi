@@ -1998,6 +1998,7 @@ class Engine:
 
         if not self.judge_model:
             return True
+        refusal = None
         try:
             async with run._sem:
                 agent = await run.make_agent(
@@ -2032,7 +2033,6 @@ class Engine:
             # whose existing precedence must be preserved.
             pending: deque[object] = deque([exc])
             seen: dict[int, object] = {}
-            refusal = None
             visited = 0
             while pending and visited < _JUDGE_CHAIN_LIMIT:
                 cause = pending.popleft()
@@ -2076,15 +2076,19 @@ class Engine:
                     refusal_cause = refusal.__cause__
                 except Exception:  # noqa: BLE001 — unreadable links are skipped
                     refusal_cause = None
-                raise refusal from refusal_cause
-            # No refusal on the chain. A chain that loops back on itself, or one longer than
-            # the limit, lands here too, instead of walking forever. Under containment the
-            # refusal can arrive as any error type (an unreadable directory, a config the
-            # request model rejects), so an error is never read as a pass.
-            run.notify("judge_error", eid=eid, error=str(exc))
-            if self.contain_account_integrations:
-                raise
-            return True
+            else:
+                # No refusal on the chain. A chain that loops back on itself, or one longer than
+                # the limit, lands here too, instead of walking forever. Under containment the
+                # refusal can arrive as any error type (an unreadable directory, a config the
+                # request model rejects), so an error is never read as a pass.
+                run.notify("judge_error", eid=eid, error=str(exc))
+                if self.contain_account_integrations:
+                    raise
+                return True
+
+        # Raise after the handler so the outer error is not attached as context.
+        if refusal is not None:
+            raise refusal from refusal_cause
 
         if not allow:
             try:

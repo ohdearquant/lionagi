@@ -69,6 +69,46 @@ async def test_request_and_policy_refusals_are_not_admitted(refusal_type, contai
     assert caught.value is refusal
 
 
+@pytest.mark.parametrize("refusal_type", _REFUSALS, ids=lambda cls: cls.__name__)
+@pytest.mark.parametrize("shape", ["cause", "context", "group"])
+async def test_selected_refusal_does_not_expose_or_mutate_its_outer_error(refusal_type, shape):
+    secret = "outer-error-secret-marker"
+    refusal = refusal_type("refused")
+    refusal_cause = ValueError("safe refusal cause")
+    refusal.__cause__ = refusal_cause
+    other_link = RuntimeError("unchanged outer link")
+    if shape == "group":
+        outer = ExceptionGroup(secret, [refusal])
+        outer.__cause__ = other_link
+    else:
+        outer = RuntimeError(secret)
+        if shape == "cause":
+            outer.__cause__ = refusal
+            outer.__context__ = other_link
+        else:
+            outer.__context__ = refusal
+            outer.__cause__ = other_link
+    original_links = (outer.__cause__, outer.__context__)
+
+    with pytest.raises(refusal_type) as caught:
+        await _judge_raising(outer)
+
+    assert caught.value is refusal
+    assert refusal.__cause__ is refusal_cause
+    assert (outer.__cause__, outer.__context__) == original_links
+    pending = [caught.value]
+    seen = set()
+    while pending:
+        error = pending.pop()
+        if id(error) in seen:
+            continue
+        seen.add(id(error))
+        assert secret not in str(error)
+        pending.extend(link for link in (error.__cause__, error.__context__) if link is not None)
+        if isinstance(error, ExceptionGroup):
+            pending.extend(error.exceptions)
+
+
 def _chain_with_refusal_at(position, refusal, *, with_group):
     tail = ExceptionGroup("group", [refusal]) if with_group else refusal
     for index in range(position - (2 if with_group else 1)):
