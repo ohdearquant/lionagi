@@ -4334,6 +4334,34 @@ async def test_a_pending_cancellation_is_delivered_after_a_200_is_settled(
     assert _warm_rows(path) == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "outcome", "blocked"),
+    [
+        (401, "auth_required", "auth_required"),
+        (429, "rate_limited", None),
+    ],
+    ids=["401", "429"],
+)
+async def test_a_pending_cancellation_is_delivered_after_a_refused_status_is_recorded(
+    monkeypatch, tmp_path, status, outcome, blocked
+):
+    """The refusal arrives after the deadline, so a cancellation is pending when it is recorded."""
+    path, model, transport, _ = await _prime(
+        monkeypatch, tmp_path, [StubResponse(status, {"error": CANARY})]
+    )
+    _answer_late_shielded(model, transport)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(DEADLINE):
+            await model.endpoint.call(HOUR_REQUEST)
+
+    attempt = _attempts(path)[-1]
+    assert attempt[4] == outcome, attempt
+    assert _block_reason(path, attempt[1]) == blocked
+    assert _warm_rows(path) == []
+
+
 _ERROR_EVENT = {"type": "error", "error": {"type": "overloaded_error", "message": "x"}}
 _HOUR_MESSAGE_START = {
     "type": "message_start",
