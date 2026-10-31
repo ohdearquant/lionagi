@@ -389,7 +389,7 @@ async def test_cancellation_captures_only_present_runner_markers(monkeypatch):
     }
     sent = _stub_recorded_groups(monkeypatch, module)
     patched_unaddressable_pid_reason = lambda meta: None
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("gone", None))
     result = await module._try_recorded_worker_cleanup(
@@ -653,9 +653,9 @@ async def test_recursive_running_dead_runner_handles_children_before_parent(
         return await original_cancel(*args, **kwargs)
 
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_list_running_children", children)
+    monkeypatch.setattr(module, "list_running_children", children)
     monkeypatch.setattr(kill_service, "list_running_children", children)
-    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "kill_one", kill_one)
     monkeypatch.setattr(kill_service, "kill_one", kill_one)
     db.cancel_session_if_worker_generation = cancel
 
@@ -705,7 +705,7 @@ async def test_terminal_session_recursive_does_not_expand_to_children(monkeypatc
         return 0
 
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_list_running_children", children)
+    monkeypatch.setattr(module, "list_running_children", children)
     monkeypatch.setattr(kill_service, "list_running_children", children)
     monkeypatch.setattr(module, "_try_recorded_worker_cleanup", terminal)
     assert await module._do_kill("session-test", recursive=True) == 0
@@ -745,9 +745,9 @@ async def test_resolve_to_snapshot_resume_never_signals_or_cancels_new_runner(mo
 
     monkeypatch.setattr(db_mod, "StateDB", Context)
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_list_running_children", children)
+    monkeypatch.setattr(module, "list_running_children", children)
     monkeypatch.setattr(kill_service, "list_running_children", children)
-    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "kill_one", kill_one)
     monkeypatch.setattr(kill_service, "kill_one", kill_one)
     monkeypatch.setattr(module, "log_error", errors.append)
     monkeypatch.setattr(kill_service, "log_error", errors.append)
@@ -827,7 +827,7 @@ async def test_running_dead_runner_boot_mismatch_preserves_original_refusal(monk
     monkeypatch.setattr(db_mod, "StateDB", Context)
     monkeypatch.setattr(module, "_resolve_entity", resolve)
     patched_unaddressable_pid_reason = lambda meta: "boot_mismatch"
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(module, "warn", warnings.append)
     monkeypatch.setattr(kill_service, "warn", warnings.append)
@@ -866,7 +866,7 @@ async def _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid):
     sent = _stub_recorded_groups(monkeypatch, module)
     _serve_db(monkeypatch, module, db)
     patched_unaddressable_pid_reason = lambda meta: "boot_unverifiable"
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     patched_pid_alive = lambda _pid: True
     monkeypatch.setattr(module, "_pid_alive", patched_pid_alive)
@@ -919,7 +919,7 @@ async def test_recorded_workers_of_a_runner_this_host_cannot_judge_are_reported(
     db = _CleanupDB(status="running")
     warnings = []
     patched_unaddressable_pid_reason = lambda meta: reason
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(module, "warn", warnings.append)
     monkeypatch.setattr(kill_service, "warn", warnings.append)
@@ -947,7 +947,7 @@ async def test_no_unhandled_worker_report_without_live_recorded_workers(
         db.records = []
     warnings = []
     patched_unaddressable_pid_reason = lambda meta: reason
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(module, "warn", warnings.append)
     monkeypatch.setattr(kill_service, "warn", warnings.append)
@@ -993,7 +993,7 @@ async def test_unreadable_worker_records_still_kill_the_running_session(monkeypa
     monkeypatch.setattr(db_mod, "StateDB", Context)
     monkeypatch.setattr(module, "_resolve_entity", resolve)
     monkeypatch.setattr(module, "_try_recorded_worker_cleanup", recorded)
-    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "kill_one", kill_one)
     monkeypatch.setattr(kill_service, "kill_one", kill_one)
     monkeypatch.setattr(module, "warn", warnings.append)
     monkeypatch.setattr(kill_service, "warn", warnings.append)

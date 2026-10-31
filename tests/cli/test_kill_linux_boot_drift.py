@@ -138,7 +138,7 @@ def test_inherited_marker_cannot_rescue_a_linux_start_mismatch(monkeypatch):
     monkeypatch.setattr(kill_service, "raw_create_time", lambda _proc: 102.0)
     reasons = []
     assert (
-        kill_mod._check_pid_identity(
+        kill_mod.check_pid_identity(
             4242,
             "lionagi",
             expected_session_id="inherited",
@@ -155,7 +155,7 @@ def test_non_linux_mismatch_keeps_previous_verdict(monkeypatch):
     monkeypatch.setattr(psutil, "LINUX", False)
     monkeypatch.setattr(psutil, "Process", lambda _pid: object())
     monkeypatch.setattr(kill_service, "raw_create_time", lambda _proc: 102.0)
-    assert kill_mod._check_pid_identity(4242, "lionagi", expected_create_time=100.0) == "not_ours"
+    assert kill_mod.check_pid_identity(4242, "lionagi", expected_create_time=100.0) == "not_ours"
 
 
 @pytest.mark.parametrize("kind", ["start", "boot"])
@@ -255,7 +255,7 @@ async def test_imported_process_whose_identity_cannot_be_checked_is_retained(
             _reason_out.append("identity_unknown")
             return "unverifiable"
 
-        monkeypatch.setattr(kill_mod, "_check_pid_identity", unknown)
+        monkeypatch.setattr(kill_mod, "check_pid_identity", unknown)
         monkeypatch.setattr(kill_service, "check_pid_identity", unknown)
     sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
     manifest = {
@@ -305,7 +305,7 @@ def test_permission_denial_has_its_own_observation(monkeypatch):
     monkeypatch.setattr(kill_service, "raw_create_time", deny)
     reasons = []
     assert (
-        kill_mod._check_pid_identity(
+        kill_mod.check_pid_identity(
             4242, "lionagi", expected_create_time=100.0, _reason_out=reasons
         )
         == "unverifiable"
@@ -380,7 +380,7 @@ async def test_stale_sweep_counts_identity_unknown(tmp_path, monkeypatch, capsys
             _reason_out.append("identity_unknown")
         return "unverifiable"
 
-    monkeypatch.setattr(kill_mod, "_check_pid_identity", unknown)
+    monkeypatch.setattr(kill_mod, "check_pid_identity", unknown)
     monkeypatch.setattr(kill_service, "check_pid_identity", unknown)
     sid, progression = str(uuid.uuid4()), str(uuid.uuid4())
     async with StateDB(path) as db:
@@ -461,7 +461,7 @@ async def test_direct_kill_refuses_ambiguous_linux_identity_without_signal_or_te
             }
         )
         row = await db.get_session(sid)
-        result = await kill_mod._kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, row, user_reason="")
         assert result["signal"] == (
             "boot_unverifiable" if kind == "boot" else "identity_unverifiable"
         )
@@ -497,7 +497,7 @@ async def test_unknown_on_escalation_reports_sent_sigterm_without_a_terminal_wri
             kwargs["_reason_out"].append("start_mismatch")
         return verdict
 
-    monkeypatch.setattr(kill_mod, "_check_pid_identity", identity)
+    monkeypatch.setattr(kill_mod, "check_pid_identity", identity)
     monkeypatch.setattr(kill_service, "check_pid_identity", identity)
     sent, warnings = [], []
     monkeypatch.setattr(kill_service.os, "kill", lambda pid, sig: sent.append((pid, sig)))
@@ -514,7 +514,7 @@ async def test_unknown_on_escalation_reports_sent_sigterm_without_a_terminal_wri
                 "node_metadata": {"pid": 4242, "pid_create_time": 100.0},
             }
         )
-        result = await kill_mod._kill_one(
+        result = await kill_mod.kill_one(
             db, "session", sid, await db.get_session(sid), user_reason="", grace_seconds=0
         )
         assert result["signal"] == "identity_unverifiable_after_sigterm"
@@ -537,7 +537,7 @@ def test_non_epoch_unknown_kill_verdict_keeps_previous_reason(monkeypatch, phase
     monkeypatch.setattr(kill_service, "_pid_is_zombie", lambda _pid: False)
     verdicts = iter(["unverifiable"] if phase == "initial" else ["ours", "unverifiable"])
     patched_check_pid_identity = lambda *args, **kw: next(verdicts)
-    monkeypatch.setattr(kill_mod, "_check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr(kill_mod, "check_pid_identity", patched_check_pid_identity)
     monkeypatch.setattr(kill_service, "check_pid_identity", patched_check_pid_identity)
     sent = []
     monkeypatch.setattr(kill_service.os, "kill", lambda pid, sig: sent.append((pid, sig)))
@@ -559,8 +559,7 @@ def test_matching_session_marker_without_start_keeps_legacy_positive(monkeypatch
         kill_service, "raw_create_time", lambda _proc: pytest.fail("unexpected start-time probe")
     )
     assert (
-        kill_mod._check_pid_identity(4242, "lionagi", expected_session_id="session-marker")
-        == "ours"
+        kill_mod.check_pid_identity(4242, "lionagi", expected_session_id="session-marker") == "ours"
     )
 
 
@@ -712,7 +711,7 @@ async def test_direct_kill_dead_pid_keeps_non_linux_boot_refusal_path(tmp_path, 
                 "node_metadata": {"pid": 4242, "pid_boot_time": 900.0},
             }
         )
-        result = await kill_mod._kill_one(
+        result = await kill_mod.kill_one(
             db, "session", sid, await db.get_session(sid), user_reason=""
         )
         assert result["signal"] == "boot_mismatch"
@@ -736,7 +735,7 @@ async def test_direct_kill_refuses_foreign_host_before_parsing_infinite_pid(monk
         "status": "running",
         "node_metadata": {"pid": float("inf"), "pid_host": "other-host"},
     }
-    result = await kill_mod._kill_one(object(), "session", row["id"], row, user_reason="")
+    result = await kill_mod.kill_one(object(), "session", row["id"], row, user_reason="")
     assert result["signal"] == "host_mismatch"
     assert result["pid"] is None
     assert any("different host" in message for message in warnings)
@@ -825,5 +824,5 @@ def test_unset_magicmock_linux_flag_keeps_non_linux_semantics(monkeypatch):
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr(kill_service, "psutil", fake_psutil)
     monkeypatch.setattr(kill_service, "raw_create_time", lambda _proc: 102.0)
-    assert kill_mod._unaddressable_pid_reason({"pid_boot_time": 900.0}) == "boot_mismatch"
-    assert kill_mod._check_pid_identity(4242, "lionagi", expected_create_time=100.0) == "not_ours"
+    assert kill_mod.unaddressable_pid_reason({"pid_boot_time": 900.0}) == "boot_mismatch"
+    assert kill_mod.check_pid_identity(4242, "lionagi", expected_create_time=100.0) == "not_ours"

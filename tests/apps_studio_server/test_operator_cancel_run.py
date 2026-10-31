@@ -610,7 +610,7 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
     import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
 
-    monkeypatch.setattr(kill_mod, "_kill_one", fake_kill_one)
+    monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)
 
     result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
@@ -680,8 +680,8 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
     import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
 
-    real_kill_one = kill_mod._kill_one
-    monkeypatch.setattr(kill_mod, "_kill_one", racing_kill_one)
+    real_kill_one = kill_mod.kill_one
+    monkeypatch.setattr(kill_mod, "kill_one", racing_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", racing_kill_one)
 
     result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
@@ -715,7 +715,7 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
     import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
 
-    monkeypatch.setattr(kill_mod, "_kill_one", fake_kill_one)
+    monkeypatch.setattr(kill_mod, "kill_one", fake_kill_one)
     monkeypatch.setattr(kill_service, "kill_one", fake_kill_one)
 
     store = OperatorStore(path)

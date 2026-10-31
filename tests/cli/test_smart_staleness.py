@@ -187,7 +187,7 @@ async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
     patched_check_pid_identity = lambda *a, **kw: "ours"
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
     monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
 
     old_time = time.time() - 7200

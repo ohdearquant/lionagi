@@ -720,7 +720,7 @@ async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_p
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
     monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
     patched_check_pid_identity = lambda *a, **kw: "ours"
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
     monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
 
     async with StateDB() as db:
@@ -776,7 +776,7 @@ async def test_doctor_keeps_an_imported_degraded_run_whose_identity_cannot_be_ch
         _reason_out.append(reason)
         return "unverifiable"
 
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", cannot_check)
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", cannot_check)
     monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", cannot_check)
 
     async with StateDB() as db:

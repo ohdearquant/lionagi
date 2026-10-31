@@ -54,7 +54,7 @@ class TestStartTimeBehavior:
             return observed
 
         monkeypatch.setattr(kill_service, "raw_create_time", read_start_time)
-        result = kill_module._check_pid_identity(42, "lionagi", expected_create_time=0.0)
+        result = kill_module.check_pid_identity(42, "lionagi", expected_create_time=0.0)
         assert result == expected_verdict
         assert probes == [proc]
         kill_service.psutil.Process.assert_called_once_with(42)
@@ -79,7 +79,7 @@ class TestStartTimeBehavior:
             raise error
 
         monkeypatch.setattr(kill_service, "raw_create_time", unreadable_start_time)
-        result = kill_module._check_pid_identity(42, "lionagi", expected_create_time=100.0)
+        result = kill_module.check_pid_identity(42, "lionagi", expected_create_time=100.0)
         assert result == expected_verdict
         assert probes == [proc]
 
@@ -90,7 +90,7 @@ class TestStartTimeBehavior:
             pytest.fail("a missing recorded start time must not trigger a live start-time read")
 
         monkeypatch.setattr(kill_service, "raw_create_time", unexpected_probe)
-        result = kill_module._check_pid_identity(
+        result = kill_module.check_pid_identity(
             42, "lionagi", expected_session_id="recorded-session"
         )
         assert result == "ours"
@@ -106,7 +106,7 @@ class TestStartTimeBehavior:
 
         monkeypatch.setattr(kill_service, "raw_create_time", broken_probe)
         with pytest.raises(RuntimeError, match="unanticipated probe failure") as raised:
-            kill_module._check_pid_identity(42, "lionagi", expected_create_time=100.0)
+            kill_module.check_pid_identity(42, "lionagi", expected_create_time=100.0)
         assert raised.value is error
         assert probes == [proc]
 
@@ -123,6 +123,6 @@ class TestStartTimeDelegation:
             return matches
 
         monkeypatch.setattr(kill_service, "_start_time_matches", compare_start_times, raising=False)
-        result = kill_module._check_pid_identity(42, "lionagi", expected_create_time=100.0)
+        result = kill_module.check_pid_identity(42, "lionagi", expected_create_time=100.0)
         assert calls == [(100.05, 100.0)]
         assert result == ("ours" if matches else "not_ours")

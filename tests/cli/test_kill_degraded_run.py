@@ -472,7 +472,7 @@ async def test_create_time_mismatch_refuses_degraded_kill_on_each_platform(
     )
 
     reasons = []
-    verdict = kill_mod._check_pid_identity(
+    verdict = kill_mod.check_pid_identity(
         4242, "lionagi", expected_create_time=1.0, _reason_out=reasons
     )
     assert verdict == ("unverifiable" if linux else "not_ours")

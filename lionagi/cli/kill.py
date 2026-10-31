@@ -18,6 +18,8 @@ from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from ._kill_service import (
     _REFUSED_SIGNAL_REASONS,
     _STALE_SWEEP_ORDER,
+    NOT_JUDGEABLE_HERE,
+    NOT_STOPPED_SIGNALS,
     _degraded_run,
     _imported_degraded_process_identity,
     _kill_degraded_run,
@@ -25,14 +27,12 @@ from ._kill_service import (
     _pid_addressability,
     _same_cleanup_session,
     _try_recorded_worker_cleanup,
+    check_pid_identity,
+    kill_one,
+    list_running_children,
+    read_pid_from_entity,
+    unaddressable_pid_reason,
 )
-from ._kill_service import NOT_JUDGEABLE_HERE as _NOT_JUDGEABLE_HERE
-from ._kill_service import NOT_STOPPED_SIGNALS as _NOT_STOPPED_SIGNALS
-from ._kill_service import check_pid_identity as _check_pid_identity
-from ._kill_service import kill_one as _kill_one
-from ._kill_service import list_running_children as _list_running_children
-from ._kill_service import read_pid_from_entity as _read_pid_from_entity
-from ._kill_service import unaddressable_pid_reason as _unaddressable_pid_reason
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
@@ -127,16 +127,16 @@ async def _do_kill(
             # A play row carries no PID of its own, so its whole effect on the
             # running system is through the sessions it started. Resolving them
             # is the kill, not an extra step behind --recursive.
-            children = await _list_running_children(db, entity_type, row["id"])
+            children = await list_running_children(db, entity_type, row["id"])
             play_workers_unreachable = not children
         elif recursive:
-            children = await _list_running_children(db, entity_type, row["id"])
+            children = await list_running_children(db, entity_type, row["id"])
         else:
             children = []
 
         if children:
             for _child_table, child_type, child_row in children:
-                r = await _kill_one(
+                r = await kill_one(
                     db,
                     child_type,
                     child_row["id"],
@@ -153,7 +153,7 @@ async def _do_kill(
                         f"signal={r['signal']}, but cancellation was not recorded: "
                         f"{r['cancel_error']}"
                     )
-                elif r["signal"] in _NOT_STOPPED_SIGNALS:
+                elif r["signal"] in NOT_STOPPED_SIGNALS:
                     blocked.append(r)
                 else:
                     print(
@@ -171,7 +171,7 @@ async def _do_kill(
             if recorded_result is not None:
                 return 1 if blocked else recorded_result
 
-        r = await _kill_one(
+        r = await kill_one(
             db,
             entity_type,
             row["id"],
@@ -187,7 +187,7 @@ async def _do_kill(
                 f"{entity_type} {row['id'][:12]}: signal={r['signal']}, "
                 f"but cancellation was not recorded: {r['cancel_error']}"
             )
-        elif r["signal"] in _NOT_STOPPED_SIGNALS:
+        elif r["signal"] in NOT_STOPPED_SIGNALS:
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
@@ -330,8 +330,8 @@ async def _do_kill_all_stale(
                     if isinstance(row_dict.get("node_metadata"), dict)
                     else {}
                 )
-                unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
-                if unjudgeable in _NOT_JUDGEABLE_HERE:
+                unjudgeable = unaddressable_pid_reason(row_meta_for_host)
+                if unjudgeable in NOT_JUDGEABLE_HERE:
                     # Another host or unmanaged runtime cannot be judged here.
                     skipped_unjudgeable += 1
                     if verbose:
@@ -340,7 +340,7 @@ async def _do_kill_all_stale(
                             f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
                         )
                     continue
-                pid = _read_pid_from_entity(row_dict)
+                pid = read_pid_from_entity(row_dict)
                 unjudgeable, pid_alive_now = _pid_addressability(unjudgeable, pid)
                 if unjudgeable == "boot_unverifiable":
                     await keep_unverifiable(
@@ -388,7 +388,7 @@ async def _do_kill_all_stale(
                         expected_create_time = None
 
                     reasons: list[str] = []
-                    verdict = _check_pid_identity(
+                    verdict = check_pid_identity(
                         pid,
                         "lionagi",
                         expected_session_id=expected_session_id,
