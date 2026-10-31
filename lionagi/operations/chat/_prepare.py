@@ -573,7 +573,7 @@ def _prepare_run_kwargs(
             "assembly — this is a bug, not a valid empty-prompt call."
         )
 
-    if needs_block_fold:
+    if needs_block_fold and pending_blocks.strip():
         chat_msgs.append({"role": "user", "content": pending_blocks})
 
     kw["messages"] = chat_msgs

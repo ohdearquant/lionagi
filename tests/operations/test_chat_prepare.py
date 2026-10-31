@@ -564,6 +564,20 @@ def test_uncached_blocks_only_request_without_system_is_sent(monkeypatch):
     assert ins.content.plain_content is None
 
 
+@pytest.mark.parametrize("blocks", [[" \t "], ["", ""]])
+def test_uncached_blank_blocks_with_empty_current_send_no_message(monkeypatch, blocks):
+    from lionagi.protocols.messages import Instruction
+
+    ins = Instruction(content=InstructionContent(), sender="user")
+    monkeypatch.setattr(InstructionContent, "rendered", property(lambda _content: ""))
+
+    _, request = _prepare_run_kwargs(
+        Branch(), None, ChatParam(), ins=ins, imodel=_Model(False), context_blocks=blocks
+    )
+
+    assert request["messages"] == []
+
+
 def test_uncached_blocks_with_system_and_empty_plain_current_are_sent_once():
     from lionagi.protocols.messages import Instruction
 

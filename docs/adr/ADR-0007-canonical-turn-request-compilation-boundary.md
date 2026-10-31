@@ -562,9 +562,10 @@ lines:
   (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
   (`lionagi/operations/chat/_prepare.py:208`), and joined into the first instruction's guidance,
-  or prefixed to its plain content, with no marker (`:391-392`, `:500-528`); with ADR-0127's
-  prompt-cache option on, they are kept on the turn's instruction and sent after it as one more
-  block (`:232-233`, `:529-530`). The prompt therefore shows the kept
+  or prefixed to its plain content, with no marker (`:391-392`, `:500-528`); when no instruction
+  renders, nonblank blocks are sent as one user message of their own (`:576-577`); with
+  ADR-0127's prompt-cache option on, they are kept on the turn's instruction and sent after it as
+  one more block (`:232-233`, `:529-530`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
   and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`

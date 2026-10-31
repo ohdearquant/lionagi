@@ -683,6 +683,8 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
     _in_span(_PREPARE, 391, 392, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
     _in_span(_PREPARE, 232, 233, "ins.metadata[_TURN_CONTEXT] = list(context_blocks)")
     _in_span(_PREPARE, 529, 530, "rendered = _with_context(rendered, entry.context)")
+    _in_span(_PREPARE, 576, 577, "if needs_block_fold and pending_blocks.strip():")
+    _in_span(_PREPARE, 576, 577, 'chat_msgs.append({"role": "user", "content": pending_blocks})')
     _in_span(_PREPARE, 323, 328, "_collect_action_dicts(_act_res, projection)")
     _in_span(
         _PREPARE,
