@@ -228,6 +228,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
   | `lionagi.mcp` | `lionhub.serve.mcp` | 2.0.0 |
   | `lionagi.providers._provider_errors` | `lionagi._provider_errors` | 2.0.0 |
+  | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` | 2.0.0 |
 
 - The core no longer imports `lionagi.cli`: no import statement or literal
   `import_module` call outside `lionagi.cli`, `lionagi.mcp` and `lionagi.studio`

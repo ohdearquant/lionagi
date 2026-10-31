@@ -1508,11 +1508,6 @@
       "owner": "provider_support",
       "target_owner": "lionhub (destination not yet recorded)"
     },
-    "lionagi.providers._secret_resolution": {
-      "layer": "adapter",
-      "owner": "provider_support",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
     "lionagi.providers._subagent_admission": {
       "layer": "adapter",
       "owner": "provider_support",
@@ -1911,6 +1906,10 @@
       "owner": "accounts"
     },
     "lionagi.service.accounts._scope": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._secret_resolution": {
       "layer": "adapter",
       "owner": "accounts"
     },

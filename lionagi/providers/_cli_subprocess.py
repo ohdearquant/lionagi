@@ -48,8 +48,8 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
 from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.service.accounts._secret_resolution import fill_declared_secrets_and_names
 
-from ._secret_resolution import fill_declared_secrets_and_names
 from ._subagent_admission import (
     AGENT_DEPTH_ENV,
     DEFAULT_WORKLOAD,

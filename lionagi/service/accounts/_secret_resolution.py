@@ -36,7 +36,9 @@ __all__ = (
     "resolve_secret_lookup_config",
 )
 
-logger = logging.getLogger(__name__)
+# The logger keeps the name it had before the module moved, so handlers and
+# filters configured for that name still receive its records.
+logger = logging.getLogger("lionagi.providers._secret_resolution")
 
 # POSIX-portable environment variable name. The names are the one part of the
 # configuration interpolated into an argument, so a name that is not one is

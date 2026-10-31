@@ -247,7 +247,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -932,9 +932,6 @@
     "lionagi/providers/_multipart.py": [
       "__all__ = (\"_replayable_file_factory\",)"
     ],
-    "lionagi/providers/_secret_resolution.py": [
-      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
-    ],
     "lionagi/providers/_subagent_admission.py": [
       "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
     ],
@@ -1221,6 +1218,9 @@
     ],
     "lionagi/service/accounts/_scope.py": [
       "__all__ = (\"current_scope\", \"routing_scope\")"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
     ],
     "lionagi/service/accounts/_types.py": [
       "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
@@ -2984,15 +2984,6 @@
       "unencodable_env_entry",
       "validate_message_prompt"
     ],
-    "lionagi/providers/_secret_resolution.py": [
-      "OneNameLookup",
-      "ResolvedSecretLookup",
-      "SecretLookupResolution",
-      "fill_declared_secrets",
-      "fill_declared_secrets_and_names",
-      "lookup_one_name",
-      "resolve_secret_lookup_config"
-    ],
     "lionagi/providers/_subagent_admission.py": [
       "SubagentLease",
       "admit_subagent",
@@ -3376,6 +3367,15 @@
     "lionagi/service/accounts/_scope.py": [
       "current_scope",
       "routing_scope"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "OneNameLookup",
+      "ResolvedSecretLookup",
+      "SecretLookupResolution",
+      "fill_declared_secrets",
+      "fill_declared_secrets_and_names",
+      "lookup_one_name",
+      "resolve_secret_lookup_config"
     ],
     "lionagi/service/accounts/_types.py": [
       "AccountRoutingError",

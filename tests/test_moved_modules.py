@@ -293,49 +293,73 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
 # A module that moved on its own (one file, not a package) is a row of the table too. Its old
 # name sits inside a package that stays in lionagi/, so the finder must serve it while that
 # package is still on disk.
-MOVED_MODULE_OLD = "lionagi.providers._provider_errors"
-MOVED_MODULE_NEW = "lionagi._provider_errors"
+MOVED_MODULES = (
+    ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
+    ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
+)
+_MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
 
-def test_an_old_module_name_warns_once_and_is_the_new_module():
-    sys.modules.pop(MOVED_MODULE_OLD, None)
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
+    sys.modules.pop(old, None)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        old = importlib.import_module(MOVED_MODULE_OLD)
+        module = importlib.import_module(old)
     deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert len(deprecations) == 1, [str(w.message) for w in deprecations]
-    assert MOVED_MODULE_NEW in str(deprecations[0].message)
+    assert new in str(deprecations[0].message)
     assert deprecations[0].filename == __file__
-    assert old is importlib.import_module(MOVED_MODULE_NEW)
-    assert sys.modules[MOVED_MODULE_OLD] is old
+    assert module is importlib.import_module(new)
+    assert sys.modules[old] is module
 
 
-def test_every_class_of_a_moved_module_is_the_same_object_under_the_old_name():
-    new = importlib.import_module(MOVED_MODULE_NEW)
-    classes = [
+# What each moved module offers its callers. Naming some of it keeps the identity check
+# below from passing on a module that defines nothing.
+MOVED_MODULE_PUBLIC_NAMES = {
+    "lionagi._provider_errors": {"ProviderError", "EmissionError"},
+    "lionagi.service.accounts._secret_resolution": {
+        "SecretLookupResolution",
+        "fill_declared_secrets",
+        "lookup_one_name",
+        "resolve_secret_lookup_config",
+    },
+}
+
+
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_name(old, new):
+    module = importlib.import_module(new)
+    public = [
         name
-        for name, obj in vars(new).items()
-        if isinstance(obj, type) and obj.__module__ == MOVED_MODULE_NEW
+        for name, obj in vars(module).items()
+        if not name.startswith("_") and callable(obj) and getattr(obj, "__module__", None) == new
     ]
-    assert {"ProviderError", "EmissionError"} <= set(classes)
-    for name in classes:
+    assert MOVED_MODULE_PUBLIC_NAMES[new] <= set(public)
+    for name in public:
         namespace: dict = {}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
-            exec(f"from {MOVED_MODULE_OLD} import {name}", namespace)  # noqa: S102
-        assert namespace[name] is getattr(new, name), name
+            exec(f"from {old} import {name}", namespace)  # noqa: S102
+        assert namespace[name] is getattr(module, name), name
 
 
-def test_an_old_module_name_is_served_while_its_old_package_stays_on_disk():
+def test_a_moved_module_keeps_the_logger_name_it_had():
+    module = importlib.import_module("lionagi.service.accounts._secret_resolution")
+    assert module.logger.name == "lionagi.providers._secret_resolution"
+
+
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_an_old_module_name_is_served_while_its_old_package_stays_on_disk(old, new):
     assert _moved.still_on_disk("lionagi.providers")
-    assert not _moved.still_on_disk(MOVED_MODULE_OLD)
-    assert _moved.resolve(MOVED_MODULE_OLD) == MOVED_MODULE_NEW
+    assert not _moved.still_on_disk(old)
+    assert _moved.resolve(old) == new
     # Names beside the moved module, and the package around it, did not move.
-    assert _moved.resolve(MOVED_MODULE_OLD + "x") is None
+    assert _moved.resolve(old + "x") is None
     assert _moved.resolve("lionagi.providers") is None
     assert _moved.resolve("lionagi.providers.errors") is None
     finder = next(f for f in sys.meta_path if getattr(f, "lionagi_moved", False))
-    spec = finder.find_spec(MOVED_MODULE_OLD)
+    spec = finder.find_spec(old)
     assert spec is not None
     assert spec.submodule_search_locations is None
     assert finder.find_spec("lionagi.providers") is None

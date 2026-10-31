@@ -26,13 +26,13 @@ import sys
 import pytest
 
 from lionagi.providers import _cli_subprocess as cs
-from lionagi.providers import _secret_resolution
 from lionagi.providers._cli_subprocess import (
     _abandoned_without_output_note,
     _no_stderr_reason,
     ndjson_from_cli,
 )
-from lionagi.providers._secret_resolution import fill_declared_secrets
+from lionagi.service.accounts import _secret_resolution
+from lionagi.service.accounts._secret_resolution import fill_declared_secrets
 
 
 def _cmd(script: str) -> list[str]:
