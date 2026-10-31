@@ -779,11 +779,13 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
 
     The manifest is the run's own record, so it is read whether or not it carries the degraded
     marker. An id that names no run directory, no manifest, a run that is not ``running`` and a
-    recorded process that is gone or not addressable are `not_ours`. Whatever leaves it unknown
-    whether the run still owns a live process is `unverifiable` with its reason, never
-    `not_ours`: a manifest that is present but unreadable (``manifest_unreadable``), no recorded
-    pid (``no_recorded_process``), a Linux boot epoch disagreement (``boot_disagreement``), no
-    recorded start time (``no_recorded_identity``), or the identity check's own reason for a live
+    recorded process that is gone (one from an earlier boot included) are `not_ours`. Whatever
+    leaves it unknown whether the run still owns a live process is `unverifiable` with its reason,
+    never `not_ours`: a pid recorded on another host, in an identity mode this CLI cannot signal,
+    or as a shared in-process host that is still alive (the `NOT_JUDGEABLE_HERE` reasons); a
+    manifest that is present but unreadable (``manifest_unreadable``); no recorded pid
+    (``no_recorded_process``); a Linux boot epoch disagreement (``boot_disagreement``); no
+    recorded start time (``no_recorded_identity``); or the identity check's own reason for a live
     process it cannot confirm (start-time mismatch, permission denied). Such a run is kept, not
     swept as a stranger.
     """
@@ -807,6 +809,18 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
     if pid <= 0:
         return "unverifiable", "no_recorded_process"
     unaddressable, alive = _pid_addressability(unaddressable_pid_reason(manifest), pid)
+    if unaddressable in NOT_JUDGEABLE_HERE:
+        # The recorded pid cannot say from here whether the run still holds a process: it is
+        # another host's, it uses an identity mode this CLI cannot signal, or it is the host
+        # process the run shares. Only a shared host process on this machine that is gone
+        # settles it.
+        if (
+            unaddressable == "in_process"
+            and not _recorded_pid_is_foreign(manifest)
+            and not _pid_alive(pid)
+        ):
+            return "not_ours", None
+        return "unverifiable", unaddressable
     if unaddressable is not None and unaddressable != "boot_unverifiable":
         return "not_ours", None
     if alive is None:
@@ -830,7 +844,7 @@ def imported_degraded_process_is_live(run_id: str) -> bool:
     """Whether an imported run's recorded process may still be alive, for the boolean reapers.
 
     True for a process that is ours and for a run whose process cannot be ruled out
-    (`unverifiable`); False only when the run is `not_ours`.
+    (`unverifiable`); False when the run is `not_ours` or its recorded process is a zombie.
     """
     verdict, _ = _imported_degraded_process_identity(run_id)
     return verdict in ("ours", "unverifiable")

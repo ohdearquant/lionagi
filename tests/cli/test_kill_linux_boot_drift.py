@@ -744,6 +744,40 @@ async def _seed_stale_imported_session(
             "skipped_unverifiable_pid=1",
             id="manifest-not-an-object",
         ),
+        # A recorded pid that cannot be judged from this host keeps the run, whether or not a
+        # process with that number is alive here.
+        pytest.param(
+            _imported_run_manifest(pid_host="another-host.invalid"),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="pid-on-another-host",
+        ),
+        pytest.param(
+            _imported_run_manifest(process_identity_mode="container"),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="identity-mode-not-signallable",
+        ),
+        pytest.param(
+            _imported_run_manifest(process_identity_mode="in_process"),
+            True,
+            ("ours", None),
+            "running",
+            "skipped_unverifiable_pid=1",
+            id="in-process-host-alive",
+        ),
+        pytest.param(
+            _imported_run_manifest(process_identity_mode="in_process"),
+            False,
+            ("ours", None),
+            "cancelled",
+            "skipped_unverifiable_pid=0",
+            id="in-process-host-gone",
+        ),
         pytest.param(
             _imported_run_manifest(),
             True,

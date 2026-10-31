@@ -835,6 +835,30 @@ def _imported_running_manifest(run_id: str, **overrides) -> str:
         ),
         pytest.param('{"status":', True, ("ours", None), "running", id="unreadable-manifest"),
         pytest.param("[]", True, ("ours", None), "running", id="manifest-not-an-object"),
+        pytest.param(
+            {"pid_host": "another-host.invalid"}, True, ("ours", None), "running", id="another-host"
+        ),
+        pytest.param(
+            {"process_identity_mode": "container"},
+            True,
+            ("ours", None),
+            "running",
+            id="identity-mode-not-signallable",
+        ),
+        pytest.param(
+            {"process_identity_mode": "in_process"},
+            True,
+            ("ours", None),
+            "running",
+            id="in-process-host-alive",
+        ),
+        pytest.param(
+            {"process_identity_mode": "in_process"},
+            False,
+            ("ours", None),
+            "aborted",
+            id="in-process-host-gone",
+        ),
         pytest.param({}, False, ("ours", None), "aborted", id="dead-process"),
         pytest.param({}, True, ("not_ours", None), "aborted", id="live-process-not-ours"),
         pytest.param({"status": "completed"}, True, ("ours", None), "aborted", id="finished-run"),
