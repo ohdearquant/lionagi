@@ -1583,7 +1583,6 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
 
     exited_leg = {"pid": 101, "pid_create_time": 1.0}
     live_leg = {"pid": 202, "pid_create_time": 2.0}
-    monkeypatch.setattr(runs_mod, "current_pid_markers", lambda: dict(exited_leg), raising=False)
     monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(exited_leg))
 
     branch = Branch(name="resumed")
@@ -1863,7 +1862,6 @@ async def test_a_row_that_never_declared_is_repaired_by_a_resume_that_reopens_it
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-repaired")
     exited_leg = {"pid": 303, "pid_create_time": 3.0}
     live_leg = {"pid": 404, "pid_create_time": 4.0}
-    monkeypatch.setattr(runs_mod, "current_pid_markers", lambda: dict(exited_leg), raising=False)
     monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(exited_leg))
 
     branch = Branch(name="predates-the-field-then-ends")
