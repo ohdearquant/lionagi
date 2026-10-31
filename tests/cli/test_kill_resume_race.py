@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 
+import lionagi.cli._kill_service as kill_service
 from lionagi.cli import kill as kill_mod
 from lionagi.cli._runs import _reopen_session_for_resume
 from lionagi.state import db as db_mod
@@ -42,8 +43,8 @@ async def test_kill_grace_does_not_cancel_reopened_session(
         return "sigterm"
 
     # Stub every OS process probe or signal: no process with these PIDs is contacted.
-    monkeypatch.setattr(kill_mod, "_runner_process_create_time", lambda pid: ("found", 100.0))
-    monkeypatch.setattr(kill_mod, "_terminate_pid", wait_in_grace)
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("found", 100.0))
+    monkeypatch.setattr(kill_service, "_terminate_pid", wait_in_grace)
     monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(new_identity))
 
     async with StateDB(path) as editor:
@@ -125,8 +126,8 @@ async def test_kill_succeeds_when_the_runner_records_its_own_sigterm_end_in_grac
         return "sigterm"
 
     # Stub every OS process probe or signal: no process with these PIDs is contacted.
-    monkeypatch.setattr(kill_mod, "_runner_process_create_time", lambda pid: ("found", 100.0))
-    monkeypatch.setattr(kill_mod, "_terminate_pid", wait_in_grace)
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("found", 100.0))
+    monkeypatch.setattr(kill_service, "_terminate_pid", wait_in_grace)
 
     async with StateDB(path) as editor:
         sid = str(uuid.uuid4())

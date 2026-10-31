@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import lionagi.cli._kill_service as kill_service
 import lionagi.cli.kill as kill_module
 
 
@@ -24,7 +25,7 @@ def _fake_process(monkeypatch, *, create_time=100.0, environ=None):
         AccessDenied=type("AccessDenied", (Exception,), {}),
         ZombieProcess=type("ZombieProcess", (no_such_process,), {}),
     )
-    monkeypatch.setattr(kill_module, "psutil", fake_psutil)
+    monkeypatch.setattr(kill_service, "psutil", fake_psutil)
     return proc
 
 
@@ -52,11 +53,11 @@ class TestStartTimeBehavior:
             probes.append(candidate)
             return observed
 
-        monkeypatch.setattr(kill_module, "raw_create_time", read_start_time)
+        monkeypatch.setattr(kill_service, "raw_create_time", read_start_time)
         result = kill_module._check_pid_identity(42, "lionagi", expected_create_time=0.0)
         assert result == expected_verdict
         assert probes == [proc]
-        kill_module.psutil.Process.assert_called_once_with(42)
+        kill_service.psutil.Process.assert_called_once_with(42)
 
     @pytest.mark.parametrize(
         ("error_name", "expected_verdict"),
@@ -70,14 +71,14 @@ class TestStartTimeBehavior:
         self, monkeypatch, error_name, expected_verdict
     ):
         proc = _fake_process(monkeypatch)
-        error = getattr(kill_module.psutil, error_name)("probe failed")
+        error = getattr(kill_service.psutil, error_name)("probe failed")
         probes = []
 
         def unreadable_start_time(candidate):
             probes.append(candidate)
             raise error
 
-        monkeypatch.setattr(kill_module, "raw_create_time", unreadable_start_time)
+        monkeypatch.setattr(kill_service, "raw_create_time", unreadable_start_time)
         result = kill_module._check_pid_identity(42, "lionagi", expected_create_time=100.0)
         assert result == expected_verdict
         assert probes == [proc]
@@ -88,7 +89,7 @@ class TestStartTimeBehavior:
         def unexpected_probe(proc):
             pytest.fail("a missing recorded start time must not trigger a live start-time read")
 
-        monkeypatch.setattr(kill_module, "raw_create_time", unexpected_probe)
+        monkeypatch.setattr(kill_service, "raw_create_time", unexpected_probe)
         result = kill_module._check_pid_identity(
             42, "lionagi", expected_session_id="recorded-session"
         )
@@ -103,7 +104,7 @@ class TestStartTimeBehavior:
             probes.append(candidate)
             raise error
 
-        monkeypatch.setattr(kill_module, "raw_create_time", broken_probe)
+        monkeypatch.setattr(kill_service, "raw_create_time", broken_probe)
         with pytest.raises(RuntimeError, match="unanticipated probe failure") as raised:
             kill_module._check_pid_identity(42, "lionagi", expected_create_time=100.0)
         assert raised.value is error
@@ -115,13 +116,13 @@ class TestStartTimeDelegation:
     def test_recorded_start_time_delegates_without_changing_arguments(self, monkeypatch, matches):
         _fake_process(monkeypatch)
         calls = []
-        monkeypatch.setattr(kill_module, "raw_create_time", lambda proc: 100.05)
+        monkeypatch.setattr(kill_service, "raw_create_time", lambda proc: 100.05)
 
         def compare_start_times(observed, recorded):
             calls.append((observed, recorded))
             return matches
 
-        monkeypatch.setattr(kill_module, "_start_time_matches", compare_start_times, raising=False)
+        monkeypatch.setattr(kill_service, "_start_time_matches", compare_start_times, raising=False)
         result = kill_module._check_pid_identity(42, "lionagi", expected_create_time=100.0)
         assert calls == [(100.05, 100.0)]
         assert result == ("ours" if matches else "not_ours")

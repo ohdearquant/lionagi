@@ -716,8 +716,12 @@ async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_p
         )
     )
     monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda _pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
+    patched_pid_alive = lambda _pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **kw: "ours"
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
 
     async with StateDB() as db:
         progression_id = str(uuid.uuid4())
@@ -764,13 +768,16 @@ async def test_doctor_keeps_an_imported_degraded_run_whose_identity_cannot_be_ch
         )
     )
     monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda _pid: True)
+    patched_pid_alive = lambda _pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     def cannot_check(*args, _reason_out=None, **kwargs):
         _reason_out.append(reason)
         return "unverifiable"
 
     monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", cannot_check)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", cannot_check)
 
     async with StateDB() as db:
         progression_id = str(uuid.uuid4())
@@ -821,12 +828,13 @@ async def test_doctor_sweeps_a_session_whose_pid_was_recycled(
 async def test_doctor_create_time_mismatch_is_platform_specific(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, linux: bool
 ):
+    import lionagi.cli._kill_service as kill_service
     from lionagi.cli import _util
     from lionagi.cli import kill as kill_mod
 
     monkeypatch.setattr(psutil, "LINUX", linux)
     monkeypatch.setattr(psutil, "Process", lambda _pid: object())
-    monkeypatch.setattr(kill_mod, "raw_create_time", lambda _proc: 100.0)
+    monkeypatch.setattr(kill_service, "raw_create_time", lambda _proc: 100.0)
     monkeypatch.setattr(_util, "pid_alive", lambda _pid: True)
     signals = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))

@@ -151,7 +151,9 @@ async def test_do_kill_all_stale_sweeps_play_with_dead_session(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A play whose linked session is terminal gets cancelled by --all-stale."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -181,8 +183,12 @@ async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
     # check is mocked too: our own pid is genuinely the pytest process, not a
     # lionagi CLI invocation, so the real cmdline check would (correctly)
     # reject it -- here it stands in for a live, identity-matching session.
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: pid == own_pid)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
+    patched_pid_alive = lambda pid: pid == own_pid
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **kw: "ours"
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -216,7 +222,9 @@ async def test_do_kill_all_stale_does_not_sweep_play_without_session(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A play with no session_id is NOT swept even if old."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -236,7 +244,9 @@ async def test_do_kill_all_stale_sweeps_show_with_all_terminal_plays(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A show whose plays are all terminal gets aborted by --all-stale."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -261,7 +271,9 @@ async def test_do_kill_all_stale_does_not_sweep_show_with_active_play(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A show with at least one active play is NOT swept."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -285,7 +297,9 @@ async def test_do_kill_all_stale_does_not_sweep_show_with_no_plays(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A show with no plays is NOT swept (not yet started)."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
@@ -307,7 +321,9 @@ async def test_do_kill_all_stale_dry_run_child_derived(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """--dry-run must not write any rows for child-derived stale plays."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200
     async with StateDB() as db:
