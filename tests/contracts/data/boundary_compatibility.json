@@ -12,6 +12,9 @@
     "lionagi/cli/_agent_depth.py": [
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
+    "lionagi/cli/_mirror_settings.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\""
+    ],
     "lionagi/cli/_providers.py": [
       "os.getenv:\"LIONAGI_INVOCATION_ID\""
     ],
@@ -101,7 +104,6 @@
       "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
       "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
@@ -1831,6 +1833,9 @@
       "explicit_mcp_config_path",
       "resolve_spawn_mcp_servers"
     ],
+    "lionagi/cli/_mirror_service.py": [
+      "mirror_forever"
+    ],
     "lionagi/cli/_notify_outcomes.py": [
       "DurableRunRecorder"
     ],
@@ -1971,7 +1976,6 @@
     ],
     "lionagi/cli/mirror.py": [
       "add_mirror_subparser",
-      "mirror_forever",
       "run_mirror"
     ],
     "lionagi/cli/monitor.py": [

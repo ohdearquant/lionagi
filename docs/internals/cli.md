@@ -1525,6 +1525,12 @@ installs a fresh generation in the same guarded status write.
 
 ## `mirror.py` — Claude transcript mirroring into StateDB
 
+The state, passes and `mirror_forever` described below are defined in
+`lionagi/cli/_mirror_service.py`, and the preview-size setting in
+`lionagi/cli/_mirror_settings.py`. `mirror.py` keeps the `li mirror` parser, its
+`_run` loop and `run_mirror`, and imports the service names back for callers that
+read them from `lionagi.cli.mirror`.
+
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
 conversation opens a fresh transcript whose first message points — via `parentUuid` — at the
 last message of the session it continues. `_Lineage` indexes each file's current leaf uuid and,
