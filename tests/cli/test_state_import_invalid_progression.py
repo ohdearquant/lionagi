@@ -168,6 +168,5 @@ async def test_import_uses_checked_snapshot_if_branch_changes_before_first_write
         monkeypatch.setattr(db, "_create_progression_in_tx", replace_file_at_first_write)
         assert await state_mod._import_one_run(db, "run-4", run_dir, {"kind": "agent"}) == (1, 2, 2)
         assert changed is True
-        assert changed
         rows = await db.fetch_all("SELECT id FROM messages ORDER BY id")
         assert [row["id"] for row in rows] == ["checked-id", "valid-1"]
