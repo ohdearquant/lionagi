@@ -37,6 +37,10 @@
       "layer": "contracts",
       "owner": "errors"
     },
+    "lionagi._feature_errors": {
+      "layer": "contracts",
+      "owner": "errors"
+    },
     "lionagi._flow_spec": {
       "layer": "contracts",
       "owner": "flow_contracts"
