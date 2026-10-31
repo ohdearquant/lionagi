@@ -62,7 +62,7 @@ async def test_stale_sweep_does_not_cancel_live_linux_process_after_boot_clock_d
         psutil, "_psplatform", SimpleNamespace(Process=_LinuxBackend, boot_time=boot_time)
     )
     monkeypatch.setattr(psutil, "boot_time", boot_time)
-    monkeypatch.setattr(kill_mod.socket, "gethostname", lambda: "test-host")
+    monkeypatch.setattr(_proc.socket, "gethostname", lambda: "test-host")
     live_process = _Process(boot_time, sid)
 
     # Select a reader in each simulated interpreter. Both observe the same PID
@@ -687,7 +687,7 @@ async def test_direct_kill_dead_pid_keeps_non_linux_boot_refusal_path(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_direct_kill_refuses_foreign_host_before_parsing_infinite_pid(monkeypatch):
-    monkeypatch.setattr(kill_mod.socket, "gethostname", lambda: "local-host")
+    monkeypatch.setattr(_proc.socket, "gethostname", lambda: "local-host")
     monkeypatch.setattr(kill_mod, "_pid_alive", lambda _pid: pytest.fail("unexpected pid probe"))
     monkeypatch.setattr(
         kill_mod, "_terminate_pid", lambda *a, **kw: pytest.fail("unexpected signal")

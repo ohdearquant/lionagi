@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def isolated_setup(monkeypatch):
-    from lionagi.cli import _runs, kill
+    from lionagi.cli import _runs
     from lionagi.session import session as session_module
     from lionagi.state import cli_workers, compat, provenance
 
@@ -38,7 +38,7 @@ def isolated_setup(monkeypatch):
     monkeypatch.setattr(session_module, "Session", Session)
     monkeypatch.setattr(cli_workers, "_WorkerSpawnOwner", Owner)
     monkeypatch.setattr(compat, "is_compatibility_store", lambda _db: False)
-    monkeypatch.setattr(kill, "current_pid_markers", lambda: {})
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {})
     monkeypatch.setattr(provenance, "agent_definition_hash", lambda _name: None)
     monkeypatch.setattr(_runs, "_resolve_project", lambda _project: (None, None))
     return _runs

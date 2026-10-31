@@ -9,7 +9,6 @@ import contextlib
 import json
 import os
 import signal
-import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,7 @@ from lionagi.ln._proc import (
     _RecordedGroupRefusal,
     _RecordedGroupWitness,
     _RecordedWorkerIdentity,
+    current_pid_markers,  # noqa: F401  (re-exported: the kill command's historical import path)
     raw_create_time,
 )
 from lionagi.ln._proc import start_time_matches as _start_time_matches
@@ -61,17 +61,6 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
             pass
 
     return None
-
-
-def current_pid_markers() -> dict[str, Any]:
-    """Host-scoped process identity for liveness and kill verification."""
-    return {
-        "pid": os.getpid(),
-        "pid_create_time": raw_create_time(psutil.Process(os.getpid())),
-        "pid_host": socket.gethostname(),
-        "pid_boot_time": psutil.boot_time(),
-        "process_identity_mode": "local",
-    }
 
 
 #: Refusals to signal. A pid only names a process together with its host and boot; when the

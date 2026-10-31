@@ -54,7 +54,7 @@ def _run(monkeypatch, tmp_path) -> RunDir:
     monkeypatch.setattr(
         runs_mod, "current_pid_markers", lambda: dict(process_markers), raising=False
     )
-    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(process_markers))
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(process_markers))
     return run
 
 

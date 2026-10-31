@@ -229,6 +229,19 @@ def raw_create_time(proc) -> float:
     return _read_raw_create_time(proc)
 
 
+def current_pid_markers() -> dict[str, Any]:
+    """Host-scoped process identity for liveness and kill verification."""
+    import psutil
+
+    return {
+        "pid": os.getpid(),
+        "pid_create_time": raw_create_time(psutil.Process(os.getpid())),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
+        "process_identity_mode": "local",
+    }
+
+
 def process_create_time(pid: int) -> tuple[str, float | None]:
     """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
     or ``("unknown", None)``.

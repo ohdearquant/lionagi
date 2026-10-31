@@ -2012,7 +2012,7 @@ async def _reopen_session_for_resume(
     stays attributable and terminal exit isn't opened to every writer --
     finality is what the reapers, the teardown guard, and ``li wait`` all rest on.
     """
-    from lionagi.cli.kill import current_pid_markers
+    from lionagi.ln._proc import current_pid_markers
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import SessionReasons
 
@@ -2232,7 +2232,7 @@ async def setup_agent_persist(
 
             session_dict = session.to_dict(mode="db")
             _proj, _proj_src = _resolve_project(project)
-            from lionagi.cli.kill import current_pid_markers
+            from lionagi.ln._proc import current_pid_markers
 
             # Whether this session's runner consumes operator controls, declared
             # by the caller that starts the run rather than inferred. The
