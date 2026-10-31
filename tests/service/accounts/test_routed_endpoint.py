@@ -4549,6 +4549,44 @@ async def test_unwinding_a_stream_that_already_settled_settles_nothing_more(
     assert _warm_rows(path) == settled_rows
 
 
+@pytest.mark.asyncio
+async def test_a_native_cancel_inside_a_stream_status_write_records_no_second_outcome(
+    monkeypatch, tmp_path
+):
+    """The router's writes are shielded, but a native task.cancel() still raises inside the
+    router call. A stream that got a 429 has then already counted as settled, so the
+    cancellation handler records no ``cancelled`` end on top of the status outcome."""
+    _install_accounts(monkeypatch, tmp_path)
+    recorded: list[tuple[str, str]] = []
+    in_write = asyncio.Event()
+    never_set = asyncio.Event()
+
+    async def hold_status_write(self, attempt, reason):
+        recorded.append(("settle_unknown", reason))
+        in_write.set()
+        await never_set.wait()
+
+    async def record_stream_end(self, attempt, usage, *, reason="usage_incomplete"):
+        recorded.append(("settle_stream_end", reason))
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", hold_status_write)
+    monkeypatch.setattr(router_module.AccountRouter, "settle_stream_end", record_stream_end)
+    model, _ = _model(monkeypatch, [StubResponse(429, {"error": CANARY})])
+    model.endpoint.config.max_retries = 0
+
+    async def consume():
+        async for _ in model.endpoint.stream(REQUEST):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(in_write.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert recorded == [("settle_unknown", "rate_limited")], recorded
+
+
 # --- the warm row is keyed by the body that was sent, not the body the marks were placed on
 
 REWRITTEN_SYSTEM = "Replacement instructions written after the marks were placed. " * 40
