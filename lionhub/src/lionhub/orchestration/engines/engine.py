@@ -1982,16 +1982,19 @@ class Engine:
         """Return whether to expand an item, or raise when the judge cannot be trusted.
 
         With no judge configured this returns True; budget exhaustion returns False.
-        Judge failures fail open except for settings errors, a containment or exclusive MCP
-        selection refusal on the bounded exception chain, and failures under account containment. An
+        Judge failures fail open except for request or policy refusals on the bounded
+        exception chain, and failures under account containment. An
         ordinary error reporting a denial does not change that denial; an unreadable
         callback error chain or a containment or settings refusal still raises.
         """
         from lionagi._errors import (  # noqa: PLC0415
+            CLIInputRefusedError,
             ContainmentRefusedError,
+            InputTokenCapError,
             _ExclusiveMcpSelectionError,
         )
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
+        from lionagi.providers._provider_errors import NestedAgentRefusedError  # noqa: PLC0415
 
         if not self.judge_model:
             return True
@@ -2023,31 +2026,57 @@ class Engine:
         except _AgentSettingError:
             raise
         except Exception as exc:
-            # The model layer wraps containment and exclusive MCP selection refusals in its
-            # own error, so the refusal is
-            # found on the error's chain: its cause, or its context when a wrapper raised
-            # without `from`. It refuses every call this judge makes; read as a pass, it would
-            # turn the gate off for the whole run. Whatever a link holds is followed, an object
-            # that is not an exception included, and every link read is kept until the walk
-            # ends, so a link an error builds on each read cannot take a visited one's address.
-            # Links are read nearest first, so a long branch cannot spend the limit before a
-            # refusal one link away is read.
+            # Request and policy refusals recur for the same input and must not be
+            # mistaken for an ordinary infrastructure failure. Retain the first new
+            # refusal while looking for a containment or exclusive-selection refusal,
+            # whose existing precedence must be preserved.
             pending: deque[object] = deque([exc])
             seen: dict[int, object] = {}
-            while pending and len(seen) < _JUDGE_CHAIN_LIMIT:
+            refusal = None
+            visited = 0
+            while pending and visited < _JUDGE_CHAIN_LIMIT:
                 cause = pending.popleft()
-                if cause is None or id(cause) in seen:
+                visited += 1
+                if id(cause) in seen:
                     continue
                 seen[id(cause)] = cause
                 if issubclass(type(cause), (ContainmentRefusedError, _ExclusiveMcpSelectionError)):
                     raise cause from cause.__cause__
+                if refusal is None and issubclass(
+                    type(cause),
+                    (
+                        CLIInputRefusedError,
+                        InputTokenCapError,
+                        NestedAgentRefusedError,
+                        _AgentSettingError,
+                    ),
+                ):
+                    refusal = cause
                 for name in ("__context__", "__cause__"):
                     # A read that fails ends that branch. An interrupt, an exit or a cancellation
                     # raised by the read is not caught.
                     try:
-                        pending.append(getattr(cause, name, None))
+                        link = getattr(cause, name, None)
                     except Exception:  # noqa: S112
                         continue
+                    if link is not None and visited + len(pending) < _JUDGE_CHAIN_LIMIT:
+                        pending.append(link)
+                try:
+                    if is_exception_group(cause):
+                        members = iter(get_exception_group_exceptions(cause))
+                        while visited + len(pending) < _JUDGE_CHAIN_LIMIT:
+                            try:
+                                pending.append(next(members))
+                            except StopIteration:
+                                break
+                except Exception:  # noqa: S110 — unreadable group members are skipped
+                    pass
+            if refusal is not None:
+                try:
+                    refusal_cause = refusal.__cause__
+                except Exception:  # noqa: BLE001 — unreadable links are skipped
+                    refusal_cause = None
+                raise refusal from refusal_cause
             # No refusal on the chain. A chain that loops back on itself, or one longer than
             # the limit, lands here too, instead of walking forever. Under containment the
             # refusal can arrive as any error type (an unreadable directory, a config the
