@@ -86,7 +86,7 @@ distinct from the pricing table's `ModelPrice.max_input_tokens`, which keeps its
 pricing table prices by prompt length, `"auto"` is the first tier's `max_prompt_tokens` (100,000 for
 `claude-haiku-5-5`). The table prices the requests it is consulted for, the Anthropic Messages path
 and the account router (`lionagi/providers/anthropic/messages.py:988`,
-`lionagi/service/accounts/_router.py:125`); a provider the table does not price, such as a command-line
+`lionagi/service/accounts/_router.py:137`); a provider the table does not price, such as a command-line
 agent billed by subscription, has no tier here, so unset leaves it unchanged. For a model with one flat
 tier, or none in the table, `"auto"` resolves to no ceiling, and the resolution says so in the
 decision event (D7) rather than inventing a number. A

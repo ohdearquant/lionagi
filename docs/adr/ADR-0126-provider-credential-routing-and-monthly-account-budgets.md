@@ -153,7 +153,8 @@ Purpose: raise the prompt-cache hit rate of a process that starts many short con
 
 D3 binds each conversation to one account for its whole life, because the Claude API keeps a
 separate prompt cache for each organization (P3). D3 orders a NEW scope's candidates by utilization
-alone (`_ratio_order`, `lionagi/service/accounts/_ledger.py:400`, applied at `:548`), without regard
+alone (`_ratio_order`, `lionagi/service/accounts/_ledger.py:400`, applied at `:548`)
+(line numbers at `c6ac2d97400fe0ed480b942c945570e197cdfcc8`), without regard
 to cache warmth. A process that starts many short conversations sharing one system prompt therefore
 lands each new conversation on whichever account is furthest behind its budget pace. The first
 request of that conversation then writes the stable prefix again on that account, even when the
@@ -213,7 +214,7 @@ selection reads it: the D4 ledger.
    one-hour mark (`cache_control` with `"ttl": "1h"`) in the body that is sent. It
    names the longest one-hour entry the tools and system tiers of that body can hold.
    - With the adapter's own placement that block is normally the stable one. The adapter writes
-     the system tier as blocks (`lionagi/providers/anthropic/messages.py:383-384`) and `place()`
+     the system tier as blocks (`lionagi/providers/anthropic/messages.py:384-385`) and `place()`
      puts the stable one-hour mark on the last markable block outside the messages (`stable`,
      `_prompt_cache.py:257`, marked at `:305-315`).
    - An earlier one-hour mark in those tiers (a caller's own, or the placement's read or probe of
@@ -225,7 +226,7 @@ selection reads it: the D4 ledger.
    - A request with no one-hour mark in its tools or system tiers has no certificate and takes no
      part in this amendment: it neither reads nor writes the index.
    - `router.begin` computes it from the final payload it freezes, the dict `request_ttls` reads
-     (`lionagi/service/accounts/_router.py:123`), after parsing the frozen bytes back (next
+     (`lionagi/service/accounts/_router.py:129`), after parsing the frozen bytes back (next
      bullet but one). It never comes from the placement record,
      so a direct endpoint, a prebuilt event and a body a hook changed after placement are keyed by
      the body that is sent. A standalone call takes part only when that body carries a one-hour mark
@@ -241,7 +242,7 @@ selection reads it: the D4 ledger.
      `"ttl": "1h"` and a markable block follows the key block: the provider's automatic caching then
      puts a one-hour breakpoint on the last cacheable block, after the key block. When the key block
      is the last markable block, that breakpoint is at the key block and the flag stays false. The
-     adapter never sends that field itself (`messages.py:1158-1160`, `:1170-1173`), so only a
+     adapter never sends that field itself (`messages.py:1193-1195`, `:1205-1208`), so only a
      direct or prebuilt body, or a hook, carries it. Decision 3 uses the flag.
    - `begin` computes the key and `hour_after_key` from the frozen bytes parsed back
      (`json.loads`), not from the dict. `points()` reads only lists as content
@@ -275,7 +276,7 @@ selection reads it: the D4 ledger.
    fraction lengths and basic-format dates, so such a value is absent on 3.10 only. The ledger
    writes only `isoformat()` of aware UTC datetimes.
 3. **Writing a row.** Settle writes only inside its open-to-settled branch (`_settle_sync`,
-   `_ledger.py:668-701`), only when the evidence is `CompleteUsage` (D5) with cost at or under the
+   `_ledger.py:886-934`), only when the evidence is `CompleteUsage` (D5) with cost at or under the
    ceiling, only when settle was given the certificate, and only when the account is not blocked
    when that transaction reads it. The block is read in the branch where cost is at or under the
    ceiling, so no later statement in the transaction sets one. Then:
@@ -289,7 +290,7 @@ selection reads it: the D4 ledger.
      A request with a server tool (`_server_tools`, `_prompt_cache.py:184-189`) also stores NULL:
      the provider sums usage over its internal iterations, so the sum is not a length. The
      prompt-cache logger is blind to those requests for the same reason
-     (`service_prompt_cache.py:462`).
+     (`_prompt_cache.py:462`).
    - **Read arm.** `cache_write_1h_tokens == 0`, a row exists for the account and certificate, its
      `stable_tokens` is not NULL, and `cache_read_input_tokens == stable_tokens`: the request read
      exactly the entry that ends at the key block, because a read is a prefix of the request, and the
@@ -325,22 +326,22 @@ selection reads it: the D4 ledger.
 4. **Clearing.** In the transaction that records the outcome, the ledger deletes every
    `warm_prefix` row for the provider and account when it records:
    - an `UnknownOutcome` on an open attempt with any reason but `cancelled` and `stream_closed` (the
-     still-open branch, `_ledger.py:644-651`), whether or not an earlier reason already stands:
+     still-open branch, `_ledger.py:859-868`), whether or not an earlier reason already stands:
      `auth_required`, `rate_limited`, `provider_error`, `request_rejected`, `transport_error`,
      `usage_incomplete`, `stream_error`, `stream_truncated`;
    - a `ProvenNotSent` the caller did not cause, settled in the open-to-settled branch
-     (`:668-701`): an unresolved key in `begin` (`_router.py:132-134`) and a transport failure
-     before the request entered (`messages.py:619`, `:1083`). `ProvenNotSent`
-     (`lionagi/service/accounts/_types.py:141-143`) gains `caller_cancelled: bool = False`. It is
-     set by the two cancellation handlers (`messages.py:585`, `:1055`) and by `begin` when the
-     exception at `_router.py:140` is the cancellation class or `GeneratorExit` (a consumer that
+     (`:886-934`): an unresolved key in `begin` (`_router.py:146-148`) and a transport failure
+     before the request entered (`messages.py:622`, `:1117`). `ProvenNotSent`
+     (`lionagi/service/accounts/_types.py:141-150`) gains `caller_cancelled: bool = False`. It is
+     set by the two cancellation handlers (`messages.py:586`, `:1085`) and by `begin` when the
+     exception at `_router.py:154-157` is the cancellation class or `GeneratorExit` (a consumer that
      closes its own stream during `begin`). The recorded outcome stays `not_sent`;
-   - a block: `settlement_conflict` (`_ledger.py:662`), `ceiling_exceeded` (`:697`) and every
-     `block()` (`_block_sync`, `:714`), `auth_required` included;
-   - `clear_block()` (`:968`) on an account whose `block_reason` is not NULL when that transaction
+   - a block: `settlement_conflict` (`_ledger.py:879`), `ceiling_exceeded` (`:915`) and every
+     `block()` (`_block_sync`, `:962`), `auth_required` included;
+   - `clear_block()` (`:1217`) on an account whose `block_reason` is not NULL when that transaction
      reads it. A process without this amendment can block an account without deleting its rows, so
      the re-admission deletes them. A `clear_block()` on an account that is not blocked deletes
-     nothing, and a repeat of an adjustment already recorded returns before that read (`:983`) and
+     nothing, and a repeat of an adjustment already recorded returns before that read (`:1229-1233`) and
      deletes nothing.
 
    It does not clear on a complete settlement. It does not clear on `cancelled`, `stream_closed` or
@@ -354,11 +355,11 @@ selection reads it: the D4 ledger.
    returns `already_settled` and clears nothing.
 
    The clear has to cover more than blocks. Only a 401 or 403 blocks an account
-   (`messages.py:516`, `:986`). A rate-limited account, or one whose credit is exhausted (a 400), stays a
+   (`messages.py:517`, `:993`). A rate-limited account, or one whose credit is exhausted (a 400), stays a
    candidate. Without the clear, its row would keep it first in W for every new scope with that
    prefix, and a bound scope never moves. The clear removes that preference and nothing else: D3's
    order still binds the failing account when it ranks first, as it does today. A `ProvenNotSent`
-   settles at cost zero (`_ledger.py:607-609`) and an unknown outcome keeps only its attempt's quote
+   settles at cost zero (`_ledger.py:821-823`) and an unknown outcome keeps only its attempt's quote
    open, so a failure need not move the account down that order. A request already in flight when
    its account failed, whose complete settlement with a one-hour write commits after the failure's,
    writes a row again. That settlement is evidence the account served the request, not that it
@@ -369,12 +370,12 @@ selection reads it: the D4 ledger.
    Clearing more than needed (a second reason on one attempt, an older failure deleting a fresher
    row) costs only writes.
 5. **Selection for a new scope.** The candidate set is unchanged: configured, unblocked accounts
-   with room for the attempt (`_fits`, `_ledger.py:395-397`).
+   with room for the attempt (`_fits`, `_ledger.py:578-580`).
    - Let W be the candidates holding a row for the request's certificate whose `expires_at` is later
      than the reservation's now, and whose committed spend including this attempt satisfies
      `10 * (spent + opened + ceiling) <= 9 * budget`. Equality is inside W. The values are the
-     Python integers `_fits` uses: `spent` and `opened` from `_spend_parts` (`:346`), the quote's
-     ceiling, and `spec.budget_nusd`, which equals the month row whenever one exists (`:473`).
+     Python integers `_fits` uses: `spent` and `opened` from `_spend_parts` (`:716-720`), the quote's
+     ceiling, and `spec.budget_nusd`, which equals the month row whenever one exists (`:657`).
    - If W is non-empty, the scope binds the first of W under D3's order.
    - Otherwise it binds the first of all candidates under D3's order, as before. A warm candidate
      above the bound is not in W and stays a candidate under that order, so it is bound again when
@@ -398,14 +399,14 @@ selection reads it: the D4 ledger.
      distinct scopes in flight, then account name. Unknown attempts remain open for ranking and
      admission.
 7. **Schema.** `user_version` stays 1. The table is not added to `_TABLES`.
-   - The unlocked fast path in `_ensure_schema` (`_ledger.py:233-236`) returns only when the
+   - The unlocked fast path in `_ensure_schema` (`_ledger.py:399-402`) returns only when the
      version is 1 and `_TABLES | {"warm_prefix"}` is present.
    - The locked version-0 branch, which a fresh file takes, creates the table beside the base
-     tables and before `PRAGMA user_version = 1` (`:343`), in the same transaction.
+     tables and before `PRAGMA user_version = 1` (`:526`), in the same transaction.
    - The locked version-1 branch requires `_TABLES` as today and then runs the
      `CREATE TABLE IF NOT EXISTS` statement before it returns. A version-1 file missing a base table
      still refuses with `LEDGER_UNAVAILABLE`.
-   - So every connection `_connect` returns (`_ledger.py:200-218`) holds the table. Every connection
+   - So every connection `_connect` returns (`_ledger.py:366-384`) holds the table. Every connection
      is opened writable, so the first open after an upgrade creates it under the lock, and no reader
      needs a write it could not already make.
    - An older lionagi opens a file that has the table, because its check admits a superset of
@@ -416,74 +417,75 @@ selection reads it: the D4 ledger.
 8. **Operations.**
    - D4's `reserve(scope, attempt_id, quote, accounts)` becomes
      `reserve(scope, attempt_id, quote, accounts, *, cert=None)`; it reads the index when the
-     reservation inserts the scope's binding (`_ledger.py:551`). `Reservation` is unchanged: no
+     reservation inserts the scope's binding (`_ledger.py:732-755`). `Reservation` is unchanged: no
      later step needs to know whether the scope was new, because the read arm applies to every
      settled attempt.
    - `settle(attempt_id, evidence)` becomes `settle(attempt_id, evidence, *, cert=None,
      hour_after_key=False, server_tools=False)`; it writes (Decision 3) and clears (Decision 4).
      `hour_after_key` is the flag from Decision 1, and `server_tools` is true for a request that
      carries a server tool.
-   - `RouterAttempt` (`_router.py:62-67`, `@dataclass(slots=True)`, built positionally at `:143`)
+   - `RouterAttempt` (`_router.py:63-73`, `@dataclass(slots=True)`, built positionally at `:159-167`)
      gains `cert: str | None = None`, `hour_after_key: bool = False` and
      `server_tools: bool = False` after its four fields, so positional construction is unchanged.
-     `begin` computes `cert` and `hour_after_key` from the frozen payload (`:124`) and
+     `begin` computes `cert` and `hour_after_key` from the frozen payload (`:130-136`) and
      `server_tools` from the same parsed body through `_server_tools`, passes `cert` to
-     `ledger.reserve` (`:129`) and builds the attempt with all three (`:143`). Only the
+     `ledger.reserve` (`:141-143`) and builds the attempt with all three (`:159-167`). Only the
      two settlements that can carry `CompleteUsage` pass them on to `ledger.settle`:
-     `settle_response` (`:159-169`) and `settle_stream_end` (`:184-195`). `settle_unknown`
-     (`:171-172`) and the not-sent paths pass neither; nothing is lost, because only a
+     `settle_response` (`:183-201`) and `settle_stream_end` (`:226-243`). `settle_unknown`
+     (`:203-205`) and the not-sent paths pass neither; nothing is lost, because only a
      `CompleteUsage` settlement writes a row and a clear needs only the account.
    - `ProvenNotSent` gains `caller_cancelled` (Decision 4). `AccountRouter.settle_reservation_not_sent`
-     (`_router.py:177-179`) gains `*, caller_cancelled: bool = False` and builds its `ProvenNotSent`
-     with it. `settle_not_sent` (`:174-175`), which delegates to it, gains the same keyword and
+     (`_router.py:214-220`) gains `*, caller_cancelled: bool = False` and builds its `ProvenNotSent`
+     with it. `settle_not_sent` (`:207-212`), which delegates to it, gains the same keyword and
      forwards it. The adapter's two cancellation handlers pass `True` at their `settle_not_sent`
-     calls (`messages.py:585`, `:1055`). `begin`'s bare `except BaseException` (`:140-142`) binds
+     calls (`messages.py:586`, `:1085`). `begin`'s bare `except BaseException` (`_router.py:154-158`) binds
      the exception and passes `True` when it is the cancellation class or `GeneratorExit`, `False`
-     otherwise. Its `AccountRoutingError` handler (`:133-139`) passes nothing.
-   - `AccountRouter.settle_response` (`_router.py:159-169`), `AccountRouter.settle_unknown`
-     (`:171-172`) and `AccountRouter.block` (`:181-182`) run their ledger write under
+     otherwise. Its `AccountRoutingError` handler (`_router.py:147-153`) passes nothing.
+   - `AccountRouter.settle_response` (`_router.py:183-201`), `AccountRouter.settle_unknown`
+     (`:203-205`) and `AccountRouter.block` (`:222-224`) run their ledger write under
      `CancelScope(shield=True)`, as `settle_reservation_not_sent` and `settle_stream_end` already do
-     (`:177-179`, `:184-195`). `settle_response` records Decision 4's `usage_incomplete` and
-     `ceiling_exceeded` on the non-streamed path (`messages.py:573`), and the complete settlements
+     (`:214-220`, `:226-243`). `settle_response` records Decision 4's `usage_incomplete` and
+     `ceiling_exceeded` on the non-streamed path (`messages.py:574`), and the complete settlements
      that D6 settles under cancellation (`ADR-0126.md:565`). A worker write that waits for admission
      while an AnyIO scope cancellation is pending never starts
-     (`lionagi/ln/concurrency/utils.py:64-65`). Today, when a 401, 403, 429, 5xx or other non-200
-     status is being recorded (`messages.py:511-541`, `:981-1011`), the adapter's cancellation
-     handler then records `cancelled` instead: no clear, no block for a 401 or 403 whose cancellation
-     was already pending when `block` was called, and a held ceiling for a 200 whose settlement never
-     started. A
-     cancellation that arrives while `block` runs lets the block commit and stops `settle_unknown`.
-     With the shields, both writes commit.
+     (`lionagi/ln/concurrency/utils.py:64-65`).
+
+     Before this amendment, when a 401, 403, 429, 5xx or other non-200 status was being recorded
+     (`messages.py:511-541`, `:981-1011`, line numbers at `04e03ffef292f1dad08549cdbf23b53f9b1d5644`),
+     the adapter's cancellation handler then recorded `cancelled` instead: no clear, no block for a
+     401 or 403 whose cancellation was already pending when `block` was called, and a held ceiling
+     for a 200 whose settlement never started. A cancellation that arrived while `block` ran let the
+     block commit and stopped `settle_unknown`. With the shields, both writes commit.
    - The adapter delivers a pending cancellation after the failure is recorded. The clauses that
-     re-raise a routed failure (`messages.py:591-599`, `:1066-1069`) and the two transport-failure
-     branches (`:615-620`, `:1079-1084`) call `await anyio.lowlevel.checkpoint()` before they raise.
+     re-raise a routed failure (`messages.py:592-602`, `:1097-1102`) and the two transport-failure
+     branches (`:618-624`, `:1112-1119`) call `await anyio.lowlevel.checkpoint()` before they raise.
      Without it, the transport branch raises the routed failure with no checkpoint after its
      shielded write, so a caller under `fail_after` receives the routing error instead of
      `TimeoutError`, and a status-code branch delivers the cancellation only if closing the HTTP
      session checkpoints. When the cancellation fires first, the cancellation handler's second
      settlement records nothing: the first reason on an open attempt stands, and a settled attempt
-     is left as it is (`_ledger.py:642-650`). The comment at `messages.py:512-515` and `:982-985` is
+     is left as it is (`_ledger.py:857-865`). The comment at `messages.py:513-516` and `:986-991` is
      rewritten: both writes are shielded, and the block still goes first because a ledger error on
      the first write stops the second, and losing the attempt's reason only keeps its ceiling held.
    - The shields hold against AnyIO scope cancellation only. A native `task.cancel()` is not held:
      pending before the write is admitted, it stops the write; arriving during the worker wait, it
-     returns to the caller at once and the write commits after (`messages.py:578-580`). Both hold
+     returns to the caller at once and the write commits after (`messages.py:579-581`). Both hold
      for the two existing shields as well. A shielded write also waits without a timeout for a
      thread-limiter token. D6's five-second bound (`ADR-0126.md:572-573`) covers the SQLite wait,
      not admission, for the existing shields and for these three alike.
-   - The streamed adapter's `GeneratorExit` handler (`messages.py:1061-1065`) records `stream_error`
-     when the stream carried an error event (`saw_error_event`, `:935`, `:955-958`) and
-     `stream_closed` otherwise, as its end-of-stream branch already does (`:1045-1047`).
+   - The streamed adapter's `GeneratorExit` handler (`messages.py:1091-1096`) records `stream_error`
+     when the stream carried an error event (`saw_error_event`, `:939`, `:959-962`) and
+     `stream_closed` otherwise. Its end-of-stream branch already decides the error-event case the
+     same way and records `stream_truncated` otherwise (`:1075-1077`).
    - In the streamed attempt every settlement sets `settled` before it awaits the router (the
-     status branches, `messages.py:986-1017`, and `:951`, `:1048`), and the transport-failure
-     branch (`:1079-1084`) settles only when `settled` is false; it still raises. Today a status
-     branch settles without setting the flag, and the transport branch has no guard, so a
-     `GeneratorExit` or an exception that the unwinding response or client raises after a
-     settlement leads the close handler or the transport branch to settle a second time. After
-     `CompleteUsage` that is `already_settled`; on an attempt still open (`usage_incomplete`, a
-     status outcome) a second clearing reason clears the account's rows again, a row another
-     request wrote in between included. A settlement whose ledger write raises leaves the attempt
-     open for reconciliation, as an unsettled attempt is today.
+     status branches, `messages.py:985-1027`, and `:955-956`, `:1078-1079`), and the transport-failure
+     branch (`:1112-1119`) settles only when `settled` is false; it still raises. Without the flag
+     and the guard, a `GeneratorExit` or an exception that the unwinding response or client raises
+     after a settlement would lead the close handler or the transport branch to settle a second
+     time. After `CompleteUsage` that is `already_settled`; on an attempt still open
+     (`usage_incomplete`, a status outcome) a second clearing reason would clear the account's
+     warm-prefix rows again, a row another request wrote in between included. A settlement whose
+     ledger write raises leaves the attempt open for reconciliation, as any unsettled attempt is.
    - The summary row "Assignment" reads: "D3: bind a conversation once; a new conversation prefers
      an account where its stable prefix is warm, then ranks by committed budget utilization."
 
@@ -557,7 +559,7 @@ selection reads it: the D4 ledger.
   today, each paying a write on the cold account it lands on, until a one-hour write settles and
   writes a row. A row that lapsed, rather than never appearing, also comes back with the next
   stable-length read on its account. A failure after the attempt settled (a transport error after a
-  stream's final usage) clears nothing: the attempt is already settled (`_ledger.py:642-643`), and
+  stream's final usage) clears nothing: the attempt is already settled (`_ledger.py:856-858`), and
   the account served the request.
 - Not guaranteed: a key that names a shorter one-hour entry finds a row written under the longer
   key that contains it. The row records the last one-hour block of the request that wrote it.
@@ -748,7 +750,7 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
   dropping the block check turns the blocked-account no-write case red; dropping the server-tool check
   turns the server-tool arm red; reading `Point.nested` for the flag turns the `source.content` arm red;
   setting `settled` after a status-branch settlement instead of before turns the settled-stream arm red;
-  treating `GeneratorExit` like any other exception in `begin` (`_router.py:140`) turns `begin`'s
+  treating `GeneratorExit` like any other exception in `begin` (`_router.py:154-157`) turns `begin`'s
   no-clear case red; comparing the stored and current `expires_at` as text turns the `+01:00` case red;
   removing the shield from `settle_unknown` turns the pending-cancellation 429 case red; removing it
   from `block` turns the pending-cancellation 401 case red; removing it from `settle_response` turns the
@@ -839,21 +841,21 @@ supplies that name to endpoint configuration
 (`lionagi/providers/anthropic/_config.py:23`,
 `lionagi/service/connections/provider_config.py:99`). A missing settings name
 falls through to `os.getenv(name, name)`, allowing the unresolved name to become
-the credential (`lionagi/service/connections/endpoint_config.py:132`).
+the credential (`lionagi/service/connections/endpoint_config.py:138`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
 (`lionagi/operations/chat/chat.py:103`, `lionagi/service/imodel.py:709`,
 `lionagi/service/connections/api_calling.py:329-338`). HTTP retry happens inside the
-endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:895`,
-`lionagi/service/connections/endpoint.py:918`). Response JSON returns directly;
+endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:950`,
+`lionagi/service/connections/endpoint.py:973`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
-(`lionagi/service/connections/endpoint.py:826`, `lionagi/session/signal.py:346`).
+(`lionagi/service/connections/endpoint.py:881`, `lionagi/session/signal.py:346`).
 Neither a successful outer operation nor its final response accounts for every
 attempt that might have reached the provider.
 
 **P3 — Shared models are not conversation identities.** API Branch clones share
-their models (`lionagi/session/branch.py:580`). Binding a credential on that
+their models (`lionagi/session/branch.py:581`). Binding a credential on that
 shared endpoint would couple independent conversations. Switching accounts per
 call would instead disrupt cache reuse. The Claude API isolates caches by
 workspace, so keys of different organizations never share a cache
@@ -990,7 +992,7 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
 the current eager header path (`lionagi/service/imodel.py:384`,
-`lionagi/service/connections/endpoint.py:483`). For routed calls, explicit
+`lionagi/service/connections/endpoint.py:532`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
 redirects are rejected before lookup: the ledger must describe the credential
@@ -1019,8 +1021,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:851`) and
-`from_dict` reads it back (`lionagi/service/imodel.py:936`). Direct endpoints have
+preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:854`) and
+`from_dict` reads it back (`lionagi/service/imodel.py:943`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 
@@ -1237,7 +1239,7 @@ Status alone is not proof of a zero bill. Streams merge the initial usage and
 later cumulative usage fields by replacement, not addition, and settle only with
 complete terminal evidence. HTTP usage is intercepted before generic stream
 projection and before yielding to consumers; the current generic projection keeps
-raw events (`lionagi/service/connections/endpoint.py:1143`). No automatic retry after
+raw events (`lionagi/service/connections/endpoint.py:1200-1280`). No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
 from caller cancellation; the shield waits at most five seconds for a worker thread
 token (admission) and at most five seconds for the SQLite lock (`busy_timeout_s`), a
@@ -1262,7 +1264,7 @@ marks and new error handling. It retains current direct-key and unresolved-name
 semantics, retry/cache behavior, return types and serialization. Tightening
 `EndpointConfig._validate_api_key` globally is explicitly not authorized here.
 Configured routing disallows the endpoint's application response cache initially:
-its current wrapper receives headers (`lionagi/service/connections/endpoint.py:732`),
+its current wrapper receives headers (`lionagi/service/connections/endpoint.py:786`),
 and making that cache account-aware is DEFERRED. Provider prompt caching remains
 supported and is distinct from that application cache.
 
