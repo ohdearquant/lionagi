@@ -18,11 +18,14 @@ __all__ = (
     "is_secret_field_name",
 )
 
-# Multi-word markers include both their separated and run-together spellings.
-# Field-name folding normalizes punctuation but intentionally does not guess
-# camel-case boundaries, so ``accessKey`` folds to ``accesskey`` while
-# ``access-key`` folds to ``access_key``.
-SECRET_KEY_MARKERS = (
+# Every marker is matched as a substring of the folded name. Folding does not
+# guess camel-case boundaries (``accessKey`` folds to ``accesskey``, while
+# ``access-key`` folds to ``access_key``), so the key markers are listed in both
+# their separated and their run-together spelling.
+# Signing-key and HMAC-key names.
+_KEY_MATERIAL_MARKERS = ("hmac_key", "hmackey", "signing_key", "signingkey")
+# Other credential words.
+_PLAIN_SECRET_MARKERS = (
     "secret",
     "token",
     "password",
@@ -39,6 +42,7 @@ SECRET_KEY_MARKERS = (
     "client_secret",
     "bearer",
 )
+SECRET_KEY_MARKERS = (*_PLAIN_SECRET_MARKERS, *_KEY_MATERIAL_MARKERS)
 
 # Names that mean a credential on their own but must not match as substrings.
 # "auth" inside "author" or "authorized_keys_count" is a different word.

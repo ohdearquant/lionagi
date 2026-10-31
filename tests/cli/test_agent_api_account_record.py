@@ -148,12 +148,22 @@ def _settings(monkeypatch, tmp_path, *, accounts=(), dotenv=None):
         ("ACCT_B", _TEAM_B, False),
         ("EXAMPLE_API_KEY", (), True),
         ("ACCT_B", _TEAM_B, True),
+        ("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", (), False),
+        ("webhooksigningkey", (), True),
+        ("designing_key", (), False),
+        ("codesigningkey", (), False),
+        ("nodesigning_key", (), True),
     ],
     ids=[
         "credential variable",
         "configured account variable",
         "credential in dotenv",
         "configured account in dotenv",
+        "hmac key in environment",
+        "signing key in dotenv",
+        "designing substring in environment",
+        "code signing key in environment",
+        "node signing key in dotenv",
     ],
 )
 async def test_a_key_the_process_holds_is_refused_without_being_shown(
