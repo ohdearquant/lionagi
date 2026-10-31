@@ -20,11 +20,15 @@ from lionagi._errors import (
 from lionagi.agent.factory import _AgentSettingError
 from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.providers._provider_errors import NestedAgentRefusedError
-from lionhub.orchestration.engines.engine import Engine, EngineBudgetError
+from lionhub.orchestration.engines.engine import _JUDGE_REFUSALS, Engine, EngineBudgetError
 
 pytestmark = pytest.mark.asyncio
 
 _REFUSALS = [CLIInputRefusedError, InputTokenCapError, NestedAgentRefusedError, _AgentSettingError]
+
+
+async def test_request_and_policy_refusal_test_cases_cover_engine_types():
+    assert tuple(_REFUSALS) == _JUDGE_REFUSALS
 
 
 async def _judge_raising(error, *, contained=False):
@@ -67,6 +71,25 @@ async def test_request_and_policy_refusals_are_not_admitted(refusal_type, contai
     with pytest.raises(refusal_type) as caught:
         await _judge_raising(_wrap(refusal, shape), contained=contained)
     assert caught.value is refusal
+
+
+@pytest.mark.parametrize(
+    ("first_type", "second_type"),
+    [
+        (CLIInputRefusedError, InputTokenCapError),
+        (InputTokenCapError, CLIInputRefusedError),
+    ],
+)
+async def test_first_request_or_policy_refusal_in_walk_order_is_raised(first_type, second_type):
+    first = first_type("first refusal")
+    second = second_type("second refusal")
+    outer = RuntimeError("wrapper")
+    outer.__context__ = first
+    outer.__cause__ = second
+
+    with pytest.raises(first_type) as caught:
+        await _judge_raising(outer)
+    assert caught.value is first
 
 
 @pytest.mark.parametrize("refusal_type", _REFUSALS, ids=lambda cls: cls.__name__)
@@ -204,6 +227,36 @@ async def test_wide_group_members_are_read_lazily_within_the_shared_budget():
     assert 0 < len(reads) <= 99
 
 
+async def test_group_iteration_failure_keeps_prior_members_and_skips_the_rest():
+    first = CLIInputRefusedError("first refusal")
+    unread = InputTokenCapError("unread refusal")
+    reads = []
+
+    class Members:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            reads.append(1)
+            if len(reads) == 1:
+                return first
+            if len(reads) == 2:
+                raise OSError("members cannot be read")
+            return unread
+
+    class PartiallyReadableGroup(ExceptionGroup):
+        def __getattribute__(self, name):
+            if name == "exceptions":
+                return Members()
+            return super().__getattribute__(name)
+
+    group = PartiallyReadableGroup("group", [first, unread])
+    with pytest.raises(CLIInputRefusedError) as caught:
+        await _judge_raising(group)
+    assert caught.value is first
+    assert reads == [1, 1]
+
+
 @pytest.mark.parametrize(
     "error", [RuntimeError("backend unavailable"), ConfigurationError("configuration")]
 )
@@ -295,7 +348,7 @@ async def test_oversized_copied_codex_request_stays_advisory_before_spawn(monkey
 
 
 @pytest.mark.parametrize("refusal_type", _REFUSALS, ids=lambda cls: cls.__name__)
-async def test_synthetic_pre_spawn_argv_refusal_retains_type_and_redacts_its_exception_chain(
+async def test_synthetic_pre_spawn_argv_refusal_redacts_chain_and_only_preserves_cli_type(
     monkeypatch, refusal_type
 ):
     from lionagi.providers import _cli_subprocess as cli

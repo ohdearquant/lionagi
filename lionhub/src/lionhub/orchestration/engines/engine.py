@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi._errors import ConfigurationError
+from lionagi._errors import CLIInputRefusedError, ConfigurationError, InputTokenCapError
 from lionagi.agent import AgentSpec, create_agent
+from lionagi.agent.factory import _AgentSettingError
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import Semaphore, gather, move_on_after, sleep
 from lionagi.ln.concurrency._compat import (
@@ -30,6 +31,7 @@ from lionagi.ln.concurrency._compat import (
 )
 from lionagi.ln.types import RoleFilter, TypeFilter
 from lionagi.protocols._concepts import Observable
+from lionagi.providers._provider_errors import NestedAgentRefusedError
 from lionagi.session.observer import SessionObserver
 from lionagi.session.session import Session
 from lionagi.session.signal import Signal
@@ -41,6 +43,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lionagi.engines")
 EventCallback = Callable[[dict[str, Any]], Any]
+
+_JUDGE_REFUSALS = (
+    CLIInputRefusedError,
+    InputTokenCapError,
+    NestedAgentRefusedError,
+    _AgentSettingError,
+)
 
 # Sentinel used by Engine.run() to distinguish "partial export produced a
 # result" from "partial export returned None intentionally".
@@ -1988,13 +1997,9 @@ class Engine:
         callback error chain or a containment or settings refusal still raises.
         """
         from lionagi._errors import (  # noqa: PLC0415
-            CLIInputRefusedError,
             ContainmentRefusedError,
-            InputTokenCapError,
             _ExclusiveMcpSelectionError,
         )
-        from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
-        from lionagi.providers._provider_errors import NestedAgentRefusedError  # noqa: PLC0415
 
         if not self.judge_model:
             return True
@@ -2031,6 +2036,8 @@ class Engine:
             # mistaken for an ordinary infrastructure failure. Retain the first new
             # refusal while looking for a containment or exclusive-selection refusal,
             # whose existing precedence must be preserved.
+            # Follow whatever each link holds, nearest first. Keep each visited object
+            # alive until the walk ends so a link built on a later read cannot reuse its id.
             pending: deque[object] = deque([exc])
             seen: dict[int, object] = {}
             visited = 0
@@ -2042,15 +2049,7 @@ class Engine:
                 seen[id(cause)] = cause
                 if issubclass(type(cause), (ContainmentRefusedError, _ExclusiveMcpSelectionError)):
                     raise cause from cause.__cause__
-                if refusal is None and issubclass(
-                    type(cause),
-                    (
-                        CLIInputRefusedError,
-                        InputTokenCapError,
-                        NestedAgentRefusedError,
-                        _AgentSettingError,
-                    ),
-                ):
+                if refusal is None and issubclass(type(cause), _JUDGE_REFUSALS):
                     refusal = cause
                 for name in ("__context__", "__cause__"):
                     # A read that fails ends that branch. An interrupt, an exit or a cancellation
