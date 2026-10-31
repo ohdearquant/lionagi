@@ -122,6 +122,7 @@ TARGET_RULES = {
     "lionagi.cli._code_identity": "lionhub.serve.diagnostics",
     "lionagi.cli._engine_definitions": "lionhub.orchestration.engine_definitions",
     "lionagi.cli._inspection": "lionhub.orchestration.inspection",
+    "lionagi.cli._kill_service": "lionhub.orchestration.kill",
     "lionagi.cli._mcp_resolve": "lionhub.orchestration.mcp_config",
     "lionagi.cli._mirror_service": "lionhub.serve.mirror",
     "lionagi.cli._mirror_settings": "lionhub.serve.mirror",

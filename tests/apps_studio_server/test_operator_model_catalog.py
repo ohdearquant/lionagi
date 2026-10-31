@@ -36,7 +36,7 @@ def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path) -> None:
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
-    monkeypatch.setattr("lionagi.cli.kill.psutil.boot_time", lambda: 1_700_000_000.0)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil.boot_time", lambda: 1_700_000_000.0)
 
 
 async def _empty_branch_run(self, *_args, **_kwargs):

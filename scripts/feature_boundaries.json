@@ -519,6 +519,11 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.inspection"
     },
+    "lionagi.cli._kill_service": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.kill"
+    },
     "lionagi.cli._logging": {
       "layer": "root",
       "owner": "cli",

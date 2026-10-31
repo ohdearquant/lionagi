@@ -63,7 +63,7 @@ def _guard_runner_probes_in_kill_tests(request, monkeypatch):
     def unexpected_runner(pid):
         raise AssertionError(f"unconfigured runner process probe: {pid}")
 
-    monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", unexpected_runner)
+    monkeypatch.setattr("lionagi.cli._kill_service._runner_process_create_time", unexpected_runner)
 
 
 @dataclass

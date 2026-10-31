@@ -1823,6 +1823,14 @@
       "resolve_primary_session",
       "run_id_candidates"
     ],
+    "lionagi/cli/_kill_service.py": [
+      "check_pid_identity",
+      "imported_degraded_process_is_live",
+      "kill_one",
+      "list_running_children",
+      "read_pid_from_entity",
+      "unaddressable_pid_reason"
+    ],
     "lionagi/cli/_logging.py": [
       "configure_cli_logging"
     ],
