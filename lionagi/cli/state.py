@@ -1470,14 +1470,14 @@ async def _doctor(
 
     from sqlalchemy import text
 
-    from lionagi.cli._util import pid_alive
-    from lionagi.cli.kill import (
-        _NOT_JUDGEABLE_HERE,
-        _check_pid_identity,
-        _imported_degraded_process_is_live,
-        _read_pid_from_entity,
-        _unaddressable_pid_reason,
+    from lionagi.cli._kill_service import (
+        NOT_JUDGEABLE_HERE,
+        check_pid_identity,
+        imported_degraded_process_is_live,
+        read_pid_from_entity,
+        unaddressable_pid_reason,
     )
+    from lionagi.cli._util import pid_alive
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -1512,16 +1512,16 @@ async def _doctor(
                 except ValueError:
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
-            if _unaddressable_pid_reason(entity["node_metadata"] or {}) in _NOT_JUDGEABLE_HERE:
+            if unaddressable_pid_reason(entity["node_metadata"] or {}) in NOT_JUDGEABLE_HERE:
                 # Recorded on another machine or an unmanaged runtime — every check below
                 # asks this host's process table about a pid that means something else here.
                 skipped += 1
                 continue
-            pid = _read_pid_from_entity(entity)
+            pid = read_pid_from_entity(entity)
             if (
                 pid is None
                 and entity.get("source_kind") == "imported_fs"
-                and _imported_degraded_process_is_live(row["id"])
+                and imported_degraded_process_is_live(row["id"])
             ):
                 skipped += 1
                 continue
@@ -1533,7 +1533,7 @@ async def _doctor(
                     expected_create_time = float(raw_ct) if raw_ct is not None else None
                 except (TypeError, ValueError):
                     expected_create_time = None
-                verdict = _check_pid_identity(
+                verdict = check_pid_identity(
                     pid,
                     "lionagi",
                     expected_session_id=row["id"],
