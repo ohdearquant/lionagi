@@ -4547,3 +4547,103 @@ async def test_unwinding_a_stream_that_already_settled_settles_nothing_more(
     assert len(written) == settlements, written
     assert _attempts(path)[-1] == settled_row
     assert _warm_rows(path) == settled_rows
+
+
+# --- the warm row is keyed by the body that was sent, not the body the marks were placed on
+
+REWRITTEN_SYSTEM = "Replacement instructions written after the marks were placed. " * 40
+
+
+def _system_certificate(body) -> str:
+    """The certificate of the last one-hour system block in a request body."""
+    from lionagi.providers.anthropic._prompt_cache import points
+
+    blocks, _ = points(body)
+    keyed = [p for p in blocks if p.tier == "system" and p.markable and p.mark == "1h"]
+    assert keyed, body
+    return keyed[-1].cert
+
+
+def _rewrite_system(payload) -> None:
+    payload["system"][0]["text"] = REWRITTEN_SYSTEM
+
+
+def _stored_certificates(path) -> set[str]:
+    return {cert for _, cert in _warm_rows(path)}
+
+
+@pytest.mark.asyncio
+async def test_a_pre_invoke_hook_that_rewrites_the_system_text_is_keyed_by_the_body_sent(
+    monkeypatch, tmp_path
+):
+    """Reached through ``iModel.invoke`` with a pre-invoke hook registered on the model: the
+    hook runs after the marks are placed and changes the system text the request sends."""
+    from lionagi.service.hooks import HookRegistry
+    from lionagi.service.hooks._types import HookEventTypes
+
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response(usage=_hour_write_usage())])
+    model.endpoint.config.max_retries = 0
+
+    async def rewrite(event, **_):
+        _rewrite_system(event.payload)
+
+    model.hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: rewrite})
+    await model.invoke(**copy.deepcopy(HOUR_REQUEST))
+
+    assert len(transport.calls) == 1
+    sent = transport.calls[0]["json"]
+    assert sent["system"][0]["text"] == REWRITTEN_SYSTEM
+    sent_certificate = _system_certificate(sent)
+    assert sent_certificate != _system_certificate(HOUR_REQUEST)
+    assert _stored_certificates(path) == {sent_certificate}
+
+
+@pytest.mark.asyncio
+async def test_a_direct_endpoint_call_with_a_prebuilt_request_is_keyed_by_the_body_sent(
+    monkeypatch, tmp_path
+):
+    """Reached through ``Endpoint.call`` with ``skip_payload_creation``: the payload was built
+    by ``create_payload`` and its system text changed before it was handed in."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response(usage=_hour_write_usage())])
+    model.endpoint.config.max_retries = 0
+
+    payload, headers = model.endpoint.create_payload(request=copy.deepcopy(HOUR_REQUEST))
+    _rewrite_system(payload)
+    await model.endpoint.call(payload, skip_payload_creation=True, extra_headers=headers)
+
+    assert len(transport.calls) == 1
+    sent = transport.calls[0]["json"]
+    assert sent["system"][0]["text"] == REWRITTEN_SYSTEM
+    sent_certificate = _system_certificate(sent)
+    assert sent_certificate != _system_certificate(HOUR_REQUEST)
+    assert _stored_certificates(path) == {sent_certificate}
+
+
+@pytest.mark.asyncio
+async def test_a_prebuilt_event_sent_twice_is_keyed_by_the_body_of_each_send(monkeypatch, tmp_path):
+    """Reached through an event from ``iModel.create_api_calling``. A second ``invoke`` on a
+    finished event sends nothing; its payload is sent again through ``Endpoint.call``."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(
+        monkeypatch,
+        [_response(usage=_hour_write_usage()), _response(usage=_hour_write_usage())],
+    )
+    model.endpoint.config.max_retries = 0
+    event = model.create_api_calling(**copy.deepcopy(HOUR_REQUEST))
+
+    await event.invoke()
+    await event.invoke()
+    assert len(transport.calls) == 1
+    await model.endpoint.call(
+        event.payload,
+        skip_payload_creation=True,
+        extra_headers=event.headers,
+        _routing_scope=event._routing_scope,
+    )
+
+    assert len(transport.calls) == 2
+    certificates = {_system_certificate(call["json"]) for call in transport.calls}
+    assert len(certificates) == 1
+    assert _stored_certificates(path) == certificates
