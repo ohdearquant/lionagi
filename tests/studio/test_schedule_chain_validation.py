@@ -204,3 +204,83 @@ def test_cli_parser_and_service_agree(field, build, fragment):
         assert str(update_err) == cli_err
         create_db.create_schedule.assert_not_called()
         update_db.update_schedule.assert_not_called()
+
+
+# the chain-fire merge overlays only the keys a chain action may carry
+
+
+def _parent_schedule() -> dict:
+    return {
+        "id": "sid-parent",
+        "name": "parent",
+        "trigger_type": "cron",
+        "action_kind": "agent",
+        "action_model": "base-model",
+        "action_prompt": "base prompt",
+        "action_agent": "base-agent",
+        "action_playbook": "base-playbook",
+        "action_cwd": "/work/parent",
+        "action_command": "git",
+        "on_success": {"prompt": "old"},
+        "on_fail": None,
+    }
+
+
+def test_merge_keeps_parent_action_cwd_when_stored_chain_carries_one():
+    from lionagi.studio.scheduler.engine import _merge_chain_action
+
+    merged = _merge_chain_action(
+        _parent_schedule(), {"prompt": "next", "action_cwd": "/somewhere/else"}
+    )
+    assert merged["action_cwd"] == "/work/parent"
+    assert merged["action_prompt"] == "next"
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("action_cwd", "/somewhere/else"),
+        ("action_command", "rm"),
+        ("action_prompt", "smuggled"),
+        ("id", "other-id"),
+        ("name", "other-name"),
+        ("trigger_type", "interval"),
+        ("enabled", False),
+    ],
+)
+def test_merge_ignores_stored_chain_keys_that_are_not_allowed(key, value):
+    from lionagi.studio.scheduler.engine import _merge_chain_action
+
+    parent = _parent_schedule()
+    merged = _merge_chain_action(parent, {"model": "m2", key: value})
+    assert merged.get(key) == parent.get(key)
+    assert merged["action_model"] == "m2"
+
+
+def test_merge_applies_every_allowed_key():
+    from lionagi.cli._schedule_parsing import _CHAIN_ACTION_ALLOWED_KEYS
+    from lionagi.studio.scheduler.engine import _merge_chain_action
+
+    nested = {"prompt": "after", "on_success": None}
+    chain_action = {
+        "kind": "play",
+        "action_kind": "flow",
+        "model": "m2",
+        "prompt": "next",
+        "agent": "next-agent",
+        "playbook": "next-playbook",
+        "on_success": nested,
+        "on_fail": {"prompt": "recover", "on_fail": None},
+    }
+    assert set(chain_action) == _CHAIN_ACTION_ALLOWED_KEYS
+
+    parent = _parent_schedule()
+    merged = _merge_chain_action(parent, chain_action)
+    assert merged["action_kind"] == "play", "kind wins over action_kind"
+    assert merged["action_model"] == "m2"
+    assert merged["action_prompt"] == "next"
+    assert merged["action_agent"] == "next-agent"
+    assert merged["action_playbook"] == "next-playbook"
+    assert merged["on_success"] is nested
+    assert merged["on_fail"] == {"prompt": "recover", "on_fail": None}
+    assert parent["on_success"] == {"prompt": "old"}, "the parent schedule is not modified"
