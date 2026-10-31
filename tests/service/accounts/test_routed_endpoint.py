@@ -15,10 +15,12 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
+import anyio
 import httpx
 import pytest
 
 import lionagi.config as config_module
+import lionagi.service.accounts._ledger as ledger_module
 import lionagi.service.accounts._router as router_module
 from lionagi.config import AppSettings
 from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
@@ -1110,6 +1112,85 @@ async def test_stream_retries_before_yield_with_a_new_reservation(monkeypatch, t
     assert len(rows) == 2 and rows[0][0] != rows[1][0]
     assert rows[0][4] == "rate_limited"
     assert rows[1][2] == "settled", rows
+
+
+@asynccontextmanager
+async def _saturated_default_limiter():
+    """Hold every token of AnyIO's default thread limiter until the block ends."""
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    release = threading.Event()
+
+    async def hold() -> None:
+        await anyio.to_thread.run_sync(release.wait, 30)
+
+    try:
+        async with anyio.create_task_group() as group:
+            for _ in range(int(limiter.total_tokens)):
+                group.start_soon(hold)
+            with anyio.fail_after(5):
+                while limiter.borrowed_tokens < limiter.total_tokens:
+                    await anyio.sleep(0.01)
+            try:
+                yield
+            finally:
+                release.set()
+    finally:
+        release.set()
+
+
+def _count_begins(monkeypatch) -> list[int]:
+    """Record every reservation the router is asked to begin."""
+    begins: list[int] = []
+    original = router_module.AccountRouter.begin
+
+    async def counting_begin(self, *args, **kwargs):
+        begins.append(1)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(router_module.AccountRouter, "begin", counting_begin)
+    return begins
+
+
+@pytest.mark.anyio
+async def test_call_ledger_busy_reaches_the_caller_unchanged_and_is_not_retried(
+    monkeypatch, tmp_path
+):
+    _install_accounts(monkeypatch, tmp_path)
+    monkeypatch.setattr(ledger_module, "_ADMISSION_BOUND_S", 0.2)
+    begins = _count_begins(monkeypatch)
+    model, transport = _model(monkeypatch, [_response()])
+    model.endpoint.retry_config = RetryConfig(max_retries=2, base_delay=0.01, jitter=False)
+
+    async with _saturated_default_limiter():
+        with anyio.fail_after(10):
+            with pytest.raises(AccountRoutingError) as caught:
+                await model.endpoint.call(REQUEST)
+
+    assert type(caught.value) is AccountRoutingError
+    assert caught.value.code is RouterErrorCode.LEDGER_BUSY
+    assert len(begins) == 1
+    assert transport.calls == []
+
+
+@pytest.mark.anyio
+async def test_stream_ledger_busy_reaches_the_caller_unchanged_and_is_not_retried(
+    monkeypatch, tmp_path
+):
+    _install_accounts(monkeypatch, tmp_path)
+    monkeypatch.setattr(ledger_module, "_ADMISSION_BOUND_S", 0.2)
+    begins = _count_begins(monkeypatch)
+    model, transport = _model(monkeypatch, [StubResponse(pieces=[b""])])
+    model.endpoint.retry_config = RetryConfig(max_retries=2, base_delay=0.01, jitter=False)
+
+    async with _saturated_default_limiter():
+        with anyio.fail_after(10):
+            with pytest.raises(AccountRoutingError) as caught:
+                _ = [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    assert type(caught.value) is AccountRoutingError
+    assert caught.value.code is RouterErrorCode.LEDGER_BUSY
+    assert len(begins) == 1
+    assert transport.calls == []
 
 
 def _stream_pieces() -> list[bytes]:

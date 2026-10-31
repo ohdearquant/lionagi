@@ -238,6 +238,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.generic.progression:139:28": "``Ordering[T]``, the ordering base on ``Element``",
     "lionagi.protocols.generic.progression:139:41": "``Generic[T]``, the typing generic base",
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
+    "lionagi.service.accounts._ledger:54:18": "``Generic[_T]``, the typing generic base",
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
     "lionagi.service.connections.endpoint:97:36": "``httpx.ConnectError``, imported lazily",
