@@ -18,12 +18,13 @@ __all__ = (
     "is_secret_field_name",
 )
 
-# Markers match substrings of the folded name. Key-material markers also match
-# a camel-split view.
-# Field-name folding normalizes punctuation but intentionally does not guess
-# camel-case boundaries, so ``accessKey`` folds to ``accesskey`` while
-# ``access-key`` folds to ``access_key``.
+# Every marker is matched as a substring of the folded name. Folding does not
+# guess camel-case boundaries (``accessKey`` folds to ``accesskey``, while
+# ``access-key`` folds to ``access_key``), so the key markers are listed in both
+# their separated and their run-together spelling.
+# Signing-key and HMAC-key names.
 _KEY_MATERIAL_MARKERS = ("hmac_key", "hmackey", "signing_key", "signingkey")
+# Other credential words.
 _PLAIN_SECRET_MARKERS = (
     "secret",
     "token",
@@ -41,18 +42,13 @@ _PLAIN_SECRET_MARKERS = (
     "client_secret",
     "bearer",
 )
-SECRET_KEY_MARKERS = (
-    *_PLAIN_SECRET_MARKERS[:-2],
-    *_KEY_MATERIAL_MARKERS,
-    *_PLAIN_SECRET_MARKERS[-2:],
-)
+SECRET_KEY_MARKERS = (*_PLAIN_SECRET_MARKERS, *_KEY_MATERIAL_MARKERS)
 
 # Names that mean a credential on their own but must not match as substrings.
 # "auth" inside "author" or "authorized_keys_count" is a different word.
 EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
 
 _FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
-_CAMEL_WORD_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def fold_field_name(key: str) -> str:
@@ -68,9 +64,6 @@ def fold_field_name(key: str) -> str:
 def is_secret_field_name(key: str) -> bool:
     """Return whether ``key`` identifies a credential-bearing field."""
     folded = fold_field_name(key)
-    signing_words = fold_field_name(_CAMEL_WORD_RE.sub("_", key))
-    return (
-        folded in EXACT_SECRET_FIELD_NAMES
-        or any(marker in folded for marker in SECRET_KEY_MARKERS)
-        or any(marker in signing_words for marker in _KEY_MATERIAL_MARKERS)
+    return folded in EXACT_SECRET_FIELD_NAMES or any(
+        marker in folded for marker in SECRET_KEY_MARKERS
     )

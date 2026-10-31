@@ -20,69 +20,87 @@ NO_KNOWN_VALUES: frozenset[str] = frozenset()
 SECRET = "s3cr3t-value-abc123def456"
 
 
-@pytest.mark.parametrize("path", ["classifier", "mapping", "text", "url", "environment", "mcp"])
-@pytest.mark.parametrize(
-    "name",
-    [
-        "LIONAGI_STUDIO_EVIDENCE_HMAC_KEY",
-        "hmac-key",
-        "hmacKey",
-        "SIGNING_KEY",
-        "signing-key",
-        "signingKey",
-        "my_signing_key_id",
-        "mySigningKeyValue",
-        "myHMACKeyBase64",
-        "signingKeyValue",
-        "hmacKeyBase64",
-        "SIGNINGKEY",
-        "SIGNING_KEY_ID",
-        "signing_keys",
-        "hmac_keys",
-        "signing_key2",
-        "SigningKey2",
-        "mysigningkey",
-        "webhooksigningkey",
-        "MYSIGNINGKEY",
-        "signing_keyword",
-        "hmac_keyboard",
-        "signingkeyvalue",
-        "deSigningKey",
-        "designingkey",
-        "designing_key",
-        "redesigning_key",
-        "RedesigningKey",
-        "codesigningkey",
-        "codesigning_key",
-        "code_signing_key",
-        "nodesigningkey",
-        "nodesigning_key",
-        "node_signing_key",
-    ],
-)
-def test_signing_key_names_are_withheld_across_redaction_paths(name, path, monkeypatch):
-    # This value cannot be caught by the shape heuristic or by known env values.
-    value = "opaque/value=="
-    assert not redact._looks_like_secret_value(value)
-    if path == "classifier":
-        assert redact.is_secret_field_name(name)
-    elif path == "mapping":
-        assert redact.redact_scalar(name, value) == "[redacted]"
-    elif path == "text":
-        assert redact.scrub_text(f"{name}={value}", known_values=NO_KNOWN_VALUES) == (
-            f"{name}=[redacted]"
-        )
-    elif path == "url":
-        assert _redact_url(f"https://example.com/?{name}=opaque-value&safe=visible") == (
-            f"https://example.com/?{name}=***&safe=visible"
-        )
-    elif path == "environment":
-        monkeypatch.setenv(name, value)
-        assert value in redact.known_secret_values()
-    elif path == "mcp":
-        assert _safe_content({name: {"value": value}}) == {name: "[redacted]"}
-    else:
-        pytest.fail(f"unknown redaction path: {path}")
+# A value the shape heuristic and the known env values cannot catch, so each
+# test below can only be answered by the name the value sits under.
+SIGNING_KEY_VALUE = "opaque/value=="
+SIGNING_KEY_NAMES = [
+    "LIONAGI_STUDIO_EVIDENCE_HMAC_KEY",
+    "hmac-key",
+    "hmacKey",
+    "SIGNING_KEY",
+    "signing-key",
+    "signingKey",
+    "my_signing_key_id",
+    "mySigningKeyValue",
+    "myHMACKeyBase64",
+    "signingKeyValue",
+    "hmacKeyBase64",
+    "SIGNINGKEY",
+    "SIGNING_KEY_ID",
+    "signing_keys",
+    "hmac_keys",
+    "signing_key2",
+    "SigningKey2",
+    "mysigningkey",
+    "webhooksigningkey",
+    "MYSIGNINGKEY",
+    "signing_keyword",
+    "hmac_keyboard",
+    "signingkeyvalue",
+    "deSigningKey",
+    "designingkey",
+    "designing_key",
+    "redesigning_key",
+    "RedesigningKey",
+    "codesigningkey",
+    "codesigning_key",
+    "code_signing_key",
+    "nodesigningkey",
+    "nodesigning_key",
+    "node_signing_key",
+]
+
+
+def test_the_signing_key_value_is_invisible_to_the_shape_rule():
+    """Guards the signing-key tests below: if the shape rule ever starts
+    catching this value they still pass, but stop being about the name."""
+    assert not redact._looks_like_secret_value(SIGNING_KEY_VALUE)
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_classified_as_credentials(name):
+    assert redact.is_secret_field_name(name)
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_mappings(name):
+    assert redact.redact_scalar(name, SIGNING_KEY_VALUE) == "[redacted]"
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_free_text(name):
+    assert (
+        redact.scrub_text(f"{name}={SIGNING_KEY_VALUE}", known_values=NO_KNOWN_VALUES)
+        == f"{name}=[redacted]"
+    )
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_adapter_urls(name):
+    assert _redact_url(f"https://example.com/?{name}=opaque-value&safe=visible") == (
+        f"https://example.com/?{name}=***&safe=visible"
+    )
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_in_the_environment_become_known_secrets(name, monkeypatch):
+    monkeypatch.setenv(name, SIGNING_KEY_VALUE)
+    assert SIGNING_KEY_VALUE in redact.known_secret_values()
+
+
+@pytest.mark.parametrize("name", SIGNING_KEY_NAMES)
+def test_signing_key_names_are_withheld_in_tool_content(name):
+    assert _safe_content({name: {"value": SIGNING_KEY_VALUE}}) == {name: "[redacted]"}
 
 
 @pytest.mark.parametrize(
