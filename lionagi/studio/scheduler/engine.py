@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from lionagi.cli._schedule_parsing import _MAX_CHAIN_DEPTH
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.ln.concurrency import sleep as _sleep
@@ -70,7 +71,6 @@ def _scheduler_audit_context(actor: str) -> ScheduleAuditContext:
     )
 
 
-_MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
 # Backoff between tick-loop restarts, holding at the last value. A loop that dies every
 # time must not spin, and one that died once must come back before the next schedule is due.
