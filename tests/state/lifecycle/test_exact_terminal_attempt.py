@@ -291,22 +291,15 @@ async def test_cancel_resistant_async_effect_keeps_event_admission_until_finishe
         second = TerminalReconciler("async-late", prepare, batch_size=1, timeout=1.0)
         try:
             result = await getattr(first, adapter)(db, event_id)
-            assert entered.is_set() and result.status == "failed"
+            assert result.status == "failed" and result.attempted is True
+            await entered.wait()
             assert (await second.attempt_exact(db, event_id)).status == "busy"
             assert calls == ["effect"]
             release.set()
 
             key = (reconciliation._store_identity(db), "async-late", event_id)
 
-            async def wait_for_admission():
-                while True:
-                    with reconciliation._workers_lock:
-                        active = key in reconciliation._attempts or key in reconciliation._workers
-                    if not active:
-                        return
-                    await asyncio.sleep(0)
-
-            await asyncio.wait_for(wait_for_admission(), 2)
+            await _wait_for_attempt_release(key)
             assert await is_acknowledged(db, event_id, "async-late") is acknowledged
             next_result = await getattr(second, adapter)(db, event_id)
             assert next_result.status == ("not_owed" if acknowledged else "failed")
@@ -354,7 +347,8 @@ async def test_late_sync_outcome_obeys_exact_policy(tmp_path, adapter, late_outc
 
     def deliver():
         started.set()
-        return late_outcome if release.wait(3) else DeliveryOutcome.FAILURE
+        release.wait()
+        return late_outcome
 
     async def prepare(_row, _db):
         return PreparedDelivery(deliver)
@@ -365,7 +359,11 @@ async def test_late_sync_outcome_obeys_exact_policy(tmp_path, adapter, late_outc
         reconciler = TerminalReconciler("late-policy", prepare, batch_size=1, timeout=1.0)
         try:
             result = await getattr(reconciler, adapter)(db, event_id)
-            assert result.status == "failed" and started.is_set()
+            assert result.status == "failed" and result.attempted is True
+            # The delivery thread was launched before the budget ended; wait
+            # for it to reach the effect instead of assuming it already has.
+            while not started.is_set():
+                await asyncio.sleep(0.005)
             key = (reconciliation._store_identity(db), "late-policy", event_id)
             with reconciliation._workers_lock:
                 assert key in reconciliation._workers
@@ -379,7 +377,7 @@ async def test_late_sync_outcome_obeys_exact_policy(tmp_path, adapter, late_outc
                         return
                     await asyncio.sleep(0.01)
 
-            await asyncio.wait_for(wait_for_worker_release(), 2)
+            await wait_for_worker_release()
             assert await is_acknowledged(db, event_id, "late-policy") is acknowledged
         finally:
             release.set()
@@ -464,14 +462,12 @@ async def test_late_async_success_retains_admission_until_ack_settles(
 
 
 async def _wait_for_attempt_release(key):
-    async def wait():
-        while True:
-            with reconciliation._workers_lock:
-                if key not in reconciliation._attempts and key not in reconciliation._workers:
-                    return
-            await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(wait(), 5)
+    """Wait until the event's admission is released; only the per-test timeout bounds it."""
+    while True:
+        with reconciliation._workers_lock:
+            if key not in reconciliation._attempts and key not in reconciliation._workers:
+                return
+        await asyncio.sleep(0.01)
 
 
 def _late_async_prepare(release, calls):

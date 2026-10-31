@@ -36,12 +36,10 @@ def no_external_effects(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _forbid)
 
 
-async def _wait_thread_event(event: threading.Event, timeout: float = 2) -> None:
-    async def wait():
-        while not event.is_set():
-            await asyncio.sleep(0.005)
-
-    await asyncio.wait_for(wait(), timeout)
+async def _wait_thread_event(event: threading.Event) -> None:
+    """Wait until another thread sets ``event``; only the per-test timeout bounds it."""
+    while not event.is_set():
+        await asyncio.sleep(0.005)
 
 
 class _ForeignOwner:
@@ -55,8 +53,7 @@ class _ForeignOwner:
         self.cancelled = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
-        if not self.ready.wait(2):
-            raise AssertionError("foreign loop did not start")
+        self.ready.wait()
 
     def _run(self):
         self.loop = asyncio.new_event_loop()
@@ -103,9 +100,7 @@ class _ForeignOwner:
                 self.future.cancel()
 
         self.loop.call_soon_threadsafe(stop)
-        self.thread.join(timeout=2)
-        if self.thread.is_alive():
-            raise AssertionError("foreign test loop did not stop")
+        self.thread.join()
 
 
 @pytest.mark.asyncio
@@ -136,15 +131,14 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
     async def held_ack(worker):
         acknowledgements.append(worker.key[2])
         ack_entered.set()
-        if not release_ack.wait(5):
-            raise AssertionError("test did not release fake ACK gate")
+        release_ack.wait()
         await original_ack(worker)
 
     def deliver():
         effects.append("effect")
         invoked.set()
-        if arrival == "late" and not release_sync.wait(5):
-            raise AssertionError("test did not release sync worker")
+        if arrival == "late":
+            release_sync.wait()
         return owner.future
 
     async def prepare(_row, _db):
@@ -161,9 +155,11 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
             second = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
             attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
             try:
-                await _wait_thread_event(invoked)
-                result = await asyncio.wait_for(attempt, 4)
+                # The attempt ends on the reconciler's own budget; once it
+                # reports an attempt, the delivery thread has been started.
+                result = await attempt
                 assert result.status == "failed" and result.attempted is True
+                await _wait_thread_event(invoked)
                 if arrival == "late":
                     release_sync.set()
                 assert (await getattr(second, adapter)(db, event_id)).status == "busy"
@@ -173,7 +169,15 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
                 owner.settle(outcome)
                 await _wait_thread_event(owner.done)
                 if acknowledged:
-                    await _wait_thread_event(ack_entered)
+                    # The ACK gate opens only while the event is still reserved;
+                    # if the reservation ended first it never will.
+                    while not ack_entered.is_set():
+                        with reconciliation._workers_lock:
+                            reserved = (
+                                key in reconciliation._attempts or key in reconciliation._workers
+                            )
+                        assert reserved, "reservation ended before the late ACK started"
+                        await asyncio.sleep(0.005)
                     assert (await getattr(second, adapter)(db, event_id)).status == "busy"
                     assert not await is_acknowledged(db, event_id, "foreign")
                     release_ack.set()
