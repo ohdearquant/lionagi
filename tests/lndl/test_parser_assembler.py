@@ -18,10 +18,10 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from lionagi.lndl import Lexer, Parser, assemble, collect_notes, normalize_lndl_text
-from lionagi.lndl.assembler import NOTE_NAMESPACE, _coerce_str_to_list
-from lionagi.lndl.ast import Lact, RLvar
-from lionagi.lndl.normalize import _fix_missing_gt
+from lionhub.lndl import Lexer, Parser, assemble, collect_notes, normalize_lndl_text
+from lionhub.lndl.assembler import NOTE_NAMESPACE, _coerce_str_to_list
+from lionhub.lndl.ast import Lact, RLvar
+from lionhub.lndl.normalize import _fix_missing_gt
 
 
 def _parse(text: str):
@@ -356,7 +356,7 @@ class TestCoerceStrToList:
 
 class TestParseFunctionCall:
     def test_simple_call(self):
-        from lionagi.lndl._parse_function_call import parse_function_call
+        from lionhub.lndl._parse_function_call import parse_function_call
 
         result = parse_function_call('search(query="AI")')
         assert result["action"] == "search"
@@ -364,7 +364,7 @@ class TestParseFunctionCall:
         assert "service" not in result
 
     def test_namespaced_call(self):
-        from lionagi.lndl._parse_function_call import parse_function_call
+        from lionhub.lndl._parse_function_call import parse_function_call
 
         result = parse_function_call('memory.recall(query="context")')
         assert result["service"] == "memory"
@@ -372,7 +372,7 @@ class TestParseFunctionCall:
         assert result["arguments"] == {"query": "context"}
 
     def test_qualified_name_simple(self):
-        from lionagi.lndl._parse_function_call import (
+        from lionhub.lndl._parse_function_call import (
             parse_function_call,
             qualified_name,
         )
@@ -381,7 +381,7 @@ class TestParseFunctionCall:
         assert qualified_name(parsed) == "search"
 
     def test_qualified_name_namespaced(self):
-        from lionagi.lndl._parse_function_call import (
+        from lionhub.lndl._parse_function_call import (
             parse_function_call,
             qualified_name,
         )
@@ -390,25 +390,25 @@ class TestParseFunctionCall:
         assert qualified_name(parsed) == "svc.tool"
 
     def test_reserved_keyword_escaping(self):
-        from lionagi.lndl._parse_function_call import parse_function_call
+        from lionhub.lndl._parse_function_call import parse_function_call
 
         result = parse_function_call('search(from="2024-01-01")')
         assert result["arguments"]["from_"] == "2024-01-01"
 
     def test_invalid_call_raises(self):
-        from lionagi.lndl._parse_function_call import parse_function_call
+        from lionhub.lndl._parse_function_call import parse_function_call
 
         with pytest.raises(ValueError, match="Invalid function call"):
             parse_function_call("not a call at all")
 
     def test_nested_dict_arg(self):
-        from lionagi.lndl._parse_function_call import parse_function_call
+        from lionhub.lndl._parse_function_call import parse_function_call
 
         result = parse_function_call('fn(config={"key": "val"})')
         assert result["arguments"]["config"] == {"key": "val"}
 
     def test_batch_parse(self):
-        from lionagi.lndl._parse_function_call import parse_batch_function_calls
+        from lionhub.lndl._parse_function_call import parse_batch_function_calls
 
         results = parse_batch_function_calls('[search(q="a"), search(q="b")]')
         assert len(results) == 2

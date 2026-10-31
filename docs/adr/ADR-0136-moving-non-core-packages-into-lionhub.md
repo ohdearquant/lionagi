@@ -60,7 +60,7 @@ In the move change, add `test_provider_interim_edge_inventory` and rename D2's p
 | `service/accounts/_router.py` | Existing lazy `lionhub.providers.anthropic._prompt_cache` helpers | Before 2.0, replace both imports with adapter-supplied cache evidence and server-tool projection through a core-owned port. |
 | `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. |
 | `cli/_providers.py:45` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
-| `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152 | Remove this core edge in the CLI move; only then is it hub-to-hub. |
+| `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152, and the lazy `lionhub.lndl.middle` reference at line 1026 that the LNDL move adds for the API leg's LNDL loop (Amendment 1 A3; `test_lndl_interim_edge_inventory`) | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/orchestrate/_orchestration.py` | Existing lazy `lionhub.providers.openai._codex_profile` reference at line 852 | Remove this core edge in the CLI move; only then is it hub-to-hub. |
 | `studio/operator/engine.py` | Existing lazy `lionhub.providers.anthropic.claude_code` (line 405) and `lionhub.providers.google.gemini_code` (line 679) references | Remove these edges, and `studio` from the set, with the application extraction under Amendment 2 at 2.0. |
 | `service/connections/_provider_compat.py` (added in the contract change, absent at the move) | One `lionhub.providers.manifest` source, used by registry and token budgeting | Delete at 2.0; roots pass composed catalogs. |
@@ -249,7 +249,7 @@ belongs to the CLI's catalog and leaves the core with it (A4, step 3).
 - **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:16` imports 15 LNDL names. It is LNDL's opt-in
   Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
   `lionagi.operations.lndl_middle`.
-- **Root exports.** `lionagi/__init__.py:97-105` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
+- **Root exports.** `lionagi/__init__.py:86-94` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
   lazy compatibility names until 2.0, and their entries keep naming the old module paths, which the table
   serves. This is a stated exception, limited to these nine entries, to D4's rule that no repository module
   imports an old name and to D2's rule that the core initiates no hub import; it adds no hub name outside the

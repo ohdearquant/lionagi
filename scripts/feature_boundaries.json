@@ -1041,71 +1041,6 @@
       "layer": "foundation",
       "owner": "primitives"
     },
-    "lionagi.lndl": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl._parse_function_call": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.assembler": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.ast": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.diagnostics": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.errors": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.extract": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.lexer": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.normalize": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.parser": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.prompt": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.round_outcome": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.lndl.types": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
     "lionagi.models": {
       "layer": "foundation",
       "owner": "models"
@@ -1225,16 +1160,6 @@
     "lionagi.operations.interpret.interpret": {
       "layer": "sdk",
       "owner": "operations"
-    },
-    "lionagi.operations.lndl_middle": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.operations.lndl_middle.lndl_middle": {
-      "layer": "adapter",
-      "owner": "lndl",
-      "target_owner": "lionhub (destination not yet recorded)"
     },
     "lionagi.operations.manager": {
       "layer": "sdk",

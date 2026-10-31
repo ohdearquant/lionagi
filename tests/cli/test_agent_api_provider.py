@@ -873,7 +873,7 @@ async def test_an_lndl_leg_is_told_to_keep_calls_and_the_answer_apart(leg):
 
 @pytest.mark.asyncio
 async def test_an_lndl_turn_that_spends_its_rounds_ends_failed_with_the_cause(leg):
-    from lionagi.lndl import LNDLError
+    from lionhub.lndl import LNDLError
 
     leg.replies = [_text(_LNDL_MISSING), _text(_LNDL_MISSING)]
 

@@ -4,7 +4,7 @@
 import pytest
 from pydantic import BaseModel
 
-from lionagi.lndl.types import (
+from lionhub.lndl.types import (
     ActionCall,
     LactMetadata,
     LNDLOutput,

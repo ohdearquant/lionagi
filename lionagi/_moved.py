@@ -50,6 +50,8 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.work", "lionhub.orchestration.work", "0.37.0", "2.0.0"),
     Moved("lionagi.mcp", "lionhub.serve.mcp", "0.37.0", "2.0.0"),
     Moved("lionagi.providers", "lionhub.providers", "0.37.0", "2.0.0"),
+    Moved("lionagi.lndl", "lionhub.lndl", "0.37.0", "2.0.0"),
+    Moved("lionagi.operations.lndl_middle", "lionhub.lndl.middle", "0.37.0", "2.0.0"),
     Moved("lionagi.providers._provider_errors", "lionagi._provider_errors", "0.37.0", "2.0.0"),
     Moved(
         "lionagi.providers._secret_resolution",
@@ -102,14 +104,29 @@ def still_on_disk(fullname: str) -> bool:
     return os.path.isfile(base + ".py") or os.path.isfile(os.path.join(base, "__init__.py"))
 
 
-def _is_import_machinery(filename: str) -> bool:
-    return filename == __file__ or filename == importlib.__file__
+# A root lazy export (``lionagi.LNDLOutput``) reaches a moved module through the root
+# ``__getattr__`` and the lazy-import helper, so both stand between the caller and this loader.
+_LAZY_EXPORT_FRAMES = frozenset(
+    {
+        (os.path.join(os.path.dirname(__file__), "__init__.py"), "__getattr__"),
+        (os.path.join(os.path.dirname(__file__), "ln", "_lazy_init.py"), "lazy_import"),
+    }
+)
+
+
+def _is_import_machinery(code: CodeType) -> bool:
+    filename = code.co_filename
+    return (
+        filename == __file__
+        or filename == importlib.__file__
+        or (filename, code.co_name) in _LAZY_EXPORT_FRAMES
+    )
 
 
 def _caller_stacklevel() -> int:
     # Point the warning at the code that wrote the import. ``warnings`` already skips
     # the frozen importlib frames without counting them, so count only the frames it
-    # counts: this module's own and ``importlib.import_module``.
+    # counts: this module's own, ``importlib.import_module``, and a root lazy export's two.
     frame = sys._getframe(1)
     level = 1
     while frame.f_back is not None:
@@ -118,7 +135,7 @@ def _caller_stacklevel() -> int:
         if "importlib" in filename and "_bootstrap" in filename:
             continue
         level += 1
-        if not _is_import_machinery(filename):
+        if not _is_import_machinery(frame.f_code):
             break
     return level
 

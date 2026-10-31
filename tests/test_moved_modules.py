@@ -1287,3 +1287,91 @@ def test_changelog_names_every_move():
     for row in _moved.MOVED:
         line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
         assert line in changelog, row
+
+
+def test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files():
+    import lionagi
+    from lionagi.ln import _lazy_init
+
+    # A root lazy export reaches a moved module through these two frames.
+    assert _moved._is_import_machinery(lionagi.__getattr__.__code__)
+    assert _moved._is_import_machinery(_lazy_init.lazy_import.__code__)
+    # Other code in the same files is still the caller's code.
+    assert not _moved._is_import_machinery(_lazy_init.LazyInit.ensure.__code__)
+    assert not _moved._is_import_machinery(
+        test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files.__code__
+    )
+
+
+_ROOT_LNDL_EXPORTS = (
+    "InvalidConstructorError",
+    "LNDLError",
+    "LNDLOutput",
+    "MissingFieldError",
+    "MissingLvarError",
+    "TypeMismatchError",
+    "extract_lndl_blocks",
+    "get_lndl_system_prompt",
+    "normalize_lndl_text",
+)
+
+# The line that first reads a root LNDL export is line 6 of this program.
+_ROOT_LNDL_ACCESS = """\
+import importlib, json, sys, warnings
+import lionagi
+before = sorted(n for n in sys.modules if n == "lionhub" or n.startswith("lionhub."))
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    first = lionagi.LNDLOutput
+    rest = {name: getattr(lionagi, name) for name in sys.argv[1:]}
+hub = importlib.import_module("lionhub.lndl")
+print(json.dumps({
+    "before": before,
+    "same": {name: rest[name] is getattr(hub, name) for name in rest},
+    "first_same": first is hub.LNDLOutput,
+    "warnings": [
+        [w.category.__name__, w.filename, w.lineno, str(w.message)] for w in caught
+    ],
+}))
+"""
+
+
+def test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line():
+    proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed program
+        [sys.executable, "-c", _ROOT_LNDL_ACCESS, *_ROOT_LNDL_EXPORTS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    result = json.loads(proc.stdout)
+    assert result["before"] == []
+    assert result["first_same"] is True
+    assert result["same"] == dict.fromkeys(_ROOT_LNDL_EXPORTS, True)
+    moved = [w for w in result["warnings"] if "lionhub.lndl" in w[3]]
+    assert [(w[0], w[1], w[2]) for w in moved] == [("DeprecationWarning", "<string>", 6)], result
+
+
+# Every lionhub.lndl module a file under lionagi/ names, by file (relative to lionagi/). The CLI's
+# API leg builds the LNDL Middle lazily until the CLI move; no other file names the language.
+LNDL_INTERIM_EDGES = {"cli/agent.py": ["lionhub.lndl.middle"]}
+
+_HUB_LNDL = re.compile(r"lionhub\.lndl(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def test_lndl_interim_edge_inventory():
+    lionagi = SOURCE_ROOTS[0]
+    found = {}
+    # _moved.py names lionhub as data: the table of new paths it serves old names from.
+    for path in sorted(lionagi.rglob("*.py")):
+        if path.name == "_moved.py":
+            continue
+        names = sorted(
+            name
+            for name in (hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path))
+            if _HUB_LNDL.fullmatch(name)
+        )
+        if names:
+            found[path.relative_to(lionagi).as_posix()] = names
+    assert found == LNDL_INTERIM_EDGES

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi.lndl.assembler — ActionCall placeholders, list/dict
+"""Unit tests for lionhub.lndl.assembler — ActionCall placeholders, list/dict
 assembly paths, and grouped-list salvage, beyond what test_parser_assembler.py
 already covers for the note-namespace and nested-group happy paths."""
 
@@ -10,21 +10,21 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from lionagi.lndl.assembler import (
+from lionhub.lndl.assembler import (
     assemble,
     assemble_spec_value,
     collect_actions,
     replace_actions,
 )
-from lionagi.lndl.errors import (
+from lionhub.lndl.errors import (
     InvalidConstructorError,
     MissingFieldError,
     MissingLvarError,
     TypeMismatchError,
 )
-from lionagi.lndl.lexer import Lexer
-from lionagi.lndl.parser import Parser
-from lionagi.lndl.types import ActionCall
+from lionhub.lndl.lexer import Lexer
+from lionhub.lndl.parser import Parser
+from lionhub.lndl.types import ActionCall
 
 
 def _parse(text: str):
