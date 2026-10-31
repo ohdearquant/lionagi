@@ -3,7 +3,7 @@
 
 import pytest
 
-from lionagi.lndl.errors import (
+from lionhub.lndl.errors import (
     InvalidConstructorError,
     LNDLError,
     MissingFieldError,

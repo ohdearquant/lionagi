@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin
 from pydantic import JsonValue, ValidationError
 
 from lionagi.ln import unwrap_optional
-from lionagi.lndl import (
+from lionagi.operations._defaults import get_default_action_call
+from lionagi.operations._turn_origin import TurnOrigin
+from lionagi.operations.chat._prepare import _no_tool_section
+from lionagi.operations.types import ActionParam, ChatParam, ParseParam, RunParam
+from lionagi.service._prompt_cache import cache_intent
+from lionhub.lndl import (
     ActionCall,
     Continue,
     Lexer,
@@ -30,12 +35,6 @@ from lionagi.lndl import (
     normalize_lndl_text,
     replace_actions,
 )
-from lionagi.service._prompt_cache import cache_intent
-
-from .._defaults import get_default_action_call
-from .._turn_origin import TurnOrigin
-from ..chat._prepare import _no_tool_section
-from ..types import ActionParam, ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.instruction import Instruction
@@ -45,7 +44,7 @@ __all__ = ("DEFAULT_ROUND_BUDGET", "build_lndl_middle", "lndl_middle")
 
 DEFAULT_ROUND_BUDGET = 3
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lionagi.operations.lndl_middle.lndl_middle")
 
 # Shared by every round's action bridge: concurrent, error-suppressed so a
 # failed tool call becomes a result the model reacts to, not an aborting exception.
@@ -99,7 +98,7 @@ async def _bridge_action_calls(branch: Branch, calls: list[ActionCall]) -> dict[
     if not calls:
         return {}
 
-    from ..act.act import act
+    from lionagi.operations.act.act import act
 
     requests = [
         branch.msgs.create_action_request(
@@ -127,11 +126,11 @@ async def _run_round_chat(
         branch.chat_model if chat_param._is_sentinel(chat_param.imodel) else chat_param.imodel
     )
     if isinstance(chat_param, RunParam) or getattr(effective_imodel, "is_cli", False):
-        from ..run.run import run_and_collect
+        from lionagi.operations.run.run import run_and_collect
 
         return await run_and_collect(branch, instruction, chat_param, skip_validation=True)
 
-    from ..communicate.communicate import communicate
+    from lionagi.operations.communicate.communicate import communicate
 
     return await communicate(branch, instruction, chat_param, skip_validation=True)
 

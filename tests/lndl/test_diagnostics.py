@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi.lndl.diagnostics — pure logic, no LLM."""
+"""Unit tests for lionhub.lndl.diagnostics — pure logic, no LLM."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from lionagi.lndl.diagnostics import (
+from lionhub.lndl.diagnostics import (
     LndlChunkHealth,
     LndlRoundRecord,
     LndlTrace,

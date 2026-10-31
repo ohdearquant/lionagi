@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.libs.schema.extract_code_block import extract_fenced_blocks
-from lionagi.lndl.extract import extract_lndl_blocks
+from lionhub.lndl.extract import extract_lndl_blocks
 from lionagi.operations.parse.parse import _extract_lndl
 
 pytestmark = pytest.mark.unit
@@ -63,9 +63,9 @@ def test_parse_joins_blocks_or_returns_the_unchanged_reply(case_id):
 
 def test_all_three_legacy_exports_are_one_function():
     import lionagi
-    import lionagi.lndl
+    import lionhub.lndl
 
-    assert lionagi.lndl.extract_lndl_blocks is extract_lndl_blocks
+    assert lionhub.lndl.extract_lndl_blocks is extract_lndl_blocks
     assert lionagi.extract_lndl_blocks is extract_lndl_blocks
 
 
@@ -82,20 +82,20 @@ core_name = "lionagi.libs.schema.extract_code_block"
 samples = json.loads((root / "tests/fixtures/fenced_blocks.json").read_text())["cases"]
 sample = next(case for case in samples if case["id"] == "existing-extract-multiple-lndl-blocks")
 assert len(sample["blocks"]) > 1
-assert not any(n == "lionagi.lndl" or n.startswith("lionagi.lndl.") for n in sys.modules)
+assert not any(n == "lionhub.lndl" or n.startswith("lionhub.lndl.") for n in sys.modules)
 if first == "parse":
     parser = importlib.import_module("lionagi.operations.parse.parse")
     result = parser._extract_lndl(sample["text"], None)
     assert result == "\n\n".join(sample["blocks"])
-    loaded = sorted(n for n in sys.modules if n == "lionagi.lndl" or n.startswith("lionagi.lndl."))
+    loaded = sorted(n for n in sys.modules if n == "lionhub.lndl" or n.startswith("lionhub.lndl."))
     assert not loaded, loaded
     assert Path(parser.__file__).resolve() == root / "lionagi/operations/parse/parse.py"
 else:
-    legacy = importlib.import_module("lionagi.lndl.extract")
+    legacy = importlib.import_module("lionhub.lndl.extract")
     assert legacy.extract_lndl_blocks(sample["text"]) == sample["blocks"]
-    assert Path(legacy.__file__).resolve() == root / "lionagi/lndl/extract.py"
-    loaded = sorted(n for n in sys.modules if n == "lionagi.lndl" or n.startswith("lionagi.lndl."))
-    assert "lionagi.lndl.extract" in loaded
+    assert Path(legacy.__file__).resolve() == root / "lionhub/src/lionhub/lndl/extract.py"
+    loaded = sorted(n for n in sys.modules if n == "lionhub.lndl" or n.startswith("lionhub.lndl."))
+    assert "lionhub.lndl.extract" in loaded
 core = sys.modules[core_name]
 assert core.__spec__.name == core_name
 assert Path(core.__file__).resolve() == root / "lionagi/libs/schema/extract_code_block.py"

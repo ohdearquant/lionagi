@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.operations.lndl_middle — the ADR-0024 §1-2 LNDL seam
+"""Tests for lionhub.lndl.middle — the ADR-0024 §1-2 LNDL seam
 Middle: round-outcome classification, the ActionCall -> ActionRequest bridge,
 prompt injection, and repair semantics."""
 
@@ -12,19 +12,19 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
-import lionagi.lndl as lndl
+import lionhub.lndl as lndl
 from lionagi.hooks.bus import HookBus, HookPoint
-from lionagi.lndl import Continue, LNDLError, Retry, Success, get_lndl_system_prompt
-from lionagi.operations.lndl_middle import (
+from lionhub.lndl import Continue, LNDLError, Retry, Success, get_lndl_system_prompt
+from lionhub.lndl.middle import (
     DEFAULT_ROUND_BUDGET as PACKAGE_DEFAULT_ROUND_BUDGET,
 )
-from lionagi.operations.lndl_middle import (
+from lionhub.lndl.middle import (
     build_lndl_middle as package_build_lndl_middle,
 )
-from lionagi.operations.lndl_middle import (
+from lionhub.lndl.middle import (
     lndl_middle as package_lndl_middle,
 )
-from lionagi.operations.lndl_middle.lndl_middle import (
+from lionhub.lndl.middle.lndl_middle import (
     _classify_round,
     _render_target_spec,
     _render_tool_calls,
@@ -1181,7 +1181,7 @@ class TestRoundBudget:
 class TestPackageImportSurface:
     """The documented public path (CHANGELOG.md, ADR-0024 §1) is the package
     itself, not the private nested module — a caller writes
-    `from lionagi.operations.lndl_middle import lndl_middle`, not
+    `from lionhub.lndl.middle import lndl_middle`, not
     `...lndl_middle.lndl_middle import lndl_middle`."""
 
     def test_package_level_lndl_middle_is_callable(self):
@@ -1277,7 +1277,7 @@ class TestToolsAsCalls:
         middle = build_lndl_middle(round_budget=2, lacts_with_out=False, tools_as_calls=True)
         param = ChatParam(response_format=AnswerModel, tool_schemas=unnamed)
 
-        with caplog.at_level("WARNING", logger="lionagi.operations.lndl_middle.lndl_middle"):
+        with caplog.at_level("WARNING", logger="lionhub.lndl.middle.lndl_middle"):
             result = await middle(branch, "look it up", param)
 
         assert result.answer == "read"

@@ -1023,7 +1023,7 @@ async def _api_loop_pass(
     For ReAct, *rounds* (when given) receives each round's analysis and then the answer.
     """
     if loop in ("lndl", "lndl-calls"):
-        from lionagi.operations.lndl_middle import build_lndl_middle
+        from lionhub.lndl.middle import build_lndl_middle
 
         schemas = branch.acts.get_tool_schema(tools=True)
         return await branch.operate(

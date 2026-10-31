@@ -12,8 +12,8 @@ import json
 import pytest
 from pydantic import BaseModel
 
-from lionagi.lndl import LNDLError
-from lionagi.operations.lndl_middle.lndl_middle import build_lndl_middle
+from lionhub.lndl import LNDLError
+from lionhub.lndl.middle.lndl_middle import build_lndl_middle
 from lionagi.operations.types import ChatParam
 from lionagi.service import _prompt_cache as ledger_mod
 from lionagi.testing import TestBranch

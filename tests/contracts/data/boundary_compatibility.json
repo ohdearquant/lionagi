@@ -244,7 +244,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -284,7 +284,8 @@
       "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
     ],
     "lionagi/_moved.py": [
-      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"still_on_disk\")"
+      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"still_on_disk\")",
+      "_LAZY_EXPORT_FRAMES = frozenset(\n    {\n        (os.path.join(os.path.dirname(__file__), \"__init__.py\"), \"__getattr__\"),\n        (os.path.join(os.path.dirname(__file__), \"ln\", \"_lazy_init.py\"), \"lazy_import\"),\n    }\n)"
     ],
     "lionagi/_paths.py": [
       "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n)"
@@ -676,47 +677,6 @@
     "lionagi/ln/types/spec.py": [
       "__all__ = (\"Spec\", \"CommonMeta\")"
     ],
-    "lionagi/lndl/__init__.py": [
-      "from .assembler import (\n    NOTE_NAMESPACE,\n    assemble,\n    assemble_spec_value,\n    build_action_call,\n    collect_actions,\n    collect_notes,\n    replace_actions,\n)",
-      "from .ast import Identifier, Lact, Literal, Lvar, OutBlock, Program, RLvar",
-      "from .diagnostics import (\n    LndlChunkHealth,\n    LndlRoundRecord,\n    LndlTrace,\n    classify_chunk,\n    classify_result,\n    extract_lndl_chunks,\n)",
-      "from .errors import (\n    InvalidConstructorError,\n    LNDLError,\n    MissingFieldError,\n    MissingLvarError,\n    TypeMismatchError,\n)",
-      "from .extract import extract_lndl_blocks",
-      "from .lexer import Lexer, Token, TokenType",
-      "from .normalize import normalize_lndl_text",
-      "from .parser import ParseError, Parser",
-      "from .prompt import LNDL_SYSTEM_PROMPT, get_lndl_system_prompt",
-      "from .round_outcome import Continue, Retry, RoundOutcome, Success",
-      "from .types import (\n    ActionCall,\n    LactMetadata,\n    LNDLOutput,\n    LvarMetadata,\n    ParsedConstructor,\n    RLvarMetadata,\n    Scalar,\n    ensure_no_action_calls,\n    has_action_calls,\n    revalidate_with_action_results,\n)",
-      "__all__ = (\n    \"LNDL_SYSTEM_PROMPT\",\n    \"NOTE_NAMESPACE\",\n    \"ActionCall\",\n    \"Continue\",\n    \"Identifier\",\n    \"InvalidConstructorError\",\n    \"LNDLError\",\n    \"LNDLOutput\",\n    \"Lact\",\n    \"LactMetadata\",\n    \"Lexer\",\n    \"Literal\",\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"Lvar\",\n    \"LvarMetadata\",\n    \"MissingFieldError\",\n    \"MissingLvarError\",\n    \"OutBlock\",\n    \"ParseError\",\n    \"ParsedConstructor\",\n    \"Parser\",\n    \"Program\",\n    \"RLvar\",\n    \"RLvarMetadata\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Scalar\",\n    \"Success\",\n    \"Token\",\n    \"TokenType\",\n    \"TypeMismatchError\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"ensure_no_action_calls\",\n    \"extract_lndl_blocks\",\n    \"extract_lndl_chunks\",\n    \"get_lndl_system_prompt\",\n    \"has_action_calls\",\n    \"normalize_lndl_text\",\n    \"replace_actions\",\n    \"revalidate_with_action_results\",\n)"
-    ],
-    "lionagi/lndl/_parse_function_call.py": [
-      "__all__ = (\n    \"parse_batch_function_calls\",\n    \"parse_function_call\",\n    \"qualified_name\",\n)"
-    ],
-    "lionagi/lndl/assembler.py": [
-      "__all__ = (\n    \"NOTE_NAMESPACE\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"replace_actions\",\n)"
-    ],
-    "lionagi/lndl/ast.py": [
-      "__all__ = (\n    \"ASTNode\",\n    \"Expr\",\n    \"Identifier\",\n    \"Lact\",\n    \"Literal\",\n    \"Lvar\",\n    \"OutBlock\",\n    \"Program\",\n    \"RLvar\",\n    \"Stmt\",\n)"
-    ],
-    "lionagi/lndl/diagnostics.py": [
-      "__all__ = (\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"extract_lndl_chunks\",\n)"
-    ],
-    "lionagi/lndl/extract.py": [
-      "__all__ = (\"extract_lndl_blocks\",)"
-    ],
-    "lionagi/lndl/lexer.py": [
-      "__all__ = (\"Lexer\", \"Token\", \"TokenType\")"
-    ],
-    "lionagi/lndl/normalize.py": [
-      "__all__ = (\"normalize_lndl_text\",)"
-    ],
-    "lionagi/lndl/parser.py": [
-      "__all__ = (\"ParseError\", \"Parser\")"
-    ],
-    "lionagi/lndl/round_outcome.py": [
-      "__all__ = (\n    \"Continue\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Success\",\n)"
-    ],
     "lionagi/models/__init__.py": [
       "from .field_model import FieldModel",
       "from .hashable_model import HashableModel",
@@ -759,13 +719,6 @@
     "lionagi/operations/fields.py": [
       "def __getattr__(name: str):\n    if name in _FIELD_CONSTANTS:\n        with _FIELD_CONSTANTS_LOCK:\n            if name not in globals():\n                field_name, kwargs = _FIELD_CONSTANTS[name]\n                globals()[name] = get_default_field(field_name, **kwargs)\n            return globals()[name]\n    raise AttributeError(f\"module '{__name__}' has no attribute '{name}'\")",
       "__all__ = (\n    \"ACTION_REQUESTS_FIELD\",\n    \"ACTION_RESPONSES_FIELD\",\n    \"ACTION_REQUIRED_FIELD\",\n    \"INSTRUCT_FIELD\",\n    \"LIST_INSTRUCT_FIELD_MODEL\",\n    \"REASON_FIELD\",\n    \"ActionRequestModel\",\n    \"ActionResponseModel\",\n    \"Instruct\",\n    \"Reason\",\n    \"get_default_field\",\n)"
-    ],
-    "lionagi/operations/lndl_middle/__init__.py": [
-      "from .lndl_middle import DEFAULT_ROUND_BUDGET, build_lndl_middle, lndl_middle",
-      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
-    ],
-    "lionagi/operations/lndl_middle/lndl_middle.py": [
-      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
     ],
     "lionagi/operations/operate/operative.py": [
       "__all__ = (\"Operative\",)"
@@ -2277,81 +2230,6 @@
       "CommonMeta",
       "Spec"
     ],
-    "lionagi/lndl/_parse_function_call.py": [
-      "parse_batch_function_calls",
-      "parse_function_call",
-      "qualified_name"
-    ],
-    "lionagi/lndl/assembler.py": [
-      "assemble",
-      "assemble_spec_value",
-      "build_action_call",
-      "collect_actions",
-      "collect_notes",
-      "replace_actions"
-    ],
-    "lionagi/lndl/ast.py": [
-      "ASTNode",
-      "Expr",
-      "Identifier",
-      "Lact",
-      "Literal",
-      "Lvar",
-      "OutBlock",
-      "Program",
-      "RLvar",
-      "Stmt"
-    ],
-    "lionagi/lndl/diagnostics.py": [
-      "LndlChunkHealth",
-      "LndlRoundRecord",
-      "LndlTrace",
-      "classify_chunk",
-      "classify_result",
-      "extract_lndl_chunks"
-    ],
-    "lionagi/lndl/errors.py": [
-      "InvalidConstructorError",
-      "LNDLError",
-      "MissingFieldError",
-      "MissingLvarError",
-      "TypeMismatchError"
-    ],
-    "lionagi/lndl/extract.py": [
-      "extract_lndl_blocks"
-    ],
-    "lionagi/lndl/lexer.py": [
-      "Lexer",
-      "Token",
-      "TokenType"
-    ],
-    "lionagi/lndl/normalize.py": [
-      "normalize_lndl_text"
-    ],
-    "lionagi/lndl/parser.py": [
-      "ParseError",
-      "Parser",
-      "parse_value"
-    ],
-    "lionagi/lndl/prompt.py": [
-      "get_lndl_system_prompt"
-    ],
-    "lionagi/lndl/round_outcome.py": [
-      "Continue",
-      "Retry",
-      "Success"
-    ],
-    "lionagi/lndl/types.py": [
-      "ActionCall",
-      "LNDLOutput",
-      "LactMetadata",
-      "LvarMetadata",
-      "ParsedConstructor",
-      "RLvarMetadata",
-      "ensure_no_action_calls",
-      "has_action_calls",
-      "revalidate_with_action_results"
-    ],
     "lionagi/models/_build_model.py": [
       "build_model_type"
     ],
@@ -2448,9 +2326,6 @@
     "lionagi/operations/interpret/interpret.py": [
       "interpret",
       "prepare_interpret_kw"
-    ],
-    "lionagi/operations/lndl_middle/lndl_middle.py": [
-      "build_lndl_middle"
     ],
     "lionagi/operations/manager.py": [
       "OperationManager"

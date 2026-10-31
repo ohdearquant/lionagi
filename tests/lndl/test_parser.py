@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi.lndl.parser — error paths, OUT block forms, parse_value."""
+"""Unit tests for lionhub.lndl.parser — error paths, OUT block forms, parse_value."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import warnings
 
 import pytest
 
-from lionagi.lndl.errors import LNDLError
-from lionagi.lndl.lexer import Lexer
-from lionagi.lndl.parser import ParseError, Parser, parse_value
+from lionhub.lndl.errors import LNDLError
+from lionhub.lndl.lexer import Lexer
+from lionhub.lndl.parser import ParseError, Parser, parse_value
 
 
 def _parse(text: str):

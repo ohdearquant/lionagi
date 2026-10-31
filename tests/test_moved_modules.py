@@ -1302,3 +1302,52 @@ def test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_th
         test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files.__code__
     )
 
+
+_ROOT_LNDL_EXPORTS = (
+    "InvalidConstructorError",
+    "LNDLError",
+    "LNDLOutput",
+    "MissingFieldError",
+    "MissingLvarError",
+    "TypeMismatchError",
+    "extract_lndl_blocks",
+    "get_lndl_system_prompt",
+    "normalize_lndl_text",
+)
+
+# The line that first reads a root LNDL export is line 6 of this program.
+_ROOT_LNDL_ACCESS = """\
+import importlib, json, sys, warnings
+import lionagi
+before = sorted(n for n in sys.modules if n == "lionhub" or n.startswith("lionhub."))
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    first = lionagi.LNDLOutput
+    rest = {name: getattr(lionagi, name) for name in sys.argv[1:]}
+hub = importlib.import_module("lionhub.lndl")
+print(json.dumps({
+    "before": before,
+    "same": {name: rest[name] is getattr(hub, name) for name in rest},
+    "first_same": first is hub.LNDLOutput,
+    "warnings": [
+        [w.category.__name__, w.filename, w.lineno, str(w.message)] for w in caught
+    ],
+}))
+"""
+
+
+def test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line():
+    proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed program
+        [sys.executable, "-c", _ROOT_LNDL_ACCESS, *_ROOT_LNDL_EXPORTS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    result = json.loads(proc.stdout)
+    assert result["before"] == []
+    assert result["first_same"] is True
+    assert result["same"] == dict.fromkeys(_ROOT_LNDL_EXPORTS, True)
+    moved = [w for w in result["warnings"] if "lionhub.lndl" in w[3]]
+    assert [(w[0], w[1], w[2]) for w in moved] == [("DeprecationWarning", "<string>", 6)], result

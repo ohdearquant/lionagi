@@ -1,11 +1,11 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi.lndl.lexer — pure tokenizer, no parser involved."""
+"""Unit tests for lionhub.lndl.lexer — pure tokenizer, no parser involved."""
 
 from __future__ import annotations
 
-from lionagi.lndl.lexer import Lexer, Token, TokenType
+from lionhub.lndl.lexer import Lexer, Token, TokenType
 
 
 def _types(text: str) -> list[TokenType]:
