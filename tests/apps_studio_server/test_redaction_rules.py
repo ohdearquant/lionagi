@@ -117,15 +117,22 @@ def test_unrelated_key_names_remain_visible(name):
     assert redact.redact_scalar(name, "visible") == "visible"
     assert redact.scrub_text(f"{name}=visible", known_values=NO_KNOWN_VALUES) == f"{name}=visible"
     assert _safe_content({name: {"value": "visible"}}) == {name: {"value": "visible"}}
+
+
+@pytest.mark.parametrize("name", ["sort_key", "cache_key", "primary_key"])
+def test_unrelated_key_query_parameters_remain_visible_in_urls(name):
     url = f"https://example.com/?{name}=visible"
-    # Adapter URLs independently reserve the bare query parameter "key".
-    assert _redact_url(url) == ("https://example.com/?key=***" if name == "key" else url)
+    assert _redact_url(url) == url
+
+
+def test_bare_key_query_parameter_is_reserved_in_urls():
+    # Adapter URLs reserve the bare query parameter "key" independently of the field-name rule.
+    assert _redact_url("https://example.com/?key=visible") == "https://example.com/?key=***"
 
 
 def test_known_signing_key_value_is_scrubbed_when_echoed(monkeypatch):
-    value = "opaque/value=="
-    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", value)
-    assert redact.scrub_text(f"echo {value}") == "echo [redacted]"
+    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", SIGNING_KEY_VALUE)
+    assert redact.scrub_text(f"echo {SIGNING_KEY_VALUE}") == "echo [redacted]"
 
 
 @pytest.mark.parametrize(
@@ -137,7 +144,7 @@ def test_fold_field_name_keeps_its_existing_case_and_separator_contract(name, fo
 
 
 @pytest.mark.parametrize("name", ["privateMode", "authorName", "clientService", "apiaryKey"])
-def test_camel_splitting_does_not_expand_the_older_marker_rules(name):
+def test_camel_case_names_outside_the_markers_remain_visible(name):
     assert not redact.is_secret_field_name(name)
 
 
