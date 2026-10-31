@@ -34,7 +34,7 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+from lionagi.providers._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi.providers._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
@@ -821,11 +821,17 @@ async def _run_api_turn(
         refused = _first_refusal(_pass_responses(branch, before))
         if refused is not None:
             details["stop_reason"] = refused[0]
-        raise FailedRoundError(
+            details.update(_refusal_details(refused[1]))
+        failure = FailedRoundError(
             f"{round_resumes + 1} passes of the tool loop in a row ended on a failed round: "
             f"{failed[1]}",
             details=details,
         )
+        if refused is not None:
+            # A provider refusal is a provider failure that retrying the same request will not
+            # clear, so the run records it as one rather than as a generic exception.
+            raise failure from ProviderSafetyError(failed[1])
+        raise failure
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
 
@@ -937,6 +943,34 @@ def _first_refusal(responses: list) -> tuple[str, Any] | None:
         if marker is not None:
             return marker, response
     return None
+
+
+def _refusal_details(response: Any) -> dict[str, Any]:
+    """The provider's own account of a refusal, copied verbatim from a raw response: an Anthropic
+    Messages response's ``stop_details`` when it is a non-empty JSON object, as ``stop_details``;
+    an OpenAI chat completion's non-empty ``message.refusal`` string, or the first non-empty text
+    of an OpenAI Responses ``refusal`` content part, as ``refusal``. Empty when the response
+    carries none of these (a ``content_filter`` stop has no detail), so the key is then absent."""
+    if not isinstance(response, dict):
+        return {}
+    if "stop_reason" in response:
+        stop_details = response.get("stop_details")
+        if isinstance(stop_details, dict) and stop_details:
+            return {"stop_details": stop_details}
+        return {}
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return {"refusal": refusal} if isinstance(refusal, str) and refusal else {}
+    for item in response.get("output") or []:
+        if isinstance(item, dict) and item.get("type") == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "refusal":
+                    text = part.get("refusal")
+                    if isinstance(text, str) and text:
+                        return {"refusal": text}
+    return {}
 
 
 def _provider_refusal(response: Any) -> str | None:
@@ -2815,6 +2849,9 @@ async def _run_agent(
                         _stop_reason = _terminal_exc.details.get("stop_reason")
                         if _stop_reason:
                             run_manifest["stop_reason"] = _stop_reason
+                        for _detail in ("stop_details", "refusal"):
+                            if _terminal_exc.details.get(_detail):
+                                run_manifest[_detail] = _terminal_exc.details[_detail]
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
                 # Only when an exception is on its way out, because then this is
