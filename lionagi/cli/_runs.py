@@ -1799,6 +1799,33 @@ async def _open_shared_db(*, register: bool = True):
     return db
 
 
+def _live_message_dict(msg: Any) -> dict[str, Any]:
+    """Snapshot a message, replacing only an output that cannot be serialized."""
+    try:
+        return msg.to_dict(mode="db")
+    except (RecursionError, TypeError) as exc:
+        if isinstance(exc, TypeError) and (
+            type(exc) is not TypeError or exc.args != ("Recursion limit reached",)
+        ):
+            raise
+        from lionagi.protocols.messages.action_response import (  # noqa: PLC0415
+            _OUTPUT_TOO_DEEP,
+            ActionResponse,
+            ActionResponseContent,
+        )
+
+        if not isinstance(msg, ActionResponse) or not isinstance(
+            msg.content, ActionResponseContent
+        ):
+            raise
+
+        # Build a detached projection, leaving the live message and its metadata
+        # untouched. Other unserializable fields still fail on serialization.
+        content = replace(msg.content, output=_OUTPUT_TOO_DEEP)
+        projection = msg.model_copy(update={"content": content})
+        return projection.to_dict(mode="db")
+
+
 def _make_message_handler(
     db,
     branch_id: str,
@@ -1829,7 +1856,7 @@ def _make_message_handler(
         try:
             if not update and on_first_msg is not None:
                 await on_first_msg()
-            msg_dict = msg.to_dict(mode="db")
+            msg_dict = _live_message_dict(msg)
             msg_id = msg_dict["id"]
             if update and msg_id not in queued_adds:
                 _log.warning(
