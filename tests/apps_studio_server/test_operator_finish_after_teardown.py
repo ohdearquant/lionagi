@@ -371,7 +371,7 @@ async def test_cancel_during_setup_failure_recovery_finishes_turn(tmp_path, monk
         return await real_finish(request_id, *args, **kwargs)
 
     monkeypatch.setattr(StateDB, "create_branch", fail_branch)
-    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: {})
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {})
     monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", held_recovery)
     monkeypatch.setattr(store, "finish_turn", record_finish)
     await coordinator.startup()

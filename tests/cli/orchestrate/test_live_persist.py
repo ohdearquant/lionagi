@@ -503,7 +503,7 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
 
 def test_register_branch_hook_lives_in_the_runs_module():
     """The hook is defined beside the message handler it calls, the orchestration module re-exports
-    the same object, and the runs module imports no orchestration module."""
+    the same object, and the runs module imports no command module."""
     from lionagi.cli import _runs
     from lionagi.cli.orchestrate import _orchestration
 
@@ -511,18 +511,15 @@ def test_register_branch_hook_lives_in_the_runs_module():
     assert _orchestration.register_branch_hook is _runs.register_branch_hook
 
     imported = resolved_imports(_runs.__file__, "lionagi.cli")
-    orchestrate_imports = {
-        name for name in command_module_imports(imported) if name.split(".")[2] == "orchestrate"
-    }
-    assert orchestrate_imports == set()
+    assert command_module_imports(imported) == set()
 
 
-@pytest.mark.parametrize("probe", [p for p in COMMAND_IMPORT_PROBES if "orchestrate" in p])
+@pytest.mark.parametrize("probe", COMMAND_IMPORT_PROBES)
 def test_register_branch_hook_guard_rejects_a_command_import(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str
 ):
-    """The guard fails on a copy of the runs module that gains an orchestrate import, whether
-    the import is absolute, relative or by name."""
+    """The guard fails on a copy of the runs module that gains an import of a command module or
+    of the orchestrate package, whether the import is absolute, relative or by name."""
     import importlib
 
     module = importlib.import_module("lionagi.cli._runs")

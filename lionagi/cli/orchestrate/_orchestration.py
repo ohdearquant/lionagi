@@ -1990,7 +1990,7 @@ async def setup_orchestration_persist(
 
         session_prog_id = str(uuid.uuid4())
         _proj, _proj_src = _resolve_project(project)
-        from lionagi.cli.kill import current_pid_markers as _pid_markers
+        from lionagi.ln._proc import current_pid_markers as _pid_markers
 
         _identity_markers = _pid_markers()
         _node_meta = {

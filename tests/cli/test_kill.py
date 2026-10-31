@@ -798,6 +798,14 @@ def test_current_pid_markers_records_own_pid():
     assert markers["process_identity_mode"] == "local"
 
 
+def test_current_pid_markers_is_the_process_module_function():
+    """The kill command re-exports the function that the shared modules import from the process module."""
+    from lionagi.cli import kill
+    from lionagi.ln import _proc
+
+    assert kill.current_pid_markers is _proc.current_pid_markers
+
+
 # Records its own launch markers the way a launching process does, under a
 # boot-time value moved by five seconds, then stays alive to be checked.
 _RECORDS_ITS_MARKERS_UNDER_SLEW = (

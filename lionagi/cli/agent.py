@@ -2391,8 +2391,7 @@ async def _run_agent(
             # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
             # says how to stop it (ADR-0104 Amendment 2).
             from lionagi.cli._logging import warn
-
-            from .kill import current_pid_markers
+            from lionagi.ln._proc import current_pid_markers
 
             run_manifest.update(current_pid_markers())
             _write_run_manifest(run_manifest)

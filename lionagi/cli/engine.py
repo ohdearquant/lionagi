@@ -289,7 +289,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
             if await db.get_session(run_id) is not None:
                 warn(f"sessions row {run_id} already exists; skipping signal binding")
             else:
-                from lionagi.cli.kill import current_pid_markers
+                from lionagi.ln._proc import current_pid_markers
 
                 generation_id = str(uuid.uuid4())
                 prog_id = f"{run_id}-prog"

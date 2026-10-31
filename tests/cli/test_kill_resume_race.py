@@ -44,7 +44,7 @@ async def test_kill_grace_does_not_cancel_reopened_session(
     # Stub every OS process probe or signal: no process with these PIDs is contacted.
     monkeypatch.setattr(kill_mod, "_runner_process_create_time", lambda pid: ("found", 100.0))
     monkeypatch.setattr(kill_mod, "_terminate_pid", wait_in_grace)
-    monkeypatch.setattr(kill_mod, "current_pid_markers", lambda: dict(new_identity))
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: dict(new_identity))
 
     async with StateDB(path) as editor:
         sid = str(uuid.uuid4())

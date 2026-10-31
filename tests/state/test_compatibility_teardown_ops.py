@@ -852,7 +852,7 @@ async def test_a_registered_branch_with_no_messages_does_not_fail_the_teardown(
 
     monkeypatch.setattr(_orchestration, "_open_shared_db", compatibility_store)
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 1,
             "pid_create_time": 0.0,
