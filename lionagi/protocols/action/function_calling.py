@@ -19,6 +19,9 @@ from ..generic.event import Event
 from .tool import Tool
 from .tool_hooks import ActionGovernanceDeniedError
 
+ARGUMENTS_TOO_DEEP = "<arguments too deeply nested>"
+"""Recorded in place of call arguments that are too deeply nested to serialize."""
+
 
 class RevalidationDeniedError(ActionGovernanceDeniedError):
     """Raised when rewritten tool arguments fail schema revalidation after a
@@ -143,8 +146,25 @@ class FunctionCalling(Event):
         return response
 
     def to_dict(self, *args, **kw) -> dict[str, Any]:
-        """Serialize to dict, adding function name and arguments."""
-        dict_ = super().to_dict(*args, **kw)
+        """Serialize to dict, adding function name and arguments.
+
+        Arguments nested too deeply for the serializer (orjson refuses more
+        than 255 levels, and a still deeper structure can exhaust the
+        interpreter stack) are recorded as a value-free placeholder instead of
+        failing the whole serialization. Any other serialization error still
+        propagates.
+        """
+        try:
+            dict_ = super().to_dict(*args, **kw)
+        except (RecursionError, TypeError) as exc:
+            if isinstance(exc, TypeError) and "Recursion limit reached" not in str(exc):
+                raise
+            # Serialize the rest of the call with its arguments left out.
+            without_arguments = self.model_copy(update={"arguments": {}})
+            dict_ = super(FunctionCalling, without_arguments).to_dict(*args, **kw)
+            dict_["function"] = self.function
+            dict_["arguments"] = ARGUMENTS_TOO_DEEP
+            return dict_
         dict_["function"] = self.function
         dict_["arguments"] = self.arguments
         return dict_
