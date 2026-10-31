@@ -140,7 +140,14 @@ class CompleteUsage:
 
 @dataclass(frozen=True, slots=True)
 class ProvenNotSent:
-    """The transport's own proof that the request never left this process."""
+    """The transport's own proof that the request never left this process.
+
+    ``caller_cancelled`` is true when the caller's own cancellation, not a fault on
+    the account's side, is why the request never left; the ledger then keeps what it
+    knows about the account's cached prefixes.
+    """
+
+    caller_cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
