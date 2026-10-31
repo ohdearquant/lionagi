@@ -257,7 +257,7 @@ async def _gh_cli_token() -> str | None:
             ["gh", "auth", "token"], b"", timeout=10.0
         )
         if returncode != 0:
-            _log.warning("gh auth token lookup failed")
+            _log.debug("gh auth token lookup failed")
         elif stdout:
             return stdout.decode().strip()
     except asyncio.TimeoutError:

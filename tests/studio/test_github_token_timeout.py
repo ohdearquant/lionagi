@@ -217,16 +217,44 @@ async def test_success_returns_stripped_token_in_separate_session(monkeypatch, c
     assert "synthetic-secret-token" not in caplog.text
 
 
-async def test_nonzero_exit_warns_without_copying_child_output(monkeypatch, caplog):
+async def test_nonzero_exit_is_debug_without_copying_child_output(monkeypatch, caplog):
     child = _Child(response=(b"synthetic-secret-token", b"synthetic-secret-token"), returncode=1)
     _install_child(monkeypatch, child)
     _short_exchange(monkeypatch)
-    caplog.set_level(logging.WARNING, logger=github.__name__)
+    caplog.set_level(logging.DEBUG, logger=github.__name__)
 
     assert await asyncio.wait_for(github._gh_cli_token(), 0.5) is None
-    assert len(_warnings(caplog)) == 1
+    assert not _warnings(caplog)
+    assert [record.levelno for record in caplog.records if record.name == github.__name__] == [
+        logging.DEBUG
+    ]
     assert "synthetic-secret-token" not in caplog.text
     assert child.kills == 0
+
+
+async def test_success_with_empty_stdout_returns_none(monkeypatch, caplog):
+    child = _Child(response=(b"", b""))
+    _install_child(monkeypatch, child)
+    caplog.set_level(logging.WARNING, logger=github.__name__)
+
+    assert await github._gh_cli_token() is None
+    assert not _warnings(caplog)
+    assert child.kills == 0
+
+
+async def test_missing_gh_returns_none_without_exposing_error(monkeypatch, caplog):
+    async def spawn(*args, **kwargs):
+        raise FileNotFoundError("synthetic-secret-token")
+
+    monkeypatch.setattr(_proc.asyncio, "create_subprocess_exec", spawn)
+    caplog.set_level(logging.DEBUG, logger=github.__name__)
+
+    assert await github._gh_cli_token() is None
+    assert not _warnings(caplog)
+    assert [record.levelno for record in caplog.records if record.name == github.__name__] == [
+        logging.DEBUG
+    ]
+    assert "synthetic-secret-token" not in caplog.text
 
 
 async def test_spawn_failure_returns_none(monkeypatch, caplog):
