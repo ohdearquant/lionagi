@@ -271,7 +271,7 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",
-    "lionagi.service.accounts._router:608:13": (
+    "lionagi.service.accounts._router:712:13": (
         "a counter on a held character popped from a list, not a class attribute"
     ),
     "lionagi.studio.scheduler.signals:221:17": "a counter field on a dict-held object",

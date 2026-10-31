@@ -424,9 +424,11 @@ selection reads it: the D4 ledger.
      `hour_after_key` is the flag from Decision 1, and `server_tools` is true for a request that
      carries a server tool.
    - `RouterAttempt` (`_router.py:62-67`, `@dataclass(slots=True)`, built positionally at `:143`)
-     gains `cert: str | None = None` and `hour_after_key: bool = False` after its four fields, so
-     positional construction is unchanged. `begin` computes both from the frozen payload (`:124`),
-     passes `cert` to `ledger.reserve` (`:129`) and builds the attempt with both (`:143`). Only the
+     gains `cert: str | None = None`, `hour_after_key: bool = False` and
+     `server_tools: bool = False` after its four fields, so positional construction is unchanged.
+     `begin` computes `cert` and `hour_after_key` from the frozen payload (`:124`) and
+     `server_tools` from the same parsed body through `_server_tools`, passes `cert` to
+     `ledger.reserve` (`:129`) and builds the attempt with all three (`:143`). Only the
      two settlements that can carry `CompleteUsage` pass them on to `ledger.settle`:
      `settle_response` (`:159-169`) and `settle_stream_end` (`:184-195`). `settle_unknown`
      (`:171-172`) and the not-sent paths pass neither; nothing is lost, because only a
@@ -735,8 +737,8 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
   existing prompt-cache tests.
 - A bound scope's reservation is unchanged by any row and issues no statement naming `warm_prefix`
   (the same trace callback).
-- `RouterAttempt` built positionally with four arguments still constructs, with `cert` None and
-  `hour_after_key` false.
+- `RouterAttempt` built positionally with four arguments still constructs, with `cert` None,
+  `hour_after_key` false and `server_tools` false.
 - A version-0 (fresh) file gains the table before `user_version` is set; a version-1 ledger without
   it opens and gains it under the lock; a version-1 file missing a base table still refuses; an
   older reader admits a file that has it.

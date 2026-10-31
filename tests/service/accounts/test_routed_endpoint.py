@@ -635,12 +635,12 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
     monkeypatch.setattr(model.endpoint, name, hold)
     real_reserve = CredentialLedger.reserve
 
-    async def reserve_then_change(self, *args):
+    async def reserve_then_change(self, *args, **kwargs):
         # another task changes both while the account is being reserved
         for headers in (*held, client_headers):
             headers["anthropic-beta"] = "files-api-2025-04-14"
             headers["Authorization"] = "Bearer late"
-        return await real_reserve(self, *args)
+        return await real_reserve(self, *args, **kwargs)
 
     monkeypatch.setattr(CredentialLedger, "reserve", reserve_then_change)
 
@@ -676,13 +676,13 @@ async def test_a_url_method_or_timeout_set_while_the_account_is_reserved_is_not_
     timeout = config.timeout
     real_reserve = CredentialLedger.reserve
 
-    async def reserve_then_change(self, *args):
+    async def reserve_then_change(self, *args, **kwargs):
         # another task points the endpoint elsewhere while the account is being reserved
         config.base_url = "https://attacker.invalid/v1"
         config.endpoint = "other"
         config.method = "PUT"
         config.timeout = timeout + 7
-        return await real_reserve(self, *args)
+        return await real_reserve(self, *args, **kwargs)
 
     monkeypatch.setattr(CredentialLedger, "reserve", reserve_then_change)
 
