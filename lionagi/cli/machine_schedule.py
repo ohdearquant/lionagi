@@ -68,7 +68,7 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
         detail = exc.read().decode(errors="replace")[:2000]
         raise MachineError(_error_kind(exc.code), _http_message(exc.code, detail)) from exc
     except OSError as exc:
-        from lionagi.studio.cli import (
+        from lionagi.cli._schedule_parsing import (
             _is_schedule_request_timeout,
             _schedule_request_timeout_message,
         )
@@ -131,7 +131,7 @@ def _http_message(code: int, detail: str) -> str:
 
 
 def _schedule_subparsers() -> dict[str, argparse.ArgumentParser]:
-    from lionagi.studio.cli import add_schedule_subparser
+    from lionagi.cli._schedule_parsing import add_schedule_subparser
 
     root = argparse.ArgumentParser(prog="li", add_help=False)
     schedule = add_schedule_subparser(root.add_subparsers(dest="command"))
@@ -438,7 +438,7 @@ def _create(argv: list[str]) -> dict[str, Any]:
     trigger next resolves at ``resolved_next_fire``. It does not mean a
     scheduler is running to fire it.
     """
-    from lionagi.studio.cli import build_create_body
+    from lionagi.cli._schedule_parsing import build_create_body
 
     _refuse_inside_an_agent()
     known = _parse("create", argv, unhonoured={})
@@ -510,7 +510,7 @@ def _enable(argv: list[str]) -> dict[str, Any]:
 
 
 def _disable(argv: list[str]) -> dict[str, Any]:
-    from lionagi.studio.cli import _normalize_schedule_reason
+    from lionagi.cli._schedule_parsing import _normalize_schedule_reason
 
     known = _parse("disable", argv, unhonoured={})
     body = None
