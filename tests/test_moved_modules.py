@@ -296,6 +296,7 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
 MOVED_MODULES = (
     ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
     ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
+    ("lionagi.providers._subagent_admission", "lionagi.service._subagent_admission"),
 )
 _MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
 
@@ -323,6 +324,12 @@ MOVED_MODULE_PUBLIC_NAMES = {
         "fill_declared_secrets",
         "lookup_one_name",
         "resolve_secret_lookup_config",
+    },
+    "lionagi.service._subagent_admission": {
+        "SubagentLease",
+        "admit_subagent",
+        "child_agent_depth",
+        "refuse_nested_agent",
     },
 }
 

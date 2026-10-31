@@ -1489,7 +1489,7 @@ async def test_a_bytes_value_is_read_as_the_spawn_reads_it_not_by_its_own_bytes_
     calls."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
-    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
+    from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1520,7 +1520,7 @@ async def test_a_bytes_value_beside_its_text_twin_is_taken_as_one_entry(tmp_path
     equal entries, the pair is admitted, and the child receives one entry."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
-    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
+    from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1664,7 +1664,7 @@ async def test_keys_and_values_spelled_two_ways_that_encode_alike_are_taken(tmp_
     with equal sides, so the pair is admitted and the child receives that one entry."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
-    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
+    from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 
@@ -1931,7 +1931,7 @@ async def test_a_text_subclass_behind_a_subclass_encoder_reaches_the_spawn_as_pl
     a second time."""
     from lionagi.ln._proc import _PROCESS_GROUP_MARKER
     from lionagi.providers import _cli_subprocess
-    from lionagi.providers._subagent_admission import AGENT_DEPTH_ENV
+    from lionagi.service._subagent_admission import AGENT_DEPTH_ENV
 
     given = {}
 

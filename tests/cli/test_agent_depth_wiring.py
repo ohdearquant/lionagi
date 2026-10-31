@@ -20,7 +20,7 @@ from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.cli import _agent_depth as depth_mod
 from lionagi.cli._agent_depth import DEPTH_ENV
 from lionagi.ln._proc import _PROCESS_GROUP_MARKER
-from lionagi.providers import _subagent_admission as admission
+from lionagi.service import _subagent_admission as admission
 
 
 class _StopEarly(Exception):

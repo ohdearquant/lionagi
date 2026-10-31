@@ -27,9 +27,9 @@ from lionagi._provider_errors import (
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
-from lionagi.providers import _subagent_admission as admission
 from lionagi.providers._cli_subprocess import ndjson_from_cli
-from lionagi.providers._subagent_admission import (
+from lionagi.service import _subagent_admission as admission
+from lionagi.service._subagent_admission import (
     AGENT_DEPTH_ENV,
     _ancestor_agent_depth,
     _parse_agent_depth,
@@ -97,7 +97,7 @@ def _refusal_under_a_parent(parent_depth: str | None) -> tuple[int, str, str, in
     Returns the child's exit code, its output, its stderr and the parent's pid."""
     child = (
         "import sys\n"
-        "from lionagi.providers._subagent_admission import refuse_nested_agent\n"
+        "from lionagi.service._subagent_admission import refuse_nested_agent\n"
         "from lionagi._provider_errors import NestedAgentRefusedError\n"
         "try:\n"
         "    refuse_nested_agent('codex')\n"

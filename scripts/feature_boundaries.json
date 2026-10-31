@@ -1508,11 +1508,6 @@
       "owner": "provider_support",
       "target_owner": "lionhub (destination not yet recorded)"
     },
-    "lionagi.providers._subagent_admission": {
-      "layer": "adapter",
-      "owner": "provider_support",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
     "lionagi.providers.ag2": {
       "layer": "adapter",
       "owner": "provider_ag2",
@@ -1882,6 +1877,10 @@
       "owner": "model_invocation"
     },
     "lionagi.service._prompt_cache": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
+    "lionagi.service._subagent_admission": {
       "layer": "sdk",
       "owner": "model_invocation"
     },

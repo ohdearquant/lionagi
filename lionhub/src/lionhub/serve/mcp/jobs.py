@@ -39,7 +39,7 @@ from lionagi.ln._proc import (
     start_time_matches,
 )
 from lionagi.ln.concurrency import current_time, sleep
-from lionagi.providers._subagent_admission import refuse_nested_agent
+from lionagi.service._subagent_admission import refuse_nested_agent
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config

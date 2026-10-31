@@ -35,13 +35,13 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
-from lionagi.providers._subagent_admission import (
+from lionagi.service._api_telemetry import collect_api_turn
+from lionagi.service._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
-from lionagi.service._api_telemetry import collect_api_turn
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation

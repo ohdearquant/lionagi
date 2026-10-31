@@ -829,7 +829,7 @@ async def test_an_unknown_no_handle_spawn_failure_keeps_holder_ownership(
     scripted, tmp_path, monkeypatch, caplog, failure_kind
 ):
     from lionagi import _paths
-    from lionagi.providers import _subagent_admission as admission
+    from lionagi.service import _subagent_admission as admission
 
     state = scripted
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
@@ -956,7 +956,7 @@ async def test_missing_executables_never_attempt_spawn_or_accumulate_capped_slot
     from lionagi import _paths
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.providers import _cli_subprocess as cs
-    from lionagi.providers import _subagent_admission as admission
+    from lionagi.service import _subagent_admission as admission
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": str(count), "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -1053,7 +1053,7 @@ async def test_an_unconfirmed_dead_child_keeps_actual_holder_locks_until_explici
 ):
     from lionagi import _paths
     from lionagi.providers import _cli_subprocess as cs
-    from lionagi.providers import _subagent_admission as admission
+    from lionagi.service import _subagent_admission as admission
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}

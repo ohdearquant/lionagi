@@ -48,15 +48,14 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service.accounts._secret_resolution import fill_declared_secrets_and_names
-
-from ._subagent_admission import (
+from lionagi.service._subagent_admission import (
     AGENT_DEPTH_ENV,
     DEFAULT_WORKLOAD,
     admit_subagent,
     child_agent_depth,
     refuse_nested_agent,
 )
+from lionagi.service.accounts._secret_resolution import fill_declared_secrets_and_names
 
 log = logging.getLogger(__name__)
 
@@ -1306,7 +1305,7 @@ async def ndjson_from_cli(
     before any output is read, and its failure is not swallowed — it
     propagates through the teardown below, which ends the child's group.
     Before the spawn the agent takes a machine-wide slot for ``engine`` and
-    ``workload`` (see ``_subagent_admission``), held until the child's group
+    ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
     has ended. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an

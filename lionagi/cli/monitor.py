@@ -1032,7 +1032,7 @@ _WATCH_READ_ATTEMPTS = 3
 
 async def _subagent_status() -> dict[str, Any]:
     from lionagi.ln.concurrency import run_sync as _run_sync
-    from lionagi.providers._subagent_admission import subagent_admission_status
+    from lionagi.service._subagent_admission import subagent_admission_status
 
     try:
         # Off the event loop: the read waits on each pool's admission lock.

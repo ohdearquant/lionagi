@@ -22,11 +22,11 @@ from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
-from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.providers.openai._codex_profile import (
     refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
 )
+from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,

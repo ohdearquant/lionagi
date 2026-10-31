@@ -40,7 +40,7 @@ from lionagi.providers._cli_subprocess import (
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
-from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
+from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession

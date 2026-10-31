@@ -56,6 +56,12 @@ MOVED: tuple[Moved, ...] = (
         "0.37.0",
         "2.0.0",
     ),
+    Moved(
+        "lionagi.providers._subagent_admission",
+        "lionagi.service._subagent_admission",
+        "0.37.0",
+        "2.0.0",
+    ),
 )
 
 
