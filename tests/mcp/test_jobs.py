@@ -43,6 +43,11 @@ class _FakeProc:
     def __init__(self, pid: int = 4242) -> None:
         self.pid = pid
 
+    def wait(self, timeout: float | None = None) -> int:
+        # submit() hands the child to a thread that waits on it; this one has
+        # already exited.
+        return 0
+
 
 def test_new_run_id_format():
     rid = jobs.new_run_id()
@@ -272,6 +277,46 @@ def test_pid_alive_reaps_zombie_child():
     p = subprocess.Popen(["sleep", "0.05"], start_new_session=True)
     time.sleep(0.35)  # exited, but an unreaped zombie of this process
     assert jobs._pid_alive(p.pid) is False
+
+
+def test_submit_reaps_the_child_it_spawns(sandbox, monkeypatch):
+    """A job's child is waited on once it exits, so it never lingers as a zombie.
+
+    Nothing else in the process waits on the child, and a zombie still answers
+    ``kill -0`` as alive for as long as it stays unreaped, so only the spawn
+    itself can make the child go away. A real short-lived child stands in for
+    the run.
+    """
+    import time
+
+    real_popen = subprocess.Popen
+    pids: list[int] = []
+
+    def spawn_short_child(argv, **kwargs):
+        # The spawn's own keyword arguments, so the child is started exactly as
+        # a real run is; only the program differs.
+        proc = real_popen(["sleep", "0.05"], **kwargs)
+        pids.append(proc.pid)
+        return proc
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", spawn_short_child)
+    jobs.submit("agent", [], prompt="x")
+    (pid,) = pids
+
+    # kill -0 succeeds on a zombie and, unlike waitpid, does not reap it, so it
+    # stops succeeding only once something else has reaped the child.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+
+    # The one reaping probe, made last: a child nothing waited on is still ours
+    # to reap (and this reaps it); a child that was already waited on is not.
+    with pytest.raises(ChildProcessError):
+        os.waitpid(pid, os.WNOHANG)
 
 
 def test_kill_guards_low_pid(sandbox):

@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1659,6 +1660,10 @@ def submit(
     # lock is taken so a slow process table never holds up another mutation.
     _state, created = _process_create_time(proc.pid)
     pgid = _spawned_pgid(proc.pid)
+    # Nothing else waits on the child, so without this it would linger as a
+    # zombie of this process after it exits. Started once the probes above are
+    # done: they read the child by pid, which it keeps until it is reaped.
+    threading.Thread(target=proc.wait, name=f"job-reaper-{run_id}", daemon=True).start()
     latest = record
     with _locked_job(run_id) as guard:
         if guard.record is None:
