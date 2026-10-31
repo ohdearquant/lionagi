@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from pydantic import JsonValue
 
+from lionagi._provider_errors import WorkerLivenessError, classify_provider_error
 from lionagi.ln import acreate_path, json_dumps
 from lionagi.ln.concurrency import current_time, fail_after, run_sync
 from lionagi.models.note import Note
@@ -24,7 +25,6 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
 from lionagi.providers._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 
@@ -771,7 +771,7 @@ async def run(
                 # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
                 # A write the store refused in compatibility mode is no provider failure, and keeps
                 # its type (ADR-0128 D6).
-                from lionagi.providers._provider_errors import ProviderError
+                from lionagi._provider_errors import ProviderError
                 from lionagi.state.compat import StateCompatibilityRefused
 
                 if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):

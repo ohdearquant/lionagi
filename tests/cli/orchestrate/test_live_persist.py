@@ -2246,8 +2246,8 @@ async def test_reconciled_linked_engine_completed_with_output_stays_completed(
     completion-trust gate just because the *profile* session's own
     progression carries no assistant output — the linked engine session's own
     progression (real answer text) is legitimate completion evidence too."""
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import teardown_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     repo = tmp_path / "repo"

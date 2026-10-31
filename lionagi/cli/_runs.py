@@ -20,13 +20,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
+from lionagi._provider_errors import ProviderError, _WorkerSpawnAdmissionError
 from lionagi.cli._util import AmbiguousIdError, mark_run_allocated
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, move_on_after
-from lionagi.providers._provider_errors import ProviderError, _WorkerSpawnAdmissionError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:

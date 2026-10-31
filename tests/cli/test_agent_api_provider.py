@@ -1619,8 +1619,8 @@ async def test_a_refused_turn_with_stop_details_fails_as_a_nonretryable_provider
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
+    from lionagi._provider_errors import ProviderSafetyError
     from lionagi.cli._runs import resolve_run_reason
-    from lionagi.providers._provider_errors import ProviderSafetyError
     from lionagi.state.reasons import RunReasons
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):

@@ -136,8 +136,8 @@ async def test_terminal_resume_uses_the_adopted_key_and_new_atomic_generation(st
 @pytest.mark.parametrize("same_object", [False, True])
 async def test_independent_running_resume_preserves_the_first_bound_handle(store, same_object):
     from lionagi import Branch
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.cli import _runs
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
     branch = Branch()
     first = await _runs.setup_agent_persist(branch, run_id="first")
@@ -160,8 +160,8 @@ async def test_independent_running_resume_preserves_the_first_bound_handle(store
 @pytest.mark.asyncio(loop_scope="function")
 async def test_fresh_session_key_collision_cannot_borrow_an_existing_owner(store, monkeypatch):
     from lionagi import Branch
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.cli import _runs
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.session import session as session_module
 
     branch = Branch()
@@ -190,8 +190,8 @@ async def test_fresh_session_key_collision_cannot_borrow_an_existing_owner(store
 @pytest.mark.asyncio(loop_scope="function")
 async def test_bound_close_failure_cannot_be_a_continuation_witness(store, monkeypatch):
     from lionagi import Branch
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.cli import _runs
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 
     branch = Branch()
@@ -269,8 +269,8 @@ async def test_new_agent_setup_masks_an_outer_recorder(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_auto_resumed_flag_without_capability_refuses_before_setup(monkeypatch):
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.cli import agent
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
     reached = []
     monkeypatch.setattr(

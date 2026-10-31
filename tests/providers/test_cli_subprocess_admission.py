@@ -103,7 +103,7 @@ async def test_a_child_that_finishes_gives_its_slot_to_the_next_spawn(capped):
 
 @pytest.mark.asyncio
 async def test_a_spawn_that_fails_gives_its_slot_back(capped, monkeypatch):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     spawns = []
 

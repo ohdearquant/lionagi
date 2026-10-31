@@ -255,7 +255,7 @@ async def test_fresh_recovery_guards(isolated_setup, monkeypatch, tmp_path, capl
 async def test_direct_cancel_during_cleanup_keeps_first_failure(
     isolated_setup, monkeypatch, tmp_path, mode
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
@@ -507,7 +507,7 @@ async def test_recovery_close_is_bounded_and_preserves_open_error(
 async def test_admission_refusal_remains_primary_when_owner_drain_is_cancelled(
     isolated_setup, monkeypatch, tmp_path
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state import cli_workers
     from lionagi.state.db import StateDB
 

@@ -300,7 +300,7 @@ async def test_all_engine_exit_paths_drain_before_status_and_db_close(engine_wor
 async def test_post_create_collision_or_missing_row_refuses_before_constructor(
     engine_workers, mode
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     h = engine_workers
     h.mode = mode
@@ -313,7 +313,7 @@ async def test_post_create_collision_or_missing_row_refuses_before_constructor(
 
 
 async def test_compatibility_refusal_does_not_degrade_to_unrecorded_engine(engine_workers):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.compat import StateCompatibilityRefused
 
     h = engine_workers

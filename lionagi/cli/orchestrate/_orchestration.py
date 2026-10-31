@@ -1980,7 +1980,7 @@ async def setup_orchestration_persist(
     ctx = None
     admission_checked = False
     generation_id = str(uuid.uuid4())
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.cli_workers import _WorkerSpawnOwner
     from lionagi.state.compat import is_compatibility_store, refusal_in
 

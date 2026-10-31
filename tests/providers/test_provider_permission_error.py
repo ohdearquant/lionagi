@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from lionagi.providers._provider_errors import (
+from lionagi._provider_errors import (
     ProviderAdapterError,
     ProviderError,
     ProviderPermissionError,
@@ -77,7 +77,7 @@ class TestTheBranchOrderIsWhatMakesItReachable:
         """
         both = "agy returned status=SUCCESS — a tool call was auto-denied"
 
-        from lionagi.providers import _provider_errors as mod
+        from lionagi import _provider_errors as mod
 
         assert any(p.search(both) for p in mod._PERMISSION_PATTERNS)
         assert any(p.search(both) for p in mod._ADAPTER_PATTERNS)
@@ -145,7 +145,7 @@ class TestTheHierarchyStaysWhereTheRecordCanSeeIt:
         list is what the derivation was written to avoid, since a class added
         without a second edit there would silently read back as 'unknown'.
         """
-        import lionagi.providers._provider_errors as owner
+        import lionagi._provider_errors as owner
 
         def walk(cls: type) -> set[type]:
             found = {cls}

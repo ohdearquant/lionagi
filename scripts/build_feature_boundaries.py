@@ -98,6 +98,7 @@ ROOT_MODULES = {
     "lionagi._log_channels": ("foundation", "logging_channels"),
     "lionagi._moved": ("foundation", "compatibility"),
     "lionagi._paths": ("foundation", "path_configuration"),
+    "lionagi._provider_errors": ("contracts", "errors"),
     "lionagi._settings": ("sdk", "configuration"),
     "lionagi._spec_limits": ("contracts", "specification_limits"),
     "lionagi._types": ("foundation", "types"),

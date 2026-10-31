@@ -298,7 +298,7 @@ async def test_a_benign_sentinel_leaves_the_returned_session_clean():
 @pytest.mark.asyncio
 async def test_a_non_streamed_call_raises_for_the_failed_session():
     """The same turn through _call: the failed session raises its provider error."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
 
     events = [_agent_message(MARKUP_FIXTURE), _turn_completed()]
 
@@ -807,7 +807,7 @@ async def test_a_clean_message_before_the_sentinel_still_completes():
 @pytest.mark.asyncio
 async def test_a_non_streamed_call_markup_then_sentinel_raises():
     """The non-streamed path reads the same sentinel turn end and raises."""
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
 
     events = [_agent_message(MARKUP_FIXTURE), _benign_sentinel()]
 

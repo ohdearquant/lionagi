@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from lionagi.providers._provider_errors import (
+from lionagi._provider_errors import (
     ProviderAdapterError,
     ProviderAuthError,
     ProviderError,

@@ -1669,8 +1669,8 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
     session was alive but not yet terminal) must resolve via the linked
     engine row's status, not hang on its own frozen 'running' column."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333333"
@@ -1735,8 +1735,8 @@ async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
 ) -> None:
     """`li monitor run` resolving a profile session via its linked engine row must PERSIST the reconciled terminal status through StateDB.update_status(), not just synthesize it in memory for this one call, so the profile session's own DB row doesn't stay stuck at 'running' forever."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333334"
@@ -1794,8 +1794,8 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
     (the terminal row is authoritative) instead of crashing on the
     rejected transition."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333335"
@@ -1905,8 +1905,8 @@ async def test_effective_session_status_cas_mismatch_reports_persisted_status(
     ignore that `False` and fall through to the synthesized linked-engine
     status; it must re-read and report the persisted row instead."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderError
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
-    from lionagi.providers._provider_errors import ProviderError
     from lionagi.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333336"

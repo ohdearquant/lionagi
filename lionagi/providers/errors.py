@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from ._provider_errors import (
+from lionagi._provider_errors import (
     NestedAgentRefusedError,
     ProviderAdapterError,
     ProviderAuthError,

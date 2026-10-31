@@ -69,10 +69,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from lionagi._provider_errors import NestedAgentRefusedError, SubagentAdmissionRefusedError
 from lionagi.ln._proc import process_create_time, start_time_matches
 from lionagi.ln.concurrency import sleep as _sleep
-
-from ._provider_errors import NestedAgentRefusedError, SubagentAdmissionRefusedError
 
 # A slot is an flock; without one (Windows) an uncapped agent runs as before and a
 # configured cap refuses, since nothing could hold the slot it would count.

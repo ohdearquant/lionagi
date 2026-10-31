@@ -53,6 +53,10 @@
       "layer": "foundation",
       "owner": "path_configuration"
     },
+    "lionagi._provider_errors": {
+      "layer": "contracts",
+      "owner": "errors"
+    },
     "lionagi._settings": {
       "layer": "sdk",
       "owner": "configuration"
@@ -1500,11 +1504,6 @@
       "target_owner": "lionhub (destination not yet recorded)"
     },
     "lionagi.providers._multipart": {
-      "layer": "adapter",
-      "owner": "provider_support",
-      "target_owner": "lionhub (destination not yet recorded)"
-    },
-    "lionagi.providers._provider_errors": {
       "layer": "adapter",
       "owner": "provider_support",
       "target_owner": "lionhub (destination not yet recorded)"
