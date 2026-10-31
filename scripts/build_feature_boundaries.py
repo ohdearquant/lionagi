@@ -126,7 +126,7 @@ TARGET_RULES = {
     "lionagi.cli._project": "lionhub.orchestration.project",
     "lionagi.cli._providers": "lionhub.orchestration.spawn",
     "lionagi.cli._runs": "lionhub.orchestration.runs",
-    "lionagi.cli._schedule_parsing": "lionhub.orchestration.schedule.parsing",
+    "lionagi.cli._schedule_parsing": "lionhub.orchestration.schedule",
     "lionagi.cli._team_service": "lionhub.orchestration.team",
     "lionagi.cli._util": "lionhub.orchestration.job",
     "lionagi.cli.orchestrate._checkpoint": "lionhub.orchestration.flow.checkpoint",

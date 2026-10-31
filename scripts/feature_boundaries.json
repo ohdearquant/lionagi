@@ -557,7 +557,7 @@
     "lionagi.cli._schedule_parsing": {
       "layer": "root",
       "owner": "cli",
-      "target_owner": "lionhub.orchestration.schedule.parsing"
+      "target_owner": "lionhub.orchestration.schedule"
     },
     "lionagi.cli._team_service": {
       "layer": "root",
