@@ -13,6 +13,8 @@ on whether a helper was called.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +25,8 @@ from lionagi.cli._providers import AgentProfile
 from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
 from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+from lionagi.providers.openai import _codex_project_layers as project_layers
+from lionagi.providers.openai import codex as codex_mod
 from lionagi.providers.openai.codex import CodexCodeRequest
 
 
@@ -93,10 +97,36 @@ async def _cli_args(imodel) -> list[str]:
 
 
 async def _codex_cli_args(imodel) -> list[str]:
+    """The argv the codex child would be spawned with, off the live request.
+
+    A worker that ignores the user config gets its command line at launch, from
+    the spawn helper's argv hook; the request's own ``as_cmd_args`` refuses that
+    shape. So the request goes through the same launch path with only the spawn
+    itself stubbed: no process starts and no host config is read.
+    """
     api_call = await imodel.create_event(prompt="hi")
     request = api_call.payload["request"]
     assert isinstance(request, CodexCodeRequest)
-    return request.as_cmd_args()
+    spawned: list[list[str]] = []
+
+    async def _stub_stream(cmd, **kwargs):
+        prepare = kwargs.get("_prepare_argv")
+        assert prepare is not None, (
+            "a worker that ignores the user config is launched through the argv hook"
+        )
+        cmd = prepare(dict(kwargs.get("env") or os.environ))
+        spawned.append(list(cmd))
+        return
+        yield
+
+    with tempfile.TemporaryDirectory() as scratch, pytest.MonkeyPatch.context() as patch:
+        patch.setattr(project_layers, "_SYSTEM_CONFIG", Path(scratch) / "system-config.toml")
+        patch.setattr(codex_mod, "CODEX_CLI", "codex")
+        patch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+        patch.setattr(codex_mod, "ndjson_from_cli", _stub_stream)
+        [_ async for _ in codex_mod._ndjson_from_cli(request)]
+    assert len(spawned) == 1
+    return spawned[0]
 
 
 @pytest.mark.asyncio

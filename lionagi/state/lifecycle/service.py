@@ -13,15 +13,16 @@ import logging
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, get_args
 
 from sqlalchemy import JSON, Boolean, bindparam, text
 
 from lionagi.ln import short_id
+from lionagi.ln.concurrency import fail_after
 
 from ..compat import _quote
-from ..reasons import VALID_REASON_CODES
+from ..reasons import VALID_REASON_CODES, validate_reason_code
 from ..terminal_eligibility import (
     HistoryWriteKind,
     has_delivery_eligibility_column,
@@ -36,6 +37,7 @@ from .callbacks import (
     TerminalCallbackRegistry,
 )
 from .models import (
+    ActorRecord,
     ActorType,
     InitialStateCommand,
     ReasonRecord,
@@ -55,6 +57,13 @@ class _HistoryWrite(NamedTuple):
     transition_id: str
     eligibility_stored: bool
     eligibility_at_write: bool
+
+
+@dataclass
+class _GuardedCancelObservation:
+    """A private observation populated only by one guarded cancellation."""
+
+    terminal_same_execution: bool = False
 
 
 # Only these fields supplied the dead-runner evidence. An omitted key means
@@ -109,10 +118,13 @@ class _TxProvider(Protocol):
 
     dialect: str
     mode: str
+    readonly: bool
 
     def _tx(self) -> Any: ...
 
     def _read(self) -> Any: ...
+
+    def _refuse_in_compatibility(self, operation: str, reason: str) -> None: ...
 
     def _owner_predicate(self, table: str) -> tuple[str, dict[str, str]]: ...
 
@@ -376,6 +388,62 @@ class SQLAlchemyLifecycleService:
             fill_only_if_absent=fill_only_if_absent,
         )
 
+    async def guarded_cancel_session(
+        self,
+        *,
+        session_id: str,
+        generation_id: str | None,
+        expected_runner_identity: Mapping[str, Any],
+        reason: ReasonRecord,
+    ) -> tuple[TransitionOutcome, bool]:
+        """Cancel one captured execution and report a matching terminal observation.
+
+        The second result is true only when the row observed in the guarded
+        transition was terminal and matched the captured generation and runner.
+        It describes that transaction's observation, not a later row state.
+        """
+        # The specialized entry point is callable independently of StateDB's
+        # facade, so it must enforce the same native-store and input guards.
+        self._db._refuse_in_compatibility(
+            "cancel_session_if_worker_generation", "worker cleanup requires native storage"
+        )
+        if self._db.readonly:
+            raise ValueError("worker cancellation requires a writable state handle")
+        # Import the facade's canonical validators lazily to avoid a module cycle
+        # and keep generation normalization and input policy in one place.
+        from ..db import (
+            _CLI_WORKER_OPERATION_TIMEOUT_SECONDS,
+            _validate_cli_worker_generation,
+            _validate_cli_worker_session_id,
+        )
+
+        session_id = _validate_cli_worker_session_id(session_id)
+        generation_id = _validate_cli_worker_generation(generation_id)
+        if not isinstance(expected_runner_identity, Mapping):
+            raise ValueError("expected_runner_identity must be a mapping")
+        expected_runner_identity = dict(expected_runner_identity)
+        validate_reason_code(reason.code)
+        command = TransitionCommand(
+            entity_type="session",
+            entity_id=session_id,
+            to_status="cancelled",
+            reason=reason,
+            actor=ActorRecord(type="admin", id="user"),
+            expected_statuses=frozenset({"running"}),
+            patch={"current_phase": None},
+        )
+        observation = _GuardedCancelObservation()
+        with fail_after(_CLI_WORKER_OPERATION_TIMEOUT_SECONDS):
+            outcome = await self._transition(
+                command,
+                extra_guard={"cli_worker_generation": generation_id},
+                expected_runner_identity=expected_runner_identity,
+                enforce_edges=True,
+                undeclared_edge_mode="reject",
+                _guarded_cancel_observation=observation,
+            )
+        return outcome, observation.terminal_same_execution
+
     async def _emit_terminal_event(
         self,
         command: TransitionCommand,
@@ -436,7 +504,19 @@ class SQLAlchemyLifecycleService:
         write_reason_columns: bool = True,
         fill_only_if_absent: frozenset[str] = frozenset(),
         owned_links: tuple[tuple[str, str, str], ...] = (),
+        _guarded_cancel_observation: _GuardedCancelObservation | None = None,
     ) -> TransitionOutcome:
+        if _guarded_cancel_observation is not None and (
+            command.entity_type != "session"
+            or command.to_status != "cancelled"
+            or command.expected_statuses != frozenset({"running"})
+            or command.expected_version is not None
+            or command.override is not None
+            or extra_guard is None
+            or set(extra_guard) != {"cli_worker_generation"}
+            or expected_runner_identity is None
+        ):
+            raise LifecycleValidationError("invalid guarded cancellation observation")
         if expected_runner_identity is not None:
             if command.entity_type != "session":
                 raise LifecycleValidationError("runner identity guard requires a session")
@@ -542,6 +622,15 @@ class SQLAlchemyLifecycleService:
                 command.expected_statuses is not None
                 and previous_status not in command.expected_statuses
             ):
+                if _guarded_cancel_observation is not None:
+                    _guarded_cancel_observation.terminal_same_execution = (
+                        previous_status in policy.terminal_statuses
+                        and row["cli_worker_generation"] == extra_guard["cli_worker_generation"]
+                        and expected_runner_identity is not None
+                        and _runner_identity_matches(
+                            expected_runner_identity, row["node_metadata"], dialect=self._db.dialect
+                        )
+                    )
                 return TransitionOutcome(
                     result="conflict",
                     previous_status=previous_status,

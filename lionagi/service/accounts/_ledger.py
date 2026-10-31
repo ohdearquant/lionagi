@@ -5,20 +5,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from pathlib import Path
-from typing import TypeVar
+from typing import Generic, TypeVar, cast
 from uuid import UUID
 
 from lionagi.ln import now_utc
-from lionagi.ln.concurrency import run_sync
+from lionagi.ln.concurrency import move_on_after, run_sync
 from lionagi.service.accounts._types import (
     INT64_MAX,
     AccountRoutingError,
@@ -43,6 +45,36 @@ _MONTH_RE = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])\Z")
 _INT64_MIN = -(INT64_MAX + 1)
 _TABLES = {"account", "month", "binding", "attempt", "adjustment"}
 _T = TypeVar("_T")
+_LOGGER = logging.getLogger(__name__)
+# How long one ledger call waits for a worker thread before it is refused as busy. The
+# bound covers admission only; the SQLite lock wait is set by busy_timeout_s.
+_ADMISSION_BOUND_S = 5.0
+
+
+class _TimedCall(Generic[_T]):
+    """Run an operation in a worker thread and record when it started and finished.
+
+    The operation's result or error is kept here and the call itself returns normally,
+    so a caller whose wait was cancelled can still read the outcome of a write that ran.
+    """
+
+    __slots__ = ("operation", "started_at", "finished_at", "result", "error")
+
+    def __init__(self, operation: Callable[[], _T]) -> None:
+        self.operation = operation
+        self.started_at: float | None = None
+        self.finished_at: float | None = None
+        self.result: _T | None = None
+        self.error: Exception | None = None
+
+    def __call__(self) -> None:
+        self.started_at = time.monotonic()
+        try:
+            self.result = self.operation()
+        except Exception as exc:
+            self.error = exc
+        finally:
+            self.finished_at = time.monotonic()
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,15 +316,52 @@ class CredentialLedger:
         self._clock = clock or (lambda: now_utc())
 
     async def _run(self, operation: Callable[[], _T]) -> _T:
+        """Run one ledger operation in a worker thread.
+
+        The wait for a worker thread is bounded by _ADMISSION_BOUND_S. If the operation never
+        started when the bound fires, the call is refused as ledger_busy. If it started, its
+        result or error is returned as usual, even when the bound fired while it ran. Each
+        call emits one DEBUG event with its admission wait, SQLite wait and outcome.
+        """
+        call = _TimedCall(operation)
+        requested_at = time.monotonic()
+        outcome = "committed"
         try:
-            return await run_sync(operation)
-        except sqlite3.OperationalError as exc:
-            message = str(exc).lower()
-            if "locked" in message or "busy" in message:
-                raise _routing_error(RouterErrorCode.LEDGER_BUSY) from None
-            raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
-        except (sqlite3.DatabaseError, OSError):
-            raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+            with move_on_after(_ADMISSION_BOUND_S):
+                await run_sync(call)
+            if call.started_at is None:
+                outcome = "ledger_busy"
+                raise _routing_error(RouterErrorCode.LEDGER_BUSY)
+            try:
+                if call.error is not None:
+                    raise call.error
+                return cast(_T, call.result)
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" in message or "busy" in message:
+                    outcome = "ledger_busy"
+                    raise _routing_error(RouterErrorCode.LEDGER_BUSY) from None
+                outcome = type(exc).__name__
+                raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+            except (sqlite3.DatabaseError, OSError) as exc:
+                outcome = type(exc).__name__
+                raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE) from None
+        except BaseException as exc:
+            if outcome == "committed":
+                outcome = type(exc).__name__
+            raise
+        finally:
+            now = time.monotonic()
+            fields: dict[str, object] = {
+                "admission_wait_s": (call.started_at if call.started_at is not None else now)
+                - requested_at,
+                "outcome": outcome,
+            }
+            if call.started_at is not None:
+                fields["sqlite_wait_s"] = (
+                    call.finished_at if call.finished_at is not None else now
+                ) - call.started_at
+            _LOGGER.debug("credential ledger call finished", extra=fields)
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

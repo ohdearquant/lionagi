@@ -429,11 +429,22 @@ is surfaced rather than left for a reader to notice two fields disagree.
   in after the reap had already latched. `late_report` (null when absent)
   carries what it reported; both fields exist so a reader never has to notice
   two writers disagreeing by diffing them itself.
-- `notify_delivery` is null only while `terminal` is false. A terminal run with
-  no configured notifier reports `{"attempted": false}`. Delivery writes an
-  attempted/unknown object before launching the notifier and replaces it with
-  success or failure afterward, so cancellation after an external side effect
-  cannot erase the fact that an attempt occurred.
+- `notify_delivery` is null only while `terminal` is false. A terminal run that
+  asked for no notice and has no configured notifier reports
+  `{"attempted": false}`. A run that named a `notify_seat` or `notify_sender`
+  and has no delivery command reports `{"attempted": false, "ok": false,
+  "exit_code": null, "error": "no_delivery_command", "command": null}`, and its
+  console log gets one "NOT delivered" line; the `LIONAGI_MCP_NOTIFY_TARGET`
+  and `LIONAGI_MCP_NOTIFY_SENDER` environment fallbacks do not count as asking.
+  Delivery writes an attempted/unknown object before launching the notifier and
+  replaces it with success or failure afterward, so cancellation after an
+  external side effect cannot erase the fact that an attempt occurred.
+- `notify_warning` is the sentence `submit()` returned when the submission named
+  a `notify_seat` or `notify_sender` and no delivery command resolved (the
+  per-submit `notify_command`, then `LIONAGI_MCP_NOTIFY_COMMAND`, then the
+  `notify.on_terminal` setting). It names `no_delivery_command`, or the reason a
+  configured command is unusable. It is null otherwise, and the submit handle
+  omits the key in that case. The run is still submitted.
 - `possibly_orphaned` flags a gone process with no end recorded whose loss
   wasn't conclusively established (unaskable pid, or an unpublishable
   transition) — advisory, never makes the run terminal.

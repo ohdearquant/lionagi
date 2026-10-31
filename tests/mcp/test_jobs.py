@@ -124,6 +124,90 @@ def test_notify_template_no_target_no_command_when_absent(sandbox, monkeypatch):
     assert rec["notify_command"] is None
 
 
+def _settings_notifier(monkeypatch, handler=None, reason=None):
+    """Double the notify settings lookup and clear the environment command."""
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **_kw: SimpleNamespace(reason=reason, handler=handler),
+    )
+
+
+@pytest.mark.parametrize(
+    "named",
+    [{"notify_target": "downstream"}, {"notify_sender": "someone"}],
+    ids=["target", "sender"],
+)
+def test_submit_warns_when_a_notice_is_asked_for_and_nothing_can_send_it(
+    sandbox, monkeypatch, named
+):
+    monkeypatch.setattr(jobs.subprocess, "Popen", _capture_popen({}))
+    monkeypatch.setattr(jobs, "_validate_notify_sender", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    _settings_notifier(monkeypatch)
+
+    res = jobs.submit("agent", ["-a", "reviewer"], prompt="x", **named)
+
+    assert res["status"] == "running"  # the submit still succeeds
+    warning = res["notify_warning"]
+    assert "no_delivery_command" in warning
+    # the three places a command can come from, in the order they are tried
+    assert (
+        warning.index("notify_command")
+        < warning.index("LIONAGI_MCP_NOTIFY_COMMAND")
+        < warning.index("notify.on_terminal")
+    )
+    assert jobs._read_job(res["run_id"])["notify_warning"] == warning
+    assert jobs.status(res["run_id"])["notify_warning"] == warning
+
+
+def test_submit_warning_names_why_a_given_command_is_unusable(sandbox, monkeypatch):
+    monkeypatch.setattr(jobs.subprocess, "Popen", _capture_popen({}))
+    _settings_notifier(monkeypatch)
+
+    res = jobs.submit(
+        "agent",
+        ["-a", "reviewer"],
+        prompt="x",
+        notify_target="downstream",
+        notify_command="nope",
+    )
+
+    assert res["status"] == "running"
+    assert "delivery_command_is_not_valid_json" in res["notify_warning"]
+    assert jobs._read_job(res["run_id"])["notify_warning"] == res["notify_warning"]
+
+
+@pytest.mark.parametrize("source", ["per_submit", "environment"])
+def test_submit_has_no_warning_when_a_delivery_command_resolves(sandbox, monkeypatch, source):
+    monkeypatch.setattr(jobs.subprocess, "Popen", _capture_popen({}))
+    _settings_notifier(monkeypatch)
+    extra: dict = {}
+    if source == "per_submit":
+        extra["notify_command"] = '["notify-send", "{status}"]'
+    else:
+        monkeypatch.setenv("LIONAGI_MCP_NOTIFY_COMMAND", '["notify-send", "{status}"]')
+
+    res = jobs.submit("agent", ["-a", "reviewer"], prompt="x", notify_target="downstream", **extra)
+
+    assert "notify_warning" not in res
+    assert jobs._read_job(res["run_id"])["notify_warning"] is None
+    assert jobs.status(res["run_id"])["notify_warning"] is None
+
+
+def test_submit_has_no_warning_when_no_notice_is_asked_for(sandbox, monkeypatch):
+    monkeypatch.setattr(jobs.subprocess, "Popen", _capture_popen({}))
+    _settings_notifier(monkeypatch)
+
+    res = jobs.submit("agent", ["-a", "reviewer"], prompt="x")
+
+    assert "notify_warning" not in res
+    assert jobs._read_job(res["run_id"])["notify_warning"] is None
+    assert jobs.status(res["run_id"])["notify_warning"] is None
+
+
 def test_notify_template_bakes_command_override(sandbox, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(jobs.subprocess, "Popen", _capture_popen(captured))

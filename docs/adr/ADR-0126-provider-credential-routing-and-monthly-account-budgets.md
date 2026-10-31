@@ -775,9 +775,9 @@ D6 says stream close and finalization shield an available settlement from caller
 
 ### Decision
 
-1. Every ledger call bounds its admission wait with its own five-second bound, separate from `busy_timeout_s`. The worst case for one call is five seconds waiting for a token plus five seconds waiting for the SQLite lock.
+1. Every ledger call bounds its admission wait with its own five-second bound, separate from `busy_timeout_s`. The worst case for one call is five seconds waiting for a token plus five seconds waiting for the SQLite lock. A 401 or 403 makes two ledger calls (it records the block, then the attempt's reason), so that path can wait up to twice the per-call worst case, twenty seconds.
 2. When the admission bound trips, the call raises `AccountRoutingError` with code `ledger_busy` (`RouterErrorCode.LEDGER_BUSY`), the outcome a SQLite lock timeout produces today. It never surfaces as a bare `TimeoutError`. The default retry exceptions in `lionagi/service/resilience.py` include `TimeoutError`, so a bare timeout would be retried as if the request had failed in transit. `AccountRoutingError` is not in that default set, so it is not retried.
-3. A caller of a routed request receives that `AccountRoutingError(ledger_busy)` unchanged and is not retried. The `begin` call in `_request_attempt` (`lionagi/providers/anthropic/messages.py`) sits after the try block that converts routing errors, and the handlers in `lionagi/service/connections/endpoint.py` convert only the internal routed-attempt classes, so the error passes through.
+3. A caller of a routed request receives that `AccountRoutingError(ledger_busy)` unchanged and is not retried. The `begin` call in `_request_attempt` (`lionagi/providers/anthropic/messages.py`) sits after the try block that converts routing errors, and the handlers in `lionagi/service/connections/endpoint.py` convert only the internal routed-attempt classes, so the error passes through. The streamed attempt's `begin` call in `_routed_stream_attempt` (same file) also sits outside that conversion, and a test measures that its error reaches the caller unchanged and is not retried.
 4. The bound covers admission only. Once the worker thread has started the operation, the admission bound no longer applies, and the SQLite wait stays bounded by `busy_timeout_s`. A bound that also spanned the worker wait could expire after the write committed, and the caller would then be told the call failed while its ledger row exists. A test pins this rule.
 5. The same change adds an admission-wait timing record. For each ledger call, it records the time from requesting a token to the operation's first line in the worker, kept apart from the SQLite wait. The record is one structured log event per ledger call, described under Timing record. It adds no database column, because a schema change needs its own decision.
 6. Not decided here: a dedicated thread limiter for the ledger. It is new structure with no measurement behind it. It returns as its own amendment only if admission-wait numbers from real runs (p50 and p99, with the population named) show that the shared pool is the cause.
@@ -789,6 +789,12 @@ D6 says stream close and finalization shield an available settlement from caller
 - It does not change the native `task.cancel()` behavior that Amendment 5 describes.
 - It does not change the existing busy-timeout arm, which still raises `ledger_busy` when the SQLite lock is held past `busy_timeout_s`.
 - The admission bound is not a retry. The caller decides whether to retry.
+
+### Alternatives considered
+
+- One bound over admission and the worker wait together: rejected, because it could expire after the write committed and tell the caller the call failed while its ledger row exists (Decision 4).
+- A separate admission bound for each ledger call: chosen (Decision 1).
+- A dedicated thread limiter for the ledger: deferred until measured admission waits show that the shared pool is the cause (Decision 6).
 
 ### Verification
 

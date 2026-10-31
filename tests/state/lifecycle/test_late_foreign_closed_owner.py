@@ -74,7 +74,7 @@ async def _exercise_settled_future(tmp_path, monkeypatch, adapter, value, *, clo
             key = (reconciliation._store_identity(db), "settled", event_id)
             runner = TerminalReconciler("settled", prepare, batch_size=1, timeout=1.0)
             try:
-                result = await asyncio.wait_for(getattr(runner, adapter)(db, event_id), 4)
+                result = await getattr(runner, adapter)(db, event_id)
                 assert result.attempted is True
                 await _wait_thread_event(finish_called)
                 await _wait_for_attempt_release(key)

@@ -81,8 +81,9 @@ async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
         assert re.search(r"\b0\b", str(caught.value))
         assert await _snapshot(db) == before
 
-    # A corrected source is importable via the real caller, rather than being
-    # skipped because a partially committed session from the failed try exists.
+    # Correct both errors; a shared message must keep the keeper's content.
+    # No partially committed session from the failed try may suppress this import.
+    _branch(branches / "first.json", "branch-1", [_message("shared", "original")], stamp=1)
     _branch(branches / "second.json", "branch-2", [_message("second-msg", "fixed")], stamp=2)
     assert await state_mod._import_runs() == {
         "sessions": 1,

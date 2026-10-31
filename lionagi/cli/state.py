@@ -144,6 +144,110 @@ def _derive_timestamps(
     return float(started_at), float(ended_at), ended_at_is_approximate
 
 
+class ImportMessageConflictError(ValueError):
+    """An imported message differs from one listed by another session."""
+
+    def __init__(self, message_id: str, columns: tuple[str, ...]) -> None:
+        self.message_id = message_id
+        self.columns = columns
+        super().__init__(
+            f"Imported message {message_id!r} conflicts with another session in: "
+            + ", ".join(columns)
+        )
+
+
+async def _shared_import_messages(db: Any, run_id: str, message_ids: list[str]) -> dict[str, Any]:
+    """Read existing messages listed by other sessions, in one read snapshot."""
+    from sqlalchemy import text
+
+    if not message_ids:
+        return {}
+    if db.dialect == "sqlite":
+        members = "json_each(p.collection) AS members"
+    elif db.dialect == "postgresql":
+        members = "jsonb_array_elements_text(p.collection::jsonb) AS members(value)"
+    else:
+        raise ValueError(f"Import message ownership checks do not support {db.dialect!r}")
+
+    # Keep each IN list within SQLite's conservative bind-parameter ceiling.
+    unique = list(dict.fromkeys(message_ids))
+    shared: dict[str, Any] = {}
+    async with db.read_snapshot() as conn:
+        for start in range(0, len(unique), 500):
+            chunk = unique[start : start + 500]
+            placeholders = ",".join(f":message_id_{index}" for index in range(len(chunk)))
+            params = {f"message_id_{index}": value for index, value in enumerate(chunk)}
+            # A fresh import commonly has no existing IDs: avoid expanding every
+            # stored progression when none of this chunk can overlap a message.
+            existing = (
+                (
+                    await conn.execute(
+                        text(f"SELECT id FROM messages WHERE id IN ({placeholders})"),  # noqa: S608
+                        params,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not existing:
+                continue
+            placeholders = ",".join(f":message_id_{index}" for index in range(len(existing)))
+            params = {f"message_id_{index}": value for index, value in enumerate(existing)}
+            params["run_id"] = run_id
+            sql = (  # noqa: S608 -- only fixed SQL fragments and generated bind names
+                "SELECT m.id, CAST(m.content AS TEXT) AS content, "  # noqa: S608 -- fixed SQL and bind names only
+                "CAST(m.node_metadata AS TEXT) AS node_metadata, "
+                "m.role, m.sender, m.recipient, m.channel, m.embedding, "
+                "m.lion_class AS lion_class_id, mt.lion_class AS lion_class "
+                "FROM messages m LEFT JOIN message_types mt ON mt.type_id = m.lion_class "
+                f"WHERE m.id IN ({placeholders}) AND ("  # noqa: S608
+                "EXISTS (SELECT 1 FROM sessions s WHERE s.id != :run_id "
+                "AND (s.first_msg_id = m.id OR s.last_msg_id = m.id)) OR "
+                "EXISTS (SELECT 1 FROM branches b JOIN sessions s ON s.id = b.session_id "
+                "WHERE b.system_msg_id = m.id AND s.id != :run_id) OR "
+                "m.id IN (SELECT members.value FROM progressions p "
+                f"CROSS JOIN {members} "  # noqa: S608
+                "WHERE EXISTS (SELECT 1 FROM sessions s "
+                "WHERE s.progression_id = p.id AND s.id != :run_id) OR "
+                "EXISTS (SELECT 1 FROM branches b JOIN sessions s ON s.id = b.session_id "
+                "WHERE b.progression_id = p.id AND s.id != :run_id)))"
+            )
+            rows = (await conn.execute(text(sql), params)).mappings().all()
+            for row in rows:
+                # CAST avoids driver-specific JSON decoding; parse each JSON
+                # text once so a JSON string such as "true" stays a string.
+                record = dict(row)
+                record["content"] = json.loads(record["content"])
+                metadata = record["node_metadata"]
+                record["node_metadata"] = None if metadata is None else json.loads(metadata)
+                shared[record["id"]] = record
+    return shared
+
+
+def _import_content_bytes(content: Any) -> str:
+    """Compare JSON without collapsing booleans into numeric values."""
+    return json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _import_message_differences(existing: dict[str, Any], raw: dict[str, Any]) -> tuple[str, ...]:
+    """Compare the fields the normal message upsert would replace."""
+    from lionagi.state.db import _pack_embedding
+
+    incoming = _msg_from_collection_entry(raw)
+    metadata = incoming["node_metadata"]
+    lion_class = (metadata or {}).get("lion_class", "") or "__unknown__"
+    stored_lion_class = existing["lion_class"] if existing["lion_class_id"] != 0 else "__unknown__"
+    differences = []
+    for field in ("content", "node_metadata", "role", "sender", "recipient", "channel"):
+        if _import_content_bytes(existing[field]) != _import_content_bytes(incoming[field]):
+            differences.append(field)
+    if _import_content_bytes(stored_lion_class) != _import_content_bytes(lion_class):
+        differences.append("lion_class")
+    if _pack_embedding(existing["embedding"]) != _pack_embedding(incoming["embedding"]):
+        differences.append("embedding")
+    return tuple(differences)
+
+
 async def _import_one_run(
     db: Any,
     run_id: str,
@@ -187,6 +291,19 @@ async def _import_one_run(
             except ValueError as exc:
                 raise ValueError(f"{branch_file.name}: message entry {index}: {exc}") from exc
         prepared_branches.append((branch_file, branch_data, [message for _, message in selected]))
+
+    # This is a preflight snapshot, not a concurrent-writer fence. A different
+    # session can attach a message after this read and before this import writes.
+    selected_messages = [message for _, _, messages in prepared_branches for message in messages]
+    shared = await _shared_import_messages(
+        db, run_id, [message["id"] for message in selected_messages]
+    )
+    for message in selected_messages:
+        message_id = message["id"]
+        if message_id in shared:
+            differences = _import_message_differences(shared[message_id], message)
+            if differences:
+                raise ImportMessageConflictError(message_id, differences)
 
     await db.create_progression(session_prog_id)
 
@@ -246,7 +363,10 @@ async def _import_one_run(
         branch_msg_ids: list[str] = []
         for raw_msg in ordered_msgs:
             msg = _msg_from_collection_entry(raw_msg)
-            await db.insert_message(msg)
+            # An identical shared row already belongs to another session;
+            # keep it intact rather than upserting it.
+            if msg["id"] not in shared:
+                await db.insert_message(msg)
             branch_msg_ids.append(msg["id"])
             total_messages += 1
 

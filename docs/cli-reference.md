@@ -924,7 +924,10 @@ notify:
 
 Or per submit: `notify` overrides the delivery command for one run (a JSON argv
 list), `notify_seat` fills the `{target}` placeholder, and `notify_sender` fills
-`{sender}`, naming the actor signing the notice. By default an explicit sender is
+`{sender}`, naming the actor signing the notice. A submission that names either
+but has no delivery command from `notify`, the environment or the settings still
+runs, and its submit handle carries a `notify_warning` saying nothing will be
+sent. By default an explicit sender is
 checked against the submitting directory, as before. A deployment that wants
 callers to attest from their run directories sets
 `LIONAGI_MCP_SENDER_ROOTS` to an OS-path-separated list of absolute paths where
