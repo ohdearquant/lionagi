@@ -212,6 +212,58 @@ async def test_write_arm_records_tokens_and_expiry_from_the_attempt_start(tmp_pa
     assert datetime.fromisoformat(expires) == NOW + HOUR
 
 
+async def test_a_write_deletes_rows_that_expired_more_than_a_day_earlier(tmp_path):
+    env = await make_env(tmp_path)
+    other = await env.ledger.reserve(
+        Scope("branch", uuid4(), "other"),
+        uuid4(),
+        quote(1),
+        (AccountSpec("gamma", "GAMMA_KEY", 100),),
+    )
+    await env.ledger.settle(other.attempt_id, ProvenNotSent())
+    rsv = await reserve(env, (ALPHA,))
+    env.now = NOW + timedelta(minutes=10)
+    put_warm(env.path, "alpha", cert="old", expires=NOW - timedelta(hours=26))
+    put_warm(env.path, "alpha", cert="recent", expires=NOW - timedelta(hours=24))
+    with closing(sqlite3.connect(env.path)) as connection:
+        connection.execute(
+            "INSERT INTO warm_prefix(provider, account, cert, stable_tokens, expires_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("other", "gamma", "old", 6, (NOW - timedelta(hours=26)).isoformat()),
+        )
+        connection.commit()
+
+    result = await env.ledger.settle(rsv.attempt_id, usage(1, read=2, write=4), cert="c1")
+
+    assert result == "settled"
+    rows = warm_rows(env.path)
+    assert ("alpha", "old") not in rows
+    assert ("alpha", "recent") in rows
+    assert ("alpha", "c1") in rows
+    with closing(sqlite3.connect(env.path)) as connection:
+        assert connection.execute(
+            "SELECT account, cert FROM warm_prefix WHERE provider = 'other'"
+        ).fetchall() == [("gamma", "old")]
+
+
+async def test_a_write_keeps_an_unexpired_row_whose_text_sorts_before_the_attempt(tmp_path):
+    """An expiry half an hour ahead at -10:00 reads as text about 9.5 hours before the attempt."""
+    env = await make_env(tmp_path)
+    rsv = await reserve(env, (ALPHA,))
+    env.now = NOW + timedelta(minutes=10)
+    offset = timezone(timedelta(hours=-10))
+    put_warm(
+        env.path, "alpha", cert="live", expires=(NOW + timedelta(minutes=30)).astimezone(offset)
+    )
+
+    result = await env.ledger.settle(rsv.attempt_id, usage(1, read=2, write=4), cert="c1")
+
+    assert result == "settled"
+    rows = warm_rows(env.path)
+    assert ("alpha", "live") in rows
+    assert ("alpha", "c1") in rows
+
+
 @pytest.mark.parametrize("flag", ["hour_after_key", "server_tools"])
 async def test_write_arm_leaves_stable_tokens_unknown_for_unreliable_counts(tmp_path, flag):
     env = await make_env(tmp_path)
@@ -624,6 +676,36 @@ async def test_version_one_ledger_without_the_warm_table_gains_it(tmp_path):
     assert warm_rows(env.path) == {}
     with closing(sqlite3.connect(env.path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+
+
+async def test_the_certificate_read_uses_its_index(tmp_path):
+    env = await make_env(tmp_path)
+    statement = "SELECT account, expires_at FROM warm_prefix WHERE provider = ? AND cert = ?"
+
+    with closing(sqlite3.connect(env.path)) as connection:
+        plan = [
+            row[3]
+            for row in connection.execute("EXPLAIN QUERY PLAN " + statement, ("anthropic", "c1"))
+        ]
+
+    assert any("warm_prefix_cert" in detail and "cert=?" in detail for detail in plan), plan
+
+
+async def test_a_ledger_whose_table_predates_the_indexes_gains_them(tmp_path):
+    env = await make_env(tmp_path)
+    with closing(sqlite3.connect(env.path)) as connection:
+        connection.execute("DROP INDEX IF EXISTS warm_prefix_cert")
+        connection.execute("DROP INDEX IF EXISTS warm_prefix_expiry")
+        connection.commit()
+
+    await CredentialLedger(env.path, clock=lambda: NOW).status("anthropic")
+
+    with closing(sqlite3.connect(env.path)) as connection:
+        names = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+    assert {"warm_prefix_cert", "warm_prefix_expiry"} <= names
 
 
 async def test_version_one_ledger_missing_a_base_table_is_refused(tmp_path):

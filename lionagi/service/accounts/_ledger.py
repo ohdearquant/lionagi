@@ -49,6 +49,9 @@ _LOGGER = logging.getLogger(__name__)
 # How long one ledger call waits for a worker thread before it is refused as busy. The
 # bound covers admission only; the SQLite lock wait is set by busy_timeout_s.
 _ADMISSION_BOUND_S = 5.0
+# Expired rows are deleted by text order with a margin wider than an offset moves the text (a day),
+# so an isoformat() row goes only after it expired; a row lost early only loses a routing hint.
+_WARM_PURGE_MARGIN = timedelta(hours=25)
 
 
 class _TimedCall(Generic[_T]):
@@ -247,6 +250,10 @@ def _record_warm_prefix(
             return
         stable, expiry = stored[0], max(stored_expiry, expires)
     connection.execute(
+        "DELETE FROM warm_prefix WHERE provider = ? AND expires_at < ?",
+        (provider, (started - _WARM_PURGE_MARGIN).astimezone(timezone.utc).isoformat()),
+    )
+    connection.execute(
         "INSERT OR REPLACE INTO warm_prefix(provider, account, cert, stable_tokens, expires_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (provider, account, cert, stable, expiry.isoformat()),
@@ -392,13 +399,23 @@ class CredentialLedger:
             )
         }
 
+    @staticmethod
+    def _index_names(connection: sqlite3.Connection) -> set[str]:
+        return {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
-        # Unlocked, these two reads can straddle another process's schema commit, so
-        # they only let a complete ledger through; every other answer is read again,
-        # together, under the write lock before anything is refused or created.
-        if connection.execute("PRAGMA user_version").fetchone()[0] == 1 and (
-            _TABLES | {"warm_prefix"}
-        ).issubset(self._table_names(connection)):
+        # Unlocked, these reads can straddle another process's schema commit, so
+        # they only let a complete ledger through, warm-prefix indexes included; every
+        # other answer is read again, together, under the write lock before anything
+        # is refused or created.
+        if (
+            connection.execute("PRAGMA user_version").fetchone()[0] == 1
+            and (_TABLES | {"warm_prefix"}).issubset(self._table_names(connection))
+            and {"warm_prefix_cert", "warm_prefix_expiry"}.issubset(self._index_names(connection))
+        ):
             return
 
         # A ledger written before warm-prefix tracking is still version 1 and has none
@@ -415,6 +432,10 @@ class CredentialLedger:
                 FOREIGN KEY (provider, account) REFERENCES account(provider, name)
             )
             """
+        warm_prefix_indexes = (
+            "CREATE INDEX IF NOT EXISTS warm_prefix_cert ON warm_prefix (provider, cert)",
+            "CREATE INDEX IF NOT EXISTS warm_prefix_expiry ON warm_prefix (provider, expires_at)",
+        )
 
         with _transaction(connection):
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -423,6 +444,8 @@ class CredentialLedger:
                 if not _TABLES.issubset(tables):
                     raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
                 connection.execute(warm_prefix_ddl)
+                for statement in warm_prefix_indexes:
+                    connection.execute(statement)
                 return
             if version != 0 or tables:
                 raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
@@ -523,6 +546,8 @@ class CredentialLedger:
                 "ON adjustment(provider, account, month_utc)"
             )
             connection.execute(warm_prefix_ddl)
+            for statement in warm_prefix_indexes:
+                connection.execute(statement)
             connection.execute("PRAGMA user_version = 1")
 
     @staticmethod

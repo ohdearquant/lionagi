@@ -262,10 +262,17 @@ selection reads it: the D4 ledger.
        PRIMARY KEY (provider, account, cert),
        FOREIGN KEY (provider, account) REFERENCES account (provider, name)
    );
+   CREATE INDEX IF NOT EXISTS warm_prefix_cert ON warm_prefix (provider, cert);
+   CREATE INDEX IF NOT EXISTS warm_prefix_expiry ON warm_prefix (provider, expires_at);
    ```
 
+   The certificate read (Decision 5) filters on `(provider, cert)`, which the key's leading columns
+   do not cover, so without `warm_prefix_cert` it reads every row the provider holds.
+   `warm_prefix_expiry` serves the purge in Decision 3.
+
    Every time the amendment reads or writes is parsed with `datetime.fromisoformat` and compared as
-   an aware datetime in Python, never by SQLite date functions or by text order. The ledger's own
+   an aware datetime in Python, never by SQLite date functions or by text order; the one exception
+   is the purge in Decision 3, which only deletes and keeps a margin for it. The ledger's own
    values are `isoformat()` of UTC datetimes, and those sort in time order as text, zero microseconds
    included. The parse is what keeps the comparison right for any other offset a stored value can
    carry. A stored `expires_at` counts only when it is text and `fromisoformat` returns an aware
@@ -276,7 +283,7 @@ selection reads it: the D4 ledger.
    fraction lengths and basic-format dates, so such a value is absent on 3.10 only. The ledger
    writes only `isoformat()` of aware UTC datetimes.
 3. **Writing a row.** Settle writes only inside its open-to-settled branch (`_settle_sync`,
-   `_ledger.py:886-934`), only when the evidence is `CompleteUsage` (D5) with cost at or under the
+   `_ledger.py:911-959`), only when the evidence is `CompleteUsage` (D5) with cost at or under the
    ceiling, only when settle was given the certificate, and only when the account is not blocked
    when that transaction reads it. The block is read in the branch where cost is at or under the
    ceiling, so no later statement in the transaction sets one. Then:
@@ -290,7 +297,7 @@ selection reads it: the D4 ledger.
      A request with a server tool (`_server_tools`, `_prompt_cache.py:184-189`) also stores NULL:
      the provider sums usage over its internal iterations, so the sum is not a length. The
      prompt-cache logger is blind to those requests for the same reason
-     (`_prompt_cache.py:462`).
+     (`lionagi/service/_prompt_cache.py:462`).
    - **Read arm.** `cache_write_1h_tokens == 0`, a row exists for the account and certificate, its
      `stable_tokens` is not NULL, and `cache_read_input_tokens == stable_tokens`: the request read
      exactly the entry that ends at the key block, because a read is a prefix of the request, and the
@@ -315,6 +322,13 @@ selection reads it: the D4 ledger.
    stored row that counts as absent under Decision 2 is replaced whole: the write sets both
    fields, a NULL `stable_tokens` included.
 
+   Before the upsert the write deletes the provider's rows whose `expires_at` sorts as text before
+   the attempt's `created_at` less 25 hours, written as UTC `isoformat()` (`_ledger.py:252-255`,
+   the margin at `:54`). An offset moves an `isoformat()` value's text by less than a day from its
+   UTC time, so a row in that form is deleted only after it expired. A value in any other form was
+   not written by the ledger, and a row deleted early loses only a routing preference. Without the
+   purge the table would keep a row per account and certificate for every conversation it has seen.
+
    No other outcome writes a row: not a repeated or conflicting settlement, not a ceiling block, not
    an attempt settled without the certificate (an open attempt settled by another process), and not
    an attempt on an account blocked when it settles. A stable prefix below the provider's minimum
@@ -326,22 +340,22 @@ selection reads it: the D4 ledger.
 4. **Clearing.** In the transaction that records the outcome, the ledger deletes every
    `warm_prefix` row for the provider and account when it records:
    - an `UnknownOutcome` on an open attempt with any reason but `cancelled` and `stream_closed` (the
-     still-open branch, `_ledger.py:859-868`), whether or not an earlier reason already stands:
+     still-open branch, `_ledger.py:884-893`), whether or not an earlier reason already stands:
      `auth_required`, `rate_limited`, `provider_error`, `request_rejected`, `transport_error`,
      `usage_incomplete`, `stream_error`, `stream_truncated`;
    - a `ProvenNotSent` the caller did not cause, settled in the open-to-settled branch
-     (`:886-934`): an unresolved key in `begin` (`_router.py:146-148`) and a transport failure
+     (`:911-959`): an unresolved key in `begin` (`_router.py:146-148`) and a transport failure
      before the request entered (`messages.py:622`, `:1117`). `ProvenNotSent`
      (`lionagi/service/accounts/_types.py:141-150`) gains `caller_cancelled: bool = False`. It is
      set by the two cancellation handlers (`messages.py:586`, `:1085`) and by `begin` when the
      exception at `_router.py:154-157` is the cancellation class or `GeneratorExit` (a consumer that
      closes its own stream during `begin`). The recorded outcome stays `not_sent`;
-   - a block: `settlement_conflict` (`_ledger.py:879`), `ceiling_exceeded` (`:915`) and every
-     `block()` (`_block_sync`, `:962`), `auth_required` included;
-   - `clear_block()` (`:1217`) on an account whose `block_reason` is not NULL when that transaction
+   - a block: `settlement_conflict` (`_ledger.py:904`), `ceiling_exceeded` (`:940`) and every
+     `block()` (`_block_sync`, `:987`), `auth_required` included;
+   - `clear_block()` (`:1242`) on an account whose `block_reason` is not NULL when that transaction
      reads it. A process without this amendment can block an account without deleting its rows, so
      the re-admission deletes them. A `clear_block()` on an account that is not blocked deletes
-     nothing, and a repeat of an adjustment already recorded returns before that read (`:1229-1233`) and
+     nothing, and a repeat of an adjustment already recorded returns before that read (`:1254-1258`) and
      deletes nothing.
 
    It does not clear on a complete settlement. It does not clear on `cancelled`, `stream_closed` or
@@ -359,7 +373,7 @@ selection reads it: the D4 ledger.
    candidate. Without the clear, its row would keep it first in W for every new scope with that
    prefix, and a bound scope never moves. The clear removes that preference and nothing else: D3's
    order still binds the failing account when it ranks first, as it does today. A `ProvenNotSent`
-   settles at cost zero (`_ledger.py:821-823`) and an unknown outcome keeps only its attempt's quote
+   settles at cost zero (`_ledger.py:846-848`) and an unknown outcome keeps only its attempt's quote
    open, so a failure need not move the account down that order. A request already in flight when
    its account failed, whose complete settlement with a one-hour write commits after the failure's,
    writes a row again. That settlement is evidence the account served the request, not that it
@@ -370,12 +384,12 @@ selection reads it: the D4 ledger.
    Clearing more than needed (a second reason on one attempt, an older failure deleting a fresher
    row) costs only writes.
 5. **Selection for a new scope.** The candidate set is unchanged: configured, unblocked accounts
-   with room for the attempt (`_fits`, `_ledger.py:578-580`).
+   with room for the attempt (`_fits`, `_ledger.py:603-605`).
    - Let W be the candidates holding a row for the request's certificate whose `expires_at` is later
      than the reservation's now, and whose committed spend including this attempt satisfies
      `10 * (spent + opened + ceiling) <= 9 * budget`. Equality is inside W. The values are the
-     Python integers `_fits` uses: `spent` and `opened` from `_spend_parts` (`:716-720`), the quote's
-     ceiling, and `spec.budget_nusd`, which equals the month row whenever one exists (`:657`).
+     Python integers `_fits` uses: `spent` and `opened` from `_spend_parts` (`:741-745`), the quote's
+     ceiling, and `spec.budget_nusd`, which equals the month row whenever one exists (`:682`).
    - If W is non-empty, the scope binds the first of W under D3's order.
    - Otherwise it binds the first of all candidates under D3's order, as before. A warm candidate
      above the bound is not in W and stays a candidate under that order, so it is bound again when
@@ -399,14 +413,15 @@ selection reads it: the D4 ledger.
      distinct scopes in flight, then account name. Unknown attempts remain open for ranking and
      admission.
 7. **Schema.** `user_version` stays 1. The table is not added to `_TABLES`.
-   - The unlocked fast path in `_ensure_schema` (`_ledger.py:399-402`) returns only when the
-     version is 1 and `_TABLES | {"warm_prefix"}` is present.
-   - The locked version-0 branch, which a fresh file takes, creates the table beside the base
-     tables and before `PRAGMA user_version = 1` (`:526`), in the same transaction.
+   - The unlocked fast path in `_ensure_schema` (`_ledger.py:414-419`) returns only when the
+     version is 1, `_TABLES | {"warm_prefix"}` is present and both warm-prefix indexes exist.
+   - The locked version-0 branch, which a fresh file takes, creates the table and its indexes beside
+     the base tables and before `PRAGMA user_version = 1` (`:551`), in the same transaction.
    - The locked version-1 branch requires `_TABLES` as today and then runs the
-     `CREATE TABLE IF NOT EXISTS` statement before it returns. A version-1 file missing a base table
-     still refuses with `LEDGER_UNAVAILABLE`.
-   - So every connection `_connect` returns (`_ledger.py:366-384`) holds the table. Every connection
+     `CREATE TABLE IF NOT EXISTS` statement and the two `CREATE INDEX IF NOT EXISTS` statements
+     before it returns (`:446-449`), so a file whose table predates the indexes gains them. A
+     version-1 file missing a base table still refuses with `LEDGER_UNAVAILABLE`.
+   - So every connection `_connect` returns (`_ledger.py:373-391`) holds the table. Every connection
      is opened writable, so the first open after an upgrade creates it under the lock, and no reader
      needs a write it could not already make.
    - An older lionagi opens a file that has the table, because its check admits a superset of
@@ -417,7 +432,7 @@ selection reads it: the D4 ledger.
 8. **Operations.**
    - D4's `reserve(scope, attempt_id, quote, accounts)` becomes
      `reserve(scope, attempt_id, quote, accounts, *, cert=None)`; it reads the index when the
-     reservation inserts the scope's binding (`_ledger.py:732-755`). `Reservation` is unchanged: no
+     reservation inserts the scope's binding (`_ledger.py:757-780`). `Reservation` is unchanged: no
      later step needs to know whether the scope was new, because the read arm applies to every
      settled attempt.
    - `settle(attempt_id, evidence)` becomes `settle(attempt_id, evidence, *, cert=None,
@@ -464,7 +479,7 @@ selection reads it: the D4 ledger.
      `TimeoutError`, and a status-code branch delivers the cancellation only if closing the HTTP
      session checkpoints. When the cancellation fires first, the cancellation handler's second
      settlement records nothing: the first reason on an open attempt stands, and a settled attempt
-     is left as it is (`_ledger.py:857-865`). The comment at `messages.py:513-516` and `:986-991` is
+     is left as it is (`_ledger.py:882-890`). The comment at `messages.py:513-516` and `:986-991` is
      rewritten: both writes are shielded, and the block still goes first because a ledger error on
      the first write stops the second, and losing the attempt's reason only keeps its ceiling held.
    - The shields hold against AnyIO scope cancellation only. A native `task.cancel()` is not held:
@@ -559,7 +574,7 @@ selection reads it: the D4 ledger.
   today, each paying a write on the cold account it lands on, until a one-hour write settles and
   writes a row. A row that lapsed, rather than never appearing, also comes back with the next
   stable-length read on its account. A failure after the attempt settled (a transport error after a
-  stream's final usage) clears nothing: the attempt is already settled (`_ledger.py:856-858`), and
+  stream's final usage) clears nothing: the attempt is already settled (`_ledger.py:881-883`), and
   the account served the request.
 - Not guaranteed: a key that names a shorter one-hour entry finds a row written under the longer
   key that contains it. The row records the last one-hour block of the request that wrote it.
@@ -665,6 +680,10 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
   not in W, not refreshed by a stable read, replaced by a write (a NULL `stable_tokens` included),
   and nothing refuses. Both on Python 3.10 and 3.12. A stored value with a `Z` suffix counts as
   absent on 3.10 and compares by time on 3.12; every value the ledger writes ends in `+00:00`.
+- Index and purge: the certificate read's query plan uses `warm_prefix_cert`. A write deletes the
+  provider's row that expired 26 hours before the attempt and keeps one that expired 24 hours
+  before it, another provider's old row and an unexpired row at `-10:00` whose text sorts about
+  9.5 hours before the attempt.
 - Month boundary: a row written before a credit-month rollover stays in W after it, with the bound
   computed on the new month's spend.
 - The bound: a warm candidate for which `10 * (spent + opened + ceiling) > 9 * budget` is excluded
@@ -742,8 +761,9 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
 - `RouterAttempt` built positionally with four arguments still constructs, with `cert` None,
   `hour_after_key` false and `server_tools` false.
 - A version-0 (fresh) file gains the table before `user_version` is set; a version-1 ledger without
-  it opens and gains it under the lock; a version-1 file missing a base table still refuses; an
-  older reader admits a file that has it.
+  it opens and gains it under the lock; a version-1 file whose table predates the indexes gains
+  them; a version-1 file missing a base table still refuses; an older reader admits a file that
+  has it.
 - Two router instances on one ledger file see each other's rows and clears.
 - Mutations: replacing the W preference with the plain order turns the first test red; dropping the
   length comparison from the read arm turns the one-token-longer and one-token-shorter cases red;
@@ -757,7 +777,9 @@ Tests under `tests/service/accounts/` and `tests/providers/anthropic/`:
   pending-cancellation `usage_incomplete` case red; removing the checkpoint from the transport branch
   turns its `TimeoutError` arm red; ignoring the error event in the `GeneratorExit` handler turns the
   close-after-error case red; dropping the `block_reason` read from `clear_block()` turns the
-  not-blocked case red.
+  not-blocked case red; dropping the `warm_prefix_cert` statement turns the query-plan and
+  predates-the-indexes tests red; dropping the purge turns the 26-hour row red; a zero margin turns
+  the 24-hour row and the `-10:00` row red.
 
 KPI: the same per-route census on the first process of that service started on code carrying this
 amendment. Like for like: new-scope one-hour writes, 54 and 59 measured, fall toward the replay's 9

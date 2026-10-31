@@ -787,7 +787,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         usage: dict[str, Any] = {}
         served_model = None
         request_id = None
-        settled = False
+        settled = False  # set before each settlement write, so no handler writes a second
         saw_error_event = False
         saw_final_usage = False
         start_models: set[str] = set()
@@ -1026,8 +1026,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                         ) from None
 
-                    # Only a failure of the byte source itself is held back here: an error
-                    # raised while a received event is handled is not a transport error.
+                    # Only a failure of the byte source itself is held back, so the events it
+                    # completed are dispatched first; an error handling an event raises at once.
                     byte_stream = response.aiter_bytes().__aiter__()
                     transport_error: Exception | None = None
                     while True:
