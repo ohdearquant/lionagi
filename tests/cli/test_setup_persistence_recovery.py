@@ -100,6 +100,10 @@ async def test_cancellation_recovers_committed_session(
     monkeypatch.setattr(db, "get_session", read)
     monkeypatch.setattr(db, "create_branch", create_branch)
     monkeypatch.setattr(isolated_setup, "_open_shared_db", open_db)
+    # Recovery closes the row under a deadline a loaded runner can overrun. This test checks what
+    # recovery does to the committed row, not how fast the runner is, so it runs under a bound
+    # a slow runner can still meet.
+    monkeypatch.setattr(isolated_setup, "_SETUP_RECOVERY_TIMEOUT_SECONDS", 30)
     task = asyncio.create_task(isolated_setup.setup_agent_persist(fake_branch(), share_db=False))
     try:
         await asyncio.wait_for(entered.wait(), 5)
