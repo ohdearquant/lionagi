@@ -4647,3 +4647,34 @@ async def test_a_prebuilt_event_sent_twice_is_keyed_by_the_body_of_each_send(mon
     certificates = {_system_certificate(call["json"]) for call in transport.calls}
     assert len(certificates) == 1
     assert _stored_certificates(path) == certificates
+
+
+@pytest.mark.asyncio
+async def test_a_second_call_with_the_same_stable_prefix_binds_the_account_that_wrote_it(
+    monkeypatch, tmp_path
+):
+    """Two calls with the same stable prefix on a fresh ledger with two accounts, each call on a
+    new conversation. Without a one-hour cache write nothing is warm, so the second call is placed
+    by pace and lands on the second account. When the first call writes a one-hour cache entry for
+    the prefix on the first account, the second call is bound to that account although the second
+    account is first by pace."""
+
+    async def run_two_calls(directory, response_options):
+        directory.mkdir()
+        path = _install_accounts(monkeypatch, directory)
+        warm_after_first = None
+        for turn in range(2):
+            model, _ = _model(monkeypatch, [_response(**response_options)])
+            model.endpoint.config.max_retries = 0
+            await model.endpoint.call(copy.deepcopy(HOUR_REQUEST))
+            if turn == 0:
+                warm_after_first = [row[0] for row in _warm_rows(path)]
+        return warm_after_first, [row[1] for row in _attempts(path)]
+
+    warm, accounts = await run_two_calls(tmp_path / "cold", {})
+    assert warm == []
+    assert accounts == ["primary", "secondary"]
+
+    warm, accounts = await run_two_calls(tmp_path / "warm", {"usage": _hour_write_usage()})
+    assert warm == ["primary"]
+    assert accounts == ["primary", "primary"]
