@@ -875,7 +875,7 @@ environments) stays out of scope.
 |---|---|
 | Declaration and activation | D1: an optional AppSettings account list; no second settings hierarchy. |
 | Secret custody | D2: strict named env → dotenv → existing declared lookup, at dispatch only. |
-| Assignment | D3: bind a conversation once; rank new conversations by committed budget utilization. |
+| Assignment | D3: bind a conversation once; a new conversation prefers an account where its stable prefix is warm, then ranks by committed budget utilization. |
 | Durability | D4: one local ledger file; selection, reservation and settlement are transactions. |
 | Admission and cost | D5: conservative priced ceilings; complete provider usage settles once. |
 | Errors and compatibility | D6: same-account retries, explicit uncertainty, unchanged unconfigured path. |

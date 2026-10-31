@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
+import anyio
 import httpx
 import pytest
 
@@ -23,6 +24,7 @@ import lionagi.service.accounts._router as router_module
 from lionagi.config import AppSettings
 from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.accounts._credentials import CredentialSources
+from lionagi.service.accounts._ledger import CredentialLedger
 from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode, Scope
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
@@ -3426,6 +3428,195 @@ class _FailingResponse:
         self.closed = True
 
 
+# --- a failed attempt clears the account's warm rows; a pending cancellation never decides that
+
+HOUR_REQUEST = {
+    **REQUEST,
+    "system": [
+        {
+            "type": "text",
+            "text": "Stable instructions that every call of this test repeats. " * 40,
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ],
+}
+# The transport answers after the caller's deadline and without yielding to the event loop, so
+# the cancellation is still pending when the attempt's outcome is recorded.
+DEADLINE = 0.25
+TRANSPORT_DELAY = 0.35
+
+
+class _LateSession(StubSession):
+    def _request(self, method, url, **kwargs):
+        time.sleep(TRANSPORT_DELAY)
+        return super()._request(method, url, **kwargs)
+
+
+class _HangingEntry:
+    """A session that never finishes opening: the request has not entered when it is cancelled."""
+
+    async def __aenter__(self):
+        await anyio.sleep_forever()
+
+    async def __aexit__(self, *_):
+        return False
+
+
+def _hour_write_usage(write: int = 2000) -> dict:
+    return {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": write,
+        "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": write},
+    }
+
+
+def _warm_rows(path):
+    with sqlite3.connect(path) as connection:
+        return connection.execute(
+            "SELECT account, cert FROM warm_prefix ORDER BY account"
+        ).fetchall()
+
+
+def _block_reason(path, account):
+    with sqlite3.connect(path) as connection:
+        return connection.execute(
+            "SELECT block_reason FROM account WHERE provider = 'anthropic' AND name = ?",
+            (account,),
+        ).fetchone()[0]
+
+
+async def _prime(monkeypatch, tmp_path, responses):
+    """A routed model whose first call writes a one-hour warm row; later calls take ``responses``."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_response(usage=_hour_write_usage()), *responses])
+    model.endpoint.config.max_retries = 0
+    await model.endpoint.call(HOUR_REQUEST)
+    rows = _warm_rows(path)
+    assert len(rows) == 1, rows
+    return path, model, transport, rows
+
+
+def _answer_late(model, transport):
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: _LateSession(
+        transport, timeout=timeout
+    )
+
+
+class _ShieldedLateSession(StubSession):
+    """Answers after the caller's deadline, from a shielded wait: the deadline passes while the
+    request is in flight and its cancellation is still pending when the response arrives."""
+
+    async def request(self, method, url, **kwargs):
+        with anyio.CancelScope(shield=True):
+            await anyio.sleep(TRANSPORT_DELAY)
+        return await super().request(method, url, **kwargs)
+
+
+def _answer_late_shielded(model, transport):
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: (
+        _ShieldedLateSession(transport, timeout=timeout)
+    )
+
+
+async def _send(model, streamed):
+    if streamed:
+        async for _ in model.endpoint.stream(HOUR_REQUEST):
+            pass
+    else:
+        await model.endpoint.call(HOUR_REQUEST)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+@pytest.mark.parametrize(
+    ("status", "outcome", "blocked"),
+    [
+        (429, "rate_limited", None),
+        (401, "auth_required", "auth_required"),
+        (500, "provider_error", None),
+        (400, "request_rejected", None),
+    ],
+    ids=["429", "401", "500", "400"],
+)
+async def test_a_pending_cancellation_is_delivered_after_a_failed_status_is_recorded(
+    monkeypatch, tmp_path, streamed, status, outcome, blocked
+):
+    path, model, transport, _ = await _prime(
+        monkeypatch, tmp_path, [StubResponse(status, {"error": CANARY})]
+    )
+    _answer_late(model, transport)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(DEADLINE):
+            await _send(model, streamed)
+
+    attempt = _attempts(path)[-1]
+    assert attempt[4] == outcome, attempt
+    assert _block_reason(path, attempt[1]) == blocked
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+async def test_a_pending_cancellation_is_delivered_after_a_transport_failure_is_recorded(
+    monkeypatch, tmp_path, streamed
+):
+    failing = _FailingResponse(httpx.ConnectError("connection dropped"))
+    path, model, transport, _ = await _prime(monkeypatch, tmp_path, [failing])
+    _answer_late(model, transport)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(DEADLINE):
+            await _send(model, streamed)
+
+    attempt = _attempts(path)[-1]
+    assert attempt[4] == "transport_error", attempt
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+async def test_a_pending_cancellation_is_delivered_when_the_ledger_refuses_a_settlement(
+    monkeypatch, tmp_path
+):
+    """A ledger refusal on the call path is raised as a routed error, but a cancellation
+    already pending when it happens reaches the caller instead."""
+    path, model, transport, _ = await _prime(
+        monkeypatch, tmp_path, [_response(usage=_hour_write_usage())]
+    )
+    _answer_late(model, transport)
+
+    async def refuse(self, *args, **kwargs):
+        # Like the real write, the refusal runs shielded: the deadline passes while it runs
+        # and the cancellation is left pending when the error is raised.
+        with anyio.CancelScope(shield=True):
+            await anyio.sleep(0.05)
+        raise AccountRoutingError(RouterErrorCode.LEDGER_BUSY)
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_response", refuse)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(DEADLINE):
+            await model.endpoint.call(HOUR_REQUEST)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+async def test_a_cancellation_before_the_request_enters_leaves_the_warm_rows(
+    monkeypatch, tmp_path, streamed
+):
+    path, model, _, rows = await _prime(monkeypatch, tmp_path, [])
+    model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: _HangingEntry()
+
+    with anyio.move_on_after(DEADLINE):
+        await _send(model, streamed)
+
+    assert len(_attempts(path)) == 2
+    assert _attempts(path)[-1][4] != "transport_error"
+    assert _warm_rows(path) == rows
+
+
 @pytest.mark.asyncio
 async def test_an_unreadable_body_is_not_chained_to_the_error(monkeypatch, tmp_path):
     from lionagi.service.connections.endpoint import _RoutedNoRetryError
@@ -4100,3 +4291,259 @@ async def test_a_failed_ledger_write_does_not_replace_the_cancellation(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# --- a pending cancellation at a 200, a consumer that closes the stream, a stream already settled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usage", "outcome", "blocked"),
+    [
+        ({"input_tokens": 10, "output_tokens": 5}, "usage_incomplete", None),
+        (
+            {**_hour_write_usage(), "output_tokens": 10_000_000},
+            "complete",
+            "ceiling_exceeded",
+        ),
+    ],
+    ids=["usage_incomplete", "over_the_ceiling"],
+)
+async def test_a_pending_cancellation_is_delivered_after_a_200_is_settled(
+    monkeypatch, tmp_path, usage, outcome, blocked
+):
+    """A 200 whose usage cannot be priced, or prices over the ceiling, still clears the warm
+    rows (and blocks the account in the second case) when the deadline has already passed:
+    the response arrives after the deadline, so the cancellation is pending while it is
+    settled. The call returns the response; the caller's next checkpoint raises the timeout."""
+    path, model, transport, _ = await _prime(monkeypatch, tmp_path, [_response(usage=usage)])
+    _answer_late_shielded(model, transport)
+
+    started = anyio.current_time()
+    returned_after: list[float] = []
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(DEADLINE):
+            await model.endpoint.call(HOUR_REQUEST)
+            returned_after.append(anyio.current_time() - started)
+            await anyio.sleep(0)
+    assert returned_after and returned_after[0] > DEADLINE
+
+    attempt = _attempts(path)[-1]
+    assert attempt[4] == outcome, attempt
+    assert _block_reason(path, attempt[1]) == blocked
+    assert _warm_rows(path) == []
+
+
+_ERROR_EVENT = {"type": "error", "error": {"type": "overloaded_error", "message": "x"}}
+_HOUR_MESSAGE_START = {
+    "type": "message_start",
+    "message": {
+        "id": "msg_s",
+        "model": MODEL,
+        "usage": {**_hour_write_usage(), "output_tokens": 0},
+    },
+}
+_FINAL_COUNT = {
+    "type": "message_delta",
+    "delta": {"stop_reason": "end_turn"},
+    "usage": {"output_tokens": 5},
+}
+_MESSAGE_STOP = {"type": "message_stop"}
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_closing_the_stream_after_an_error_event_records_stream_error(
+    monkeypatch, tmp_path
+):
+    path, model, _, _ = await _prime(
+        monkeypatch,
+        tmp_path,
+        [StubResponse(pieces=[_sse([_HOUR_MESSAGE_START, _ERROR_EVENT, _PARTIAL_TEXT])])],
+    )
+
+    stream = model.endpoint.stream(HOUR_REQUEST)
+    async for chunk in stream:
+        if chunk.type == "error":
+            break
+    else:
+        raise AssertionError("the stream ended without its error chunk")
+    await stream.aclose()
+
+    attempt = _attempts(path)[-1]
+    assert attempt[2:] == ("open", None, "stream_error"), attempt
+    assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_closing_the_stream_without_an_error_event_keeps_the_warm_rows(
+    monkeypatch, tmp_path
+):
+    path, model, _, rows = await _prime(
+        monkeypatch,
+        tmp_path,
+        [StubResponse(pieces=[_sse([_HOUR_MESSAGE_START, _PARTIAL_TEXT])])],
+    )
+
+    stream = model.endpoint.stream(HOUR_REQUEST)
+    await stream.__anext__()
+    await stream.aclose()
+
+    attempt = _attempts(path)[-1]
+    assert attempt[2:] == ("open", None, "stream_closed"), attempt
+    assert _warm_rows(path) == rows
+
+
+def _count_ledger_settlements(monkeypatch) -> list:
+    """Record the evidence of every settlement the ledger is asked to write from here on."""
+    written: list = []
+    original = CredentialLedger.settle
+
+    async def settle(self, attempt_id, evidence, **kwargs):
+        written.append(evidence)
+        return await original(self, attempt_id, evidence, **kwargs)
+
+    monkeypatch.setattr(CredentialLedger, "settle", settle)
+    return written
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_after_complete_usage_settled_clears_nothing(
+    monkeypatch, tmp_path
+):
+    pieces = [
+        _sse([_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP]),
+        httpx.ReadError("connection dropped"),
+    ]
+    path, model, _, rows = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=pieces)])
+    written = _count_ledger_settlements(monkeypatch)
+
+    with pytest.raises(Exception):
+        async for _ in model.endpoint.stream(HOUR_REQUEST):
+            pass
+
+    attempt = _attempts(path)[-1]
+    assert attempt[2] == "settled" and attempt[4] == "complete", attempt
+    assert len(written) == 1, written
+    assert _block_reason(path, attempt[1]) is None
+    assert _warm_rows(path) == rows
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_inside_an_unterminated_event_does_not_dispatch_it(
+    monkeypatch, tmp_path
+):
+    """An event cut off before its blank line is a truncated event: the message_stop in it is
+    never seen, so the attempt settles as a transport failure."""
+    unterminated = _sse([_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP])[:-2]
+    assert not unterminated.endswith(b"\n\n")
+    pieces = [unterminated, httpx.ReadError("connection dropped")]
+    path, model, _, _ = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=pieces)])
+    written = _count_ledger_settlements(monkeypatch)
+
+    with pytest.raises(Exception):
+        async for _ in model.endpoint.stream(HOUR_REQUEST):
+            pass
+
+    attempt = _attempts(path)[-1]
+    assert attempt[2:] == ("open", None, "transport_error"), attempt
+    assert len(written) == 1, written
+
+
+@pytest.mark.asyncio
+async def test_a_key_prefix_held_when_the_transport_fails_is_never_delivered_or_stored(
+    monkeypatch, tmp_path
+):
+    """The first half of the key is the last thing received before the connection drops: it
+    sits in the redactor's held tail, and nothing the consumer or the store gets completes it."""
+    half = len(CANARY) // 2
+    cut_event = (
+        b'data: {"type": "content_block_delta", "index": 0, '
+        b'"delta": {"type": "text_delta", "text": "' + CANARY[:half].encode()
+    )
+    pieces = [
+        _sse([_HOUR_MESSAGE_START, _PARTIAL_TEXT]),
+        cut_event,
+        httpx.ReadError("connection dropped"),
+    ]
+    path, model, _, _ = await _prime(monkeypatch, tmp_path, [StubResponse(pieces=pieces)])
+
+    chunks = []
+    with pytest.raises(Exception):
+        async for chunk in model.endpoint.stream(HOUR_REQUEST):
+            chunks.append(chunk)
+
+    received = _all_chunk_text(chunks)
+    assert "partial" in received
+    assert CANARY not in received
+    assert CANARY[:half] not in received
+    with sqlite3.connect(path) as connection:
+        stored = "\n".join(connection.iterdump())
+    assert CANARY not in stored
+    assert CANARY[:half] not in stored
+    attempt = _attempts(path)[-1]
+    assert attempt[2:] == ("open", None, "transport_error"), attempt
+
+
+class _UnwindFailingSession(StubSession):
+    """A session whose stream fails to close, the way a dropped connection can."""
+
+    @asynccontextmanager
+    async def stream(self, method, url, **kwargs):
+        response = self._request(method, url, **kwargs)
+        try:
+            yield response
+        finally:
+            response.closed = True
+            raise RuntimeError("closing the connection failed")
+
+
+async def _stream_past_settlement(model):
+    """A suspended stream that has already yielded content sent after its message_stop."""
+    stream = model.endpoint.stream(HOUR_REQUEST)
+    async for chunk in stream:
+        if "partial" in str(chunk.content or ""):
+            return stream
+    raise AssertionError("the stream ended before the content that follows its settlement")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unwind", ["close", "raise"])
+@pytest.mark.parametrize(
+    ("events", "state", "outcome"),
+    [
+        ([_HOUR_MESSAGE_START, _MESSAGE_STOP, _PARTIAL_TEXT], "open", "usage_incomplete"),
+        ([_HOUR_MESSAGE_START, _FINAL_COUNT, _MESSAGE_STOP, _PARTIAL_TEXT], "settled", "complete"),
+    ],
+    ids=["after_unknown_usage", "after_complete_usage"],
+)
+async def test_unwinding_a_stream_that_already_settled_settles_nothing_more(
+    monkeypatch, tmp_path, unwind, events, state, outcome
+):
+    """The consumer closing the stream, or the close itself failing, after message_stop has
+    settled the attempt leaves its outcome and the account's warm rows as they were."""
+    path, model, transport, _ = await _prime(
+        monkeypatch, tmp_path, [StubResponse(pieces=[_sse(events)])]
+    )
+    if unwind == "raise":
+        model.endpoint._create_http_session = lambda client_kwargs=None, timeout=None: (
+            _UnwindFailingSession(transport, timeout=timeout)
+        )
+    written = _count_ledger_settlements(monkeypatch)
+
+    stream = await _stream_past_settlement(model)
+    settled_row = _attempts(path)[-1]
+    settled_rows = _warm_rows(path)
+    assert settled_row[2] == state and settled_row[4] == outcome, settled_row
+    settlements = len(written)
+
+    if unwind == "close":
+        await stream.aclose()
+    else:
+        try:
+            await stream.aclose()
+        except Exception:  # noqa: S110 - only what is recorded afterwards is under test
+            pass
+
+    assert len(written) == settlements, written
+    assert _attempts(path)[-1] == settled_row
+    assert _warm_rows(path) == settled_rows
