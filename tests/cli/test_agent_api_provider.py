@@ -1585,6 +1585,191 @@ async def test_the_run_record_of_another_failed_round_has_no_stop_reason(leg, tm
     assert "the answer had no text" in manifest["error"]
 
 
+class _OfflineEncoding:
+    """A stand-in for the tiktoken encoding: about one token per four characters."""
+
+    def encode(self, text, **_kwargs):
+        return [0] * (len(text) // 4 + 1)
+
+
+@pytest.fixture
+def offline_tokens(monkeypatch):
+    """Count request tokens without fetching the encoding file from the network."""
+    import tiktoken
+
+    monkeypatch.setattr(tiktoken, "get_encoding", lambda _name: _OfflineEncoding())
+
+
+_STOP_DETAILS = {
+    "type": "refusal",
+    "category": "cyber",
+    "explanation": "declined by the provider's policy",
+}
+
+
+def _refused_with(**fields) -> dict:
+    """A refused Anthropic response that also carries ``fields``."""
+    return {**_refused(), **fields}
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+async def test_a_refused_turn_with_stop_details_fails_as_a_nonretryable_provider_refusal(
+    leg, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.providers._provider_errors import ProviderSafetyError
+    from lionagi.state.reasons import RunReasons
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _refused_with(stop_details=_STOP_DETAILS)])
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert isinstance(raised.value.__cause__, ProviderSafetyError)
+    assert str(raised.value.__cause__) == _REFUSED_REASON
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert summary == f"ProviderSafetyError: {_REFUSED_REASON}"
+    assert raised.value.details == {
+        "continued": agent_mod._API_ROUND_RESUMES,
+        "stop_reason": "refusal",
+        "stop_details": _STOP_DETAILS,
+    }
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == "refusal"
+    assert manifest["stop_details"] == _STOP_DETAILS
+    assert "ProviderSafetyError" in manifest["error"]
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"stop_details": None}, {"stop_details": "declined"}, {"stop_details": {}}],
+    ids=["absent", "null", "not-an-object", "empty-object"],
+)
+async def test_a_refused_turn_without_stop_details_has_the_same_reason_and_no_such_field(
+    extra, leg, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _refused_with(**extra)])
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert summary == f"ProviderSafetyError: {_REFUSED_REASON}"
+    assert raised.value.details == {
+        "continued": agent_mod._API_ROUND_RESUMES,
+        "stop_reason": "refusal",
+    }
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == "refusal"
+    assert "stop_details" not in manifest
+    assert "refusal" not in manifest
+
+
+_OPENAI_CHAT_REFUSAL = {
+    "choices": [
+        {
+            "finish_reason": "stop",
+            "message": {"content": None, "refusal": "I cannot help with that."},
+        }
+    ]
+}
+_OPENAI_RESPONSES_REFUSAL = {
+    "status": "completed",
+    "output": [
+        {
+            "type": "message",
+            "content": [{"type": "refusal", "refusal": "I cannot help with that."}],
+        }
+    ],
+}
+_OPENAI_CONTENT_FILTER = {
+    "choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]
+}
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "marker", "detail"),
+    [
+        (_OPENAI_CHAT_REFUSAL, "refusal", "I cannot help with that."),
+        (_OPENAI_RESPONSES_REFUSAL, "refusal", "I cannot help with that."),
+        (_OPENAI_CONTENT_FILTER, "content_filter", None),
+    ],
+    ids=["chat-refusal", "responses-refusal", "content-filter"],
+)
+async def test_an_openai_refusal_carries_its_text_beside_the_stop_reason(
+    response, marker, detail, leg, monkeypatch, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    # The scripted endpoint speaks the Anthropic wire, so the pass's raw responses are
+    # swapped for the OpenAI-shaped one the failed-round check reads.
+    monkeypatch.setattr(agent_mod, "_pass_responses", lambda branch, before: [response])
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _answer("half an answer")])
+
+    with pytest.raises(FailedRoundError, match="the provider refused the response") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert summary == (
+        f"ProviderSafetyError: the provider refused the response (stop reason: {marker})"
+    )
+    expected = {"continued": agent_mod._API_ROUND_RESUMES, "stop_reason": marker}
+    if detail is not None:
+        expected["refusal"] = detail
+    assert raised.value.details == expected
+    manifest = _run_record(tmp_path)
+    assert manifest["stop_reason"] == marker
+    assert manifest.get("refusal") == detail
+    assert "stop_details" not in manifest
+
+
+@pytest.mark.usefixtures("offline_tokens")
+@pytest.mark.asyncio
+async def test_a_failed_round_that_is_not_a_refusal_keeps_the_exception_reason_and_no_detail(
+    leg, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi._errors import FailedRoundError
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    for _ in range(agent_mod._API_ROUND_RESUMES + 1):
+        leg.replies.extend([_last_round(), _text("")])
+
+    with pytest.raises(FailedRoundError, match="the answer had no text") as raised:
+        await leg.run(_profile(api_tools="read"))
+
+    assert raised.value.__cause__ is None
+    code, summary, _ = resolve_run_reason(status="failed", exception=raised.value)
+    assert code == RunReasons.FAILED_EXCEPTION
+    assert summary.startswith("FailedRoundError: ")
+    assert raised.value.details == {"continued": agent_mod._API_ROUND_RESUMES}
+    manifest = _run_record(tmp_path)
+    assert "stop_details" not in manifest
+    assert "refusal" not in manifest
+
+
 @pytest.mark.asyncio
 async def test_profile_effort_reaches_anthropic_wire_payload(leg, monkeypatch):
     profile = _profile(api_tools="read")

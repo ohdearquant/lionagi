@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import lionagi.cli._kill_service as kill_service
 from lionagi.cli import kill as kill_mod
 from lionagi.state import db as db_mod
 from lionagi.state.compat import StateCompatibilityRefused
@@ -35,12 +36,14 @@ async def _session(db, *, generation, metadata):
 
 @pytest.mark.asyncio
 async def test_null_generation_still_cancels_the_unchanged_running_session(tmp_path, monkeypatch):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _session(db, generation=None, metadata={})
         before = await db.get_session(sid)
         assert before["cli_worker_generation"] is None
-        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, before, user_reason="")
         after = await db.get_session(sid)
         assert result["signal"] == "no_pid"
         assert result["cancel_status"] == "applied"
@@ -60,7 +63,9 @@ async def test_null_generation_still_cancels_the_unchanged_running_session(tmp_p
 async def test_no_pid_kill_does_not_cancel_a_changed_or_ended_execution(
     tmp_path, monkeypatch, metadata, change
 ):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _session(db, generation=None, metadata=metadata)
         before = await db.get_session(sid)
@@ -85,7 +90,7 @@ async def test_no_pid_kill_does_not_cancel_a_changed_or_ended_execution(
             return await guard(session_id, generation, **kwargs)
 
         monkeypatch.setattr(db, "cancel_session_if_worker_generation", change_before_guard)
-        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, before, user_reason="")
         after = await db.get_session(sid)
         assert calls == [None]
         assert result["signal"] == "no_pid"
@@ -112,7 +117,9 @@ async def test_no_pid_kill_does_not_cancel_a_changed_or_ended_execution(
 async def test_no_pid_kill_refuses_when_runner_identity_changes_in_same_generation(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     async with StateDB(tmp_path / "state.db") as db:
         generation = str(uuid.uuid4())
         sid = await _session(db, generation=generation, metadata={"pid": "not-a-pid"})
@@ -124,7 +131,7 @@ async def test_no_pid_kill_refuses_when_runner_identity_changes_in_same_generati
             return await guard(session_id, captured_generation, **kwargs)
 
         monkeypatch.setattr(db, "cancel_session_if_worker_generation", replace_runner)
-        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, before, user_reason="")
         after = await db.get_session(sid)
         assert result["signal"] == "no_pid"
         assert result["cancel_status"] == "conflict"
@@ -141,7 +148,9 @@ async def test_no_pid_kill_refuses_when_runner_identity_changes_in_same_generati
 async def test_guard_deadline_is_reported_and_leaves_the_session_running(
     tmp_path, monkeypatch, capsys, caplog
 ):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _session(db, generation=str(uuid.uuid4()), metadata={})
         row = await db.get_session(sid)
@@ -177,7 +186,9 @@ async def test_guard_deadline_is_reported_and_leaves_the_session_running(
 
 @pytest.mark.asyncio
 async def test_ended_execution_with_a_replaced_runner_is_still_a_conflict(tmp_path, monkeypatch):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     async with StateDB(tmp_path / "state.db") as db:
         generation = str(uuid.uuid4())
         sid = await _session(db, generation=generation, metadata={"pid": "not-a-pid"})
@@ -198,7 +209,7 @@ async def test_ended_execution_with_a_replaced_runner_is_still_a_conflict(tmp_pa
             return await guard(session_id, captured_generation, **kwargs)
 
         monkeypatch.setattr(db, "cancel_session_if_worker_generation", replace_runner_then_end)
-        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, before, user_reason="")
         after = await db.get_session(sid)
         assert result["cancel_status"] == "conflict"
         assert after["status"] == "completed"
@@ -207,7 +218,9 @@ async def test_ended_execution_with_a_replaced_runner_is_still_a_conflict(tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_resumed_leg_that_ended_is_still_a_conflict(tmp_path, monkeypatch):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     async with StateDB(tmp_path / "state.db") as db:
         generation, resumed = str(uuid.uuid4()), str(uuid.uuid4())
         sid = await _session(db, generation=generation, metadata={"pid": "not-a-pid"})
@@ -228,7 +241,7 @@ async def test_a_resumed_leg_that_ended_is_still_a_conflict(tmp_path, monkeypatc
             return await guard(session_id, captured_generation, **kwargs)
 
         monkeypatch.setattr(db, "cancel_session_if_worker_generation", resume_then_end)
-        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, before, user_reason="")
         after = await db.get_session(sid)
         assert result["cancel_status"] == "conflict"
         assert after["status"] == "completed"
@@ -239,14 +252,16 @@ async def test_a_resumed_leg_that_ended_is_still_a_conflict(tmp_path, monkeypatc
 async def test_compatibility_refusal_reports_signal_without_unguarded_cancel(
     tmp_path, monkeypatch, capsys, caplog
 ):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     signals = []
 
     def terminate(pid, **_kwargs):
         signals.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr(kill_mod, "_terminate_pid", terminate)
+    monkeypatch.setattr(kill_service, "_terminate_pid", terminate)
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _session(
             db,
@@ -263,7 +278,7 @@ async def test_compatibility_refusal_reports_signal_without_unguarded_cancel(
         monkeypatch.setattr(db, "cancel_session_if_worker_generation", refuse_guard)
         unguarded = AsyncMock(side_effect=AssertionError("unguarded status update"))
         monkeypatch.setattr(db, "update_status", unguarded)
-        result = await kill_mod._kill_one(db, "session", sid, before, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, before, user_reason="")
         wire = json.loads(json.dumps(result))
         assert wire["signal"] == "sigterm"
         assert wire["pid"] == 4242
@@ -298,14 +313,16 @@ async def test_compatibility_refusal_reports_signal_without_unguarded_cancel(
 async def test_missing_generation_snapshot_fails_closed_without_calling_guard(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     signals = []
 
     def terminate(pid, **_kwargs):
         signals.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr(kill_mod, "_terminate_pid", terminate)
+    monkeypatch.setattr(kill_service, "_terminate_pid", terminate)
     async with StateDB(tmp_path / "state.db") as db:
         sid = await _session(
             db,
@@ -319,7 +336,7 @@ async def test_missing_generation_snapshot_fails_closed_without_calling_guard(
         monkeypatch.setattr(db, "cancel_session_if_worker_generation", guard)
         monkeypatch.setattr(db, "update_status", unguarded)
 
-        result = await kill_mod._kill_one(db, "session", sid, snapshot, user_reason="")
+        result = await kill_mod.kill_one(db, "session", sid, snapshot, user_reason="")
 
         assert result["signal"] == "sigterm"
         assert result["cancel_status"] == "unavailable"
@@ -338,14 +355,16 @@ async def test_missing_generation_snapshot_fails_closed_without_calling_guard(
 async def test_recursive_child_conflict_reports_signal_and_returns_failure(
     tmp_path, monkeypatch, capsys, caplog
 ):
-    monkeypatch.setattr(kill_mod, "_degraded_run", lambda _sid: None)
+    patched_degraded_run = lambda _sid: None
+    monkeypatch.setattr(kill_mod, "_degraded_run", patched_degraded_run)
+    monkeypatch.setattr(kill_service, "_degraded_run", patched_degraded_run)
     signals = []
 
     def terminate(pid, **_kwargs):
         signals.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr(kill_mod, "_terminate_pid", terminate)
+    monkeypatch.setattr(kill_service, "_terminate_pid", terminate)
     async with StateDB(tmp_path / "state.db") as db:
         parent = await _session(db, generation=str(uuid.uuid4()), metadata={})
         child_generation = str(uuid.uuid4())
@@ -376,10 +395,16 @@ async def test_recursive_child_conflict_reports_signal_and_returns_failure(
         monkeypatch.setattr(
             kill_mod, "_resolve_entity", AsyncMock(return_value=("sessions", "session", parent_row))
         )
+        patched_list_running_children = AsyncMock(return_value=[("sessions", "session", child_row)])
         monkeypatch.setattr(
             kill_mod,
-            "_list_running_children",
-            AsyncMock(return_value=[("sessions", "session", child_row)]),
+            "list_running_children",
+            patched_list_running_children,
+        )
+        monkeypatch.setattr(
+            kill_service,
+            "list_running_children",
+            patched_list_running_children,
         )
         monkeypatch.setattr(kill_mod, "_try_recorded_worker_cleanup", AsyncMock(return_value=None))
 

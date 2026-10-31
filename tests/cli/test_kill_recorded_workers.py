@@ -274,11 +274,12 @@ class _CleanupDB:
 
 
 def _stub_recorded_groups(monkeypatch, module):
+    import lionagi.cli._kill_service as kill_service
     from lionagi.ln._proc import _RecordedGroupWitness
 
     sent = []
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_admit_recorded_worker_group",
         lambda identity, **kwargs: _RecordedGroupWitness(
             identity,
@@ -286,8 +287,8 @@ def _stub_recorded_groups(monkeypatch, module):
             ((identity.pid, identity.pid_create_time),),
         ),
     )
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", lambda witness: "matches")
-    monkeypatch.setattr(module, "_recorded_worker_group_state", lambda identity: "empty")
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", lambda witness: "matches")
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_state", lambda identity: "empty")
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append((pgid, sig)))
     return sent
 
@@ -308,6 +309,7 @@ async def test_guard_failure_stops_remaining_groups_and_all_settlement(monkeypat
 
 @pytest.mark.asyncio
 async def test_interruption_during_grace_propagates_without_kill_or_settlement(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB()
@@ -319,7 +321,7 @@ async def test_interruption_during_grace_propagates_without_kill_or_settlement(m
             return
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(module, "sleep", interrupted)
+    monkeypatch.setattr(kill_service, "sleep", interrupted)
     before = dict(db.session)
     with pytest.raises(asyncio.CancelledError):
         await module._try_recorded_worker_cleanup(db, db.session, user_reason="", grace_seconds=1)
@@ -330,11 +332,12 @@ async def test_interruption_during_grace_propagates_without_kill_or_settlement(m
 
 @pytest.mark.asyncio
 async def test_resume_race_cancellation_conflict_never_signals_workers(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running", outcome="conflict")
     sent = _stub_recorded_groups(monkeypatch, module)
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("gone", None))
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -347,6 +350,7 @@ async def test_resume_race_cancellation_conflict_never_signals_workers(monkeypat
 
 @pytest.mark.asyncio
 async def test_cancellation_deadline_is_reported_and_never_signals_workers(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -356,9 +360,10 @@ async def test_cancellation_deadline_is_reported_and_never_signals_workers(monke
 
     monkeypatch.setattr(db, "cancel_session_if_worker_generation", deadline_passed)
     sent = _stub_recorded_groups(monkeypatch, module)
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("gone", None))
     errors: list[str] = []
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -371,6 +376,7 @@ async def test_cancellation_deadline_is_reported_and_never_signals_workers(monke
 
 @pytest.mark.asyncio
 async def test_cancellation_captures_only_present_runner_markers(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running", outcome="conflict")
@@ -382,8 +388,10 @@ async def test_cancellation_captures_only_present_runner_markers(monkeypatch):
         "unrelated": "not part of the runner identity",
     }
     sent = _stub_recorded_groups(monkeypatch, module)
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: None)
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    patched_unaddressable_pid_reason = lambda meta: None
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("gone", None))
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0
     )
@@ -423,6 +431,7 @@ async def test_unusable_snapshot_metadata_cannot_cancel_or_clean_workers(
 
 @pytest.mark.asyncio
 async def test_missing_runner_row_identity_cannot_cancel_away_recorded_workers(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -431,6 +440,7 @@ async def test_missing_runner_row_identity_cannot_cancel_away_recorded_workers(m
     sent = _stub_recorded_groups(monkeypatch, module)
     warnings = []
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -447,6 +457,7 @@ async def test_missing_runner_row_identity_cannot_cancel_away_recorded_workers(m
 @pytest.mark.parametrize("invalid_pid", [76543.5, float("inf"), 2**31, 10**50, str(10**50), True])
 @pytest.mark.asyncio
 async def test_invalid_runner_pid_cannot_probe_cancel_or_clean_workers(monkeypatch, invalid_pid):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -455,7 +466,8 @@ async def test_invalid_runner_pid_cannot_probe_cancel_or_clean_workers(monkeypat
     warnings = []
     probes = []
     monkeypatch.setattr(module, "warn", warnings.append)
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: probes.append(pid))
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: probes.append(pid))
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0
     )
@@ -472,13 +484,14 @@ async def test_invalid_runner_pid_cannot_probe_cancel_or_clean_workers(monkeypat
 
 @pytest.mark.asyncio
 async def test_nan_runner_pid_cannot_probe_cancel_or_clean_workers(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
     db.session["node_metadata"] = {"pid": float("nan")}
     sent = _stub_recorded_groups(monkeypatch, module)
     probes = []
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: probes.append(pid))
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: probes.append(pid))
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0
     )
@@ -492,6 +505,7 @@ async def test_nan_runner_pid_cannot_probe_cancel_or_clean_workers(monkeypatch):
 @pytest.mark.parametrize("valid_pid", [76543, 76543.0, "76543", " +76543 "])
 @pytest.mark.asyncio
 async def test_integer_runner_pid_forms_are_preserved(monkeypatch, valid_pid):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running", outcome="conflict")
@@ -503,7 +517,7 @@ async def test_integer_runner_pid_forms_are_preserved(monkeypatch, valid_pid):
         probes.append(pid)
         return "gone", None
 
-    monkeypatch.setattr(module, "_runner_process_create_time", dead_runner)
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", dead_runner)
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0
     )
@@ -517,11 +531,12 @@ async def test_integer_runner_pid_forms_are_preserved(monkeypatch, valid_pid):
 
 @pytest.mark.asyncio
 async def test_unreadable_runner_cannot_cancel_away_recorded_workers(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
     sent = _stub_recorded_groups(monkeypatch, module)
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("unknown", None))
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("unknown", None))
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -533,6 +548,7 @@ async def test_unreadable_runner_cannot_cancel_away_recorded_workers(monkeypatch
 
 @pytest.mark.asyncio
 async def test_all_terms_precede_one_grace_then_exact_settlement(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB()
@@ -545,9 +561,9 @@ async def test_all_terms_precede_one_grace_then_exact_settlement(monkeypatch):
             return
         waits.append(delay)
 
-    monkeypatch.setattr(module, "sleep", one_wait)
+    monkeypatch.setattr(kill_service, "sleep", one_wait)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: (
             "missing" if any(pid == witness.identity.pgid for pid, _ in sent) else "matches"
@@ -581,6 +597,7 @@ async def test_missing_killpg_refuses_without_settling(monkeypatch):
 async def test_recursive_running_dead_runner_handles_children_before_parent(
     monkeypatch, capsys, with_workers, child_blocked
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -588,16 +605,16 @@ async def test_recursive_running_dead_runner_handles_children_before_parent(
         db.records = []
     calls = []
     sent = _stub_recorded_groups(monkeypatch, module)
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("gone", None))
 
     async def no_wait(_delay):
         if db.in_signal_guard:
             await _real_sleep(0)
         return None
 
-    monkeypatch.setattr(module, "sleep", no_wait)
+    monkeypatch.setattr(kill_service, "sleep", no_wait)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: (
             "missing" if any(pid == witness.identity.pgid for pid, _ in sent) else "matches"
@@ -636,8 +653,10 @@ async def test_recursive_running_dead_runner_handles_children_before_parent(
         return await original_cancel(*args, **kwargs)
 
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_list_running_children", children)
-    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "list_running_children", children)
+    monkeypatch.setattr(kill_service, "list_running_children", children)
+    monkeypatch.setattr(module, "kill_one", kill_one)
+    monkeypatch.setattr(kill_service, "kill_one", kill_one)
     db.cancel_session_if_worker_generation = cancel
 
     result = await module._do_kill("session-test", recursive=True, grace_seconds=0)
@@ -659,6 +678,7 @@ async def test_recursive_running_dead_runner_handles_children_before_parent(
 
 @pytest.mark.asyncio
 async def test_terminal_session_recursive_does_not_expand_to_children(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="failed")
@@ -685,7 +705,8 @@ async def test_terminal_session_recursive_does_not_expand_to_children(monkeypatc
         return 0
 
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_list_running_children", children)
+    monkeypatch.setattr(module, "list_running_children", children)
+    monkeypatch.setattr(kill_service, "list_running_children", children)
     monkeypatch.setattr(module, "_try_recorded_worker_cleanup", terminal)
     assert await module._do_kill("session-test", recursive=True) == 0
     assert calls == ["terminal"]
@@ -693,6 +714,7 @@ async def test_terminal_session_recursive_does_not_expand_to_children(monkeypatc
 
 @pytest.mark.asyncio
 async def test_resolve_to_snapshot_resume_never_signals_or_cancels_new_runner(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -723,9 +745,12 @@ async def test_resolve_to_snapshot_resume_never_signals_or_cancels_new_runner(mo
 
     monkeypatch.setattr(db_mod, "StateDB", Context)
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_list_running_children", children)
-    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "list_running_children", children)
+    monkeypatch.setattr(kill_service, "list_running_children", children)
+    monkeypatch.setattr(module, "kill_one", kill_one)
+    monkeypatch.setattr(kill_service, "kill_one", kill_one)
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     assert await module._do_kill("session-test", recursive=True) == 1
     assert calls == []
     assert db.cancelled == []
@@ -735,6 +760,7 @@ async def test_resolve_to_snapshot_resume_never_signals_or_cancels_new_runner(mo
 
 @pytest.mark.asyncio
 async def test_all_refused_groups_still_report_a_concurrent_generation_change(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln._proc import _RecordedGroupRefusal
 
@@ -747,9 +773,10 @@ async def test_all_refused_groups_still_report_a_concurrent_generation_change(mo
         db.session["cli_worker_generation"] = "generation-b"
         return _RecordedGroupRefusal("host_mismatch")
 
-    monkeypatch.setattr(module, "_admit_recorded_worker_group", refuse)
+    monkeypatch.setattr(kill_service, "_admit_recorded_worker_group", refuse)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append((pgid, sig)))
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     result = await module._try_recorded_worker_cleanup(
         db, original, user_reason="", grace_seconds=0
     )
@@ -761,6 +788,7 @@ async def test_all_refused_groups_still_report_a_concurrent_generation_change(mo
 
 @pytest.mark.asyncio
 async def test_one_malformed_record_produces_one_identity_warning(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB()
@@ -768,6 +796,7 @@ async def test_one_malformed_record_produces_one_identity_warning(monkeypatch):
     del db.records[0]["pid"]
     warnings = []
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -778,6 +807,7 @@ async def test_one_malformed_record_produces_one_identity_warning(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_running_dead_runner_boot_mismatch_preserves_original_refusal(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -796,8 +826,11 @@ async def test_running_dead_runner_boot_mismatch_preserves_original_refusal(monk
 
     monkeypatch.setattr(db_mod, "StateDB", Context)
     monkeypatch.setattr(module, "_resolve_entity", resolve)
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: "boot_mismatch")
+    patched_unaddressable_pid_reason = lambda meta: "boot_mismatch"
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     assert await module._do_kill("session-test") == 1
     assert db.cancelled == []
     assert db.settled == []
@@ -825,19 +858,28 @@ async def _kill_runner_with_ambiguous_boot(monkeypatch, runner_pid):
     """Run the kill command on a running session with recorded workers whose runner
     pid is alive and whose boot time disagrees on Linux; return its db, exit code and
     the worker groups that were signalled."""
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
     db.session["node_metadata"] = {"pid": runner_pid}
     sent = _stub_recorded_groups(monkeypatch, module)
     _serve_db(monkeypatch, module, db)
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: "boot_unverifiable")
-    monkeypatch.setattr(module, "_pid_alive", lambda _pid: True)
+    patched_unaddressable_pid_reason = lambda meta: "boot_unverifiable"
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    patched_pid_alive = lambda _pid: True
+    monkeypatch.setattr(module, "_pid_alive", patched_pid_alive)
+    monkeypatch.setattr(kill_service, "_pid_alive", patched_pid_alive)
     monkeypatch.setattr(
-        module, "_terminate_pid", lambda *args, **kwargs: pytest.fail("unexpected signal")
+        kill_service, "_terminate_pid", lambda *args, **kwargs: pytest.fail("unexpected signal")
     )
-    monkeypatch.setattr(module, "warn", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "log_error", lambda *args, **kwargs: None)
+    patched_warn = lambda *args, **kwargs: None
+    monkeypatch.setattr(module, "warn", patched_warn)
+    monkeypatch.setattr(kill_service, "warn", patched_warn)
+    patched_log_error = lambda *args, **kwargs: None
+    monkeypatch.setattr(module, "log_error", patched_log_error)
+    monkeypatch.setattr(kill_service, "log_error", patched_log_error)
     code = await module._do_kill("session-test")
     return db, code, sent
 
@@ -871,12 +913,16 @@ async def test_direct_kill_with_a_reserved_runner_pid_and_ambiguous_boot_cancels
 async def test_recorded_workers_of_a_runner_this_host_cannot_judge_are_reported(
     monkeypatch, reason
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
     warnings = []
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: reason)
+    patched_unaddressable_pid_reason = lambda meta: reason
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -893,14 +939,18 @@ async def test_recorded_workers_of_a_runner_this_host_cannot_judge_are_reported(
 async def test_no_unhandled_worker_report_without_live_recorded_workers(
     monkeypatch, reason, records
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
     if not records:
         db.records = []
     warnings = []
-    monkeypatch.setattr(module, "_unaddressable_pid_reason", lambda meta: reason)
+    patched_unaddressable_pid_reason = lambda meta: reason
+    monkeypatch.setattr(module, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
+    monkeypatch.setattr(kill_service, "unaddressable_pid_reason", patched_unaddressable_pid_reason)
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
     )
@@ -910,6 +960,7 @@ async def test_no_unhandled_worker_report_without_live_recorded_workers(
 
 @pytest.mark.asyncio
 async def test_unreadable_worker_records_still_kill_the_running_session(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -942,9 +993,12 @@ async def test_unreadable_worker_records_still_kill_the_running_session(monkeypa
     monkeypatch.setattr(db_mod, "StateDB", Context)
     monkeypatch.setattr(module, "_resolve_entity", resolve)
     monkeypatch.setattr(module, "_try_recorded_worker_cleanup", recorded)
-    monkeypatch.setattr(module, "_kill_one", kill_one)
+    monkeypatch.setattr(module, "kill_one", kill_one)
+    monkeypatch.setattr(kill_service, "kill_one", kill_one)
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     assert await module._do_kill("session-test") == 1
     assert calls == ["signal"]
     assert any("worker records could not be read (store unavailable)" in m for m in warnings)
@@ -953,6 +1007,7 @@ async def test_unreadable_worker_records_still_kill_the_running_session(monkeypa
 
 @pytest.mark.asyncio
 async def test_running_dead_runner_resumed_during_grace_settles_old_group(monkeypatch, capsys):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB(status="running")
@@ -960,10 +1015,11 @@ async def test_running_dead_runner_resumed_during_grace_settles_old_group(monkey
     sent = _stub_recorded_groups(monkeypatch, module)
     events = []
     errors = []
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda pid: ("gone", None))
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", lambda pid: ("gone", None))
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: "missing" if sent else "matches",
     )
@@ -990,7 +1046,7 @@ async def test_running_dead_runner_resumed_during_grace_settles_old_group(monkey
 
     db.settle_cli_worker_spawn = settle
     db.get_session = get
-    monkeypatch.setattr(module, "sleep", resume_during_grace)
+    monkeypatch.setattr(kill_service, "sleep", resume_during_grace)
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0.5
     )
@@ -1017,6 +1073,7 @@ async def test_running_dead_runner_resumed_during_grace_settles_old_group(monkey
 async def test_terminal_mixed_refusal_and_resume_never_reports_stale_terminal_status(
     monkeypatch, capsys
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln._proc import _RecordedGroupRefusal, _RecordedGroupWitness
 
@@ -1056,15 +1113,17 @@ async def test_terminal_mixed_refusal_and_resume_never_reports_stale_terminal_st
 
     db.settle_cli_worker_spawn = settle
     db.get_session = get
-    monkeypatch.setattr(module, "_admit_recorded_worker_group", admit)
+    monkeypatch.setattr(kill_service, "_admit_recorded_worker_group", admit)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: "missing" if sent else "matches",
     )
-    monkeypatch.setattr(module, "sleep", resume_during_grace)
+    monkeypatch.setattr(kill_service, "sleep", resume_during_grace)
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
 
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0.5
@@ -1085,6 +1144,7 @@ async def test_terminal_mixed_refusal_and_resume_never_reports_stale_terminal_st
 async def test_final_session_read_failure_reports_unconfirmed_without_stale_status(
     monkeypatch, capsys
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB()
@@ -1092,8 +1152,9 @@ async def test_final_session_read_failure_reports_unconfirmed_without_stale_stat
     sent = _stub_recorded_groups(monkeypatch, module)
     warnings = []
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: "missing" if sent else "matches",
     )
@@ -1115,6 +1176,7 @@ async def test_final_session_read_failure_reports_unconfirmed_without_stale_stat
 
 @pytest.mark.asyncio
 async def test_terminal_generations_share_grace_and_kill_only_survivor(monkeypatch, capsys):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     db = _CleanupDB()
@@ -1146,9 +1208,9 @@ async def test_terminal_generations_share_grace_and_kill_only_survivor(monkeypat
         events.append(("sleep", delay))
 
     monkeypatch.setattr(os, "killpg", fake_killpg)
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", matches)
-    monkeypatch.setattr(module, "_recorded_worker_group_state", group_state)
-    monkeypatch.setattr(module, "sleep", fake_sleep)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", matches)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_state", group_state)
+    monkeypatch.setattr(kill_service, "sleep", fake_sleep)
 
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0.5
@@ -1171,6 +1233,7 @@ async def test_terminal_generations_share_grace_and_kill_only_survivor(monkeypat
 
 @pytest.mark.asyncio
 async def test_terminal_identity_mismatch_never_signals_or_settles_that_record(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln._proc import _RecordedGroupRefusal, _RecordedGroupWitness
 
@@ -1196,10 +1259,11 @@ async def test_terminal_identity_mismatch_never_signals_or_settles_that_record(m
         assert identity.pgid == 76542
         return "empty"
 
-    monkeypatch.setattr(module, "_admit_recorded_worker_group", admit)
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", matches)
-    monkeypatch.setattr(module, "_recorded_worker_group_state", group_state)
+    monkeypatch.setattr(kill_service, "_admit_recorded_worker_group", admit)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", matches)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_state", group_state)
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
 
     result = await module._try_recorded_worker_cleanup(
         db, db.session, user_reason="", grace_seconds=0
@@ -1234,6 +1298,7 @@ async def test_terminal_changed_signal_guard_stops_remaining_groups_and_settleme
 
 @pytest.mark.asyncio
 async def test_terminal_already_empty_record_and_stopped_worker_both_settle(monkeypatch, capsys):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln._proc import _RecordedGroupRefusal, _RecordedGroupWitness
 
@@ -1250,13 +1315,14 @@ async def test_terminal_already_empty_record_and_stopped_worker_both_settle(monk
             ((identity.pid, identity.pid_create_time),),
         )
 
-    monkeypatch.setattr(module, "_admit_recorded_worker_group", admit)
+    monkeypatch.setattr(kill_service, "_admit_recorded_worker_group", admit)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: "missing" if sent else "matches",
     )
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0
     )
@@ -1272,6 +1338,7 @@ async def test_terminal_already_empty_record_and_stopped_worker_both_settle(monk
 
 @pytest.mark.asyncio
 async def test_terminal_already_empty_records_without_signal_refuse(monkeypatch):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln._proc import _RecordedGroupRefusal
 
@@ -1279,11 +1346,12 @@ async def test_terminal_already_empty_records_without_signal_refuse(monkeypatch)
     sent = _stub_recorded_groups(monkeypatch, module)
     errors = []
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_admit_recorded_worker_group",
         lambda identity, **kwargs: _RecordedGroupRefusal("leader_not_live"),
     )
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     result = await module._try_recorded_worker_cleanup(
         db, dict(db.session), user_reason="", grace_seconds=0
     )
@@ -1299,6 +1367,7 @@ async def test_native_corrupt_worker_row_refuses_entire_snapshot_without_probe(
 ):
     from sqlalchemy import text
 
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     path = tmp_path / "state.db"
@@ -1359,13 +1428,20 @@ async def test_native_corrupt_worker_row_refuses_entire_snapshot_without_probe(
     signals = []
     warnings = []
     monkeypatch.setattr(
-        module, "_admit_recorded_worker_group", lambda *a, **kw: probes.append("admit")
+        kill_service, "_admit_recorded_worker_group", lambda *a, **kw: probes.append("admit")
     )
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", lambda *a: probes.append("match"))
-    monkeypatch.setattr(module, "_recorded_worker_group_state", lambda *a: probes.append("state"))
-    monkeypatch.setattr(module, "_runner_process_create_time", lambda *a: probes.append("pid"))
+    monkeypatch.setattr(
+        kill_service, "_recorded_worker_group_matches", lambda *a: probes.append("match")
+    )
+    monkeypatch.setattr(
+        kill_service, "_recorded_worker_group_state", lambda *a: probes.append("state")
+    )
+    monkeypatch.setattr(
+        kill_service, "_runner_process_create_time", lambda *a: probes.append("pid")
+    )
     monkeypatch.setattr(os, "killpg", lambda *a: signals.append(a))
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
     result = await _do_kill(session_id, grace_seconds=0)
     assert result == 1
     assert probes == []
@@ -1422,6 +1498,7 @@ async def _seed_native_running_cleanup(tmp_path, monkeypatch):
 
 
 def _mock_native_running_cleanup_processes(monkeypatch, module):
+    import lionagi.cli._kill_service as kill_service
     from lionagi.ln._proc import _RecordedGroupWitness
 
     signals = []
@@ -1454,14 +1531,14 @@ def _mock_native_running_cleanup_processes(monkeypatch, module):
         assert pgid == 76541
         signals.append((pgid, sig))
 
-    monkeypatch.setattr(module, "_runner_process_create_time", dead_runner)
-    monkeypatch.setattr(module, "_admit_recorded_worker_group", admit)
+    monkeypatch.setattr(kill_service, "_runner_process_create_time", dead_runner)
+    monkeypatch.setattr(kill_service, "_admit_recorded_worker_group", admit)
     monkeypatch.setattr(
-        module,
+        kill_service,
         "_recorded_worker_group_matches",
         lambda witness: "missing" if signals else "matches",
     )
-    monkeypatch.setattr(module, "_recorded_worker_group_state", lambda identity: "empty")
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_state", lambda identity: "empty")
     monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "kill", forbidden("os.kill"))
     monkeypatch.setattr(os, "getpgid", forbidden("os.getpgid"))
@@ -1516,6 +1593,7 @@ async def test_native_running_dead_runner_cancels_and_settles_recorded_worker(
 async def test_native_running_marker_swap_after_snapshot_conflicts_before_signal(
     tmp_path, monkeypatch
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     path, sid, generation, spawn_id, markers, history = await _seed_native_running_cleanup(
@@ -1540,6 +1618,7 @@ async def test_native_running_marker_swap_after_snapshot_conflicts_before_signal
 
     monkeypatch.setattr(StateDB, "cancel_session_if_worker_generation", swap_then_cancel)
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     result = await module._do_kill(sid, grace_seconds=0)
     assert result == 1
     assert outcomes == ["conflict"]
@@ -1587,6 +1666,7 @@ async def _runner_ends_before_cancel(monkeypatch, path, sid, generation):
 async def test_native_runner_end_after_snapshot_still_stops_recorded_worker(
     tmp_path, monkeypatch, capsys
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     path, sid, generation, spawn_id, _markers, _history = await _seed_native_running_cleanup(
@@ -1597,6 +1677,7 @@ async def test_native_runner_end_after_snapshot_still_stops_recorded_worker(
     )
     errors = []
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     outcomes = await _runner_ends_before_cancel(monkeypatch, path, sid, generation)
     result = await module._do_kill(sid, grace_seconds=0)
     assert outcomes == ["already_terminal"]
@@ -1629,6 +1710,7 @@ async def test_native_runner_end_after_snapshot_still_stops_recorded_worker(
 async def test_native_runner_end_after_snapshot_without_workers_reports_nothing_to_kill(
     tmp_path, monkeypatch
 ):
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
 
     path, sid, generation, spawn_id, _markers, _history = await _seed_native_running_cleanup(
@@ -1641,6 +1723,7 @@ async def test_native_runner_end_after_snapshot_without_workers_reports_nothing_
     )
     errors = []
     monkeypatch.setattr(module, "log_error", errors.append)
+    monkeypatch.setattr(kill_service, "log_error", errors.append)
     outcomes = await _runner_ends_before_cancel(monkeypatch, path, sid, generation)
     result = await module._do_kill(sid, grace_seconds=0)
     assert outcomes == ["already_terminal"]
@@ -1657,6 +1740,7 @@ async def test_native_runner_end_after_snapshot_without_workers_reports_nothing_
 @pytest.mark.parametrize("late_signal", [signal.SIGTERM, signal.SIGKILL], ids=["term", "kill"])
 async def test_native_guard_refuses_a_signal_after_its_deadline(tmp_path, monkeypatch, late_signal):
     """A slow synchronous witness read must not authorize a late signal."""
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln.concurrency import fail_after
 
@@ -1668,6 +1752,7 @@ async def test_native_guard_refuses_a_signal_after_its_deadline(tmp_path, monkey
     )
     warnings = []
     monkeypatch.setattr(module, "warn", warnings.append)
+    monkeypatch.setattr(kill_service, "warn", warnings.append)
 
     budget = 0.20
     slow_seconds = 0.50
@@ -1712,7 +1797,7 @@ async def test_native_guard_refuses_a_signal_after_its_deadline(tmp_path, monkey
         return "matches"
 
     monkeypatch.setattr(StateDB, "guard_cli_worker_signal", instrumented_guard)
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", match)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", match)
     result = await module._do_kill(sid, grace_seconds=0)
 
     expected_entries = ["unchanged"] if late_signal == signal.SIGTERM else ["unchanged"] * 2
@@ -1755,6 +1840,7 @@ async def test_native_guard_propagates_cancel_before_checkpoint(
     tmp_path, monkeypatch, cancel_signal, delivery
 ):
     """A cancellation queued at the guarded read is delivered before the signal."""
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln.concurrency import fail_after
 
@@ -1819,7 +1905,7 @@ async def test_native_guard_propagates_cancel_before_checkpoint(
         return "matches"
 
     monkeypatch.setattr(StateDB, "guard_cli_worker_signal", guarded_read)
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", match)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", match)
     task = asyncio.create_task(module._do_kill(sid, grace_seconds=0))
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -1850,6 +1936,7 @@ async def test_native_checkpoint_rechecks_group_identity_before_signal(
     tmp_path, monkeypatch, target_signal
 ):
     """Replacing a simulated group at the checkpoint cannot authorize a signal."""
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln.concurrency import fail_after
 
@@ -1905,8 +1992,8 @@ async def test_native_checkpoint_rechecks_group_identity_before_signal(
         signals.append((pgid, sig))
 
     monkeypatch.setattr(StateDB, "guard_cli_worker_signal", guarded_read)
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", match)
-    monkeypatch.setattr(module, "_recorded_worker_group_state", lambda _identity: "present")
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", match)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_state", lambda _identity: "present")
     monkeypatch.setattr(os, "killpg", fake_signal)
     result = await module._do_kill(sid, grace_seconds=0)
 
@@ -1935,6 +2022,7 @@ async def test_native_cancel_during_identity_read_preserves_one_verified_term(
     tmp_path, monkeypatch
 ):
     """Cancellation during the synchronous read follows its already verified TERM."""
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as module
     from lionagi.ln.concurrency import fail_after
 
@@ -1970,7 +2058,7 @@ async def test_native_cancel_during_identity_read_preserves_one_verified_term(
         return "matches"
 
     monkeypatch.setattr(StateDB, "guard_cli_worker_signal", observed_guard)
-    monkeypatch.setattr(module, "_recorded_worker_group_matches", match)
+    monkeypatch.setattr(kill_service, "_recorded_worker_group_matches", match)
     task = asyncio.create_task(module._do_kill(sid, grace_seconds=0))
     with pytest.raises(asyncio.CancelledError):
         await task

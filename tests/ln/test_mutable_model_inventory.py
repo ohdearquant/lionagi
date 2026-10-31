@@ -238,7 +238,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.generic.progression:139:28": "``Ordering[T]``, the ordering base on ``Element``",
     "lionagi.protocols.generic.progression:139:41": "``Generic[T]``, the typing generic base",
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
-    "lionagi.service.accounts._ledger:54:18": "``Generic[_T]``, the typing generic base",
+    "lionagi.service.accounts._ledger:57:18": "``Generic[_T]``, the typing generic base",
     # A class base whose module is imported inside the function that defines the class,
     # so the scan cannot resolve the name; the class is an exception, not a model:
     "lionagi.service.connections.endpoint:97:36": "``httpx.ConnectError``, imported lazily",
@@ -272,7 +272,7 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",
-    "lionagi.service.accounts._router:608:13": (
+    "lionagi.service.accounts._router:712:13": (
         "a counter on a held character popped from a list, not a class attribute"
     ),
     "lionagi.studio.scheduler.signals:221:17": "a counter field on a dict-held object",

@@ -9,7 +9,7 @@ Filesystem and process helpers preserve each caller's path admission, publicatio
 | Root and path admission | Workspace-root resolution preserves empty/None/cwd, expanduser and resolve behavior. Other path consumers retain their own dot/backslash, absolute/traversal, symlink and containment checks, error envelopes and mkdir order. |
 | Atomic writer ownership | Private atomic writers retain their owning modules, None return, non-finite check order, `mkstemp` with mode `0o600`, serializer bytes, replace, BaseException cleanup and any post-publication chmod. |
 | File-lock platform semantics | MCP Windows byte locks seek byte zero without restoring the offset; plugin locks restore it after success. POSIX shared/exclusive flock and missing/required/optional lock policies remain distinct. |
-| Process identity and liveness | `kill._check_pid_identity` delegates to the inclusive 0.1s comparator while preserving expected-time admission, one probe, unknown/gone/found verdicts and later command/session checks. MCP low-PID waitpid and OSError behavior differs from CLI; admin retains zombie checks and its 1.0s tolerance. |
+| Process identity and liveness | `lionagi.cli._kill_service.check_pid_identity` delegates to the inclusive 0.1s comparator while preserving expected-time admission, one probe, unknown/gone/found verdicts and later command/session checks. MCP low-PID waitpid and OSError behavior differs from CLI; admin retains zombie checks and its 1.0s tolerance. |
 | Capped stream readers | Capped readers retain their head-versus-tail selection, EOF draining, byte return shape, truncation flags, logging and per-stream limits. |
 | Child exchange ownership | The child exchange owns env/cwd/trusted executable, state-URL stripping, witnessed process-group cleanup, outcome callbacks and best-effort two-second reap. |
 | Temporary signal handlers | Monitor uses `temporary_signal_handlers`, preserving main-thread/None-handler abstention and restoration of installed handlers. |
@@ -32,7 +32,7 @@ Filesystem and process helpers preserve each caller's path admission, publicatio
 
 ## Shared helpers
 
-Tool constructors share `_resolve_workspace_root`. Monitor signal scopes use `temporary_signal_handlers`. `kill._check_pid_identity` delegates its inclusive 0.1s comparison to `start_time_matches`, while retaining PID admission, one process probe and command/session checks. Admin liveness keeps its distinct 1.0s policy.
+Tool constructors share `_resolve_workspace_root`. Monitor signal scopes use `temporary_signal_handlers`. `lionagi.cli._kill_service.check_pid_identity` delegates its inclusive 0.1s comparison to `start_time_matches`, while retaining PID admission, one process probe and command/session checks. Admin liveness keeps its distinct 1.0s policy.
 
 ## Behavioral reference
 

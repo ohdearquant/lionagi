@@ -519,6 +519,11 @@
       "owner": "cli",
       "target_owner": "lionhub.orchestration.inspection"
     },
+    "lionagi.cli._kill_service": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.orchestration.kill"
+    },
     "lionagi.cli._logging": {
       "layer": "root",
       "owner": "cli",
@@ -528,6 +533,16 @@
       "layer": "root",
       "owner": "cli",
       "target_owner": "lionhub.orchestration.mcp_config"
+    },
+    "lionagi.cli._mirror_service": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.serve.mirror"
+    },
+    "lionagi.cli._mirror_settings": {
+      "layer": "root",
+      "owner": "cli",
+      "target_owner": "lionhub.serve.mirror"
     },
     "lionagi.cli._notify_outcomes": {
       "layer": "root",

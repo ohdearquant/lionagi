@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 
-from lionagi.ln.concurrency import CancelScope
+from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 from lionagi.service._api_telemetry import record_selected_attempt
 from lionagi.service._prompt_cache import note_attempt
 
@@ -65,6 +66,11 @@ class RouterAttempt:
     body: bytes
     ttls: frozenset[str]
     key: SecretStr = field(repr=False)
+    # The warm-prefix evidence of the request: the cache point it is certified by, whether a
+    # one-hour mark follows that point, and whether it names a tool the provider runs.
+    cert: str | None = None
+    hour_after_key: bool = False
+    server_tools: bool = False
 
     @property
     def account(self) -> str:
@@ -122,11 +128,19 @@ class AccountRouter:
             final_payload["service_tier"] = "standard_only"
         ttls = request_ttls(final_payload)
         body = freeze_request(final_payload)
+        # Imported here because that module imports the Messages endpoint, which uses this one.
+        from lionagi.providers.anthropic._prompt_cache import _server_tools
+
+        parsed = json.loads(body)
+        cert, hour_after_key = _warm_evidence(parsed)
+        server_tools = _server_tools(parsed)
         quote = quote_ceiling(self.revision, body)
         attempt_id = uuid4()
         # Shielded so a cancelled caller cannot leave a committed reservation unknown to it.
         with CancelScope(shield=True):
-            reservation = await self.ledger.reserve(scope, attempt_id, quote, self.accounts)
+            reservation = await self.ledger.reserve(
+                scope, attempt_id, quote, self.accounts, cert=cert
+            )
         account = next(spec for spec in self.accounts if spec.name == reservation.account)
         try:
             key = await resolve_account_key(account.key_env, self.sources)
@@ -137,10 +151,20 @@ class AccountRouter:
             raise AccountRoutingError(
                 exc.code, account=account.name, attempt_id=reservation.attempt_id
             ) from None
-        except BaseException:
-            await self.settle_reservation_not_sent(reservation)
+        except BaseException as exc:
+            # A caller that cancelled or closed the stream did not show the account unusable.
+            caller_cancelled = isinstance(exc, (get_cancelled_exc_class(), GeneratorExit))
+            await self.settle_reservation_not_sent(reservation, caller_cancelled=caller_cancelled)
             raise
-        attempt = RouterAttempt(reservation, body, ttls, key)
+        attempt = RouterAttempt(
+            reservation,
+            body,
+            ttls,
+            key,
+            cert=cert,
+            hour_after_key=hour_after_key,
+            server_tools=server_tools,
+        )
         label = attempt.account
         if (
             not isinstance(label, str)
@@ -166,20 +190,38 @@ class AccountRouter:
                 body.get("usage"),
                 provider_request_id(body.get("id"), attempt.key),
             )
-        await self.ledger.settle(attempt.attempt_id, evidence)
+        # Shielded so a cancelled caller cannot leave the write undone.
+        with CancelScope(shield=True):
+            await self.ledger.settle(
+                attempt.attempt_id,
+                evidence,
+                cert=attempt.cert,
+                hour_after_key=attempt.hour_after_key,
+                server_tools=attempt.server_tools,
+            )
 
     async def settle_unknown(self, attempt: RouterAttempt, reason: str) -> None:
-        await self.ledger.settle(attempt.attempt_id, UnknownOutcome(reason))
-
-    async def settle_not_sent(self, attempt: RouterAttempt) -> None:
-        await self.settle_reservation_not_sent(attempt.reservation)
-
-    async def settle_reservation_not_sent(self, reservation: Reservation) -> None:
         with CancelScope(shield=True):
-            await self.ledger.settle(reservation.attempt_id, ProvenNotSent())
+            await self.ledger.settle(attempt.attempt_id, UnknownOutcome(reason))
+
+    async def settle_not_sent(
+        self, attempt: RouterAttempt, *, caller_cancelled: bool = False
+    ) -> None:
+        await self.settle_reservation_not_sent(
+            attempt.reservation, caller_cancelled=caller_cancelled
+        )
+
+    async def settle_reservation_not_sent(
+        self, reservation: Reservation, *, caller_cancelled: bool = False
+    ) -> None:
+        with CancelScope(shield=True):
+            await self.ledger.settle(
+                reservation.attempt_id, ProvenNotSent(caller_cancelled=caller_cancelled)
+            )
 
     async def block(self, attempt: RouterAttempt, reason: str) -> None:
-        await self.ledger.block("anthropic", attempt.account, reason)
+        with CancelScope(shield=True):
+            await self.ledger.block("anthropic", attempt.account, reason)
 
     async def settle_stream_end(
         self,
@@ -192,7 +234,69 @@ class AccountRouter:
         # The write runs in a worker thread that is not abandoned on cancellation, so the
         # shield keeps an anyio cancel scope from returning before it commits.
         with CancelScope(shield=True):
-            await self.ledger.settle(attempt.attempt_id, evidence)
+            await self.ledger.settle(
+                attempt.attempt_id,
+                evidence,
+                cert=attempt.cert,
+                hour_after_key=attempt.hour_after_key,
+                server_tools=attempt.server_tools,
+            )
+
+
+def _has_hour_mark(value: Any) -> bool:
+    """Whether ``value`` holds a cache mark of one hour at any depth."""
+    if isinstance(value, dict):
+        mark = value.get("cache_control")
+        if isinstance(mark, dict) and mark.get("ttl") == "1h":
+            return True
+        return any(_has_hour_mark(inner) for inner in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_hour_mark(inner) for inner in value)
+    return False
+
+
+def _warm_evidence(parsed: Mapping[str, Any]) -> tuple[str | None, bool]:
+    """The cache point a request is certified by, and whether a one-hour mark follows it.
+
+    The point is the last block of the tools or the system that takes a mark and carries a
+    one-hour one, and its certificate names the prefix up to and including that block. A request
+    with no such block has no point and yields ``(None, False)``. The flag is true when a block
+    read after the point carries a one-hour mark, at any depth, or when the request's own
+    top-level one-hour mark has a block after the point to land on. A system or message content
+    given as a string carries no mark.
+    """
+    # Imported here because that module imports the Messages endpoint, which uses this one.
+    from lionagi.providers.anthropic._prompt_cache import points
+
+    blocks, _ = points(parsed)
+    keys = [
+        point
+        for point in blocks
+        if point.tier in ("tools", "system") and point.markable and point.mark == "1h"
+    ]
+    if not keys:
+        return None, False
+    key = keys[-1]
+    tools = parsed.get("tools")
+    system = parsed.get("system")
+    later: list[Any] = []
+    if key.tier == "tools":
+        if isinstance(tools, list):
+            later.extend(tools[key.slot + 1 :])
+        if isinstance(system, list):
+            later.extend(system)
+    elif isinstance(system, list):
+        later.extend(system[key.slot + 1 :])
+    for message in parsed.get("messages") or ():
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            later.extend(content)
+    if _has_hour_mark(later):
+        return key.cert, True
+    top = parsed.get("cache_control")
+    if isinstance(top, dict) and top.get("ttl") == "1h":
+        return key.cert, any(point.markable and point.index > key.index for point in blocks)
+    return key.cert, False
 
 
 def _refuse(code: RouterErrorCode) -> AccountRoutingError:

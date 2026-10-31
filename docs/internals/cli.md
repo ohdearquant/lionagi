@@ -128,8 +128,10 @@ from the record, searching from the launch directory, so the directory the resum
 not decide what is found. A flag given on the resume is used for that leg instead of the record.
 Either way, a set resolved on the resume replaces the servers the earlier run was handed, on
 codex (whose servers are merged overrides) as on Claude, and the Claude strict flag goes with
-them: a non-empty set is handed to a resumed leg as it is to a new one, without
-`--strict-mcp-config`. A recorded config is read from the launch directory when its path is
+them. The set is handed to a resumed leg as it is to a new one: a set named by a config file,
+on the resume or in the record, is the whole set (Claude gets `--strict-mcp-config`, and codex
+is given only those servers), while a set found by searching the launch directory adds to the
+servers the provider finds for itself. A recorded config is read from the launch directory when its path is
 relative; one that is missing or can no longer be read refuses the resume, naming that config
 and the flags to resume with instead. A branch created before the choice was recorded resolves
 nothing new, and its request keeps the servers its earlier run was handed.
@@ -1348,6 +1350,12 @@ and `li o` report on one line with exit `1`.
 
 ## `kill.py`
 
+The process identity, signalling and recorded-worker cleanup helpers are defined in
+`lionagi/cli/_kill_service.py`. `kill.py` keeps the `li kill` parser, `_do_kill`, the
+`--all-stale` sweep and `run_kill`, and imports the helpers it uses from there under their
+public names. The Studio cancel path and `li state doctor` import `kill_one`,
+`list_running_children`, `check_pid_identity` and the related helpers from the new module.
+
 No standalone entries beyond the general ADR-0035 CAS-guard pattern documented under
 `_runs.py` / `status.py` — `li kill`'s `TransitionRejectedError` handling follows the same
 race-window discipline (the session may have gone terminal between resolution and the kill
@@ -1524,6 +1532,12 @@ generation, after the parent's drain and successful database close. Reopening a 
 installs a fresh generation in the same guarded status write.
 
 ## `mirror.py` — Claude transcript mirroring into StateDB
+
+The state, passes and `mirror_forever` described below are defined in
+`lionagi/cli/_mirror_service.py`, and the preview-size setting in
+`lionagi/cli/_mirror_settings.py`. `mirror.py` keeps the `li mirror` parser, its
+`_run` loop and `run_mirror`, and imports the service names back for callers that
+read them from `lionagi.cli.mirror`.
 
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
 conversation opens a fresh transcript whose first message points — via `parentUuid` — at the

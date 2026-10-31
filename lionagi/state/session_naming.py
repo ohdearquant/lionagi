@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Deterministic display-name derivation for sessions/runs, shared between the
-write path (transcript-mirror ingestion — cli/mirror.py) and the read path
+write path (transcript-mirror ingestion — cli/_mirror_service.py) and the read path
 (studio API — studio/services/sessions.py, runs.py) so both agree on what
 "prompt-shaped" and "sane display width" mean. No randomness, no DB reads:
 every function here is a pure transform over already-available fields, so a

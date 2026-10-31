@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:5020-5031`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:5071-5082`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -342,7 +342,7 @@ about, so it is the subject of the change rather than a downstream reader of
 it. That leaves the **11 downstream consumer files** enumerated below. Read
 "11" as a description of the table and not as a count of everything in the tree
 that reads the constant: the reconciler reads it, and `state/db.py` derives a
-second name from it at `lionagi/state/db.py:461`.
+second name from it at `lionagi/state/db.py:484`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |

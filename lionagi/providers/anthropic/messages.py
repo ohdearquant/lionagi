@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Union
 
+import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lionagi.service.connections.endpoint import Endpoint
@@ -509,10 +510,10 @@ class AnthropicMessagesEndpoint(Endpoint):
                 )
                 status = response.status_code
                 if status in (401, 403):
-                    # A cancellation during the first of these writes lets it commit but stops
-                    # the second from starting, so the block goes first: losing the attempt's
-                    # reason keeps its ceiling held, while losing the block would leave the
-                    # refused key free to be reserved again.
+                    # Both writes are shielded from cancellation. The block goes first because
+                    # a ledger error on the first write stops the second from running: losing
+                    # the attempt's reason only keeps its ceiling held, while losing the block
+                    # would leave the refused key free to be reserved again.
                     await router.block(attempt, "auth_required")
                     await router.settle_unknown(attempt, "auth_required")
                     raise _RoutedNoRetryError(
@@ -582,13 +583,14 @@ class AnthropicMessagesEndpoint(Endpoint):
             # caller.
             try:
                 if not request_entered:
-                    await router.settle_not_sent(attempt)
+                    await router.settle_not_sent(attempt, caller_cancelled=True)
                 else:
                     await router.settle_stream_end(attempt, None, reason="cancelled")
             except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
             raise
         except AccountRoutingError as exc:
+            await anyio.lowlevel.checkpoint()
             raise _RoutedNoRetryError(
                 exc.code.value,
                 account=exc.account,
@@ -596,6 +598,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 http_status=exc.http_status,
             ) from None
         except (_RoutedNoRetryError, _RoutedRetryableError):
+            await anyio.lowlevel.checkpoint()
             raise
         except (httpx.RequestError, asyncio.TimeoutError, TimeoutError, ConnectionError):
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
@@ -617,6 +620,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 await router.settle_unknown(attempt, "transport_error")
             else:
                 await router.settle_not_sent(attempt)
+            await anyio.lowlevel.checkpoint()
             raise failure
 
     async def _stream_http(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
@@ -783,7 +787,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         usage: dict[str, Any] = {}
         served_model = None
         request_id = None
-        settled = False
+        settled = False  # set before each settlement write, so no handler writes a second
         saw_error_event = False
         saw_final_usage = False
         start_models: set[str] = set()
@@ -948,8 +952,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                         if saw_final_usage
                         else None
                     )
-                    await router.settle_stream_end(attempt, outcome)
                     settled = True
+                    await router.settle_stream_end(attempt, outcome)
                 chunk = self._line_to_stream_chunk(data, sse_event=sse_event)
                 if chunk is not None:
                     if chunk.metadata.get("call_failed"):
@@ -979,10 +983,13 @@ class AnthropicMessagesEndpoint(Endpoint):
                 ) as response:
                     status = response.status_code
                     if status in (401, 403):
-                        # A cancellation during the first of these writes lets it commit but stops
-                        # the second from starting, so the block goes first: losing the attempt's
-                        # reason keeps its ceiling held, while losing the block would leave the
-                        # refused key free to be reserved again.
+                        # Both writes are shielded from cancellation. The block goes first
+                        # because a ledger error on the first write stops the second from
+                        # running: losing the attempt's reason only keeps its ceiling held,
+                        # while losing the block would leave the refused key free to be
+                        # reserved again. The attempt counts as settled before the writes, so
+                        # a cancellation arriving during them does not record a second outcome.
+                        settled = True
                         await router.block(attempt, "auth_required")
                         await router.settle_unknown(attempt, "auth_required")
                         raise AccountRoutingError(
@@ -992,6 +999,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                         ) from None
                     if status == 429:
+                        settled = True
                         await router.settle_unknown(attempt, "rate_limited")
                         raise _RoutedRetryableError(
                             RouterErrorCode.RATE_LIMITED.value,
@@ -1000,6 +1008,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                         )
                     if status >= 500:
+                        settled = True
                         await router.settle_unknown(attempt, "provider_error")
                         raise _RoutedRetryableError(
                             RouterErrorCode.PROVIDER_ERROR.value,
@@ -1008,6 +1017,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                         )
                     if status != 200:
+                        settled = True
                         await router.settle_unknown(attempt, "request_rejected")
                         raise AccountRoutingError(
                             RouterErrorCode.REQUEST_REJECTED,
@@ -1016,7 +1026,18 @@ class AnthropicMessagesEndpoint(Endpoint):
                             http_status=status,
                         ) from None
 
-                    async for raw in response.aiter_bytes():
+                    # Only a failure of the byte source itself is held back, so the events it
+                    # completed are dispatched first; an error handling an event raises at once.
+                    byte_stream = response.aiter_bytes().__aiter__()
+                    transport_error: Exception | None = None
+                    while True:
+                        try:
+                            raw = await byte_stream.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        except Exception as error:
+                            transport_error = error
+                            break
                         safe = redactor.feed(raw)
                         pending += decoder.decode(safe)
                         while "\n" in pending:
@@ -1025,34 +1046,43 @@ class AnthropicMessagesEndpoint(Endpoint):
                                 async for chunk in emit_ready(queue_data(data, name)):
                                     yield chunk
                     # The byte redactor's held tail can hold several lines, the last events
-                    # of the stream among them.
-                    pending += decoder.decode(redactor.feed(b"", final=True), final=True)
+                    # of the stream among them. They are framed whether the stream ended or
+                    # the connection failed; after a failure a trailing partial character is
+                    # a truncated one and is dropped, not an error.
+                    pending += decoder.decode(
+                        redactor.feed(b"", final=True), final=transport_error is None
+                    )
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         for data, name in self._frame_stream_line(line, frame):
                             async for chunk in emit_ready(queue_data(data, name)):
                                 yield chunk
-                    if pending:
-                        for data, name in self._frame_stream_line(pending, frame):
+                    if transport_error is None:
+                        if pending:
+                            for data, name in self._frame_stream_line(pending, frame):
+                                async for chunk in emit_ready(queue_data(data, name)):
+                                    yield chunk
+                        if frame.data:
+                            data, name = self._take_sse_event(frame)
                             async for chunk in emit_ready(queue_data(data, name)):
                                 yield chunk
-                    if frame.data:
-                        data, name = self._take_sse_event(frame)
-                        async for chunk in emit_ready(queue_data(data, name)):
-                            yield chunk
+                    # After a failure an unterminated line or event is a truncated event and
+                    # is not dispatched; the text already held from complete events is.
                     async for chunk in emit_ready(text_redactor.finish()):
                         yield chunk
+                    if transport_error is not None:
+                        raise transport_error
                     if not settled:
                         # The stream ended before message_stop, so its usage is incomplete.
                         reason = "stream_error" if saw_error_event else "stream_truncated"
-                        await router.settle_stream_end(attempt, None, reason=reason)
                         settled = True
+                        await router.settle_stream_end(attempt, None, reason=reason)
         except get_cancelled_exc_class():
             # A write that fails records nothing; the cancellation still reaches the caller.
             # As on the call path, a native task.cancel() returns before the write commits.
             try:
                 if not request_entered:
-                    await router.settle_not_sent(attempt)
+                    await router.settle_not_sent(attempt, caller_cancelled=True)
                 elif not settled:
                     await router.settle_stream_end(attempt, None, reason="cancelled")
             except Exception:  # noqa: S110 - the caller must see the cancellation
@@ -1061,11 +1091,14 @@ class AnthropicMessagesEndpoint(Endpoint):
         except GeneratorExit:
             # The consumer closed the stream before message_stop.
             if not settled:
-                await router.settle_stream_end(attempt, None, reason="stream_closed")
+                reason = "stream_error" if saw_error_event else "stream_closed"
+                await router.settle_stream_end(attempt, None, reason=reason)
             raise
         except AccountRoutingError:
+            await anyio.lowlevel.checkpoint()
             raise
         except (_RoutedNoRetryError, _RoutedRetryableError):
+            await anyio.lowlevel.checkpoint()
             raise
         except Exception:
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
@@ -1077,10 +1110,12 @@ class AnthropicMessagesEndpoint(Endpoint):
         # this error carries context: the exception it stands for can quote the request
         # or the response.
         if failure is not None:
-            if request_entered:
-                await router.settle_unknown(attempt, "transport_error")
-            else:
-                await router.settle_not_sent(attempt)
+            if not settled:
+                if request_entered:
+                    await router.settle_unknown(attempt, "transport_error")
+                else:
+                    await router.settle_not_sent(attempt)
+            await anyio.lowlevel.checkpoint()
             raise failure
 
     def create_payload(

@@ -74,7 +74,7 @@ async def orchestration_workers(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(shared, "save_last_branch_pointer", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "lionagi.cli.kill.current_pid_markers",
+        "lionagi.ln._proc.current_pid_markers",
         lambda: {
             "pid": 4200,
             "pid_create_time": 200.0,

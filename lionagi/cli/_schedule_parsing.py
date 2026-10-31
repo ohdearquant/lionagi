@@ -100,7 +100,15 @@ def _validate_chain_action_node(
     max_chain_depth: int,
 ) -> str | None:
     """Validate one chain_action node, recursing into its own nested
-    on_success/on_fail the same way the engine's chain-fire would reach them."""
+    on_success/on_fail the same way the engine's chain-fire would reach them.
+
+    A node at ``max_chain_depth`` is still validated, but one that nests a
+    further action below it is refused: the engine would never fire that
+    action, so accepting it would store a chain that silently stops short.
+    The engine fires a chain action only when its value is truthy, so at that
+    depth a nested ``None`` or ``{}`` is accepted, a nested value that is not a
+    JSON object is refused as it is below the limit, and a nested non-empty
+    object is refused as past the depth limit."""
     if not isinstance(action, dict):
         return f"{label}: must be a JSON object, got {type(action).__name__}"
 
@@ -119,6 +127,16 @@ def _validate_chain_action_node(
         )
 
     if chain_depth >= max_chain_depth:
+        for nested_field in ("on_success", "on_fail"):
+            nested = action.get(nested_field)
+            if nested is None or (isinstance(nested, dict) and not nested):
+                continue
+            if not isinstance(nested, dict):
+                return f"{label}.{nested_field}: must be a JSON object, got {type(nested).__name__}"
+            return (
+                f"{label}: {nested_field} nests chain actions past the depth limit "
+                f"of {max_chain_depth}"
+            )
         return None
 
     for nested_field in ("on_success", "on_fail"):

@@ -455,6 +455,11 @@ def _prepare_run_kwargs(
     if cache_view is not None and round_ids:
         cache_view["round"] = round_ids
     chat_msgs = []
+    # Without a system message, fold the caller's blocks into the first
+    # outgoing instruction. A plain-content instruction ignores guidance, so
+    # it also needs this fold when a system message is present.
+    pending_blocks = "\n".join(context_blocks or ()) if not places_cache else ""
+    needs_block_fold = bool(pending_blocks)
     for i, entry in enumerate(_contents):
         # The stored message this entry renders, when it renders one: a note or a round member.
         source = entry.source
@@ -492,6 +497,35 @@ def _prepare_run_kwargs(
             _current_turn_rendered = rendered
         if not rendered and entry.results is None:
             continue
+        is_first_plain = (
+            bool(pending_blocks)
+            and bool(branch.msgs.system)
+            and i == 0
+            and isinstance(entry.base_content, InstructionContent)
+            and bool(entry.base_content.plain_content)
+        )
+        if branch.msgs.system and i == 0 and not is_first_plain:
+            # The system/guidance fold already included these blocks.
+            needs_block_fold = False
+        if (needs_block_fold or is_first_plain) and isinstance(
+            entry.base_content, InstructionContent
+        ):
+            content = entry.materialize()
+            if content.plain_content:
+                content = content.with_updates(
+                    plain_content=f"{pending_blocks}\n{content.plain_content}"
+                )
+            else:
+                guidance = content.guidance or ""
+                if not isinstance(guidance, str):
+                    from lionagi.libs.schema.minimal_yaml import minimal_yaml
+
+                    guidance = minimal_yaml(guidance).strip()
+                content = content.with_updates(
+                    guidance="\n".join(part for part in (pending_blocks, guidance) if part)
+                )
+            rendered = content.rendered
+            needs_block_fold = False
         if rendered and entry.context:
             rendered = _with_context(rendered, entry.context)
         if entry.results is not None:
@@ -538,6 +572,9 @@ def _prepare_run_kwargs(
             "The instruction content was lost or filtered during message "
             "assembly — this is a bug, not a valid empty-prompt call."
         )
+
+    if needs_block_fold and pending_blocks.strip():
+        chat_msgs.append({"role": "user", "content": pending_blocks})
 
     kw["messages"] = chat_msgs
     return ins, kw

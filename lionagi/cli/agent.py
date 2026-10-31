@@ -34,7 +34,7 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+from lionagi.providers._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi.providers._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
@@ -821,11 +821,17 @@ async def _run_api_turn(
         refused = _first_refusal(_pass_responses(branch, before))
         if refused is not None:
             details["stop_reason"] = refused[0]
-        raise FailedRoundError(
+            details.update(_refusal_details(refused[1]))
+        failure = FailedRoundError(
             f"{round_resumes + 1} passes of the tool loop in a row ended on a failed round: "
             f"{failed[1]}",
             details=details,
         )
+        if refused is not None:
+            # A provider refusal is a provider failure that retrying the same request will not
+            # clear, so the run records it as one rather than as a generic exception.
+            raise failure from ProviderSafetyError(failed[1])
+        raise failure
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
 
@@ -937,6 +943,34 @@ def _first_refusal(responses: list) -> tuple[str, Any] | None:
         if marker is not None:
             return marker, response
     return None
+
+
+def _refusal_details(response: Any) -> dict[str, Any]:
+    """The provider's own account of a refusal, copied verbatim from a raw response: an Anthropic
+    Messages response's ``stop_details`` when it is a non-empty JSON object, as ``stop_details``;
+    an OpenAI chat completion's non-empty ``message.refusal`` string, or the first non-empty text
+    of an OpenAI Responses ``refusal`` content part, as ``refusal``. Empty when the response
+    carries none of these (a ``content_filter`` stop has no detail), so the key is then absent."""
+    if not isinstance(response, dict):
+        return {}
+    if "stop_reason" in response:
+        stop_details = response.get("stop_details")
+        if isinstance(stop_details, dict) and stop_details:
+            return {"stop_details": stop_details}
+        return {}
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        return {"refusal": refusal} if isinstance(refusal, str) and refusal else {}
+    for item in response.get("output") or []:
+        if isinstance(item, dict) and item.get("type") == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "refusal":
+                    text = part.get("refusal")
+                    if isinstance(text, str) and text:
+                        return {"refusal": text}
+    return {}
 
 
 def _provider_refusal(response: Any) -> str | None:
@@ -1840,7 +1874,7 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty,
+                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
@@ -2161,9 +2195,11 @@ async def _run_agent(
                 cfg,
                 mcp_resolution.servers,
                 provider=provider,
-                # The persisted request carries the previous run's servers; only a declared set replaces
-                # them. A failed search leaves them, as it leaves a new leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty,
+                # A set named by a config file, or declared empty, is the whole set: the provider's
+                # own servers are left out too. A set found by search joins what the provider finds
+                # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
+                # leg to what its CLI finds.
+                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
             )
             missing_profile = _missing_generated_codex_profile(cfg)
             if missing_profile is not None:
@@ -2389,8 +2425,7 @@ async def _run_agent(
             # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
             # says how to stop it (ADR-0104 Amendment 2).
             from lionagi.cli._logging import warn
-
-            from .kill import current_pid_markers
+            from lionagi.ln._proc import current_pid_markers
 
             run_manifest.update(current_pid_markers())
             _write_run_manifest(run_manifest)
@@ -2815,6 +2850,9 @@ async def _run_agent(
                         _stop_reason = _terminal_exc.details.get("stop_reason")
                         if _stop_reason:
                             run_manifest["stop_reason"] = _stop_reason
+                        for _detail in ("stop_details", "refusal"):
+                            if _terminal_exc.details.get(_detail):
+                                run_manifest[_detail] = _terminal_exc.details[_detail]
                 if _write_run_manifest is not None:
                     _write_run_manifest(run_manifest)
                 # Only when an exception is on its way out, because then this is

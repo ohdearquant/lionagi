@@ -12,6 +12,9 @@
     "lionagi/cli/_agent_depth.py": [
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
+    "lionagi/cli/_mirror_settings.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\""
+    ],
     "lionagi/cli/_providers.py": [
       "os.getenv:\"LIONAGI_INVOCATION_ID\""
     ],
@@ -101,7 +104,6 @@
       "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\"",
       "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
       "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
@@ -1821,6 +1823,14 @@
       "resolve_primary_session",
       "run_id_candidates"
     ],
+    "lionagi/cli/_kill_service.py": [
+      "check_pid_identity",
+      "imported_degraded_process_is_live",
+      "kill_one",
+      "list_running_children",
+      "read_pid_from_entity",
+      "unaddressable_pid_reason"
+    ],
     "lionagi/cli/_logging.py": [
       "configure_cli_logging"
     ],
@@ -1830,6 +1840,9 @@
       "discover_mcp_config",
       "explicit_mcp_config_path",
       "resolve_spawn_mcp_servers"
+    ],
+    "lionagi/cli/_mirror_service.py": [
+      "mirror_forever"
     ],
     "lionagi/cli/_notify_outcomes.py": [
       "DurableRunRecorder"
@@ -1923,7 +1936,6 @@
     ],
     "lionagi/cli/kill.py": [
       "add_kill_subparser",
-      "current_pid_markers",
       "run_kill"
     ],
     "lionagi/cli/machine.py": [
@@ -1971,7 +1983,6 @@
     ],
     "lionagi/cli/mirror.py": [
       "add_mirror_subparser",
-      "mirror_forever",
       "run_mirror"
     ],
     "lionagi/cli/monitor.py": [
@@ -2328,6 +2339,7 @@
       "aterminate_process_group",
       "capture_group_witnesses",
       "communicate_in_process_group",
+      "current_pid_markers",
       "env_without_state_db_url",
       "group_member_pids",
       "kill_group_now",

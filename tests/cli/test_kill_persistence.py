@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import lionagi.cli._kill_service as kill_service
 import lionagi.cli.kill as kill_mod
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
@@ -40,7 +41,9 @@ async def _cancel(db: StateDB, reason_code: str = RunReasons.CANCELLED_MANUAL_KI
 async def test_invocation_cancel_records_observation_time_atomically(
     tmp_path, monkeypatch, reason_code
 ):
-    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    patched_time = SimpleNamespace(time=lambda: 300.0)
+    monkeypatch.setattr(kill_mod, "time", patched_time)
+    monkeypatch.setattr(kill_service, "time", patched_time)
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db)
         # A reader must never observe the cancellation without its end time.
@@ -72,7 +75,9 @@ async def test_invocation_cancel_pre_check_skips_non_running_rows(
 ):
     """The pre-check refuses a row that is already terminal, so the guarded
     write below it is never reached and the row is untouched."""
-    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    patched_time = SimpleNamespace(time=lambda: 300.0)
+    monkeypatch.setattr(kill_mod, "time", patched_time)
+    monkeypatch.setattr(kill_service, "time", patched_time)
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db, status=status, ended_at=ended_at)
         before = await db.get_invocation("invocation")
@@ -84,7 +89,9 @@ async def test_invocation_cancel_pre_check_skips_non_running_rows(
 async def test_invocation_cancel_preserves_concurrent_terminal_transition(
     tmp_path, monkeypatch, status
 ):
-    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    patched_time = SimpleNamespace(time=lambda: 300.0)
+    monkeypatch.setattr(kill_mod, "time", patched_time)
+    monkeypatch.setattr(kill_service, "time", patched_time)
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db)
         original_update = db.update_status
@@ -123,7 +130,9 @@ async def test_invocation_cancel_preserves_existing_running_end_time(
 ):
     """Regression control for the end-time rule, not for the running guard: a
     plain write would overwrite the stored value with the observation time."""
-    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    patched_time = SimpleNamespace(time=lambda: 300.0)
+    monkeypatch.setattr(kill_mod, "time", patched_time)
+    monkeypatch.setattr(kill_service, "time", patched_time)
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db, ended_at=ended_at)
         await _cancel(db)
@@ -136,7 +145,9 @@ async def test_invocation_cancel_preserves_concurrent_running_end_time(tmp_path,
     """Regression control for the end-time rule against a write that lands
     before the transition's own read; the running guard does not reach this
     case, because the row is still ``running`` when the read happens."""
-    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    patched_time = SimpleNamespace(time=lambda: 300.0)
+    monkeypatch.setattr(kill_mod, "time", patched_time)
+    monkeypatch.setattr(kill_service, "time", patched_time)
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db)
         original_update = db.update_status

@@ -19,7 +19,6 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 @pytest_asyncio.fixture(loop_scope="function")
 async def engine_workers(monkeypatch):
     import lionagi.cli.engine as cli
-    import lionagi.cli.kill as kill_module
     import lionagi.session.session as session_module
     import lionagi.state.cli_workers as worker_module
     import lionagi.state.db as db_module
@@ -187,7 +186,7 @@ async def engine_workers(monkeypatch):
     monkeypatch.setattr(cli, "progress", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "log_error", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "warn", state.warnings.append)
-    monkeypatch.setattr(kill_module, "current_pid_markers", lambda: {"runner": "fixture"})
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"runner": "fixture"})
     monkeypatch.setattr(db_module, "StateDB", lambda: state.db)
     monkeypatch.setattr(worker_module, "_WorkerSpawnOwner", Owner)
     monkeypatch.setattr(session_module, "Session", RuntimeSession)

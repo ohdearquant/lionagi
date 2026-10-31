@@ -250,7 +250,7 @@ def test_mirror_offsets_refuse_non_finite(tmp_path, monkeypatch):
     The offset is this module's own arithmetic, but the tool-name map comes out
     of a transcript another program wrote and is never coerced to ``str``.
     """
-    from lionagi.cli import mirror
+    from lionagi.cli import _mirror_service as mirror
 
     target = tmp_path / "offsets.json"
     monkeypatch.setattr(mirror, "_OFFSETS_PATH", target)

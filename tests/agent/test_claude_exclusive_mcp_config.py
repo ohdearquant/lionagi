@@ -562,3 +562,32 @@ async def test_factory_copy_preserves_caller_runtime_behavior(tmp_path, monkeypa
     assert json.loads(_mcp_argument(forwarded.as_cmd_args())) == {"mcpServers": {}}
     assert forwarded.env == before.env
     assert forwarded.on_spawn is before.on_spawn
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", [True, False], ids=["named-file", "ambient"])
+async def test_factory_caller_resolved_set_is_exclusive_only_when_named(
+    tmp_path, monkeypatch, explicit
+):
+    """A set read from a file the caller named bounds the Claude child; an ambient one does not."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    selected = {"selected": {"command": "never-run-fixture"}}
+    caller = iModel(provider="claude_code", model="sonnet", api_key="dummy")
+    spec = AgentSpec.compose("reviewer", model="claude_code/sonnet", cwd=str(tmp_path))
+    assert spec.mcp_servers is None
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        chat_model=caller,
+        resolved_mcp_servers=selected,
+        resolved_mcp_explicit=explicit,
+        log_config={"auto_save_on_exit": False},
+    )
+
+    request = _caller_request(branch.chat_model)
+    assert request.mcp_servers == selected
+    assert request.strict_mcp_config is explicit
+    args = request.as_cmd_args()
+    assert ("--strict-mcp-config" in args) is explicit
+    assert json.loads(_mcp_argument(args)) == {"mcpServers": selected}
