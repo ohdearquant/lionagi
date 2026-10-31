@@ -16,6 +16,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from lionagi import ln
+from lionagi._provider_errors import (
+    ProviderError,
+    classify_provider_error,
+)
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -35,10 +39,6 @@ from lionagi.providers._cli_subprocess import (
 )
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
-)
-from lionagi.providers._provider_errors import (
-    ProviderError,
-    classify_provider_error,
 )
 from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint

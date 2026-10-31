@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers._provider_errors import (
+from lionagi._provider_errors import (
     ProviderTeardownError,
     classify_provider_error,
 )

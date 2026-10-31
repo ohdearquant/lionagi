@@ -14,6 +14,13 @@ import anyio
 from pydantic import Field
 
 from lionagi._errors import ConfigurationError
+from lionagi._provider_errors import (
+    ProviderAuthError,
+    ProviderError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import compute_hash
 from lionagi.ln import gather as ln_gather
@@ -21,13 +28,6 @@ from lionagi.ln.concurrency import fail_after
 from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
-)
-from lionagi.providers._provider_errors import (
-    ProviderAuthError,
-    ProviderError,
-    ProviderQuotaError,
-    ProviderSafetyError,
-    ProviderUnsupportedModelError,
 )
 
 from .engine import Engine, EngineEvent, EngineRun, check_max_tokens

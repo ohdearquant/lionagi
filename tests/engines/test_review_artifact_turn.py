@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
+from lionagi._provider_errors import ProviderError
 from lionagi.ln.concurrency import fail_after
-from lionagi.providers._provider_errors import ProviderError
 from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionhub.orchestration.engines import ReviewEngine
 from lionhub.orchestration.engines.review import DimensionClean, IssueFound

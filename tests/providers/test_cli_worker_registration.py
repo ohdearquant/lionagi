@@ -615,7 +615,7 @@ async def test_explicit_none_keeps_uncapped_optional_identity_and_records_nothin
 async def test_registration_refusal_exposes_no_output_and_preserves_lease_ownership(
     scripted, group_present
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     state = scripted
     state.lease.slots = [object()]
@@ -639,7 +639,7 @@ async def test_registration_refusal_exposes_no_output_and_preserves_lease_owners
 @pytest.mark.parametrize("ending", ["eof", "explicit-close"])
 @pytest.mark.asyncio(loop_scope="function")
 async def test_unconfirmed_eof_or_explicit_close_surfaces_teardown_failure(scripted, ending):
-    from lionagi.providers._provider_errors import ProviderTeardownError
+    from lionagi._provider_errors import ProviderTeardownError
 
     state = scripted
     state.group_present = True
@@ -812,7 +812,7 @@ async def test_late_cleanup_is_retained_before_python312_eager_execution(scripte
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_a_closed_owner_refuses_before_creating_an_os_child(scripted):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     state = scripted
     owned = state.owner()
@@ -930,8 +930,8 @@ def test_executable_gate_uses_the_child_cwd_and_actual_environment_path(
 def test_executable_gate_refuses_parent_path_fallback_and_nonexecutables(
     tmp_path, monkeypatch, kind
 ):
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.providers import _cli_subprocess as cs
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
     child, parent = tmp_path / "child", tmp_path / "parent-bin"
     child.mkdir()
@@ -954,9 +954,9 @@ async def test_missing_executables_never_attempt_spawn_or_accumulate_capped_slot
     tmp_path, monkeypatch, count
 ):
     from lionagi import _paths
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.providers import _cli_subprocess as cs
     from lionagi.providers import _subagent_admission as admission
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": str(count), "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -1002,7 +1002,7 @@ async def test_unreadable_local_identity_refuses_before_record_or_output(
 ):
     import psutil
 
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     state = scripted
     monkeypatch.setattr(psutil, "boot_time", lambda: boot)
@@ -1086,7 +1086,7 @@ async def test_an_unconfirmed_dead_child_keeps_actual_holder_locks_until_explici
 async def test_real_store_stale_generation_refuses_before_transport_and_leaves_records_unchanged(
     scripted, tmp_path
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.db import StateDB
 
     state = scripted

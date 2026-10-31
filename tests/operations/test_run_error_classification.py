@@ -10,13 +10,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.operations.run.run import RunParam, run
-from lionagi.providers._provider_errors import (
+from lionagi._provider_errors import (
     ProviderAuthError,
     ProviderContextError,
     ProviderError,
     ProviderQuotaError,
 )
+from lionagi.operations.run.run import RunParam, run
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch

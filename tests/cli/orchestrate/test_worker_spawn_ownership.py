@@ -579,7 +579,7 @@ async def test_an_ownerless_persisted_orchestration_runs_only_when_its_setup_say
 ):
     """ADR-0104 Amendment 4, Limits: "its setup result says so in `worker_spawns_unrecorded`, and
     a persisted setup result that carries no owner and does not say so is refused"."""
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     h = orchestration_workers
     env = h.make_env(f"ownerless-{kind}-{'declared' if declared else 'undeclared'}")

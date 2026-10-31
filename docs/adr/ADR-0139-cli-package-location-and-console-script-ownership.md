@@ -102,8 +102,8 @@ selection/loading entry points to leave core before the first command target mov
 **P4. Import compatibility cannot establish installer correctness.**
 The alias loader supports longest-prefix lookup, module identity and code loading,
 but the current table has no CLI row
-(`lionagi/_moved.py:46`, `lionagi/_moved.py:55`,
-`lionagi/_moved.py:118`, `lionagi/_moved.py:132`).
+(`lionagi/_moved.py:46`, `lionagi/_moved.py:56`,
+`lionagi/_moved.py:119`, `lionagi/_moved.py:133`).
 A working old script does not prove that an upgrade installed the intended new
 entry point or left a single file owner.
 
@@ -342,7 +342,7 @@ step 6 ships, not a new runtime variable. Keep the ten more-specific whole-modul
 `lionagi.cli._runs` must still resolve to `lionhub.orchestration.runs`,
 rather than a nonexistent `lionhub.cli._runs`.
 The loader already selects the longest matching prefix and supports non-package
-specs (`lionagi/_moved.py:55`, `lionagi/_moved.py:149`).
+specs (`lionagi/_moved.py:56`, `lionagi/_moved.py:150`).
 
 Before adding these rows, extend the move-test enumerator to accept a module
 target without `__path__`; it currently assumes every target is a package

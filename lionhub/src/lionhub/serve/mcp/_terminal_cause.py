@@ -31,7 +31,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lionagi.providers._provider_errors import ProviderError
+from lionagi._provider_errors import ProviderError
 from lionhub.serve.mcp import config
 
 __all__ = [
