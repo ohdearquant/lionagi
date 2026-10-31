@@ -1849,6 +1849,60 @@ class EngineResult(str):
 _JUDGE_CHAIN_LIMIT = 100
 
 
+def _judge_refusal(
+    error: BaseException,
+) -> tuple[BaseException | None, BaseException | None, bool]:
+    """Find a request refusal while preserving the existing containment precedence."""
+    from lionagi._errors import (  # noqa: PLC0415
+        ContainmentRefusedError,
+        _ExclusiveMcpSelectionError,
+    )
+
+    # Retain the first request or policy refusal while looking for a containment or
+    # exclusive-selection refusal, whose existing precedence must be preserved.
+    # Follow whatever each link holds, nearest first. Keep each visited object
+    # alive until the walk ends so a link built on a later read cannot reuse its id.
+    pending: deque[object] = deque([error])
+    seen: dict[int, object] = {}
+    refusal = None
+    visited = 0
+    while pending and visited < _JUDGE_CHAIN_LIMIT:
+        cause = pending.popleft()
+        visited += 1
+        if id(cause) in seen:
+            continue
+        seen[id(cause)] = cause
+        if issubclass(type(cause), (ContainmentRefusedError, _ExclusiveMcpSelectionError)):
+            return cause, None, True
+        if refusal is None and issubclass(type(cause), _JUDGE_REFUSALS):
+            refusal = cause
+        for name in ("__context__", "__cause__"):
+            # A read that fails ends that branch. An interrupt, an exit or a cancellation
+            # raised by the read is not caught.
+            try:
+                link = getattr(cause, name, None)
+            except Exception:  # noqa: S112
+                continue
+            if link is not None and visited + len(pending) < _JUDGE_CHAIN_LIMIT:
+                pending.append(link)
+        try:
+            if is_exception_group(cause):
+                members = iter(get_exception_group_exceptions(cause))
+                while visited + len(pending) < _JUDGE_CHAIN_LIMIT:
+                    try:
+                        pending.append(next(members))
+                    except StopIteration:
+                        break
+        except Exception:  # noqa: S110 — unreadable group members are skipped
+            pass
+    if refusal is not None:
+        try:
+            return refusal, refusal.__cause__, False
+        except Exception:  # noqa: BLE001 — unreadable links are skipped
+            return refusal, None, False
+    return None, None, False
+
+
 def check_max_tokens(name: str, value: Any) -> int:
     """*value* as an output-token limit: a positive int (a bool is not one)."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -1996,10 +2050,7 @@ class Engine:
         ordinary error reporting a denial does not change that denial; an unreadable
         callback error chain or a containment or settings refusal still raises.
         """
-        from lionagi._errors import (  # noqa: PLC0415
-            ContainmentRefusedError,
-            _ExclusiveMcpSelectionError,
-        )
+        from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
 
         if not self.judge_model:
             return True
@@ -2033,49 +2084,12 @@ class Engine:
             raise
         except Exception as exc:
             # Request and policy refusals recur for the same input and must not be
-            # mistaken for an ordinary infrastructure failure. Retain the first new
-            # refusal while looking for a containment or exclusive-selection refusal,
-            # whose existing precedence must be preserved.
-            # Follow whatever each link holds, nearest first. Keep each visited object
-            # alive until the walk ends so a link built on a later read cannot reuse its id.
-            pending: deque[object] = deque([exc])
-            seen: dict[int, object] = {}
-            visited = 0
-            while pending and visited < _JUDGE_CHAIN_LIMIT:
-                cause = pending.popleft()
-                visited += 1
-                if id(cause) in seen:
-                    continue
-                seen[id(cause)] = cause
-                if issubclass(type(cause), (ContainmentRefusedError, _ExclusiveMcpSelectionError)):
-                    raise cause from cause.__cause__
-                if refusal is None and issubclass(type(cause), _JUDGE_REFUSALS):
-                    refusal = cause
-                for name in ("__context__", "__cause__"):
-                    # A read that fails ends that branch. An interrupt, an exit or a cancellation
-                    # raised by the read is not caught.
-                    try:
-                        link = getattr(cause, name, None)
-                    except Exception:  # noqa: S112
-                        continue
-                    if link is not None and visited + len(pending) < _JUDGE_CHAIN_LIMIT:
-                        pending.append(link)
-                try:
-                    if is_exception_group(cause):
-                        members = iter(get_exception_group_exceptions(cause))
-                        while visited + len(pending) < _JUDGE_CHAIN_LIMIT:
-                            try:
-                                pending.append(next(members))
-                            except StopIteration:
-                                break
-                except Exception:  # noqa: S110 — unreadable group members are skipped
-                    pass
-            if refusal is not None:
-                try:
-                    refusal_cause = refusal.__cause__
-                except Exception:  # noqa: BLE001 — unreadable links are skipped
-                    refusal_cause = None
-            else:
+            # mistaken for an ordinary infrastructure failure. Keep the traversal in a
+            # separate frame so this traceback does not retain the outer error's links.
+            refusal, refusal_cause, containment_refusal = _judge_refusal(exc)
+            if containment_refusal:
+                raise refusal from refusal.__cause__
+            if refusal is None:
                 # No refusal on the chain. A chain that loops back on itself, or one longer than
                 # the limit, lands here too, instead of walking forever. Under containment the
                 # refusal can arrive as any error type (an unreadable directory, a config the

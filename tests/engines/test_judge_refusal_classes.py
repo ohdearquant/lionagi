@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import deque
 from contextlib import aclosing
 
 import pytest
@@ -130,6 +131,92 @@ async def test_selected_refusal_does_not_expose_or_mutate_its_outer_error(refusa
         pending.extend(link for link in (error.__cause__, error.__context__) if link is not None)
         if isinstance(error, ExceptionGroup):
             pending.extend(error.exceptions)
+
+
+@pytest.mark.parametrize("shape", ["cause", "context", "group"])
+async def test_selected_refusal_does_not_retain_outer_error_in_judge_frame(shape):
+    refusal = CLIInputRefusedError("refused")
+    outer = _wrap(refusal, shape)
+    with pytest.raises(CLIInputRefusedError) as caught:
+        await _judge_raising(outer)
+
+    traceback = caught.value.__traceback__
+    judge_frames = []
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if frame.f_code.co_name == "judge" and frame.f_code.co_filename.endswith("engine.py"):
+            judge_frames.append(frame)
+        traceback = traceback.tb_next
+    assert len(judge_frames) == 1
+
+    def retains_outer(value):
+        if value is outer:
+            return True
+        if isinstance(value, dict):
+            return any(item is outer for item in (*value.keys(), *value.values()))
+        if isinstance(value, (list, tuple, deque)):
+            return any(item is outer for item in value)
+        return False
+
+    retained = [name for name, value in judge_frames[0].f_locals.items() if retains_outer(value)]
+    assert retained == []
+
+
+async def test_selected_refusal_does_not_retain_other_group_chain_objects_in_judge_frame():
+    refusal = CLIInputRefusedError("refused")
+    intermediate = RuntimeError("intermediate")
+    intermediate.__cause__ = refusal
+    sibling = RuntimeError("ordinary sibling")
+    outer = ExceptionGroup("outer", [intermediate, sibling])
+
+    with pytest.raises(CLIInputRefusedError) as caught:
+        await _judge_raising(outer)
+    assert caught.value is refusal
+
+    traceback = caught.value.__traceback__
+    judge_frames = []
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if frame.f_code.co_name == "judge" and frame.f_code.co_filename.endswith("engine.py"):
+            judge_frames.append(frame)
+        traceback = traceback.tb_next
+    assert len(judge_frames) == 1
+    unwanted = (outer, intermediate, sibling)
+
+    def retains_unwanted(value):
+        if any(value is item for item in unwanted):
+            return True
+        if isinstance(value, dict):
+            return any(
+                entry is item for entry in (*value.keys(), *value.values()) for item in unwanted
+            )
+        if isinstance(value, (list, tuple, deque)):
+            return any(entry is item for entry in value for item in unwanted)
+        return False
+
+    retained = [name for name, value in judge_frames[0].f_locals.items() if retains_unwanted(value)]
+    assert retained == []
+
+
+async def test_containment_refusal_keeps_its_existing_raise_context():
+    refusal = ContainmentRefusedError("containment refused")
+    original_cause = ValueError("cause")
+    refusal.__cause__ = original_cause
+    outer = RuntimeError("wrapper")
+    outer.__cause__ = refusal
+
+    with pytest.raises(ContainmentRefusedError) as caught:
+        await _judge_raising(outer)
+    assert caught.value is refusal
+    assert refusal.__cause__ is original_cause
+    assert refusal.__context__ is outer
+    traceback = caught.value.__traceback__
+    names = []
+    while traceback is not None:
+        names.append(traceback.tb_frame.f_code.co_name)
+        traceback = traceback.tb_next
+    assert "judge" in names
+    assert "_judge_refusal" not in names
 
 
 def _chain_with_refusal_at(position, refusal, *, with_group):
