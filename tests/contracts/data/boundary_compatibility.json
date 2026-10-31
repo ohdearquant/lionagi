@@ -1915,7 +1915,6 @@
     ],
     "lionagi/cli/kill.py": [
       "add_kill_subparser",
-      "current_pid_markers",
       "run_kill"
     ],
     "lionagi/cli/machine.py": [
@@ -2319,6 +2318,7 @@
       "aterminate_process_group",
       "capture_group_witnesses",
       "communicate_in_process_group",
+      "current_pid_markers",
       "env_without_state_db_url",
       "group_member_pids",
       "kill_group_now",
