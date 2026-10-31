@@ -4009,13 +4009,13 @@ async def test_a_cancel_while_an_auth_failure_is_recorded_keeps_the_account_bloc
     write_done = threading.Event()
     original = router.ledger._settle_sync
 
-    def slow_auth_settle(attempt_id, evidence):
+    def slow_auth_settle(attempt_id, evidence, *rest):
         auth = getattr(evidence, "reason_code", None) == "auth_required"
         try:
             if auth:
                 in_write.set()
                 time.sleep(0.2)
-            return original(attempt_id, evidence)
+            return original(attempt_id, evidence, *rest)
         finally:
             if auth:
                 write_done.set()

@@ -420,8 +420,9 @@ selection reads it: the D4 ledger.
      later step needs to know whether the scope was new, because the read arm applies to every
      settled attempt.
    - `settle(attempt_id, evidence)` becomes `settle(attempt_id, evidence, *, cert=None,
-     hour_after_key=False)`; it writes (Decision 3) and clears (Decision 4). `hour_after_key` is
-     the flag from Decision 1.
+     hour_after_key=False, server_tools=False)`; it writes (Decision 3) and clears (Decision 4).
+     `hour_after_key` is the flag from Decision 1, and `server_tools` is true for a request that
+     carries a server tool.
    - `RouterAttempt` (`_router.py:62-67`, `@dataclass(slots=True)`, built positionally at `:143`)
      gains `cert: str | None = None` and `hour_after_key: bool = False` after its four fields, so
      positional construction is unchanged. `begin` computes both from the frozen payload (`:124`),
