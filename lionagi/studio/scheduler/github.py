@@ -13,6 +13,8 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
+from lionagi.ln._proc import communicate_in_process_group
+
 _log = logging.getLogger(__name__)
 
 _CURSOR_SEP = "#"
@@ -251,16 +253,15 @@ def _get_client() -> httpx.AsyncClient:
 async def _gh_cli_token() -> str | None:
     """Fetch a token from the gh CLI (`gh auth token`), or None if unavailable."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "gh",
-            "auth",
-            "token",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+        returncode, stdout, _ = await communicate_in_process_group(
+            ["gh", "auth", "token"], b"", timeout=10.0
         )
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0 and stdout:
+        if returncode != 0:
+            _log.warning("gh auth token lookup failed")
+        elif stdout:
             return stdout.decode().strip()
+    except asyncio.TimeoutError:
+        _log.warning("gh auth token lookup timed out")
     except Exception:
         _log.debug("gh CLI not available for token retrieval")
     return None
