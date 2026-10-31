@@ -157,6 +157,8 @@ its area block.
   credential routing and monthly account budgets (sequential number; see Numbering)
 - [ADR-0133](ADR-0133-machine-wide-admission-for-cli-agents.md) — Machine-wide admission for
   CLI agents (sequential number; see Numbering)
+- [ADR-0140](ADR-0140-provider-discovery-contract.md) — Provider discovery and composition
+  through the 1.x transition (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 
