@@ -80,7 +80,7 @@ _HINTED = [
     ("gemini_code", "gemini-2.5-pro", 2_097_152),
     # The pi table has one key, so the second name is one that contains it. That key's window
     # equals the unknown-model estimate, so these two rows cannot tell a table hit from a miss;
-    # the entry count in _TABLE_SIZES is what pins this table.
+    # test_pi_table_items is what pins the table's key and window.
     ("pi", "pi", 128_000),
     ("pi", "pi-large", 128_000),
     ("groq", "mixtral-8x7b-32768", 32_768),
@@ -103,6 +103,8 @@ _LONGEST_KEY = [
     ("perplexity", "sonar-pro-search", 200_000),
     # "gpt-5.4-mini" (1,000,000) beats "gpt-5.4" (1,048,576).
     ("openai", "gpt-5.4-mini", 1_000_000),
+    # "o1-mini" (128,000) beats the shorter "o1" (200,000).
+    ("openai", "o1-mini-2024", 128_000),
 ]
 
 _HEALTHY_CHILD = """
@@ -119,6 +121,7 @@ providers = list(token_budget._PROVIDER_MODULES)
 out = {
     "order": providers,
     "sizes": {p: len(token_budget._get_provider_windows(p)) for p in providers},
+    "pi_items": dict(token_budget._get_provider_windows("pi")),
     "lookups": {f"{p}|{m}": lookup(m, p) for p, m in cases},
     "unknown_hinted": lookup("zzz-unknown-model-9", "openai"),
     "unknown_unhinted": lookup("zzz-unknown-model-9"),
@@ -158,6 +161,7 @@ for label, module in (("missing", "window_module_absent"), ("raises", "window_im
         "unhinted": lookup("gpt-5.5"),
         "unknown": lookup("zzz-unknown-model-9", "openai"),
     }
+out["cached_after"] = sorted(token_budget._provider_cache)
 token_budget._PROVIDER_MODULES["openai"] = real
 out["restored"] = lookup("gpt-5.5", "openai")
 print(json.dumps(out))
@@ -213,6 +217,12 @@ def test_window_table_size(healthy, provider, size):
     assert healthy["sizes"][provider] == size
 
 
+def test_pi_table_items(healthy):
+    # The pi table's own contents. The pi rows in _HINTED get the same 128,000 from a table hit
+    # and from a miss, so only the items show that the key is still there.
+    assert healthy["pi_items"] == {"pi": 128_000}
+
+
 @pytest.mark.parametrize(("provider", "model", "window"), _HINTED)
 def test_hinted_lookup_reads_the_hinted_table(healthy, provider, model, window):
     assert healthy["lookups"][f"{provider}|{model}"] == window
@@ -238,6 +248,9 @@ def test_failed_window_module_is_indistinguishable_from_unknown_model(healthy, b
         assert broken[scenario]["unhinted"] == 128_000
         # The same broken provider with an unknown model gives the identical value.
         assert broken[scenario]["unknown"] == 128_000
+    # A failed load caches nothing for its provider: a table is stored only after a successful
+    # import, so the lookup below loads the real module instead of reading a cached failure.
+    assert "openai" not in broken["cached_after"]
     # Control: with the real module restored, the same lookup reads the table row, so the
     # 128,000 above came from the failed load and not from gpt-5.5 being unknown.
     assert broken["restored"] == 1_000_000
