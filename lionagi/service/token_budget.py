@@ -9,87 +9,41 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lionagi.service.connections.provider_catalog import ProviderCatalog
     from lionagi.session.branch import Branch
 
 _DEFAULT_CONTEXT_WINDOW = 128_000
 
-_provider_cache: dict[str, dict[str, int]] = {}
 
-_PROVIDER_MODULES: dict[str, str] = {
-    "openai": "lionhub.providers.openai._config",
-    "anthropic": "lionhub.providers.anthropic.messages",
-    "claude_code": "lionhub.providers.anthropic.claude_code",
-    "codex": "lionhub.providers.openai.codex",
-    "deepseek": "lionhub.providers.deepseek.chat",
-    "nvidia_nim": "lionhub.providers.nvidia_nim.chat",
-    "perplexity": "lionhub.providers.perplexity.chat",
-    "gemini_code": "lionhub.providers.google.gemini_code",
-    "pi": "lionhub.providers.pi.cli",
-    "groq": "lionhub.providers.groq.chat",
-    "gemini": "lionhub.providers.google.chat",
-    "openrouter": "lionhub.providers.openrouter.chat",
-}
+def lookup_context_window(
+    model_name: str,
+    provider: str | None = None,
+    *,
+    provider_catalog: ProviderCatalog | None = None,
+) -> int:
+    """Return the context window for model_name from a provider catalog.
 
+    The catalog tries the hinted provider's window table first, then every provider's table in
+    its declared order; within a table the longest key contained in the lower-cased model name
+    wins. A model no table matches gets the 128,000-token estimate. A hint counts only when its
+    lower-cased form is a provider key of the catalog; an alias or any other name is no hint.
 
-def _get_provider_windows(provider: str) -> dict[str, int] | None:
-    """Return CONTEXT_WINDOWS for the named provider, importing lazily."""
-    provider_lower = provider.lower()
-    if provider_lower in _provider_cache:
-        return _provider_cache[provider_lower]
+    ``provider_catalog`` is used as given; when it is None the installed provider hub's catalog
+    is loaded. A hub that is missing or cannot be loaded raises the loader's typed error
+    (``MissingFeatureError``, ``ProviderContractVersionError`` or ``ProviderActivationError``)
+    rather than answering with the estimate.
+    """
+    if provider_catalog is None:
+        from lionagi.service.connections._provider_compat import default_provider_catalog
 
-    module_path = _PROVIDER_MODULES.get(provider_lower)
-    if module_path is None:
-        return None
-
-    try:
-        from lionagi.ln import import_module
-
-        mod = import_module(module_path)
-        windows = getattr(mod, "CONTEXT_WINDOWS", None)
-        if isinstance(windows, dict):
-            _provider_cache[provider_lower] = windows
-            return windows
-    except ImportError:
-        pass
-
-    return None
-
-
-def _all_provider_windows():
-    """Yield CONTEXT_WINDOWS dicts for all known providers."""
-    for provider_lower in _PROVIDER_MODULES:
-        windows = _get_provider_windows(provider_lower)
-        if windows is not None:
-            yield windows
-
-
-def _longest_prefix_match(model_name: str, windows: dict[str, int]) -> int | None:
-    """Return the context window for the longest matching prefix in windows."""
-    model_lower = model_name.lower()
-    best_match: int | None = None
-    best_len = 0
-    for prefix, window in windows.items():
-        if prefix in model_lower and len(prefix) > best_len:
-            best_match = window
-            best_len = len(prefix)
-    return best_match
-
-
-def lookup_context_window(model_name: str, provider: str | None = None) -> int:
-    """Return context window for model_name via longest-prefix match; tries provider-specific dict first."""
-    if provider:
-        windows = _get_provider_windows(provider)
-        if windows:
-            result = _longest_prefix_match(model_name, windows)
-            if result is not None:
-                return result
-
-    for prov_windows in _all_provider_windows():
-        result = _longest_prefix_match(model_name, prov_windows)
-        if result is not None:
-            return result
-
-    return _DEFAULT_CONTEXT_WINDOW
+        provider_catalog = default_provider_catalog()
+    # The earlier lookup matched a hint against provider keys only, so an alias or a padded
+    # name was no hint; the catalog also resolves aliases, which would read another table.
+    provider_keys = {fragment.key for fragment in provider_catalog.providers}
+    if provider is not None and provider.lower() not in provider_keys:
+        provider = None
+    window = provider_catalog.context_window(model_name, provider)
+    return _DEFAULT_CONTEXT_WINDOW if window is None else window
 
 
 @dataclass(frozen=True)

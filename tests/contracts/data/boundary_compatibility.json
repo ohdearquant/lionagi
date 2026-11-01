@@ -937,6 +937,9 @@
     "lionagi/service/connections/_chat_schemas.py": [
       "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
     ],
+    "lionagi/service/connections/_provider_compat.py": [
+      "__all__ = (\"default_provider_catalog\",)"
+    ],
     "lionagi/service/connections/agentic_endpoint.py": [
       "__all__ = (\"AgenticEndpoint\",)"
     ],
@@ -2720,6 +2723,9 @@
       "ToolMessage",
       "UserMessage",
       "uses_developer_messages"
+    ],
+    "lionagi/service/connections/_provider_compat.py": [
+      "default_provider_catalog"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
       "AgenticEndpoint"

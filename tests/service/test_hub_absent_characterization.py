@@ -220,26 +220,27 @@ print(json.dumps(out))
     assert report["error_text"].startswith("no endpoint registered for provider 'openai'"), report
 
 
-def test_context_window_without_hub_falls_back_to_default(tmp_path):
+def test_context_window_without_hub_raises_missing_feature_error(tmp_path):
     report = _run_blocked(
         """
 from lionagi.service.token_budget import lookup_context_window
 
-print(json.dumps({
-    "gpt-4o-mini": lookup_context_window("gpt-4o-mini", "openai"),
-    "gpt-4.1": lookup_context_window("gpt-4.1", "openai"),
-}))
+out = {}
+for model in ("gpt-4o-mini", "gpt-4.1"):
+    try:
+        out[model] = lookup_context_window(model, "openai")
+    except Exception as exc:
+        out[model] = type(exc).__name__
+print(json.dumps(out))
 """,
         tmp_path,
     )
 
-    # Pins: with the provider tables unreachable the lookup swallows the import
-    # failure and returns the default estimate. The first model's table value is
-    # also the default, so it cannot tell a table hit from the fallback; the
-    # second model has a larger window in the hub's table, so its value shows
-    # the fallback. ADR-0140 D5 changes both: a missing manifest or failed
-    # metadata load raises a typed error instead of returning 128,000.
-    assert report == {"gpt-4o-mini": 128000, "gpt-4.1": 128000}
+    # With the provider hub unreachable the lookup raises the loader's typed error rather
+    # than answering with the 128,000 estimate. The first model's table value is also the
+    # estimate, so it could not tell a table hit from the fallback; the second model has a
+    # larger window in the hub's table, so a returned number would show a fallback.
+    assert report == {"gpt-4o-mini": "MissingFeatureError", "gpt-4.1": "MissingFeatureError"}
 
 
 def test_old_provider_import_path_without_hub_raises_module_not_found(tmp_path):

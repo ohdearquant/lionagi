@@ -1481,6 +1481,10 @@
       "layer": "adapter",
       "owner": "provider_connections"
     },
+    "lionagi.service.connections._provider_compat": {
+      "layer": "sdk",
+      "owner": "provider_registry"
+    },
     "lionagi.service.connections.agentic_endpoint": {
       "layer": "adapter",
       "owner": "provider_connections"

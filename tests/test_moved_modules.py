@@ -947,21 +947,6 @@ PROVIDER_INTERIM_EDGES = {
         "lionhub.providers.ag2.agent",
         "lionhub.providers.ag2.nlip",
     ],
-    # ``_PROVIDER_MODULES``: the module each provider key maps to.
-    "service/token_budget.py": [
-        "lionhub.providers.openai._config",
-        "lionhub.providers.anthropic.messages",
-        "lionhub.providers.anthropic.claude_code",
-        "lionhub.providers.openai.codex",
-        "lionhub.providers.deepseek.chat",
-        "lionhub.providers.nvidia_nim.chat",
-        "lionhub.providers.perplexity.chat",
-        "lionhub.providers.google.gemini_code",
-        "lionhub.providers.pi.cli",
-        "lionhub.providers.groq.chat",
-        "lionhub.providers.google.chat",
-        "lionhub.providers.openrouter.chat",
-    ],
     # Every import here is inside a function (see the test of that below).
     "agent/factory.py": [
         *["lionhub.providers._cli_subprocess"] * 2,
@@ -971,6 +956,9 @@ PROVIDER_INTERIM_EDGES = {
     "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
     "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
     "service/providers.py": ["lionhub.providers.openai._codex_profile"],
+    # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
+    # the first call that needs the default provider catalog.
+    "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
     # The codex profile import is at module level; the Gemini ones are inside functions.
     "cli/_providers.py": [
         "lionhub.providers.openai._codex_profile",
@@ -1017,9 +1005,8 @@ def _assigned_value(path: Path, name: str) -> ast.expr:
     ("relative", "name", "size"),
     [
         ("service/connections/registry.py", "_modules", 34),
-        ("service/token_budget.py", "_PROVIDER_MODULES", 12),
     ],
-    ids=["registry_modules", "token_budget_provider_modules"],
+    ids=["registry_modules"],
 )
 def test_a_provider_name_list_keeps_its_size(relative, name, size):
     value = _assigned_value(SOURCE_ROOTS[0] / relative, name)
