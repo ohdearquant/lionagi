@@ -7,7 +7,7 @@ import asyncio
 import math
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import nullcontext
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, SecretStr
@@ -33,6 +33,9 @@ from .hooks import (
 )
 from .rate_limited_processor import RateLimitedAPIExecutor
 from .types import StreamChunk
+
+if TYPE_CHECKING:
+    from .connections.provider_catalog import ProviderCatalog
 
 # A request under this many counted tokens does not calibrate input_token_scale.
 _CALIBRATION_FLOOR = 4_000
@@ -161,8 +164,19 @@ class iModel:  # noqa: N801
         created_at: float | None = None,
         max_input_tokens: int | None = None,
         tool_result_max_chars: int | None = None,
+        *,
+        provider_catalog: ProviderCatalog | None = None,
         **kwargs,
     ) -> None:
+        """Build a model on one provider endpoint.
+
+        ``provider_catalog`` makes the model select its endpoint from that catalog alone: the
+        automatic source is consulted neither for the endpoint nor for routing the effort
+        suffix of a model name. The model keeps it as ``provider_catalog``; ``copy`` and
+        ``from_dict`` carry it and ``to_dict`` does not write it. Without it the automatic
+        source is used. It cannot be combined with an ``endpoint`` that is already an
+        ``Endpoint`` instance, which has been selected already.
+        """
         self.id = None
         self.created_at = None
         if max_input_tokens is not None and (
@@ -192,6 +206,13 @@ class iModel:  # noqa: N801
         # the count times this. It starts at 1.0 and only rises, so the cap never admits more
         # than its own count.
         self.input_token_scale: float = 1.0
+        # The catalog this model selects its endpoint from; None means the automatic source.
+        self.provider_catalog: ProviderCatalog | None = provider_catalog
+        if provider_catalog is not None and isinstance(endpoint, Endpoint):
+            raise ValueError(
+                "An Endpoint instance is already selected; pass an endpoint name with "
+                "provider_catalog, or an Endpoint instance without it, not both"
+            )
         if id is not None:
             self.id = to_uuid(id)
         else:
@@ -228,8 +249,15 @@ class iModel:  # noqa: N801
                 split_effort_suffix,
             )
 
-            # An alias ("openai-codex") routes as the provider it names.
-            _canonical = EndpointRegistry.canonical_provider(provider) if provider else None
+            # An alias ("openai-codex") routes as the provider it names. A supplied catalog
+            # names it: the automatic source is not consulted.
+            if provider_catalog is None:
+                _canonical = EndpointRegistry.canonical_provider(provider) if provider else None
+            elif provider:
+                _fragment = provider_catalog.fragment(provider)
+                _canonical = _fragment.key if _fragment else provider.lower()
+            else:
+                _canonical = None
             _effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical) if _canonical else None
             _model_name = kwargs.get("model")
             if _effort_kwarg and isinstance(_model_name, str):
@@ -274,6 +302,7 @@ class iModel:  # noqa: N801
             self.endpoint = match_endpoint(
                 provider=provider,
                 endpoint=endpoint,
+                provider_catalog=provider_catalog,
                 **match_kwargs,
             )
         if provider:
@@ -804,7 +833,7 @@ class iModel:  # noqa: N801
     def copy(self, share_session: bool = False, share_executor: bool = False) -> iModel:
         """Create a new iModel with the same config but a fresh ID. See
         docs/internals/service-layer.md#copy-and-runtime-state for what state
-        is/isn't shared with the copy."""
+        is/isn't shared with the copy. The copy keeps this model's provider catalog."""
         endpoint_cls = type(self.endpoint)
         # Drain before the deep copy so no runtime-only state (child env, bound
         # callbacks) rides along duplicated; see
@@ -836,6 +865,9 @@ class iModel:  # noqa: N801
             tool_result_max_chars=self.tool_result_max_chars,
             **self.executor.config,
         )
+        # The constructor refuses a catalog beside an Endpoint instance, so the copy is given
+        # the catalog here instead.
+        new.provider_catalog = self.provider_catalog
         new.input_token_scale = self.input_token_scale
         if share_executor:
             new.executor = self.executor
@@ -875,6 +907,7 @@ class iModel:  # noqa: N801
         base_url: str | None = None,
         api_key: str | SecretStr | None = None,
         allow_local_network: bool | None = None,
+        provider_catalog: ProviderCatalog | None = None,
     ):
         """Rebuild a model from ``to_dict`` output, read as trusted input.
 
@@ -886,7 +919,9 @@ class iModel:  # noqa: N801
         ``api_key``, the environment's credential is attached only at the provider's
         registered base URL. Without ``allow_local_network``, the provider's
         registered setting applies. ``base_url`` replaces the stored URL. The stored
-        ``retry_config`` and ``circuit_breaker`` are kept.
+        ``retry_config`` and ``circuit_breaker`` are kept. ``provider_catalog`` is the catalog
+        the registered subclass is recovered from, and the restored model carries it as
+        ``copy`` does; ``to_dict`` does not write it. Without it the automatic source is used.
         """
         endpoint = Endpoint.from_dict(
             data.get("endpoint", {}),
@@ -903,6 +938,7 @@ class iModel:  # noqa: N801
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
             openai_compatible=True,
+            provider_catalog=provider_catalog,
         ):
             registered = e1.config
             e1.config = endpoint.config
@@ -946,6 +982,8 @@ class iModel:  # noqa: N801
             tool_result_max_chars=data.get("tool_result_max_chars"),
             **{name: stored_limits[name] for name in _EXECUTOR_LIMITS if name in stored_limits},
         )
+        # The constructor refuses a catalog beside an Endpoint instance, so it is set here.
+        model.provider_catalog = provider_catalog
         scale = data.get("input_token_scale")
         if (
             isinstance(scale, (int, float))

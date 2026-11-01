@@ -832,7 +832,7 @@ everything since; facts past the range belong to the next wake.
   observer (the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, both in
   `lionhub/src/lionhub/orchestration/engines/review.py`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
-  reading (`lionagi/service/token_budget.py:94`); the nearest crossing is the engine's
+  reading (`lionagi/service/token_budget.py:102`); the nearest crossing is the engine's
   `budget_exhausted` notification (`EngineRun._notify_budget_once` in
   `lionhub/src/lionhub/orchestration/engines/engine.py`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary

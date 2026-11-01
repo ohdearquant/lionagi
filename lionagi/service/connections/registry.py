@@ -7,12 +7,15 @@ import logging
 import threading
 import warnings
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
 from lionagi.ln import HashAlgorithm, compute_hash, hash_file, import_module, is_import_installed
 from lionagi.ln.types import Enum
+
+if TYPE_CHECKING:
+    from .provider_catalog import ProviderCatalog
 
 __all__ = (
     "EndpointType",
@@ -222,6 +225,7 @@ class EndpointRegistry:
         endpoint: str = "",
         *,
         openai_compatible: bool = False,
+        provider_catalog: ProviderCatalog | None = None,
         **kwargs,
     ) -> Any:
         """Find and instantiate the best matching endpoint. With no endpoint named, a
@@ -232,7 +236,23 @@ class EndpointRegistry:
         lookup while the catalog cannot load, scans the registered entries. On a registry miss,
         consults the plugin registry before falling back to the generic
         OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
-        for the provider-vs-endpoint rejection contract."""
+        for the provider-vs-endpoint rejection contract.
+
+        Supplying ``provider_catalog`` selects from that catalog's declarations alone, in
+        declaration order, by the same provider, endpoint and single-endpoint rules: the
+        bundled catalog, the registered entries and the plugin registry are never read, and
+        an empty catalog is not the same as omitting the argument. A declaration whose
+        implementation fails to import raises instead of being skipped. A provider the
+        catalog does not declare gets the same ``openai_compatible=`` and ``base_url=``
+        outcomes, and otherwise a ``ProviderNotFoundError`` naming the catalog."""
+        if provider_catalog is not None:
+            matched = cls._match_catalog(provider_catalog, provider, endpoint, kwargs)
+            if matched is not None:
+                return matched
+            return cls._generic_endpoint(
+                provider, endpoint, openai_compatible, kwargs, provider_catalog
+            )
+
         cls._ensure_loaded()
 
         if not endpoint:
@@ -249,7 +269,41 @@ class EndpointRegistry:
             if matched is not None:
                 return matched
 
-        if not openai_compatible and not cls._is_known_provider(provider):
+        return cls._generic_endpoint(provider, endpoint, openai_compatible, kwargs, None)
+
+    @classmethod
+    def _match_catalog(
+        cls, catalog: ProviderCatalog, provider: str, endpoint: str, kwargs: dict[str, Any]
+    ) -> Any | None:
+        """Build the endpoint ``catalog`` declares for ``provider`` and ``endpoint``: the
+        declaration :meth:`ProviderCatalog.endpoint` selects. ``None`` when the catalog
+        declares no such provider, or declares several endpoints for it and none matches the
+        named one. The declaration's ``factory()`` runs outside any ``try``, so an exception
+        it raises, ``ImportError`` included, reaches the caller instead of selecting another
+        declaration."""
+        declaration = catalog.endpoint(provider, endpoint)
+        if declaration is None:
+            return None
+        return declaration.factory()(None, **kwargs)
+
+    @classmethod
+    def _generic_endpoint(
+        cls,
+        provider: str,
+        endpoint: str,
+        openai_compatible: bool,
+        kwargs: dict[str, Any],
+        catalog: ProviderCatalog | None,
+    ) -> Any:
+        """Settle a lookup no declared or registered endpoint matched: reject an unrecognized
+        ``provider`` or route it to the generic OpenAI-compatible endpoint. A provider is
+        recognized when a registered entry claimed it or, with ``catalog`` supplied, when that
+        catalog declares it."""
+        if catalog is None:
+            known = cls._is_known_provider(provider)
+        else:
+            known = catalog.fragment(provider) is not None
+        if not openai_compatible and not known:
             if kwargs.get("base_url"):
                 warnings.warn(
                     f"provider {provider!r} is not registered; routing to the "
@@ -259,10 +313,12 @@ class EndpointRegistry:
                     "match_endpoint(..., openai_compatible=True)) to silence "
                     "this warning.",
                     DeprecationWarning,
-                    stacklevel=3,
+                    stacklevel=4,
                 )
-            else:
+            elif catalog is None:
                 raise cls._provider_not_found_error(provider)
+            else:
+                raise cls._catalog_not_found_error(provider, catalog)
 
         from .endpoint import Endpoint, EndpointConfig
 
@@ -343,6 +399,18 @@ class EndpointRegistry:
             f"providers: {', '.join(sorted(known)) or '(none)'}. Pass "
             "openai_compatible=True to route unrecognized providers to the "
             "generic OpenAI-compatible endpoint explicitly."
+        )
+
+    @classmethod
+    def _catalog_not_found_error(
+        cls, provider: str, catalog: ProviderCatalog
+    ) -> ProviderNotFoundError:
+        declared = ", ".join(fragment.key for fragment in catalog.providers) or "(none)"
+        return ProviderNotFoundError(
+            f"no endpoint declared for provider {provider!r} by the provider catalog "
+            f"{catalog.source!r}, which was supplied explicitly; declared providers: "
+            f"{declared}. Pass openai_compatible=True to route unrecognized providers "
+            "to the generic OpenAI-compatible endpoint explicitly."
         )
 
     @classmethod
