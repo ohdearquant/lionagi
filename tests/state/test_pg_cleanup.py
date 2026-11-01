@@ -3,10 +3,10 @@
 
 """Retrying a contended imported-session delete in a PostgreSQL test teardown.
 
-``StateDB.delete_imported_session`` takes its table locks ``NOWAIT`` on PostgreSQL, so a
-backend that holds a conflicting lock for an instant fails it at once with SQLSTATE 55P03.
-The helper under test waits such a holder out for a bounded time and, if the lock is still
-held after that, fails loudly with the holders listed.
+``StateDB.delete_imported_session`` does not wait for locks on PostgreSQL, so a backend that
+holds a conflicting lock for an instant fails it quickly with SQLSTATE 55P03. The helper under
+test waits such a holder out for a bounded time and, if the lock is still held after that,
+fails loudly with the holders listed.
 
 The tests that need no server drive the helper with a stub store and a fake clock. The
 others use the ``pg_url`` fixture and are skipped where PostgreSQL is not reachable.
@@ -75,7 +75,7 @@ class _StubDB:
         self.holders = [] if holders is None else holders
         self.holders_error = holders_error
         self.calls: list[tuple[str, str]] = []
-        self.holder_queries: list[str] = []
+        self.holder_queries: list[tuple[str, object]] = []
 
     async def delete_imported_session(self, session_id, *, require_source_kind):
         self.calls.append((session_id, require_source_kind))
@@ -85,7 +85,7 @@ class _StubDB:
         return outcome
 
     async def fetch_all(self, sql, params=None):
-        self.holder_queries.append(sql)
+        self.holder_queries.append((sql, params))
         if self.holders_error is not None:
             raise self.holders_error
         return self.holders
@@ -232,17 +232,54 @@ async def test_holder_query_text_is_cut_to_200_characters(clock):
 
 
 @pytest.mark.asyncio
-async def test_holder_listing_covers_the_three_tables_and_skips_the_listing_backend(clock):
+async def test_holder_listing_reads_every_relation_lock_in_the_database_but_its_own(clock):
     db = _StubDB([_lock_refused()])
 
     with pytest.raises(AssertionError):
         await delete_imported_session_with_retry(db, "sid-1", require_source_kind=_KIND)
 
-    (sql,) = db.holder_queries
-    for expected in ("pg_locks", "pg_class", "pg_stat_activity", "pg_backend_pid()"):
+    (sql, params) = db.holder_queries[0]
+    assert len(db.holder_queries) == 1
+    for expected in (
+        "pg_locks",
+        "pg_stat_activity",
+        "pg_backend_pid()",
+        "current_database()",
+        "::regclass",
+        "LIMIT :limit",
+    ):
         assert expected in sql
+    # The refused lock can be on any table the delete touches, so no table name filters it.
     for table in ("branches", "progressions", "sessions"):
-        assert f"'{table}'" in sql
+        assert f"'{table}'" not in sql
+    assert params == {"limit": 51}
+
+
+@pytest.mark.asyncio
+async def test_holder_listing_past_the_cap_shows_fifty_and_says_it_was_cut(clock):
+    holders = [_holder_row(pid=1000 + n) for n in range(51)]
+    db = _StubDB([_lock_refused()], holders=holders)
+
+    with pytest.raises(AssertionError) as caught:
+        await delete_imported_session_with_retry(db, "sid-1", require_source_kind=_KIND)
+
+    message = str(caught.value)
+    assert "pid=1049 " in message
+    assert "pid=1050 " not in message
+    assert "first 50 shown, more exist" in message
+
+
+@pytest.mark.asyncio
+async def test_holder_listing_at_the_cap_is_not_marked_cut(clock):
+    holders = [_holder_row(pid=1000 + n) for n in range(50)]
+    db = _StubDB([_lock_refused()], holders=holders)
+
+    with pytest.raises(AssertionError) as caught:
+        await delete_imported_session_with_retry(db, "sid-1", require_source_kind=_KIND)
+
+    message = str(caught.value)
+    assert "pid=1049 " in message
+    assert "more exist" not in message
 
 
 @pytest.mark.asyncio
@@ -298,16 +335,18 @@ async def _imported_session(pg_url):
             )
             yield db, holder, session_id
         finally:
-            if await db.get_session(session_id) is not None:
-                assert await delete_imported_session_with_retry(
-                    db, session_id, require_source_kind=_KIND
-                )
-            await db.execute("DELETE FROM progressions WHERE id = :id", {"id": progression_id})
+            try:
+                if await db.get_session(session_id) is not None:
+                    assert await delete_imported_session_with_retry(
+                        db, session_id, require_source_kind=_KIND
+                    )
+            finally:
+                await db.execute("DELETE FROM progressions WHERE id = :id", {"id": progression_id})
 
 
 @asynccontextmanager
-async def _lock_holder(holder: StateDB):
-    """Hold ``LOCK TABLE progressions IN ROW EXCLUSIVE MODE`` in an open transaction.
+async def _lock_holder(holder: StateDB, table: str = "progressions"):
+    """Hold ``LOCK TABLE <table> IN ROW EXCLUSIVE MODE`` in an open transaction.
 
     Yields the holder's backend pid and an event that ends the transaction. The lock is
     always released on exit.
@@ -317,8 +356,8 @@ async def _lock_holder(holder: StateDB):
 
     async def hold() -> None:
         try:
-            async with holder._tx() as conn:
-                await conn.execute(text("LOCK TABLE progressions IN ROW EXCLUSIVE MODE"))
+            async with holder.transaction() as conn:
+                await conn.execute(text(f"LOCK TABLE {table} IN ROW EXCLUSIVE MODE"))
                 pid = int((await conn.exec_driver_sql("SELECT pg_backend_pid()")).scalar_one())
                 locked.set_result(pid)
                 await release.wait()
@@ -368,6 +407,18 @@ async def test_postgres_lock_that_is_never_released_fails_naming_the_holder(pg_u
         assert "RowExclusiveLock" in message
         assert budget <= elapsed < budget + _BUDGET_MARGIN
         assert await db.get_session(session_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_postgres_holder_listing_names_a_lock_outside_the_three_locked_tables(pg_url):
+    # Past its LOCK TABLE the delete reads and deletes rows in other tables under a 250 ms
+    # lock_timeout, so the lock that refused it can be on one of those. The listing names it.
+    async with _imported_session(pg_url) as (db, holder, session_id):
+        async with _lock_holder(holder, table="messages") as (holder_pid, _release):
+            message = await _pg_cleanup._exhausted_message(db, session_id, _lock_refused())
+        assert f"pid={holder_pid} " in message
+        assert "relation=messages " in message
+        assert "RowExclusiveLock" in message
 
 
 @pytest.mark.asyncio

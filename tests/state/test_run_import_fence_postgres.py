@@ -84,10 +84,10 @@ async def _stores(pg_url, monkeypatch):
             )
         finally:
             # Each ID comes from this test; do not touch message type rows or other sessions.
-            # Session deletion takes NOWAIT table locks, so a backend that holds a conflicting
-            # lock for an instant (autovacuum, a rollback still finishing) refuses it. The helper
-            # waits such a holder out for a bounded time and fails with the holders listed if a
-            # lock stays held.
+            # Session deletion does not wait for locks; the helper waits out a momentary holder
+            # (see tests/state/_pg_cleanup.py). On a shared PostgreSQL URL, unrelated writers
+            # can hold a lock past its ~5 s budget and still fail cleanup, with the holders
+            # listed. Use a dedicated test database.
             for session_id in (run_id, keeper_id):
                 if await writer.get_session(session_id) is not None:
                     assert await delete_imported_session_with_retry(
