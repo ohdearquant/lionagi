@@ -118,7 +118,13 @@ equal a key the process holds: the value of a variable whose name marks a creden
 were built from. A dotenv file that cannot be read for that comparison refuses too. Every refusal
 raises `ConfigurationError` before the run writes anything (`_read_api_account()`, called by
 `_run_agent()` before the run is allocated); the error names the rule, or the variable whose value
-matched, and never repeats the value. Unset, the run records no `api_account`, as before.
+matched, and never repeats the value. Unset, the run records no `api_account`, as before. A run
+whose own chat endpoint sends through the account router (D1 to D6: the Anthropic API endpoint with
+accounts configured) records none either, with the variable set and valid: the router chooses the
+account for each attempt and ignores the variable, so the field could name an account that paid
+nothing. For that run `account_labels` and each attempt's `account_label` in the API usage record
+name the account that did. A run whose endpoint routes nothing, such as a CLI run or an API run
+with no accounts configured, records the name as before.
 
 What the check guarantees: a value with any character outside the name rule (an upper-case letter,
 `.`, `@`, a space), a value containing `sk-ant` or starting `sk-`, and the whole value of any key
@@ -145,7 +151,9 @@ first, a value of 33 characters, a space and an empty value; of a value held und
 credential-named and under a configured-account variable, each in the environment and in a dotenv
 file; and of a name when a dotenv file cannot be read, with the value never shown in the error.
 Its controls record the name when a credential variable holds a different value, and when a
-variable or a dotenv entry that is neither holds the same one.
+variable or a dotenv entry that is neither holds the same one. It also pins that a routed API run
+with the variable set records no `api_account` while its API usage record names the account that
+paid, and that an API run with no accounts configured records the name.
 
 ## Amendment 5 (2026-10-30) — a new conversation goes where its stable prefix is warm
 

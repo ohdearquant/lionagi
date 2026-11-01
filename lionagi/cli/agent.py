@@ -42,6 +42,7 @@ from lionagi.service._subagent_admission import (
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
+from lionagi.service.imodel import _endpoint_routing_enabled
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
@@ -2339,7 +2340,10 @@ async def _run_agent(
             run_manifest["api_usage"] = _api_usage.snapshot()
         if context_from:
             run_manifest["context_from"] = list(context_from)
-        if api_account is not None:
+        # A run whose own endpoint sends through the account router does not use the launcher's
+        # account name: the router picks the account for each request and ignores the variable.
+        # Its api_usage record names the account that paid.
+        if api_account is not None and not _endpoint_routing_enabled(branch.chat_model.endpoint):
             run_manifest["api_account"] = api_account
         _write_run_manifest = getattr(run, "write_manifest", None)
         if _write_run_manifest is not None:
