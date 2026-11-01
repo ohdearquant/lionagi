@@ -26,6 +26,38 @@ class StopStream(Exception):  # noqa: N818
         self.reason = reason
 
 
+def _split_list_values(block: dict[str, Any], capabilities: Operable) -> list[dict[str, Any]]:
+    """Expand a key holding a non-empty list of objects into one single-key block per element.
+
+    A model asked for one object per key sometimes puts several under one key
+    (``{"issue_found": [{...}, {...}]}``). Each element is validated on its own as the
+    key's model, so its field rules apply per element. Only keys whose spec is a pydantic
+    model are expanded; every other key stays together in the first block, and a block with
+    no such key comes back unchanged.
+    """
+    from pydantic import BaseModel
+
+    split_keys: list[str] = []
+    for key, value in block.items():
+        spec = capabilities.get(key, None)
+        base = getattr(spec, "base_type", None)
+        if (
+            isinstance(value, list)
+            and value
+            and all(isinstance(item, dict) for item in value)
+            and isinstance(base, type)
+            and issubclass(base, BaseModel)
+        ):
+            split_keys.append(key)
+    if not split_keys:
+        return [block]
+    rest = {k: v for k, v in block.items() if k not in split_keys}
+    out: list[dict[str, Any]] = [rest] if rest else []
+    for key in split_keys:
+        out.extend({key: item} for item in block[key])
+    return out
+
+
 def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[Any], list[Any]]:
     """Parse fenced JSON capability blocks from an assistant message; returns (bundles, violations, rejects).
     Keys ⊆ grant → validated bundle; keys outside grant → violation; schema failure → reject."""
@@ -44,7 +76,13 @@ def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[
     bundles: list[Any] = []
     violations: list[Any] = []
     rejects: list[Any] = []
+    expanded: list[Any] = []
     for block in blocks:
+        if isinstance(block, dict) and block and set(block).issubset(allowed):
+            expanded.extend(_split_list_values(block, capabilities))
+        else:
+            expanded.append(block)
+    for block in expanded:
         if not isinstance(block, dict) or not block:
             continue
         keys = set(block.keys())

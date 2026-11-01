@@ -430,7 +430,12 @@ def emission_keys(emits: tuple[type, ...]) -> str:
     from lionagi.casts.emission import field_name_for
 
     names = ", ".join(f"'{field_name_for(m)}'" for m in emits)
-    return f"Expected top-level key(s): {names}." if names else ""
+    if not names:
+        return ""
+    return (
+        f"Expected top-level key(s): {names}. Each key holds one object; to report "
+        "several, emit one object per finding, or a list of objects under the key."
+    )
 
 
 def _namespaced_injection(injection: Any, namespace: str) -> Any:
