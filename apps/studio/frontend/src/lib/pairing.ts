@@ -224,12 +224,14 @@ export function storedBearerToCheck(apiBase: string): string | undefined {
 }
 
 /**
- * Forget the bearer, in memory and in storage: the daemon refused it, so the
- * page asks to be paired again. The decision capability is left alone.
+ * Forget a bearer the daemon refused, in memory and in storage, so the page
+ * asks to be paired again. Only that value is forgotten: a bearer another tab
+ * stored since, or this load paired with since, is kept. The decision
+ * capability is left alone.
  */
-export function forgetPairedBearer(): void {
-  paired = undefined;
-  writeStoredBearer(undefined);
+export function forgetPairedBearer(refused: string): void {
+  if (paired?.token === refused) paired = undefined;
+  if (readStoredBearer()?.token === refused) writeStoredBearer(undefined);
 }
 
 /**

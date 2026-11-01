@@ -7,6 +7,7 @@ import { onAccessRefused, onConnectivityFailure } from "@/lib/connectivity";
 import {
   forgetPairedBearer,
   hasPendingPairingCode,
+  PAIRING_TIMEOUT_MS,
   redeemPairingCode,
   storedBearerToCheck,
 } from "@/lib/pairing";
@@ -50,25 +51,29 @@ const BEARER_CHECK_PATH = "/api/casts/";
 
 /**
  * Send a bearer an earlier load stored once, before the app mounts. The daemon
- * draws a new launch bearer each time it starts, so a stored one can be stale:
- * a 401 forgets it and the page asks to be paired again. A request that does not
- * reach the daemon keeps it for the next probe. Any other answer means the
- * bearer was accepted; the app's own requests report their errors as usual.
+ * draws a new launch bearer each time it starts, so a stored one can be stale.
+ * Only a 2xx answer mounts the app. A 401 forgets the bearer and the page asks
+ * to be paired again. Any other answer, or none within `PAIRING_TIMEOUT_MS`,
+ * leaves it unvalidated: the page shows the access screen and keeps the bearer
+ * for Retry. A request that does not reach the daemon keeps it for the next probe.
  */
 async function checkStoredBearer(apiBase: string, bearer: string): Promise<ConnectivityStatus> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), PAIRING_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(`${apiBase}${BEARER_CHECK_PATH}`, {
       headers: { Authorization: `Bearer ${bearer}` },
+      signal: abort.signal,
     });
   } catch {
-    return "unreachable";
+    return abort.signal.aborted ? "accessRequired" : "unreachable";
+  } finally {
+    clearTimeout(timer);
   }
-  if (response.status === 401) {
-    forgetPairedBearer();
-    return "accessRequired";
-  }
-  return "connected";
+  if (response.ok) return "connected";
+  if (response.status === 401) forgetPairedBearer(bearer);
+  return "accessRequired";
 }
 
 /**

@@ -69,9 +69,10 @@ in `localStorage` for its own origin, bound to the daemon's API base. A configur
 page load only and never stored. The capability is kept in `sessionStorage` for
 that tab and sent in `X-Studio-Decision-Token` on the two Operator decision
 requests only. The stored bearer is checked with one request before the app
-mounts and stays usable across reloads, tabs and bookmarks until the daemon
-refuses it (a restarted daemon draws a new launch bearer); the page then forgets
-it and asks for `li studio` again;
+mounts, and the app mounts only on a 2xx answer. The bearer stays usable across
+reloads, tabs and bookmarks until the daemon refuses it (a restarted daemon
+draws a new launch bearer); the page then forgets it and asks for `li studio`
+again;
 with the daemon already running, that opens a freshly paired page over the
 daemon's same-user reconnect socket without starting a second daemon. No HTTP
 route issues a code.

@@ -457,7 +457,7 @@ describe("a bearer kept across reloads", () => {
 
     expect(pairedBearer(BASE)).toBe("launch-bearer");
     expect(pairedBearer(OTHER)).toBeUndefined();
-    expect(() => forgetPairedBearer()).not.toThrow();
+    expect(() => forgetPairedBearer("launch-bearer")).not.toThrow();
     expect(pairedBearer(BASE)).toBeUndefined();
   });
 
@@ -487,11 +487,33 @@ describe("a bearer kept across reloads", () => {
   it("forgets the bearer from memory and from storage", async () => {
     await pair();
 
-    forgetPairedBearer();
+    forgetPairedBearer("launch-bearer");
 
     expect(storage.getItem(BEARER_KEY)).toBeNull();
     expect(pairedBearer(BASE)).toBeUndefined();
     expect((await reload()).pairedBearer(BASE)).toBeUndefined();
+  });
+
+  it("forgets only the refused bearer, keeping one another tab stored since", async () => {
+    await pair("first-bearer");
+    storage.setItem(BEARER_KEY, JSON.stringify({ base: BASE, token: "second-bearer" }));
+
+    forgetPairedBearer("first-bearer");
+
+    expect(pairedBearer(BASE)).toBe("second-bearer");
+    expect((await reload()).pairedBearer(BASE)).toBe("second-bearer");
+  });
+
+  it("keeps the bearer this load paired with when an older one is refused", async () => {
+    await pair("current-bearer");
+
+    forgetPairedBearer("older-bearer");
+
+    expect(pairedBearer(BASE)).toBe("current-bearer");
+    expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+      base: BASE,
+      token: "current-bearer",
+    });
   });
 
   it("leaves the decision capability alone when it forgets the bearer", async () => {
@@ -504,7 +526,7 @@ describe("a bearer kept across reloads", () => {
     );
     await redeemPairingCode(BASE);
 
-    forgetPairedBearer();
+    forgetPairedBearer("launch-bearer");
 
     expect(pairedBearer(BASE)).toBeUndefined();
     expect(pairedDecisionToken(BASE)).toBe("decision-capability");

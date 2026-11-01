@@ -252,7 +252,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
   // A refusal drops the bearer from pairing, which the page can obtain again; a
   // token the shell injected is not the page's to drop.
-  const sentPairedBearer = Boolean(token) && !window.__STUDIO_AUTH_TOKEN__;
+  const sentPairedBearer = token && !window.__STUDIO_AUTH_TOKEN__ ? token : undefined;
 
   let response: Response;
   try {
@@ -265,7 +265,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw err;
   }
   if (response.status === 401) {
-    if (sentPairedBearer) forgetPairedBearer();
+    if (sentPairedBearer !== undefined) forgetPairedBearer(sentPairedBearer);
     reportAccessRefused();
   }
   if (!response.ok) {

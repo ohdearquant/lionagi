@@ -19,8 +19,9 @@
  * - accessRequired (the daemon refused the code, or refused a request later),
  *   which names `li studio` as the remedy and does not poll
  * - a bearer an earlier load stored is checked with one request before the
- *   app mounts: a 401 forgets it and asks to pair again, a network failure
- *   keeps it, any other answer mounts the app
+ *   app mounts: only a 2xx mounts the app, a 401 forgets it and asks to pair
+ *   again, any other answer or none in time shows accessRequired and keeps it,
+ *   a network failure keeps it and shows unreachable
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -30,7 +31,12 @@ import { IntlProvider } from "use-intl";
 import NoDaemonGate from "./NoDaemonGate";
 import enMessages from "@/messages/en.json";
 import { reportAccessRefused, reportConnectivityFailure } from "@/lib/connectivity";
-import { pairedBearer, resetPairingForTests, takePairingCodeFromLocation } from "@/lib/pairing";
+import {
+  PAIRING_TIMEOUT_MS,
+  pairedBearer,
+  resetPairingForTests,
+  takePairingCodeFromLocation,
+} from "@/lib/pairing";
 
 const apiConfig = vi.hoisted(() => ({ base: "http://127.0.0.1:8765" }));
 
@@ -245,10 +251,10 @@ describe("NoDaemonGate", () => {
     );
   }
 
-  function daemonCheckingBearer(check: () => Promise<Response>) {
-    fetchMock.mockImplementation((url: string) => {
+  function daemonCheckingBearer(check: (init?: RequestInit) => Promise<Response>) {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok" }));
-      if (url.endsWith("/api/casts/")) return check();
+      if (url.endsWith("/api/casts/")) return check(init);
       return Promise.reject(new Error(`unexpected request: ${url}`));
     });
   }
@@ -265,7 +271,10 @@ describe("NoDaemonGate", () => {
     await settle();
 
     expect(checkCalls()).toHaveLength(1);
-    expect(checkCalls()[0][1]).toEqual({ headers: { Authorization: "Bearer stale-bearer" } });
+    expect(checkCalls()[0][1]).toMatchObject({
+      headers: { Authorization: "Bearer stale-bearer" },
+    });
+    expect(checkCalls()[0][1].signal).toBeInstanceOf(AbortSignal);
     expect(container.querySelector('[data-testid="child"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "This daemon needs an access token",
@@ -274,9 +283,16 @@ describe("NoDaemonGate", () => {
     expect(pairedBearer("http://127.0.0.1:8765")).toBeUndefined();
   });
 
-  it("does not mount the app while the stored bearer's check is pending", async () => {
+  it("does not mount the app while the check is pending, and reads no answer in time as unvalidated", async () => {
     storeBearer("stored-bearer");
-    daemonCheckingBearer(() => new Promise(() => {}));
+    daemonCheckingBearer(
+      (init) =>
+        new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
 
     await mount();
     await settle();
@@ -284,7 +300,35 @@ describe("NoDaemonGate", () => {
     expect(checkCalls()).toHaveLength(1);
     expect(container.querySelector('[data-testid="child"]')).toBeNull();
     expect(container.querySelector('[role="status"]')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PAIRING_TIMEOUT_MS);
+    });
+    await settle();
+
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "This daemon needs an access token",
+    );
+    expect(window.localStorage.getItem(BEARER_KEY)).not.toBeNull();
   });
+
+  for (const status of [404, 500]) {
+    it(`does not mount the app on a ${status} to the check, and keeps the stored bearer`, async () => {
+      storeBearer("stored-bearer");
+      daemonCheckingBearer(() => Promise.resolve(jsonResponse({ detail: "no" }, false, status)));
+
+      await mount();
+      await settle();
+
+      expect(container.querySelector('[data-testid="child"]')).toBeNull();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "This daemon needs an access token",
+      );
+      expect(window.localStorage.getItem(BEARER_KEY)).not.toBeNull();
+      expect(pairedBearer("http://127.0.0.1:8765")).toBe("stored-bearer");
+    });
+  }
 
   it("mounts the app once the daemon accepts a stored bearer", async () => {
     storeBearer("stored-bearer");

@@ -97,10 +97,13 @@ daemon released before the field. A stored launch bearer is kept in
 `localStorage` for the page's own origin, bound to the daemon's API base, and
 survives reloads, tabs and bookmarks. Before the app mounts, the page checks a
 stored bearer with one authenticated request (`GET /api/casts/`), so nothing
-renders on it unchecked; the first 401, to that check or to any later request
-that carried it, clears it. A restarted daemon draws a new launch bearer, so its
-first answer sends the page back to the access-required screen with `li studio`
-as the remedy. A check that does not reach the daemon keeps the stored bearer.
+renders on it unchecked. Only a 2xx answer mounts the app. The first 401, to
+that check or to any later request that carried it, clears that value; a bearer
+another tab stored since is kept. A restarted daemon draws a new launch bearer,
+so its first answer sends the page back to the access-required screen with
+`li studio` as the remedy. Any other answer to the check, or none within 15
+seconds, shows the same screen and keeps the stored bearer for Retry, and a
+check that does not reach the daemon keeps it too.
 
 Why storing the launch bearer is acceptable: a daemon with no configured token
 already admits any local caller that sends no `Origin`, a command-line client
