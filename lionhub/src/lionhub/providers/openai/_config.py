@@ -115,3 +115,14 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "o1-mini": 128_000,
     "o1": 200_000,
 }
+
+CODEX_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-6.1-sol": 1_050_000,
+    "gpt-6.1-terra": 1_050_000,
+    "gpt-6-astra": 1_050_000,
+    "gpt-6-sol": 1_050_000,
+    "gpt-6-luna": 1_050_000,
+    "codex-mini": 200_000,
+    "o4-mini": 200_000,
+    "o3": 200_000,
+}

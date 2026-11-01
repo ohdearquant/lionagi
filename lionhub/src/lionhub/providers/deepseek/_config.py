@@ -22,4 +22,16 @@ DeepSeekConfigs._PROVIDER = "deepseek"
 DeepSeekConfigs._PROVIDER_ALIASES = []
 DeepSeekConfigs._API_KEY_ENV = "DEEPSEEK_API_KEY"
 
-__all__ = ("DeepSeekConfigs",)
+
+CONTEXT_WINDOWS: dict[str, int] = {
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-v4": 1_000_000,
+    "deepseek-coder-v2": 128_000,
+    "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000,
+    "deepseek-v3": 128_000,
+    "deepseek-r1": 64_000,
+}
+
+__all__ = ("DeepSeekConfigs", "CONTEXT_WINDOWS")

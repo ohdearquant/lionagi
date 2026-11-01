@@ -4,17 +4,11 @@
 from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import GEMINI_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import GeminiChatConfigs
 
 __all__ = ("OpenAIChatCompletionsRequest", "GeminiChatEndpoint")
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "gemini-3.8-flash": 1_048_576,
-    "gemini-2.5-flash": 1_048_576,
-    "gemini-2.5-pro": 1_048_576,
-    "gemini-2.0-flash": 1_048_576,
-}
 
 
 @GeminiChatConfigs.CHAT.register

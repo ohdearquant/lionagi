@@ -86,6 +86,9 @@ from ._codex_project_layers import (
     refuse_unsafe_exclusive_profile,
     system_mcp_server_names,
 )
+
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import CODEX_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import CodexConfigs
 
 if TYPE_CHECKING:
@@ -3669,18 +3672,6 @@ async def stream_codex_cli(
 
 
 codex_log = log
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "gpt-6.1-sol": 1_050_000,
-    "gpt-6.1-terra": 1_050_000,
-    "gpt-6-astra": 1_050_000,
-    "gpt-6-sol": 1_050_000,
-    "gpt-6-luna": 1_050_000,
-    "codex-mini": 200_000,
-    "o4-mini": 200_000,
-    "o3": 200_000,
-}
 
 _CODEX_HANDLER_PARAMS = (
     "on_text",

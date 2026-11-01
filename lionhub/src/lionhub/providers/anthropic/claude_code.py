@@ -47,6 +47,8 @@ from lionhub.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
 
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import CLAUDE_CODE_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import ClaudeCodeConfigs
 
 try:
@@ -1018,25 +1020,6 @@ async def stream_claude_code_cli(  # noqa: C901
 
 
 cc_log = log
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "fable-5-1": 1_000_000,
-    "opus-5-5": 1_000_000,
-    "sonnet-5-5": 1_000_000,
-    "haiku-5-5": 1_000_000,
-    "opus-4-7": 1_000_000,
-    "opus-4-6": 1_000_000,
-    "opus": 1_000_000,
-    "sonnet-5": 1_000_000,
-    "sonnet-4-6": 1_000_000,
-    "sonnet-4-5": 200_000,
-    "sonnet": 1_000_000,
-    "haiku-4-5": 200_000,
-    "haiku": 200_000,
-    "fable-5": 1_000_000,
-    "fable": 1_000_000,
-}
 
 _CLAUDE_HANDLER_PARAMS = (
     "on_thinking",

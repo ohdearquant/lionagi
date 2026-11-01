@@ -22,4 +22,10 @@ PerplexityConfigs._PROVIDER = "perplexity"
 PerplexityConfigs._PROVIDER_ALIASES = []
 PerplexityConfigs._API_KEY_ENV = "PERPLEXITY_API_KEY"
 
-__all__ = ("PerplexityConfigs",)
+
+CONTEXT_WINDOWS: dict[str, int] = {
+    "sonar-pro": 200_000,
+    "sonar": 128_000,
+}
+
+__all__ = ("PerplexityConfigs", "CONTEXT_WINDOWS")
