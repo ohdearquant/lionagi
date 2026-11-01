@@ -365,13 +365,25 @@ async def test_detached_coroutine_waits_on_original_stopped_loop(monkeypatch, di
             await _eventually(hook_finished)
             assert outcome == [DeliveryOutcome.SUCCESS]
         else:
+            # Unreachable leftovers from earlier tests are collected before the
+            # recording window opens, so they cannot be reported inside it.
+            gc.collect()
             with warnings.catch_warnings(record=True) as seen:
                 warnings.simplefilter("always", RuntimeWarning)
                 loop.close()
                 thread.join(timeout=2)
                 assert not thread.is_alive()
                 gc.collect()
-                assert not any("was never awaited" in str(item.message) for item in seen)
+                # The delivery's own coroutines: the hook, and the wrapper the
+                # reconciler builds around it to run on the original loop.
+                own = (hook.__qualname__, reconciliation._settle_late_awaitable.__qualname__)
+                unawaited = [
+                    str(item.message)
+                    for item in seen
+                    if "was never awaited" in str(item.message)
+                    and any(name in str(item.message) for name in own)
+                ]
+                assert not unawaited, f"detached coroutine left unawaited at close: {unawaited}"
             assert outcome == []
             with reconciliation._workers_lock:
                 assert reconciliation._workers.get(worker.key) is worker
