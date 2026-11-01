@@ -87,7 +87,7 @@ def test_in_process_spawn_paths_are_present_where_named() -> None:
     assert "run.spawn" in _line(hypothesis, 977)
     assert "run.spawn" in _line(hypothesis, 1057)
     assert f"{hypothesis}:977-1057" in _amendment()
-    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 711)
+    assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/review.py", 737)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 187)
     assert "run.spawn" in _line("lionhub/src/lionhub/orchestration/engines/research.py", 191)
 
