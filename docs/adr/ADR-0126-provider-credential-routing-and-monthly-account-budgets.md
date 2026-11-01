@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28 and 2026-10-30 (see Amendments 1 to 6)
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30 and 2026-11-01 (see Amendments 1 to 7)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -848,6 +848,194 @@ Each ledger call emits one structured log event at DEBUG level, with three field
 - the outcome: committed, `ledger_busy` from the admission bound, `ledger_busy` from the SQLite lock, or the class name of any other error.
 
 The event is the whole record. The change adds no state to `CredentialLedger` and no field to `RouterAttempt`, and nothing in the process reads the event back. Numbers across runs (p50 and p99, Decision 6) come from collecting these events from a run's logs. A run that does not keep DEBUG logs keeps no timing.
+
+## Amendment 7 (2026-11-01) — a routed rejection names its class, never its text
+
+Purpose: make a routed request that the provider rejects diagnosable from the error and the ledger,
+while keeping the rule that no provider text reaches either.
+
+### Context
+
+D6 classifies any 4xx other than 401, 403 and 429 as a request rejection. The routed Anthropic
+paths settle such a response `request_rejected` and raise before reading its body, in both the
+non-streamed and the streamed attempt (`lionhub/src/lionhub/providers/anthropic/messages.py`, the
+`status != 200` branches of `_request_attempt` and `_routed_stream_attempt`). The settled outcome
+stores only that reason code, and `AccountRoutingError` carries only the code, the validated ids and
+the HTTP status. So when accounts are configured, nothing records whether a 400 was a prompt over
+the context window, a tool result without its call, a thinking setting the model refuses, or any
+other cause. The unrouted path keeps the whole body in its error, and this amendment leaves it as
+it is. Amendment 6, Decision 5 added no database column because a schema change needs its own
+decision; Decision 5 below is that decision for the two columns it adds.
+
+The provider documents a closed list of error types and states the message for several 400
+conditions. It also says the list of types may grow, and that callers should branch on its typed
+errors rather than match message text. This amendment uses message text only to name a class for
+diagnosis, and no code path may branch on that class.
+
+### Decision
+
+1. **Two closed-set fields.** A routed rejection carries `provider_error_type` and
+   `rejection_class`. Each value comes from a set written in this amendment, and `other` is the
+   default for anything the set does not name. The fields are set on the request-rejected branch
+   only. That branch settles the attempt with an `UnknownOutcome` whose reason code is
+   `request_rejected`, so that outcome carries the two fields and raises the error that carries
+   them. On every other outcome, and on an `UnknownOutcome` with any other reason code, both are
+   absent.
+2. **The rule is provider-neutral.** The field names, the class vocabulary and the drop rule
+   (Decision 4) apply to every routed provider. A provider's match table is written into this ADR
+   before that provider's rejection branch reads a body. The table names the `error.type` values
+   that provider documents and maps its documented messages onto classes. A class the neutral set
+   does not have is added to that set by the same amendment. The sets the code validates against
+   are the union of the tables written here, kept in one place that every validating site reads.
+   A routed provider without a table records `other` for both fields. The Anthropic table below is
+   the first implementation.
+3. **Reading the body.** On the rejection branch, the classifier decodes at most 64 KiB of the
+   response body, counted after content decoding, as JSON. The non-streamed attempt's client has
+   already read the whole body before the status is checked, as it does today, so the bound limits
+   only what is decoded. The streamed attempt reads the body of the non-200 response before closing
+   it and stops after 64 KiB and one more byte, so a larger body is detected without being read
+   further. Both bounds count decoded bytes: the streamed read consumes the decoded byte stream,
+   never the bytes on the wire. That read comes before the settlement, so it runs under
+   `CancelScope(shield=True)`
+   bounded at five seconds, like the settlement writes Amendment 5 shields: a pending cancellation is
+   still delivered after the failure is recorded (Amendment 5), and a read that has not finished
+   within the bound records `other` for both fields. A body over the bound, a body that does
+   not decode, a body with no
+   `error.type` string, or one whose `error.type` is not in the provider's set records `other` for
+   the type. A body with no `error.message` string records `other` for the class. The settlement
+   order of D6 is unchanged: the attempt is settled `request_rejected`, now with both fields, and
+   then the error is raised.
+4. **The drop rule.** The body, the decoded object and the message string exist only inside the one
+   function that returns the two field values. That function catches its own failures and returns
+   `other` for both. Nothing in it logs. Its input is never stored, never placed in an exception's
+   arguments, and never left reachable from `__context__` or `__cause__`. The error is raised after
+   that function has returned, outside any `except` block, so the attempt's error has no context
+   from the read. This is the same rule the decode error already follows on the success path. On
+   the streamed attempt the bounded read of Decision 3 also runs inside that function, so no string
+   or bytes value holding the body is bound in the attempt's own frame.
+5. **Where the fields go.**
+   - `AccountRoutingError` gains `provider_error_type` and `rejection_class`, both optional. Each is
+     validated against its set when the error is built, and an unknown value raises `ValueError`.
+     When present, they join the message as `type=<value>` and `class=<value>`, so the message is
+     still built from validated fields only. The docstring's guarantee is restated, not weakened.
+   - The internal routed-attempt error that the non-streamed attempt raises carries the same two
+     fields, and the conversion to `AccountRoutingError` in `lionagi/service/connections/endpoint.py`
+     (`_public_routed_failure`) passes them on. That internal error stays reachable as the public
+     error's `__context__`, so it holds nothing beyond the validated fields either. The streamed
+     attempt raises `AccountRoutingError` itself on this branch, as it does today, and passes the two
+     fields to it directly.
+   - `UnknownOutcome` gains the same two optional fields, validated the same way.
+   - The ledger's `attempt` row gains two nullable text columns, `provider_error_type` and
+     `rejection_class`. The settlement that records `request_rejected` writes them in the same
+     statement as the reason, under the same condition, so the first reason recorded on an open
+     attempt stands together with its two fields, as the reason alone does today. No other
+     settlement writes them. They are added to an existing version 1 ledger the same way the
+     warm-prefix table is, when missing, without changing `user_version`, and the check that lets
+     a complete ledger through also requires them. A reader that predates them does not read them,
+     and a row settled by a version that predates them holds null in both. The ledger validates
+     both values against the sets before writing, as it validates reason codes today.
+6. **No behaviour keys on them.** Retry, blocking, account choice and warm-prefix clearing ignore
+   both fields. A request rejection is still never retried and never moves to another account.
+7. **Out of scope.** The unrouted path (`lionagi/service/connections/endpoint.py`, the error-body
+   branch) is unchanged. No provider text is stored anywhere by this amendment. Keeping a bounded
+   message would be a separate amendment with its own reader policy.
+
+### Vocabulary
+
+`provider_error_type` for the Anthropic Messages API. Each value is the provider's documented
+`error.type`, from https://platform.claude.com/docs/en/api/errors, "HTTP errors". This page and
+every page the class table cites were read on 2026-11-01:
+`invalid_request_error` (400), `authentication_error` (401), `billing_error` (402),
+`permission_error` (403), `not_found_error` (404), `conflict_error` (409), `request_too_large`
+(413), `rate_limit_error` (429), `api_error` (500), `timeout_error` (504), `overloaded_error` (529),
+and `other`. On the rejection branch only the 4xx types other than 401, 403 and 429 can occur. The
+full documented list is kept so that a type arriving with an unexpected status is still named.
+
+`rejection_class`, provider-neutral. The Anthropic match is a case-sensitive substring of
+`error.message`, tried in this order, first match wins:
+
+| Class | Anthropic message contains | Source |
+|---|---|---|
+| `prompt_too_long` | `prompt is too long` | context-windows page, "Context window overflow behavior": "If the input alone already exceeds the model's context window, the API returns a 400 `invalid_request_error` ("prompt is too long") on every model." |
+| `tool_result_missing` | `tool_use ids were found without tool_result blocks immediately after`, or `was found without a corresponding` | troubleshooting-tool-use page, "Errors at request time" table, both rows quoted |
+| `prefill_unsupported` | `does not support assistant message prefill` | errors page, "Prefill not supported" example body |
+| `thinking_config_unsupported` | `"thinking.type.enabled" is not supported`, `"thinking.type.disabled" is not supported`, `"thinking.type.between_tools" is not supported`, `adaptive thinking is not supported on this model`, `is not supported when thinking is disabled on this model`, or `effort cannot change when thinking is disabled` | errors page, "Extended thinking not supported", "Adaptive thinking not supported" and "Thinking cannot be disabled", each message quoted |
+| `thinking_block_invalid` | `blocks in the latest assistant message cannot be modified`, or `The block is bound to a different conversation` | errors page, "Thinking blocks cannot be modified" and "Thinking block bound to a different conversation" |
+| `tool_choice_unsupported` | `tool_choice: type "tool" and "any" are not supported for this model` | errors page, "Forced tool use not supported" |
+| `tool_type_unsupported` | `does not support tool types:` | errors page, "Computer use tool version not supported": "The API returns the same message for any Anthropic-defined tool type that the requested model doesn't support." |
+| `image_too_large` | `exceed the maximum image size`, or `many-image requests` | vision-coordinates page, "Turn resizing into an error" example message; vision page, the many-image limit: "rejected with an `invalid_request_error` whose message references "many-image requests"" |
+| `other` | anything else, and any body without a message string | |
+
+Documented conditions with no stated wording are not classes and record `other`: a request over a
+spend limit (the errors page says it returns a 400 but gives no message), `max_tokens` above a
+model's output limit, and the hard image and page limits. A class is added only from a provider
+documentation line or a captured message, cited in this table.
+
+### What it guarantees, and what it does not
+
+- A routed rejection's error, its settled outcome and its ledger row name a documented error type
+  or `other`, and a class or `other`. None of them holds provider text.
+- A provider message whose wording changes falls to `other`. It is never assigned a wrong class
+  that a caller acts on, because nothing acts on the class (Decision 6).
+- It does not say why a rejection classed `other` happened. The message stays dropped, so a new
+  wording is found by reproducing the request on the unrouted path, which keeps the body, and is
+  then added to the table by amendment.
+- It does not cover the frames a traceback keeps alive. When the error is raised, the attempt's
+  frame still holds the response object, the request and its headers, as it does on every other
+  failure of this path today, so a crash reporter that records local variables sees them. That
+  exposure, including the credential header, is not changed by this amendment. It would be falsified
+  for this amendment's own values if a string or bytes local of a frame of the package's own code,
+  in the error's traceback or in the traceback of an exception in its chain, held the body.
+- The measured case that prompted this amendment, a 400 after a context fold, was never captured,
+  and its class cannot be named from the evidence. The fold changes only lionagi's own message
+  history, which the Anthropic body carries as text, with no `tool_use`, `tool_result` or
+  `thinking` blocks, and the folded input was far below the model's context window. Its acceptance
+  is that the next such rejection records a documented type, and a class other than `other` or,
+  failing that, a reproduction on the unrouted path whose captured message extends the table.
+
+### Alternatives considered
+
+- Error type only: kept as the floor. Nearly every rejection is `invalid_request_error`, so alone
+  it does not tell causes apart.
+- A bounded, redacted message on the ledger row: not taken here. It puts provider text, which can
+  quote request content, in the durable store, and needs its own reader policy.
+- Documenting that a routed rejection cannot be diagnosed: rejected. Routing is the normal
+  configuration, so the defect would stay where requests run.
+- Encoding the class into the reason code (`request_rejected_prompt_too_long`): rejected. The
+  warm-prefix clearing rule enumerates reason codes (it keeps the warm prefix only for `cancelled`
+  and `stream_closed`), so every new class would be a new reason code that each such rule has to
+  be checked against.
+
+### Verification
+
+Each item is a test that fails without this change:
+
+- For each class, a 400 body carrying the documented message, through both the non-streamed and the
+  streamed routed attempt, raises `AccountRoutingError(request_rejected)` with that class and
+  `provider_error_type="invalid_request_error"`, and the ledger row holds the same two values.
+- A body with an unknown message, no message, an unknown or missing type, invalid JSON, or more
+  than 64 KiB records `other` for the affected field, and never raises anything but the routed
+  error. On the streamed attempt, a body larger than the bound is not read past 64 KiB and one
+  byte, and a body that does not arrive within five seconds records `other` for both fields.
+- A cancellation already pending when a 400 arrives is delivered after the attempt is recorded
+  `request_rejected` with its two fields, on both attempts, as Amendment 5 requires today.
+- A message containing the text of two rows gets the class of the earlier row.
+- Sentinel: a body whose message carries a unique sentinel string, through both branches. The
+  sentinel is absent from the error's `args` and `str`, from every exception reachable through
+  `__context__` and `__cause__`, from every log record captured at DEBUG level for every logger
+  (the HTTP client's included), from the ledger row, and from every string or bytes local of every
+  frame of the package's own code in the traceback of the error and of each exception in its
+  chain (the test's own frame, which holds the sentinel it built, is not one of them). A control
+  arm with the classifier replaced by one that returns `other` passes the same assertions. An arm
+  that deliberately places the message in the error's arguments fails them.
+- An unknown value passed to `AccountRoutingError`, `UnknownOutcome` or the ledger write raises
+  `ValueError`.
+- Neither field changes retry, blocking or warm-prefix clearing: a rejection of each class is not
+  retried and clears the same warm-prefix rows as a `request_rejected` settlement does today.
+- A ledger created before this change gains the two columns on open and keeps its rows. A
+  settlement with any other outcome leaves both columns null, and a later reason written to an
+  attempt that already records `request_rejected` changes neither the reason nor the two fields.
+- The unrouted error-body path is unchanged.
 
 ## Requirements
 
