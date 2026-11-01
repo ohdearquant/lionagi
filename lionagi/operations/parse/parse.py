@@ -169,9 +169,9 @@ async def parse(
 
     A text that does not parse is sent to a repair request, which reformats it. With
     ``stopped_at_output_limit`` the text came from a response that stopped at its output token
-    limit: it is incomplete, so no repair request is sent and the parse goes straight to its
-    ``handle_validation`` failure handling, with a reason that names the stop. A text that parses
-    as it is is still used.
+    limit: it is incomplete, so no repair request is sent and ``handle_validation`` decides at
+    once: under ``"raise"`` the error names the stop, and ``"return_value"`` gives the text as an
+    ``UnparsedResponse`` of kind ``"extraction"``. A text that parses as it is is still used.
     """
     structure = parse_param.structure if isinstance(parse_param.structure, Structure) else None
     attempts = _ReformatAttempts()
