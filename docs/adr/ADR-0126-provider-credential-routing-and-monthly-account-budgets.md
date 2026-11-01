@@ -893,8 +893,11 @@ diagnosis, and no code path may branch on that class.
    response body, counted after content decoding, as JSON. The non-streamed attempt's client has
    already read the whole body before the status is checked, as it does today, so the bound limits
    only what is decoded. The streamed attempt reads the body of the non-200 response before closing
-   it, under the attempt's existing transport timeout, and stops after 64 KiB and one more byte, so
-   a larger body is detected without being read further. A body over the bound, a body that does
+   it and stops after 64 KiB and one more byte, so a larger body is detected without being read
+   further. That read comes before the settlement, so it runs under `CancelScope(shield=True)`
+   bounded at five seconds, like the settlement writes Amendment 5 shields: a pending cancellation is
+   still delivered after the failure is recorded (Amendment 5), and a read that has not finished
+   within the bound records `other` for both fields. A body over the bound, a body that does
    not decode, a body with no
    `error.type` string, or one whose `error.type` is not in the provider's set records `other` for
    the type. A body with no `error.message` string records `other` for the class. The settlement
@@ -1003,7 +1006,9 @@ Each item is a test that fails without this change:
 - A body with an unknown message, no message, an unknown or missing type, invalid JSON, or more
   than 64 KiB records `other` for the affected field, and never raises anything but the routed
   error. On the streamed attempt, a body larger than the bound is not read past 64 KiB and one
-  byte.
+  byte, and a body that does not arrive within five seconds records `other` for both fields.
+- A cancellation already pending when a 400 arrives is delivered after the attempt is recorded
+  `request_rejected` with its two fields, on both attempts, as Amendment 5 requires today.
 - A message containing the text of two rows gets the class of the earlier row.
 - Sentinel: a body whose message carries a unique sentinel string, through both branches. The
   sentinel is absent from the error's `args` and `str`, from every exception reachable through
