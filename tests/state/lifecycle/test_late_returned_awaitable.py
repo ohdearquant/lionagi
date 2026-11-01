@@ -57,16 +57,22 @@ async def _first_attempt(runner, adapter, db, event_id, key, started, tries=3):
 
     One time budget covers the state reads before the hook as well as the hook, so a
     loaded runner can spend all of it before the hook starts; the attempt is then
-    correctly reported as not attempted. Repeating it is valid only while ``started``
-    is unset and the slot is released. An attempt whose hook ran but is reported as
-    not attempted, or one that never begins within ``tries`` attempts, is returned
-    unchanged so the caller's assertion still fails.
+    correctly reported as not attempted. Repeating it is valid only for that case:
+    ``started`` is unset and the attempt ran for nearly its whole budget, so the budget
+    expired rather than the attempt failing at once. The slot is released before the
+    repeat. An attempt whose hook ran but is reported as not attempted, one that fails
+    before the hook without spending its budget, and one that never begins within
+    ``tries`` attempts are returned unchanged, so the caller's assertion still fails.
     """
+    loop = asyncio.get_running_loop()
+    begun = loop.time()
     result = await getattr(runner, adapter)(db, event_id)
     for _ in range(tries - 1):
-        if started.is_set() or result.status != "failed" or result.attempted:
+        expired = loop.time() - begun >= 0.9 * runner.timeout
+        if started.is_set() or result.status != "failed" or result.attempted or not expired:
             break
         await _wait_for_attempt_release(key)
+        begun = loop.time()
         result = await getattr(runner, adapter)(db, event_id)
     return result
 
@@ -463,13 +469,18 @@ async def test_scenarios_survive_a_stalled_first_state_read(
 
 
 class _ScriptedRunner:
-    """Answers each attempt with the next scripted result and counts the attempts."""
+    """Answers each attempt with the next scripted result and counts the attempts.
+
+    Each answer returns at once, so with the default zero budget every attempt counts as
+    having spent its budget; a larger budget makes every attempt one that failed at once.
+    """
 
     consumer = "scripted"
 
-    def __init__(self, *results):
+    def __init__(self, *results, timeout=0.0):
         self.results = list(results)
         self.attempts = 0
+        self.timeout = timeout
 
     async def attempt_replay(self, _db, _transition_id):
         self.attempts += 1
@@ -504,3 +515,11 @@ async def test_first_attempt_gives_up_after_three_attempts_without_an_effect():
     runner = _ScriptedRunner(_NOT_STARTED, _NOT_STARTED, _NOT_STARTED, _STARTED)
     result = await _first_attempt(runner, "attempt_replay", None, "event", _SCRIPTED_KEY, started)
     assert result == _NOT_STARTED and runner.attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_first_attempt_returns_a_failure_that_did_not_spend_its_budget():
+    started = threading.Event()
+    runner = _ScriptedRunner(_NOT_STARTED, _STARTED, timeout=60.0)
+    result = await _first_attempt(runner, "attempt_replay", None, "event", _SCRIPTED_KEY, started)
+    assert result == _NOT_STARTED and runner.attempts == 1
