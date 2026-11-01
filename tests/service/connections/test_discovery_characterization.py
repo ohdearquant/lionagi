@@ -15,8 +15,14 @@ import sys
 
 import pytest
 
+from tests._core_imports import ROOT
+
 # Marks "leave LIONAGI_CHAT_PROVIDER in the child exactly as this process has it".
 _INHERIT = object()
+
+# This checkout and its lionhub package, put first on each child's path so the cold load reads
+# the providers in this tree and not an installed copy.
+_CHILD_PATH = (str(ROOT), str(ROOT / "lionhub" / "src"))
 
 _COLD_CHILD = r"""
 import json
@@ -250,6 +256,8 @@ def _run_child(code, *args, chat_provider=_INHERIT):
     removes it from the child's environment and a string sets it.
     """
     env = dict(os.environ)
+    inherited = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join([*_CHILD_PATH, *([inherited] if inherited else [])])
     if chat_provider is not _INHERIT:
         env.pop("LIONAGI_CHAT_PROVIDER", None)
         if chat_provider is not None:
@@ -258,6 +266,7 @@ def _run_child(code, *args, chat_provider=_INHERIT):
         [sys.executable, "-c", code, *args],
         capture_output=True,
         text=True,
+        cwd=ROOT,
         env=env,
         timeout=240,
     )
