@@ -340,3 +340,57 @@ def test_manifest_matches_registry_registration():
     )
     # A shrinking registry population would make the comparisons above vacuous.
     assert result["counts"] == {"fragments": 18, "compared": 37}
+
+
+# The order in which an unhinted context-window lookup scans the providers' tables.
+_WINDOW_ORDER = (
+    "openai",
+    "anthropic",
+    "claude_code",
+    "codex",
+    "deepseek",
+    "nvidia_nim",
+    "perplexity",
+    "gemini_code",
+    "pi",
+    "groq",
+    "gemini",
+    "openrouter",
+)
+
+_WINDOW_ORDER_CHILD = """
+import json
+import sys
+
+sys.path.insert(0, sys.argv[1])
+
+from lionagi.service.connections.provider_catalog import compose_provider_catalog
+from lionhub.providers.manifest import get_provider_manifest
+
+manifest = get_provider_manifest()
+declared = compose_provider_catalog(manifest)
+unordered = compose_provider_catalog(manifest.fragments, source=manifest.source)
+print(
+    json.dumps(
+        {
+            "declared": declared.context_window("gemini-2.5-pro"),
+            "unordered": unordered.context_window("gemini-2.5-pro"),
+        }
+    )
+)
+"""
+
+
+def test_catalog_composed_from_the_manifest_scans_context_windows_in_the_declared_order():
+    result = _run_child(_WINDOW_ORDER_CHILD, _LIONHUB_SRC)
+
+    # The google tables disagree on this model; only the scan order decides between them.
+    assert result == {"declared": 2097152, "unordered": 1048576}
+
+
+def test_manifest_declares_a_context_window_order_naming_every_windowed_provider():
+    manifest = get_provider_manifest()
+    windowed = {fragment.key for fragment in manifest.fragments if fragment.context_windows}
+
+    assert manifest.context_window_order == _WINDOW_ORDER
+    assert set(_WINDOW_ORDER) == windowed == set(_WINDOW_TABLES)

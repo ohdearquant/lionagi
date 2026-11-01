@@ -1,12 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Context-window lookup as it behaves today, before the provider discovery contract
-(docs/adr/ADR-0140-provider-discovery-contract.md) replaces it.
+"""Context-window lookup through the provider catalog
+(docs/adr/ADR-0140-provider-discovery-contract.md).
 
-Every check that loads provider window tables runs in a fresh interpreter, so no table cached
-by another test can change the result; the child prints one JSON line and the test asserts on
-it. Expected values are literals, never derived from the tables under test.
+Every check that loads the catalog runs in a fresh interpreter, so no catalog or loader state
+kept by another test can change the result; the child prints one JSON line and the test
+asserts on it. Expected values are literals, except in the parity check, whose expected values
+come from a frozen copy of the earlier lookup algorithm reading each provider's own tables.
 """
 
 from __future__ import annotations
@@ -25,9 +26,8 @@ from tests._core_imports import ROOT
 # the ones in this tree and not an installed copy.
 _LIONHUB_SRC = str(ROOT / "lionhub" / "src")
 
-# Unhinted lookups scan the window tables in this order and the first match wins. D1 removes
-# _PROVIDER_MODULES; D5 keeps scanning the declared mappings in their declared order for a
-# healthy catalog.
+# Unhinted lookups scan the window tables in this order and the first match wins; the catalog
+# carries it as its context_window_order.
 _PROVIDER_ORDER = [
     "openai",
     "anthropic",
@@ -42,6 +42,29 @@ _PROVIDER_ORDER = [
     "gemini",
     "openrouter",
 ]
+
+# (provider key, provider package, table name): where each window table is declared, in the
+# order of _PROVIDER_ORDER. The parity check reads these tables from the packages' own config
+# modules, not through the catalog.
+_LEGACY_TABLES = [
+    ("openai", "openai", "CONTEXT_WINDOWS"),
+    ("anthropic", "anthropic", "ANTHROPIC_CONTEXT_WINDOWS"),
+    ("claude_code", "anthropic", "CLAUDE_CODE_CONTEXT_WINDOWS"),
+    ("codex", "openai", "CODEX_CONTEXT_WINDOWS"),
+    ("deepseek", "deepseek", "CONTEXT_WINDOWS"),
+    ("nvidia_nim", "nvidia_nim", "CONTEXT_WINDOWS"),
+    ("perplexity", "perplexity", "CONTEXT_WINDOWS"),
+    ("gemini_code", "google", "GEMINI_CODE_CONTEXT_WINDOWS"),
+    ("pi", "pi", "CONTEXT_WINDOWS"),
+    ("groq", "groq", "CONTEXT_WINDOWS"),
+    ("gemini", "google", "GEMINI_CONTEXT_WINDOWS"),
+    ("openrouter", "openrouter", "CONTEXT_WINDOWS"),
+]
+
+# Lookups the parity check compares: every distinct model string built from the window keys,
+# times every distinct hint (none, the empty string, each catalog key, every alias a provider
+# declares, each key in upper case and padded with spaces, and an unknown name).
+_PARITY_COMPARISONS = 27440
 
 # Number of entries in each provider's CONTEXT_WINDOWS table.
 _TABLE_SIZES = {
@@ -114,14 +137,15 @@ from types import SimpleNamespace
 
 sys.path.insert(0, sys.argv[1])
 from lionagi.service import token_budget
+from lionagi.service.connections._provider_compat import default_provider_catalog
 
 cases = json.loads(sys.argv[2])
 lookup = token_budget.lookup_context_window
-providers = list(token_budget._PROVIDER_MODULES)
+catalog = default_provider_catalog()
 out = {
-    "order": providers,
-    "sizes": {p: len(token_budget._get_provider_windows(p)) for p in providers},
-    "pi_items": dict(token_budget._get_provider_windows("pi")),
+    "order": list(catalog.context_window_order),
+    "sizes": {f.key: len(f.context_windows) for f in catalog.providers if f.context_windows},
+    "pi_items": dict(catalog.fragment("pi").context_windows),
     "lookups": {f"{p}|{m}": lookup(m, p) for p, m in cases},
     "unknown_hinted": lookup("zzz-unknown-model-9", "openai"),
     "unknown_unhinted": lookup("zzz-unknown-model-9"),
@@ -143,28 +167,190 @@ out["table"] = token_budget.get_context_window(
 print(json.dumps(out))
 """
 
+# One scenario per interpreter, because the loader keeps its first failure for the life of the
+# process. "missing": the hub's top-level package cannot be imported. "raises": a hub comes first
+# on the path whose manifest module fails when it is imported.
 _BROKEN_CHILD = """
+import json
+import sys
+from types import SimpleNamespace
+
+from lionagi.service import token_budget
+
+mode = sys.argv[1]
+for name in [n for n in sys.modules if n == "lionhub" or n.startswith("lionhub.")]:
+    del sys.modules[name]
+if mode == "missing":
+
+    class _Absent:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "lionhub":
+                raise ModuleNotFoundError("No module named 'lionhub'", name="lionhub")
+            return None
+
+    sys.meta_path.insert(0, _Absent())
+else:
+    sys.path.insert(0, sys.argv[2])
+
+lookup = token_budget.lookup_context_window
+
+
+def attempt(call):
+    try:
+        return {"value": call()}
+    except Exception as exc:
+        cause = exc.__cause__
+        return {
+            "error": type(exc).__name__,
+            "cause": None if cause is None else type(cause).__name__,
+        }
+
+
+def branch(**config):
+    endpoint = SimpleNamespace(config=SimpleNamespace(**config))
+    return SimpleNamespace(chat_model=SimpleNamespace(endpoint=endpoint))
+
+
+model = {"model": "gpt-5.5"}
+out = {
+    "hinted": attempt(lambda: lookup("gpt-5.5", "openai")),
+    "unhinted": attempt(lambda: lookup("gpt-5.5")),
+    "unknown": attempt(lambda: lookup("zzz-unknown-model-9", "openai")),
+    "explicit": attempt(
+        lambda: token_budget.get_context_window(
+            branch(context_window=32000, provider="openai", kwargs=model)
+        )
+    ),
+    "modelled": attempt(
+        lambda: token_budget.get_context_window(
+            branch(context_window=None, provider="openai", kwargs=model)
+        )
+    ),
+}
+print(json.dumps(out))
+"""
+
+# Every window key of the catalog, in four spellings, against every hint: the catalog lookup
+# must give what a frozen copy of the earlier algorithm gives (hinted table first, then the
+# tables in legacy order, longest key contained in the lower-cased model name, first declared
+# wins a tie, 128,000 when nothing matches). The earlier algorithm honoured a hint only when
+# its lower-cased form was one of the twelve provider keys, so an alias, a padded name and the
+# empty string all fall through to the unhinted scan.
+_PARITY_CHILD = """
+import importlib
+import json
+import sys
+
+sys.path.insert(0, sys.argv[1])
+tables = json.loads(sys.argv[2])
+order = json.loads(sys.argv[3])
+
+from lionagi.service import token_budget
+from lionagi.service.connections._provider_compat import default_provider_catalog
+
+legacy = {}
+for key, package, name in tables:
+    module = importlib.import_module(f"lionhub.providers.{package}._config")
+    legacy[key] = dict(getattr(module, name))
+
+
+def longest(windows, lowered):
+    best, best_len = None, 0
+    for prefix, window in windows.items():
+        if prefix in lowered and len(prefix) > best_len:
+            best, best_len = window, len(prefix)
+    return best
+
+
+def expected(model, hint):
+    lowered = model.lower()
+    windows = legacy.get(hint.lower()) if hint else None
+    if windows:
+        found = longest(windows, lowered)
+        if found is not None:
+            return found
+    for key in order:
+        found = longest(legacy[key], lowered)
+        if found is not None:
+            return found
+    return 128000
+
+
+catalog = default_provider_catalog()
+keys = sorted({k for f in catalog.providers for k in (f.context_windows or {})})
+models = sorted({v for k in keys for v in (k, k + "-x", "x/" + k, k.upper())})
+provider_keys = [f.key for f in catalog.providers]
+aliases = [alias for f in catalog.providers for alias in f.aliases]
+hints = list(
+    dict.fromkeys(
+        [None, ""]
+        + provider_keys
+        + aliases
+        + [key.upper() for key in provider_keys]
+        + [f" {key} " for key in provider_keys]
+        + ["unknown"]
+    )
+)
+differences = []
+compared = 0
+for model in models:
+    for hint in hints:
+        got = token_budget.lookup_context_window(model, hint, provider_catalog=catalog)
+        want = expected(model, hint)
+        compared += 1
+        if got != want:
+            differences.append([model, hint, got, want])
+print(json.dumps({
+    "compared": compared,
+    "models": len(models),
+    "hints": len(hints),
+    "alias_hints": aliases,
+    "difference_count": len(differences),
+    "differences": differences[:20],
+}))
+"""
+
+# An explicit catalog is used as given: an empty one answers every model with the estimate and
+# never loads the hub.
+_EMPTY_CATALOG_CHILD = """
+import json
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from lionagi.service import token_budget
+from lionagi.service.connections.provider_catalog import compose_provider_catalog
+
+empty = compose_provider_catalog([], source="empty-catalog-test")
+lookup = token_budget.lookup_context_window
+print(json.dumps({
+    "hinted": lookup("gpt-5.5", "openai", provider_catalog=empty),
+    "unhinted": lookup("gpt-5.5", provider_catalog=empty),
+    "hub_modules": sorted(
+        n for n in sys.modules if n == "lionhub" or n.startswith("lionhub.")
+    ),
+}))
+"""
+
+# The lookup reads window metadata only: nothing is loaded from the hub before the lookup, and
+# afterwards only provider packages, their config modules and the manifest.
+_PURITY_CHILD = """
 import json
 import sys
 
 sys.path.insert(0, sys.argv[1])
 from lionagi.service import token_budget
 
-sys.path.insert(0, sys.argv[2])
-lookup = token_budget.lookup_context_window
-real = token_budget._PROVIDER_MODULES["openai"]
-out = {"cached_before": sorted(token_budget._provider_cache)}
-for label, module in (("missing", "window_module_absent"), ("raises", "window_import_error")):
-    token_budget._PROVIDER_MODULES["openai"] = module
-    out[label] = {
-        "hinted": lookup("gpt-5.5", "openai"),
-        "unhinted": lookup("gpt-5.5"),
-        "unknown": lookup("zzz-unknown-model-9", "openai"),
-    }
-out["cached_after"] = sorted(token_budget._provider_cache)
-token_budget._PROVIDER_MODULES["openai"] = real
-out["restored"] = lookup("gpt-5.5", "openai")
-print(json.dumps(out))
+
+def loaded():
+    return sorted(n for n in sys.modules if n == "lionhub" or n.startswith("lionhub."))
+
+
+before = loaded()
+if sys.argv[2] == "hinted":
+    token_budget.lookup_context_window("gemini-2.5-pro", "gemini_code")
+else:
+    token_budget.lookup_context_window("zzz-unknown-model-9")
+print(json.dumps({"before": before, "loaded": loaded()}))
 """
 
 
@@ -190,11 +376,18 @@ def healthy() -> dict:
 
 @pytest.fixture(scope="module")
 def broken(tmp_path_factory) -> dict:
-    directory = tmp_path_factory.mktemp("window_modules")
-    (directory / "window_import_error.py").write_text(
+    hub = tmp_path_factory.mktemp("broken_hub")
+    package = hub / "lionhub" / "providers"
+    package.mkdir(parents=True)
+    (hub / "lionhub" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "manifest.py").write_text(
         "raise ImportError('provider unavailable')\n", encoding="utf-8"
     )
-    return _run_child(_BROKEN_CHILD, _LIONHUB_SRC, str(directory))
+    return {
+        scenario: _run_child(_BROKEN_CHILD, scenario, str(hub))
+        for scenario in ("missing", "raises")
+    }
 
 
 class _MissingKey:
@@ -233,27 +426,28 @@ def test_longest_matching_key_wins(healthy, provider, model, window):
     assert healthy["lookups"][f"{provider}|{model}"] == window
 
 
-def test_failed_window_module_is_indistinguishable_from_unknown_model(healthy, broken):
-    # An unknown model gets the 128,000 estimate with or without a provider hint; D5 keeps it
-    # for a healthy catalog.
+def test_failed_provider_load_raises_a_typed_error_not_the_unknown_model_estimate(healthy, broken):
+    # An unknown model gets the 128,000 estimate with or without a provider hint when the
+    # catalog loads.
     assert healthy["unknown_hinted"] == 128_000
     assert healthy["unknown_unhinted"] == 128_000
-    # Nothing has filled the table cache when a fresh process starts, so the repointed
-    # module is the one the lookup uses.
-    assert broken["cached_before"] == []
-    for scenario in ("missing", "raises"):
-        # A hinted provider whose module is missing, or raises ImportError, returns the same
-        # 128,000, hinted or not; D5 replaces this fallback with a typed error.
-        assert broken[scenario]["hinted"] == 128_000
-        assert broken[scenario]["unhinted"] == 128_000
-        # The same broken provider with an unknown model gives the identical value.
-        assert broken[scenario]["unknown"] == 128_000
-    # A failed load caches nothing for its provider: a table is stored only after a successful
-    # import, so the lookup below loads the real module instead of reading a cached failure.
-    assert "openai" not in broken["cached_after"]
-    # Control: with the real module restored, the same lookup reads the table row, so the
-    # 128,000 above came from the failed load and not from gpt-5.5 being unknown.
-    assert broken["restored"] == 1_000_000
+    # Control: with a healthy catalog the same gpt-5.5 lookup reads its table row, so the
+    # errors below replace a real answer and not an estimate.
+    assert healthy["table"] == 1_000_000
+    expected = {
+        # The hub's top-level package cannot be imported.
+        "missing": {"error": "MissingFeatureError", "cause": "ModuleNotFoundError"},
+        # The hub is present and its manifest module fails when it is imported.
+        "raises": {"error": "ProviderActivationError", "cause": "ImportError"},
+    }
+    for scenario, failure in expected.items():
+        result = broken[scenario]
+        # Hinted, unhinted, unknown-model and branch lookups all raise the loader's typed
+        # error; none of them returns 128,000.
+        for call in ("hinted", "unhinted", "unknown", "modelled"):
+            assert result[call] == failure, (scenario, call, result)
+        # An explicit context window on the endpoint config never consults the catalog.
+        assert result["explicit"] == {"value": 32_000}, (scenario, result)
 
 
 def test_explicit_window_beats_the_table(healthy):
@@ -275,3 +469,59 @@ def test_key_error_while_reading_the_model_returns_default(config):
     # A KeyError raised while reading the model name is swallowed and the 128,000 estimate
     # is returned; no window table is loaded on this path.
     assert get_context_window(_branch(config)) == 128_000
+
+
+def test_catalog_lookup_matches_the_earlier_algorithm_on_every_window_key():
+    result = _run_child(
+        _PARITY_CHILD,
+        _LIONHUB_SRC,
+        json.dumps(_LEGACY_TABLES),
+        json.dumps(_PROVIDER_ORDER),
+    )
+
+    print(
+        f"parity comparisons: {result['compared']} = {result['models']} models x "
+        f"{result['hints']} hints, {result['difference_count']} differences"
+    )
+    assert result["difference_count"] == 0, result
+    assert result["differences"] == []
+    # The hint set really contains aliases; without them the check would not see an alias hint.
+    assert "gemini-api" in result["alias_hints"], result
+    assert result["compared"] == result["models"] * result["hints"]
+    assert result["compared"] == _PARITY_COMPARISONS
+
+
+def test_explicit_empty_catalog_gives_the_estimate_and_never_loads_the_hub():
+    result = _run_child(_EMPTY_CATALOG_CHILD, _LIONHUB_SRC)
+
+    # gpt-5.5 has a 1,000,000 row in the hub's table (see test_explicit_window_beats_the_table),
+    # so 128,000 here comes from the empty catalog and not from the table.
+    assert result == {"hinted": 128_000, "unhinted": 128_000, "hub_modules": []}
+
+
+def _unexpected_hub_modules(loaded: list[str]) -> list[str]:
+    """Loaded hub modules other than the root, provider packages, config modules and manifest."""
+    fixed = {"lionhub", "lionhub.providers", "lionhub.providers.manifest"}
+    unexpected = []
+    for name in loaded:
+        parts = name.split(".")
+        if name in fixed:
+            continue
+        if len(parts) == 3 and parts[:2] == ["lionhub", "providers"]:
+            continue
+        if len(parts) == 4 and parts[:2] == ["lionhub", "providers"] and parts[3] == "_config":
+            continue
+        unexpected.append(name)
+    return unexpected
+
+
+@pytest.mark.parametrize("mode", ["unhinted", "hinted"])
+def test_window_lookup_loads_metadata_without_endpoint_implementations(mode):
+    result = _run_child(_PURITY_CHILD, _LIONHUB_SRC, mode)
+    loaded = result["loaded"]
+
+    # Importing the budget module loads nothing from the hub.
+    assert result["before"] == []
+    # The lookup did read the manifest; an empty list would not show purity.
+    assert "lionhub.providers.manifest" in loaded, f"loaded lionhub modules: {loaded}"
+    assert _unexpected_hub_modules(loaded) == [], f"loaded lionhub modules: {loaded}"
