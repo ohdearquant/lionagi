@@ -20,6 +20,7 @@ from sqlalchemy import event, text
 from lionagi.cli import state as state_mod
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
+from tests.state._pg_cleanup import delete_imported_session_with_retry
 
 _WAIT = 10.0
 _HOLD_WAIT = 4 * _WAIT
@@ -83,12 +84,14 @@ async def _stores(pg_url, monkeypatch):
             )
         finally:
             # Each ID comes from this test; do not touch message type rows or other sessions.
-            # Session deletion takes NOWAIT table locks; a shared PostgreSQL URL can make
-            # cleanup fail under unrelated concurrent writes. Use a dedicated test database.
+            # Session deletion takes NOWAIT table locks, so a backend that holds a conflicting
+            # lock for an instant (autovacuum, a rollback still finishing) refuses it. The helper
+            # waits such a holder out for a bounded time and fails with the holders listed if a
+            # lock stays held.
             for session_id in (run_id, keeper_id):
                 if await writer.get_session(session_id) is not None:
-                    assert await writer.delete_imported_session(
-                        session_id, require_source_kind="imported_fs"
+                    assert await delete_imported_session_with_retry(
+                        writer, session_id, require_source_kind="imported_fs"
                     )
             for message_id in message_ids:
                 await writer.execute("DELETE FROM messages WHERE id = :id", {"id": message_id})
