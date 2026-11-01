@@ -64,7 +64,7 @@ GEMINI_CODE_CONTEXT_WINDOWS: dict[str, int] = {
     "gemini-3-flash-preview": 1_048_576,
     "gemini-3-pro-preview": 1_048_576,
     "gemini-2.5-flash": 1_048_576,
-    "gemini-2.5-pro": 2_097_152,
+    "gemini-2.5-pro": 1_048_576,
 }
 
 

@@ -9,11 +9,13 @@ first use. No endpoint module is removed from or run again in the test process.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+from lionagi.service.connections.provider_catalog import compose_provider_catalog
 from lionhub.providers.manifest import get_provider_manifest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -358,34 +360,38 @@ _WINDOW_ORDER = (
     "openrouter",
 )
 
-_WINDOW_ORDER_CHILD = """
-import json
-import sys
-
-sys.path.insert(0, sys.argv[1])
-
-from lionagi.service.connections.provider_catalog import compose_provider_catalog
-from lionhub.providers.manifest import get_provider_manifest
-
-manifest = get_provider_manifest()
-declared = compose_provider_catalog(manifest)
-unordered = compose_provider_catalog(manifest.fragments, source=manifest.source)
-print(
-    json.dumps(
-        {
-            "declared": declared.context_window("gemini-2.5-pro"),
-            "unordered": unordered.context_window("gemini-2.5-pro"),
-        }
-    )
-)
-"""
-
 
 def test_catalog_composed_from_the_manifest_scans_context_windows_in_the_declared_order():
-    result = _run_child(_WINDOW_ORDER_CHILD, _LIONHUB_SRC)
+    manifest = get_provider_manifest()
+    order = manifest.context_window_order
+    position = {key: index for index, key in enumerate(order)}
+    # Every model name a bundled table holds has the same window under the declared order and
+    # under the order the fragments are declared in, so the order is measured on probe names
+    # instead of on a real model. A provider at position N of the declared order holds the probe
+    # names 00..N, each with the window N + 1: probe-NN is then held by every provider declared
+    # at NN or later, and the window a scan returns for it names the first of them the scan
+    # reached.
+    probed = tuple(
+        dataclasses.replace(
+            fragment,
+            context_windows={
+                f"probe-{n:02d}": position[fragment.key] + 1
+                for n in range(position[fragment.key] + 1)
+            },
+        )
+        if fragment.context_windows is not None
+        else fragment
+        for fragment in manifest.fragments
+    )
+    declared = compose_provider_catalog(probed, source=manifest.source, context_window_order=order)
+    unordered = compose_provider_catalog(probed, source=manifest.source)
 
-    # The google tables disagree on this model; only the scan order decides between them.
-    assert result == {"declared": 2097152, "unordered": 1048576}
+    probes = [f"probe-{n:02d}" for n in range(len(order))]
+    in_declared_order = list(range(1, len(order) + 1))
+    assert [declared.context_window(probe) for probe in probes] == in_declared_order
+    # Without the declared order the scan follows the order the fragments are declared in, which
+    # is a different order, so the same probes answer differently.
+    assert [unordered.context_window(probe) for probe in probes] != in_declared_order
 
 
 def test_manifest_declares_a_context_window_order_naming_every_windowed_provider():

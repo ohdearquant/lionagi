@@ -276,14 +276,32 @@ class TestCanonicalContextWindowRegistry:
     @pytest.mark.parametrize(
         ("provider", "model", "expected"),
         [
-            (None, "gemini-2.5-pro", 2_097_152),
+            (None, "gemini-2.5-pro", 1_048_576),
             ("gemini", "gemini-2.5-pro", 1_048_576),
             ("GeMiNi", "gemini-2.5-pro", 1_048_576),
-            ("gemini-api", "gemini-2.5-pro", 2_097_152),
-            (" gemini ", "gemini-2.5-pro", 2_097_152),
+            ("gemini-api", "gemini-2.5-pro", 1_048_576),
+            (" gemini ", "gemini-2.5-pro", 1_048_576),
             ("gemini", "routing/GEMINI-2.5-PRO-release", 1_048_576),
+            # The name holds another provider's key as well as the Gemini key, so the Gemini hint
+            # and the scan over every provider give different windows: these rows tell a hint that
+            # was recognised from one that fell through to the scan.
+            (None, "o3/gemini-2.5-pro", 200_000),
+            ("gemini", "o3/gemini-2.5-pro", 1_048_576),
+            ("gemini-api", "o3/gemini-2.5-pro", 200_000),
+            (" gemini ", "o3/gemini-2.5-pro", 200_000),
         ],
-        ids=["global", "hint", "case", "alias", "whitespace", "substring"],
+        ids=[
+            "global",
+            "hint",
+            "case",
+            "alias",
+            "whitespace",
+            "substring",
+            "global-scan",
+            "hint-over-scan",
+            "alias-scan",
+            "whitespace-scan",
+        ],
     )
     def test_gemini_lookup_preserves_hint_and_global_precedence(self, provider, model, expected):
         """Context lookup has its own hint matching and provider scan order."""
@@ -291,6 +309,17 @@ class TestCanonicalContextWindowRegistry:
 
         # Use the production catalog's window tables.
         assert token_budget.lookup_context_window(model, provider=provider) == expected
+
+    @pytest.mark.parametrize(
+        "provider",
+        [None, "gemini_code", "gemini"],
+        ids=["global", "gemini_code", "gemini"],
+    )
+    def test_gemini_2_5_pro_has_one_window_on_every_route(self, provider):
+        """gemini-2.5-pro has a 1,048,576-token window with no hint and with either Gemini hint."""
+        import lionagi.service.token_budget as token_budget
+
+        assert token_budget.lookup_context_window("gemini-2.5-pro", provider=provider) == 1_048_576
 
     def test_gpt_4_1_canonical_value_is_openai(self):
         """gpt-4.1 from the openai provider must match openai/_config.py (primary path)."""
