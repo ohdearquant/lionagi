@@ -629,16 +629,18 @@ def test_cold_load_logs_one_warning_when_the_catalog_cannot_load(
     assert len(warnings) == 1
     assert warnings[0].name == _registry_mod.logger.name
     assert warnings[0].levelno == logging.WARNING
-    assert warnings[0].getMessage().startswith(
-        "built-in providers were not registered: the provider catalog could not load: "
-        f"{type(error).__name__}"
+    assert (
+        warnings[0]
+        .getMessage()
+        .startswith(
+            "built-in providers were not registered: the provider catalog could not load: "
+            f"{type(error).__name__}"
+        )
     )
     assert EndpointRegistry._loaded is True
 
 
-def test_cold_load_lets_an_unexpected_catalog_error_propagate(
-    monkeypatch, cold_registry, caplog
-):
+def test_cold_load_lets_an_unexpected_catalog_error_propagate(monkeypatch, cold_registry, caplog):
     failure = RuntimeError("the catalog failed in a way the registry does not expect")
     _install_catalog(monkeypatch, failure)
 
