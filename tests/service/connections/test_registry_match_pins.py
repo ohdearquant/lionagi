@@ -6,13 +6,24 @@
 aliases, endpoint key, endpoint aliases, the endpoint class as
 ``module:qualname`` and whether it is the provider's default (the first endpoint
 registered for it). The resolution tests go through the public
-``match_endpoint`` and compare against that table only. A separate group of
-tests checks the table against what is registered, so a stale table fails
-loudly. Order across providers is not significant; order inside one provider
-matters only through its default.
+``match_endpoint`` and compare against that table, with one exception: with no
+endpoint named, the provider's default is the first entry registered for it,
+and which entry registers first depends on which provider modules the process
+imported before the registry loaded. So the in-process test pins that rule
+against the registry's own entries, and the table's absolute defaults are
+pinned in a fresh interpreter, where nothing else has been imported first. One
+more fresh-interpreter test records what importing a provider module ahead of
+the registry does to the default today. A separate group of tests checks the
+table against what is registered, so a stale table fails loudly. Order across
+providers is not significant; order inside one provider matters only through
+its default.
 """
 
 import importlib
+import json
+import os
+import subprocess
+import sys
 import warnings
 from typing import NamedTuple
 
@@ -21,6 +32,7 @@ import pytest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.connections.registry import EndpointRegistry, ProviderNotFoundError
+from tests._core_imports import ROOT
 
 
 class Row(NamedTuple):
@@ -149,9 +161,40 @@ def _resolve(provider: str, endpoint: str, **kwargs):
     return result, caught
 
 
+# This checkout and its lionhub package, put first on each child's path so a fresh
+# interpreter reads the providers in this tree and not an installed copy.
+_CHILD_PATH = (str(ROOT), str(ROOT / "lionhub" / "src"))
+
+
+def _run_child(code, *args):
+    """Run ``code`` in a fresh interpreter and return the JSON object it printed last."""
+    env = dict(os.environ)
+    inherited = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join([*_CHILD_PATH, *([inherited] if inherited else [])])
+    proc = subprocess.run(
+        [sys.executable, "-c", code, *args],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=env,
+        timeout=240,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
 def _builtin_entries():
     """Registry entries contributed by the built-in providers, in registration order."""
     return [e for e in EndpointRegistry._entries if e.cls.__module__.startswith(BUILTIN_MODULES)]
+
+
+def _first_registered_class(name: str) -> type:
+    """The class of the first registered entry whose provider or provider alias is
+    ``name``, read from the registry now."""
+    for entry in EndpointRegistry._entries:
+        if name == entry.meta.provider or name in entry.meta.provider_aliases:
+            return entry.cls
+    raise AssertionError(f"no registered entry for provider {name!r}")
 
 
 KEY_CASES = [pytest.param(r, id=f"{r.provider}/{r.endpoint}") for r in ROWS]
@@ -174,12 +217,10 @@ CASE_VARIANT_CASES = [
     for variant in _spellings(name.upper(), _mixed_case(name))
 ]
 
-DEFAULT_CASES = [
-    pytest.param(r, name, id=name)
-    for r in ROWS
-    if r.default
-    for name in (r.provider, *r.provider_aliases)
-]
+# Every provider name and provider alias, mapped to its table default class.
+DEFAULT_CLASS = {
+    name: r.cls for r in ROWS if r.default for name in (r.provider, *r.provider_aliases)
+}
 
 SINGLE_ENTRY_CASES = [
     pytest.param(rows[0], name, id=name)
@@ -198,9 +239,12 @@ MULTI_ENTRY_CASES = [
 
 @pytest.fixture(scope="module", autouse=True)
 def _builtin_providers_loaded():
-    """Load the built-in providers in the registry's own import order before any
-    test imports a provider module directly, so each provider's default is the
-    first endpoint the registry registers for it."""
+    """Make sure the registry has loaded the built-in providers before any test reads it.
+
+    It does not decide which endpoint registers first for a provider: that follows
+    import order, so a provider module another test module imported earlier in the
+    same process can already have registered a different one first.
+    """
     EndpointRegistry.list_providers()
 
 
@@ -230,10 +274,10 @@ def test_table_lists_every_built_in_entry():
 
 
 @pytest.mark.parametrize("provider", list(BY_PROVIDER))
-def test_table_default_is_the_first_registered_entry(provider):
-    first = next(e for e in _builtin_entries() if e.meta.provider == provider)
+def test_table_default_is_one_of_the_registered_entries(provider):
     default = next(r for r in BY_PROVIDER[provider] if r.default)
-    assert first.meta.endpoint == default.endpoint
+    registered = {e.meta.endpoint for e in _builtin_entries() if e.meta.provider == provider}
+    assert default.endpoint in registered
 
 
 # -- 1. every pair resolves by key, endpoint alias and provider alias -------
@@ -287,10 +331,58 @@ def test_padded_provider_with_base_url_warns_and_routes_generic():
 # -- 3. no endpoint named: the provider's default ---------------------------
 
 
-@pytest.mark.parametrize(("row", "provider"), DEFAULT_CASES)
-def test_no_endpoint_named_resolves_to_the_provider_default(row, provider):
+@pytest.mark.parametrize("provider", list(DEFAULT_CLASS))
+def test_no_endpoint_named_resolves_to_the_first_registered_entry(provider):
+    expected = _first_registered_class(provider)
     result = match_endpoint(provider=provider, endpoint="")
-    assert type(result) is _class_of(row)
+    assert type(result) is expected
+
+
+_DEFAULTS_CHILD = r"""
+import json
+import sys
+
+from lionagi.service.connections.match_endpoint import match_endpoint
+
+classes = {}
+for name in sys.argv[1:]:
+    cls = type(match_endpoint(provider=name, endpoint=""))
+    classes[name] = f"{cls.__module__}:{cls.__qualname__}"
+print(json.dumps(classes))
+"""
+
+_AUDIO_FIRST_CHILD = r"""
+import json
+
+import lionhub.providers.openai.audio
+from lionagi.service.connections.match_endpoint import match_endpoint
+from lionagi.service.connections.registry import EndpointRegistry
+
+loaded_before_match = EndpointRegistry._loaded
+cls = type(match_endpoint(provider="openai", endpoint=""))
+print(
+    json.dumps(
+        {
+            "loaded_before_match": loaded_before_match,
+            "cls": f"{cls.__module__}:{cls.__qualname__}",
+        }
+    )
+)
+"""
+
+
+def test_default_endpoint_in_a_fresh_interpreter_is_the_table_default():
+    classes = _run_child(_DEFAULTS_CHILD, *DEFAULT_CLASS)
+    assert classes == DEFAULT_CLASS
+
+
+def test_default_endpoint_follows_import_order_today():
+    # Records today's behaviour, not a promise: a provider module imported before the
+    # registry loads registers its endpoints first, and the first one registered for a
+    # provider is what an empty endpoint resolves to.
+    result = _run_child(_AUDIO_FIRST_CHILD)
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == "lionhub.providers.openai.audio:OpenaiAudioSpeechEndpoint"
 
 
 # -- 4. an endpoint the provider does not list ------------------------------
