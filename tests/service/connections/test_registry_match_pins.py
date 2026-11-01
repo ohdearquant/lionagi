@@ -382,6 +382,40 @@ print(
 """
 
 
+_RUNTIME_REGISTRATION_CHILD = r"""
+import importlib
+import json
+import sys
+
+from lionagi.service.connections.match_endpoint import match_endpoint
+from lionagi.service.connections.registry import EndpointRegistry
+
+
+class RuntimeEndpoint:
+    def __init__(self, config=None, **kwargs):
+        self.config = config
+        self.kwargs = kwargs
+
+
+for step in sys.argv[1:]:
+    if step == "register":
+        EndpointRegistry.register(provider="openai", endpoint="pin-runtime-key")(RuntimeEndpoint)
+    else:
+        importlib.import_module(step)
+
+loaded_before_match = EndpointRegistry._loaded
+cls = type(match_endpoint(provider="openai", endpoint=""))
+print(
+    json.dumps(
+        {
+            "loaded_before_match": loaded_before_match,
+            "cls": f"{cls.__module__}:{cls.__qualname__}",
+        }
+    )
+)
+"""
+
+
 def test_default_endpoint_in_a_fresh_interpreter_is_the_table_default():
     classes = _run_child(_DEFAULTS_CHILD, *DEFAULT_CLASS)
     assert classes == DEFAULT_CLASS
@@ -393,6 +427,32 @@ def test_default_endpoint_ignores_import_order():
     result = _run_child(_AUDIO_FIRST_CHILD)
     assert result["loaded_before_match"] is False
     assert result["cls"] == DEFAULT_CLASS["openai"]
+
+
+_AUDIO_MODULE = "lionhub.providers.openai.audio"
+_RUNTIME_ENDPOINT = "__main__:RuntimeEndpoint"
+
+
+def test_endpoint_registered_before_the_built_ins_load_resolves_with_no_endpoint():
+    # A class registered under a built-in provider before anything loads the registry is
+    # that provider's first entry, and an empty endpoint keeps resolving to it.
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, "register")
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == _RUNTIME_ENDPOINT
+
+
+def test_endpoint_registered_after_a_built_in_module_keeps_the_declared_default():
+    # The first entry is a built-in the catalog declares, so the declared default wins
+    # over it and over the later registration.
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, _AUDIO_MODULE, "register")
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == DEFAULT_CLASS["openai"]
+
+
+def test_endpoint_registered_before_a_built_in_module_still_resolves_with_no_endpoint():
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, "register", _AUDIO_MODULE)
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == _RUNTIME_ENDPOINT
 
 
 # -- 3b. no endpoint named: the catalog route and its fall-backs -------------
@@ -416,8 +476,17 @@ class _StubDeclaration:
         return self._cls
 
 
+class _StubFragment:
+    """The one thing ``match`` asks of a catalog's provider fragment: its declarations."""
+
+    def __init__(self, endpoints):
+        self.endpoints = endpoints
+
+
 class _StubCatalog:
-    """The two catalog methods ``match`` uses, recording every call."""
+    """The two catalog methods ``match`` uses, recording every call. A declared provider's
+    fragment lists the stub's own declaration and the classes the registry already holds
+    for that provider, so the stub's default is the result whichever class registered first."""
 
     def __init__(self, declared):
         self._declared = {name: _StubDeclaration(cls) for name, cls in declared.items()}
@@ -426,7 +495,15 @@ class _StubCatalog:
 
     def fragment(self, name):
         self.fragment_calls.append(name)
-        return object() if name.lower() in self._declared else None
+        lowered = name.lower()
+        if lowered not in self._declared:
+            return None
+        registered = [
+            _StubDeclaration(entry.cls)
+            for entry in list(EndpointRegistry._entries)
+            if lowered == entry.meta.provider or lowered in entry.meta.provider_aliases
+        ]
+        return _StubFragment([self._declared[lowered], *registered])
 
     def endpoint(self, provider, name=None):
         self.endpoint_calls.append((provider, name))
