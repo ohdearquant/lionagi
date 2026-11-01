@@ -649,6 +649,22 @@ def test_declared_default_that_fails_to_import_keeps_the_registry_scan(monkeypat
     assert catalog.endpoint_calls == [("openai", "")]
 
 
+def test_unimportable_declaration_beside_the_default_is_skipped(register_throwaway, monkeypatch):
+    # The provider's first registered class is its declared default. Another declaration of the
+    # provider names an implementation module that fails to import: it is left out when the
+    # declared classes are collected, and the declared default is still built.
+    first = register_throwaway("runtime-pin-provider", "alpha")
+    catalog = _install_catalog(monkeypatch, _StubCatalog({"runtime-pin-provider": first}))
+    declared = catalog._declared["runtime-pin-provider"]
+    fragment = _StubFragment([declared, _UnimportableDeclaration()])
+    monkeypatch.setattr(catalog, "fragment", lambda name: fragment)
+    result = match_endpoint(provider="runtime-pin-provider", endpoint="", model="a-model")
+    assert type(result) is first
+    assert result.config is None
+    assert result.kwargs == {"model": "a-model"}
+    assert catalog.endpoint_calls == [("runtime-pin-provider", "")]
+
+
 # -- 4. an endpoint the provider does not list ------------------------------
 
 

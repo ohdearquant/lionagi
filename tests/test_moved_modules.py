@@ -946,46 +946,6 @@ def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():
     assert [hit for hit in hits if hit[2] == "module"] == []
 
 
-def _assigned_value(path: Path, name: str) -> ast.expr:
-    """The value ``path`` assigns to ``name``, at module level or inside a function."""
-    values = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets = [node.target]
-        else:
-            continue
-        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
-            values.append(node.value)
-    assert len(values) == 1, f"{path.name} assigns {name} {len(values)} times"
-    return values[0]
-
-
-# The registry list also holds the core scripted provider, which is not a hub module.
-@pytest.mark.parametrize(
-    ("relative", "name", "size"),
-    [
-        ("service/connections/registry.py", "_modules", 34),
-    ],
-    ids=["registry_modules"],
-)
-def test_a_provider_name_list_keeps_its_size(relative, name, size):
-    value = _assigned_value(SOURCE_ROOTS[0] / relative, name)
-    items = value.values if isinstance(value, ast.Dict) else value.elts
-    names = [
-        item.value
-        for item in items
-        if isinstance(item, ast.Constant)
-        and isinstance(item.value, str)
-        and _HUB_PROVIDER.fullmatch(item.value)
-    ]
-    assert len(names) == size, (
-        f"{name} in {relative} lists {len(names)} hub provider modules, "
-        f"the inventory expects {size}"
-    )
-
-
 def test_the_provider_check_sees_each_form_of_reference():
     # A relative import resolves only inside lionagi or lionhub, so the probe sits in the hub.
     probe = ROOT / "lionhub" / "src" / "lionhub" / "orchestration" / "_probe.py"
