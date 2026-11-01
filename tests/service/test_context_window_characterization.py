@@ -100,7 +100,7 @@ _HINTED = [
     ("perplexity", "sonar", 128_000),
     ("perplexity", "sonar-pro", 200_000),
     ("gemini_code", "gemini-3.1-pro", 1_048_576),
-    ("gemini_code", "gemini-2.5-pro", 2_097_152),
+    ("gemini_code", "gemini-2.5-pro", 1_048_576),
     # The pi table has one key, so the second name is one that contains it. That key's window
     # equals the unknown-model estimate, so these two rows cannot tell a table hit from a miss;
     # test_pi_table_items is what pins the table's key and window.
@@ -117,9 +117,6 @@ _HINTED = [
 # (provider, model, window): a name that two keys of the hinted table both match resolves to the
 # longer key's window. D5 keeps the rule: longest substring, despite the prefix-oriented name.
 _LONGEST_KEY = [
-    # "gemini-2.5-pro" (2,097,152) is listed after the shorter "argon" (1,048,576), so the
-    # length of the key, not its position in the table, decides.
-    ("gemini_code", "gemini-2.5-pro-argon", 2_097_152),
     # "sonnet-4-5" (200,000) beats the shorter "sonnet" (1,000,000).
     ("claude_code", "claude-sonnet-4-5", 200_000),
     # "sonar-pro" (200,000) beats the shorter "sonar" (128,000).

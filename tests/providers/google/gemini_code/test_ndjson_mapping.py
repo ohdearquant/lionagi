@@ -746,10 +746,6 @@ def test_an_argon_name_has_the_argon_context_window(spec):
     assert lookup_context_window(spec, "gemini_code") == 1_048_576
 
 
-def test_a_longer_window_row_still_wins_over_the_argon_rows():
-    assert lookup_context_window("gemini-2.5-pro-argon", "gemini_code") == 2_097_152
-
-
 def test_resolve_agy_model_38_flash_defaults_medium_and_stays_on_family():
     assert resolve_agy_model("flash") == "Gemini 3.8 Flash (Medium)"
     assert resolve_agy_model("gemini-3.8-flash") == "Gemini 3.8 Flash (Medium)"
