@@ -187,6 +187,7 @@ class AppSettings(BaseSettings, frozen=True):
     EXA_API_KEY: SecretStr | None = None
     TAVILY_API_KEY: SecretStr | None = None
     FIRECRAWL_API_KEY: SecretStr | None = None
+    OUTCRAWL_API_KEY: SecretStr | None = None
     PERPLEXITY_API_KEY: SecretStr | None = None
     GROQ_API_KEY: SecretStr | None = None
     ANTHROPIC_API_KEY: SecretStr | None = None

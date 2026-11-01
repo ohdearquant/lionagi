@@ -177,6 +177,15 @@ _DECLARATIONS: tuple[_Provider, ...] = (
         ),
     ),
     _Provider(
+        "outcrawl",
+        "OutcrawlConfigs",
+        None,
+        (
+            _Endpoint("SCRAPE", "outcrawl.scrape:OutcrawlScrapeEndpoint"),
+            _Endpoint("SEARCH", "outcrawl.search:OutcrawlSearchEndpoint"),
+        ),
+    ),
+    _Provider(
         "perplexity",
         "PerplexityConfigs",
         "CONTEXT_WINDOWS",

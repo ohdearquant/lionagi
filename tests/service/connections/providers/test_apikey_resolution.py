@@ -72,6 +72,7 @@ def test_api_key_env_metadata_on_provider_configs():
     from lionhub.providers.ollama._config import OllamaConfigs
     from lionhub.providers.openai._config import OpenAIConfigs
     from lionhub.providers.openrouter._config import OpenRouterConfigs
+    from lionhub.providers.outcrawl._config import OutcrawlConfigs
     from lionhub.providers.perplexity._config import PerplexityConfigs
     from lionhub.providers.tavily._config import TavilyConfigs
 
@@ -86,6 +87,7 @@ def test_api_key_env_metadata_on_provider_configs():
         "perplexity": (PerplexityConfigs, "PERPLEXITY_API_KEY"),
         "exa": (ExaConfigs, "EXA_API_KEY"),
         "firecrawl": (FirecrawlConfigs, "FIRECRAWL_API_KEY"),
+        "outcrawl": (OutcrawlConfigs, "OUTCRAWL_API_KEY"),
         "tavily": (TavilyConfigs, "TAVILY_API_KEY"),
     }
     for name, (cls, expected_env) in has_key.items():
