@@ -31,12 +31,12 @@ between threads. An interrupt during the first load (``KeyboardInterrupt``,
 
 from __future__ import annotations
 
-import copy
 import importlib
 import threading
 
 from lionagi._feature_errors import MissingFeatureError
 from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
+from lionagi.ln import copy
 from lionagi.service.connections.provider_catalog import ProviderCatalog, compose_provider_catalog
 
 __all__ = ("default_provider_catalog",)
@@ -116,5 +116,5 @@ def default_provider_catalog() -> ProviderCatalog:
             if outcome is None:
                 outcome = _outcome = _load()
     if isinstance(outcome, Exception):
-        raise copy.copy(outcome) from outcome.__cause__
+        raise copy(outcome, deep=False) from outcome.__cause__
     return outcome
