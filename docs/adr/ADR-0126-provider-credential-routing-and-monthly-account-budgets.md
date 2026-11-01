@@ -877,14 +877,25 @@ diagnosis, and no code path may branch on that class.
 1. **Two closed-set fields.** A routed rejection carries `provider_error_type` and
    `rejection_class`. Each value comes from a set written in this amendment, and `other` is the
    default for anything the set does not name. The fields are set on the request-rejected branch
-   only. On every other outcome both are absent.
+   only. That branch settles the attempt with an `UnknownOutcome` whose reason code is
+   `request_rejected`, so that outcome carries the two fields and raises the error that carries
+   them. On every other outcome, and on an `UnknownOutcome` with any other reason code, both are
+   absent.
 2. **The rule is provider-neutral.** The field names, the class vocabulary and the drop rule
    (Decision 4) apply to every routed provider. A provider's match table is written into this ADR
-   before that provider's rejection branch reads a body. A routed provider without a table records
-   `other` for both fields. The Anthropic table below is the first implementation.
-3. **Reading the body.** On the rejection branch, the attempt reads at most 64 KiB of the response
-   body and decodes it as JSON. The streamed attempt reads the body of the non-200 response the same
-   way before closing it. A body over the bound, a body that does not decode, a body with no
+   before that provider's rejection branch reads a body. The table names the `error.type` values
+   that provider documents and maps its documented messages onto classes. A class the neutral set
+   does not have is added to that set by the same amendment. The sets the code validates against
+   are the union of the tables written here, kept in one place that every validating site reads.
+   A routed provider without a table records `other` for both fields. The Anthropic table below is
+   the first implementation.
+3. **Reading the body.** On the rejection branch, the classifier decodes at most 64 KiB of the
+   response body, counted after content decoding, as JSON. The non-streamed attempt's client has
+   already read the whole body before the status is checked, as it does today, so the bound limits
+   only what is decoded. The streamed attempt reads the body of the non-200 response before closing
+   it, under the attempt's existing transport timeout, and stops after 64 KiB and one more byte, so
+   a larger body is detected without being read further. A body over the bound, a body that does
+   not decode, a body with no
    `error.type` string, or one whose `error.type` is not in the provider's set records `other` for
    the type. A body with no `error.message` string records `other` for the class. The settlement
    order of D6 is unchanged: the attempt is settled `request_rejected`, now with both fields, and
@@ -903,7 +914,9 @@ diagnosis, and no code path may branch on that class.
    - The internal routed-attempt error that the non-streamed attempt raises carries the same two
      fields, and the conversion to `AccountRoutingError` in `lionagi/service/connections/endpoint.py`
      (`_public_routed_failure`) passes them on. That internal error stays reachable as the public
-     error's `__context__`, so it holds nothing beyond the validated fields either.
+     error's `__context__`, so it holds nothing beyond the validated fields either. The streamed
+     attempt raises `AccountRoutingError` itself on this branch, as it does today, and passes the two
+     fields to it directly.
    - `UnknownOutcome` gains the same two optional fields, validated the same way.
    - The ledger's `attempt` row gains two nullable text columns, `provider_error_type` and
      `rejection_class`. The settlement that records `request_rejected` writes them in the same
@@ -923,7 +936,8 @@ diagnosis, and no code path may branch on that class.
 ### Vocabulary
 
 `provider_error_type` for the Anthropic Messages API. Each value is the provider's documented
-`error.type`, from https://platform.claude.com/docs/en/api/errors, "HTTP errors":
+`error.type`, from https://platform.claude.com/docs/en/api/errors, "HTTP errors". This page and
+every page the class table cites were read on 2026-11-01:
 `invalid_request_error` (400), `authentication_error` (401), `billing_error` (402),
 `permission_error` (403), `not_found_error` (404), `conflict_error` (409), `request_too_large`
 (413), `rate_limit_error` (429), `api_error` (500), `timeout_error` (504), `overloaded_error` (529),
@@ -953,7 +967,7 @@ documentation line or a captured message, cited in this table.
 ### What it guarantees, and what it does not
 
 - A routed rejection's error, its settled outcome and its ledger row name a documented error type
-  and a class, or `other`. None of them holds provider text.
+  or `other`, and a class or `other`. None of them holds provider text.
 - A provider message whose wording changes falls to `other`. It is never assigned a wrong class
   that a caller acts on, because nothing acts on the class (Decision 6).
 - It does not say why a rejection classed `other` happened. The message stays dropped, so a new
@@ -988,10 +1002,13 @@ Each item is a test that fails without this change:
   `provider_error_type="invalid_request_error"`, and the ledger row holds the same two values.
 - A body with an unknown message, no message, an unknown or missing type, invalid JSON, or more
   than 64 KiB records `other` for the affected field, and never raises anything but the routed
-  error.
+  error. On the streamed attempt, a body larger than the bound is not read past 64 KiB and one
+  byte.
+- A message containing the text of two rows gets the class of the earlier row.
 - Sentinel: a body whose message carries a unique sentinel string, through both branches. The
   sentinel is absent from the error's `args` and `str`, from every exception reachable through
-  `__context__` and `__cause__`, from every captured log record, and from the ledger row. A control
+  `__context__` and `__cause__`, from every log record captured at DEBUG level for every logger
+  (the HTTP client's included), and from the ledger row. A control
   arm with the classifier replaced by one that returns `other` passes the same assertions. An arm
   that deliberately places the message in the error's arguments fails them.
 - An unknown value passed to `AccountRoutingError`, `UnknownOutcome` or the ledger write raises
