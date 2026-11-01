@@ -24,13 +24,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from lionagi.providers import _secret_resolution
-from lionagi.providers._cli_subprocess import ndjson_from_cli
-from lionagi.providers._secret_resolution import (
+from lionagi.service.accounts import _secret_resolution
+from lionagi.service.accounts._secret_resolution import (
     fill_declared_secrets,
     fill_declared_secrets_and_names,
     resolve_secret_lookup_config,
 )
+from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 NAME = "LIONAGI_TEST_SECRET"
 OTHER = "LIONAGI_TEST_SECRET_TWO"
@@ -119,7 +119,7 @@ class TestWhatCountsAsAConfiguredLookup:
     def test_an_unknown_key_is_reported_by_position_not_echoed(self, caplog, capsys):
         # Synthetic value pasted where a key belongs: report where, never what.
         secret = "example-pasted-secret-key"
-        caplog.set_level(logging.WARNING, logger=_secret_resolution.__name__)
+        caplog.set_level(logging.WARNING, logger=_secret_resolution.logger.name)
         settings = _block(_PRINTS_A_VALUE)
         settings["secrets"]["lookup"][secret] = True
 
@@ -152,7 +152,7 @@ class TestWhatCountsAsAConfiguredLookup:
     def test_malformed_lookup_value_is_not_echoed(self, caplog, capsys):
         # Synthetic URL-shaped value: the malformed setting must report its type, not content.
         secret = "dbuser:example-source-secret@vault"
-        caplog.set_level(logging.WARNING, logger=_secret_resolution.__name__)
+        caplog.set_level(logging.WARNING, logger=_secret_resolution.logger.name)
 
         result = resolve_secret_lookup_config(settings={"secrets": {"lookup": secret}})
 
@@ -166,7 +166,7 @@ class TestWhatCountsAsAConfiguredLookup:
     def test_malformed_argv_is_not_echoed(self, caplog, capsys):
         # Synthetic URL-shaped argument: malformed argv diagnostics must not echo arguments.
         secret = "dbuser:example-argv-secret@vault"
-        caplog.set_level(logging.WARNING, logger=_secret_resolution.__name__)
+        caplog.set_level(logging.WARNING, logger=_secret_resolution.logger.name)
 
         result = resolve_secret_lookup_config(
             settings={"secrets": {"lookup": {"argv": ["vault-cli", secret, None], "names": [NAME]}}}
@@ -183,7 +183,7 @@ class TestWhatCountsAsAConfiguredLookup:
     def test_malformed_names_are_not_echoed(self, caplog, capsys):
         # Synthetic value: a string where the list of names belongs reports its type only.
         secret = "dbuser:example-names-secret@vault"
-        caplog.set_level(logging.WARNING, logger=_secret_resolution.__name__)
+        caplog.set_level(logging.WARNING, logger=_secret_resolution.logger.name)
 
         result = resolve_secret_lookup_config(
             settings={"secrets": {"lookup": {"argv": ["p", "{name}"], "names": secret}}}
@@ -198,7 +198,7 @@ class TestWhatCountsAsAConfiguredLookup:
     def test_an_invalid_name_is_reported_by_position_not_echoed(self, caplog, capsys):
         # Synthetic value pasted where a variable name belongs: report where, never what.
         secret = "example-pasted-secret-value"
-        caplog.set_level(logging.WARNING, logger=_secret_resolution.__name__)
+        caplog.set_level(logging.WARNING, logger=_secret_resolution.logger.name)
 
         result = resolve_secret_lookup_config(
             settings=_block(_PRINTS_A_VALUE, names=[NAME, secret])
@@ -570,6 +570,7 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
     proc.pid = 5151
     proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
     proc.wait = AsyncMock(return_value=-9)
+    proc.stdout.read = AsyncMock(return_value=b"")
     witnesses = ((5151, 16.0),)
     cleanup = AsyncMock()
 
@@ -598,6 +599,7 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
     monkeypatch.setattr(_secret_resolution, "aterminate_process_group", cleanup)
 
     assert await _secret_resolution._run_lookup(lookup, NAME) is None
+    proc.stdout.read.assert_awaited_once_with(65536)
     cleanup.assert_awaited_once_with(
         proc,
         grace=None,
@@ -616,7 +618,7 @@ async def test_lookup_timeout_passes_spawn_bound_witnesses(monkeypatch):
             lambda lookup: _secret_resolution.lookup_one_name(lookup, NAME, env={}, max_bytes=64),
             "_terminate_draining",
         ),
-        (lambda lookup: _secret_resolution._run_lookup(lookup, NAME), "_terminate"),
+        (lambda lookup: _secret_resolution._run_lookup(lookup, NAME), "_terminate_draining"),
     ],
     ids=["one-name", "cli-fill"],
 )

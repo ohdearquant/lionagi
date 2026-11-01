@@ -75,16 +75,16 @@ class TestLndlPublicAPI:
 
     def test_lndloutput_is_correct_type(self) -> None:
         from lionagi import LNDLOutput
-        from lionagi.lndl import LNDLOutput as LNDLOutputDirect
+        from lionhub.lndl import LNDLOutput as LNDLOutputDirect
 
         assert LNDLOutput is LNDLOutputDirect, (
-            "lionagi.LNDLOutput is not the same object as lionagi.lndl.LNDLOutput — "
+            "lionagi.LNDLOutput is not the same object as lionhub.lndl.LNDLOutput — "
             "possible shadowing or wrong import path in _LAZY_MAP"
         )
 
     def test_lndlerror_is_correct_type(self) -> None:
         from lionagi import LNDLError
-        from lionagi.lndl import LNDLError as LNDLErrorDirect
+        from lionhub.lndl import LNDLError as LNDLErrorDirect
 
         assert LNDLError is LNDLErrorDirect
 
@@ -255,22 +255,22 @@ class TestAllConsistency:
 
 class TestSubmoduleImportPaths:
     def test_lndl_subpackage_importable(self) -> None:
-        import lionagi.lndl as lndl_mod
+        import lionhub.lndl as lndl_mod
 
         assert lndl_mod is not None
 
     def test_lndloutput_via_subpackage(self) -> None:
-        from lionagi.lndl import LNDLOutput
+        from lionhub.lndl import LNDLOutput
 
         assert LNDLOutput is not None
 
     def test_lndlerror_via_subpackage(self) -> None:
-        from lionagi.lndl import LNDLError
+        from lionhub.lndl import LNDLError
 
         assert issubclass(LNDLError, Exception)
 
     def test_get_lndl_system_prompt_via_subpackage(self) -> None:
-        from lionagi.lndl import get_lndl_system_prompt
+        from lionhub.lndl import get_lndl_system_prompt
 
         assert callable(get_lndl_system_prompt)
         prompt = get_lndl_system_prompt()

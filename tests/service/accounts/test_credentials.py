@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from lionagi.config import AppSettings
-from lionagi.providers import _secret_resolution
-from lionagi.providers._secret_resolution import resolve_secret_lookup_config
+from lionagi.service.accounts import _secret_resolution
 from lionagi.service.accounts._credentials import CredentialSources, resolve_account_key
+from lionagi.service.accounts._secret_resolution import resolve_secret_lookup_config
 from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
 
 KEY = "LIONAGI_TEST_ACCOUNT_KEY"

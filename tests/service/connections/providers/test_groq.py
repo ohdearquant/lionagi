@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from lionagi.providers.groq.audio_transcription import (
-    GroqAudioTranscriptionEndpoint,
-    _replayable_file_factory,
-)
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.resilience import APIClientError, RetryConfig
+from lionhub.providers.groq.audio_transcription import (
+    GroqAudioTranscriptionEndpoint,
+    _replayable_file_factory,
+)
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
 

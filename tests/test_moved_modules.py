@@ -50,7 +50,9 @@ def _module_pairs() -> list[tuple[str, str]]:
     for row in _moved.MOVED:
         package = importlib.import_module(row.new)
         names = [row.new]
-        names += [info.name for info in pkgutil.walk_packages(package.__path__, row.new + ".")]
+        search_path = getattr(package, "__path__", None)  # a lone module has no submodules
+        if search_path is not None:
+            names += [info.name for info in pkgutil.walk_packages(search_path, row.new + ".")]
         # A package moved inside this one is paired under its own row, by the name it had.
         inner = tuple(other.new for other in _inner_rows(row))
         names = [n for n in names if not any(n == p or n.startswith(p + ".") for p in inner)]
@@ -288,6 +290,133 @@ def test_the_allow_list_adds_only_the_moved_packages_to_lionagi():
     assert all(any(prefix.startswith(a) for a in added) for prefix in moved)
 
 
+# A module that moved on its own (one file, not a package) is a row of the table too. Its old
+# name sits inside a package that stays in lionagi/, so the finder must serve it while that
+# package is still on disk.
+MOVED_MODULES = (
+    ("lionagi.providers._provider_errors", "lionagi._provider_errors"),
+    ("lionagi.providers._secret_resolution", "lionagi.service.accounts._secret_resolution"),
+    ("lionagi.providers._subagent_admission", "lionagi.service._subagent_admission"),
+    ("lionagi.providers.openai._chat_schemas", "lionagi.service.connections._chat_schemas"),
+)
+_MOVED_MODULE_IDS = [old for old, _ in MOVED_MODULES]
+
+
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_an_old_module_name_warns_once_and_is_the_new_module(old, new):
+    sys.modules.pop(old, None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        module = importlib.import_module(old)
+    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecations) == 1, [str(w.message) for w in deprecations]
+    assert new in str(deprecations[0].message)
+    assert deprecations[0].filename == __file__
+    assert module is importlib.import_module(new)
+    assert sys.modules[old] is module
+
+
+# What each moved module offers its callers. Naming some of it keeps the identity check
+# below from passing on a module that defines nothing.
+MOVED_MODULE_PUBLIC_NAMES = {
+    "lionagi._provider_errors": {"ProviderError", "EmissionError"},
+    "lionagi.service.accounts._secret_resolution": {
+        "SecretLookupResolution",
+        "fill_declared_secrets",
+        "lookup_one_name",
+        "resolve_secret_lookup_config",
+    },
+    "lionagi.service._subagent_admission": {
+        "SubagentLease",
+        "admit_subagent",
+        "child_agent_depth",
+        "refuse_nested_agent",
+    },
+    # The request model, every class it is built from, and the developer-message helper.
+    "lionagi.service.connections._chat_schemas": {
+        "AssistantMessage",
+        "ChatRole",
+        "DeveloperMessage",
+        "FunctionCall",
+        "FunctionDef",
+        "FunctionTool",
+        "ImageURLObject",
+        "ImageURLPart",
+        "JSONSchemaFormat",
+        "OpenAIChatCompletionsRequest",
+        "ResponseFormatJSONObject",
+        "ResponseFormatJSONSchema",
+        "ResponseFormatText",
+        "StreamOptions",
+        "SystemMessage",
+        "TextPart",
+        "ToolCall",
+        "ToolCallFunction",
+        "ToolChoiceFunction",
+        "ToolMessage",
+        "UserMessage",
+        "uses_developer_messages",
+    },
+}
+
+
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_name(old, new):
+    module = importlib.import_module(new)
+    public = [
+        name
+        for name, obj in vars(module).items()
+        if not name.startswith("_") and callable(obj) and getattr(obj, "__module__", None) == new
+    ]
+    assert MOVED_MODULE_PUBLIC_NAMES[new] <= set(public)
+    for name in public:
+        namespace: dict = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            exec(f"from {old} import {name}", namespace)  # noqa: S102
+        assert namespace[name] is getattr(module, name), name
+
+
+def test_a_moved_module_keeps_the_logger_name_it_had():
+    module = importlib.import_module("lionagi.service.accounts._secret_resolution")
+    assert module.logger.name == "lionagi.providers._secret_resolution"
+
+
+@pytest.mark.parametrize(("old", "new"), MOVED_MODULES, ids=_MOVED_MODULE_IDS)
+def test_a_module_moved_into_the_core_keeps_its_own_row_after_its_package_moved(old, new):
+    # The package around each of these modules later moved to lionhub as a whole. The longer,
+    # module-level row still wins for the module's own name, and only for it.
+    assert not _moved.still_on_disk("lionagi.providers")
+    assert not _moved.still_on_disk(old)
+    assert _moved.resolve(old) == new
+    hub_twin = "lionhub.providers" + old[len("lionagi.providers") :]
+    assert _moved.resolve(old + "x") == hub_twin + "x"
+    assert _moved.resolve("lionagi.providers") == "lionhub.providers"
+    assert _moved.resolve("lionagi.providers.errors") == "lionhub.providers.errors"
+    finder = next(f for f in sys.meta_path if getattr(f, "lionagi_moved", False))
+    spec = finder.find_spec(old)
+    assert spec is not None
+    assert spec.submodule_search_locations is None
+    package = finder.find_spec("lionagi.providers")
+    assert package is not None
+    assert package.submodule_search_locations is not None
+
+
+def test_a_lazy_type_naming_the_old_chat_schema_module_resolves_to_the_same_class():
+    # Provider configs name their request model as a "module:Class" string, which reaches the
+    # module through importlib, so a string written against the old name must keep working.
+    from lionagi.service.connections.provider_config import LazyType
+
+    old = "lionagi.providers.openai._chat_schemas"
+    new = "lionagi.service.connections._chat_schemas"
+    sys.modules.pop(old, None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resolved = LazyType(f"{old}:OpenAIChatCompletionsRequest").resolve()
+    assert resolved is importlib.import_module(new).OpenAIChatCompletionsRequest
+    assert any(issubclass(w.category, DeprecationWarning) and new in str(w.message) for w in caught)
+
+
 def test_reload_through_the_old_name_keeps_the_real_spec():
     old, new = PAIRS[0]
     module = importlib.import_module(old)
@@ -296,9 +425,14 @@ def test_reload_through_the_old_name_keeps_the_real_spec():
     assert module.__name__ == new
 
 
-def _run_fresh(code: str) -> str:
+def _run_fresh(code: str, env: dict[str, str] | None = None) -> str:
     proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed program
-        [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
     return proc.stdout
@@ -663,10 +797,12 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
     assert [int(hit.split(":")[1]) for hit in hits] == [3], hits
 
 
-# The packages under lionagi/ that may name lionhub: ones a later move takes out of the
-# core. Every other package is core and never names it. The set must match what the
-# tree does, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"cli", "studio"})
+# The core packages under lionagi/ that name a lionhub module: they hold a listed
+# interim edge into the hub (see test_provider_interim_edge_inventory) or, for cli and
+# studio, import a hub orchestration or serve module. Every other package never names
+# lionhub. The set must match what the tree does, and it shrinks as each interim edge is
+# removed, so a package that stops naming lionhub is removed from it too.
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"agent", "cli", "operations", "service", "studio"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -688,7 +824,7 @@ def _lionhub_names(path: Path, source: str | None = None) -> list[str]:
     return hits
 
 
-def test_only_packages_that_move_later_name_lionhub():
+def test_only_packages_with_listed_interim_edges_name_lionhub():
     lionagi = SOURCE_ROOTS[0]
     users = {}
     # _moved.py names lionhub as data: the table of new paths it serves old names from.
@@ -709,6 +845,324 @@ def test_the_lionhub_check_sees_each_form_of_reference():
     )
     hits = _lionhub_names(probe, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
+# The hub's provider modules, as dotted names. A reference is an import, a from-import or a
+# string that is exactly one such name: ``lionhub.providersx`` is another package, and a
+# prefix such as ``lionhub.providers.`` names no module.
+_HUB_PROVIDER = re.compile(r"lionhub\.providers(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _provider_references(path: Path, source: str | None = None) -> list[tuple[str, int, str]]:
+    """Every reference in ``path`` to a ``lionhub.providers`` module: ``(module, line, scope)``.
+
+    ``scope`` is ``"function"`` for a reference in the body of a ``def``, ``async def`` or
+    ``lambda``, and ``"module"`` for any other: the body of a class, a decorator and a default
+    value all run when the module is imported. An import under ``if TYPE_CHECKING:`` is at
+    module scope too, because this reads the source and does not run it. A from-import names
+    the module it imports from, so ``from lionhub.providers.openai import codex`` refers to
+    ``lionhub.providers.openai`` and ``from lionhub import providers`` to ``lionhub.providers``.
+    """
+    text = path.read_text(encoding="utf-8") if source is None else source
+    hits: list[tuple[str, int, str]] = []
+    pending: list[tuple[ast.AST, str]] = [(ast.parse(text, filename=str(path)), "module")]
+    while pending:
+        node, scope = pending.pop()
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = _absolute(node.module, node.level, path)
+            if base and _HUB_PROVIDER.fullmatch(base):
+                names = [base]
+            elif base:
+                names = [f"{base}.{alias.name}" for alias in node.names]
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names = [node.value]
+        hits += [(name, node.lineno, scope) for name in names if _HUB_PROVIDER.fullmatch(name)]
+        body: list = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+        elif isinstance(node, ast.Lambda):
+            body = [node.body]
+        pending += [
+            (child, "function" if child in body else scope) for child in ast.iter_child_nodes(node)
+        ]
+    return sorted(hits, key=lambda hit: (hit[1], hit[0]))
+
+
+def _provider_inventory() -> dict[str, list[str]]:
+    """The hub provider modules each file under lionagi/ refers to, one name per reference."""
+    lionagi = SOURCE_ROOTS[0]
+    found = {}
+    # _moved.py names lionhub as data: the table of new paths it serves old names from.
+    for path in sorted(lionagi.rglob("*.py")):
+        if path.name == "_moved.py":
+            continue
+        modules = sorted(module for module, _, _ in _provider_references(path))
+        if modules:
+            found[path.relative_to(lionagi).as_posix()] = modules
+    return found
+
+
+# Every reference lionagi still holds to a lionhub provider module, by file (relative to
+# lionagi/) and target module, one entry per reference. Each is a listed interim edge: this
+# table changes when an edge is removed or a new one is added, never as a side effect.
+PROVIDER_INTERIM_EDGES = {
+    # The ``_modules`` list in ``_import_all_providers``: imported to run the registration
+    # decorators of every provider.
+    "service/connections/registry.py": [
+        "lionhub.providers.openai.chat",
+        "lionhub.providers.openai.codex",
+        "lionhub.providers.openai.audio",
+        "lionhub.providers.openai.batch",
+        "lionhub.providers.openai.images",
+        "lionhub.providers.openai.embed",
+        "lionhub.providers.openai.response",
+        "lionhub.providers.anthropic.messages",
+        "lionhub.providers.anthropic.claude_code",
+        "lionhub.providers.ollama.chat",
+        "lionhub.providers.ollama.embed",
+        "lionhub.providers.ollama.generate",
+        "lionhub.providers.lattice.chat",
+        "lionhub.providers.lattice.embed",
+        "lionhub.providers.tavily.search",
+        "lionhub.providers.exa.search",
+        "lionhub.providers.exa.contents",
+        "lionhub.providers.exa.find_similar",
+        "lionhub.providers.firecrawl.scrape",
+        "lionhub.providers.firecrawl.map",
+        "lionhub.providers.firecrawl.crawl",
+        "lionhub.providers.perplexity.chat",
+        "lionhub.providers.nvidia_nim.chat",
+        "lionhub.providers.nvidia_nim.embed",
+        "lionhub.providers.deepseek.chat",
+        "lionhub.providers.google.chat",
+        "lionhub.providers.google.gemini_code",
+        "lionhub.providers.groq.chat",
+        "lionhub.providers.groq.audio_transcription",
+        "lionhub.providers.pi.cli",
+        "lionhub.providers.openrouter.chat",
+        "lionhub.providers.ag2.groupchat",
+        "lionhub.providers.ag2.agent",
+        "lionhub.providers.ag2.nlip",
+    ],
+    # Every import here is inside a function (see the test of that below).
+    "agent/factory.py": [
+        *["lionhub.providers._cli_subprocess"] * 2,
+        *["lionhub.providers.openai._codex_profile"] * 8,
+        *["lionhub.providers.openai.codex"] * 6,
+    ],
+    "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
+    "service/accounts/_router.py": ["lionhub.providers.anthropic._prompt_cache"] * 2,
+    "service/providers.py": ["lionhub.providers.openai._codex_profile"],
+    # ``_MANIFEST_MODULE`` in the compatibility loader: the hub's manifest module, imported on
+    # the first call that needs the default provider catalog.
+    "service/connections/_provider_compat.py": ["lionhub.providers.manifest"],
+    # The codex profile import is at module level; the Gemini ones are inside functions.
+    "cli/_providers.py": [
+        "lionhub.providers.openai._codex_profile",
+        *["lionhub.providers.google.gemini_code"] * 2,
+    ],
+    "cli/agent.py": ["lionhub.providers.google.gemini_code"],
+    "cli/orchestrate/_orchestration.py": ["lionhub.providers.openai._codex_profile"],
+    "studio/operator/engine.py": [
+        "lionhub.providers.anthropic.claude_code",
+        "lionhub.providers.google.gemini_code",
+    ],
+}
+
+
+def test_provider_interim_edge_inventory():
+    expected = {path: sorted(names) for path, names in PROVIDER_INTERIM_EDGES.items()}
+    assert _provider_inventory() == expected
+
+
+def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():
+    hits = _provider_references(SOURCE_ROOTS[0] / "agent" / "factory.py")
+    assert hits, "agent/factory.py names no hub provider module, so this checks nothing"
+    assert [hit for hit in hits if hit[2] == "module"] == []
+
+
+def _assigned_value(path: Path, name: str) -> ast.expr:
+    """The value ``path`` assigns to ``name``, at module level or inside a function."""
+    values = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            values.append(node.value)
+    assert len(values) == 1, f"{path.name} assigns {name} {len(values)} times"
+    return values[0]
+
+
+# The registry list also holds the core scripted provider, which is not a hub module.
+@pytest.mark.parametrize(
+    ("relative", "name", "size"),
+    [
+        ("service/connections/registry.py", "_modules", 34),
+    ],
+    ids=["registry_modules"],
+)
+def test_a_provider_name_list_keeps_its_size(relative, name, size):
+    value = _assigned_value(SOURCE_ROOTS[0] / relative, name)
+    items = value.values if isinstance(value, ast.Dict) else value.elts
+    names = [
+        item.value
+        for item in items
+        if isinstance(item, ast.Constant)
+        and isinstance(item.value, str)
+        and _HUB_PROVIDER.fullmatch(item.value)
+    ]
+    assert len(names) == size, (
+        f"{name} in {relative} lists {len(names)} hub provider modules, "
+        f"the inventory expects {size}"
+    )
+
+
+def test_the_provider_check_sees_each_form_of_reference():
+    # A relative import resolves only inside lionagi or lionhub, so the probe sits in the hub.
+    probe = ROOT / "lionhub" / "src" / "lionhub" / "orchestration" / "_probe.py"
+    source = (
+        "import lionhub.providers.openai.chat\n"
+        "from lionhub.providers.google.gemini_code import resolve\n"
+        "from lionhub import providers\n"
+        "from ..providers.anthropic import messages\n"
+        "NAMES = ['lionhub.providers.groq.chat']\n"
+        "BY_KEY = {'pi': 'lionhub.providers.pi.cli'}\n"
+        "def lazy():\n"
+        "    import lionhub.providers.exa.search\n"
+        "if TYPE_CHECKING:\n"
+        "    from lionhub.providers.ollama.chat import Endpoint\n"
+        "async def later():\n"
+        "    from lionhub.providers.nvidia_nim.chat import Endpoint\n"
+        "def with_default(path='lionhub.providers.lattice.chat'):\n"
+        "    return path\n"
+        "import lionhub.providersx\n"
+        "PREFIX = 'lionhub.providers.'\n"
+        "import lionhub.orchestration\n"
+        "OTHER = 'lionhub.orchestration.patterns'\n"
+    )
+    assert _provider_references(probe, source) == [
+        ("lionhub.providers.openai.chat", 1, "module"),
+        ("lionhub.providers.google.gemini_code", 2, "module"),
+        ("lionhub.providers", 3, "module"),
+        ("lionhub.providers.anthropic", 4, "module"),
+        ("lionhub.providers.groq.chat", 5, "module"),
+        ("lionhub.providers.pi.cli", 6, "module"),
+        ("lionhub.providers.exa.search", 8, "function"),
+        ("lionhub.providers.ollama.chat", 10, "module"),
+        ("lionhub.providers.nvidia_nim.chat", 12, "function"),
+        ("lionhub.providers.lattice.chat", 13, "module"),
+    ]
+
+
+# Every provider key the endpoint registry accepts: a provider name or one of its aliases.
+PROVIDER_KEYS = (
+    "ag2",
+    "anthropic",
+    "autogen",
+    "claude",
+    "claude-code",
+    "claude_code",
+    "codex",
+    "deepseek",
+    "exa",
+    "firecrawl",
+    "gemini",
+    "gemini-api",
+    "gemini-cli",
+    "gemini-code",
+    "gemini_cli",
+    "gemini_code",
+    "groq",
+    "lattice",
+    "nim",
+    "nvidia",
+    "nvidia_nim",
+    "ollama",
+    "open-router",
+    "openai",
+    "openai-codex",
+    "openrouter",
+    "perplexity",
+    "pi",
+    "pi-code",
+    "pi_code",
+    "scripted",
+    "tavily",
+)
+
+
+def _isolated_environment(home: Path) -> dict[str, str]:
+    """The environment of a child interpreter whose home and config directories are ``home``."""
+    import os
+
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "CODEX_HOME": str(home / ".codex"),
+    }
+
+
+def test_the_provider_keys_are_the_keys_the_registry_accepts(tmp_path):
+    out = _run_fresh(
+        "from lionagi.service.connections.registry import EndpointRegistry\n"
+        "EndpointRegistry.list_providers()\n"
+        "print(sorted(EndpointRegistry._alias_owners))\n",
+        env=_isolated_environment(tmp_path),
+    )
+    assert ast.literal_eval(out.strip().splitlines()[-1]) == sorted(PROVIDER_KEYS)
+
+
+# A key builds its endpoint from the hub, or is the core scripted provider. The model name
+# and key are placeholders: nothing is called, the iModel is only constructed. exa, firecrawl
+# and tavily offer several endpoints, so each key is built with the first one registered for
+# its provider; without one they build the generic core endpoint.
+_PROVIDER_PROBE = (
+    "import sys\n"
+    "import lionagi\n"
+    "loaded = [m for m in sys.modules if m == 'lionhub' or m.startswith('lionhub.')]\n"
+    "assert not loaded, loaded\n"
+    "from lionagi.service.connections.registry import EndpointRegistry\n"
+    "from lionagi.service.imodel import iModel\n"
+    "key = {key!r}\n"
+    "owner = EndpointRegistry.canonical_provider(key)\n"
+    "endpoint = next(\n"
+    "    e['endpoint'] for e in EndpointRegistry.list_providers() if e['provider'] == owner\n"
+    ")\n"
+    "try:\n"
+    "    model = iModel(provider=key, model='placeholder-model', api_key='x', endpoint=endpoint)\n"
+    "except ModuleNotFoundError as exc:\n"
+    "    if (exc.name or '').split('.')[0] in ('lionagi', 'lionhub'):\n"
+    "        raise\n"
+    "    print('SKIP', exc.name)\n"
+    "    raise SystemExit(0)\n"
+    "print('MODULE', type(model.endpoint).__module__)\n"
+)
+
+
+@pytest.mark.parametrize("key", PROVIDER_KEYS)
+def test_a_provider_key_builds_its_endpoint_in_a_fresh_interpreter(key, tmp_path):
+    out = _run_fresh(_PROVIDER_PROBE.format(key=key), env=_isolated_environment(tmp_path))
+    probed = out.strip().splitlines()[-1].split()
+    if probed[0] == "SKIP":
+        reason = f"{key}: optional dependency {probed[1]} is not installed"
+        print(reason)
+        pytest.skip(reason)
+    assert probed[0] == "MODULE", out
+    module = probed[1]
+    assert module.startswith("lionhub.providers.") or module == "lionagi.testing._endpoint", (
+        f"{key} built its endpoint from {module}"
+    )
 
 
 # Wave 2 moves these out of the core (D6), so the rest of lionagi must not import them. Logger
@@ -820,3 +1274,91 @@ def test_changelog_names_every_move():
     for row in _moved.MOVED:
         line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
         assert line in changelog, row
+
+
+def test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files():
+    import lionagi
+    from lionagi.ln import _lazy_init
+
+    # A root lazy export reaches a moved module through these two frames.
+    assert _moved._is_import_machinery(lionagi.__getattr__.__code__)
+    assert _moved._is_import_machinery(_lazy_init.lazy_import.__code__)
+    # Other code in the same files is still the caller's code.
+    assert not _moved._is_import_machinery(_lazy_init.LazyInit.ensure.__code__)
+    assert not _moved._is_import_machinery(
+        test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files.__code__
+    )
+
+
+_ROOT_LNDL_EXPORTS = (
+    "InvalidConstructorError",
+    "LNDLError",
+    "LNDLOutput",
+    "MissingFieldError",
+    "MissingLvarError",
+    "TypeMismatchError",
+    "extract_lndl_blocks",
+    "get_lndl_system_prompt",
+    "normalize_lndl_text",
+)
+
+# The line that first reads a root LNDL export is line 6 of this program.
+_ROOT_LNDL_ACCESS = """\
+import importlib, json, sys, warnings
+import lionagi
+before = sorted(n for n in sys.modules if n == "lionhub" or n.startswith("lionhub."))
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    first = lionagi.LNDLOutput
+    rest = {name: getattr(lionagi, name) for name in sys.argv[1:]}
+hub = importlib.import_module("lionhub.lndl")
+print(json.dumps({
+    "before": before,
+    "same": {name: rest[name] is getattr(hub, name) for name in rest},
+    "first_same": first is hub.LNDLOutput,
+    "warnings": [
+        [w.category.__name__, w.filename, w.lineno, str(w.message)] for w in caught
+    ],
+}))
+"""
+
+
+def test_a_root_lndl_export_is_the_moved_object_and_warns_at_the_callers_line():
+    proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed program
+        [sys.executable, "-c", _ROOT_LNDL_ACCESS, *_ROOT_LNDL_EXPORTS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    result = json.loads(proc.stdout)
+    assert result["before"] == []
+    assert result["first_same"] is True
+    assert result["same"] == dict.fromkeys(_ROOT_LNDL_EXPORTS, True)
+    moved = [w for w in result["warnings"] if "lionhub.lndl" in w[3]]
+    assert [(w[0], w[1], w[2]) for w in moved] == [("DeprecationWarning", "<string>", 6)], result
+
+
+# Every lionhub.lndl module a file under lionagi/ names, by file (relative to lionagi/). The CLI's
+# API leg builds the LNDL Middle lazily until the CLI move; no other file names the language.
+LNDL_INTERIM_EDGES = {"cli/agent.py": ["lionhub.lndl.middle"]}
+
+_HUB_LNDL = re.compile(r"lionhub\.lndl(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def test_lndl_interim_edge_inventory():
+    lionagi = SOURCE_ROOTS[0]
+    found = {}
+    # _moved.py names lionhub as data: the table of new paths it serves old names from.
+    for path in sorted(lionagi.rglob("*.py")):
+        if path.name == "_moved.py":
+            continue
+        names = sorted(
+            name
+            for name in (hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path))
+            if _HUB_LNDL.fullmatch(name)
+        )
+        if names:
+            found[path.relative_to(lionagi).as_posix()] = names
+    assert found == LNDL_INTERIM_EDGES

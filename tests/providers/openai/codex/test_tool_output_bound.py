@@ -18,12 +18,12 @@ from unittest.mock import patch
 
 import pytest
 
-from lionagi.providers.openai.codex import (
+from lionagi.service.types.stream_chunk import StreamChunk
+from lionhub.providers.openai.codex import (
     CODEX_TOOL_OUTPUT_MAX_CHARS,
     CodexCodeRequest,
     stream_codex_cli,
 )
-from lionagi.service.types.stream_chunk import StreamChunk
 
 HALF = CODEX_TOOL_OUTPUT_MAX_CHARS // 2
 MARKER = "\n[output truncated: "
@@ -35,7 +35,7 @@ def _fake_events(events: list[dict]):
             yield event
 
     return patch(
-        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        "lionhub.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     )
 
@@ -383,7 +383,7 @@ def _nested(depth: int, leaf, kind: str = "dict"):
     ],
 )
 def test_the_json_size_of_a_value_is_the_length_of_its_json_text(value):
-    from lionagi.providers.openai.codex import _json_size
+    from lionhub.providers.openai.codex import _json_size
 
     assert _json_size(value, {}) == len(json.dumps(value, ensure_ascii=False, default=str))
 
@@ -638,7 +638,7 @@ async def test_a_structured_result_the_json_encoder_cannot_reach_says_it_is_too_
     as a line saying it is nested too deep to show."""
     import types
 
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     def dumps(obj, *args, **kwargs):
         raise RecursionError("maximum recursion depth exceeded while encoding a JSON object")
@@ -715,7 +715,7 @@ def test_a_deep_value_is_serialized_a_bounded_number_of_times(monkeypatch):
     deep costs a small multiple of its size, not its size per level."""
     import types
 
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     leaf = "q" * 200_000
     value = leaf

@@ -413,7 +413,7 @@ def test_codex_code_request_clamps_effort_when_model_kwarg_omitted():
     validators only see keys the caller actually supplied — omitting `model`
     must not silently skip the clamp for the request that will actually be
     sent against the default model."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     omitted = CodexCodeRequest(prompt="hello", reasoning_effort="max")
     explicit_default = CodexCodeRequest(

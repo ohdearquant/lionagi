@@ -1,9 +1,9 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.lndl.normalize.normalize_lndl_text."""
+"""Tests for lionhub.lndl.normalize.normalize_lndl_text."""
 
-from lionagi.lndl.normalize import normalize_lndl_text
+from lionhub.lndl.normalize import normalize_lndl_text
 
 
 class TestNormalizeLndlText:

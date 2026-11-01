@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
 
 def _model_arg(req: ClaudeCodeRequest) -> str:

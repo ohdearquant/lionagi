@@ -18,8 +18,8 @@ import pytest
 from lionagi._errors import ConfigurationError
 from lionagi.agent.factory import create_agent
 from lionagi.agent.spec import AgentSpec
-from lionagi.providers.anthropic.messages import ANTHROPIC_DEFAULT_MAX_TOKENS
 from lionagi.service.imodel import iModel
+from lionhub.providers.anthropic.messages import ANTHROPIC_DEFAULT_MAX_TOKENS
 
 MODEL = "anthropic/claude-haiku-5-5"
 

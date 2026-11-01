@@ -118,6 +118,7 @@ async def communicate(
 
     if parse_param and chat_param.response_format:
         from lionagi.protocols.messages.assistant_response import AssistantResponse
+        from lionagi.service._output_limit import read_output_limit_stop
 
         from ..parse.parse import _try_propagate_structure, parse
 
@@ -125,7 +126,13 @@ async def communicate(
         parse_param = _try_propagate_structure(ins_content, parse_param)
 
         try:
-            out, res2 = await parse(branch, res.response, parse_param, return_res_message=True)
+            out, res2 = await parse(
+                branch,
+                res.response,
+                parse_param,
+                return_res_message=True,
+                stopped_at_output_limit=read_output_limit_stop(res.model_response)[0],
+            )
             if res2 and isinstance(res2, AssistantResponse):
                 res.metadata["original_text"] = res.response
                 res.metadata["original_model_response"] = res.model_response

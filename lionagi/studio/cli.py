@@ -2133,8 +2133,8 @@ _STARTS_RUNS = frozenset({"create", "enable", "trigger", "apply"})
 def _refused_inside_an_agent() -> bool:
     """Print the refusal and return True when this process runs inside an agent lionagi
     started (see refuse_nested_agent)."""
-    from lionagi.providers._provider_errors import NestedAgentRefusedError
-    from lionagi.providers._subagent_admission import refuse_nested_agent
+    from lionagi._provider_errors import NestedAgentRefusedError
+    from lionagi.service._subagent_admission import refuse_nested_agent
 
     try:
         refuse_nested_agent()

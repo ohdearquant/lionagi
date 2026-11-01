@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from lionagi.lndl.types import (
+from lionhub.lndl.types import (
     ActionCall,
     _coerce_result,
     revalidate_with_action_results,

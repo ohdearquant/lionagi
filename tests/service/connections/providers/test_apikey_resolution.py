@@ -13,7 +13,7 @@ from lionagi.service.connections.registry import EndpointMeta, EndpointRegistry,
 
 class TestOllamaNoKeyRequired:
     def test_ollama_endpoint_has_no_api_key_env(self):
-        from lionagi.providers.ollama._config import OllamaConfigs
+        from lionhub.providers.ollama._config import OllamaConfigs
 
         assert getattr(OllamaConfigs, "_API_KEY_ENV", None) is None
 
@@ -62,18 +62,18 @@ class TestOllamaNoKeyRequired:
 
 def test_api_key_env_metadata_on_provider_configs():
     """All non-Ollama API providers must declare _API_KEY_ENV; Ollama must not."""
-    from lionagi.providers.anthropic._config import AnthropicConfigs
-    from lionagi.providers.deepseek._config import DeepSeekConfigs
-    from lionagi.providers.exa._config import ExaConfigs
-    from lionagi.providers.firecrawl._config import FirecrawlConfigs
-    from lionagi.providers.google._config import GeminiChatConfigs
-    from lionagi.providers.groq._config import GroqConfigs
-    from lionagi.providers.nvidia_nim._config import NvidiaNimConfigs
-    from lionagi.providers.ollama._config import OllamaConfigs
-    from lionagi.providers.openai._config import OpenAIConfigs
-    from lionagi.providers.openrouter._config import OpenRouterConfigs
-    from lionagi.providers.perplexity._config import PerplexityConfigs
-    from lionagi.providers.tavily._config import TavilyConfigs
+    from lionhub.providers.anthropic._config import AnthropicConfigs
+    from lionhub.providers.deepseek._config import DeepSeekConfigs
+    from lionhub.providers.exa._config import ExaConfigs
+    from lionhub.providers.firecrawl._config import FirecrawlConfigs
+    from lionhub.providers.google._config import GeminiChatConfigs
+    from lionhub.providers.groq._config import GroqConfigs
+    from lionhub.providers.nvidia_nim._config import NvidiaNimConfigs
+    from lionhub.providers.ollama._config import OllamaConfigs
+    from lionhub.providers.openai._config import OpenAIConfigs
+    from lionhub.providers.openrouter._config import OpenRouterConfigs
+    from lionhub.providers.perplexity._config import PerplexityConfigs
+    from lionhub.providers.tavily._config import TavilyConfigs
 
     has_key = {
         "openai": (OpenAIConfigs, "OPENAI_API_KEY"),
@@ -192,7 +192,7 @@ def test_anthropic_endpoint_uses_x_api_key_header():
     mock_settings.ANTHROPIC_API_KEY = SecretStr("anthro-test-key")
     mock_settings.get_secret.return_value = "anthro-test-key"
 
-    from lionagi.providers.anthropic._config import AnthropicConfigs
+    from lionhub.providers.anthropic._config import AnthropicConfigs
 
     meta_member = AnthropicConfigs.MESSAGES
     meta_kwargs = meta_member.as_registry_kwargs()

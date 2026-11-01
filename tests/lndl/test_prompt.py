@@ -1,13 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.lndl.prompt.get_lndl_system_prompt."""
+"""Tests for lionhub.lndl.prompt.get_lndl_system_prompt."""
 
 from __future__ import annotations
 
 import hashlib
 
-from lionagi.lndl.prompt import get_lndl_system_prompt
+from lionhub.lndl.prompt import get_lndl_system_prompt
 
 # SHA-256 of the prompt as of the tests being written. Any accidental edit to
 # LNDL_SYSTEM_PROMPT (whitespace, typo, truncation, marker removal) will flip
@@ -76,7 +76,7 @@ class TestGetLndlSystemPrompt:
     def test_prompt_snapshot(self):
         """SHA-256 snapshot guard: any accidental edit trips this test.
 
-        To update: python -c "import hashlib; from lionagi.lndl.prompt import get_lndl_system_prompt; print(hashlib.sha256(get_lndl_system_prompt().encode()).hexdigest())"
+        To update: python -c "import hashlib; from lionhub.lndl.prompt import get_lndl_system_prompt; print(hashlib.sha256(get_lndl_system_prompt().encode()).hexdigest())"
         """
         prompt = get_lndl_system_prompt()
         actual = hashlib.sha256(prompt.encode()).hexdigest()

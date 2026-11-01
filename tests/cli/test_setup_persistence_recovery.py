@@ -100,12 +100,19 @@ async def test_cancellation_recovers_committed_session(
     monkeypatch.setattr(db, "get_session", read)
     monkeypatch.setattr(db, "create_branch", create_branch)
     monkeypatch.setattr(isolated_setup, "_open_shared_db", open_db)
+    # Recovery closes the row under a deadline a loaded runner can overrun. This test checks what
+    # recovery does to the committed row, not how fast the runner is, so it runs under a bound
+    # a slow runner can still meet.
+    bound = 30
+    monkeypatch.setattr(isolated_setup, "_SETUP_RECOVERY_TIMEOUT_SECONDS", bound)
     task = asyncio.create_task(isolated_setup.setup_agent_persist(fake_branch(), share_db=False))
     try:
         await asyncio.wait_for(entered.wait(), 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            # The guarded update and the database close each run under the bound, so the wait
+            # covers both; a shorter wait would be the real limit instead of the bound.
+            await asyncio.wait_for(task, 2 * bound + 15)
         async with StateDB(tmp_path / "state.db") as check:
             row = await check.get_session(observed["id"])
         assert row["status"] == "cancelled"
@@ -255,7 +262,7 @@ async def test_fresh_recovery_guards(isolated_setup, monkeypatch, tmp_path, capl
 async def test_direct_cancel_during_cleanup_keeps_first_failure(
     isolated_setup, monkeypatch, tmp_path, mode
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
@@ -507,7 +514,7 @@ async def test_recovery_close_is_bounded_and_preserves_open_error(
 async def test_admission_refusal_remains_primary_when_owner_drain_is_cancelled(
     isolated_setup, monkeypatch, tmp_path
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state import cli_workers
     from lionagi.state.db import StateDB
 

@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
+from lionagi._provider_errors import _WorkerSpawnAdmissionError
 from lionagi.ln import compute_hash
-from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
 
 from ._engine_definitions import KIND_META, import_engine_class
 from ._logging import log_error, progress, warn

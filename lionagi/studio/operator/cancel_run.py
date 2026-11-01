@@ -8,7 +8,7 @@ human allow/deny proposal flow ``launch_playbook`` uses
 (`application_mcp.py::launch_playbook`). Real in-process cancellation only:
 the state-changing act reuses the exact primitives ``li kill`` uses
 (``lionagi.cli._util.fetch_unique_row`` for id/prefix resolution,
-``lionagi.cli.kill._kill_one`` for identity-checked termination), so a
+``lionagi.cli._kill_service.kill_one`` for identity-checked termination), so a
 cancellation through the Operator is indistinguishable from one run through
 ``li kill`` directly -- no subprocess is spawned. See
 docs/internals/studio.md ("Turn identity and the propose/poll/execute
@@ -429,12 +429,12 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     resolution `cancel_run` captured. `_persist_cancel` is a no-op once the
     row is no longer 'running', so a race here degrades to
     ``already_terminal`` -- never a double cancel, never a wrong-run cancel.
-    Reuses `lionagi.cli.kill`'s deepest-first child traversal
-    (``_list_running_children``/``_kill_one``) so a still-running owning
+    Reuses `lionagi.cli._kill_service`'s deepest-first child traversal
+    (``list_running_children``/``kill_one``) so a still-running owning
     invocation is reaped exactly the way ``li kill --recursive`` does,
     rather than orphaned when the parent session goes terminal.
     """
-    from lionagi.cli.kill import _NOT_STOPPED_SIGNALS, _kill_one, _list_running_children
+    from lionagi.cli._kill_service import NOT_STOPPED_SIGNALS, kill_one, list_running_children
     from lionagi.state.db import StateDB
 
     run_id = command.get("session_id")
@@ -470,19 +470,19 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         # it is never left orphaned by the parent going terminal ahead of it.
         # Best-effort per child -- an identity-mismatched or already-gone
         # child does not block the parent's own cancellation below.
-        children = await _list_running_children(db, "session", run_id)
+        children = await list_running_children(db, "session", run_id)
         for _table, child_type, child_row in children:
-            await _kill_one(db, child_type, child_row["id"], child_row, user_reason=user_reason)
+            await kill_one(db, child_type, child_row["id"], child_row, user_reason=user_reason)
 
-        outcome = await _kill_one(
+        outcome = await kill_one(
             db,
             "session",
             run_id,
             row_dict,
             user_reason=user_reason,
         )
-        if outcome["signal"] in _NOT_STOPPED_SIGNALS:
-            # _kill_one() leaves the row unchanged when it cannot stop the
+        if outcome["signal"] in NOT_STOPPED_SIGNALS:
+            # kill_one() leaves the row unchanged when it cannot stop the
             # process. Preserve that distinction from an already-terminal row.
             return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"]}
 

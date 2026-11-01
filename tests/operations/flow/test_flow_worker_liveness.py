@@ -52,10 +52,10 @@ def _make_fast_chat_branch(name: str) -> Branch:
     """A plain (non-CLI) branch whose chat_model.invoke() completes quickly —
     stands in for a downstream leg that must still complete after an
     unrelated upstream leg fails."""
-    from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
     from lionagi.service.connections.api_calling import APICalling
     from lionagi.service.connections.endpoint import Endpoint
     from lionagi.service.connections.endpoint_config import EndpointConfig
+    from lionhub.providers.openai.chat import OpenAIChatCompletionsRequest
 
     branch = Branch(user="test_user", name=name)
 

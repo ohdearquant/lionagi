@@ -227,6 +227,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   | `lionagi.dispatch` | `lionhub.orchestration.dispatch` | 2.0.0 |
   | `lionagi.work` | `lionhub.orchestration.work` | 2.0.0 |
   | `lionagi.mcp` | `lionhub.serve.mcp` | 2.0.0 |
+  | `lionagi.providers` | `lionhub.providers` | 2.0.0 |
+  | `lionagi.lndl` | `lionhub.lndl` | 2.0.0 |
+  | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` | 2.0.0 |
+  | `lionagi.providers._provider_errors` | `lionagi._provider_errors` | 2.0.0 |
+  | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` | 2.0.0 |
+  | `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` | 2.0.0 |
+  | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` | 2.0.0 |
 
 - The core no longer imports `lionagi.cli`: no import statement or literal
   `import_module` call outside `lionagi.cli`, `lionagi.mcp` and `lionagi.studio`

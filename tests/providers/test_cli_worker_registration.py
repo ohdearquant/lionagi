@@ -22,8 +22,8 @@ _OTHER_GENERATION = "c06b1529-665f-4ee4-9ff1-c85d5fb2d9da"
 async def scripted(monkeypatch):
     import psutil
 
-    from lionagi.providers import _cli_subprocess as cs
     from lionagi.state.cli_workers import _WorkerSpawnOwner
+    from lionhub.providers import _cli_subprocess as cs
 
     state = SimpleNamespace(
         cs=cs,
@@ -342,7 +342,7 @@ async def test_pre_spawn_callback_runs_after_admission_wait(scripted, monkeypatc
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_codex_census_reads_secret_filled_codex_home(scripted, monkeypatch, tmp_path):
-    from lionagi.providers.openai import _codex_project_layers, codex
+    from lionhub.providers.openai import _codex_project_layers, codex
 
     state = scripted
     alternate = tmp_path / "alternate"
@@ -378,7 +378,7 @@ async def test_codex_census_reads_secret_filled_codex_home(scripted, monkeypatch
 @pytest.mark.asyncio(loop_scope="function")
 async def test_ignore_user_config_checks_project_after_secret_fill(scripted, monkeypatch, tmp_path):
     from lionagi._errors import ConfigurationError
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     state = scripted
     project = tmp_path / "repo"
@@ -408,7 +408,7 @@ async def test_ignore_user_config_checks_project_after_secret_fill(scripted, mon
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_ignore_user_config_skips_final_secret_filled_home(scripted, monkeypatch, tmp_path):
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     state = scripted
     project = tmp_path / "repo"
@@ -436,7 +436,7 @@ async def test_secret_filled_relative_codex_home_is_refused_without_value(
     scripted, monkeypatch, tmp_path, variable
 ):
     from lionagi._errors import ConfigurationError
-    from lionagi.providers.openai import codex
+    from lionhub.providers.openai import codex
 
     state = scripted
     marker = "synthetic-relative-value"
@@ -463,7 +463,7 @@ async def test_callback_refusal_redacts_declared_home_and_exception_chain(
     scripted, monkeypatch, tmp_path
 ):
     from lionagi._errors import _ExclusiveMcpSelectionError
-    from lionagi.providers.openai import _codex_project_layers, codex
+    from lionhub.providers.openai import _codex_project_layers, codex
 
     state = scripted
     secret_home = tmp_path / "synthetic-secret-home"
@@ -519,7 +519,7 @@ async def test_invalid_server_name_does_not_disclose_short_credential(
     scripted, monkeypatch, tmp_path
 ):
     from lionagi._errors import _ExclusiveMcpSelectionError
-    from lionagi.providers.openai import _codex_project_layers, codex
+    from lionhub.providers.openai import _codex_project_layers, codex
 
     state = scripted
     home = tmp_path / "codex-home"
@@ -615,7 +615,7 @@ async def test_explicit_none_keeps_uncapped_optional_identity_and_records_nothin
 async def test_registration_refusal_exposes_no_output_and_preserves_lease_ownership(
     scripted, group_present
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     state = scripted
     state.lease.slots = [object()]
@@ -639,7 +639,7 @@ async def test_registration_refusal_exposes_no_output_and_preserves_lease_owners
 @pytest.mark.parametrize("ending", ["eof", "explicit-close"])
 @pytest.mark.asyncio(loop_scope="function")
 async def test_unconfirmed_eof_or_explicit_close_surfaces_teardown_failure(scripted, ending):
-    from lionagi.providers._provider_errors import ProviderTeardownError
+    from lionagi._provider_errors import ProviderTeardownError
 
     state = scripted
     state.group_present = True
@@ -812,7 +812,7 @@ async def test_late_cleanup_is_retained_before_python312_eager_execution(scripte
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_a_closed_owner_refuses_before_creating_an_os_child(scripted):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     state = scripted
     owned = state.owner()
@@ -829,7 +829,7 @@ async def test_an_unknown_no_handle_spawn_failure_keeps_holder_ownership(
     scripted, tmp_path, monkeypatch, caplog, failure_kind
 ):
     from lionagi import _paths
-    from lionagi.providers import _subagent_admission as admission
+    from lionagi.service import _subagent_admission as admission
 
     state = scripted
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
@@ -890,7 +890,7 @@ async def test_an_unknown_no_handle_spawn_failure_keeps_holder_ownership(
 def test_executable_gate_uses_the_child_cwd_and_actual_environment_path(
     tmp_path, monkeypatch, kind
 ):
-    from lionagi.providers import _cli_subprocess as cs
+    from lionhub.providers import _cli_subprocess as cs
 
     child = tmp_path / "child"
     child.mkdir()
@@ -930,8 +930,8 @@ def test_executable_gate_uses_the_child_cwd_and_actual_environment_path(
 def test_executable_gate_refuses_parent_path_fallback_and_nonexecutables(
     tmp_path, monkeypatch, kind
 ):
-    from lionagi.providers import _cli_subprocess as cs
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
+    from lionhub.providers import _cli_subprocess as cs
 
     child, parent = tmp_path / "child", tmp_path / "parent-bin"
     child.mkdir()
@@ -954,9 +954,9 @@ async def test_missing_executables_never_attempt_spawn_or_accumulate_capped_slot
     tmp_path, monkeypatch, count
 ):
     from lionagi import _paths
-    from lionagi.providers import _cli_subprocess as cs
-    from lionagi.providers import _subagent_admission as admission
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _cli_subprocess as cs
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": str(count), "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -1002,7 +1002,7 @@ async def test_unreadable_local_identity_refuses_before_record_or_output(
 ):
     import psutil
 
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     state = scripted
     monkeypatch.setattr(psutil, "boot_time", lambda: boot)
@@ -1015,7 +1015,7 @@ async def test_unreadable_local_identity_refuses_before_record_or_output(
 @pytest.mark.parametrize("probe", ["absent", "present", "permission-denied", "zombie-only"])
 def test_cleanup_requires_kernel_absence_even_after_direct_child_exit(monkeypatch, probe):
     from lionagi.ln import _proc
-    from lionagi.providers import _cli_subprocess as cs
+    from lionhub.providers import _cli_subprocess as cs
 
     # Recorded rather than asserted inside the double: the probe's caller reads any
     # exception as an unanswered probe, so an assertion raised here would be swallowed
@@ -1037,7 +1037,7 @@ def test_cleanup_requires_kernel_absence_even_after_direct_child_exit(monkeypatc
 
 
 def test_group_absence_does_not_replace_a_nonlive_owned_child(monkeypatch):
-    from lionagi.providers import _cli_subprocess as cs
+    from lionhub.providers import _cli_subprocess as cs
 
     monkeypatch.setattr(cs, "_group_has_members", lambda _pgid: False)
     child = SimpleNamespace(pid=12345, returncode=None)
@@ -1052,8 +1052,8 @@ async def test_an_unconfirmed_dead_child_keeps_actual_holder_locks_until_explici
     tmp_path, monkeypatch, reported
 ):
     from lionagi import _paths
-    from lionagi.providers import _cli_subprocess as cs
-    from lionagi.providers import _subagent_admission as admission
+    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _cli_subprocess as cs
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -1086,7 +1086,7 @@ async def test_an_unconfirmed_dead_child_keeps_actual_holder_locks_until_explici
 async def test_real_store_stale_generation_refuses_before_transport_and_leaves_records_unchanged(
     scripted, tmp_path
 ):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.db import StateDB
 
     state = scripted
@@ -1123,9 +1123,9 @@ async def test_real_python_child_commits_its_identity_before_callback_and_first_
     import psutil
 
     from lionagi import _paths
-    from lionagi.providers import _cli_subprocess as cs
     from lionagi.state.cli_workers import _WorkerSpawnOwner
     from lionagi.state.db import StateDB
+    from lionhub.providers import _cli_subprocess as cs
 
     admission_home = tmp_path / "admission-home"
     child_home = tmp_path / "child-home"

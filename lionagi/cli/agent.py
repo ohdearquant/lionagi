@@ -22,6 +22,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._errors import ConfigurationError, FailedRoundError, InputTokenCapError
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     CancelScope,
@@ -34,14 +35,14 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
-from lionagi.providers._provider_errors import ProviderSafetyError, _WorkerSpawnAdmissionError
-from lionagi.providers._subagent_admission import (
+from lionagi.service._api_telemetry import collect_api_turn
+from lionagi.service._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
-from lionagi.service._api_telemetry import collect_api_turn
+from lionagi.service.imodel import _endpoint_routing_enabled
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
@@ -845,7 +846,9 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
     responses checked for a refusal and then against the output limit are the pass's last two,
     the round that ended the loop and the answer turn after it. A refused response (see
     ``_provider_refusal``) wins over an output-limit stop in that window and prints one
-    ``[api] refused`` line; an answer with no text fails the pass whatever its stop.
+    ``[api] refused`` line; an answer with no text fails the pass whatever its stop. A round
+    whose reply did not parse is reported as having stopped at its output token limit when its
+    response did.
     """
     from lionagi.operations.types import UnparsedResponse
 
@@ -875,7 +878,11 @@ def _failed_round(branch, before: set, rounds: list) -> tuple[str, str] | None:
                 detail = detail[:800] + " ...(truncated)"
             reason = f"the response schema rejected it: {detail}"
         else:
+            from lionagi.service._output_limit import read_output_limit_stop
+
             reason = "no JSON object could be read from it"
+            if len(window) > 1 and read_output_limit_stop(window[-2])[0]:
+                reason = "the response stopped at its output token limit, so its text is incomplete"
         return _API_UNPARSED_RESUME_PROMPT.format(reason=reason), f"a reply did not parse: {reason}"
     # An answer turn whose reply had no text, cut off or not, ends ReAct with that empty text.
     answer = rounds[-1] if rounds else None
@@ -889,48 +896,24 @@ def _stopped_at_output_limit_with_nothing(response: Any) -> bool:
     """Whether a raw provider response stopped at its output token limit before it wrote any
     text or tool call. Reads the Anthropic Messages, OpenAI chat completions and OpenAI
     Responses shapes; any other shape, a list of responses included, reads False."""
-    if not isinstance(response, dict):
-        return False
-    if "stop_reason" in response:
-        if response["stop_reason"] != "max_tokens":
-            return False
-        return not any(
-            isinstance(block, dict)
-            and (
-                block.get("type") == "tool_use"
-                or (block.get("type") == "text" and str(block.get("text") or "").strip())
-            )
-            for block in response.get("content") or []
-        )
-    choices = response.get("choices")
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        if choices[0].get("finish_reason") != "length":
-            return False
-        message = choices[0].get("message") or {}
-        return not str(message.get("content") or "").strip() and not message.get("tool_calls")
-    if response.get("status") == "incomplete":
-        if (response.get("incomplete_details") or {}).get("reason") != "max_output_tokens":
-            return False
-        for item in response.get("output") or []:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "function_call":
-                return False
-            if item.get("type") == "message" and any(
-                isinstance(part, dict) and str(part.get("text") or "").strip()
-                for part in item.get("content") or []
-            ):
-                return False
-        return True
-    return False
+    from lionagi.service._output_limit import read_output_limit_stop
+
+    stopped, wrote = read_output_limit_stop(response)
+    return stopped and not wrote
 
 
 def _pass_responses(branch, before: set) -> list:
     """The raw provider responses a pass ended on: the last two it added, the round that ended
     the loop and the answer turn after it. ``before`` holds the ids of the branch's messages
-    before the pass."""
+    before the pass. A shortened copy the context fold made of a clipped reply
+    (``clipped_from``) carries no raw response and is not a reply the model sent, so it is
+    skipped and the original keeps its place in the window."""
     added = [
-        m for m in branch.msgs.messages if m.id not in before and isinstance(m, AssistantResponse)
+        m
+        for m in branch.msgs.messages
+        if m.id not in before
+        and isinstance(m, AssistantResponse)
+        and not m.metadata.get("clipped_from")
     ]
     return [m.model_response for m in added[-2:]]
 
@@ -1023,7 +1006,7 @@ async def _api_loop_pass(
     For ReAct, *rounds* (when given) receives each round's analysis and then the answer.
     """
     if loop in ("lndl", "lndl-calls"):
-        from lionagi.operations.lndl_middle import build_lndl_middle
+        from lionhub.lndl.middle import build_lndl_middle
 
         schemas = branch.acts.get_tool_schema(tools=True)
         return await branch.operate(
@@ -2149,7 +2132,7 @@ async def _run_agent(
                 elif canonical in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                     # agy (Antigravity CLI) has no effort kwarg — fold effort into
                     # the resolved --model name instead (see resolve_agy_model).
-                    from lionagi.providers.google.gemini_code import resolve_agy_model
+                    from lionhub.providers.google.gemini_code import resolve_agy_model
 
                     cfg["model"] = resolve_agy_model(
                         cfg.get("model"),
@@ -2357,7 +2340,10 @@ async def _run_agent(
             run_manifest["api_usage"] = _api_usage.snapshot()
         if context_from:
             run_manifest["context_from"] = list(context_from)
-        if api_account is not None:
+        # A run whose own endpoint sends through the account router does not use the launcher's
+        # account name: the router picks the account for each request and ignores the variable.
+        # Its api_usage record names the account that paid.
+        if api_account is not None and not _endpoint_routing_enabled(branch.chat_model.endpoint):
             run_manifest["api_account"] = api_account
         _write_run_manifest = getattr(run, "write_manifest", None)
         if _write_run_manifest is not None:

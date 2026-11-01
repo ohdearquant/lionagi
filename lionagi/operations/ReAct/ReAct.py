@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from pydantic import BaseModel
 
 from lionagi._errors import ExecutionError, InputTokenCapError
+from lionagi._provider_errors import ProviderError
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
 from lionagi.models.field_model import FieldModel
-from lionagi.providers._provider_errors import ProviderError
 from lionagi.service._prompt_cache import cache_intent
 from lionagi.service.imodel import iModel
 

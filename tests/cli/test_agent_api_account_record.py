@@ -8,8 +8,15 @@ import json
 import pytest
 
 from lionagi._errors import ConfigurationError
+from lionagi.service.connections.endpoint import Endpoint
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
+from tests.cli import test_agent_api_provider as api_provider
 from tests.cli.test_agent_context_from import _wire_agent_stubs
 from tests.cli.test_agent_run_json_error import _run
+from tests.service.accounts import test_routed_endpoint as routed
+
+# The scripted API run fixture: drives `_run_agent` against a stubbed Anthropic endpoint.
+scripted_run = api_provider.leg
 
 
 @pytest.mark.asyncio
@@ -243,3 +250,111 @@ async def test_an_unreadable_dotenv_file_refuses_the_name_without_quoting_it(mon
     assert _STAND_IN not in str(info.value)
     assert info.value.__cause__ is None and info.value.__suppress_context__
     assert not runs_root.exists() or not list(runs_root.rglob("run.json"))
+
+
+def _tool_loop_replies():
+    """The replies of a run that reads one file, has nothing more to read, and then answers."""
+    read_the_notes = api_provider._reply(
+        {
+            "analysis": "read the notes first",
+            "action_requests": [
+                {"function": "reader", "arguments": {"action": "read", "path": "notes.txt"}}
+            ],
+            "action_strategy": "sequential",
+            "extension_needed": True,
+            "reason": {"title": "read", "content": "the answer is in the file"},
+        }
+    )
+    nothing_more_to_read = api_provider._reply(
+        {
+            "analysis": "the file says hello",
+            "action_requests": [],
+            "action_strategy": "sequential",
+            "extension_needed": False,
+            "reason": {"title": "done", "content": "nothing left to read"},
+        }
+    )
+    return [read_the_notes, nothing_more_to_read, api_provider._answer("the notes say hello")]
+
+
+async def _api_run_manifest(scripted_run, monkeypatch, tmp_path, *, accounts_declared):
+    """Run a tool-using API run to its answer and return the run.json it left.
+
+    With ``accounts_declared`` the Anthropic endpoint sends through the account router against a
+    stubbed transport; without it the endpoint sends with the direct key against scripted replies.
+    """
+    replies = _tool_loop_replies()
+    try:
+        if accounts_declared:
+            routed._install_accounts(monkeypatch, tmp_path)
+            for reply in replies:
+                reply["model"] = "claude-sonnet-5-5"
+            transport = routed.StubTransport([routed.StubResponse(body=reply) for reply in replies])
+
+            async def through_the_router(self, request, *args, **kwargs):
+                return await Endpoint.call(self, request, *args, **kwargs)
+
+            monkeypatch.setattr(AnthropicMessagesEndpoint, "call", through_the_router)
+            monkeypatch.setattr(
+                AnthropicMessagesEndpoint,
+                "_create_http_session",
+                lambda self, *args, **kwargs: transport.session(*args, **kwargs),
+            )
+            monkeypatch.setattr(
+                AnthropicMessagesEndpoint, "_assert_ssrf_safe_url", lambda self: None
+            )
+        else:
+            routed._install_unconfigured(monkeypatch, tmp_path)
+            scripted_run.replies = replies
+        await scripted_run.run(
+            api_provider._profile(api_tools="read", max_input_tokens=50000), "read notes"
+        )
+    finally:
+        routed._cleanup_router()
+    (path,) = (tmp_path / "runs").glob("*/run.json")
+    return json.loads(path.read_text())
+
+
+@pytest.mark.asyncio
+async def test_a_routed_run_json_does_not_name_an_account_the_router_never_used(
+    scripted_run, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "acct-b")
+
+    manifest = await _api_run_manifest(scripted_run, monkeypatch, tmp_path, accounts_declared=True)
+
+    assert "api_account" not in manifest
+    usage = manifest["api_usage"]
+    assert usage["account_labels"] == [{"provider": "anthropic", "label": "primary"}]
+    paid = [
+        attempt["account_label"]
+        for row in usage["requests"]
+        for attempt in row["selected_attempts"]
+    ]
+    assert paid and set(paid) == {"primary"}
+
+
+@pytest.mark.asyncio
+async def test_without_the_variable_a_routed_run_json_names_no_account(
+    scripted_run, monkeypatch, tmp_path
+):
+    monkeypatch.delenv("LIONAGI_API_ACCOUNT", raising=False)
+
+    manifest = await _api_run_manifest(scripted_run, monkeypatch, tmp_path, accounts_declared=True)
+
+    assert "api_account" not in manifest
+    assert manifest["api_usage"]["account_labels"] == [
+        {"provider": "anthropic", "label": "primary"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_api_run_without_declared_accounts_keeps_the_launchers_account_name(
+    scripted_run, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LIONAGI_API_ACCOUNT", "acct-b")
+
+    manifest = await _api_run_manifest(scripted_run, monkeypatch, tmp_path, accounts_declared=False)
+
+    assert manifest["api_account"] == "acct-b"
+    assert manifest["api_usage"]["account_labels"] == []

@@ -69,9 +69,9 @@ Attribute lookup and handler calls stay outside the import helper. Demand-driven
 | --- | --- | ---|
 | `lionagi/studio/services/approvals.py` | `_compute_chain_hash` | concatenated `content_hash`+`previous_hash` and its existing zero-valued genesis; `ln.compute_chain_hash` uses a colon and GENESIS, so it is not the same chain.|
 | `lionagi/studio/services/approvals.py` | `_compute_hmac_sig` | Keyed HMAC consumes `chain_hash`+`created_at` UTF8 bytes and receives hashlib.sha256 as its digest constructor. This keyed interface is distinct from unkeyed `compute_hash`.|
-| `lionagi/lndl/assembler.py` | `_is_model_cls` | structural class-with-`model_fields` admission; a non-BaseModel class can satisfy it, unlike the nominal shared Pydantic helper.|
-| `lionagi/lndl/assembler.py` | `_unwrap_optional` | local multi-member union preference for the first structural model class, else first non-None member. Shared `unwrap_optional` deliberately leaves unions with multiple non-None members unchanged.|
-| `lionagi/operations/lndl_middle/lndl_middle.py` | `_render_type` | generic list/dict `get_origin`/`get_args` and structural `model_fields` formatting, including classes that are not BaseModel subclasses.|
+| `lionhub/src/lionhub/lndl/assembler.py` | `_is_model_cls` | structural class-with-`model_fields` admission; a non-BaseModel class can satisfy it, unlike the nominal shared Pydantic helper.|
+| `lionhub/src/lionhub/lndl/assembler.py` | `_unwrap_optional` | local multi-member union preference for the first structural model class, else first non-None member. Shared `unwrap_optional` deliberately leaves unions with multiple non-None members unchanged.|
+| `lionhub/src/lionhub/lndl/middle/lndl_middle.py` | `_render_type` | generic list/dict `get_origin`/`get_args` and structural `model_fields` formatting, including classes that are not BaseModel subclasses.|
 | `lionagi/models/field_model.py` | `__repr__` | the PEP604 UnionType-specific repr branch and existing typing.Union alternative; `is_union_type` would merge distinct formatting paths.|
 | `lionagi/libs/schema/breakdown_pydantic_annotation.py` | `breakdown_pydantic_annotation` | list generic origin/element extraction. The nominal Pydantic predicate moved; union helpers are not substitutes for list arguments.|
 

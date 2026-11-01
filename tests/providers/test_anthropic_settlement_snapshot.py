@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers.anthropic.messages import _settlement_reading
+from lionhub.providers.anthropic.messages import _settlement_reading
 
 
 @pytest.mark.parametrize("event_type", ("message_start", "message_delta"))

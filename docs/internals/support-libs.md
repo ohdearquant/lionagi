@@ -1,6 +1,6 @@
 # Support libraries — design notes
 
-Extracted rationale for `lionagi/casts/`, `lionagi/lndl/`, `lionagi/testing/`,
+Extracted rationale for `lionagi/casts/`, `lionhub/src/lionhub/lndl/`, `lionagi/testing/`,
 `lionagi/libs/`, `lionagi/adapters/`, `lionagi/models/`, `lionhub/src/lionhub/orchestration/`
 (including `lionhub/src/lionhub/orchestration/dispatch/` and
 `lionhub/src/lionhub/orchestration/work/`), and the top-level `lionagi/*.py`

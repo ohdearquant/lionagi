@@ -110,7 +110,7 @@ _GEMINI_TERMINAL = {
 ADAPTERS: list[Adapter] = [
     Adapter(
         id="claude_code",
-        module="lionagi.providers.anthropic.claude_code",
+        module="lionhub.providers.anthropic.claude_code",
         endpoint_cls="ClaudeCodeCLIEndpoint",
         request_cls="ClaudeCodeRequest",
         binary_attr="CLAUDE_CLI",
@@ -123,7 +123,7 @@ ADAPTERS: list[Adapter] = [
     ),
     Adapter(
         id="gemini_code",
-        module="lionagi.providers.google.gemini_code",
+        module="lionhub.providers.google.gemini_code",
         endpoint_cls="GeminiCLIEndpoint",
         request_cls="GeminiCodeRequest",
         binary_attr="AGY_CLI",
@@ -138,7 +138,7 @@ ADAPTERS: list[Adapter] = [
     ),
     Adapter(
         id="codex",
-        module="lionagi.providers.openai.codex",
+        module="lionhub.providers.openai.codex",
         endpoint_cls="CodexCLIEndpoint",
         request_cls="CodexCodeRequest",
         binary_attr="CODEX_CLI",
@@ -153,7 +153,7 @@ ADAPTERS: list[Adapter] = [
     ),
     Adapter(
         id="pi",
-        module="lionagi.providers.pi.cli",
+        module="lionhub.providers.pi.cli",
         endpoint_cls="PiCLIEndpoint",
         request_cls="PiCodeRequest",
         binary_attr="PI_CLI",

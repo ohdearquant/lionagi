@@ -15,18 +15,6 @@ from lionagi._errors import ConfigurationError
 from lionagi.ln import Unset
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.ln.types import UnsetType
-from lionagi.providers.openai._codex_profile import (
-    CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
-)
-from lionagi.providers.openai._codex_profile import (
-    codex_home_for_env as _codex_home_for_env,
-)
-from lionagi.providers.openai._codex_profile import (
-    is_generated_codex_profile as _is_generated_codex_profile,
-)
-from lionagi.providers.openai._codex_profile import (
-    refuse_non_absolute_codex_home as _refuse_non_absolute_codex_home,
-)
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
@@ -78,7 +66,7 @@ def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = 
     if provider == "anthropic":
         return {"output_config": {"effort": effort}}
     if provider == "openai":
-        from lionagi.providers.openai._chat_schemas import CHAT_MODELS, REASONING_MODELS
+        from lionagi.service.connections._chat_schemas import CHAT_MODELS, REASONING_MODELS
 
         if model not in CHAT_MODELS or model in REASONING_MODELS:
             return {"reasoning_effort": effort}
@@ -219,7 +207,7 @@ async def create_agent(
         # prints anything from the mapping: an entry is reported by its position,
         # since an environment routinely carries credentials and a key can hold
         # one as easily as a value.
-        from lionagi.providers._cli_subprocess import raise_if_env_is_not_a_string_map
+        from lionhub.providers._cli_subprocess import raise_if_env_is_not_a_string_map
 
         if not isinstance(agent_env, Mapping):
             raise _AgentSettingError(
@@ -422,7 +410,7 @@ async def create_agent(
         if spec.prompt_caching:
             chat_model.endpoint.config.prompt_caching = True
         if spec.contain_account_integrations or agent_env:
-            from lionagi.providers.openai.codex import CodexCLIEndpoint
+            from lionhub.providers.openai.codex import CodexCLIEndpoint
 
             # Decided by the endpoint that was built, so an alias or another case of
             # the provider name ("openai-codex", "Codex") is treated as codex.
@@ -1100,7 +1088,7 @@ def request_kwargs_carry_forwarded_mcp(kwargs: dict[str, Any] | None) -> bool:
         # Read as the codex request's own field reads it (`"true"` and `1` are True there).
         from pydantic import ValidationError
 
-        from lionagi.providers.openai.codex import _BOOL_ADAPTER
+        from lionhub.providers.openai.codex import _BOOL_ADAPTER
 
         try:
             flag = _BOOL_ADAPTER.validate_python(flag)
@@ -1200,7 +1188,7 @@ def apply_forwarded_mcp_servers(
             kwargs["strict_mcp_config"] = True
         return True
 
-    from lionagi.providers._cli_subprocess import reveal_redacted
+    from lionhub.providers._cli_subprocess import reveal_redacted
 
     # The config the child reads is the one its own environment names.
     child_env = reveal_redacted(env if env is not None else kwargs.get("env"))
@@ -1213,7 +1201,7 @@ def apply_forwarded_mcp_servers(
         # it to refuse.
         from pydantic import ValidationError
 
-        from lionagi.providers.openai.codex import _BOOL_ADAPTER
+        from lionhub.providers.openai.codex import _BOOL_ADAPTER
 
         try:
             kwargs["ignore_user_config"] = _BOOL_ADAPTER.validate_python(flag)
@@ -1240,18 +1228,19 @@ def apply_forwarded_mcp_servers(
     named_profile = kwargs.get("profile")
     remedy = "Drop the profile"
     if named_profile is None and exclusive and not kwargs.get("ignore_user_config"):
-        from lionagi.providers.openai._codex_profile import (
+        from lionhub.providers.openai._codex_profile import (
             codex_home_for_env,
             configured_codex_profile,
+            refuse_non_absolute_codex_home,
         )
-        from lionagi.providers.openai.codex import _TRIMMED
+        from lionhub.providers.openai.codex import _TRIMMED
 
         for key, value in (kwargs.get("config_overrides") or {}).items():
             # Read through `str.__str__`, as the codex request reads an override key.
             if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
                 named_profile = value
         if named_profile is None:
-            _refuse_non_absolute_codex_home(os.environ if child_env is None else child_env)
+            refuse_non_absolute_codex_home(os.environ if child_env is None else child_env)
             try:
                 named_profile = configured_codex_profile(child_env)
             except ValueError:
@@ -1326,11 +1315,14 @@ def apply_forwarded_mcp_servers(
             "them. Drop `env` and `http_headers` from the server config."
         )
     if secret_fields and child_env is not None:
-        from lionagi.providers.openai._codex_profile import codex_home_for_env
+        from lionhub.providers.openai._codex_profile import (
+            codex_home_for_env,
+            refuse_non_absolute_codex_home,
+        )
 
         # The profile file is written under this process's codex home, and codex looks for
         # `-p <name>` under the home its own environment names.
-        _refuse_non_absolute_codex_home(child_env)
+        refuse_non_absolute_codex_home(child_env)
         if codex_home_for_env(child_env).resolve() != _codex_home().resolve():
             raise ConfigurationError(
                 f"MCP server(s) {sorted(secret_fields)!r} set `env` or `http_headers`, which "
@@ -1369,7 +1361,9 @@ def _drop_forwarded_mcp_servers(kwargs: dict[str, Any]) -> None:
             kwargs["config_overrides"] = kept
         else:
             kwargs.pop("config_overrides", None)
-    if _is_generated_codex_profile(kwargs.get("profile")):
+    from lionhub.providers.openai._codex_profile import is_generated_codex_profile
+
+    if is_generated_codex_profile(kwargs.get("profile")):
         kwargs.pop("profile", None)
 
 
@@ -1600,9 +1594,9 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
     import json
     import subprocess
 
-    from lionagi.providers.openai._codex_profile import _read_codex_config
+    from lionhub.providers.openai._codex_profile import _read_codex_config, codex_home_for_env
 
-    codex_home = _codex_home_for_env(env)
+    codex_home = codex_home_for_env(env)
     config_path = codex_home / "config.toml"
     try:
         # The reader the root `profile` key goes through. Its parser decodes a quoted key
@@ -1618,7 +1612,7 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
             return set(mcp_servers)
         return set()
 
-    from lionagi.providers.openai.codex import CODEX_CLI
+    from lionhub.providers.openai.codex import CODEX_CLI
 
     if CODEX_CLI is None:
         # No binary for the run to start, so none to list with: a bare `codex` would resolve on
@@ -1661,7 +1655,9 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
 
 
 def _codex_home() -> Path:
-    return _codex_home_for_env(None)
+    from lionhub.providers.openai._codex_profile import codex_home_for_env
+
+    return codex_home_for_env(None)
 
 
 def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:
@@ -1671,8 +1667,10 @@ def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:
     and is removed when the process that wrote it exits, so a resumed request
     still naming it would hand codex a profile whose file is gone.
     """
+    from lionhub.providers.openai._codex_profile import is_generated_codex_profile
+
     name = kwargs.get("profile")
-    if _is_generated_codex_profile(name) and not (_codex_home() / f"{name}.config.toml").is_file():
+    if is_generated_codex_profile(name) and not (_codex_home() / f"{name}.config.toml").is_file():
         return name
     return None
 
@@ -1693,8 +1691,10 @@ def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
     """
     import time
 
+    from lionhub.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
+
     cutoff = time.time() - _STALE_PROFILE_MAX_AGE_SECONDS
-    for stale in codex_home.glob(f"{_CODEX_MCP_PROFILE_PREFIX}*.config.toml"):
+    for stale in codex_home.glob(f"{CODEX_MCP_PROFILE_PREFIX}*.config.toml"):
         try:
             if stale.stat().st_mtime < cutoff:
                 stale.unlink(missing_ok=True)
@@ -1714,11 +1714,16 @@ def _write_codex_mcp_secret_profile(
 
     import toml
 
+    from lionhub.providers.openai._codex_profile import (
+        CODEX_MCP_PROFILE_PREFIX,
+        is_generated_codex_profile,
+    )
+
     # Only a caller-named profile is a conflict; a profile of our own
     # generated shape (from a resumed leg's persisted request) is a spent
     # one to replace, not a second profile to refuse.
     existing_profile = kwargs.get("profile")
-    if existing_profile and not _is_generated_codex_profile(existing_profile):
+    if existing_profile and not is_generated_codex_profile(existing_profile):
         raise ConfigurationError(
             "Cannot forward MCP server secret fields for codex: the request "
             f"already has an explicit profile={existing_profile!r}, and codex "
@@ -1726,7 +1731,7 @@ def _write_codex_mcp_secret_profile(
             "explicit profile or drop `env`/`http_headers` from the MCP "
             "server config."
         )
-    from lionagi.providers.openai.codex import _TRIMMED
+    from lionhub.providers.openai.codex import _TRIMMED
 
     for key in kwargs.get("config_overrides") or {}:
         # Read through `str.__str__`, as the codex request reads an override key. Which of
@@ -1743,7 +1748,7 @@ def _write_codex_mcp_secret_profile(
     codex_home = _codex_home()
     codex_home.mkdir(parents=True, exist_ok=True)
     _reap_stale_codex_mcp_profiles(codex_home)
-    profile_name = f"{_CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"
+    profile_name = f"{CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"
     profile_path = codex_home / f"{profile_name}.config.toml"
 
     profile_doc = {"mcp_servers": {name: dict(fields) for name, fields in secret_fields.items()}}

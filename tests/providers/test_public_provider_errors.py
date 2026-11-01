@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers import _provider_errors as legacy
-from lionagi.providers import errors as public
+from lionagi import _provider_errors as legacy
+from lionhub.providers import errors as public
 
 EXPECTED = {
     "ProviderError",

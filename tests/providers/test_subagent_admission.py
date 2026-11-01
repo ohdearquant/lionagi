@@ -21,8 +21,8 @@ import pytest
 from anyio import to_thread
 
 from lionagi.ln._proc import process_create_time
-from lionagi.providers import _subagent_admission as admission
-from lionagi.providers._subagent_admission import (
+from lionagi.service import _subagent_admission as admission
+from lionagi.service._subagent_admission import (
     SubagentAdmissionRefusedError,
     admit_subagent,
     subagent_admission_status,
@@ -177,7 +177,7 @@ async def test_a_full_pool_with_room_beyond_its_ancestors_slots_is_waited_on(hom
 _HOLDER = textwrap.dedent(
     """
     import sys, time, anyio
-    from lionagi.providers._subagent_admission import admit_subagent
+    from lionagi.service._subagent_admission import admit_subagent
 
     async def main():
         await admit_subagent(engine="codex", workload="heavy", environ={"LIONAGI_MAX_SUBAGENTS": "1"})
@@ -335,7 +335,7 @@ async def test_a_smaller_cap_a_holder_read_bounds_an_agent_reading_a_larger_one(
 _RACER = textwrap.dedent(
     """
     import sys, time, anyio
-    from lionagi.providers._subagent_admission import SubagentAdmissionRefusedError, admit_subagent
+    from lionagi.service._subagent_admission import SubagentAdmissionRefusedError, admit_subagent
 
     async def main():
         env = {"LIONAGI_MAX_SUBAGENTS": sys.argv[1], "LIONAGI_MAX_SUBAGENTS_CODEX": sys.argv[2],

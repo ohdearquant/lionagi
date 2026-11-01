@@ -21,19 +21,18 @@ import psutil
 import pytest
 import yaml
 
+from lionagi.cli._kill_service import _BOOT_TIME_TOLERANCE, _terminate_pid
 from lionagi.cli.kill import (
-    _BOOT_TIME_TOLERANCE,
-    _NOT_STOPPED_SIGNALS,
     _REFUSED_SIGNAL_REASONS,
-    _check_pid_identity,
+    NOT_STOPPED_SIGNALS,
     _do_kill,
     _do_kill_all_stale,
-    _kill_one,
-    _list_running_children,
     _persist_cancel,
     _pid_alive,
     _resolve_entity,
-    _terminate_pid,
+    check_pid_identity,
+    kill_one,
+    list_running_children,
 )
 from lionagi.ln._proc import process_create_time as _real_process_create_time
 from lionagi.ln._proc import raw_create_time
@@ -64,11 +63,11 @@ def _mock_runner_probe(monkeypatch: pytest.MonkeyPatch, pid: int, state: str) ->
         assert actual_pid == pid, f"unexpected runner pid: {actual_pid}"
         return state, None
 
-    monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", probe)
+    monkeypatch.setattr("lionagi.cli._kill_service._runner_process_create_time", probe)
 
 
 def test_runner_probe_guard_rejects_unconfigured_pid():
-    from lionagi.cli.kill import _runner_process_create_time
+    from lionagi.cli._kill_service import _runner_process_create_time
 
     with pytest.raises(AssertionError, match="unconfigured runner process probe: 4242"):
         _runner_process_create_time(4242)
@@ -245,6 +244,7 @@ def test_terminate_pid_sigterm_sufficient(monkeypatch: pytest.MonkeyPatch):
         return not bool(calls)
 
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", fake_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", fake_alive)
     monkeypatch.setattr("os.kill", fake_kill)
 
     result = _terminate_pid(42, grace_seconds=1.0)
@@ -261,7 +261,9 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
         kill_calls.append((pid, sig))
 
     # Always report alive during the grace window.
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", fake_kill)
 
     result = _terminate_pid(42, grace_seconds=0.05)  # very short grace
@@ -287,7 +289,9 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     import signal as _signal
 
     kill_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
     # Mock psutil with a process whose cmdline does NOT contain "lionagi".
@@ -302,7 +306,7 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
     # that omits it lets the code under test claim a distinction it never made.
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     result = _terminate_pid(
         42, grace_seconds=0.1, expected_cmd="lionagi", expected_create_time=100.0
@@ -316,7 +320,9 @@ def test_terminate_pid_identity_match_sends_signal(
 ):
     """If cmdline contains expected_cmd, kill proceeds normally."""
     kill_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
     fake_psutil = MagicMock()
@@ -329,7 +335,7 @@ def test_terminate_pid_identity_match_sends_signal(
     # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
     # that omits it lets the code under test claim a distinction it never made.
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     # A durable create_time marker must be present for a cmdline match to
     # authorize the kill (no session id and no create_time is "unverifiable").
@@ -395,7 +401,7 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
 
     try:
         assert _await(
-            lambda: _check_pid_identity(child.pid, "lionagi", expected_session_id=sid) == "ours"
+            lambda: check_pid_identity(child.pid, "lionagi", expected_session_id=sid) == "ours"
         ), "child never came up carrying its session marker"
         # The reader production records with. The public create_time() is
         # adjusted for clock slew on some platforms, so a value read that way
@@ -406,7 +412,7 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
         # arguments changes below, so whatever answer comes back after the
         # SIGTERM differs only because the process died without being reaped.
         assert (
-            _check_pid_identity(
+            check_pid_identity(
                 child.pid,
                 "lionagi",
                 expected_session_id=sid,
@@ -437,7 +443,7 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
         )
         assert _pid_alive(child.pid) is True, "a zombie still answers kill -0"
         assert (
-            _check_pid_identity(
+            check_pid_identity(
                 child.pid,
                 "lionagi",
                 expected_session_id=sid,
@@ -450,7 +456,9 @@ async def test_kill_cancels_session_whose_child_is_an_unreaped_zombie(
             assert pid == child.pid, f"unexpected runner pid: {pid}"
             return _real_process_create_time(pid)
 
-        monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", probe_owned_child)
+        monkeypatch.setattr(
+            "lionagi.cli._kill_service._runner_process_create_time", probe_owned_child
+        )
         rc = await _do_kill(sid, grace_seconds=0.5)
         assert rc == 0, "a run that has already stopped is not a blocked kill"
 
@@ -510,7 +518,9 @@ def _mock_psutil(
 ) -> list[tuple[int, int]]:
     """Install a fake psutil + capture os.kill calls. Returns the calls list."""
     kill_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
     monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
     fake_psutil = MagicMock()
@@ -525,14 +535,14 @@ def _mock_psutil(
     # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
     # that omits it lets the code under test claim a distinction it never made.
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
     if runner_pid is not None:
 
         def probe(pid: int) -> tuple[str, float | None]:
             assert pid == runner_pid, f"unexpected runner pid: {pid}"
             return "found", raw_create_time(fake_psutil.Process(pid))
 
-        monkeypatch.setattr("lionagi.cli.kill._runner_process_create_time", probe)
+        monkeypatch.setattr("lionagi.cli._kill_service._runner_process_create_time", probe)
     return kill_calls
 
 
@@ -561,13 +571,13 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 def test_identity_accepts_dash_m_module(monkeypatch: pytest.MonkeyPatch):
     """``python -m lionagi.cli.main`` is a genuine invocation and is accepted."""
     _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli.main"])
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_li_entrypoint(monkeypatch: pytest.MonkeyPatch):
     """The ``li`` console-script entrypoint is accepted by executable basename."""
     _mock_psutil(monkeypatch, cmdline=["/opt/venv/bin/li", "kill", "abc123"])
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
@@ -576,7 +586,7 @@ def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
         monkeypatch,
         cmdline=["/opt/.venv/bin/python3", "/opt/.venv/bin/li", "play", "abc123"],
     )
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.MonkeyPatch):
@@ -589,7 +599,7 @@ def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.Mo
             "agent",
         ],
     )
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.MonkeyPatch):
@@ -598,7 +608,7 @@ def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.Mon
         monkeypatch,
         cmdline=["/usr/bin/python3", "/usr/local/bin/olia-tool", "run"],
     )
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "not_ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.0) == "not_ours"
 
 
 def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
@@ -608,7 +618,7 @@ def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         environ={"LIONAGI_SESSION_ID": "run-123"},
     )
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") == "ours"
+    assert check_pid_identity(42, "lionagi", expected_session_id="run-123") == "ours"
 
 
 def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):
@@ -622,7 +632,7 @@ def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPat
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         environ={"LIONAGI_SESSION_ID": "other-run"},
     )
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") == "not_ours"
+    assert check_pid_identity(42, "lionagi", expected_session_id="run-123") == "not_ours"
 
 
 def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.MonkeyPatch):
@@ -640,17 +650,15 @@ def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.M
         create_time=500.0,
     )
     # No create_time recorded → cannot prove this run → skip.
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") == "unverifiable"
+    assert check_pid_identity(42, "lionagi", expected_session_id="run-123") == "unverifiable"
     # create_time matches AND cmdline is lionagi → positively identified.
     assert (
-        _check_pid_identity(
-            42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
-        )
+        check_pid_identity(42, "lionagi", expected_session_id="run-123", expected_create_time=500.0)
         == "ours"
     )
     # create_time differs → recycled PID → skip.
     assert (
-        _check_pid_identity(42, "lionagi", expected_session_id="run-123", expected_create_time=1.0)
+        check_pid_identity(42, "lionagi", expected_session_id="run-123", expected_create_time=1.0)
         == "not_ours"
     )
 
@@ -668,9 +676,7 @@ def test_identity_absent_marker_rejects_nonlionagi_cmdline(monkeypatch: pytest.M
         create_time=500.0,
     )
     assert (
-        _check_pid_identity(
-            42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
-        )
+        check_pid_identity(42, "lionagi", expected_session_id="run-123", expected_create_time=500.0)
         == "not_ours"
     )
 
@@ -726,11 +732,11 @@ def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch)
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         create_time=100.0,
     )
-    assert _check_pid_identity(42, "lionagi", expected_create_time=999.0) == "not_ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=999.0) == "not_ours"
     # 0.5s apart → different process → reject (was accepted under the old 2s gate).
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) == "not_ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.5) == "not_ours"
     # within tick-rounding tolerance → accepted.
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) == "ours"
+    assert check_pid_identity(42, "lionagi", expected_create_time=100.05) == "ours"
 
 
 def test_identity_no_durable_marker_refuses_cmdline_only_authorization(
@@ -744,9 +750,9 @@ def test_identity_no_durable_marker_refuses_cmdline_only_authorization(
     same-looking, unrelated process be signalled.
     """
     _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli"])
-    assert _check_pid_identity(42, "lionagi") == "unverifiable"
+    assert check_pid_identity(42, "lionagi") == "unverifiable"
     assert (
-        _check_pid_identity(42, "lionagi", expected_session_id=None, expected_create_time=None)
+        check_pid_identity(42, "lionagi", expected_session_id=None, expected_create_time=None)
         == "unverifiable"
     )
 
@@ -846,7 +852,7 @@ def test_a_launch_record_still_identifies_its_process_across_boot_time_slew(monk
         assert markers["pid"] == child.pid
 
         monkeypatch.setattr(psplatform, "INIT_BOOT_TIME", psplatform.INIT_BOOT_TIME + 10.0)
-        verdict = _check_pid_identity(
+        verdict = check_pid_identity(
             child.pid,
             "lionagi",
             expected_session_id=session_id,
@@ -890,7 +896,7 @@ async def test_kill_one_skips_recycled_pid_via_create_time(
         )
 
         row = db._row_to_dict(await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (sid,)))
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
         assert result["signal"] == "identity_mismatch"
 
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
@@ -1059,7 +1065,7 @@ async def test_kill_one_no_pid(temp_db_path: Path):
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="test")
+        result = await kill_one(db, "session", sid, row, user_reason="test")
         assert result["signal"] == "no_pid"
 
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
@@ -1082,7 +1088,7 @@ async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="test")
+        result = await kill_one(db, "session", sid, row, user_reason="test")
 
         # Checked before the signal, deliberately: without it the row would read "cancelled"
         # while the workflow keeps executing.
@@ -1110,7 +1116,7 @@ async def test_kill_one_refuses_a_mode_marker_that_is_not_a_string(temp_db_path:
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="test")
+        result = await kill_one(db, "session", sid, row, user_reason="test")
 
         assert result["signal"] == "foreign_mode"
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -1127,7 +1133,7 @@ async def test_kill_one_still_cancels_a_local_run_without_a_pid(temp_db_path: Pa
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="test")
+        result = await kill_one(db, "session", sid, row, user_reason="test")
         assert result["signal"] == "no_pid"
 
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -1136,7 +1142,9 @@ async def test_kill_one_still_cancels_a_local_run_without_a_pid(temp_db_path: Pa
 
 async def test_kill_one_with_dead_pid(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Entity with a dead PID: _terminate_pid returns 'already_dead'."""
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "already_dead")
+    monkeypatch.setattr(
+        "lionagi.cli._kill_service._terminate_pid", lambda pid, **kw: "already_dead"
+    )
 
     async with StateDB() as db:
         sid = await _seed_session(db, status="running", pid=999999999)
@@ -1145,7 +1153,7 @@ async def test_kill_one_with_dead_pid(temp_db_path: Path, monkeypatch: pytest.Mo
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
         assert result["signal"] == "already_dead"
 
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
@@ -1157,7 +1165,7 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """When SIGKILL is needed, CANCELLED_FORCE_KILL reason code is written."""
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "sigkill")
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", lambda pid, **kw: "sigkill")
 
     async with StateDB() as db:
         sid = await _seed_session(db, status="running", pid=12345)
@@ -1165,7 +1173,7 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
         assert resolved is not None
         _, _, row = resolved
 
-        await _kill_one(db, "session", sid, row, user_reason="")
+        await kill_one(db, "session", sid, row, user_reason="")
 
         tr = await db.fetch_one(
             "SELECT reason_code FROM status_transitions "
@@ -1179,7 +1187,7 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
 
 
 async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "sigterm")
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", lambda pid, **kw: "sigterm")
     _mock_runner_probe(monkeypatch, 12345, "found")
 
     async with StateDB() as db:
@@ -1195,7 +1203,9 @@ async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.Monkey
 
 
 async def test_do_kill_by_prefix(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "already_dead")
+    monkeypatch.setattr(
+        "lionagi.cli._kill_service._terminate_pid", lambda pid, **kw: "already_dead"
+    )
 
     async with StateDB() as db:
         sid = await _seed_session(db, status="running", pid=None)
@@ -1227,7 +1237,9 @@ async def test_do_kill_all_stale_cancels_dead_pid(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Running session with a dead PID and old start time is cancelled."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_start = time.time() - 7200  # 2h ago
     async with StateDB() as db:
@@ -1246,8 +1258,12 @@ async def test_do_kill_all_stale_skips_live_pid(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Running session with a LIVE, identity-matching PID is not touched."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **kw: "ours"
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1267,8 +1283,12 @@ async def test_do_kill_all_stale_sweeps_reused_pid(
 ):
     """A live PID that no longer identifies as the tracked process (reused
     after the original died) must still be swept, not treated as live."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "not_ours")
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **kw: "not_ours"
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1285,7 +1305,9 @@ async def test_do_kill_all_stale_sweeps_reused_pid(
 
 async def test_do_kill_all_stale_skips_recent(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Session started recently (under threshold) must not be swept."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     recent_start = time.time() - 60  # only 1 min ago
     async with StateDB() as db:
@@ -1304,7 +1326,9 @@ async def test_do_kill_all_stale_dry_run_does_not_write(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """--dry-run must not modify any rows."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1323,7 +1347,9 @@ async def test_do_kill_all_stale_uses_stale_auto_reason(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """CANCELLED_STALE_AUTO reason code is written for stale sweeps."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1347,7 +1373,9 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
     """A recycled pid occupied by an unrelated lionagi-shaped process must be
     swept once the row's own pid_create_time is correlated against it, even
     though the cmdline alone still looks like a genuine lionagi invocation."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_psutil = MagicMock()
     fake_psutil.LINUX = False
@@ -1361,7 +1389,7 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
     # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
     # that omits it lets the code under test claim a distinction it never made.
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1395,7 +1423,9 @@ async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
     different operator follow-up, and only one of them means the process is
     actually gone.
     """
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_psutil = MagicMock()
     fake_psutil.LINUX = False
@@ -1407,7 +1437,7 @@ async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1445,7 +1475,9 @@ async def test_do_kill_all_stale_matching_correlation_skips_live(
 ):
     """When the row's pid_create_time genuinely matches the live process,
     the sweep must still skip it as live (not a regression on the happy path)."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
@@ -1458,7 +1490,7 @@ async def test_do_kill_all_stale_matching_correlation_skips_live(
     # Mirrors psutil: ZombieProcess is a NoSuchProcess subclass, so a double
     # that omits it lets the code under test claim a distinction it never made.
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1494,7 +1526,9 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
     ours" gets the row cancelled while the process keeps running. The verdict
     reports "unverifiable" instead and the sweep skips it.
     """
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_access_denied = type("AccessDenied", (Exception,), {})
     fake_psutil = MagicMock()
@@ -1502,7 +1536,7 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
     fake_psutil.AccessDenied = fake_access_denied
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     fake_psutil.Process.side_effect = fake_access_denied("no access")
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1529,7 +1563,9 @@ async def test_do_kill_all_stale_unverifiable_pid_persists_first_observed_marker
     record when this was first observed; a second sweep must keep that
     timestamp fixed while advancing the count, not restart the clock.
     """
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_access_denied = type("AccessDenied", (Exception,), {})
     fake_psutil = MagicMock()
@@ -1537,7 +1573,7 @@ async def test_do_kill_all_stale_unverifiable_pid_persists_first_observed_marker
     fake_psutil.AccessDenied = fake_access_denied
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     fake_psutil.Process.side_effect = fake_access_denied("no access")
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1580,7 +1616,9 @@ async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_writ
     """
     from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
 
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_access_denied = type("AccessDenied", (Exception,), {})
     fake_psutil = MagicMock()
@@ -1588,7 +1626,7 @@ async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_writ
     fake_psutil.AccessDenied = fake_access_denied
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     fake_psutil.Process.side_effect = fake_access_denied("no access")
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1648,7 +1686,9 @@ async def test_do_kill_all_stale_sweep_write_does_not_clobber_interleaved_flow_w
     """
     from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
 
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_access_denied = type("AccessDenied", (Exception,), {})
     fake_psutil = MagicMock()
@@ -1656,7 +1696,7 @@ async def test_do_kill_all_stale_sweep_write_does_not_clobber_interleaved_flow_w
     fake_psutil.AccessDenied = fake_access_denied
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     fake_psutil.Process.side_effect = fake_access_denied("no access")
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1777,7 +1817,9 @@ async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_swee
     (NoSuchProcess from environ/create_time/cmdline) must classify the row as
     stale and keep the sweep going — not escape and abort the whole sweep with
     later rows unprocessed."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     fake_no_such = type("NoSuchProcess", (Exception,), {})
     fake_psutil = MagicMock()
@@ -1789,7 +1831,7 @@ async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_swee
     fake_proc.cmdline.side_effect = fake_no_such("gone")
     fake_proc.create_time.side_effect = fake_no_such("gone")
     fake_psutil.Process.return_value = fake_proc
-    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli._kill_service.psutil", fake_psutil)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -1816,7 +1858,7 @@ async def test_list_running_children_show_behavior_is_unchanged(temp_db_path: Pa
         running_play_id = await _seed_play(db, show_id, status="running")
         await _seed_play(db, show_id, status="blocked")
 
-        children = await _list_running_children(db, "show", show_id)
+        children = await list_running_children(db, "show", show_id)
 
     assert [(kind, row["id"]) for _, kind, row in children] == [("play", running_play_id)]
 
@@ -1832,6 +1874,7 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
     the play row terminal, leaves the worker session running, and exits
     non-zero so a caller cannot read the run as stopped.
     """
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
     from lionagi.cli._logging import configure_cli_logging
 
@@ -1843,7 +1886,7 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
         signalled_pids.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr(kill_mod, "_terminate_pid", fake_terminate)
+    monkeypatch.setattr(kill_service, "_terminate_pid", fake_terminate)
 
     async with StateDB() as db:
         invocation_id = await _seed_invocation(db, status="running", pid=42002)
@@ -1892,7 +1935,7 @@ async def test_list_running_children_play_returns_worker_chain_deepest_first(
         show_id = await _seed_show(db)
         play_id = await _seed_play(db, show_id, session_id=worker_session_id)
 
-        children = await _list_running_children(db, "play", play_id)
+        children = await list_running_children(db, "play", play_id)
 
     assert [(kind, row["id"]) for _, kind, row in children] == [
         ("invocation", invocation_id),
@@ -1909,6 +1952,7 @@ async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
     bound to the session it matched by name. Both worker pids are signalled,
     both rows go terminal, and the kill exits 0 — it did stop the work.
     """
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
     from lionagi.cli._logging import configure_cli_logging
 
@@ -1920,7 +1964,7 @@ async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
         signalled_pids.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr(kill_mod, "_terminate_pid", fake_terminate)
+    monkeypatch.setattr(kill_service, "_terminate_pid", fake_terminate)
 
     async with StateDB() as db:
         invocation_id = await _seed_invocation(db, status="running", pid=44002)
@@ -1956,11 +2000,12 @@ async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
     A play row carries no PID of its own, so resolving the sessions it started
     is the whole kill rather than an opt-in extra.
     """
+    import lionagi.cli._kill_service as kill_service
     import lionagi.cli.kill as kill_mod
 
     signalled_pids: list[int] = []
     monkeypatch.setattr(
-        kill_mod,
+        kill_service,
         "_terminate_pid",
         lambda pid, **kwargs: (signalled_pids.append(pid), "sigterm")[1],
     )
@@ -2024,7 +2069,7 @@ async def test_do_kill_recursive_show_does_not_reap_play_workers(
         show_id = await _seed_show(db)  # default status="active" -- no mocking
         play_id = await _seed_play(db, show_id)
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", fake_terminate)
 
     capsys.readouterr()
     assert await _do_kill(show_id, recursive=True) == 0
@@ -2136,7 +2181,7 @@ async def test_do_kill_recursive_kills_child_invocations(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """--recursive: a session's linked invocation is also cancelled."""
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "sigterm")
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", lambda pid, **kw: "sigterm")
 
     async with StateDB() as db:
         sid = await _seed_session(db, status="running")
@@ -2307,7 +2352,9 @@ async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
     long-running shows whose child plays/sessions are still alive.
     Both the show and any co-seeded child play must survive unchanged.
     """
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_time = time.time() - 7200  # 2 hours ago
     async with StateDB() as db:
@@ -2349,7 +2396,9 @@ async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
     legitimate long-running plays. The play's status must remain 'running'
     after the sweep regardless of age or PID presence.
     """
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_start = time.time() - 7200  # 2 hours ago
     async with StateDB() as db:
@@ -2385,7 +2434,9 @@ async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
     from lionagi.cli._logging import configure_cli_logging
 
     configure_cli_logging(verbose=False)
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -2420,7 +2471,9 @@ async def test_do_kill_all_stale_sweeps_play_whose_worker_session_is_terminal(
     from lionagi.cli._logging import configure_cli_logging
 
     configure_cli_logging(verbose=False)
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old_start = time.time() - 7200
     async with StateDB() as db:
@@ -2446,9 +2499,12 @@ class TestTerminatePidIdentityRevalidation:
     we meant to kill."""
 
     def _patch(self, monkeypatch, *, alive, identity_calls):
+        import lionagi.cli._kill_service as kill_service
         from lionagi.cli import kill as kill_mod
 
-        monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: alive(pid))
+        patched_pid_alive = lambda pid: alive(pid)
+        monkeypatch.setattr(kill_mod, "_pid_alive", patched_pid_alive)
+        monkeypatch.setattr(kill_service, "_pid_alive", patched_pid_alive)
         monkeypatch.setattr(kill_mod.time, "sleep", lambda s: None)
 
         def _identity(pid, expected_cmd, **kw):
@@ -2457,17 +2513,19 @@ class TestTerminatePidIdentityRevalidation:
             # recycled while we waited out the grace window
             return "ours" if len(identity_calls) == 1 else "not_ours"
 
-        monkeypatch.setattr(kill_mod, "_check_pid_identity", _identity)
+        monkeypatch.setattr(kill_mod, "check_pid_identity", _identity)
+        monkeypatch.setattr(kill_service, "check_pid_identity", _identity)
 
     def test_recycled_pid_is_not_sigkilled(self, monkeypatch):
+        import lionagi.cli._kill_service as kill_service
         from lionagi.cli import kill as kill_mod
 
         sent = []
-        monkeypatch.setattr(kill_mod.os, "kill", lambda pid, sig: sent.append(sig))
+        monkeypatch.setattr(kill_service.os, "kill", lambda pid, sig: sent.append(sig))
         identity_calls: list[int] = []
         self._patch(monkeypatch, alive=lambda pid: True, identity_calls=identity_calls)
 
-        result = kill_mod._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
+        result = kill_service._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
 
         assert result == "identity_mismatch"
         assert len(identity_calls) == 2, "identity must be re-checked before escalating"
@@ -2476,15 +2534,20 @@ class TestTerminatePidIdentityRevalidation:
 
     def test_same_process_still_escalates(self, monkeypatch):
         """The re-check must not block escalation against the real target."""
+        import lionagi.cli._kill_service as kill_service
         from lionagi.cli import kill as kill_mod
 
         sent = []
-        monkeypatch.setattr(kill_mod.os, "kill", lambda pid, sig: sent.append(sig))
-        monkeypatch.setattr(kill_mod, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(kill_service.os, "kill", lambda pid, sig: sent.append(sig))
+        patched_pid_alive = lambda pid: True
+        monkeypatch.setattr(kill_mod, "_pid_alive", patched_pid_alive)
+        monkeypatch.setattr(kill_service, "_pid_alive", patched_pid_alive)
         monkeypatch.setattr(kill_mod.time, "sleep", lambda s: None)
-        monkeypatch.setattr(kill_mod, "_check_pid_identity", lambda *a, **kw: "ours")
+        patched_check_pid_identity = lambda *a, **kw: "ours"
+        monkeypatch.setattr(kill_mod, "check_pid_identity", patched_check_pid_identity)
+        monkeypatch.setattr(kill_service, "check_pid_identity", patched_check_pid_identity)
 
-        result = kill_mod._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
+        result = kill_service._terminate_pid(4242, expected_cmd="li agent", grace_seconds=0.01)
 
         assert result == "sigkill"
         assert sent == [signal.SIGTERM, signal.SIGKILL]
@@ -2532,7 +2595,10 @@ async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(
         first = await _seed_session_with_id(db, "abcde000-0000-0000-0000-000000000001", pid=4242)
         second = await _seed_session_with_id(db, "abcde111-0000-0000-0000-000000000002", pid=4243)
 
-    with patch("lionagi.cli.kill._kill_one") as kill_one:
+    with (
+        patch("lionagi.cli.kill.kill_one") as kill_one,
+        patch("lionagi.cli._kill_service.kill_one"),
+    ):
         with caplog.at_level("ERROR"):
             rc = await _do_kill("abcde")
 
@@ -2555,7 +2621,7 @@ async def test_kill_refuses_a_pid_recorded_on_another_host(
         signalled.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
@@ -2569,11 +2635,11 @@ async def test_kill_refuses_a_pid_recorded_on_another_host(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     assert signalled == [], "no signal may be sent to a pid recorded on another host"
     assert result["signal"] == "host_mismatch"
-    assert result["signal"] in _NOT_STOPPED_SIGNALS
+    assert result["signal"] in NOT_STOPPED_SIGNALS
 
     async with StateDB() as db:
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -2594,7 +2660,7 @@ async def test_kill_refuses_a_pid_recorded_before_this_machine_rebooted(
         signalled.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -2610,7 +2676,7 @@ async def test_kill_refuses_a_pid_recorded_before_this_machine_rebooted(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     assert signalled == []
     assert result["signal"] == "boot_mismatch"
@@ -2630,7 +2696,7 @@ async def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(
         signalled.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
 
     drift = _BOOT_TIME_TOLERANCE / 2
     assert drift > 0, "a zero tolerance would make this test assert nothing"
@@ -2649,7 +2715,7 @@ async def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     assert signalled == [os.getpid()]
     assert result["signal"] == "sigterm"
@@ -2665,7 +2731,7 @@ async def test_kill_still_signals_when_host_and_boot_agree(
         signalled.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
 
     async with StateDB() as db:
         sid = await _seed_session(
@@ -2681,7 +2747,7 @@ async def test_kill_still_signals_when_host_and_boot_agree(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     assert signalled == [os.getpid()]
     assert result["signal"] == "sigterm"
@@ -2701,7 +2767,7 @@ async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
         signalled.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
@@ -2710,7 +2776,7 @@ async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     assert signalled == [4242]
     assert result["signal"] == "sigterm"
@@ -2736,7 +2802,9 @@ async def test_stale_sweep_leaves_another_hosts_rows_alone(
 ):
     """`--all-stale` reads this host's process table, so foreign rows are not its business — the local row beside it is the discriminator that would fail if the sweep stopped working."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old = time.time() - 86400
     async with StateDB() as db:
@@ -2781,7 +2849,7 @@ async def test_kill_refuses_a_runtime_this_cli_does_not_manage(
         signalled.append(pid)
         return "sigterm"
 
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._kill_service._terminate_pid", _fake_terminate)
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
@@ -2798,11 +2866,11 @@ async def test_kill_refuses_a_runtime_this_cli_does_not_manage(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     assert signalled == [], "a run this CLI does not manage must not be signalled"
     assert result["signal"] == "foreign_mode"
-    assert result["signal"] in _NOT_STOPPED_SIGNALS
+    assert result["signal"] in NOT_STOPPED_SIGNALS
 
     async with StateDB() as db:
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -2827,7 +2895,7 @@ async def test_kill_refuses_an_unmanaged_runtime_that_recorded_no_pid(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     async with StateDB() as db:
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -2858,7 +2926,7 @@ async def test_kill_refuses_a_foreign_host_row_that_recorded_no_pid(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     async with StateDB() as db:
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -2872,7 +2940,9 @@ async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
 ):
     """`--all-stale` skipped only on the host marker, so local-looking rows fell through — an in_process or external run has no pid to contest the sweep; the local row is the discriminator."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+    patched_pid_alive = lambda pid: False
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
 
     old = time.time() - 86400
     async with StateDB() as db:
@@ -2940,7 +3010,7 @@ async def test_kill_refuses_a_row_whose_identity_mode_is_an_explicit_null(
         assert resolved is not None
         _, _, row = resolved
 
-        result = await _kill_one(db, "session", sid, row, user_reason="")
+        result = await kill_one(db, "session", sid, row, user_reason="")
 
     async with StateDB() as db:
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
@@ -2976,8 +3046,12 @@ async def test_unverifiable_stale_dry_run_preserves_complete_row(
     existing_markers: bool,
 ):
     """An inspection-only sweep neither starts nor advances durable evidence."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **k: "unverifiable")
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **k: "unverifiable"
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
     query = {
         "session": "SELECT * FROM sessions WHERE id = ?",
         "invocation": "SELECT * FROM invocations WHERE id = ?",
@@ -3006,8 +3080,12 @@ async def test_unverifiable_invocation_preserves_first_observation_across_sweeps
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Invocation evidence persists across sweeps without cancelling the run."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **k: "unverifiable")
+    patched_pid_alive = lambda pid: True
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+    patched_check_pid_identity = lambda *a, **k: "unverifiable"
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", patched_check_pid_identity)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", patched_check_pid_identity)
     async with StateDB() as db:
         invocation_id = await _seed_invocation(db, pid=54321, started_at=time.time() - 7200)
         await db.merge_invocation_node_metadata(invocation_id, {"caller_context": "keep"})
@@ -3032,8 +3110,8 @@ async def test_unverifiable_invocation_preserves_first_observation_across_sweeps
 
 def test_every_refusal_reason_is_a_not_stopped_signal():
     """A refusal writes no cancellation, so callers must never read it as a stop."""
-    assert _NOT_STOPPED_SIGNALS == frozenset(_REFUSED_SIGNAL_REASONS)
-    assert _NOT_STOPPED_SIGNALS == {
+    assert NOT_STOPPED_SIGNALS == frozenset(_REFUSED_SIGNAL_REASONS)
+    assert NOT_STOPPED_SIGNALS == {
         "identity_mismatch",
         "identity_unverifiable",
         "identity_unverifiable_after_sigterm",

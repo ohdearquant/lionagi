@@ -21,7 +21,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.cli._providers import AgentProfile
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 MODEL = "anthropic/claude-haiku-5-5"
 
@@ -873,7 +873,7 @@ async def test_an_lndl_leg_is_told_to_keep_calls_and_the_answer_apart(leg):
 
 @pytest.mark.asyncio
 async def test_an_lndl_turn_that_spends_its_rounds_ends_failed_with_the_cause(leg):
-    from lionagi.lndl import LNDLError
+    from lionhub.lndl import LNDLError
 
     leg.replies = [_text(_LNDL_MISSING), _text(_LNDL_MISSING)]
 
@@ -1430,11 +1430,12 @@ def test_a_refused_response_is_read_in_each_provider_shape(response, expected):
 
 
 class _Reply:
-    """Stands in for an assistant message: an id and the raw provider response."""
+    """Stands in for an assistant message: an id, the raw provider response and its metadata."""
 
     def __init__(self, response):
         self.id = object()
         self.model_response = response
+        self.metadata = {}
 
 
 def _window(monkeypatch, *responses):
@@ -1619,8 +1620,8 @@ async def test_a_refused_turn_with_stop_details_fails_as_a_nonretryable_provider
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
+    from lionagi._provider_errors import ProviderSafetyError
     from lionagi.cli._runs import resolve_run_reason
-    from lionagi.providers._provider_errors import ProviderSafetyError
     from lionagi.state.reasons import RunReasons
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
@@ -1813,7 +1814,7 @@ async def test_profile_effort_persists_and_can_be_overridden_on_resume(leg):
 
 @pytest.mark.asyncio
 async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, monkeypatch):
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     profile = _profile(api_tools="read")
@@ -1865,8 +1866,8 @@ async def test_openai_profile_effort_with_agent_tools_uses_no_native_tools(leg, 
 async def test_unsupported_profile_effort_does_not_break_api_leg(
     leg, monkeypatch, model, provider_class
 ):
-    from lionagi.providers.groq.chat import GroqChatEndpoint
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.groq.chat import GroqChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     monkeypatch.setenv("GROQ_API_KEY", "synthetic-key")
@@ -1929,7 +1930,7 @@ async def test_explicit_cli_effort_on_unsupported_api_is_refused(leg, monkeypatc
 async def test_api_model_suffix_origin_and_profile_precedence(
     leg, monkeypatch, profile_model, profile_effort, positional, expected
 ):
-    from lionagi.providers.openai.chat import OpenaiChatEndpoint
+    from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     profile = _profile(api_tools="read")

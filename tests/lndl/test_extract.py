@@ -3,8 +3,8 @@
 
 import pytest
 
-from lionagi.lndl.extract import extract_lndl_blocks
-from lionagi.lndl.prompt import get_lndl_system_prompt
+from lionhub.lndl.extract import extract_lndl_blocks
+from lionhub.lndl.prompt import get_lndl_system_prompt
 
 
 def test_extract_single_lndl_block():
@@ -121,7 +121,7 @@ def test_extract_lndl_case_insensitive():
 
 
 def test_all_exports():
-    from lionagi.lndl.extract import __all__
+    from lionhub.lndl.extract import __all__
 
     assert "extract_lndl_blocks" in __all__
 

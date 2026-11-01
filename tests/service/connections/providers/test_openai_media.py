@@ -14,29 +14,29 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from lionagi.providers.openai.audio import (
-    OpenaiAudioSpeechEndpoint,
-    OpenaiAudioTranscriptionEndpoint,
-)
-from lionagi.providers.openai.audio import (
-    _replayable_file_factory as audio_file_factory,
-)
-from lionagi.providers.openai.images import (
-    OpenaiImageEditEndpoint,
-)
-from lionagi.providers.openai.images import (
-    _replayable_file_factory as image_file_factory,
-)
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.resilience import APIClientError, RetryConfig
+from lionhub.providers.openai.audio import (
+    OpenaiAudioSpeechEndpoint,
+    OpenaiAudioTranscriptionEndpoint,
+)
+from lionhub.providers.openai.audio import (
+    _replayable_file_factory as audio_file_factory,
+)
+from lionhub.providers.openai.images import (
+    OpenaiImageEditEndpoint,
+)
+from lionhub.providers.openai.images import (
+    _replayable_file_factory as image_file_factory,
+)
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
 
 
 @pytest.mark.asyncio
 async def test_media_upload_builders_return_httpx_data_and_files():
-    from lionagi.providers.groq.audio_transcription import GroqAudioTranscriptionEndpoint
+    from lionhub.providers.groq.audio_transcription import GroqAudioTranscriptionEndpoint
 
     cases = [
         (

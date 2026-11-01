@@ -1,11 +1,11 @@
 import pytest
 
-from lionagi.providers.deepseek.chat import (
+from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionhub.providers.deepseek.chat import (
     DeepseekChatCompletionsRequest,
     DeepseekChatEndpoint,
     normalize_deepseek_usage,
 )
-from lionagi.service.connections.endpoint_config import EndpointConfig
 
 
 def _get_deepseek_config(**overrides) -> EndpointConfig:

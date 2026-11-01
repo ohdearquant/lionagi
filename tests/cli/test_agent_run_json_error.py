@@ -61,7 +61,7 @@ async def test_a_claude_cli_refusal_reaches_run_json_and_the_reason_as_a_quota_e
     """The whole path from the CLI's exit through the model's stream to the run directory: only
     the CLI is a stand-in, printing the refusal and exiting 1 as the real one does."""
     from lionagi import Branch
-    from lionagi.providers.anthropic import claude_code as cc
+    from lionhub.providers.anthropic import claude_code as cc
 
     operate = Branch.operate
     _wire_agent_stubs(monkeypatch, tmp_path)
@@ -565,8 +565,8 @@ async def test_a_teardown_that_failed_before_deciding_records_the_status_it_was_
     failure the store raised leaves the record: any other one left the store able to take a
     write that teardown never reached."""
     from lionagi import Branch
+    from lionagi._provider_errors import ProviderQuotaError
     from lionagi.cli import _runs
-    from lionagi.providers._provider_errors import ProviderQuotaError
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
@@ -747,7 +747,7 @@ async def test_a_leg_that_defers_its_end_to_an_auto_resume_records_no_lost_write
 async def test_a_teardown_that_decided_running_records_no_lost_write(monkeypatch, tmp_path):
     """An engine session linked to the run still runs, so teardown decides `running`, not an end."""
     from lionagi import Branch
-    from lionagi.providers._provider_errors import ProviderError
+    from lionagi._provider_errors import ProviderError
     from lionagi.state.claude_mirror import session_db_id
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)

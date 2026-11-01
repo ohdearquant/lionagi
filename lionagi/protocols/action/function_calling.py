@@ -157,7 +157,9 @@ class FunctionCalling(Event):
         try:
             dict_ = super().to_dict(*args, **kw)
         except (RecursionError, TypeError) as exc:
-            if isinstance(exc, TypeError) and "Recursion limit reached" not in str(exc):
+            if isinstance(exc, TypeError) and (
+                type(exc) is not TypeError or exc.args != ("Recursion limit reached",)
+            ):
                 raise
             # Serialize the rest of the call with its arguments left out.
             without_arguments = self.model_copy(update={"arguments": {}})

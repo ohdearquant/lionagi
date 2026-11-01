@@ -312,6 +312,11 @@ def test_a_submitting_config_the_rewrite_cannot_verify_is_the_submitter_s_fault(
 class _FakeProc:
     pid = 4242
 
+    def wait(self, timeout: float | None = None) -> int:
+        # submit() hands the child to a thread that waits on it; this one has
+        # already exited.
+        return 0
+
 
 @pytest.fixture
 def submit_sandbox(monkeypatch, tmp_path):

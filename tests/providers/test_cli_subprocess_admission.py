@@ -21,12 +21,12 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.providers import _subagent_admission as admission
-from lionagi.providers._cli_subprocess import ndjson_from_cli
-from lionagi.providers._subagent_admission import (
+from lionagi.service import _subagent_admission as admission
+from lionagi.service._subagent_admission import (
     SubagentAdmissionRefusedError,
     subagent_admission_status,
 )
+from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 # Emits one object, then blocks until killed.
 _SLEEPER = (
@@ -103,7 +103,7 @@ async def test_a_child_that_finishes_gives_its_slot_to_the_next_spawn(capped):
 
 @pytest.mark.asyncio
 async def test_a_spawn_that_fails_gives_its_slot_back(capped, monkeypatch):
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     spawns = []
 
@@ -123,7 +123,7 @@ async def test_a_spawn_that_fails_gives_its_slot_back(capped, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_input_that_cannot_be_encoded_is_refused_before_admission(capped, monkeypatch):
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     marker = capped / "started"
     admissions = []
@@ -153,7 +153,7 @@ async def test_a_cap_set_and_an_unreadable_start_time_refuses_and_frees_the_slot
 ):
     """A child whose start time cannot be read is not recorded: its slot would stop counting
     the moment this holder exits, so the spawn is refused and the child is ended."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 0.05)
     marker = capped / "started"
@@ -198,7 +198,7 @@ async def test_a_start_time_that_reads_only_after_the_launcher_execs_is_admitted
 ):
     """A launcher script's marker reads as absent until its interpreter execs; a spawn whose
     first reads come back empty is admitted once a later read binds the child."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     observations = []
     real_observe = _cli_subprocess.observe_spawned
@@ -232,7 +232,7 @@ async def test_a_child_that_exits_before_its_start_time_reads_is_refused_at_once
 ):
     """Re-reading stops when the child is gone, so a child that exits at start is refused
     without waiting out the observation budget."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
     real_observe = _cli_subprocess.observe_spawned
@@ -278,7 +278,7 @@ async def test_a_caller_cancelled_while_the_start_time_is_reread_keeps_the_slot_
 ):
     """The caller unwinds at once; the spawn keeps re-reading, then refuses and ends the
     child, and the slot is held until the child is gone."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 1.5)
     observations, ended, rereading = [], [], asyncio.Event()
@@ -307,7 +307,7 @@ async def test_a_spawn_cancelled_while_the_start_time_is_reread_ends_the_child_a
 ):
     """Cancelling the spawn itself inside the re-read window, as a loop shutdown does, ends
     the child before the slot is given back."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     monkeypatch.setattr(_cli_subprocess, "_SPAWN_OBSERVATION_BUDGET", 60.0)
     observations, ended, rereading = [], [], asyncio.Event()
@@ -355,7 +355,7 @@ async def test_a_launcher_script_run_through_usr_bin_env_is_admitted(capped, tmp
 async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(capped, monkeypatch):
     """A slot that cannot name its child would read free once this holder exited while the
     child ran, so the spawn is refused, the child's group is ended and the slot is freed."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_write = admission._Slot.write
     writes = []
@@ -396,7 +396,7 @@ async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(ca
 async def test_a_slot_written_in_part_refuses_and_ends_the_child(capped, monkeypatch):
     """A record written only in part may not parse, or may run into an older record and
     name another child, so a short write is refused like a failed one."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_pwrite = os.pwrite
     lengths = []
@@ -433,7 +433,7 @@ async def test_a_slot_written_in_part_keeps_its_lock_when_the_group_end_raises(
 ):
     """A record written only in part would not hold the slot once its holder exited, so
     when the child's group cannot be ended the lock is kept until this process exits."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_admit = _cli_subprocess.admit_subagent
     real_pwrite = os.pwrite
@@ -512,7 +512,7 @@ async def test_a_record_written_over_a_longer_stale_one_names_this_child(capped)
 @pytest.mark.asyncio
 async def test_every_slot_stays_held_until_the_childs_group_is_ended(capped, monkeypatch):
     """Each pool's slot is released after ``end_child_group`` returns, never before it runs."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     monkeypatch.setenv("LIONAGI_MAX_SUBAGENTS_CODEX", "1")
     real_end_group = _cli_subprocess.end_child_group
@@ -541,7 +541,7 @@ async def test_a_cancel_during_the_spawn_keeps_the_slot_until_the_late_child_is_
 ):
     """A cancellation that lands while the creation call still runs unwinds the caller
     before the child arrives. The slot stays held until that child's group is ended."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_create = asyncio.create_subprocess_exec
     real_end = _cli_subprocess._end_group_with_evidence
@@ -603,7 +603,7 @@ def _cancel_the_caller_as_the_spawn_finishes(monkeypatch, first, pids):
 async def test_a_cancel_as_the_spawn_finishes_ends_the_child_before_the_slot_frees(
     capped, monkeypatch
 ):
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_end = _cli_subprocess._end_group_with_evidence
     first: list[asyncio.Future] = []
@@ -637,7 +637,7 @@ async def test_an_abandoned_child_whose_group_end_raises_keeps_its_slot(
 ):
     """Nothing shows that group has ended, so its slot stays held while the child runs,
     with or without this process; the caller still sees its own cancellation."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_admit = _cli_subprocess.admit_subagent
     first: list[asyncio.Future] = []
@@ -703,7 +703,7 @@ async def test_a_cancel_during_the_spawn_keeps_the_slot_for_the_child_when_its_e
 ):
     """The late child is named in the slot before its group is ended, so a failed end
     leaves the slot held while that child runs, even once its holder has exited."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_admit = _cli_subprocess.admit_subagent
     real_create = asyncio.create_subprocess_exec
@@ -762,7 +762,7 @@ async def test_a_group_end_that_raises_keeps_the_slot_while_the_child_runs(
 ):
     """At the stream's end and when the spawn observer fails, a group end that raises
     leaves the holder lock intact even after the direct child has gone."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     pids = []
     leases = []
@@ -813,7 +813,7 @@ async def test_an_abandoned_child_without_a_start_time_keeps_the_lock_when_its_e
 ):
     """A record without the child's start time would not hold the slot, so the lock is
     kept until this process exits."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_admit = _cli_subprocess.admit_subagent
     real_observe = _cli_subprocess.observe_spawned
@@ -864,7 +864,7 @@ async def test_a_cap_set_and_a_second_start_time_read_succeeds_runs_and_records_
 ):
     """One unreadable observation is retried before the spawn is refused; the second read
     records the start time the slot needs to outlive this holder."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_observe = _cli_subprocess.observe_spawned
     observations = []
@@ -892,7 +892,7 @@ async def test_a_cap_set_and_a_second_start_time_read_succeeds_runs_and_records_
 async def test_with_no_cap_an_unreadable_start_time_still_runs(monkeypatch):
     """Nothing counts a slot when no pool is capped, so there is no record to keep and the
     child runs as it did before admission existed."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     real_observe = _cli_subprocess.observe_spawned
     observations = []
@@ -917,7 +917,7 @@ async def test_with_no_cap_an_abandoned_child_whose_group_end_raises_logs_no_slo
     monkeypatch, caplog
 ):
     """With no cap the lease holds no slot, so the logged failure claims none is kept."""
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     for name in ("LIONAGI_MAX_SUBAGENTS", "LIONAGI_MAX_SUBAGENTS_HEAVY"):
         monkeypatch.delenv(name, raising=False)

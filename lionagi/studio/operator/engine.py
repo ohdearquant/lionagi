@@ -402,7 +402,7 @@ class BranchOperatorEngine:
         # that may have moved since.
         provider, _ = resolve_operator_provider_model(turn)
         if provider == "claude_code":
-            from lionagi.providers.anthropic.claude_code import (
+            from lionhub.providers.anthropic.claude_code import (
                 claude_cli_search_locations,
                 resolve_claude_cli,
             )
@@ -676,7 +676,7 @@ def _apply_operator_effort(
         model_kwargs[kwarg] = effort
         return model_name
     if provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
-        from lionagi.providers.google.gemini_code import resolve_agy_model
+        from lionhub.providers.google.gemini_code import resolve_agy_model
 
         return resolve_agy_model(model_name, effort=effort)
     return model_name

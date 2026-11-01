@@ -111,7 +111,7 @@ def test_documented_provider_registers_when_its_endpoint_module_is_imported(
     directory.mkdir()
     (directory / "__init__.py").write_text("", encoding="utf-8")
     (directory / "_config.py").write_text(
-        config.replace("lionagi.providers.myprovider", package), encoding="utf-8"
+        config.replace("lionhub.providers.myprovider", package), encoding="utf-8"
     )
     (directory / "chat.py").write_text(endpoint, encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -136,7 +136,7 @@ def test_documented_provider_registers_when_its_endpoint_module_is_imported(
         from lionagi.service.connections.registry import _import_provider_module
 
         namespace = {"_import_provider_module": _import_provider_module}
-        exec(bootstrap.replace("lionagi.providers.myprovider", package), namespace)
+        exec(bootstrap.replace("lionhub.providers.myprovider", package), namespace)
         namespace["_import_all_providers"]()
         assert len(registry.list_providers()) == 1
     finally:

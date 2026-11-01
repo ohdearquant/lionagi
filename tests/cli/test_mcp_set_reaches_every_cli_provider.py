@@ -54,7 +54,7 @@ def codex_launch(monkeypatch, tmp_path):
     import socket
     import subprocess
 
-    from lionagi.providers.openai import _codex_project_layers, codex
+    from lionhub.providers.openai import _codex_project_layers, codex
 
     async def launch(request, *, argv: bool = False):
         """Render the launch command; the `-c` values, or the whole argv when `argv`."""
@@ -149,7 +149,7 @@ def test_an_empty_exclusive_set_with_a_named_profile_is_refused(codex_home):
     """A profile is user config too, and the by-name disables read config.toml alone, so a
     server the profile's file or a project layer declares would load. The empty set still
     takes the flag, and the codex request refuses the profile under it."""
-    from lionagi.providers.openai.codex import CodexCodeRequest, _plain_request
+    from lionhub.providers.openai.codex import CodexCodeRequest, _plain_request
 
     codex_home.write_config({"khive": {"command": "kkernel"}})
     kwargs: dict = {"profile": "work"}
@@ -213,7 +213,7 @@ async def test_an_allowlist_naming_a_server_only_codex_declares_keeps_that_serve
 
     assert "ignore_user_config" not in kwargs
     _assert_factory_selection(kwargs, ["kept"])
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     config = await codex_launch(CodexCodeRequest(prompt="hi", repo=tmp_path, **kwargs))
     assert config == ["mcp_servers.other.enabled=false"]
@@ -237,7 +237,7 @@ async def test_an_escaped_mcp_servers_key_declares_the_servers_it_spells(
     declares servers as `mcp_servers` does. Read with the escape left in, the kept server
     would be missing and the run would drop the user config with it, and a server declared
     that way beside a plain one would load with no disable."""
-    import lionagi.providers.openai.codex as codex_mod
+    import lionhub.providers.openai.codex as codex_mod
 
     # No codex binary to list the servers with, so the names can only come from the file.
     monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
@@ -250,7 +250,7 @@ async def test_an_escaped_mcp_servers_key_declares_the_servers_it_spells(
 
     assert "ignore_user_config" not in kwargs
     _assert_factory_selection(kwargs, ["kept"])
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     argv_config = await codex_launch(CodexCodeRequest(prompt="hi", repo=tmp_path, **kwargs))
     assert argv_config == ["mcp_servers.leak.enabled=false"]
@@ -340,7 +340,7 @@ def test_a_string_flag_is_read_as_the_codex_request_reads_it(codex_home):
     refused, and an empty set takes the flag. A value the field refuses is left for it."""
     from pydantic import ValidationError
 
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     codex_home.write_config({"kept": {"command": "kept-mcp"}})
 
@@ -370,7 +370,7 @@ def test_a_flag_value_the_request_refuses_is_not_replaced_on_an_empty_set(codex_
     leaves it for the request to refuse rather than replacing it with the flag."""
     from pydantic import ValidationError
 
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     codex_home.write_config({"kept": {"command": "kept-mcp"}})
     kwargs: dict = {"ignore_user_config": value}
@@ -608,7 +608,7 @@ async def test_an_allowlist_naming_no_server_codex_declares_disables_declared_se
     codex_home, codex_launch, tmp_path
 ):
     """An undeclared allowed name keeps user config and disables its declared servers."""
-    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionhub.providers.openai.codex import CodexCodeRequest
 
     codex_home.write_config({"kept": {"command": "kept-mcp"}, "other": {"command": "other-mcp"}})
     kwargs: dict = {}
@@ -691,7 +691,9 @@ def test_an_exclusive_set_leaves_no_emptied_override_map_behind(codex_home):
 def test_an_exclusive_set_drops_a_generated_profile_and_keeps_a_named_one(codex_home):
     """A generated profile holds nothing but a previous run's servers; a profile
     the caller named is theirs."""
-    from lionagi.agent.factory import _CODEX_MCP_PROFILE_PREFIX
+    from lionhub.providers.openai._codex_profile import (
+        CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
+    )
 
     codex_home.write_config({})
     generated = {"profile": _CODEX_MCP_PROFILE_PREFIX + "0" * 32}
@@ -857,7 +859,7 @@ def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(cod
 @pytest.mark.asyncio
 async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
     from lionagi.cli._providers import build_chat_model
-    from lionagi.providers.openai.codex import _plain_request
+    from lionhub.providers.openai.codex import _plain_request
 
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
     model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers={})
@@ -1753,7 +1755,7 @@ async def test_a_codex_worker_is_spawned_with_the_runs_server_set(flow_run, code
     codex_home.write_config({})
     _env, branch = await _codex_worker(flow_run, SERVERS)
 
-    from lionagi.providers.openai.codex import _plain_request
+    from lionhub.providers.openai.codex import _plain_request
 
     request = (await branch.chat_model.create_event(prompt="hi")).payload["request"]
     args = request._cmd_args(_plain_request(request), request.cwd())

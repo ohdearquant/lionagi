@@ -1,6 +1,7 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
-- **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2)
+- **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
+  (2026-10-31) is Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) has landed for its four packages: #3752 adds the
   `lionhub` root and the `lionagi._moved.MOVED` table and its finder, and moves
@@ -16,7 +17,78 @@
   decision that ADR-0125 D4 requires before a public import path is removed; amends ADR-0001
   (Amendment 2: the new prefixes of moved packages join the class-path allow-list); updates
   ADR-0120's citations of the dispatch outbox to its new file; ADR-0138 records the Studio backend's
-  form (D7, Amendment 2)
+  form (D7, Amendment 2); Amendment 3 (Proposed) amends D6 row 3 and replaces Amendment 1 A5's
+  providers-last order, with ADR-0140 as the providers discovery contract
+
+## Amendment 3 (2026-10-31): providers move first, with finite interim imports
+
+This amendment replaces Amendment 1 A5's providers-last order and amends D6 row 3 explicitly. It preserves D1's single distribution through 1.x, D3's one table and finder, D4's removal in 2.0.0, and D5's identity, persisted-name and logging requirements. The maintainer requires existing 0.x callers to continue working unchanged throughout 1.x, without a new install or registration step.
+
+D6 row 3 currently requires: "Both endpoint registration (`lionagi/service/connections/registry.py`) and token-budget lookup (`lionagi/service/token_budget.py`) use that contract instead of the module paths they list today." This amendment relaxes that prerequisite: the discovery contract lands after the package move and before 1.0. Between those changes, both files retain their module lists with their 46 provider paths rewritten to the new root, as the listed interim edges in C2. This puts the rename-only move with no behavior change first and the discovery behavior change second. The move carries an exact inventory test; a release gate prevents 1.0 while any of those 46 interim edges remains.
+
+### C1. Prerequisites and the new order
+
+Before the providers package moves:
+
+1. Relocate provider errors to `lionagi._provider_errors`, secret resolution to `lionagi.service.accounts._secret_resolution`, subagent admission to `lionagi.service._subagent_admission`, and the shared chat schema to `lionagi.service.connections._chat_schemas`, one change each. Preserve behavior and old names with specific D3 rows, using the first release that contains each move and removal in 2.0.0. Tests must support module rows before those rows land. The later broad providers row must not override these specific destinations. `_codex_profile` stays with the providers. For moves, D3's finder replaces A5's on-disk re-exports and returns the same objects, verified by identity tests.
+2. Accept ADR-0140 before dependent discovery implementation merges. Implement its catalog, metadata, failure and collision behavior after the package move and before 1.0. The move only rewrites the existing module lists; the subsequent contract change replaces both lists with the shared catalog.
+3. Preserve A5 item 1's provider-facing settings seam: secret resolution uses the existing `lionagi._settings` reader with `include_project=False` and the existing refusal/failure behavior. The tool interface and gate-contract work may wait until the tools/agent/casts move. No provider may gain an import of moved agent settings.
+4. Make the four module-scope `_codex_profile` imports in `agent/factory.py` lazy at their actual uses in a separate preparatory change. The other provider references listed for that file in C2 are already lazy. C2's inventory test lands in the package move, not before it; ADR-0140's contract failure checks land with the subsequent contract implementation.
+
+The package and contract changes are then:
+
+1. Move `lionagi/providers` completely to `lionhub/src/lionhub/providers` with one broad compatibility row. Keep the implementation diff to renames, import rewrites, path docstrings, pinned logger names and the 46 module-string root rewrites, without behavior changes.
+2. Implement ADR-0140 D1–D5 after that move and before 1.0. Write `lionhub.providers.manifest` directly at its final path, add `_provider_compat` against it, and delete the 46 interim edges.
+3. Move `tools`, `agent` and `casts` under A5 item 1's coupled-move rule, including its separate target rows, root exports, installed-wheel data and old-pickle guarantees. Their tool interface, gate/settings and casts request-contract seams remain prerequisites, as does removal of the CLI catalog from core. This amendment does not require those unrelated seams before providers.
+4. Move `hooks.external` to `lionhub.hooks.external`, after agent, under A1 and A5.
+5. Move LNDL and its Middle under A3, after the fence-extraction seam. Its root-export compatibility exception is unchanged.
+
+The plugin runtime and session hook bus stay in core under A1. Amendment 2's retained Studio application is unchanged. The CLI is still under `lionagi` at the development head and remains there at the providers move; its imports become hub-to-hub only when the CLI moves. The providers move does not wait for that CLI move; the CLI's own prerequisites remain in force.
+
+### C2. Exact interim imports and their removal
+
+D2's statement that no core code initiates a hub import is amended for the paths below through their specified removal steps. These are dependency edges under ADR-0122 D1, including lazy references and the CLI module-top import. They are not permission for any other file in these packages to name the hub.
+
+In the move change, add `test_provider_interim_edge_inventory` and rename D2's package-set test to `test_only_packages_with_listed_interim_edges_name_lionhub`. D2 now means "packages that hold a listed interim edge", since `operations` and `service` never move. The file-and-target inventory is the authority for `lionhub.providers.*` targets, the interim edges this move creates, and it lists the existing CLI and Studio provider edges as rows like every other core consumer; the package set is its projection. The wave-1 hub edges that `cli` and `studio` already hold (`lionhub.orchestration*`, `lionhub.serve*`) are not inventory rows: only the package-set test counts them, and they leave with the CLI move and with the application extraction under Amendment 2; `_moved.py`'s D3 rows are data to both tests, as they are to the package-set test today. Both tests include ordinary, relative, string, type-only and lazy references and reject new or stale exceptions. Paths below are relative to `lionagi/`; the two target lists are frozen from the pre-move source and only their root changes.
+
+| Core consumer | Allowed target and purpose after the move | Change ending the exception |
+|---|---|---|
+| `service/connections/registry.py` | The 34 `lionhub.providers.*` strings in `_import_all_providers`' `_modules` list; the separate core scripted-provider entry is not one of them | Delete the list and its 34 edges in the contract change, before 1.0. |
+| `service/token_budget.py` | The 12 `lionhub.providers.*` values in `_PROVIDER_MODULES` | Delete the table and its 12 edges in the contract change, before 1.0. |
+| `agent/factory.py` | Existing references to `lionhub.providers.openai._codex_profile`, `lionhub.providers.openai.codex`, and `lionhub.providers._cli_subprocess`; all lazy after the preparatory change | Remove these core edges and `agent` from the set in the tools/agent/casts move. References then belong to the hub. The shared schema reference already points down into core. |
+| `operations/run/run.py` | Existing lazy `lionhub.providers.google.gemini_code` request/print-timeout behavior | Before 2.0, replace the import with an endpoint-supplied request-preparation port; remove `operations` from the set in that change. The operation stays in core. |
+| `service/accounts/_router.py` | Existing lazy `lionhub.providers.anthropic._prompt_cache` helpers | Before 2.0, replace both imports with adapter-supplied cache evidence and server-tool projection through a core-owned port. |
+| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. |
+| `cli/_providers.py:45` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
+| `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152, and the lazy `lionhub.lndl.middle` reference at line 1026 that the LNDL move adds for the API leg's LNDL loop (Amendment 1 A3; `test_lndl_interim_edge_inventory`) | Remove these core edges in the CLI move; only then are they hub-to-hub. |
+| `cli/orchestrate/_orchestration.py` | Existing lazy `lionhub.providers.openai._codex_profile` reference at line 852 | Remove this core edge in the CLI move; only then is it hub-to-hub. |
+| `studio/operator/engine.py` | Existing lazy `lionhub.providers.anthropic.claude_code` (line 405) and `lionhub.providers.google.gemini_code` (line 679) references | Remove these edges, and `studio` from the set, with the application extraction under Amendment 2 at 2.0. |
+| `service/connections/_provider_compat.py` (added in the contract change, absent at the move) | One `lionhub.providers.manifest` source, used by registry and token budgeting | Delete at 2.0; roots pass composed catalogs. |
+
+This amendment also relaxes D6 row 3's "a seam in the core for each, first" for `operations/run/run.py`, `service/accounts/_router.py` and `service/providers.py`. Their seams are deferred to before 2.0 so the behavior-preserving package move does not depend on request and policy redesign. These three existing implementation edges are temporary exceptions, not completed seams. Their replacement must preserve timeout precedence, cache-certificate and account-budget behavior, child-environment selection, explicit effort overrides and unknown-model handling. It may not copy these provider implementations or model catalogs into core. The 2.0 release guard requires none of these imports or automatic lookup paths to remain, plus behavior tests using injected policies.
+
+At the providers-move head, `LIONHUB_USERS_UNDER_LIONAGI` is exactly `{agent, cli, operations, service, studio}`. The inventory test lands at that head and requires this exact set, with no alternative based on a presumed earlier CLI move.
+
+The CLI and agent members leave on their respective moves. Operations leaves when its request-preparation import is removed. Service remains while any listed source file names the hub: the two module lists leave in the contract change before 1.0, which adds the automatic manifest source through 1.x. Service leaves when its final edge is removed at 2.0. Studio remains through 1.x and leaves with the application extraction under Amendment 2. At 2.0 the set is empty. Earlier deletion of an edge shrinks the file inventory immediately; it never leaves a stale exception.
+
+### C3. Compatibility, failure and change evidence
+
+ADR-0140 defines discovery, lazy selection, key ownership and duplicates, contract versions, missing/failed provider behavior and context-window metadata under the amended D6 row 3 timing. This amendment adopts the following reading of D6 row 3's "shown with `lionhub` present and absent": present means the unchanged call resolves; absent means it reports at the public boundary, never a silent fallback. A fresh installed process resolves the unchanged provider constructor with the hub present and no earlier hub import. With the hub physically absent in 1.x, the same constructor reports an incomplete bundled installation at its public boundary. At 2.0 the boundary distinguishes an absent `lionhub` distribution from an installed hub without a composed provider catalog, as specified in ADR-0140 D4. Explicitly injected adapters remain usable without the hub.
+
+The interim module lists, subsequent automatic loader and legacy registry publication are explicit temporary exceptions to ADR-0122's layer and composition rules. In 2.0 roots select and validate provider fragments and pass immutable catalogs or ports; importing or installing the hub does not activate it. ADR-0088 D8 entry points remain deferred.
+
+D6's six per-change items apply with these amendments:
+
+1. Keep package relocation to renames, import rewrites, path docstrings and pinned logger names. The 46 module-string root rewrites belong to the move. Discovery, declaration and failure changes land separately afterward and before 1.0; the three deferred policy seams land before 2.0. The move carries fresh-process checks of every existing `lionagi.providers.*` import and every built-in `iModel(provider=...)` key with supported prerequisites and no earlier hub import.
+2. Include compatibility rows and CHANGELOG lines for the four lower modules and provider package, with actual deprecation release numbers and removal in 2.0.0.
+3. Rewrite repository callers and configuration/type strings to canonical paths, including `LazyType` strings. The finder is for external old references, not internal discovery.
+4. Report the import graph at the change head and exact package and file exception sets. For this move, the enumerated C2 consumers replace the original assertion that no core consumer imports the moved package. No other core consumer is authorized.
+5. Report D5's persisted-data population searched, old-path counts, and applicable class tests or AST evidence. A source census does not establish that external stored data contains no old path. Preserve old pickle and patch identity and the longer-prefix core destinations.
+6. Update moved-file citations that executable checks depend on; historical records retain their historical paths.
+
+The four lower-module homes do not authorize provider-specific core growth. The existing shared schema carries model-dependent validation and a warning filter; retaining its behavior during relocation is a bounded compatibility choice, not proof of a pure contract. Full ADR-0122 compliance requires separate cleanup with parity evidence. Admission and secret resolution remain explicit services and must not run on import. Importing these modules by their canonical core paths must not load the hub; their old paths load the moved parent providers packages after the broad row lands.
+
+**MAY:** retain only C2's listed interim edges through their removal steps and perform the four lower-module moves. **MAY NOT:** enlarge the exemption to other consumers, hide references in computed strings, use the finder for internal provider discovery, change logger names, or silently substitute a generic endpoint when a declared provider fails. **Verify by:** exact package and file inventories at every head, the 1.0 gate deleting all 46 interim edges, ADR-0140's fresh-wheel matrix, D3–D5 compatibility checks, and the 2.0 guard requiring no automatic hub path or compatibility row.
 
 ## Amendment 2 (2026-10-25): the Studio boundary is set in wave 2 and the application extracted at 2.0
 
@@ -177,7 +249,7 @@ belongs to the CLI's catalog and leaves the core with it (A4, step 3).
 - **The LNDL Middle.** `operations/lndl_middle/lndl_middle.py:16` imports 15 LNDL names. It is LNDL's opt-in
   Middle, so it moves with the language to `lionhub.lndl.middle`, with a table row for
   `lionagi.operations.lndl_middle`.
-- **Root exports.** `lionagi/__init__.py:97-105` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
+- **Root exports.** `lionagi/__init__.py:86-94` exports nine LNDL names lazily through `_LAZY_MAP`. They stay
   lazy compatibility names until 2.0, and their entries keep naming the old module paths, which the table
   serves. This is a stated exception, limited to these nine entries, to D4's rule that no repository module
   imports an old name and to D2's rule that the core initiates no hub import; it adds no hub name outside the
@@ -704,7 +776,7 @@ Exact semantics:
 | 1 | `orchestration`, `engines`, `dispatch`, `work` (7,801 lines) | `cli`, `studio` and each other | none: the core never imports them |
 | 1, held | `integrations` (548) | nothing | open outside contributions that edit it land or close first, so their authors do not rebase across a move |
 | 2 | `cli`, `mcp`, `studio` | each other; `state` imports `cli` in 2 files | the `cli`/`studio` cycle broken (Studio imports private `lionagi.cli` modules 32 times) and the `state`-to-`cli` inversion removed; the Studio backend goes to `apps/studio/backend`, outside the wheel; the daemon and its scheduler go into `lionhub` |
-| 3 | `providers`, `tools`, `agent`, `casts`, `hooks`, `plugins`, `lndl` | the core: `providers` by `service` (3 files) and `operations` (2); `tools`, `agent`, `casts` by `session` (1 each); `hooks` by `operations` (4) and `session` (2); `plugins` by `service` (1) and `protocols` (1); `lndl` by `operations` (2) | a seam in the core for each, first. For providers, the record before the move specifies discovery, key ownership and duplicates, contract versions, lazy selection, behaviour when a provider is missing or fails, and context-window metadata. Both endpoint registration (`lionagi/service/connections/registry.py`) and token-budget lookup (`lionagi/service/token_budget.py`) use that contract instead of the module paths they list today. A fresh process resolves today's `iModel(provider=...)` call throughout 1.x with no earlier `lionhub` import and no new registration step for the caller, shown with `lionhub` present and absent; a core-only 2.0 install reports an absent provider at the public boundary rather than falling back silently |
+| 3 | `providers`, `tools`, `agent`, `casts`, `hooks`, `plugins`, `lndl` | the core: `providers` by `service` (3 files) and `operations` (2); `tools`, `agent`, `casts` by `session` (1 each); `hooks` by `operations` (4) and `session` (2); `plugins` by `service` (1) and `protocols` (1); `lndl` by `operations` (2) | a seam in the core for each, first. For providers (amended by Amendment 3), the record before the move specifies discovery, key ownership and duplicates, contract versions, lazy selection, behaviour when a provider is missing or fails, and context-window metadata. Both endpoint registration (`lionagi/service/connections/registry.py`) and token-budget lookup (`lionagi/service/token_budget.py`) use that contract instead of the module paths they list today. A fresh process resolves today's `iModel(provider=...)` call throughout 1.x with no earlier `lionhub` import and no new registration step for the caller, shown with `lionhub` present and absent; a core-only 2.0 install reports an absent provider at the public boundary rather than falling back silently |
 
 Wave 1's destinations are `lionhub.orchestration`, `lionhub.orchestration.engines`,
 `lionhub.orchestration.dispatch` and `lionhub.orchestration.work`.

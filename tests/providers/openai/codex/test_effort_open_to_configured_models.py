@@ -20,11 +20,11 @@ from __future__ import annotations
 import pytest
 import toml
 
-from lionagi.providers.openai.codex import (
+from lionagi.service.providers import EFFORT_LEVELS
+from lionhub.providers.openai.codex import (
     CODEX_REASONING_EFFORTS,
     CodexCodeRequest,
 )
-from lionagi.service.providers import EFFORT_LEVELS
 
 # A word deliberately outside lionagi's vocabulary, standing in for whatever a
 # model configured behind codex calls its own tiers.

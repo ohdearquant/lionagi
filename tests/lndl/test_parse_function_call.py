@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Additional coverage for lionagi.lndl._parse_function_call: nested arg types,
+"""Additional coverage for lionhub.lndl._parse_function_call: nested arg types,
 error paths, and batch-parse edge cases. Basic call/service/qualified_name
 behavior is covered in test_parser_assembler.py::TestParseFunctionCall."""
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.lndl._parse_function_call import (
+from lionhub.lndl._parse_function_call import (
     parse_batch_function_calls,
     parse_function_call,
 )

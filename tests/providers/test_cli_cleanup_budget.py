@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.providers import _cli_subprocess as cli
+from lionhub.providers import _cli_subprocess as cli
 
 
 def _forbid(*_args, **_kwargs):

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from pydantic import JsonValue
 
+from lionagi._provider_errors import WorkerLivenessError, classify_provider_error
 from lionagi.ln import acreate_path, json_dumps
 from lionagi.ln.concurrency import current_time, fail_after, run_sync
 from lionagi.models.note import Note
@@ -24,8 +25,7 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
-from lionagi.providers._subagent_admission import _on_subagent_admission
+from lionagi.service._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
@@ -207,7 +207,7 @@ async def _stream_with_liveness(
                 is_liveness_boundary, wait_for = first_output_bound(current_time())
 
                 def _time_from_admission(admitted: bool) -> None:
-                    # Called by the CLI spawn (lionagi.providers._subagent_admission, through
+                    # Called by the CLI spawn (lionagi.service._subagent_admission, through
                     # the context set below) when a worker starts waiting for a machine-wide
                     # slot and when it is admitted. Only the caller's own deadline runs during
                     # the wait; the window for the first output opens at admission, and so does
@@ -575,7 +575,7 @@ async def run(
 
         request_model = getattr(endpoint, "_request_model", None)
         if request_model is not None:
-            from lionagi.providers.google.gemini_code import (
+            from lionhub.providers.google.gemini_code import (
                 GeminiCodeRequest,
                 derive_print_timeout,
                 format_print_timeout,
@@ -771,7 +771,7 @@ async def run(
                 # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
                 # A write the store refused in compatibility mode is no provider failure, and keeps
                 # its type (ADR-0128 D6).
-                from lionagi.providers._provider_errors import ProviderError
+                from lionagi._provider_errors import ProviderError
                 from lionagi.state.compat import StateCompatibilityRefused
 
                 if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):

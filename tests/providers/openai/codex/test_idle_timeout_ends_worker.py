@@ -22,8 +22,8 @@ import sys
 import psutil
 import pytest
 
+from lionagi._provider_errors import WorkerLivenessError
 from lionagi.operations.run.run import RunParam, run
-from lionagi.providers._provider_errors import WorkerLivenessError
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 
@@ -96,7 +96,7 @@ async def test_idle_timeout_ends_the_worker_group_when_the_boot_time_steps(
     from psutil import _pslinux
 
     from lionagi.ln import _proc
-    from lionagi.providers import _cli_subprocess
+    from lionhub.providers import _cli_subprocess
 
     # Select the reader before the clock moves, as a long-running process has.
     monkeypatch.setattr(_proc, "_read_raw_create_time", None)
@@ -133,7 +133,7 @@ async def test_idle_timeout_ends_the_worker_group_when_the_boot_time_steps(
 async def _run_until_idle_and_require_the_group_gone(
     tmp_path, monkeypatch, pidfile, *, ignore_term: bool
 ) -> None:
-    from lionagi.providers.openai import codex as codex_mod
+    from lionhub.providers.openai import codex as codex_mod
 
     fake_cli = tmp_path / "fake-codex"
     fake_cli.write_text(_stand_in(pidfile, ignore_term=ignore_term))
@@ -183,8 +183,8 @@ async def test_a_group_signal_that_raises_still_ends_the_stand_in_and_is_logged(
     Its child is left running: without a group signal nothing reaches it, and the run says so.
     """
     from lionagi.ln import _proc
-    from lionagi.providers import _cli_subprocess
-    from lionagi.providers.openai import codex as codex_mod
+    from lionhub.providers import _cli_subprocess
+    from lionhub.providers.openai import codex as codex_mod
 
     calls = []
 

@@ -1850,8 +1850,8 @@ async def test_a_terminal_run_json_write_that_fails_is_logged(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, monkeypatch):
-    from lionagi.providers.anthropic import claude_code
     from lionagi.studio.operator.engine import BranchOperatorEngine
+    from lionhub.providers.anthropic import claude_code
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

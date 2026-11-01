@@ -189,7 +189,7 @@ async def _run_fanout(
     silently dropped in favour of a hardcoded success.
     """
     from lionagi._cli_worker_context import _bind_cli_worker_recorder
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
     with contextlib.ExitStack() as _worker_spawn_bindings:
         _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))

@@ -804,7 +804,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:298-322`, `:359-398`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:977-1057`, `lionhub/src/lionhub/orchestration/engines/review.py:711`,
+  (`lionhub/src/lionhub/orchestration/engines/hypothesis.py:977-1057`, `lionhub/src/lionhub/orchestration/engines/review.py:737`,
   `lionhub/src/lionhub/orchestration/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1164-1165`, `:1457-1501`), under ADR-0023 D6, which decides that the
@@ -832,7 +832,7 @@ everything since; facts past the range belong to the next wake.
   observer (the `ReviewVerdict` class and the `await run.emit(final)` in `ReviewEngine._verdict`, both in
   `lionhub/src/lionhub/orchestration/engines/review.py`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
-  reading (`lionagi/service/token_budget.py:140`); the nearest crossing is the engine's
+  reading (`lionagi/service/token_budget.py:94`); the nearest crossing is the engine's
   `budget_exhausted` notification (`EngineRun._notify_budget_once` in
   `lionhub/src/lionhub/orchestration/engines/engine.py`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary

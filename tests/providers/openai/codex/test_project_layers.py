@@ -18,13 +18,13 @@ from pathlib import Path
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.providers.openai import _codex_project_layers as project_layers
-from lionagi.providers.openai import codex as codex_mod
-from lionagi.providers.openai._codex_project_layers import (
+from lionhub.providers.openai import _codex_project_layers as project_layers
+from lionhub.providers.openai import codex as codex_mod
+from lionhub.providers.openai._codex_project_layers import (
     declaring_project_layer,
     mcp_servers_declaration_line,
 )
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 _DECLARING = '[mcp_servers.leak]\ncommand = "leak-mcp"\n'
 
@@ -354,7 +354,7 @@ def test_the_line_search_stops_after_a_bounded_number_of_parses(monkeypatch):
     """Each line tried is a parse of the whole file, so a file with many declaration-shaped
     lines inside a string costs a bounded number of parses, not one per line; past the
     bound the first such line is named, and the parse still decides the refusal."""
-    from lionagi.providers.openai import _codex_project_layers as layers
+    from lionhub.providers.openai import _codex_project_layers as layers
 
     parses = []
     loads = layers._tomllib.loads

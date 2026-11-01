@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
-from lionagi.providers import _cli_subprocess as cli
+from lionhub.providers import _cli_subprocess as cli
 
 
 def _context_contains(error: BaseException, target: BaseException) -> bool:

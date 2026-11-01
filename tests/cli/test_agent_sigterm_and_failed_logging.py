@@ -272,7 +272,7 @@ class TestTheTerminalPathReachesTheCauseWriter:
     async def test_a_provider_failure_leaves_its_class_on_disk(self, monkeypatch, tmp_path):
         import json
 
-        from lionagi.providers._provider_errors import ProviderQuotaError
+        from lionagi._provider_errors import ProviderQuotaError
         from lionhub.serve.mcp import config
 
         Branch = _wire_agent_stubs(monkeypatch, tmp_path)

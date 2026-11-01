@@ -51,9 +51,9 @@ def restore_cli_logging_state():
 @pytest.mark.parametrize(
     "module",
     [
-        "lionagi.providers.anthropic.claude_code",
-        "lionagi.providers.openai.codex",
-        "lionagi.providers.pi.cli",
+        "lionhub.providers.anthropic.claude_code",
+        "lionhub.providers.openai.codex",
+        "lionhub.providers.pi.cli",
     ],
 )
 def test_import_preserves_root_logger_in_fresh_interpreter(module):

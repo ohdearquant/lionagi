@@ -43,12 +43,9 @@
     "lionagi/operations/flow.py": [
       "os.environ.get:\"LIONAGI_MAX_CONCURRENCY\""
     ],
-    "lionagi/providers/_subagent_admission.py": [
+    "lionagi/service/_subagent_admission.py": [
       "os.environ.get:AGENT_DEPTH_ENV",
       "os.environ:AGENT_DEPTH_ENV"
-    ],
-    "lionagi/providers/anthropic/claude_code.py": [
-      "os.environ.get:'PATH'"
     ],
     "lionagi/service/accounts/_credentials.py": [
       "os.environ:key_env"
@@ -247,7 +244,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -287,7 +284,8 @@
       "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
     ],
     "lionagi/_moved.py": [
-      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"still_on_disk\")"
+      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"still_on_disk\")",
+      "_LAZY_EXPORT_FRAMES = frozenset(\n    {\n        (os.path.join(os.path.dirname(__file__), \"__init__.py\"), \"__getattr__\"),\n        (os.path.join(os.path.dirname(__file__), \"ln\", \"_lazy_init.py\"), \"lazy_import\"),\n    }\n)"
     ],
     "lionagi/_paths.py": [
       "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n)"
@@ -445,11 +443,11 @@
       "from lionagi._auto import CliDeclaration, auto_register",
       "from lionagi._errors import TimeoutError as LionTimeoutError",
       "from lionagi._flow_spec import (\n    FLOW_SPEC_FIELDS,\n    load_flow_spec,\n    validate_flow_args_schema,\n    validate_flow_spec_fields,\n)",
+      "from lionagi._provider_errors import NestedAgentRefusedError",
       "from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS",
       "from lionagi.libs.path_safety import validate_path_component as validate_path_component",
       "from lionagi.ln.concurrency import is_cancelled, run_async",
-      "from lionagi.providers._provider_errors import NestedAgentRefusedError",
-      "from lionagi.providers._subagent_admission import refuse_nested_agent",
+      "from lionagi.service._subagent_admission import refuse_nested_agent",
       "from .._logging import hint, log_error",
       "from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args",
       "from .._orchestrate_parsing import add_orchestrate_subparser as add_orchestrate_subparser",
@@ -679,47 +677,6 @@
     "lionagi/ln/types/spec.py": [
       "__all__ = (\"Spec\", \"CommonMeta\")"
     ],
-    "lionagi/lndl/__init__.py": [
-      "from .assembler import (\n    NOTE_NAMESPACE,\n    assemble,\n    assemble_spec_value,\n    build_action_call,\n    collect_actions,\n    collect_notes,\n    replace_actions,\n)",
-      "from .ast import Identifier, Lact, Literal, Lvar, OutBlock, Program, RLvar",
-      "from .diagnostics import (\n    LndlChunkHealth,\n    LndlRoundRecord,\n    LndlTrace,\n    classify_chunk,\n    classify_result,\n    extract_lndl_chunks,\n)",
-      "from .errors import (\n    InvalidConstructorError,\n    LNDLError,\n    MissingFieldError,\n    MissingLvarError,\n    TypeMismatchError,\n)",
-      "from .extract import extract_lndl_blocks",
-      "from .lexer import Lexer, Token, TokenType",
-      "from .normalize import normalize_lndl_text",
-      "from .parser import ParseError, Parser",
-      "from .prompt import LNDL_SYSTEM_PROMPT, get_lndl_system_prompt",
-      "from .round_outcome import Continue, Retry, RoundOutcome, Success",
-      "from .types import (\n    ActionCall,\n    LactMetadata,\n    LNDLOutput,\n    LvarMetadata,\n    ParsedConstructor,\n    RLvarMetadata,\n    Scalar,\n    ensure_no_action_calls,\n    has_action_calls,\n    revalidate_with_action_results,\n)",
-      "__all__ = (\n    \"LNDL_SYSTEM_PROMPT\",\n    \"NOTE_NAMESPACE\",\n    \"ActionCall\",\n    \"Continue\",\n    \"Identifier\",\n    \"InvalidConstructorError\",\n    \"LNDLError\",\n    \"LNDLOutput\",\n    \"Lact\",\n    \"LactMetadata\",\n    \"Lexer\",\n    \"Literal\",\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"Lvar\",\n    \"LvarMetadata\",\n    \"MissingFieldError\",\n    \"MissingLvarError\",\n    \"OutBlock\",\n    \"ParseError\",\n    \"ParsedConstructor\",\n    \"Parser\",\n    \"Program\",\n    \"RLvar\",\n    \"RLvarMetadata\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Scalar\",\n    \"Success\",\n    \"Token\",\n    \"TokenType\",\n    \"TypeMismatchError\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"ensure_no_action_calls\",\n    \"extract_lndl_blocks\",\n    \"extract_lndl_chunks\",\n    \"get_lndl_system_prompt\",\n    \"has_action_calls\",\n    \"normalize_lndl_text\",\n    \"replace_actions\",\n    \"revalidate_with_action_results\",\n)"
-    ],
-    "lionagi/lndl/_parse_function_call.py": [
-      "__all__ = (\n    \"parse_batch_function_calls\",\n    \"parse_function_call\",\n    \"qualified_name\",\n)"
-    ],
-    "lionagi/lndl/assembler.py": [
-      "__all__ = (\n    \"NOTE_NAMESPACE\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"replace_actions\",\n)"
-    ],
-    "lionagi/lndl/ast.py": [
-      "__all__ = (\n    \"ASTNode\",\n    \"Expr\",\n    \"Identifier\",\n    \"Lact\",\n    \"Literal\",\n    \"Lvar\",\n    \"OutBlock\",\n    \"Program\",\n    \"RLvar\",\n    \"Stmt\",\n)"
-    ],
-    "lionagi/lndl/diagnostics.py": [
-      "__all__ = (\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"extract_lndl_chunks\",\n)"
-    ],
-    "lionagi/lndl/extract.py": [
-      "__all__ = (\"extract_lndl_blocks\",)"
-    ],
-    "lionagi/lndl/lexer.py": [
-      "__all__ = (\"Lexer\", \"Token\", \"TokenType\")"
-    ],
-    "lionagi/lndl/normalize.py": [
-      "__all__ = (\"normalize_lndl_text\",)"
-    ],
-    "lionagi/lndl/parser.py": [
-      "__all__ = (\"ParseError\", \"Parser\")"
-    ],
-    "lionagi/lndl/round_outcome.py": [
-      "__all__ = (\n    \"Continue\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Success\",\n)"
-    ],
     "lionagi/models/__init__.py": [
       "from .field_model import FieldModel",
       "from .hashable_model import HashableModel",
@@ -762,13 +719,6 @@
     "lionagi/operations/fields.py": [
       "def __getattr__(name: str):\n    if name in _FIELD_CONSTANTS:\n        with _FIELD_CONSTANTS_LOCK:\n            if name not in globals():\n                field_name, kwargs = _FIELD_CONSTANTS[name]\n                globals()[name] = get_default_field(field_name, **kwargs)\n            return globals()[name]\n    raise AttributeError(f\"module '{__name__}' has no attribute '{name}'\")",
       "__all__ = (\n    \"ACTION_REQUESTS_FIELD\",\n    \"ACTION_RESPONSES_FIELD\",\n    \"ACTION_REQUIRED_FIELD\",\n    \"INSTRUCT_FIELD\",\n    \"LIST_INSTRUCT_FIELD_MODEL\",\n    \"REASON_FIELD\",\n    \"ActionRequestModel\",\n    \"ActionResponseModel\",\n    \"Instruct\",\n    \"Reason\",\n    \"get_default_field\",\n)"
-    ],
-    "lionagi/operations/lndl_middle/__init__.py": [
-      "from .lndl_middle import DEFAULT_ROUND_BUDGET, build_lndl_middle, lndl_middle",
-      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
-    ],
-    "lionagi/operations/lndl_middle/lndl_middle.py": [
-      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
     ],
     "lionagi/operations/operate/operative.py": [
       "__all__ = (\"Operative\",)"
@@ -926,273 +876,6 @@
     "lionagi/protocols/types.py": [
       "__all__ = (\n    \"Collective\",\n    \"Communicatable\",\n    \"Condition\",\n    \"Manager\",\n    \"Observer\",\n    \"Ordering\",\n    \"Observable\",\n    \"Relational\",\n    \"Sendable\",\n    \"canonical_id\",\n    \"to_uuid\",\n    \"ID\",\n    \"Element\",\n    \"validate_order\",\n    \"Event\",\n    \"EventStatus\",\n    \"Execution\",\n    \"Log\",\n    \"Pile\",\n    \"Executor\",\n    \"Processor\",\n    \"Progression\",\n    \"prog\",\n    \"EdgeCondition\",\n    \"Edge\",\n    \"Graph\",\n    \"Node\",\n    \"MESSAGE_FIELDS\",\n    \"MessageField\",\n    \"MessageRole\",\n    \"validate_sender_recipient\",\n    \"ActionRequest\",\n    \"ActionResponse\",\n    \"AssistantResponse\",\n    \"Instruction\",\n    \"Message\",\n    \"MessageManager\",\n    \"RoledMessage\",\n    \"SenderRecipient\",\n    \"System\",\n    \"DataLogger\",\n    \"DataLoggerConfig\",\n    \"MemoryItem\",\n    \"MemoryQuery\",\n    \"MemoryStore\",\n    \"InMemoryStore\",\n)"
     ],
-    "lionagi/providers/_agentic_handlers.py": [
-      "__all__ = (\"RUNTIME_STATE_NAMES\", \"AgenticHandlersMixin\")"
-    ],
-    "lionagi/providers/_multipart.py": [
-      "__all__ = (\"_replayable_file_factory\",)"
-    ],
-    "lionagi/providers/_secret_resolution.py": [
-      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
-    ],
-    "lionagi/providers/_subagent_admission.py": [
-      "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
-    ],
-    "lionagi/providers/ag2/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AG2AgentRequest\": (\"agent\", None),\n    \"AG2BetaEndpoint\": (\"agent\", None),\n    \"AG2GroupChatEndpoint\": (\"groupchat\", None),\n    \"AG2GroupChatRequest\": (\"groupchat\", None),\n    \"AG2NlipEndpoint\": (\"nlip\", None),\n    \"AG2NlipRequest\": (\"nlip\", None),\n    \"AgentConfig\": (\"agent\", None),\n    \"AgentSpec\": (\"groupchat\", None),\n    \"GroupChatSpec\": (\"groupchat\", None),\n    \"HandoffCondition\": (\"groupchat\", None),\n    \"ResearchPlan\": (\"groupchat\", None),\n    \"_assert_nlip_url_safe\": (\"nlip\", None),\n    \"build_group_chat\": (\"groupchat\", None),\n    \"call_nlip_remote\": (\"nlip\", None),\n    \"run_beta_agent\": (\"agent\", None),\n    \"stream_group_chat\": (\"groupchat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/ag2/_config.py": [
-      "__all__ = (\"AG2Configs\",)"
-    ],
-    "lionagi/providers/ag2/agent.py": [
-      "__all__ = [\"AG2AgentRequest\", \"AgentConfig\", \"run_beta_agent\", \"AG2BetaEndpoint\"]"
-    ],
-    "lionagi/providers/ag2/groupchat.py": [
-      "__all__ = [\n    \"HandoffCondition\",\n    \"AgentSpec\",\n    \"GroupChatSpec\",\n    \"ResearchPlan\",\n    \"AG2GroupChatRequest\",\n    \"build_group_chat\",\n    \"stream_group_chat\",\n    \"AG2GroupChatEndpoint\",\n]"
-    ],
-    "lionagi/providers/ag2/nlip.py": [
-      "__all__ = [\"AG2NlipRequest\", \"_assert_nlip_url_safe\", \"call_nlip_remote\", \"AG2NlipEndpoint\"]"
-    ],
-    "lionagi/providers/anthropic/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AnthropicMessagesEndpoint\": (\"messages\", None),\n    \"ClaudeCodeCLIEndpoint\": (\"claude_code\", None),\n    \"ClaudeCodeRequest\": (\"claude_code\", None),\n    \"CreateMessageRequest\": (\"messages\", None),\n    \"stream_claude_code_cli\": (\"claude_code\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/anthropic/_config.py": [
-      "__all__ = (\"AnthropicConfigs\", \"ClaudeCodeConfigs\")"
-    ],
-    "lionagi/providers/anthropic/_prompt_cache.py": [
-      "__all__ = (\"CERT_VERSION\", \"LOOKBACK\", \"MAX_MARKS\", \"Point\", \"place\")"
-    ],
-    "lionagi/providers/anthropic/claude_code.py": [
-      "__all__ = (\"ClaudeCodeRequest\", \"stream_claude_code_cli\", \"ClaudeCodeCLIEndpoint\")"
-    ],
-    "lionagi/providers/anthropic/messages.py": [
-      "__all__ = (\"ANTHROPIC_DEFAULT_MAX_TOKENS\", \"CreateMessageRequest\", \"AnthropicMessagesEndpoint\")"
-    ],
-    "lionagi/providers/deepseek/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"DeepseekChatCompletionsRequest\": (\"chat\", None),\n    \"DeepseekChatEndpoint\": (\"chat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/deepseek/_config.py": [
-      "__all__ = (\"DeepSeekConfigs\",)"
-    ],
-    "lionagi/providers/deepseek/chat.py": [
-      "__all__ = (\"DeepseekChatCompletionsRequest\", \"DeepseekChatEndpoint\")"
-    ],
-    "lionagi/providers/errors.py": [
-      "__all__ = (\n    \"ProviderError\",\n    \"ProviderQuotaError\",\n    \"ProviderAuthError\",\n    \"ProviderContextError\",\n    \"ProviderCapacityError\",\n    \"ProviderUnsupportedModelError\",\n    \"ProviderSafetyError\",\n    \"ProviderStreamDisconnectError\",\n    \"ProviderTeardownError\",\n    \"ProviderPermissionError\",\n    \"ProviderAdapterError\",\n    \"WorkerLivenessError\",\n    \"SubagentAdmissionRefusedError\",\n    \"NestedAgentRefusedError\",\n)"
-    ],
-    "lionagi/providers/exa/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"ExaContentsEndpoint\": (\"contents\", None),\n    \"ExaContentsRequest\": (\"contents\", None),\n    \"ExaFindSimilarEndpoint\": (\"find_similar\", None),\n    \"ExaFindSimilarRequest\": (\"find_similar\", None),\n    \"ExaSearchEndpoint\": (\"search\", None),\n    \"ExaSearchRequest\": (\"search\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/exa/_config.py": [
-      "__all__ = (\"ExaConfigs\",)"
-    ],
-    "lionagi/providers/exa/_schemas.py": [
-      "__all__ = (\n    \"LivecrawlType\",\n    \"_ExaBase\",\n    \"ContentsText\",\n    \"ContentsHighlights\",\n    \"ContentsSummary\",\n    \"ContentsExtras\",\n    \"Contents\",\n)"
-    ],
-    "lionagi/providers/exa/contents.py": [
-      "__all__ = (\"ExaContentsRequest\", \"ExaContentsEndpoint\")"
-    ],
-    "lionagi/providers/exa/find_similar.py": [
-      "__all__ = (\"ExaFindSimilarRequest\", \"ExaFindSimilarEndpoint\")"
-    ],
-    "lionagi/providers/exa/search.py": [
-      "__all__ = (\"ExaSearchRequest\", \"ExaSearchEndpoint\")"
-    ],
-    "lionagi/providers/firecrawl/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"CrawlScrapeOptions\": (\"crawl\", None),\n    \"FirecrawlCrawlEndpoint\": (\"crawl\", None),\n    \"FirecrawlCrawlRequest\": (\"crawl\", None),\n    \"FirecrawlMapEndpoint\": (\"map\", None),\n    \"FirecrawlMapRequest\": (\"map\", None),\n    \"FirecrawlScrapeEndpoint\": (\"scrape\", None),\n    \"FirecrawlScrapeRequest\": (\"scrape\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/firecrawl/_config.py": [
-      "__all__ = (\"FirecrawlConfigs\",)"
-    ],
-    "lionagi/providers/firecrawl/_schemas.py": [
-      "__all__ = (\"OutputFormat\",)"
-    ],
-    "lionagi/providers/firecrawl/crawl.py": [
-      "__all__ = (\"FirecrawlCrawlRequest\", \"CrawlScrapeOptions\", \"FirecrawlCrawlEndpoint\")"
-    ],
-    "lionagi/providers/firecrawl/map.py": [
-      "__all__ = (\"FirecrawlMapRequest\", \"FirecrawlMapEndpoint\")"
-    ],
-    "lionagi/providers/firecrawl/scrape.py": [
-      "__all__ = (\"FirecrawlScrapeRequest\", \"FirecrawlScrapeEndpoint\")"
-    ],
-    "lionagi/providers/google/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"GeminiCLIEndpoint\": (\"gemini_code\", None),\n    \"GeminiChatEndpoint\": (\"chat\", None),\n    \"GeminiChunk\": (\"gemini_code\", None),\n    \"GeminiCodeRequest\": (\"gemini_code\", None),\n    \"GeminiSession\": (\"gemini_code\", None),\n    \"OpenAIChatCompletionsRequest\": (\"chat\", None),\n    \"stream_gemini_cli\": (\"gemini_code\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/google/_config.py": [
-      "__all__ = (\"GeminiChatConfigs\", \"GeminiCodeConfigs\")"
-    ],
-    "lionagi/providers/google/chat.py": [
-      "__all__ = (\"OpenAIChatCompletionsRequest\", \"GeminiChatEndpoint\")"
-    ],
-    "lionagi/providers/google/gemini_code.py": [
-      "__all__ = (\n    \"GeminiChunk\",\n    \"GeminiCodeRequest\",\n    \"GeminiSession\",\n    \"derive_print_timeout\",\n    \"stream_gemini_cli\",\n    \"stream_gemini_cli_events\",\n    \"GeminiCLIEndpoint\",\n    \"resolve_agy_model\",\n)"
-    ],
-    "lionagi/providers/groq/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"GroqAudioTranscriptionEndpoint\": (\"audio_transcription\", None),\n    \"GroqChatEndpoint\": (\"chat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/groq/audio_transcription.py": [
-      "__all__ = (\"GroqAudioTranscriptionEndpoint\",)"
-    ],
-    "lionagi/providers/groq/chat.py": [
-      "__all__ = (\"GroqChatEndpoint\",)"
-    ],
-    "lionagi/providers/lattice/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"LatticeChatCompletionsRequest\": (\"chat\", None),\n    \"LatticeChatEndpoint\": (\"chat\", None),\n    \"LatticeEmbedEndpoint\": (\"embed\", None),\n    \"LatticeEmbedRequest\": (\"embed\", None),\n    \"LatticeLoraSelection\": (\"chat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/lattice/_config.py": [
-      "__all__ = (\n    \"LATTICE_DEFAULT_BASE_URL\",\n    \"LatticeConfigs\",\n    \"LatticeRedirectsRefused\",\n    \"_setup_lattice_endpoint\",\n)"
-    ],
-    "lionagi/providers/lattice/chat.py": [
-      "__all__ = (\"LatticeChatCompletionsRequest\", \"LatticeChatEndpoint\", \"LatticeLoraSelection\")"
-    ],
-    "lionagi/providers/lattice/embed.py": [
-      "__all__ = (\"LatticeEmbedEndpoint\", \"LatticeEmbedRequest\")"
-    ],
-    "lionagi/providers/nvidia_nim/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"NvidiaNimChatEndpoint\": (\"chat\", None),\n    \"NvidiaNimEmbedEndpoint\": (\"embed\", None),\n    \"NvidiaNimEmbeddingRequest\": (\"embed\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/nvidia_nim/_config.py": [
-      "__all__ = (\"NvidiaNimConfigs\",)"
-    ],
-    "lionagi/providers/nvidia_nim/chat.py": [
-      "__all__ = (\"NvidiaNimChatEndpoint\",)"
-    ],
-    "lionagi/providers/nvidia_nim/embed.py": [
-      "__all__ = (\"NvidiaNimEmbeddingRequest\", \"NvidiaNimEmbedEndpoint\")"
-    ],
-    "lionagi/providers/ollama/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"OllamaChatEndpoint\": (\"chat\", None),\n    \"OllamaEmbedEndpoint\": (\"embed\", None),\n    \"OllamaEmbedRequest\": (\"embed\", None),\n    \"OllamaGenerateEndpoint\": (\"generate\", None),\n    \"OllamaGenerateRequest\": (\"generate\", None),\n    \"OpenAIChatCompletionsRequest\": (\"chat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/ollama/_config.py": [
-      "__all__ = (\"OllamaConfigs\", \"_setup_ollama_endpoint\")"
-    ],
-    "lionagi/providers/ollama/chat.py": [
-      "__all__ = (\"OpenAIChatCompletionsRequest\", \"OllamaChatEndpoint\")"
-    ],
-    "lionagi/providers/ollama/embed.py": [
-      "__all__ = (\"OllamaEmbedRequest\", \"OllamaEmbedEndpoint\")"
-    ],
-    "lionagi/providers/ollama/generate.py": [
-      "__all__ = (\"OllamaGenerateRequest\", \"OllamaGenerateEndpoint\")"
-    ],
-    "lionagi/providers/openai/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AudioSpeechRequest\": (\"audio\", None),\n    \"AudioTranscriptionRequest\": (\"audio\", None),\n    \"OpenAIBatchRequest\": (\"batch\", None),\n    \"CodexCLIEndpoint\": (\"codex\", None),\n    \"CodexCodeRequest\": (\"codex\", None),\n    \"ImageEditRequest\": (\"images\", None),\n    \"ImageGenerationRequest\": (\"images\", None),\n    \"OpenAIChatCompletionsRequest\": (\"chat\", None),\n    \"OpenAIEmbeddingRequest\": (\"embed\", None),\n    \"OpenAIResponsesRequest\": (\"response\", None),\n    \"OpenaiAudioSpeechEndpoint\": (\"audio\", None),\n    \"OpenaiAudioTranscriptionEndpoint\": (\"audio\", None),\n    \"OpenaiBatchEndpoint\": (\"batch\", None),\n    \"OpenaiChatEndpoint\": (\"chat\", None),\n    \"OpenaiEmbedEndpoint\": (\"embed\", None),\n    \"OpenaiImageEditEndpoint\": (\"images\", None),\n    \"OpenaiImageGenerationEndpoint\": (\"images\", None),\n    \"OpenaiResponseEndpoint\": (\"response\", None),\n    \"stream_codex_cli\": (\"codex\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/openai/_audio_schemas.py": [
-      "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
-    ],
-    "lionagi/providers/openai/_chat_schemas.py": [
-      "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
-    ],
-    "lionagi/providers/openai/_codex_profile.py": [
-      "__all__ = (\n    \"CODEX_MCP_PROFILE_PREFIX\",\n    \"codex_config_defining_profile\",\n    \"codex_config_setting_default_permissions\",\n    \"codex_home_for_env\",\n    \"configured_codex_profile\",\n    \"global_codex_reasoning_effort\",\n    \"is_generated_codex_profile\",\n    \"project_codex_profile\",\n    \"refuse_codex_profile_run_settings\",\n    \"refuse_non_absolute_codex_home\",\n    \"resolve_codex_config_profile\",\n)"
-    ],
-    "lionagi/providers/openai/_codex_project_layers.py": [
-      "__all__ = (\n    \"declaring_project_layer\",\n    \"mcp_servers_declaration_line\",\n    \"parse_failure\",\n    \"project_layers\",\n    \"project_mcp_server_names\",\n    \"refuse_unsafe_exclusive_profile\",\n    \"system_mcp_server_names\",\n)"
-    ],
-    "lionagi/providers/openai/audio.py": [
-      "__all__ = (\n    \"AudioSpeechRequest\",\n    \"AudioTranscriptionRequest\",\n    \"OpenaiAudioSpeechEndpoint\",\n    \"OpenaiAudioTranscriptionEndpoint\",\n)"
-    ],
-    "lionagi/providers/openai/batch.py": [
-      "__all__ = (\n    \"OpenAIBatchOutputExpiration\",\n    \"OpenAIBatchRequest\",\n    \"OpenaiBatchEndpoint\",\n)"
-    ],
-    "lionagi/providers/openai/chat.py": [
-      "__all__ = (\"OpenAIChatCompletionsRequest\", \"OpenaiChatEndpoint\")"
-    ],
-    "lionagi/providers/openai/codex.py": [
-      "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n)"
-    ],
-    "lionagi/providers/openai/embed.py": [
-      "__all__ = (\"OpenAIEmbeddingRequest\", \"OpenaiEmbedEndpoint\")"
-    ],
-    "lionagi/providers/openai/images.py": [
-      "__all__ = (\n    \"ImageGenerationRequest\",\n    \"ImageEditRequest\",\n    \"OpenaiImageGenerationEndpoint\",\n    \"OpenaiImageEditEndpoint\",\n)"
-    ],
-    "lionagi/providers/openai/response.py": [
-      "__all__ = (\"OpenAIResponsesRequest\", \"OpenaiResponseEndpoint\")"
-    ],
-    "lionagi/providers/openrouter/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"OpenRouterEndpoint\": (\"chat\", None),\n    \"OpenRouterRequest\": (\"chat\", None),\n    \"ReasoningConfig\": (\"chat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/openrouter/_config.py": [
-      "__all__ = (\"OpenRouterConfigs\",)"
-    ],
-    "lionagi/providers/openrouter/chat.py": [
-      "__all__ = (\"ReasoningConfig\", \"OpenRouterRequest\", \"OpenRouterEndpoint\")"
-    ],
-    "lionagi/providers/perplexity/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"PerplexityChatEndpoint\": (\"chat\", None),\n    \"PerplexityChatRequest\": (\"chat\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/perplexity/_config.py": [
-      "__all__ = (\"PerplexityConfigs\",)"
-    ],
-    "lionagi/providers/perplexity/chat.py": [
-      "__all__ = (\"PerplexityChatRequest\", \"PerplexityChatEndpoint\")"
-    ],
-    "lionagi/providers/pi/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"PiCLIEndpoint\": (\"cli\", None),\n    \"PiChunk\": (\"cli\", None),\n    \"PiCodeRequest\": (\"cli\", None),\n    \"PiSession\": (\"cli\", None),\n    \"stream_pi_cli\": (\"cli\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/pi/_config.py": [
-      "__all__ = (\"PiConfigs\",)"
-    ],
-    "lionagi/providers/pi/cli.py": [
-      "__all__ = (\"PiChunk\", \"PiCodeRequest\", \"PiSession\", \"stream_pi_cli\", \"PiCLIEndpoint\")"
-    ],
-    "lionagi/providers/tavily/__init__.py": [
-      "from lionagi.ln._lazy_init import lazy_import",
-      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"TavilyExtractEndpoint\": (\"search\", None),\n    \"TavilyExtractRequest\": (\"search\", None),\n    \"TavilySearchEndpoint\": (\"search\", None),\n    \"TavilySearchRequest\": (\"search\", None),\n}",
-      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
-      "__all__ = tuple(sorted(_LAZY_MAP))"
-    ],
-    "lionagi/providers/tavily/_config.py": [
-      "__all__ = (\"TavilyConfigs\",)"
-    ],
-    "lionagi/providers/tavily/search.py": [
-      "__all__ = (\n    \"TavilySearchRequest\",\n    \"TavilyExtractRequest\",\n    \"TavilySearchEndpoint\",\n    \"TavilyExtractEndpoint\",\n)"
-    ],
     "lionagi/service/__init__.py": [
       "from typing import TYPE_CHECKING",
       "from lionagi.ln._lazy_init import lazy_import",
@@ -1201,8 +884,14 @@
       "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
       "__all__ = (\n    \"APICalling\",\n    \"AssociatedEventInfo\",\n    \"Broadcaster\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HookDict\",\n    \"HookEvent\",\n    \"HookEventTypes\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"RateLimitedAPIExecutor\",\n    \"TokenCalculator\",\n    \"cache_intent\",\n    \"global_hook_logger\",\n    \"iModel\",\n    \"iModelManager\",\n)"
     ],
+    "lionagi/service/_output_limit.py": [
+      "__all__ = (\"read_output_limit_stop\",)"
+    ],
     "lionagi/service/_prompt_cache.py": [
       "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
+    ],
+    "lionagi/service/_subagent_admission.py": [
+      "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
     ],
     "lionagi/service/accounts/__init__.py": [
       "__all__ = ()"
@@ -1221,6 +910,9 @@
     ],
     "lionagi/service/accounts/_scope.py": [
       "__all__ = (\"current_scope\", \"routing_scope\")"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
     ],
     "lionagi/service/accounts/_types.py": [
       "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
@@ -1241,6 +933,12 @@
       "from .registry import (\n    EndpointMeta,\n    EndpointRegistry,\n    EndpointType,\n    ProviderAliasCollisionError,\n    ProviderNotFoundError,\n    register_endpoint,\n)",
       "__all__ = (\n    \"AgenticEndpoint\",\n    \"APICalling\",\n    \"CLIEndpoint\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HeaderFactory\",\n    \"match_endpoint\",\n    \"MCPConnectionPool\",\n    \"MCPSecurityConfig\",\n    \"create_mcp_tool\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"EndpointType\",\n    \"LazyType\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderConfig\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)",
       "def __getattr__(name: str):\n    if name == \"CLIEndpoint\":\n        warnings.warn(\n            \"CLIEndpoint is deprecated and will be removed in a future release. \"\n            \"Use AgenticEndpoint from lionagi.service.connections instead.\",\n            DeprecationWarning,\n            stacklevel=2,\n        )\n        # Cache to prevent double-fire from importlib _handle_fromlist.\n        import sys\n\n        sys.modules[__name__].__dict__[\"CLIEndpoint\"] = AgenticEndpoint\n        return AgenticEndpoint\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/service/connections/_chat_schemas.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
+    ],
+    "lionagi/service/connections/_provider_compat.py": [
+      "__all__ = (\"default_provider_catalog\",)"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
       "__all__ = (\"AgenticEndpoint\",)"
@@ -1265,6 +963,9 @@
     ],
     "lionagi/service/connections/mcp_wrapper.py": [
       "__all__ = (\n    \"MCPSecurityConfig\",\n    \"MCPConnectionPool\",\n    \"create_mcp_tool\",\n    \"is_synthetic_mcp_wrapper_schema\",\n    \"validate_mcp_tool_admission\",\n)"
+    ],
+    "lionagi/service/connections/provider_catalog.py": [
+      "__all__ = (\n    \"SUPPORTED_CONTRACT_VERSIONS\",\n    \"DependencyRequirement\",\n    \"EndpointDeclaration\",\n    \"ProviderCatalog\",\n    \"ProviderFragment\",\n    \"ProviderManifest\",\n    \"compose_provider_catalog\",\n)"
     ],
     "lionagi/service/connections/registry.py": [
       "__all__ = (\n    \"EndpointType\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)"
@@ -1620,6 +1321,9 @@
       "TimeoutError",
       "ValidationError"
     ],
+    "lionagi/_feature_errors.py": [
+      "MissingFeatureError"
+    ],
     "lionagi/_flow_spec.py": [
       "flow_spec_yaml_key",
       "load_flow_spec",
@@ -1646,6 +1350,28 @@
       "find_lionagi_dirs",
       "is_account_home",
       "is_account_lionagi_dir"
+    ],
+    "lionagi/_provider_errors.py": [
+      "EmissionError",
+      "NestedAgentRefusedError",
+      "ProviderActivationError",
+      "ProviderAdapterError",
+      "ProviderAuthError",
+      "ProviderCapacityError",
+      "ProviderCollisionError",
+      "ProviderCompositionError",
+      "ProviderContextError",
+      "ProviderContractVersionError",
+      "ProviderError",
+      "ProviderPermissionError",
+      "ProviderQuotaError",
+      "ProviderSafetyError",
+      "ProviderStreamDisconnectError",
+      "ProviderTeardownError",
+      "ProviderUnsupportedModelError",
+      "SubagentAdmissionRefusedError",
+      "WorkerLivenessError",
+      "classify_provider_error"
     ],
     "lionagi/_settings.py": [
       "load_global_settings_layer",
@@ -1822,6 +1548,14 @@
       "resolve_play_target",
       "resolve_primary_session",
       "run_id_candidates"
+    ],
+    "lionagi/cli/_kill_service.py": [
+      "check_pid_identity",
+      "imported_degraded_process_is_live",
+      "kill_one",
+      "list_running_children",
+      "read_pid_from_entity",
+      "unaddressable_pid_reason"
     ],
     "lionagi/cli/_logging.py": [
       "configure_cli_logging"
@@ -2512,81 +2246,6 @@
       "CommonMeta",
       "Spec"
     ],
-    "lionagi/lndl/_parse_function_call.py": [
-      "parse_batch_function_calls",
-      "parse_function_call",
-      "qualified_name"
-    ],
-    "lionagi/lndl/assembler.py": [
-      "assemble",
-      "assemble_spec_value",
-      "build_action_call",
-      "collect_actions",
-      "collect_notes",
-      "replace_actions"
-    ],
-    "lionagi/lndl/ast.py": [
-      "ASTNode",
-      "Expr",
-      "Identifier",
-      "Lact",
-      "Literal",
-      "Lvar",
-      "OutBlock",
-      "Program",
-      "RLvar",
-      "Stmt"
-    ],
-    "lionagi/lndl/diagnostics.py": [
-      "LndlChunkHealth",
-      "LndlRoundRecord",
-      "LndlTrace",
-      "classify_chunk",
-      "classify_result",
-      "extract_lndl_chunks"
-    ],
-    "lionagi/lndl/errors.py": [
-      "InvalidConstructorError",
-      "LNDLError",
-      "MissingFieldError",
-      "MissingLvarError",
-      "TypeMismatchError"
-    ],
-    "lionagi/lndl/extract.py": [
-      "extract_lndl_blocks"
-    ],
-    "lionagi/lndl/lexer.py": [
-      "Lexer",
-      "Token",
-      "TokenType"
-    ],
-    "lionagi/lndl/normalize.py": [
-      "normalize_lndl_text"
-    ],
-    "lionagi/lndl/parser.py": [
-      "ParseError",
-      "Parser",
-      "parse_value"
-    ],
-    "lionagi/lndl/prompt.py": [
-      "get_lndl_system_prompt"
-    ],
-    "lionagi/lndl/round_outcome.py": [
-      "Continue",
-      "Retry",
-      "Success"
-    ],
-    "lionagi/lndl/types.py": [
-      "ActionCall",
-      "LNDLOutput",
-      "LactMetadata",
-      "LvarMetadata",
-      "ParsedConstructor",
-      "RLvarMetadata",
-      "ensure_no_action_calls",
-      "has_action_calls",
-      "revalidate_with_action_results"
-    ],
     "lionagi/models/_build_model.py": [
       "build_model_type"
     ],
@@ -2683,9 +2342,6 @@
     "lionagi/operations/interpret/interpret.py": [
       "interpret",
       "prepare_interpret_kw"
-    ],
-    "lionagi/operations/lndl_middle/lndl_middle.py": [
-      "build_lndl_middle"
     ],
     "lionagi/operations/manager.py": [
       "OperationManager"
@@ -2935,366 +2591,6 @@
     "lionagi/protocols/messages/validators.py": [
       "validate_image_url"
     ],
-    "lionagi/providers/_agentic_handlers.py": [
-      "AgenticHandlersMixin"
-    ],
-    "lionagi/providers/_cli_subprocess.py": [
-      "Redacted",
-      "SpawnedProcess",
-      "build_declarative_cli_args",
-      "cli_fallback_bin_dirs",
-      "discover_cli",
-      "end_child_group",
-      "env_as_the_spawn_encodes_it",
-      "make_cli_flag",
-      "ndjson_from_cli",
-      "observe_spawned",
-      "raise_if_env_is_not_a_string_map",
-      "redact_runtime_fields_in_place",
-      "resolve_cli_workspace",
-      "reveal_redacted",
-      "spawned_create_time",
-      "spawned_pgid",
-      "unencodable_env_entry",
-      "validate_message_prompt"
-    ],
-    "lionagi/providers/_provider_errors.py": [
-      "EmissionError",
-      "NestedAgentRefusedError",
-      "ProviderAdapterError",
-      "ProviderAuthError",
-      "ProviderCapacityError",
-      "ProviderContextError",
-      "ProviderError",
-      "ProviderPermissionError",
-      "ProviderQuotaError",
-      "ProviderSafetyError",
-      "ProviderStreamDisconnectError",
-      "ProviderTeardownError",
-      "ProviderUnsupportedModelError",
-      "SubagentAdmissionRefusedError",
-      "WorkerLivenessError",
-      "classify_provider_error"
-    ],
-    "lionagi/providers/_secret_resolution.py": [
-      "OneNameLookup",
-      "ResolvedSecretLookup",
-      "SecretLookupResolution",
-      "fill_declared_secrets",
-      "fill_declared_secrets_and_names",
-      "lookup_one_name",
-      "resolve_secret_lookup_config"
-    ],
-    "lionagi/providers/_subagent_admission.py": [
-      "SubagentLease",
-      "admit_subagent",
-      "child_agent_depth",
-      "engine_cap_env",
-      "refuse_nested_agent",
-      "set_child_agent_depth",
-      "subagent_admission_status"
-    ],
-    "lionagi/providers/ag2/_config.py": [
-      "AG2Configs"
-    ],
-    "lionagi/providers/ag2/agent.py": [
-      "AG2AgentRequest",
-      "AG2BetaEndpoint",
-      "AgentConfig",
-      "run_beta_agent"
-    ],
-    "lionagi/providers/ag2/groupchat.py": [
-      "AG2GroupChatEndpoint",
-      "AG2GroupChatRequest",
-      "AgentSpec",
-      "GroupChatSpec",
-      "HandoffCondition",
-      "ResearchPlan",
-      "build_group_chat",
-      "stream_group_chat"
-    ],
-    "lionagi/providers/ag2/nlip.py": [
-      "AG2NlipEndpoint",
-      "AG2NlipRequest",
-      "call_nlip_remote"
-    ],
-    "lionagi/providers/anthropic/_config.py": [
-      "AnthropicConfigs",
-      "ClaudeCodeConfigs"
-    ],
-    "lionagi/providers/anthropic/_prompt_cache.py": [
-      "Point",
-      "place",
-      "points"
-    ],
-    "lionagi/providers/anthropic/claude_code.py": [
-      "ClaudeCodeCLIEndpoint",
-      "ClaudeCodeRequest",
-      "claude_cli_search_locations",
-      "resolve_claude_cli",
-      "stream_cc_cli_events",
-      "stream_claude_code_cli"
-    ],
-    "lionagi/providers/anthropic/messages.py": [
-      "AnthropicMessagesEndpoint",
-      "ContentBlockDeltaEvent",
-      "ContentBlockResponse",
-      "ContentBlockStartEvent",
-      "ContentBlockStopEvent",
-      "CreateMessageRequest",
-      "CreateMessageResponse",
-      "ImageContentBlock",
-      "ImageSource",
-      "Message",
-      "MessageDeltaEvent",
-      "MessageStartEvent",
-      "MessageStopEvent",
-      "TextContentBlock",
-      "ToolChoice",
-      "ToolDefinition",
-      "Usage"
-    ],
-    "lionagi/providers/deepseek/_config.py": [
-      "DeepSeekConfigs"
-    ],
-    "lionagi/providers/deepseek/chat.py": [
-      "DeepseekChatCompletionsRequest",
-      "DeepseekChatEndpoint",
-      "DeepseekThinking",
-      "normalize_deepseek_usage"
-    ],
-    "lionagi/providers/exa/_config.py": [
-      "ExaConfigs"
-    ],
-    "lionagi/providers/exa/_schemas.py": [
-      "Contents",
-      "ContentsExtras",
-      "ContentsHighlights",
-      "ContentsSummary",
-      "ContentsText",
-      "LivecrawlType"
-    ],
-    "lionagi/providers/exa/contents.py": [
-      "ExaContentsEndpoint",
-      "ExaContentsRequest"
-    ],
-    "lionagi/providers/exa/find_similar.py": [
-      "ExaFindSimilarEndpoint",
-      "ExaFindSimilarRequest"
-    ],
-    "lionagi/providers/exa/search.py": [
-      "ExaSearchEndpoint",
-      "ExaSearchRequest",
-      "SearchCategory",
-      "SearchType"
-    ],
-    "lionagi/providers/firecrawl/_config.py": [
-      "FirecrawlConfigs"
-    ],
-    "lionagi/providers/firecrawl/_schemas.py": [
-      "OutputFormat"
-    ],
-    "lionagi/providers/firecrawl/crawl.py": [
-      "CrawlScrapeOptions",
-      "FirecrawlCrawlEndpoint",
-      "FirecrawlCrawlRequest"
-    ],
-    "lionagi/providers/firecrawl/map.py": [
-      "FirecrawlMapEndpoint",
-      "FirecrawlMapRequest"
-    ],
-    "lionagi/providers/firecrawl/scrape.py": [
-      "FirecrawlScrapeEndpoint",
-      "FirecrawlScrapeRequest"
-    ],
-    "lionagi/providers/google/_config.py": [
-      "GeminiChatConfigs",
-      "GeminiCodeConfigs"
-    ],
-    "lionagi/providers/google/chat.py": [
-      "GeminiChatEndpoint"
-    ],
-    "lionagi/providers/google/gemini_code.py": [
-      "GeminiCLIEndpoint",
-      "GeminiCodeRequest",
-      "derive_print_timeout",
-      "format_print_timeout",
-      "resolve_agy_model",
-      "stream_gemini_cli",
-      "stream_gemini_cli_events"
-    ],
-    "lionagi/providers/groq/_config.py": [
-      "GroqConfigs"
-    ],
-    "lionagi/providers/groq/audio_transcription.py": [
-      "GroqAudioTranscriptionEndpoint"
-    ],
-    "lionagi/providers/groq/chat.py": [
-      "GroqChatEndpoint"
-    ],
-    "lionagi/providers/lattice/_config.py": [
-      "LatticeConfigs",
-      "LatticeRedirectsRefused"
-    ],
-    "lionagi/providers/lattice/chat.py": [
-      "LatticeChatCompletionsRequest",
-      "LatticeChatEndpoint",
-      "LatticeLoraSelection"
-    ],
-    "lionagi/providers/lattice/embed.py": [
-      "LatticeEmbedEndpoint",
-      "LatticeEmbedRequest"
-    ],
-    "lionagi/providers/nvidia_nim/_config.py": [
-      "NvidiaNimConfigs"
-    ],
-    "lionagi/providers/nvidia_nim/chat.py": [
-      "NvidiaNimChatEndpoint"
-    ],
-    "lionagi/providers/nvidia_nim/embed.py": [
-      "NvidiaNimEmbedEndpoint",
-      "NvidiaNimEmbeddingRequest"
-    ],
-    "lionagi/providers/ollama/_config.py": [
-      "OllamaConfigs"
-    ],
-    "lionagi/providers/ollama/chat.py": [
-      "OllamaChatEndpoint"
-    ],
-    "lionagi/providers/ollama/embed.py": [
-      "OllamaEmbedEndpoint",
-      "OllamaEmbedRequest"
-    ],
-    "lionagi/providers/ollama/generate.py": [
-      "OllamaGenerateEndpoint",
-      "OllamaGenerateRequest"
-    ],
-    "lionagi/providers/openai/_audio_schemas.py": [
-      "AudioSpeechRequest",
-      "AudioTranscriptionRequest"
-    ],
-    "lionagi/providers/openai/_chat_schemas.py": [
-      "AssistantMessage",
-      "ChatRole",
-      "DeveloperMessage",
-      "FunctionCall",
-      "FunctionDef",
-      "FunctionTool",
-      "ImageURLObject",
-      "ImageURLPart",
-      "JSONSchemaFormat",
-      "OpenAIChatCompletionsRequest",
-      "ResponseFormatJSONObject",
-      "ResponseFormatJSONSchema",
-      "ResponseFormatText",
-      "StreamOptions",
-      "SystemMessage",
-      "TextPart",
-      "ToolCall",
-      "ToolCallFunction",
-      "ToolChoiceFunction",
-      "ToolMessage",
-      "UserMessage",
-      "uses_developer_messages"
-    ],
-    "lionagi/providers/openai/_codex_profile.py": [
-      "codex_config_defining_profile",
-      "codex_config_setting_default_permissions",
-      "codex_home_for_env",
-      "configured_codex_profile",
-      "global_codex_reasoning_effort",
-      "is_generated_codex_profile",
-      "project_codex_profile",
-      "refuse_codex_profile_run_settings",
-      "refuse_non_absolute_codex_home",
-      "resolve_codex_config_profile"
-    ],
-    "lionagi/providers/openai/_codex_project_layers.py": [
-      "declaring_project_layer",
-      "mcp_servers_declaration_line",
-      "parse_failure",
-      "project_layers",
-      "project_mcp_server_names",
-      "refuse_unsafe_exclusive_profile",
-      "system_mcp_server_names"
-    ],
-    "lionagi/providers/openai/_config.py": [
-      "CodexConfigs",
-      "OpenAIConfigs"
-    ],
-    "lionagi/providers/openai/audio.py": [
-      "OpenaiAudioSpeechEndpoint",
-      "OpenaiAudioTranscriptionEndpoint"
-    ],
-    "lionagi/providers/openai/batch.py": [
-      "OpenAIBatchOutputExpiration",
-      "OpenAIBatchRequest",
-      "OpenaiBatchEndpoint"
-    ],
-    "lionagi/providers/openai/chat.py": [
-      "OpenaiChatEndpoint"
-    ],
-    "lionagi/providers/openai/codex.py": [
-      "CodexCLIEndpoint",
-      "CodexCodeRequest",
-      "refuse_declaring_project_layer",
-      "stream_codex_cli",
-      "stream_codex_cli_events",
-      "toml_override_value"
-    ],
-    "lionagi/providers/openai/embed.py": [
-      "OpenAIEmbeddingRequest",
-      "OpenaiEmbedEndpoint"
-    ],
-    "lionagi/providers/openai/images.py": [
-      "ImageEditRequest",
-      "ImageGenerationRequest",
-      "OpenaiImageEditEndpoint",
-      "OpenaiImageGenerationEndpoint"
-    ],
-    "lionagi/providers/openai/response.py": [
-      "OpenAIResponsesRequest",
-      "OpenaiResponseEndpoint"
-    ],
-    "lionagi/providers/openrouter/_config.py": [
-      "OpenRouterConfigs"
-    ],
-    "lionagi/providers/openrouter/chat.py": [
-      "OpenRouterEndpoint",
-      "OpenRouterRequest",
-      "ReasoningConfig"
-    ],
-    "lionagi/providers/perplexity/_config.py": [
-      "PerplexityConfigs"
-    ],
-    "lionagi/providers/perplexity/chat.py": [
-      "PerplexityChatEndpoint",
-      "PerplexityChatRequest",
-      "PerplexityMessage",
-      "PerplexityModels",
-      "WebSearchOptions"
-    ],
-    "lionagi/providers/pi/_config.py": [
-      "PiConfigs"
-    ],
-    "lionagi/providers/pi/cli.py": [
-      "PiCLIEndpoint",
-      "PiChunk",
-      "PiCodeRequest",
-      "stream_pi_cli",
-      "stream_pi_cli_events"
-    ],
-    "lionagi/providers/tavily/_config.py": [
-      "TavilyConfigs"
-    ],
-    "lionagi/providers/tavily/search.py": [
-      "SearchDepth",
-      "SearchTopic",
-      "TavilyExtractEndpoint",
-      "TavilyExtractRequest",
-      "TavilySearchEndpoint",
-      "TavilySearchRequest"
-    ],
     "lionagi/service/_api_telemetry.py": [
       "APIUsageSink",
       "InputDecision",
@@ -3310,6 +2606,9 @@
       "record_cache_usage",
       "record_guard_refusal",
       "record_selected_attempt"
+    ],
+    "lionagi/service/_output_limit.py": [
+      "read_output_limit_stop"
     ],
     "lionagi/service/_prompt_cache.py": [
       "PromptCacheCall",
@@ -3329,6 +2628,15 @@
       "prompt_cache_call",
       "protection",
       "settle"
+    ],
+    "lionagi/service/_subagent_admission.py": [
+      "SubagentLease",
+      "admit_subagent",
+      "child_agent_depth",
+      "engine_cap_env",
+      "refuse_nested_agent",
+      "set_child_agent_depth",
+      "subagent_admission_status"
     ],
     "lionagi/service/accounts/_credentials.py": [
       "CredentialSources",
@@ -3369,6 +2677,15 @@
       "current_scope",
       "routing_scope"
     ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "OneNameLookup",
+      "ResolvedSecretLookup",
+      "SecretLookupResolution",
+      "fill_declared_secrets",
+      "fill_declared_secrets_and_names",
+      "lookup_one_name",
+      "resolve_secret_lookup_config"
+    ],
     "lionagi/service/accounts/_types.py": [
       "AccountRoutingError",
       "AccountSpec",
@@ -3382,6 +2699,33 @@
     ],
     "lionagi/service/broadcaster.py": [
       "Broadcaster"
+    ],
+    "lionagi/service/connections/_chat_schemas.py": [
+      "AssistantMessage",
+      "ChatRole",
+      "DeveloperMessage",
+      "FunctionCall",
+      "FunctionDef",
+      "FunctionTool",
+      "ImageURLObject",
+      "ImageURLPart",
+      "JSONSchemaFormat",
+      "OpenAIChatCompletionsRequest",
+      "ResponseFormatJSONObject",
+      "ResponseFormatJSONSchema",
+      "ResponseFormatText",
+      "StreamOptions",
+      "SystemMessage",
+      "TextPart",
+      "ToolCall",
+      "ToolCallFunction",
+      "ToolChoiceFunction",
+      "ToolMessage",
+      "UserMessage",
+      "uses_developer_messages"
+    ],
+    "lionagi/service/connections/_provider_compat.py": [
+      "default_provider_catalog"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
       "AgenticEndpoint"
@@ -3408,6 +2752,14 @@
       "create_mcp_tool",
       "is_synthetic_mcp_wrapper_schema",
       "validate_mcp_tool_admission"
+    ],
+    "lionagi/service/connections/provider_catalog.py": [
+      "DependencyRequirement",
+      "EndpointDeclaration",
+      "ProviderCatalog",
+      "ProviderFragment",
+      "ProviderManifest",
+      "compose_provider_catalog"
     ],
     "lionagi/service/connections/provider_config.py": [
       "LazyType",

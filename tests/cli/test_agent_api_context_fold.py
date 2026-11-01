@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 
 from lionagi._errors import ConfigurationError, InputTokenCapError
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.imodel import iModel
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from tests.cli import test_agent_api_provider as _provider_tests
 from tests.cli.test_agent_api_provider import (
     _answer,

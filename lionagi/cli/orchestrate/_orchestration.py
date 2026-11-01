@@ -32,7 +32,7 @@ from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
-from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
+from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 
 from .. import team as _team_module
@@ -849,7 +849,7 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     if not getattr(imodel, "is_cli", False):
         return
     from lionagi.agent.factory import _canonical_provider
-    from lionagi.providers.openai._codex_profile import (
+    from lionhub.providers.openai._codex_profile import (
         refuse_codex_profile_run_settings,
         resolve_codex_config_profile,
     )
@@ -1980,7 +1980,7 @@ async def setup_orchestration_persist(
     ctx = None
     admission_checked = False
     generation_id = str(uuid.uuid4())
-    from lionagi.providers._provider_errors import _WorkerSpawnAdmissionError
+    from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionagi.state.cli_workers import _WorkerSpawnOwner
     from lionagi.state.compat import is_compatibility_store, refusal_in
 

@@ -34,6 +34,11 @@ class _FakeProc:
     def __init__(self, pid: int = 4242) -> None:
         self.pid = pid
 
+    def wait(self, timeout: float | None = None) -> int:
+        # submit() hands the child to a thread that waits on it; this one has
+        # already exited.
+        return 0
+
 
 @pytest.fixture
 def submit_dir(monkeypatch, tmp_path):

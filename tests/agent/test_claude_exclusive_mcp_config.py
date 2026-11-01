@@ -14,8 +14,8 @@ import pytest
 
 from lionagi.agent.factory import apply_forwarded_mcp_servers, create_agent
 from lionagi.agent.spec import AgentSpec
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 from lionagi.service.imodel import iModel
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
 
 def _mcp_argument(args: list[str]) -> str:

@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
+from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from tests.cli import test_agent_api_provider as _provider_tests
 from tests.cli.test_agent_api_context_fold import _SUMMARY_PROMPT
 from tests.cli.test_agent_api_provider import (

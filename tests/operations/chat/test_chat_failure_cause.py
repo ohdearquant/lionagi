@@ -9,10 +9,10 @@ from types import MethodType
 import pytest
 
 from lionagi._errors import ExecutionError
+from lionagi._provider_errors import ProviderAuthError
 from lionagi.operations.chat.chat import chat
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.generic import EventStatus
-from lionagi.providers._provider_errors import ProviderAuthError
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 

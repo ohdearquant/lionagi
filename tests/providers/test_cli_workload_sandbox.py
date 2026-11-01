@@ -14,9 +14,9 @@ import subprocess
 import pytest
 
 from lionagi._errors import CLIInputRefusedError
-from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
-from lionagi.providers.google.gemini_code import GeminiCodeRequest
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+from lionhub.providers.google.gemini_code import GeminiCodeRequest
+from lionhub.providers.openai.codex import CodexCodeRequest
 
 
 def _codex(tmp_path, **kw) -> list[str]:
@@ -346,7 +346,7 @@ def test_a_light_gemini_agent_always_runs_sandboxed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_light_pi_agent_is_refused_before_anything_starts(tmp_path, monkeypatch):
-    import lionagi.providers.pi.cli as pi_cli
+    import lionhub.providers.pi.cli as pi_cli
 
     monkeypatch.setattr(pi_cli, "PI_CLI", str(tmp_path / "pi-must-not-run"))
     request = pi_cli.PiCodeRequest(prompt="hi", repo=tmp_path, workload="light")

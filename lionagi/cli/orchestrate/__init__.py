@@ -16,11 +16,11 @@ from lionagi._flow_spec import (
     validate_flow_args_schema,
     validate_flow_spec_fields,
 )
+from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
-from lionagi.providers._provider_errors import NestedAgentRefusedError
-from lionagi.providers._subagent_admission import refuse_nested_agent
+from lionagi.service._subagent_admission import refuse_nested_agent
 
 from .._logging import hint, log_error
 from .._orchestrate_parsing import _add_mcp_config_args as _add_mcp_config_args

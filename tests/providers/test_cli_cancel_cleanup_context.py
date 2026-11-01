@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from lionagi.providers import _cli_subprocess as cli
+from lionhub.providers import _cli_subprocess as cli
 from tests.providers.test_cli_observer_bounded_cleanup import (
     fake_observer_boundary as fake_observer_boundary,
 )

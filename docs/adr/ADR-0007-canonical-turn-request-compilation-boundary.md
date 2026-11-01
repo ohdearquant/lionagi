@@ -561,9 +561,11 @@ lines:
   the provider name to `ProviderReport.skipped` and moves on
   (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
-  (`lionagi/operations/chat/_prepare.py:208`), and joined into the guidance fold with no marker
-  (`:391-392`), or, with ADR-0127's prompt-cache option on, kept on the turn's instruction and
-  sent after it as one more block (`:232-233`, `:495-496`). The prompt therefore shows the kept
+  (`lionagi/operations/chat/_prepare.py:208`), and joined into the first instruction's guidance,
+  or prefixed to its plain content, with no marker (`:391-392`, `:500-528`); when no instruction
+  renders, nonblank blocks are sent as one user message of their own (`:576-577`); with
+  ADR-0127's prompt-cache option on, they are kept on the turn's instruction and sent after it as
+  one more block (`:232-233`, `:529-530`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
   and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
@@ -583,21 +585,21 @@ lines:
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionagi/providers/openai/codex.py:2918-2921`); a list's tail replaced by an item counting the
-  entries left out (`:3040-3043`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:3072-3077`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionhub/src/lionhub/providers/openai/codex.py:2921-2924`); a list's tail replaced by an item counting the
+  entries left out (`:3043-3046`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:3075-3080`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionagi/providers/openai/codex.py:3132-3135`, called from `:3321`), so the
+  file-change item (`lionhub/src/lionhub/providers/openai/codex.py:3135-3138`, called from `:3324`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
   first retained message under a system message is not an Instruction
   (`lionagi/operations/chat/_prepare.py:408`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:527-540`). That guard tests the current turn, the last entry appended to the
+  or images (`:561-574`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
-  `_last_index` (`:450-451`, `:491-492`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:581-594`). No section boundary refuses
+  `_last_index` (`:450-451`, `:496-497`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`:618-631`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action
@@ -621,8 +623,8 @@ lines:
   `lionagi/protocols/context_providers.py:25`) and per-provider maxima; nothing bounds the
   system section, and the history section is shaped before compilation by the active view rather
   than by a bound. What exists for history and tool results is the model-window lookup
-  (`lookup_context_window()`, `lionagi/service/token_budget.py:78`, reached through
-  `get_context_window()` at `:118-137`, the limit `get_token_budget()` at `:140` measures usage
+  (`lookup_context_window()`, `lionagi/service/token_budget.py:18`, reached through
+  `get_context_window()` at `:72-91`, the limit `get_token_budget()` at `:94` measures usage
   against), whose result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
   cuts or records anything.
 

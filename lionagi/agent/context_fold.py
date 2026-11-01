@@ -9,7 +9,8 @@ Before a chat request is compiled, the fold estimates its input; at ``fold_at`` 
 deleted. The first stage replaces older tool calls and results with a host-written list of the
 calls (their function, arguments and output size), so the model still knows which files it
 read and which searches it ran. Large result bodies, including unread results and the kept tail,
-can then be clipped into recoverable copies. If needed, a final stage summarizes delivered
+can then be clipped into recoverable copies, and so can a reply that stopped at its output limit.
+If needed, a final stage summarizes delivered
 reasoning with one history-free model call. The task instruction stays verbatim. Every pass
 is recorded in ``records`` for the run manifest and lands only if it lowers the estimate.
 """
@@ -47,6 +48,8 @@ _MAX_ARG_CHARS = 160
 _MAX_PATH_CHARS = 1_000
 _MAX_PATH_LIST_CHARS = 4_000
 _MAX_SUMMARY_CHARS = 5_000
+# A reply that stopped at its output limit is never clipped below this many characters.
+_MIN_CLIPPED_REPLY_CHARS = 1_024
 # Argument names that carry a path: a key ending in one of these (case-insensitive) keeps its
 # value whole up to _MAX_PATH_CHARS, each element of a list of them too.
 _PATH_KEY_SUFFIXES = (
@@ -455,6 +458,8 @@ class ContextFold:
                     landed = await self._fold_once("tool_io", keep_tail, reason) or landed
                 if self.estimate() > self.target * self.cap:
                     landed = await self._clip_once(reason) or landed
+                if self.estimate() > self.target * self.cap:
+                    landed = await self._clip_runaway_once(reason) or landed
                 if done():
                     return landed
             from lionagi.protocols.messages import Instruction
@@ -922,6 +927,125 @@ class ContextFold:
                 "target_reached": (count if landed else before) <= target,
                 "clipped": clipped[:_MAX_RECORDED_CALLS] if landed else [],
                 "clipped_total": len(clipped) if landed else 0,
+            }
+        )
+        return landed
+
+    async def _clip_runaway_once(self, reason: str) -> bool:
+        """Clip assistant texts that stopped at their output limit into shorter copies.
+
+        A reply cut off at its output limit while writing text can be far larger than any tool
+        result, and the next request carries it. Each such text past the cache frontier and the
+        last note is swapped in the active view for a copy that keeps its head and says how many
+        characters were cut; the longest text shrinks first. The original stays in the message
+        pile with its raw response, and the copy records it in ``clipped_from``. The copy carries
+        no raw response, so it never reads as a stop at the limit. Lands only if it lowers the
+        estimate.
+        """
+        from lionagi.protocols.generic.progression import Progression
+        from lionagi.protocols.messages import AssistantResponse
+        from lionagi.protocols.messages.assistant_response import AssistantResponseContent
+        from lionagi.service._output_limit import read_output_limit_stop
+
+        active = list(self.branch.progression)
+        pile = self.branch.msgs.messages
+        view = [pile[uid] for uid in active]
+        before = self.estimate()
+        target = self.target * self.cap
+        start = max(self._cache_bounds(active)[1:]) + 1
+        runaway = {}
+        for slot, message in enumerate(view):
+            if slot < start or not isinstance(message, AssistantResponse):
+                continue
+            text = message.content.assistant_response
+            if "clipped_from" in message.metadata or len(text) <= _MIN_CLIPPED_REPLY_CHARS:
+                continue
+            if read_output_limit_stop(message.metadata.get("model_response"))[0]:
+                runaway[slot] = text
+        if not runaway:
+            return False
+        originals = {slot: view[slot] for slot in runaway}
+
+        def build(original, kept):
+            text = original.content.assistant_response
+            marker = (
+                f"\n[{len(text) - kept} characters cut from a reply that stopped at its "
+                "output limit.]"
+            )
+            return AssistantResponse(
+                content=AssistantResponseContent(assistant_response=text[:kept] + marker),
+                sender=original.sender,
+                recipient=original.recipient,
+                metadata={"clipped_from": str(original.id)},
+            )
+
+        count = before
+        copies = {}
+        for slot in sorted(runaway, key=lambda number: (-len(runaway[number]), number)):
+            if count <= target:
+                break
+            original = originals[slot]
+            length = len(runaway[slot])
+            empty_view = list(view)
+            empty_view[slot] = build(original, 0)
+            contribution = count - self._estimate_view(empty_view)
+            if contribution <= 0:
+                continue
+            ratio = contribution / length
+            kept = min(
+                length - 1,
+                max(_MIN_CLIPPED_REPLY_CHARS, length - math.ceil((count - target) / ratio)),
+            )
+            while True:
+                trial = list(view)
+                trial[slot] = build(original, kept)
+                after = self._estimate_view(trial)
+                if after <= target or kept == _MIN_CLIPPED_REPLY_CHARS:
+                    break
+                kept = max(
+                    _MIN_CLIPPED_REPLY_CHARS,
+                    kept - max(1, math.ceil((after - target) / ratio)),
+                )
+            if after < count:
+                view[slot] = trial[slot]
+                copies[slot] = (trial[slot], kept)
+                count = after
+        landed = bool(copies) and count < before
+        clipped = []
+        if landed:
+            for slot, (copied, kept) in copies.items():
+                async with self.branch.msgs.messages:
+                    self.branch.msgs.messages.update(copied)
+                await self.branch.msgs._a_fire_on_message_added(copied)
+                clipped.append(
+                    {
+                        "index": self.branch.msgs.progression.index(originals[slot].id),
+                        "chars": len(runaway[slot]),
+                        "kept": kept,
+                    }
+                )
+            self.branch.metadata["current_progression"] = Progression(
+                order=[message.id for message in view]
+            )
+        self.records.append(
+            {
+                "at": time.time(),
+                "reason": reason,
+                "stage": "clip",
+                "kept_tail": None,
+                "messages_folded": 0,
+                "tool_calls": [],
+                "tool_calls_total": 0,
+                "summary_source": None,
+                "summary_usage": None,
+                "estimate_before": before,
+                "estimate_after": count if landed else before,
+                "cap": self.cap,
+                "input_scale": round(self._provider_scale() * self._scale, 4),
+                "outcome": "landed" if landed else "rolled_back",
+                "target_reached": (count if landed else before) <= target,
+                "clipped": clipped[:_MAX_RECORDED_CALLS],
+                "clipped_total": len(clipped),
             }
         )
         return landed
