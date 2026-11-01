@@ -592,7 +592,46 @@ class EndpointRegistry:
         with cls._lock:
             if cls._loaded:
                 return
-            _import_all_providers()
+            from lionagi._feature_errors import MissingFeatureError
+            from lionagi._provider_errors import (
+                ProviderActivationError,
+                ProviderContractVersionError,
+            )
+
+            from ._provider_compat import default_provider_catalog
+
+            # Built-in providers register by importing the module each declaration of the
+            # bundled provider catalog names; importing a provider module runs its
+            # registration decorators. A catalog that cannot load leaves no built-in
+            # provider registered, and one warning says why.
+            try:
+                catalog = default_provider_catalog()
+            except (
+                MissingFeatureError,
+                ProviderActivationError,
+                ProviderContractVersionError,
+            ) as error:
+                logger.warning(
+                    "built-in providers were not registered: "
+                    "the provider catalog could not load: %s: %s",
+                    type(error).__name__,
+                    error,
+                )
+            else:
+                for provider in catalog.providers:
+                    for declaration in provider.endpoints:
+                        try:
+                            declaration.factory()
+                        except ImportError as error:
+                            logger.warning(
+                                "provider module %r failed to import and was not registered: %s",
+                                declaration.diagnostic_id.partition(":")[0],
+                                error,
+                            )
+            # Test-only scripted provider (provider="scripted"): a leaf core module,
+            # always loadable, gated behind LIONAGI_CHAT_PROVIDER=scripted. Imported after
+            # the declared providers so it stays last among the registered entries.
+            _import_provider_module("lionagi.testing._endpoint")
             cls._loaded = True
 
     @classmethod
@@ -649,10 +688,10 @@ def register_endpoint(
     )
 
 
-# Declared, not inferred: the optional third-party dependency each fixed
-# provider module needs, keyed by dotted module path. A module with no entry
-# here has none; add one the day a provider module imports its optional
-# dependency at module scope (all current ones defer past module scope).
+# Declared, not inferred: the optional third-party dependency each module
+# imported through ``_import_provider_module`` needs, keyed by dotted module
+# path. A module with no entry here has none; add one the day such a module
+# imports its optional dependency at module scope (none does today).
 _PROVIDER_OPTIONAL_DEPENDENCIES: dict[str, tuple[str, ...]] = {}
 
 
@@ -679,55 +718,3 @@ def _import_provider_module(mod: str) -> None:
             mod,
             e,
         )
-
-
-def _import_all_providers():
-    """Import all provider modules to trigger registration decorators."""
-    _modules = [
-        # OpenAI family
-        "lionhub.providers.openai.chat",
-        "lionhub.providers.openai.codex",
-        "lionhub.providers.openai.audio",
-        "lionhub.providers.openai.batch",
-        "lionhub.providers.openai.images",
-        "lionhub.providers.openai.embed",
-        "lionhub.providers.openai.response",
-        # Anthropic
-        "lionhub.providers.anthropic.messages",
-        "lionhub.providers.anthropic.claude_code",
-        # Ollama
-        "lionhub.providers.ollama.chat",
-        "lionhub.providers.ollama.embed",
-        "lionhub.providers.ollama.generate",
-        # Lattice
-        "lionhub.providers.lattice.chat",
-        "lionhub.providers.lattice.embed",
-        # Search & scraping
-        "lionhub.providers.tavily.search",
-        "lionhub.providers.exa.search",
-        "lionhub.providers.exa.contents",
-        "lionhub.providers.exa.find_similar",
-        "lionhub.providers.firecrawl.scrape",
-        "lionhub.providers.firecrawl.map",
-        "lionhub.providers.firecrawl.crawl",
-        # Chat / LLM providers
-        "lionhub.providers.perplexity.chat",
-        "lionhub.providers.nvidia_nim.chat",
-        "lionhub.providers.nvidia_nim.embed",
-        "lionhub.providers.deepseek.chat",
-        "lionhub.providers.google.chat",
-        "lionhub.providers.google.gemini_code",
-        "lionhub.providers.groq.chat",
-        "lionhub.providers.groq.audio_transcription",
-        "lionhub.providers.pi.cli",
-        "lionhub.providers.openrouter.chat",
-        # Agentic
-        "lionhub.providers.ag2.groupchat",
-        "lionhub.providers.ag2.agent",
-        "lionhub.providers.ag2.nlip",
-        # Test-only scripted provider (provider="scripted") — leaf module,
-        # always loadable; gated behind LIONAGI_CHAT_PROVIDER=scripted.
-        "lionagi.testing._endpoint",
-    ]
-    for mod in _modules:
-        _import_provider_module(mod)

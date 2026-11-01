@@ -89,7 +89,7 @@ print(json.dumps({
     assert report == {"core_loaded": True, "hub_modules": []}
 
 
-def test_cold_registry_load_without_hub_logs_each_failed_module(tmp_path):
+def test_cold_registry_load_without_hub_logs_one_catalog_failure(tmp_path):
     report = _run_blocked(
         """
 import logging
@@ -120,8 +120,7 @@ print(json.dumps({
     "raised": raised,
     "logger_names": sorted({r.name for r in records}),
     "levels": sorted({r.levelname for r in records}),
-    "warned_modules": [r.args[0] for r in records],
-    "failure_texts": sorted({str(r.args[1]) for r in records}),
+    "messages": [r.getMessage() for r in records],
     "providers": [[p["provider"], p["endpoint"]] for p in providers],
 }))
 """,
@@ -132,62 +131,23 @@ print(json.dumps({
     # loading lazy (first provider or context-window request); only the flag
     # that records it can change.
     assert report["cold_before"] is False
-    # Pins: an absent hub does not make the loader raise; each failure is logged
-    # and skipped. ADR-0140 D4 and ADR-0136 Amendment 3 C3 turn this into a typed
-    # error at provider selection (MissingFeatureError, feature=providers), and
-    # D1 removes this loader.
+    # Pins: an absent hub does not make the loader raise. A typed error at
+    # provider selection (MissingFeatureError, feature=providers) is a later change.
     assert report["raised"] is None
-    # Pins: the warnings come from the registry module's logger. ADR-0136
-    # Amendment 3 C3 forbids changing logger names in the package move; the
-    # warnings themselves go with the loader (ADR-0140 D1).
+    # Pins: the warning comes from the registry module's logger; its name does
+    # not change.
     assert report["logger_names"] == [_REGISTRY_LOGGER]
     assert report["levels"] == ["WARNING"]
-    # Pins: every hub module in the loader's fixed list is named once, in list
-    # order, and the one core module in that list is not named. ADR-0140 D1
-    # deletes the fixed list and with it this per-module warning pile.
-    assert report["warned_modules"] == [
-        "lionhub.providers.openai.chat",
-        "lionhub.providers.openai.codex",
-        "lionhub.providers.openai.audio",
-        "lionhub.providers.openai.batch",
-        "lionhub.providers.openai.images",
-        "lionhub.providers.openai.embed",
-        "lionhub.providers.openai.response",
-        "lionhub.providers.anthropic.messages",
-        "lionhub.providers.anthropic.claude_code",
-        "lionhub.providers.ollama.chat",
-        "lionhub.providers.ollama.embed",
-        "lionhub.providers.ollama.generate",
-        "lionhub.providers.lattice.chat",
-        "lionhub.providers.lattice.embed",
-        "lionhub.providers.tavily.search",
-        "lionhub.providers.exa.search",
-        "lionhub.providers.exa.contents",
-        "lionhub.providers.exa.find_similar",
-        "lionhub.providers.firecrawl.scrape",
-        "lionhub.providers.firecrawl.map",
-        "lionhub.providers.firecrawl.crawl",
-        "lionhub.providers.perplexity.chat",
-        "lionhub.providers.nvidia_nim.chat",
-        "lionhub.providers.nvidia_nim.embed",
-        "lionhub.providers.deepseek.chat",
-        "lionhub.providers.google.chat",
-        "lionhub.providers.google.gemini_code",
-        "lionhub.providers.groq.chat",
-        "lionhub.providers.groq.audio_transcription",
-        "lionhub.providers.pi.cli",
-        "lionhub.providers.openrouter.chat",
-        "lionhub.providers.ag2.groupchat",
-        "lionhub.providers.ag2.agent",
-        "lionhub.providers.ag2.nlip",
-    ]
-    # Pins: each failure carries the missing-module text of the blocked hub root.
-    # Removed together with the loader under ADR-0140 D1.
-    assert report["failure_texts"] == ["No module named 'lionhub'"]
-    # Pins: after the load, only the scripted test provider is registered.
-    # ADR-0140 D1 replaces this loader and turns the scripted provider's
-    # registration into an explicitly selected core test fragment, so how this
-    # list is produced changes with it.
+    # Pins: the catalog failure is logged once, naming the error, instead of one
+    # warning per provider module.
+    assert len(report["messages"]) == 1
+    assert report["messages"][0].startswith(
+        "built-in providers were not registered: "
+        "the provider catalog could not load: MissingFeatureError"
+    )
+    # Pins: after the load, only the scripted test provider is registered. It
+    # stays a core module that the loader imports directly; a later change
+    # turns it into an explicitly selected test fragment.
     assert report["providers"] == [["scripted", "chat/completions"]]
 
 

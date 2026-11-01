@@ -909,44 +909,6 @@ def _provider_inventory() -> dict[str, list[str]]:
 # lionagi/) and target module, one entry per reference. Each is a listed interim edge: this
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
-    # The ``_modules`` list in ``_import_all_providers``: imported to run the registration
-    # decorators of every provider.
-    "service/connections/registry.py": [
-        "lionhub.providers.openai.chat",
-        "lionhub.providers.openai.codex",
-        "lionhub.providers.openai.audio",
-        "lionhub.providers.openai.batch",
-        "lionhub.providers.openai.images",
-        "lionhub.providers.openai.embed",
-        "lionhub.providers.openai.response",
-        "lionhub.providers.anthropic.messages",
-        "lionhub.providers.anthropic.claude_code",
-        "lionhub.providers.ollama.chat",
-        "lionhub.providers.ollama.embed",
-        "lionhub.providers.ollama.generate",
-        "lionhub.providers.lattice.chat",
-        "lionhub.providers.lattice.embed",
-        "lionhub.providers.tavily.search",
-        "lionhub.providers.exa.search",
-        "lionhub.providers.exa.contents",
-        "lionhub.providers.exa.find_similar",
-        "lionhub.providers.firecrawl.scrape",
-        "lionhub.providers.firecrawl.map",
-        "lionhub.providers.firecrawl.crawl",
-        "lionhub.providers.perplexity.chat",
-        "lionhub.providers.nvidia_nim.chat",
-        "lionhub.providers.nvidia_nim.embed",
-        "lionhub.providers.deepseek.chat",
-        "lionhub.providers.google.chat",
-        "lionhub.providers.google.gemini_code",
-        "lionhub.providers.groq.chat",
-        "lionhub.providers.groq.audio_transcription",
-        "lionhub.providers.pi.cli",
-        "lionhub.providers.openrouter.chat",
-        "lionhub.providers.ag2.groupchat",
-        "lionhub.providers.ag2.agent",
-        "lionhub.providers.ag2.nlip",
-    ],
     # Every import here is inside a function (see the test of that below).
     "agent/factory.py": [
         *["lionhub.providers._cli_subprocess"] * 2,
