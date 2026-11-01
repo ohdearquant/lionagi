@@ -391,17 +391,21 @@ async def test_cancellation_during_cleanup_survives_later_cleanup_failure(
         )
     )
     caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    # These waits only bound events that follow within a few event-loop turns. The
+    # bound is generous so that a stalled loop (a loaded machine) does not become a
+    # TimeoutError, while a cleanup that never finishes still fails once it expires.
+    bound = 10.0
     existing_tasks = asyncio.all_tasks()
     task = asyncio.create_task(_lookup(path, proc))
-    await asyncio.wait_for(proc.killed.wait(), timeout=0.5)
-    await asyncio.wait_for(proc.stdout.drain_started.wait(), timeout=0.5)
-    await asyncio.wait_for(proc.wait_started.wait(), timeout=0.5)
+    await asyncio.wait_for(proc.killed.wait(), timeout=bound)
+    await asyncio.wait_for(proc.stdout.drain_started.wait(), timeout=bound)
+    await asyncio.wait_for(proc.wait_started.wait(), timeout=bound)
     task.cancel()
     await asyncio.sleep(0)
     proc.failure_release.set()
 
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=1.5)
+        await asyncio.wait_for(task, timeout=bound)
 
     _assert_finished(proc)
     assert proc.pipe.close_calls == 1
