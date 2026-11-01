@@ -22,6 +22,8 @@ from uuid import UUID
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import move_on_after, run_sync
 from lionagi.service.accounts._types import (
+    _PROVIDER_ERROR_TYPES,
+    _REJECTION_CLASSES,
     INT64_MAX,
     AccountRoutingError,
     AccountSpec,
@@ -34,6 +36,7 @@ from lionagi.service.accounts._types import (
     Scope,
     SettleResult,
     UnknownOutcome,
+    _check_member,
 )
 
 __all__ = ("CredentialLedger", "AccountStatus", "default_ledger_path")
@@ -44,6 +47,8 @@ _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MONTH_RE = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])\Z")
 _INT64_MIN = -(INT64_MAX + 1)
 _TABLES = {"account", "month", "binding", "attempt", "adjustment"}
+# Attempt columns added after a ledger could already exist; opening an older ledger adds them.
+_REJECTION_COLUMNS = ("provider_error_type", "rejection_class")
 _T = TypeVar("_T")
 _LOGGER = logging.getLogger(__name__)
 # How long one ledger call waits for a worker thread before it is refused as busy. The
@@ -406,21 +411,28 @@ class CredentialLedger:
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
         }
 
+    @staticmethod
+    def _attempt_columns(connection: sqlite3.Connection) -> set[str]:
+        return {row[1] for row in connection.execute('PRAGMA table_info("attempt")')}
+
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         # Unlocked, these reads can straddle another process's schema commit, so
-        # they only let a complete ledger through, warm-prefix indexes included; every
-        # other answer is read again, together, under the write lock before anything
-        # is refused or created.
+        # they only let a complete ledger through, warm-prefix indexes and rejection
+        # columns included; every other answer is read again, together, under the
+        # write lock before anything is refused or created.
         if (
             connection.execute("PRAGMA user_version").fetchone()[0] == 1
             and (_TABLES | {"warm_prefix"}).issubset(self._table_names(connection))
             and {"warm_prefix_cert", "warm_prefix_expiry"}.issubset(self._index_names(connection))
+            and set(_REJECTION_COLUMNS).issubset(self._attempt_columns(connection))
         ):
             return
 
         # A ledger written before warm-prefix tracking is still version 1 and has none
         # of this table, so the table is added whenever it is missing and a reader that
-        # predates it never needs it.
+        # predates it never needs it. The same holds for the attempt columns that record
+        # a rejected request: each missing one is added, after the columns are read again
+        # under this lock because another process may have added them first.
         warm_prefix_ddl = """
             CREATE TABLE IF NOT EXISTS warm_prefix (
                 provider TEXT NOT NULL,
@@ -446,6 +458,10 @@ class CredentialLedger:
                 connection.execute(warm_prefix_ddl)
                 for statement in warm_prefix_indexes:
                     connection.execute(statement)
+                columns = self._attempt_columns(connection)
+                for column in _REJECTION_COLUMNS:
+                    if column not in columns:
+                        connection.execute(f'ALTER TABLE attempt ADD COLUMN "{column}" TEXT')
                 return
             if version != 0 or tables:
                 raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
@@ -507,6 +523,8 @@ class CredentialLedger:
                     outcome TEXT,
                     created_at TEXT NOT NULL,
                     settled_at TEXT,
+                    provider_error_type TEXT,
+                    rejection_class TEXT,
                     CHECK (
                         (state = 'settled' AND typeof(cost_nusd) = 'integer'
                          AND cost_nusd >= 0)
@@ -837,6 +855,8 @@ class CredentialLedger:
     ) -> SettleResult:
         usage_json: str | None = None
         request_id: str | None = None
+        provider_error_type: str | None = None
+        rejection_class: str | None = None
         cost_nusd: int
         outcome: str
         if isinstance(evidence, CompleteUsage):
@@ -848,6 +868,12 @@ class CredentialLedger:
             outcome = "not_sent"
         elif isinstance(evidence, UnknownOutcome):
             outcome = _validate_reason(evidence.reason_code)
+            _check_member(
+                "provider_error_type", evidence.provider_error_type, _PROVIDER_ERROR_TYPES
+            )
+            _check_member("rejection_class", evidence.rejection_class, _REJECTION_CLASSES)
+            provider_error_type = evidence.provider_error_type
+            rejection_class = evidence.rejection_class
             cost_nusd = 0
         else:
             raise ValueError("invalid settlement evidence")
@@ -882,11 +908,13 @@ class CredentialLedger:
                     if state == "settled":
                         return "already_settled"
                     # The first reason recorded on an open attempt stands: a later write (a
-                    # cancellation arriving after a rate limit was recorded) keeps it.
+                    # cancellation arriving after a rate limit was recorded) keeps it, and the
+                    # rejection fields are written with the reason or not at all.
                     connection.execute(
-                        "UPDATE attempt SET outcome = ? "
+                        "UPDATE attempt SET outcome = ?, provider_error_type = ?, "
+                        "rejection_class = ? "
                         "WHERE id = ? AND state = 'open' AND outcome IS NULL",
-                        (outcome, str(attempt_id)),
+                        (outcome, provider_error_type, rejection_class, str(attempt_id)),
                     )
                     if outcome not in ("cancelled", "stream_closed"):
                         _clear_warm_prefix(connection, provider, account)
