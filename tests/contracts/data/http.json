@@ -4010,7 +4010,7 @@
       "status_code": null,
       "tags": [],
       "summary": null,
-      "description": "Spend a pairing code for the bearer a page on an allowed origin sends, and a\ndecision capability bound to that origin.",
+      "description": "Spend a pairing code for the bearer a page on an allowed origin sends, and a\ndecision capability bound to that origin.\n\n``token_source`` says which bearer ``token`` is: ``\"launch\"`` for this daemon's\nlaunch bearer, which stops working when the daemon restarts, or ``\"configured\"``\nfor the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential that a\npage keeps in memory only.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.pairing",
@@ -13013,7 +13013,7 @@
       "/api/studio/pair": {
         "post": {
           "summary": "Redeem Pairing Code",
-          "description": "Spend a pairing code for the bearer a page on an allowed origin sends, and a\ndecision capability bound to that origin.",
+          "description": "Spend a pairing code for the bearer a page on an allowed origin sends, and a\ndecision capability bound to that origin.\n\n``token_source`` says which bearer ``token`` is: ``\"launch\"`` for this daemon's\nlaunch bearer, which stops working when the daemon restarts, or ``\"configured\"``\nfor the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential that a\npage keeps in memory only.",
           "requestBody": {
             "content": {
               "application/json": {

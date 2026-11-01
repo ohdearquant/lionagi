@@ -4,7 +4,12 @@ import Button from "@/components/ui/Button";
 import { IconPort, IconTerminal } from "@/components/ui/icons";
 import { API_BASE } from "@/lib/api";
 import { onAccessRefused, onConnectivityFailure } from "@/lib/connectivity";
-import { hasPendingPairingCode, redeemPairingCode } from "@/lib/pairing";
+import {
+  forgetPairedBearer,
+  hasPendingPairingCode,
+  redeemPairingCode,
+  storedBearerToCheck,
+} from "@/lib/pairing";
 
 const POLL_INTERVAL_MS = 5000;
 // Floor between two connectivity-failure-triggered re-probes, so a burst of
@@ -39,18 +44,50 @@ async function probeDaemon(apiBase: string): Promise<"connected" | "unreachable"
   return response.ok && status === "ok" ? "connected" : "wrongApp";
 }
 
+// A read-only catalog every daemon this page pairs with serves behind the bearer
+// check, so one request tells whether a stored bearer is still accepted.
+const BEARER_CHECK_PATH = "/api/casts/";
+
+/**
+ * Send a bearer an earlier load stored once, before the app mounts. The daemon
+ * draws a new launch bearer each time it starts, so a stored one can be stale:
+ * a 401 forgets it and the page asks to be paired again. A request that does not
+ * reach the daemon keeps it for the next probe. Any other answer means the
+ * bearer was accepted; the app's own requests report their errors as usual.
+ */
+async function checkStoredBearer(apiBase: string, bearer: string): Promise<ConnectivityStatus> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}${BEARER_CHECK_PATH}`, {
+      headers: { Authorization: `Bearer ${bearer}` },
+    });
+  } catch {
+    return "unreachable";
+  }
+  if (response.status === 401) {
+    forgetPairedBearer();
+    return "accessRequired";
+  }
+  return "connected";
+}
+
 /**
  * Probe the daemon, then spend a pairing code the page was opened with once the
  * daemon answers, before any request needs the bearer it returns. A refused code
  * leaves the page without access; a code that did not reach the daemon is kept
- * and tried again on the next probe.
+ * and tried again on the next probe. With no code, a bearer stored by an earlier
+ * load is checked with the daemon before the app mounts.
  */
 async function connect(apiBase: string): Promise<ConnectivityStatus> {
   const result = await probeDaemon(apiBase);
-  if (result !== "connected" || !hasPendingPairingCode()) return result;
-  const paired = await redeemPairingCode(apiBase);
-  if (paired === "paired") return "connected";
-  return paired === "refused" ? "accessRequired" : "unreachable";
+  if (result !== "connected") return result;
+  if (hasPendingPairingCode()) {
+    const paired = await redeemPairingCode(apiBase);
+    if (paired === "paired") return "connected";
+    return paired === "refused" ? "accessRequired" : "unreachable";
+  }
+  const stored = storedBearerToCheck(apiBase);
+  return stored === undefined ? "connected" : checkStoredBearer(apiBase, stored);
 }
 
 /**

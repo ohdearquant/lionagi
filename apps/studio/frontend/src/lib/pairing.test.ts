@@ -3,13 +3,14 @@
  *
  * The code arrives in the URL fragment, must leave the address bar before
  * anything else reads the location, and is exchanged once for a bearer that
- * lives in memory only.
+ * the page keeps for that daemon, across reloads, until the daemon refuses it.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import {
   PAIRING_TIMEOUT_MS,
   clearDecisionToken,
+  forgetPairedBearer,
   hasPendingPairingCode,
   pairedBearer,
   pairedDecisionToken,
@@ -95,8 +96,8 @@ describe("redeemPairingCode", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("exchanges the code for a bearer held in memory for that daemon only", async () => {
-    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer" }));
+  it("exchanges the code for a bearer that only that daemon's requests receive", async () => {
+    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer", token_source: "launch" }));
 
     expect(await redeemPairingCode(BASE)).toBe("paired");
 
@@ -107,11 +108,16 @@ describe("redeemPairingCode", () => {
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
     expect(pairedBearer(BASE)).toBe("launch-bearer");
     expect(pairedBearer("http://127.0.0.1:8766")).toBeUndefined();
-    // The bearer is still memory-only: no response field is stored, and this
-    // daemon issued no decision capability to store either.
+    // The bearer is written once to localStorage, under its own key and bound to
+    // this daemon; no other response field is stored, and this daemon issued no
+    // decision capability to store either.
     expect(sessionWrites).not.toHaveBeenCalled();
     expect(hasPendingPairingCode()).toBe(false);
-    expect(localWrites).not.toHaveBeenCalled();
+    expect(localWrites).toHaveBeenCalledTimes(1);
+    expect(localWrites).toHaveBeenCalledWith(
+      "studio.pairedBearer",
+      JSON.stringify({ base: BASE, token: "launch-bearer" }),
+    );
     expect(document.cookie).not.toContain("launch-bearer");
   });
 
@@ -124,7 +130,7 @@ describe("redeemPairingCode", () => {
     const first = redeemPairingCode(BASE);
     expect(hasPendingPairingCode()).toBe(true);
     const second = redeemPairingCode(BASE);
-    answer(respond(200, { token: "launch-bearer" }));
+    answer(respond(200, { token: "launch-bearer", token_source: "launch" }));
 
     expect(await Promise.all([first, second])).toEqual(["paired", "paired"]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -165,7 +171,7 @@ describe("redeemPairingCode", () => {
               );
             }),
         )
-        .mockResolvedValue(respond(200, { token: "launch-bearer" }));
+        .mockResolvedValue(respond(200, { token: "launch-bearer", token_source: "launch" }));
 
       let settled = false;
       const first = redeemPairingCode(BASE).finally(() => {
@@ -188,7 +194,7 @@ describe("redeemPairingCode", () => {
     let answer: (response: Response) => void = () => {};
     fetchMock
       .mockReturnValueOnce(new Promise<Response>((resolve) => (answer = resolve)))
-      .mockResolvedValue(respond(200, { token: "launch-bearer" }));
+      .mockResolvedValue(respond(200, { token: "launch-bearer", token_source: "launch" }));
 
     const first = redeemPairingCode(BASE);
     pendingPage("#pair=second-code");
@@ -210,7 +216,7 @@ describe("redeemPairingCode", () => {
 
     const first = redeemPairingCode(BASE);
     const second = redeemPairingCode(other);
-    answer(respond(200, { token: "launch-bearer" }));
+    answer(respond(200, { token: "launch-bearer", token_source: "launch" }));
 
     expect(await second).toBe("refused");
     expect(await first).toBe("paired");
@@ -224,7 +230,11 @@ describe("redeemPairingCode", () => {
 
   it("keeps the decision capability in sessionStorage for that daemon only", async () => {
     fetchMock.mockResolvedValue(
-      respond(200, { token: "launch-bearer", decision_token: "decision-capability" }),
+      respond(200, {
+        token: "launch-bearer",
+        token_source: "launch",
+        decision_token: "decision-capability",
+      }),
     );
     let stored: string | null = null;
     vi.stubGlobal("sessionStorage", {
@@ -251,7 +261,9 @@ describe("redeemPairingCode", () => {
     expect(pairedDecisionToken(BASE)).toBe("decision-capability");
     expect(pairedDecisionToken("http://127.0.0.1:8766")).toBeUndefined();
     expect(pairedBearer(BASE)).toBe("launch-bearer");
-    expect(localWrites).not.toHaveBeenCalled();
+    // The capability stays out of localStorage: only the bearer is written there.
+    expect(localWrites.mock.calls.map(([key]) => key)).toEqual(["studio.pairedBearer"]);
+    expect(JSON.stringify(localWrites.mock.calls)).not.toContain("decision-capability");
   });
 
   it("survives a reload: the capability is read back from sessionStorage", async () => {
@@ -269,7 +281,11 @@ describe("redeemPairingCode", () => {
 
   it("forgets the capability on disconnect", async () => {
     fetchMock.mockResolvedValue(
-      respond(200, { token: "launch-bearer", decision_token: "decision-capability" }),
+      respond(200, {
+        token: "launch-bearer",
+        token_source: "launch",
+        decision_token: "decision-capability",
+      }),
     );
     await redeemPairingCode(BASE);
     expect(pairedDecisionToken(BASE)).toBe("decision-capability");
@@ -280,7 +296,7 @@ describe("redeemPairingCode", () => {
   });
 
   it("pairs without a decision capability when the daemon issues none", async () => {
-    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer" }));
+    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer", token_source: "launch" }));
 
     expect(await redeemPairingCode(BASE)).toBe("paired");
     expect(pairedBearer(BASE)).toBe("launch-bearer");
@@ -288,7 +304,7 @@ describe("redeemPairingCode", () => {
   });
 
   it("spends the code once: a second redeem sends nothing", async () => {
-    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer" }));
+    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer", token_source: "launch" }));
     await redeemPairingCode(BASE);
 
     expect(await redeemPairingCode(BASE)).toBe("refused");
@@ -319,8 +335,237 @@ describe("redeemPairingCode", () => {
     expect(await redeemPairingCode(BASE)).toBe("unreachable");
     expect(hasPendingPairingCode()).toBe(true);
 
-    fetchMock.mockResolvedValueOnce(respond(200, { token: "launch-bearer" }));
+    fetchMock.mockResolvedValueOnce(
+      respond(200, { token: "launch-bearer", token_source: "launch" }),
+    );
     expect(await redeemPairingCode(BASE)).toBe("paired");
     expect(pairedBearer(BASE)).toBe("launch-bearer");
+  });
+});
+
+const BEARER_KEY = "studio.pairedBearer";
+
+/** A storage that keeps what it is given, as a browser's does across a reload. */
+function keepingStorage(): Storage {
+  const data = new Map<string, string>();
+  return {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      data.set(key, value);
+    },
+    removeItem: (key: string) => {
+      data.delete(key);
+    },
+    clear: () => data.clear(),
+    key: () => null,
+    get length() {
+      return data.size;
+    },
+  } as Storage;
+}
+
+/** A storage that refuses every call, as one does when the browser blocks it. */
+function refusingStorage(): Storage {
+  const refuse = (): never => {
+    throw new DOMException("storage is not available", "SecurityError");
+  };
+  return {
+    getItem: refuse,
+    setItem: refuse,
+    removeItem: refuse,
+    clear: refuse,
+    key: refuse,
+    length: 0,
+  } as Storage;
+}
+
+describe("a bearer kept across reloads", () => {
+  const OTHER = "http://127.0.0.1:8766";
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let storage: Storage;
+
+  beforeEach(() => {
+    resetPairingForTests();
+    storage = keepingStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.stubGlobal("sessionStorage", keepingStorage());
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    pendingPage("#pair=one-time-code");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+  });
+
+  async function pair(token = "launch-bearer"): Promise<void> {
+    fetchMock.mockResolvedValueOnce(respond(200, { token, token_source: "launch" }));
+    expect(await redeemPairingCode(BASE)).toBe("paired");
+  }
+
+  /** A fresh copy of the module, as after a reload: only the storage is kept. */
+  async function reload(): Promise<typeof import("./pairing")> {
+    vi.resetModules();
+    return import("./pairing");
+  }
+
+  it("keeps the base and the token it paired with", async () => {
+    await pair();
+
+    expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+      base: BASE,
+      token: "launch-bearer",
+    });
+    expect(pairedBearer(BASE)).toBe("launch-bearer");
+  });
+
+  it("answers for that daemon after a reload, and for no other", async () => {
+    await pair();
+
+    const reloaded = await reload();
+
+    expect(reloaded.pairedBearer(BASE)).toBe("launch-bearer");
+    expect(reloaded.pairedBearer(OTHER)).toBeUndefined();
+    expect(reloaded.pairedBearer(`${BASE}/`)).toBeUndefined();
+  });
+
+  it.each([
+    ["text that is not JSON", "not json {"],
+    ["JSON null", "null"],
+    ["a JSON string", JSON.stringify("launch-bearer")],
+    ["an array", JSON.stringify([BASE, "stored-token"])],
+    ["a record without a token", JSON.stringify({ base: BASE })],
+    ["a record without a base", JSON.stringify({ token: "stored-token" })],
+    ["a token that is not text", JSON.stringify({ base: BASE, token: 7 })],
+    ["an empty token", JSON.stringify({ base: BASE, token: "" })],
+  ])("gives nothing for a stored value that is %s", async (_label, raw) => {
+    const reloaded = await reload();
+    storage.setItem(BEARER_KEY, JSON.stringify({ base: BASE, token: "stored-token" }));
+    expect(reloaded.pairedBearer(BASE)).toBe("stored-token");
+
+    storage.setItem(BEARER_KEY, raw);
+
+    expect(() => reloaded.pairedBearer(BASE)).not.toThrow();
+    expect(reloaded.pairedBearer(BASE)).toBeUndefined();
+  });
+
+  it("pairs and answers from memory when the storage refuses every call", async () => {
+    vi.stubGlobal("localStorage", refusingStorage());
+
+    await pair();
+
+    expect(pairedBearer(BASE)).toBe("launch-bearer");
+    expect(pairedBearer(OTHER)).toBeUndefined();
+    expect(() => forgetPairedBearer()).not.toThrow();
+    expect(pairedBearer(BASE)).toBeUndefined();
+  });
+
+  it("reads nothing, without throwing, from a storage that refuses reads", async () => {
+    await pair();
+    const reloaded = await reload();
+    expect(reloaded.pairedBearer(BASE)).toBe("launch-bearer");
+
+    vi.stubGlobal("localStorage", refusingStorage());
+
+    expect(() => reloaded.pairedBearer(BASE)).not.toThrow();
+    expect(reloaded.pairedBearer(BASE)).toBeUndefined();
+  });
+
+  it("replaces the stored bearer when the page pairs again", async () => {
+    await pair("first-bearer");
+    pendingPage("#pair=second-code");
+    await pair("second-bearer");
+
+    expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+      base: BASE,
+      token: "second-bearer",
+    });
+    expect((await reload()).pairedBearer(BASE)).toBe("second-bearer");
+  });
+
+  it("forgets the bearer from memory and from storage", async () => {
+    await pair();
+
+    forgetPairedBearer();
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer(BASE)).toBeUndefined();
+    expect((await reload()).pairedBearer(BASE)).toBeUndefined();
+  });
+
+  it("leaves the decision capability alone when it forgets the bearer", async () => {
+    fetchMock.mockResolvedValueOnce(
+      respond(200, {
+        token: "launch-bearer",
+        token_source: "launch",
+        decision_token: "decision-capability",
+      }),
+    );
+    await redeemPairingCode(BASE);
+
+    forgetPairedBearer();
+
+    expect(pairedBearer(BASE)).toBeUndefined();
+    expect(pairedDecisionToken(BASE)).toBe("decision-capability");
+  });
+
+  it("clears the stored bearer when the pairing state is reset", async () => {
+    await pair();
+
+    resetPairingForTests();
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+  });
+
+  async function pairAnswering(body: Record<string, unknown>): Promise<void> {
+    fetchMock.mockResolvedValueOnce(respond(200, body));
+    expect(await redeemPairingCode(BASE)).toBe("paired");
+  }
+
+  it("never stores a configured token, and holds it in memory for this load only", async () => {
+    await pairAnswering({ token: "configured-token", token_source: "configured" });
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer(BASE)).toBe("configured-token");
+    expect((await reload()).pairedBearer(BASE)).toBeUndefined();
+  });
+
+  it("stores nothing when the daemon does not say which bearer it sent", async () => {
+    await pairAnswering({ token: "unlabelled-token" });
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer(BASE)).toBe("unlabelled-token");
+  });
+
+  it("stores nothing for a token_source other than launch", async () => {
+    await pairAnswering({ token: "odd-token", token_source: "Launch" });
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+  });
+
+  it("removes a stored launch bearer when the page pairs with a configured token", async () => {
+    await pair("launch-bearer");
+    expect(storage.getItem(BEARER_KEY)).not.toBeNull();
+    pendingPage("#pair=second-code");
+
+    await pairAnswering({ token: "configured-token", token_source: "configured" });
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer(BASE)).toBe("configured-token");
+  });
+
+  it("offers a stored bearer for the gate's check only when this load has not paired", async () => {
+    storage.setItem(BEARER_KEY, JSON.stringify({ base: BASE, token: "stored-token" }));
+    const fresh = await reload();
+
+    expect(fresh.storedBearerToCheck(BASE)).toBe("stored-token");
+    expect(fresh.storedBearerToCheck(OTHER)).toBeUndefined();
+
+    fetchMock.mockResolvedValueOnce(respond(200, { token: "new-bearer", token_source: "launch" }));
+    window.history.replaceState(null, "", "/#pair=next-code");
+    fresh.takePairingCodeFromLocation();
+    expect(await fresh.redeemPairingCode(BASE)).toBe("paired");
+    expect(fresh.storedBearerToCheck(BASE)).toBeUndefined();
   });
 });

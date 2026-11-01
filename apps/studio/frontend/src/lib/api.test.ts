@@ -1410,9 +1410,30 @@ describe("the shell token does not follow a ?api= override to another daemon", (
 });
 
 describe("a page paired by `li studio`", () => {
+  // jsdom's `window.localStorage` has no Storage methods in this vitest
+  // environment, so the page's storage is a working in-memory one that, like a
+  // browser's, keeps what it is given across the module reloads these tests do.
+  let localStorageStub: Storage;
+
   beforeEach(() => {
     delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
     vi.unstubAllGlobals();
+    const data = new Map<string, string>();
+    localStorageStub = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        data.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        data.delete(key);
+      },
+      clear: () => data.clear(),
+      key: () => null,
+      get length() {
+        return data.size;
+      },
+    } as Storage;
+    vi.stubGlobal("localStorage", localStorageStub);
     vi.resetModules();
     window.history.replaceState(null, "", "/");
   });
@@ -1430,7 +1451,11 @@ describe("a page paired by `li studio`", () => {
     pairing.takePairingCodeFromLocation();
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ token }), { status: 200 }))),
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ token, token_source: "launch" }), { status: 200 }),
+        ),
+      ),
     );
     expect(await pairing.redeemPairingCode(api.API_BASE)).toBe("paired");
     return api;
@@ -1507,7 +1532,11 @@ describe("a page paired by `li studio`", () => {
     window.history.replaceState(null, "", `/?api=${destination}#pair=one-time-code`);
     pairing.takePairingCodeFromLocation();
     const redeem = vi.fn((_url: string, _init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify({ token: "launch-bearer" }), { status: 200 })),
+      Promise.resolve(
+        new Response(JSON.stringify({ token: "launch-bearer", token_source: "launch" }), {
+          status: 200,
+        }),
+      ),
     );
     vi.stubGlobal("fetch", redeem);
     expect(await pairing.redeemPairingCode(api.API_BASE)).toBe("paired");
@@ -1528,5 +1557,79 @@ describe("a page paired by `li studio`", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`${destination}/api/stats`);
     const headers = captured[0]?.headers as Record<string, string> | undefined;
     expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
+  });
+
+  it("keeps sending the paired bearer after the page reloads", async () => {
+    await pairedModules("launch-bearer");
+    vi.resetModules();
+    const api = await import("./api");
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      }),
+    );
+
+    expect(api.resolveAuthToken()).toBe("launch-bearer");
+    await api.getStats();
+
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer launch-bearer");
+  });
+
+  it("forgets the paired bearer when the daemon refuses it", async () => {
+    const api = await pairedModules("launch-bearer");
+    const pairing = await import("./pairing");
+    const { onAccessRefused } = await import("./connectivity");
+    let bearerWhenReported: string | undefined = "not reported";
+    const refused = vi.fn(() => {
+      bearerWhenReported = pairing.pairedBearer(api.API_BASE);
+    });
+    const unsubscribe = onAccessRefused(refused);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 })),
+      ),
+    );
+
+    await expect(api.getStats()).rejects.toThrow();
+
+    // The listener already finds the bearer gone, so the gate that names the
+    // remedy never sees a page that still holds the refused bearer.
+    expect(refused).toHaveBeenCalledTimes(1);
+    expect(bearerWhenReported).toBeUndefined();
+    expect(localStorageStub.getItem("studio.pairedBearer")).toBeNull();
+    expect(api.resolveAuthToken()).toBeUndefined();
+    unsubscribe();
+
+    vi.resetModules();
+    const reloaded = await import("./api");
+    expect(reloaded.resolveAuthToken()).toBeUndefined();
+  });
+
+  it("keeps the paired bearer when a request that carried an injected token is refused", async () => {
+    const api = await pairedModules("launch-bearer");
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = "shell-token";
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 }),
+        );
+      }),
+    );
+
+    await expect(api.getStats()).rejects.toThrow();
+
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer shell-token");
+    expect(localStorageStub.getItem("studio.pairedBearer")).not.toBeNull();
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+    expect(api.resolveAuthToken()).toBe("launch-bearer");
   });
 });

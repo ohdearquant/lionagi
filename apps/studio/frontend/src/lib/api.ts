@@ -35,7 +35,7 @@ import type {
   WorkerLinkEdge,
 } from "./types";
 import { reportAccessRefused, reportConnectivityFailure } from "./connectivity";
-import { pairedBearer, pairedDecisionToken } from "./pairing";
+import { forgetPairedBearer, pairedBearer, pairedDecisionToken } from "./pairing";
 
 declare global {
   interface Window {
@@ -244,11 +244,15 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     setHeader("Content-Type", "application/json");
   }
 
-  // Attach the desktop-shell bearer token when present.
+  // Attach the desktop-shell bearer token when present, or else the one this
+  // page was paired with.
   const token = resolveAuthToken();
   if (token) {
     setHeader("Authorization", `Bearer ${token}`);
   }
+  // A refusal drops the bearer from pairing, which the page can obtain again; a
+  // token the shell injected is not the page's to drop.
+  const sentPairedBearer = Boolean(token) && !window.__STUDIO_AUTH_TOKEN__;
 
   let response: Response;
   try {
@@ -261,6 +265,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw err;
   }
   if (response.status === 401) {
+    if (sentPairedBearer) forgetPairedBearer();
     reportAccessRefused();
   }
   if (!response.ok) {

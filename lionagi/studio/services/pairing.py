@@ -62,7 +62,13 @@ async def create_pairing_code_route(request: Request) -> dict[str, object]:
 @studio_route("/studio/pair", method="POST", area="pairing", tags=[], name="redeem_pairing_code")
 async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict[str, str]:
     """Spend a pairing code for the bearer a page on an allowed origin sends, and a
-    decision capability bound to that origin."""
+    decision capability bound to that origin.
+
+    ``token_source`` says which bearer ``token`` is: ``"launch"`` for this daemon's
+    launch bearer, which stops working when the daemon restarts, or ``"configured"``
+    for the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential that a
+    page keeps in memory only.
+    """
     # Only a page on an origin CORS admits (by default the hosted app), or on an
     # origin a launcher in this process named for its page and asking through
     # that page's own server, may pair. CORS answers no other page, so it could
@@ -86,8 +92,10 @@ async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict
                 "did not issue it. Run `li studio` again to open Studio."
             ),
         )
+    configured = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     return {
-        "token": os.getenv("LIONAGI_STUDIO_AUTH_TOKEN") or grant.bearer,
+        "token": configured or grant.bearer,
+        "token_source": "configured" if configured else "launch",
         "decision_token": grant.capability,
     }
 
