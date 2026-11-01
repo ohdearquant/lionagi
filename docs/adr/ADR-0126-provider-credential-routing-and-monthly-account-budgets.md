@@ -910,7 +910,9 @@ diagnosis, and no code path may branch on that class.
    `other` for both. Nothing in it logs. Its input is never stored, never placed in an exception's
    arguments, and never left reachable from `__context__` or `__cause__`. The error is raised after
    that function has returned, outside any `except` block, so the attempt's error has no context
-   from the read. This is the same rule the decode error already follows on the success path.
+   from the read. This is the same rule the decode error already follows on the success path. On
+   the streamed attempt the bounded read of Decision 3 also runs inside that function, so no string
+   or bytes value holding the body is bound in the attempt's own frame.
 5. **Where the fields go.**
    - `AccountRoutingError` gains `provider_error_type` and `rejection_class`, both optional. Each is
      validated against its set when the error is built, and an unknown value raises `ValueError`.
@@ -978,6 +980,12 @@ documentation line or a captured message, cited in this table.
 - It does not say why a rejection classed `other` happened. The message stays dropped, so a new
   wording is found by reproducing the request on the unrouted path, which keeps the body, and is
   then added to the table by amendment.
+- It does not cover the frames a traceback keeps alive. When the error is raised, the attempt's
+  frame still holds the response object, the request and its headers, as it does on every other
+  failure of this path today, so a crash reporter that records local variables sees them. That
+  exposure, including the credential header, is not changed by this amendment. It would be falsified
+  for this amendment's own values if a string or bytes local of a frame of the package's own code,
+  in the error's traceback or in the traceback of an exception in its chain, held the body.
 - The measured case that prompted this amendment, a 400 after a context fold, was never captured,
   and its class cannot be named from the evidence. The fold changes only lionagi's own message
   history, which the Anthropic body carries as text, with no `tool_use`, `tool_result` or
@@ -1015,7 +1023,9 @@ Each item is a test that fails without this change:
 - Sentinel: a body whose message carries a unique sentinel string, through both branches. The
   sentinel is absent from the error's `args` and `str`, from every exception reachable through
   `__context__` and `__cause__`, from every log record captured at DEBUG level for every logger
-  (the HTTP client's included), and from the ledger row. A control
+  (the HTTP client's included), from the ledger row, and from every string or bytes local of every
+  frame of the package's own code in the traceback of the error and of each exception in its
+  chain (the test's own frame, which holds the sentinel it built, is not one of them). A control
   arm with the classifier replaced by one that returns `other` passes the same assertions. An arm
   that deliberately places the message in the error's arguments fails them.
 - An unknown value passed to `AccountRoutingError`, `UnknownOutcome` or the ledger write raises
