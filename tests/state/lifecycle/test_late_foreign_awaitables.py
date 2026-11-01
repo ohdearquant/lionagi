@@ -17,6 +17,7 @@ from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
+from tests.state.lifecycle.test_late_returned_awaitable import _first_attempt
 
 
 def _forbid(*_args, **_kwargs):
@@ -153,10 +154,13 @@ async def test_foreign_future_remains_reserved_through_settlement_and_ack(
             key = (reconciliation._store_identity(db), "foreign", event_id)
             first = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
             second = TerminalReconciler("foreign", prepare, batch_size=1, timeout=1.0)
-            attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
+            attempt = asyncio.create_task(
+                _first_attempt(first, adapter, db, event_id, key, invoked)
+            )
             try:
                 # The attempt ends on the reconciler's own budget; once it
-                # reports an attempt, the delivery thread has been started.
+                # reports an attempt, the delivery thread has been started. A budget
+                # that expired before the hook began is repeated with a wider one.
                 result = await attempt
                 assert result.status == "failed" and result.attempted is True
                 await _wait_thread_event(invoked)
@@ -224,9 +228,12 @@ async def test_already_settled_foreign_success_acks_once(tmp_path, monkeypatch, 
             key = (reconciliation._store_identity(db), "done", event_id)
             first = TerminalReconciler("done", prepare, batch_size=1, timeout=1.0)
             second = TerminalReconciler("done", prepare, batch_size=1, timeout=1.0)
-            attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
+            attempt = asyncio.create_task(
+                _first_attempt(first, adapter, db, event_id, key, ack_entered)
+            )
             try:
-                result = await asyncio.wait_for(attempt, 4)
+                # A budget that expired before delivery began is repeated with a wider one.
+                result = await asyncio.wait_for(attempt, 10)
                 assert result.status == "failed" and result.attempted is True
                 await _wait_thread_event(ack_entered)
                 assert (await getattr(second, adapter)(db, event_id)).status == "busy"
@@ -350,7 +357,8 @@ async def test_unobservable_foreign_loop_quarantines_and_reports_stuck(
             second = TerminalReconciler("unobservable", prepare, batch_size=1, timeout=1.0)
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
-                    result = await getattr(first, adapter)(db, event_id)
+                    # A budget that expired before the hook began is repeated with a wider one.
+                    result = await _first_attempt(first, adapter, db, event_id, key, invoked)
                     assert invoked.is_set() and result.status == "failed" and result.attempted
                     assert (await getattr(second, adapter)(db, event_id)).status == "busy"
                     assert not await is_acknowledged(db, event_id, "unobservable")
@@ -471,11 +479,13 @@ async def test_foreign_loop_stops_after_observer_registration_and_restarts(
             key = (reconciliation._store_identity(db), "paused", event_id)
             first = TerminalReconciler("paused", prepare, batch_size=1, timeout=1.0)
             second = TerminalReconciler("paused", prepare, batch_size=1, timeout=1.0)
-            attempt = asyncio.create_task(getattr(first, adapter)(db, event_id))
+            attempt = asyncio.create_task(
+                _first_attempt(first, adapter, db, event_id, key, invoked)
+            )
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
                     await _wait_thread_event(invoked)
-                    result = await asyncio.wait_for(attempt, 4)
+                    result = await asyncio.wait_for(attempt, 10)
                     assert result.status == "failed" and result.attempted
                     release_sync.set()
                     owner.pause_when_observer_is_registered()

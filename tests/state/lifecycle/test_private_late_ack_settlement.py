@@ -17,6 +17,7 @@ from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
+from tests.state.lifecycle.test_late_returned_awaitable import _first_attempt
 
 
 def _forbid(*_args, **_kwargs):
@@ -83,7 +84,8 @@ async def test_private_late_ack_stays_reserved_until_owner_coroutine_settles(
         first = TerminalReconciler("private-settlement", prepare, batch_size=1, timeout=1.0)
         second = TerminalReconciler("private-settlement", prepare, batch_size=1, timeout=1.0)
         with caplog.at_level("WARNING", logger=reconciliation.__name__):
-            result = await getattr(first, adapter)(db, event_id)
+            # A budget that expired before the hook began is repeated with a wider one.
+            result = await _first_attempt(first, adapter, db, event_id, key, sync_entered)
             assert sync_entered.is_set() and result.status == "failed" and result.attempted
             release_sync.set()
             await asyncio.wait_for(ack_entered.wait(), 2)
@@ -176,7 +178,8 @@ async def test_private_late_ack_failure_logs_type_not_sensitive_message(
         key = (reconciliation._store_identity(db), "private-failure", event_id)
         runner = TerminalReconciler("private-failure", prepare, batch_size=1, timeout=1.0)
         with caplog.at_level("WARNING", logger=reconciliation.__name__):
-            result = await getattr(runner, adapter)(db, event_id)
+            # A budget that expired before the hook began is repeated with a wider one.
+            result = await _first_attempt(runner, adapter, db, event_id, key, sync_entered)
             assert sync_entered.is_set() and result.status == "failed" and result.attempted
             release_sync.set()
 

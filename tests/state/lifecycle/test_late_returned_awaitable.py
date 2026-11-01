@@ -60,20 +60,28 @@ async def _first_attempt(runner, adapter, db, event_id, key, started, tries=3):
     correctly reported as not attempted. Repeating it is valid only for that case:
     ``started`` is unset and the attempt ran for nearly its whole budget, so the budget
     expired rather than the attempt failing at once. The slot is released before the
-    repeat. An attempt whose hook ran but is reported as not attempted, one that fails
-    before the hook without spending its budget, and one that never begins within
-    ``tries`` attempts are returned unchanged, so the caller's assertion still fails.
+    repeat, and the repeat runs with twice the previous budget, because the same budget
+    would be spent the same way on a runner that is still slow. The runner's own budget
+    is restored before returning. An attempt whose hook ran but is reported as not
+    attempted, one that fails before the hook without spending its budget, and one that
+    never begins within ``tries`` attempts are returned unchanged, so the caller's
+    assertion still fails.
     """
     loop = asyncio.get_running_loop()
+    bound = runner.timeout
     begun = loop.time()
-    result = await getattr(runner, adapter)(db, event_id)
-    for _ in range(tries - 1):
-        expired = loop.time() - begun >= 0.9 * runner.timeout
-        if started.is_set() or result.status != "failed" or result.attempted or not expired:
-            break
-        await _wait_for_attempt_release(key)
-        begun = loop.time()
+    try:
         result = await getattr(runner, adapter)(db, event_id)
+        for _ in range(tries - 1):
+            expired = loop.time() - begun >= 0.9 * runner.timeout
+            if started.is_set() or result.status != "failed" or result.attempted or not expired:
+                break
+            await _wait_for_attempt_release(key)
+            runner.timeout *= 2
+            begun = loop.time()
+            result = await getattr(runner, adapter)(db, event_id)
+    finally:
+        runner.timeout = bound
     return result
 
 
@@ -89,6 +97,31 @@ class _Awaitable:
 
     def __await__(self):
         return self.coroutine.__await__()
+
+
+@pytest.mark.asyncio
+async def test_first_attempt_repeats_with_a_wider_bound_and_restores_it():
+    """A repeat gets more time than the attempt that expired before its hook began."""
+
+    class _SlowStartRunner:
+        def __init__(self):
+            self.timeout = 0.02
+            self.bounds = []
+
+        async def attempt_exact(self, _db, _event_id):
+            # The first attempt spends its whole bound before any hook begins; a repeat
+            # reports an attempt only because it was given a wider bound.
+            self.bounds.append(self.timeout)
+            await asyncio.sleep(self.timeout)
+            return AttemptResult("failed", attempted=len(self.bounds) > 1)
+
+    runner = _SlowStartRunner()
+    key = ("scripted-store", "scripted", "event")
+    result = await _first_attempt(runner, "attempt_exact", None, "event", key, threading.Event())
+
+    assert result.attempted is True
+    assert len(runner.bounds) == 2 and runner.bounds[1] > runner.bounds[0]
+    assert runner.timeout == 0.02
 
 
 @pytest.mark.asyncio
