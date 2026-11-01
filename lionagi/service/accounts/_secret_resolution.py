@@ -230,7 +230,11 @@ async def _terminate_and_reap(
         if leader_created is not None
         else ()
     )
-    await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
+    terminate_error: Exception | None = None
+    try:
+        await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
+    except Exception as exc:  # noqa: BLE001 -- still reap the child, then re-raise below
+        terminate_error = exc
 
     async def drain() -> None:
         # Waiting for process exit can also wait for stdout to close. Discard
@@ -255,11 +259,15 @@ async def _terminate_and_reap(
         # Preserve an existing cleanup failure while still finalizing the other task.
         for task in done:
             task.result()
+        if terminate_error is not None:
+            raise terminate_error
         timed_out = bool(pending)
     except BaseException:
         cleanup_failed = True
         raise
     finally:
+        # Drop the local reference: the raised exception's traceback holds this frame.
+        terminate_error = None
         pending = {task for task in tasks if not task.done()}
         for task in pending:
             task.cancel()
@@ -339,6 +347,8 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
                 logger.warning("secret lookup cleanup failed during cancellation")
         raise
     except Exception as exc:  # noqa: BLE001 -- a lookup failure must never block a spawn
+        if proc is not None and proc.returncode is None:
+            await _cleanup_after_lookup_failure(proc, leader_created)
         # Only the exception type: a message can carry the argv, and the argv
         # carries the variable's location in whatever store is being read.
         logger.warning(

@@ -577,3 +577,96 @@ async def test_anyio_cancellation_during_cleanup_reaches_caller(install_fake, pa
     assert cancellation_seen == [True]
     _assert_finished(proc)
     assert proc.pipe.close_calls == 1
+
+
+def _install_raising_terminate(monkeypatch, proc):
+    """Make the group terminate fail after it has killed the child, as the real one can."""
+
+    async def terminate(child, **kwargs):
+        assert child is proc
+        proc.events.append("kill")
+        proc.killed.set()
+        raise OSError(_SECRET)
+
+    monkeypatch.setattr(secret_lookup, "aterminate_process_group", terminate)
+
+
+async def test_run_failure_with_a_live_child_kills_and_reaps_it(install_fake, caplog):
+    proc = install_fake(_Child(stall_read=False, stall_wait=False))
+
+    async def broken_communicate():
+        raise OSError(_SECRET)
+
+    proc.communicate = broken_communicate
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    existing_tasks = asyncio.all_tasks()
+
+    result = await asyncio.wait_for(secret_lookup._run_lookup(_LOOKUP, _NAME), timeout=10.0)
+
+    assert result is None
+    assert proc.killed.is_set()
+    _assert_finished(proc)
+    assert proc.pipe.close_calls == 0
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == secret_lookup.logger.name and record.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        "secret lookup sensitive_lookup_program for LOOKUP_TOKEN failed to run (OSError)"
+    ]
+    assert _SECRET not in caplog.text
+    assert _LOOKUP.argv[2] not in caplog.text
+    assert not {
+        task for task in asyncio.all_tasks() if task not in existing_tasks and not task.done()
+    }
+
+
+@pytest.mark.parametrize("path", ["ordinary", "strict"])
+async def test_terminate_failure_still_drains_waits_and_closes_stdout(
+    install_fake, monkeypatch, caplog, path
+):
+    proc = install_fake(_Child(stall_read=False, stall_wait=False))
+    _install_raising_terminate(monkeypatch, proc)
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    existing_tasks = asyncio.all_tasks()
+
+    result = await asyncio.wait_for(_lookup(path, proc), timeout=10.0)
+
+    if path == "ordinary":
+        assert result is None
+    else:
+        assert (result.value, result.failure) == (None, "timeout")
+    _assert_finished(proc)
+    assert proc.pipe.close_calls == 1
+    cleanup_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage() == "secret lookup cleanup failed"
+    ]
+    assert cleanup_warnings == ["secret lookup cleanup failed"]
+    assert _SECRET not in caplog.text
+    assert _LOOKUP.argv[2] not in caplog.text
+    assert not {
+        task for task in asyncio.all_tasks() if task not in existing_tasks and not task.done()
+    }
+
+
+@pytest.mark.parametrize("ignore_drain_failure", [False, True])
+async def test_terminate_failure_is_raised_once_the_child_is_reaped(
+    install_fake, monkeypatch, ignore_drain_failure
+):
+    proc = install_fake(_Child(stall_read=False, stall_wait=False))
+    _install_raising_terminate(monkeypatch, proc)
+
+    with pytest.raises(OSError) as raised:
+        await asyncio.wait_for(
+            secret_lookup._terminate_and_reap(
+                proc, None, ignore_drain_failure=ignore_drain_failure
+            ),
+            timeout=10.0,
+        )
+
+    assert raised.value.args == (_SECRET,)
+    _assert_finished(proc)
+    assert proc.pipe.close_calls == 1
