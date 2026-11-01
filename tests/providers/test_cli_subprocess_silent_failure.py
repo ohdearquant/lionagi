@@ -138,15 +138,41 @@ _EMITS_THEN_HANGS = (
 _MODULE_LOGGER = "lionhub.providers._cli_subprocess"
 
 
-async def _abandon_then(agen, between) -> None:
+# How long a helper waits for a child to say it is up before it fails the test. It
+# bounds a hang and is not a pacing delay, so it is generous: a slow machine makes
+# the test slower and does not make it fail.
+_CHILD_READY_DEADLINE = 60.0
+
+
+async def _abandon_then(
+    agen, between, marker, spawned, deadline: float = _CHILD_READY_DEADLINE
+) -> None:
     """Abandon, running *between* while the child is up and before teardown logs.
 
     ``asyncio.wait_for`` cancels the pending step, which runs the generator's
     teardown then and there, so anything sequenced after it lands too late.
+
+    This waits for two things instead of for a fixed time, because cancelling
+    earlier discards the child without its stderr ever being read and how long a
+    spawn takes depends on the machine. The child creates *marker* once it has
+    written what the test needs to its stderr, and *spawned* is set by the
+    ``on_spawn`` callback, which runs only after the stream has taken ownership of
+    the child. If both have not happened after *deadline* seconds, or the child
+    ends first, the test fails with a message saying so.
     """
     step = asyncio.create_task(agen.__anext__())
     try:
-        await asyncio.sleep(1)
+        loop = asyncio.get_running_loop()
+        give_up_at = loop.time() + deadline
+        while not (marker.exists() and spawned.is_set()):
+            assert not step.done(), (
+                "the child ended before it came up, so nothing was live when between() ran"
+            )
+            assert loop.time() < give_up_at, (
+                f"the child was not up with its stderr written within {deadline:g}s "
+                f"(spawn reported: {spawned.is_set()}, {marker.name} created: {marker.exists()})"
+            )
+            await asyncio.sleep(0.05)
         assert not step.done(), "the child exited early, so nothing was live when between() ran"
         between()
     finally:
@@ -230,6 +256,23 @@ _LEAKS_ENV_SECRET_THEN_HANGS = (
     "sys.stderr.flush(); "
     "time.sleep(300)"
 )
+
+
+def _leaks_env_secret_then_hangs_marked(marker_path) -> str:
+    """The same child, which also creates *marker_path* once its stderr is flushed.
+
+    For :func:`_abandon_then`, which waits for this marker, and for the spawn
+    callback, instead of for a fixed time.
+    """
+    return (
+        "import os, pathlib, sys, time; "
+        "sys.stderr.write('auth failed for ' + os.environ['LIONAGI_TEST_API_KEY']); "
+        "sys.stderr.flush(); "
+        f"pathlib.Path({str(marker_path)!r}).write_text('ready'); "
+        "time.sleep(300)"
+    )
+
+
 # A credential the child got from its own config, so nothing we injected matches it.
 _LEAKS_TOKEN_SHAPE_THEN_HANGS = (
     "import sys, time; "
@@ -617,7 +660,9 @@ class TestTheQuotedStderrCarriesNoCredential:
         )
 
     @pytest.mark.asyncio
-    async def test_a_secret_unset_after_the_spawn_is_still_redacted(self, caplog, monkeypatch):
+    async def test_a_secret_unset_after_the_spawn_is_still_redacted(
+        self, caplog, monkeypatch, tmp_path
+    ):
         """The child keeps what it was handed, so redaction reads the environment as of the spawn rather than as of the log line."""
         monkeypatch.setattr(
             _secret_resolution,
@@ -625,10 +670,17 @@ class TestTheQuotedStderrCarriesNoCredential:
             lambda **_: _secret_resolution._NOT_CONFIGURED,
         )
         monkeypatch.setenv("LIONAGI_TEST_API_KEY", _INHERITED_SECRET)
+        marker = tmp_path / "child-wrote-its-stderr"
+        spawned = asyncio.Event()
         with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
             await _abandon_then(
-                ndjson_from_cli(_cmd(_LEAKS_ENV_SECRET_THEN_HANGS)),
+                ndjson_from_cli(
+                    _cmd(_leaks_env_secret_then_hangs_marked(marker)),
+                    on_spawn=lambda _: spawned.set(),
+                ),
                 between=lambda: os.environ.pop("LIONAGI_TEST_API_KEY", None),
+                marker=marker,
+                spawned=spawned,
             )
 
         assert _INHERITED_SECRET not in caplog.text, (
