@@ -58,6 +58,11 @@ class _RecordingPopen:
         self.argv = list(argv)
         return self
 
+    def wait(self, timeout: float | None = None) -> int:
+        # submit() hands the child to a thread that waits on it; this one has
+        # already exited.
+        return 0
+
 
 @pytest.fixture
 def spawned(monkeypatch, tmp_path):

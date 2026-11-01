@@ -132,6 +132,9 @@ def test_submit_without_a_sender_does_not_require_identity_resolution(monkeypatc
     class Spawned:
         pid = 999_999
 
+        def wait(self, timeout=None):
+            return 0
+
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", should_not_resolve)
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
 
@@ -154,6 +157,9 @@ def test_submit_without_a_sender_is_allowed_when_its_directory_is_unavailable(
     class Spawned:
         pid = 999_999
 
+        def wait(self, timeout=None):
+            return 0
+
     spawned: list = []
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", should_not_resolve)
     monkeypatch.setattr(
@@ -173,6 +179,9 @@ def test_submit_accepts_the_actor_resolved_from_the_submitting_directory(monkeyp
 
     class Spawned:
         pid = 999_999
+
+        def wait(self, timeout=None):
+            return 0
 
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:submitter")
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
@@ -439,6 +448,9 @@ def test_a_sender_is_judged_at_the_run_directory_the_submission_names(monkeypatc
     class Spawned:
         pid = 999_999
 
+        def wait(self, timeout=None):
+            return 0
+
     def resolve(cwd):
         asked.append(cwd)
         return "agent:signer"
@@ -471,6 +483,9 @@ def test_without_configured_roots_a_declared_sender_is_judged_at_the_submitting_
 
     class Spawned:
         pid = 999_999
+
+        def wait(self, timeout=None):
+            return 0
 
     def resolve(cwd):
         asked.append(cwd)
@@ -511,6 +526,9 @@ def test_without_configured_roots_the_server_directory_need_not_hold_an_actor_co
     class Spawned:
         pid = 999_999
 
+        def wait(self, timeout=None):
+            return 0
+
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
 
     jobs.submit("agent", [], prompt="work", notify_sender="agent:submitter", no_mcp_config=True)
@@ -522,6 +540,9 @@ def test_a_submission_without_a_sender_records_no_signing_directory(monkeypatch,
 
     class Spawned:
         pid = 999_999
+
+        def wait(self, timeout=None):
+            return 0
 
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
 
