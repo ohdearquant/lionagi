@@ -909,44 +909,6 @@ def _provider_inventory() -> dict[str, list[str]]:
 # lionagi/) and target module, one entry per reference. Each is a listed interim edge: this
 # table changes when an edge is removed or a new one is added, never as a side effect.
 PROVIDER_INTERIM_EDGES = {
-    # The ``_modules`` list in ``_import_all_providers``: imported to run the registration
-    # decorators of every provider.
-    "service/connections/registry.py": [
-        "lionhub.providers.openai.chat",
-        "lionhub.providers.openai.codex",
-        "lionhub.providers.openai.audio",
-        "lionhub.providers.openai.batch",
-        "lionhub.providers.openai.images",
-        "lionhub.providers.openai.embed",
-        "lionhub.providers.openai.response",
-        "lionhub.providers.anthropic.messages",
-        "lionhub.providers.anthropic.claude_code",
-        "lionhub.providers.ollama.chat",
-        "lionhub.providers.ollama.embed",
-        "lionhub.providers.ollama.generate",
-        "lionhub.providers.lattice.chat",
-        "lionhub.providers.lattice.embed",
-        "lionhub.providers.tavily.search",
-        "lionhub.providers.exa.search",
-        "lionhub.providers.exa.contents",
-        "lionhub.providers.exa.find_similar",
-        "lionhub.providers.firecrawl.scrape",
-        "lionhub.providers.firecrawl.map",
-        "lionhub.providers.firecrawl.crawl",
-        "lionhub.providers.perplexity.chat",
-        "lionhub.providers.nvidia_nim.chat",
-        "lionhub.providers.nvidia_nim.embed",
-        "lionhub.providers.deepseek.chat",
-        "lionhub.providers.google.chat",
-        "lionhub.providers.google.gemini_code",
-        "lionhub.providers.groq.chat",
-        "lionhub.providers.groq.audio_transcription",
-        "lionhub.providers.pi.cli",
-        "lionhub.providers.openrouter.chat",
-        "lionhub.providers.ag2.groupchat",
-        "lionhub.providers.ag2.agent",
-        "lionhub.providers.ag2.nlip",
-    ],
     # Every import here is inside a function (see the test of that below).
     "agent/factory.py": [
         *["lionhub.providers._cli_subprocess"] * 2,
@@ -982,46 +944,6 @@ def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():
     hits = _provider_references(SOURCE_ROOTS[0] / "agent" / "factory.py")
     assert hits, "agent/factory.py names no hub provider module, so this checks nothing"
     assert [hit for hit in hits if hit[2] == "module"] == []
-
-
-def _assigned_value(path: Path, name: str) -> ast.expr:
-    """The value ``path`` assigns to ``name``, at module level or inside a function."""
-    values = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets = [node.target]
-        else:
-            continue
-        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
-            values.append(node.value)
-    assert len(values) == 1, f"{path.name} assigns {name} {len(values)} times"
-    return values[0]
-
-
-# The registry list also holds the core scripted provider, which is not a hub module.
-@pytest.mark.parametrize(
-    ("relative", "name", "size"),
-    [
-        ("service/connections/registry.py", "_modules", 34),
-    ],
-    ids=["registry_modules"],
-)
-def test_a_provider_name_list_keeps_its_size(relative, name, size):
-    value = _assigned_value(SOURCE_ROOTS[0] / relative, name)
-    items = value.values if isinstance(value, ast.Dict) else value.elts
-    names = [
-        item.value
-        for item in items
-        if isinstance(item, ast.Constant)
-        and isinstance(item.value, str)
-        and _HUB_PROVIDER.fullmatch(item.value)
-    ]
-    assert len(names) == size, (
-        f"{name} in {relative} lists {len(names)} hub provider modules, "
-        f"the inventory expects {size}"
-    )
 
 
 def test_the_provider_check_sees_each_form_of_reference():
