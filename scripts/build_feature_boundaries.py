@@ -71,6 +71,7 @@ ROOT_MODULES = {
     "lionagi._command_env": ("adapter", "command_environment"),
     "lionagi._command_env_metadata": ("contracts", "command_environment"),
     "lionagi._errors": ("contracts", "errors"),
+    "lionagi._feature_errors": ("contracts", "errors"),
     "lionagi._flow_spec": ("contracts", "flow_contracts"),
     "lionagi._log_channels": ("foundation", "logging_channels"),
     "lionagi._moved": ("foundation", "compatibility"),

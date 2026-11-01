@@ -317,3 +317,96 @@ def classify_provider_error(
             return ProviderAdapterError(content, stderr_tail=stderr_tail, raw=content)
 
     return ProviderError(content, stderr_tail=stderr_tail, raw=content)
+
+
+# --- Provider contract errors (deliberately not ProviderError subclasses) ---
+#
+# These describe how a provider catalog is composed or activated, not how a provider
+# call failed. Code that catches ProviderError retries or falls back, which an
+# unsupported contract or a failed activation must never trigger. Each message is
+# built from the error's fields alone and never carries the text of a chained exception.
+
+
+def _rebuild_contract_error(cls: type[Any], fields: dict[str, Any]) -> Any:
+    """Unpickle helper: these constructors are keyword-only, so the fields are replayed by name."""
+    return cls(**fields)
+
+
+class ProviderContractVersionError(ValueError):
+    """A provider declaration names a contract version that is not supported.
+
+    ``observed`` is the raw declared value (it may be a bool, a str or ``None``) and is
+    kept as given; the message shows it with ``repr``. Raised before any factory runs.
+    """
+
+    def __init__(self, *, source: str, expected: tuple[int, ...], observed: object) -> None:
+        expected = tuple(expected)
+        versions = ", ".join(str(version) for version in expected)
+        super().__init__(
+            f"Unsupported provider contract version in {source}: "
+            f"expected one of {versions}; observed {observed!r}"
+        )
+        self.source: str = source
+        self.expected: tuple[int, ...] = expected
+        self.observed: object = observed
+
+    def __reduce__(self):
+        fields = {"source": self.source, "expected": self.expected, "observed": self.observed}
+        return (_rebuild_contract_error, (type(self), fields))
+
+
+class ProviderActivationError(RuntimeError):
+    """A provider endpoint could not be activated.
+
+    ``reason`` is ``"activation_failed"`` for an internal import failure or a factory
+    defect, and ``"cycle"`` for a recursive activation of the same endpoint; any other
+    value raises ``ValueError``. The raiser chains the original exception with
+    ``raise ... from exc``; its text is not part of the message.
+    """
+
+    _REASONS: ClassVar[tuple[str, ...]] = ("activation_failed", "cycle")
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        endpoint: str | None,
+        source: str,
+        reason: str,
+    ) -> None:
+        if reason not in self._REASONS:
+            raise ValueError(f"reason must be one of {', '.join(self._REASONS)}; got {reason!r}")
+        scope = f"Provider {provider!r}"
+        if endpoint is not None:
+            scope += f" endpoint {endpoint!r}"
+        super().__init__(f"{scope} could not be activated from {source}: reason={reason}")
+        self.provider: str = provider
+        self.endpoint: str | None = endpoint
+        self.source: str = source
+        self.reason: str = reason
+
+    def __reduce__(self):
+        fields = {
+            "provider": self.provider,
+            "endpoint": self.endpoint,
+            "source": self.source,
+            "reason": self.reason,
+        }
+        return (_rebuild_contract_error, (type(self), fields))
+
+
+class ProviderCompositionError(ValueError):
+    """No provider catalog was supplied, and the caller must compose one explicitly.
+
+    The message names the missing catalog and never mentions a missing distribution:
+    whether a hub distribution is installed is a separate question.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "No provider catalog was supplied; explicit composition of a provider "
+            "catalog is required."
+        )
+
+    def __reduce__(self):
+        return (type(self), ())

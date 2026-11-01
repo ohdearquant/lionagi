@@ -1312,6 +1312,9 @@
       "TimeoutError",
       "ValidationError"
     ],
+    "lionagi/_feature_errors.py": [
+      "MissingFeatureError"
+    ],
     "lionagi/_flow_spec.py": [
       "flow_spec_yaml_key",
       "load_flow_spec",
@@ -1342,10 +1345,13 @@
     "lionagi/_provider_errors.py": [
       "EmissionError",
       "NestedAgentRefusedError",
+      "ProviderActivationError",
       "ProviderAdapterError",
       "ProviderAuthError",
       "ProviderCapacityError",
+      "ProviderCompositionError",
       "ProviderContextError",
+      "ProviderContractVersionError",
       "ProviderError",
       "ProviderPermissionError",
       "ProviderQuotaError",
