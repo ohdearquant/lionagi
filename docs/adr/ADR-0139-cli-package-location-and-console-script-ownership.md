@@ -69,16 +69,16 @@ The current project declares `li = "lionagi.cli.main:main"` and packages both im
 ADR-0136 already requires one distribution through 1.x and a separate `lionhub`
 distribution depending on core at 2.0. Its release record must establish exclusive
 package-file and console-script ownership and test installation transitions
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:352`,
-`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:396`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:424`,
+`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:468`).
 It explicitly leaves the CLI path, script owner and core-only executable policy open
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:786`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:858`).
 
 **P2. Relocating the CLI without extracting shared code preserves the wrong dependency.**
 A static AST inventory at the source HEAD finds 46 Python files in `lionagi/cli`,
 32 Studio-to-CLI import statements in 14 files, and 11 CLI-to-Studio statements in
 four files. These match Amendment 1's counts
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:202`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:274`).
 Representative edges include shared run persistence, scheduler parser construction,
 and schedule declaration/export
 (`lionagi/studio/operator/coordinator.py:539`,
@@ -97,7 +97,7 @@ selected seed (`lionagi/_auto.py:143`, `lionagi/_auto.py:273`,
 Moving only handlers or decorators would leave fresh startup dependent on a core
 catalog or accidental import order. A4 already requires the populated catalog and
 selection/loading entry points to leave core before the first command target moves
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:218`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:290`).
 
 **P4. Import compatibility cannot establish installer correctness.**
 The alias loader supports longest-prefix lookup, module identity and code loading,
@@ -131,16 +131,16 @@ Out of scope:
 - Changing command spelling, parsing, output, status codes, execution locus,
   dependency defaults or optional-feature behavior. Actual moves remain relocation
   and import rewrites, as required by ADR-0136 D6 and B2
-  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:86`,
-  `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:712`).
+  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:158`,
+  `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:784`).
 - The Studio attachment mechanism, application distribution and lifecycle
   corrections. ADR-0138 owns those boundaries; its attachment form remains Proposed
   (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:45`).
 - A general third-party CLI discovery protocol. Automatic plugin bootstrap is
-  expressly deferred (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:278`).
+  expressly deferred (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:350`).
 - Exact release versions, compatibility constraints, platform/installer support and
   artifact publication. ADR-0136 D1's distribution release record owns them
-  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:402`).
+  (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:474`).
 
 ## Decision
 
@@ -187,12 +187,12 @@ for the broader operator surface and yields the shorter module invocation.
 This amends the `serve/cli` illustration and spelling in ADR-0136 D7, A4 item 6,
 and B2 step 6. Those spellings were subject to the deferred CLI decision, not a
 closed destination
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:275`,
-`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:786`,
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:347`,
+`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:858`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:163`).
 Neither `lionhub.cli` nor `lionhub.serve.cli` violates D7's generic-name rule:
 that rule prohibits sibling directories directly under `lionhub/src/`
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:737`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:809`).
 
 **Failure tests:** `test_cli_canonical_target` and
 `test_cli_module_invocations_in_fresh_processes` fail if the package, target,
@@ -204,7 +204,7 @@ Follow Amendment 2 B2's order. The catalog moves first within step 3.
 Preparatory extraction is separate from each mechanical move; no service behavior
 changes are hidden in a relocation. Steps 4 and 5 retain their scheduler and daemon
 boundaries, and step 6 moves the remaining CLI
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:62`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:134`).
 
 **Ten complete source modules move during step 3:**
 
@@ -281,7 +281,7 @@ available in the retained Studio module through 1.x; there is no broad
 `lionagi.studio` move row. Schedule/timezone/action-kind services follow
 `lionhub.orchestration.schedule` and `lionhub.orchestration.scheduler`
 as already allocated by the adjacent records
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:47`,
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:119`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:172`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:173`).
 The implementation defines the detailed schedule-service API there.
@@ -413,7 +413,7 @@ selection, conflicts, authorization and compatibility.
 declaration types/decorator machinery. It contains no populated CLI target list,
 catalog state or forwarding loader that imports the hub. This follows A4 and the
 retained-module requirement in ADR-0138
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:221`,
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:293`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:188`).
 Unused HTTP machinery is handled in step 5, not converted into CLI discovery.
 
@@ -433,11 +433,11 @@ li = "lionhub.cli.main:main"
 ```
 
 There is still no separately published hub distribution during this window
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:373`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:445`).
 All repository import callers use canonical moved paths. External old imports
 continue to resolve through the table until 2.0; each row carries its own first
 deprecation release and the common removal version
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:565`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:637`).
 
 A saved older generated wrapper importing `lionagi.cli.main` must continue to
 work against a post-move 1.x installation using the aliases. This does not promise
@@ -467,7 +467,7 @@ execution targets and test both recognition forms explicitly.
 
 The D2 exemption is exactly `{cli, studio}` before step 6, `{studio}` afterward
 through 1.x, and empty at 2.0. The core gains no new exception or hub-dependent facade
-(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:29`).
+(`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:101`).
 
 **Failure tests:** `test_1x_upgrade_replaces_li_target_once`,
 `test_saved_1x_wrapper_uses_alias`,
