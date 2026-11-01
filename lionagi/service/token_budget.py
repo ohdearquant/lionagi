@@ -70,7 +70,11 @@ class TokenBudget:
 
 
 def get_context_window(branch: Branch) -> int:
-    """Resolve context window: endpoint config > provider lookup > default (128k)."""
+    """Resolve context window: endpoint config > provider lookup > default (128k).
+
+    The provider lookup reads the catalog the branch's chat model was built with
+    (``provider_catalog``). A model built without one uses the installed provider hub's catalog.
+    """
     try:
         endpoint = branch.chat_model.endpoint
         if getattr(endpoint.config, "context_window", None):
@@ -84,7 +88,11 @@ def get_context_window(branch: Branch) -> int:
             model_name = endpoint.config.params.get("model", "")
 
         if model_name:
-            return lookup_context_window(model_name, provider)
+            return lookup_context_window(
+                model_name,
+                provider,
+                provider_catalog=getattr(branch.chat_model, "provider_catalog", None),
+            )
     except (AttributeError, KeyError):
         pass
 
