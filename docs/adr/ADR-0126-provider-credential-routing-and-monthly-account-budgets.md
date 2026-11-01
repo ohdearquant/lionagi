@@ -894,7 +894,9 @@ diagnosis, and no code path may branch on that class.
    already read the whole body before the status is checked, as it does today, so the bound limits
    only what is decoded. The streamed attempt reads the body of the non-200 response before closing
    it and stops after 64 KiB and one more byte, so a larger body is detected without being read
-   further. That read comes before the settlement, so it runs under `CancelScope(shield=True)`
+   further. Both bounds count decoded bytes: the streamed read consumes the decoded byte stream,
+   never the bytes on the wire. That read comes before the settlement, so it runs under
+   `CancelScope(shield=True)`
    bounded at five seconds, like the settlement writes Amendment 5 shields: a pending cancellation is
    still delivered after the failure is recorded (Amendment 5), and a read that has not finished
    within the bound records `other` for both fields. A body over the bound, a body that does
