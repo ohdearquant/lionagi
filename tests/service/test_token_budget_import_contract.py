@@ -161,7 +161,6 @@ import sys
 sys.path.insert(0, sys.argv[1])
 tables = json.loads(sys.argv[2])
 implementations = json.loads(sys.argv[3])
-control = sys.argv[4]
 
 missing = {}
 for package, names in tables.items():
@@ -170,8 +169,10 @@ for package, names in tables.items():
     if absent:
         missing[package] = absent
 loaded = sorted(name for name in implementations if name in sys.modules)
-importlib.import_module(control)
-print(json.dumps({"missing": missing, "loaded": loaded, "control_loaded": control in sys.modules}))
+for name in implementations:
+    importlib.import_module(name)
+loaded_after = sorted(name for name in implementations if name in sys.modules)
+print(json.dumps({"missing": missing, "loaded": loaded, "loaded_after": loaded_after}))
 """
 
 
@@ -192,20 +193,25 @@ def _run_child(code: str, *args: str) -> dict:
 def test_config_modules_expose_tables_without_loading_endpoints():
     implementations = [f"{_PROVIDERS}.{endpoint}" for _k, endpoint, _p, _n in _ENDPOINT_TABLES]
     implementations.append(f"{_PROVIDERS}.openai.chat")
-    control = f"{_PROVIDERS}.groq.chat"
 
     result = _run_child(
         _CONFIG_IMPORT_CHILD,
         _LIONHUB_SRC,
         json.dumps({package: list(names) for package, names in _CONFIG_TABLES.items()}),
         json.dumps(implementations),
-        control,
     )
 
     assert result["missing"] == {}
     assert result["loaded"] == []
-    # Importing an endpoint module afterwards must be visible to the same check.
-    assert result["control_loaded"] is True
+    # The same check sees every listed endpoint module once it is imported, so the
+    # empty list above is a measurement and not a misspelled module name.
+    assert result["loaded_after"] == sorted(implementations)
+
+
+def test_provider_table_rows_cover_every_token_budget_provider():
+    assert sorted(key for key, _package, _name in _PROVIDER_TABLES) == sorted(
+        token_budget._PROVIDER_MODULES
+    )
 
 
 @pytest.mark.parametrize(
