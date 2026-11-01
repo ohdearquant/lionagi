@@ -14,6 +14,10 @@ endpoints exist. For each endpoint it names the ``_config`` enum member and the 
 class; everything else is read from the enum, so no provider data is repeated here. Providers
 appear in the order they first register, and endpoints within a provider in their registration
 order, so a provider's default endpoint is its first one.
+
+The manifest also declares ``context_window_order``, the order in which a catalog composed
+from it scans the providers' context-window tables. It is not registration order: where two
+tables match the same model name, the provider named first in it decides the window.
 """
 
 from __future__ import annotations
@@ -34,6 +38,24 @@ __all__ = ("get_provider_manifest",)
 _PROVIDERS = "lionhub.providers"
 _SOURCE = "lionhub.providers"
 _CONTRACT_VERSION = 1
+
+# The order an unhinted context-window lookup scans the providers' tables in: the first
+# provider whose table matches the model wins, so where two tables hold the same model name
+# this order, not registration order, decides which window is returned.
+_CONTEXT_WINDOW_ORDER = (
+    "openai",
+    "anthropic",
+    "claude_code",
+    "codex",
+    "deepseek",
+    "nvidia_nim",
+    "perplexity",
+    "gemini_code",
+    "pi",
+    "groq",
+    "gemini",
+    "openrouter",
+)
 
 _OLLAMA = (
     DependencyRequirement(
@@ -279,4 +301,5 @@ def get_provider_manifest() -> ProviderManifest:
         contract_version=_CONTRACT_VERSION,
         source=_SOURCE,
         fragments=tuple(_declare_provider(row) for row in _DECLARATIONS),
+        context_window_order=_CONTEXT_WINDOW_ORDER,
     )

@@ -39,6 +39,7 @@ MODULE_RULES = {
     "lionagi.service.connections.endpoint_config": ("contracts", "provider_contracts"),
     "lionagi.service.connections.provider_catalog": ("contracts", "provider_contracts"),
     "lionagi.service.connections.registry": ("sdk", "provider_registry"),
+    "lionagi.service.connections._provider_compat": ("sdk", "provider_registry"),
     "lionagi.service.types": ("contracts", "provider_contracts"),
     "lionagi.adapters": ("adapter", "data_adapters"),
     "lionagi.agent": ("adapter", "agent"),

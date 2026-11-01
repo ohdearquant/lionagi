@@ -115,12 +115,7 @@ class TestTokenBudgetBoundaries:
 
 import types as _types
 
-from lionagi.service.token_budget import (
-    _get_provider_windows,
-    _longest_prefix_match,
-    get_token_budget,
-    lookup_context_window,
-)
+from lionagi.service.token_budget import get_token_budget, lookup_context_window
 
 
 class TestLookupContextWindow:
@@ -187,74 +182,6 @@ class TestLookupContextWindow:
         without_hint = lookup_context_window("gpt-4")
         # Both resolve to same value
         assert with_hint == without_hint
-
-    def test_get_provider_windows_unknown_provider(self):
-        """Unknown provider returns None."""
-        result = _get_provider_windows("completely_unknown_xyz")
-        assert result is None
-
-    def test_get_provider_windows_caches_result(self):
-        """Second call for same provider returns cached result."""
-        # openai is a known provider
-        first = _get_provider_windows("openai")
-        second = _get_provider_windows("openai")
-        assert first is second  # same object (cached)
-
-    def test_longest_prefix_match_returns_best_match(self):
-        """_longest_prefix_match picks the longest matching prefix."""
-        windows = {"gpt-4": 8192, "gpt-4-turbo": 128000, "gpt-3": 4096}
-        result = _longest_prefix_match("gpt-4-turbo-preview", windows)
-        assert result == 128000  # "gpt-4-turbo" is longer than "gpt-4"
-
-    def test_longest_prefix_match_no_match_returns_none(self):
-        """_longest_prefix_match returns None when no prefix matches."""
-        windows = {"gpt-4": 8192, "claude": 100000}
-        result = _longest_prefix_match("llama-3", windows)
-        assert result is None
-
-    def test_get_provider_windows_import_error_returns_none(self):
-        """_get_provider_windows returns None when module raises ImportError (lines 55-58)."""
-        import lionagi.service.token_budget as tb
-
-        original = tb._PROVIDER_MODULES.copy()
-        tb._PROVIDER_MODULES["_bad_test_provider"] = "nonexistent._module._xyz"
-        tb._provider_cache.pop("_bad_test_provider", None)
-        try:
-            result = _get_provider_windows("_bad_test_provider")
-            assert result is None
-        finally:
-            tb._PROVIDER_MODULES.pop("_bad_test_provider", None)
-            tb._provider_cache.pop("_bad_test_provider", None)
-
-    def test_all_provider_windows_yields_each_providers_lookup_in_order(self, monkeypatch):
-        """Iterating every provider goes through the per-provider lookup: in table order,
-        a cached table is read rather than re-imported, a loaded table is cached, and a
-        module that fails to import or has no CONTEXT_WINDOWS dict is skipped uncached."""
-        import importlib
-
-        import lionagi.service.token_budget as tb
-        from lionagi.service.token_budget import _all_provider_windows
-
-        monkeypatch.setattr(
-            tb,
-            "_PROVIDER_MODULES",
-            {
-                "openai": tb._PROVIDER_MODULES["openai"],
-                "_no_windows": "lionagi.service.token_budget",
-                "_bad_mod": "nonexistent.module.xyz",
-                "anthropic": tb._PROVIDER_MODULES["anthropic"],
-            },
-        )
-        cached_openai = {"cached-only-model": 1}
-        monkeypatch.setattr(tb, "_provider_cache", {"openai": cached_openai})
-
-        yielded = list(_all_provider_windows())
-
-        anthropic = importlib.import_module(tb._PROVIDER_MODULES["anthropic"]).CONTEXT_WINDOWS
-        assert len(yielded) == 2
-        assert yielded[0] is cached_openai
-        assert yielded[1] is anthropic
-        assert tb._provider_cache == {"openai": cached_openai, "anthropic": anthropic}
 
 
 class TestGetContextWindowModelLookup:
@@ -358,15 +285,11 @@ class TestCanonicalContextWindowRegistry:
         ],
         ids=["global", "hint", "case", "alias", "whitespace", "substring"],
     )
-    def test_gemini_lookup_preserves_hint_and_global_precedence(
-        self, monkeypatch, provider, model, expected
-    ):
+    def test_gemini_lookup_preserves_hint_and_global_precedence(self, provider, model, expected):
         """Context lookup has its own hint matching and provider scan order."""
         import lionagi.service.token_budget as token_budget
 
-        # Use the production dictionaries and lookup with an isolated cold cache.
-        monkeypatch.setattr(token_budget, "_provider_cache", {})
-
+        # Use the production catalog's window tables.
         assert token_budget.lookup_context_window(model, provider=provider) == expected
 
     def test_gpt_4_1_canonical_value_is_openai(self):

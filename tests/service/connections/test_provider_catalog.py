@@ -11,7 +11,7 @@ Rules the composition mirrors, as the registry applies them today:
   An empty endpoint name selects the provider's first entry (the catalog uses the provider's
   default endpoint), and an unmatched non-empty name selects the provider's entry when it has
   exactly one.
-* ``token_budget._longest_prefix_match`` returns the window of the longest key contained in the
+* ``ProviderCatalog.context_window`` returns the window of the longest key contained in the
   lowercased model name; the first key declared wins a tie.
 """
 
@@ -675,6 +675,164 @@ def test_context_window_is_none_when_no_fragment_declares_windows():
     catalog = compose(make_fragment(), make_fragment(key="beta"))
     assert catalog.context_window("any-model") is None
     assert catalog.context_window("any-model", provider="alpha") is None
+
+
+# --- context window order ----------------------------------------------------------
+
+DECLARED_ORDER = ("gamma", "beta", "alpha")
+
+
+def windowed_fragments():
+    """Fragments declared as alpha, beta, gamma, delta; only delta has no context windows."""
+    return (
+        make_fragment(key="alpha", aliases=("a1",), context_windows={"gpt": 100, "solo": 1}),
+        make_fragment(key="beta", context_windows={"gpt": 200, "shared": 20}),
+        make_fragment(key="gamma", context_windows={"gpt": 300, "shared": 30}),
+        make_fragment(key="delta", context_windows=None),
+    )
+
+
+def build_by_composing(fragments, order):
+    return compose_provider_catalog(fragments, source="src", context_window_order=order)
+
+
+def build_catalog(fragments, order):
+    return ProviderCatalog(providers=fragments, source="src", context_window_order=order)
+
+
+def build_manifest(fragments, order):
+    return ProviderManifest(
+        contract_version=1, source="src", fragments=fragments, context_window_order=order
+    )
+
+
+every_builder = pytest.mark.parametrize(
+    "build",
+    [build_by_composing, build_catalog, build_manifest],
+    ids=["compose", "catalog", "manifest"],
+)
+
+
+def test_context_window_scans_fragments_in_the_declared_order():
+    catalog = build_by_composing(windowed_fragments(), DECLARED_ORDER)
+    assert catalog.context_window_order == DECLARED_ORDER
+    assert catalog.context_window("gpt-x") == 300
+    assert catalog.context_window("solo-1") == 1
+    assert catalog.context_window("shared-1") == 30
+    assert catalog.context_window("nothing") is None
+
+
+def test_context_window_still_tries_the_hinted_fragment_before_the_declared_order():
+    catalog = build_by_composing(windowed_fragments(), DECLARED_ORDER)
+    assert catalog.context_window("gpt-x", provider="beta") == 200
+    assert catalog.context_window("gpt-x", provider="a1") == 100
+    assert catalog.context_window("gpt-x", provider="unknown") == 300
+    # A hinted fragment with no match hands over to the declared order.
+    assert catalog.context_window("shared-1", provider="alpha") == 30
+    assert catalog.context_window("shared-1", provider="delta") == 30
+
+
+def test_empty_context_window_order_keeps_fragment_order():
+    fragments = windowed_fragments()
+    for catalog in (compose(*fragments), build_by_composing(fragments, ())):
+        assert catalog.context_window_order == ()
+        assert catalog.context_window("gpt-x") == 100
+        assert catalog.context_window("shared-1") == 20
+
+
+def test_fragment_without_windows_may_be_left_out_of_the_order_or_named_in_it():
+    fragments = windowed_fragments()
+    left_out = build_by_composing(fragments, DECLARED_ORDER)
+    named = build_by_composing(fragments, ("delta", *DECLARED_ORDER))
+    assert left_out.context_window("gpt-x") == 300
+    assert named.context_window("gpt-x") == 300
+    assert named.context_window_order == ("delta", *DECLARED_ORDER)
+
+
+@every_builder
+@pytest.mark.parametrize(
+    ("order", "key"),
+    [
+        ((*DECLARED_ORDER, "zeta"), "zeta"),
+        (("gamma", "beta", "a1"), "a1"),
+        ((*DECLARED_ORDER, "beta"), "beta"),
+        (("gamma", "alpha", "delta"), "beta"),
+    ],
+    ids=["unknown_key", "alias_is_not_a_key", "repeated_key", "windowed_fragment_left_out"],
+)
+def test_invalid_context_window_order_is_rejected_naming_the_source_and_the_key(build, order, key):
+    with pytest.raises(ValueError) as info:
+        build(windowed_fragments(), order)
+    message = str(info.value)
+    assert "context_window_order" in message
+    assert "'src'" in message
+    assert repr(key) in message
+
+
+@every_builder
+@pytest.mark.parametrize(
+    ("order", "error", "message"),
+    [
+        ((1,), TypeError, "context_window_order must contain only str"),
+        ((None,), TypeError, "context_window_order must contain only str"),
+        ("gamma", TypeError, "context_window_order must be a tuple or list"),
+        ((("",)), ValueError, "context_window_order must not contain an empty string"),
+    ],
+    ids=["int_item", "none_item", "bare_string", "empty_item"],
+)
+def test_context_window_order_items_are_checked_like_other_string_tuples(
+    build, order, error, message
+):
+    with pytest.raises(error, match=message):
+        build(windowed_fragments(), order)
+
+
+@every_builder
+def test_context_window_order_is_stored_as_a_tuple(build):
+    built = build(windowed_fragments(), list(DECLARED_ORDER))
+    assert built.context_window_order == DECLARED_ORDER
+    assert type(built.context_window_order) is tuple
+
+
+def test_composing_a_manifest_carries_its_context_window_order_into_the_catalog():
+    manifest = make_manifest(fragments=windowed_fragments(), context_window_order=DECLARED_ORDER)
+    assert manifest.context_window_order == DECLARED_ORDER
+    catalog = compose_provider_catalog(manifest)
+    assert catalog.context_window_order == DECLARED_ORDER
+    assert catalog.context_window("gpt-x") == 300
+    assert compose_provider_catalog(manifest, source="src") == catalog
+    assert compose_provider_catalog(manifest, context_window_order=DECLARED_ORDER) == catalog
+
+
+def test_manifest_without_an_order_composes_in_fragment_order():
+    manifest = make_manifest(fragments=windowed_fragments())
+    assert manifest.context_window_order == ()
+    catalog = compose_provider_catalog(manifest)
+    assert catalog.context_window_order == ()
+    assert catalog.context_window("gpt-x") == 100
+    assert compose_provider_catalog(manifest, context_window_order=()) == catalog
+
+
+@pytest.mark.parametrize("explicit", [(), ("alpha", "beta", "gamma"), ("delta", *DECLARED_ORDER)])
+def test_explicit_order_that_differs_from_the_manifests_is_rejected(explicit):
+    manifest = make_manifest(fragments=windowed_fragments(), context_window_order=DECLARED_ORDER)
+    with pytest.raises(ValueError, match="does not match the manifest's context_window_order"):
+        compose_provider_catalog(manifest, context_window_order=explicit)
+
+
+def test_explicit_order_on_a_manifest_that_declares_none_is_rejected():
+    manifest = make_manifest(fragments=windowed_fragments())
+    with pytest.raises(ValueError, match="does not match the manifest's context_window_order"):
+        compose_provider_catalog(manifest, context_window_order=DECLARED_ORDER)
+
+
+def test_catalogs_that_differ_only_in_context_window_order_are_not_equal():
+    fragments = windowed_fragments()
+    ordered = build_by_composing(fragments, DECLARED_ORDER)
+    again = build_by_composing(fragments, DECLARED_ORDER)
+    unordered = build_by_composing(fragments, ())
+    assert ordered == again
+    assert ordered != unordered
 
 
 # --- empty catalog and repeatable composition ------------------------------------

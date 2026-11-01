@@ -252,13 +252,51 @@ class ProviderFragment:
             object.__setattr__(self, "context_windows", windows)
 
 
+def _context_window_order(
+    owner: str, source: str, order: object, fragments: tuple[ProviderFragment, ...]
+) -> tuple[str, ...]:
+    """Return ``order`` as a tuple of provider keys, checked against ``fragments``.
+
+    An empty order is valid and means fragment order. A non-empty one names only keys of
+    ``fragments``, names none twice and names every fragment whose ``context_windows`` is not
+    ``None``; anything else raises ``ValueError`` naming ``source`` and the offending key.
+    """
+    names = _str_tuple(owner, "context_window_order", order)
+    if not names:
+        return names
+    keys = {fragment.key for fragment in fragments}
+    seen: set[str] = set()
+    for name in names:
+        if name not in keys:
+            raise ValueError(
+                f"{owner}.context_window_order names {name!r}, which is not the key of any "
+                f"fragment from {source!r}"
+            )
+        if name in seen:
+            raise ValueError(
+                f"{owner}.context_window_order names {name!r} more than once; source {source!r}"
+            )
+        seen.add(name)
+    for fragment in fragments:
+        if fragment.context_windows is not None and fragment.key not in seen:
+            raise ValueError(
+                f"{owner}.context_window_order leaves out {fragment.key!r}, whose fragment "
+                f"from {source!r} declares context windows"
+            )
+    return names
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderManifest:
     """A named set of provider fragments sharing one contract version.
 
     ``source`` is the stable identity of whoever supplied the fragments; composition errors
-    carry it. ``contract_version`` is stored as given: composition checks it. Manifests are
-    unhashable, as the fragments they hold are.
+    carry it. ``contract_version`` is stored as given: composition checks it.
+    ``context_window_order`` is the order in which a catalog composed from the manifest scans
+    its fragments' context windows, after any hinted provider. Empty means fragment order;
+    otherwise it names fragment keys, none twice, and every fragment whose ``context_windows``
+    is not ``None``, and anything else raises ``ValueError`` naming the source and the key.
+    Manifests are unhashable, as the fragments they hold are.
     """
 
     __hash__ = None
@@ -266,14 +304,16 @@ class ProviderManifest:
     contract_version: object
     source: str
     fragments: tuple[ProviderFragment, ...]
+    context_window_order: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _check_str("ProviderManifest", "source", self.source)
-        object.__setattr__(
-            self,
-            "fragments",
-            _typed_tuple("ProviderManifest", "fragments", self.fragments, ProviderFragment),
+        fragments = _typed_tuple("ProviderManifest", "fragments", self.fragments, ProviderFragment)
+        object.__setattr__(self, "fragments", fragments)
+        order = _context_window_order(
+            "ProviderManifest", self.source, self.context_window_order, fragments
         )
+        object.__setattr__(self, "context_window_order", order)
 
 
 # --- composition ---------------------------------------------------------------
@@ -389,20 +429,27 @@ class ProviderCatalog:
     fragment whose contract version is not supported (``ProviderContractVersionError``) and
     any key collision, so a catalog never holds an unsupported fragment or two claimants for
     one name; the version check comes first. ``providers`` keeps the order the fragments were
-    declared in; two catalogs composed from equal input compare equal. Catalogs are
-    unhashable, as the fragments they hold are.
+    declared in; two catalogs composed from equal input compare equal. ``context_window_order``
+    fixes the order :meth:`context_window` scans the fragments in: empty means ``providers``
+    order, otherwise it follows the rules of ``ProviderManifest.context_window_order`` and a
+    violation raises ``ValueError`` naming the source and the key. That check runs after the
+    version check, the repeated-declaration check and the provider key and alias collisions,
+    and before endpoint keys are indexed. Catalogs are unhashable, as the fragments they
+    hold are.
     """
 
     __hash__ = None
 
     providers: tuple[ProviderFragment, ...]
     source: str
+    context_window_order: tuple[str, ...] = ()
     _providers_by_name: Mapping[str, ProviderFragment] = field(
         init=False, repr=False, compare=False
     )
     _endpoints_by_provider: Mapping[str, Mapping[str, EndpointDeclaration]] = field(
         init=False, repr=False, compare=False
     )
+    _window_scan: tuple[ProviderFragment, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _check_str("ProviderCatalog", "source", self.source)
@@ -412,12 +459,21 @@ class ProviderCatalog:
         object.__setattr__(self, "providers", providers)
         _reject_repeated_declarations(providers, self.source)
         by_name = _index_providers(providers, self.source)
+        order = _context_window_order(
+            "ProviderCatalog", self.source, self.context_window_order, providers
+        )
+        scan = providers
+        if order:
+            by_key = {fragment.key: fragment for fragment in providers}
+            scan = tuple(by_key[key] for key in order)
         endpoints = {
             fragment.key: MappingProxyType(_index_endpoints(fragment, self.source))
             for fragment in providers
         }
         object.__setattr__(self, "_providers_by_name", MappingProxyType(by_name))
         object.__setattr__(self, "_endpoints_by_provider", MappingProxyType(endpoints))
+        object.__setattr__(self, "context_window_order", order)
+        object.__setattr__(self, "_window_scan", scan)
 
     def fragment(self, key_or_alias: str) -> ProviderFragment | None:
         """Return the fragment whose key or alias equals the lowercased name, else ``None``."""
@@ -454,16 +510,16 @@ class ProviderCatalog:
 
         The window of the longest key contained in the lowercased model name wins, and the
         first declared key wins a tie. The hinted provider's mapping is tried first, then
-        every provider's mapping in declared order; a provider whose ``context_windows`` is
-        ``None`` contributes nothing. No default is ever returned: a caller that needs an
-        estimate keeps its own.
+        every provider's mapping in ``context_window_order`` (declared fragment order when
+        that is empty); a provider whose ``context_windows`` is ``None`` contributes nothing.
+        No default is ever returned: a caller that needs an estimate keeps its own.
         """
         model_lower = model.lower()
         ordered: list[ProviderFragment] = []
         hinted = self.fragment(provider) if provider else None
         if hinted is not None:
             ordered.append(hinted)
-        ordered.extend(fragment for fragment in self.providers if fragment is not hinted)
+        ordered.extend(fragment for fragment in self._window_scan if fragment is not hinted)
         for fragment in ordered:
             if fragment.context_windows:
                 window = _longest_match(model_lower, fragment.context_windows)
@@ -485,7 +541,10 @@ def _require_supported_version(source: str, version: object) -> None:
 
 
 def compose_provider_catalog(
-    fragments: Iterable[ProviderFragment] | ProviderManifest, *, source: str | None = None
+    fragments: Iterable[ProviderFragment] | ProviderManifest,
+    *,
+    source: str | None = None,
+    context_window_order: Iterable[str] | None = None,
 ) -> ProviderCatalog:
     """Compose provider fragments into one immutable catalog.
 
@@ -494,13 +553,22 @@ def compose_provider_catalog(
     source; an explicit ``source`` must equal it, and the manifest's version must agree with
     every fragment's. For an iterable of fragments, ``source`` is required, because it names
     who supplied them in collision and version errors; leaving it out raises ``TypeError``.
+    ``context_window_order`` is the order in which the catalog scans the fragments' context
+    windows after any hinted provider (see ``ProviderManifest``); for fragments it defaults to
+    empty, which means fragment order. For a manifest it defaults to the manifest's own order,
+    and an explicit value that differs raises ``ValueError``.
     Every declared contract version is checked first, ahead of the source comparison, and
     nothing else about the declarations is examined until all of them pass: a missing,
     non-``int``, ``bool`` or unsupported version raises ``ProviderContractVersionError``, and
     so does a fragment whose version differs from its manifest's. Then a ``source`` that
-    differs from the manifest's raises ``ValueError``, the keys are indexed and any collision
-    raises ``ProviderCollisionError`` naming both claimants. The result never depends on
-    declaration order beyond ``providers`` keeping it, and an empty input gives a valid empty
+    differs from the manifest's raises ``ValueError``, and so does an explicit
+    ``context_window_order`` that differs from the manifest's. Then repeated declarations and
+    provider key and alias collisions raise ``ProviderCollisionError`` naming both claimants.
+    For fragments composed directly, the order is checked next, a violation raising
+    ``ValueError`` naming the source and the key; a manifest has already checked its own.
+    Last, endpoint key collisions raise ``ProviderCollisionError`` too. The result never depends
+    on declaration order beyond ``providers`` keeping it and, while ``context_window_order``
+    is empty, the order context windows are scanned in; an empty input gives a valid empty
     catalog.
     """
     if source is not None:
@@ -537,5 +605,19 @@ def compose_provider_catalog(
             raise ValueError(
                 f"source {source!r} does not match the manifest source {manifest.source!r}"
             )
+        if context_window_order is not None:
+            explicit = _str_tuple(
+                "compose_provider_catalog", "context_window_order", context_window_order
+            )
+            if explicit != manifest.context_window_order:
+                raise ValueError(
+                    f"context_window_order {explicit!r} does not match the manifest's "
+                    f"context_window_order {manifest.context_window_order!r}"
+                )
+        context_window_order = manifest.context_window_order
 
-    return ProviderCatalog(providers=declared, source=source)
+    return ProviderCatalog(
+        providers=declared,
+        source=source,
+        context_window_order=() if context_window_order is None else context_window_order,
+    )
