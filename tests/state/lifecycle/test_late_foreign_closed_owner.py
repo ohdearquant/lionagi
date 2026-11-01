@@ -16,9 +16,12 @@ from lionagi.state.db import StateDB
 from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
-from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
+from tests.state.lifecycle.test_exact_terminal_attempt import (
+    _first_attempt,
+    _seed,
+    _wait_for_attempt_release,
+)
 from tests.state.lifecycle.test_late_foreign_awaitables import _ForeignOwner, _wait_thread_event
-from tests.state.lifecycle.test_late_returned_awaitable import _first_attempt
 
 
 @pytest.fixture(autouse=True)
@@ -52,8 +55,14 @@ async def _exercise_settled_future(tmp_path, monkeypatch, adapter, value, *, clo
         finally:
             finish_called.set()
 
+    invoked = threading.Event()
+
+    def deliver():
+        invoked.set()
+        return owner.future
+
     async def prepare(_row, _db):
-        return PreparedDelivery(lambda: owner.future)
+        return PreparedDelivery(deliver)
 
     monkeypatch.setattr(reconciliation, "_finish_late", record_finish)
     try:
@@ -75,7 +84,7 @@ async def _exercise_settled_future(tmp_path, monkeypatch, adapter, value, *, clo
             key = (reconciliation._store_identity(db), "settled", event_id)
             runner = TerminalReconciler("settled", prepare, batch_size=1, timeout=1.0)
             try:
-                result = await getattr(runner, adapter)(db, event_id)
+                result = await _first_attempt(runner, adapter, db, event_id, key, invoked)
                 assert result.attempted is True
                 await _wait_thread_event(finish_called)
                 await _wait_for_attempt_release(key)

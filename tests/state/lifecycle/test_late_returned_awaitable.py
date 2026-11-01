@@ -24,7 +24,11 @@ from lionagi.state.lifecycle.reconciler import (
     PreparedDelivery,
     TerminalReconciler,
 )
-from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
+from tests.state.lifecycle.test_exact_terminal_attempt import (
+    _first_attempt,
+    _seed,
+    _wait_for_attempt_release,
+)
 
 
 def _forbid(*_args, **_kwargs):
@@ -50,39 +54,6 @@ async def _until(predicate, timeout=2):
             await asyncio.sleep(0.005)
 
     await asyncio.wait_for(wait(), timeout)
-
-
-async def _first_attempt(runner, adapter, db, event_id, key, started, tries=3):
-    """Run the first attempt, repeating it only while the delivery hook never began.
-
-    One time budget covers the state reads before the hook as well as the hook, so a
-    loaded runner can spend all of it before the hook starts; the attempt is then
-    correctly reported as not attempted. Repeating it is valid only for that case:
-    ``started`` is unset and the attempt ran for nearly its whole budget, so the budget
-    expired rather than the attempt failing at once. The slot is released before the
-    repeat, and the repeat runs with twice the previous budget, because the same budget
-    would be spent the same way on a runner that is still slow. The runner's own budget
-    is restored before returning. An attempt whose hook ran but is reported as not
-    attempted, one that fails before the hook without spending its budget, and one that
-    never begins within ``tries`` attempts are returned unchanged, so the caller's
-    assertion still fails.
-    """
-    loop = asyncio.get_running_loop()
-    bound = runner.timeout
-    begun = loop.time()
-    try:
-        result = await getattr(runner, adapter)(db, event_id)
-        for _ in range(tries - 1):
-            expired = loop.time() - begun >= 0.9 * runner.timeout
-            if started.is_set() or result.status != "failed" or result.attempted or not expired:
-                break
-            await _wait_for_attempt_release(key)
-            runner.timeout *= 2
-            begun = loop.time()
-            result = await getattr(runner, adapter)(db, event_id)
-    finally:
-        runner.timeout = bound
-    return result
 
 
 class _FatalChild(BaseException):
