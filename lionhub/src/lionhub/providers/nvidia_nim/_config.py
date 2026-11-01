@@ -30,4 +30,13 @@ NvidiaNimConfigs._PROVIDER = "nvidia_nim"
 NvidiaNimConfigs._PROVIDER_ALIASES = ["nvidia", "nim"]
 NvidiaNimConfigs._API_KEY_ENV = "NVIDIA_NIM_API_KEY"
 
-__all__ = ("NvidiaNimConfigs",)
+
+CONTEXT_WINDOWS: dict[str, int] = {
+    "nemotron-ultra": 131_072,
+    "nemotron-super": 131_072,
+    "llama-4-scout": 10_485_760,
+    "llama-4-maverick": 1_048_576,
+    "llama-3": 128_000,
+}
+
+__all__ = ("NvidiaNimConfigs", "CONTEXT_WINDOWS")

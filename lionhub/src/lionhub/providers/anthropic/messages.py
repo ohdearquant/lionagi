@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import ANTHROPIC_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import AnthropicConfigs
 
 __all__ = ("ANTHROPIC_DEFAULT_MAX_TOKENS", "CreateMessageRequest", "AnthropicMessagesEndpoint")
@@ -173,22 +175,6 @@ StreamEvent = Union[
     MessageDeltaEvent,
     MessageStopEvent,
 ]
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-fable-5-1": 1_000_000,
-    "claude-opus-5-5": 1_000_000,
-    "claude-sonnet-5-5": 1_000_000,
-    "claude-haiku-5-5": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-haiku-4-5": 200_000,
-    "claude-3-5-sonnet": 200_000,
-    "claude-3-5-haiku": 200_000,
-    "claude-3-opus": 200_000,
-}
 
 
 def _rename_masked_names(value: dict, names: list, key: Any) -> dict:

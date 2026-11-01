@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from lionagi.ln.types import Enum
 from lionagi.service.connections.endpoint import Endpoint
 
-from ._config import PerplexityConfigs
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import CONTEXT_WINDOWS, PerplexityConfigs  # noqa: F401
 
 
 class PerplexityModels(str, Enum):
@@ -59,11 +60,6 @@ class PerplexityChatRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=0, le=2048)
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
 
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "sonar-pro": 200_000,
-    "sonar": 128_000,
-}
 
 __all__ = ("PerplexityChatRequest", "PerplexityChatEndpoint")
 

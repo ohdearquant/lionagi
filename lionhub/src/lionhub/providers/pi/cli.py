@@ -42,7 +42,8 @@ from lionhub.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
 
-from ._config import PiConfigs
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import CONTEXT_WINDOWS, PiConfigs  # noqa: F401
 
 HAS_PI_CLI, PI_CLI = discover_cli("pi")
 
@@ -600,11 +601,6 @@ async def stream_pi_cli(
 
 
 pi_log = log
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "pi": 128_000,
-}
 
 _PI_HANDLER_PARAMS = (
     "on_text",

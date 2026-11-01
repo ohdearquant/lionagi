@@ -19,4 +19,9 @@ class PiConfigs(ProviderConfig, Enum):
 PiConfigs._PROVIDER = "pi"
 PiConfigs._PROVIDER_ALIASES = ["pi-code", "pi_code"]
 
-__all__ = ("PiConfigs",)
+
+CONTEXT_WINDOWS: dict[str, int] = {
+    "pi": 128_000,
+}
+
+__all__ = ("PiConfigs", "CONTEXT_WINDOWS")

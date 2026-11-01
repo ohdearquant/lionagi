@@ -41,6 +41,8 @@ from lionhub.providers._cli_subprocess import (
     validate_message_prompt,
 )
 
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import GEMINI_CODE_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import GeminiCodeConfigs
 
 
@@ -71,29 +73,6 @@ __all__ = (
     "GeminiCLIEndpoint",
     "resolve_agy_model",
 )
-
-# agy models expose ~1M-token context (verified against `agy models`).
-CONTEXT_WINDOWS: dict[str, int] = {
-    "gemini-4-argon": 1_048_576,
-    # Matched as substrings, longest row first, and lookup_context_window falls back
-    # across every provider's table, so these give a name containing them this window
-    # on any provider unless a longer row matches it: the `gemini-4` and `argon`
-    # aliases, the "Gemini 4 Argon (...)" display names, but also `gemini-4-flash`, or
-    # `gemini-4.5-flash` on `gemini`; `gemini-2.5-pro-argon` keeps its provider's 2.5 Pro
-    # window.
-    # The windows follow these substrings, not resolve_agy_model's token rules, so
-    # `gemini-4k-flash` reads the `gemini-4` row while it resolves to 3.5 Flash.
-    "gemini-4": 1_048_576,
-    "argon": 1_048_576,
-    "gemini-3.8-flash": 1_048_576,
-    "gemini-3.6-flash": 1_048_576,
-    "gemini-3.5-flash": 1_048_576,
-    "gemini-3.1-pro": 1_048_576,
-    "gemini-3-flash-preview": 1_048_576,
-    "gemini-3-pro-preview": 1_048_576,
-    "gemini-2.5-flash": 1_048_576,
-    "gemini-2.5-pro": 2_097_152,
-}
 
 
 # --------------------------------------------------------------------------- model mapping

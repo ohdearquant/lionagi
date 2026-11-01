@@ -13,7 +13,8 @@ from lionagi.ln.types import Undefined
 from lionagi.service.connections._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 
-from ._config import DeepSeekConfigs
+# CONTEXT_WINDOWS is defined in ._config and re-exported here.
+from ._config import CONTEXT_WINDOWS, DeepSeekConfigs  # noqa: F401
 
 __all__ = ("DeepseekChatCompletionsRequest", "DeepseekChatEndpoint")
 
@@ -83,18 +84,6 @@ def normalize_deepseek_usage(response: Any) -> Any:
             usage["completion_tokens_details"]["reasoning_tokens"] = thinking_tokens
 
     return response
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "deepseek-v4-pro": 1_000_000,
-    "deepseek-v4-flash": 1_000_000,
-    "deepseek-v4": 1_000_000,
-    "deepseek-coder-v2": 128_000,
-    "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000,
-    "deepseek-v3": 128_000,
-    "deepseek-r1": 64_000,
-}
 
 
 @DeepSeekConfigs.CHAT.register

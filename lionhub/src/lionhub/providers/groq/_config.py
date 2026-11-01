@@ -26,3 +26,11 @@ class GroqConfigs(ProviderConfig, Enum):
 GroqConfigs._PROVIDER = "groq"
 GroqConfigs._PROVIDER_ALIASES = []
 GroqConfigs._API_KEY_ENV = "GROQ_API_KEY"
+
+
+CONTEXT_WINDOWS: dict[str, int] = {
+    "llama-3.3-70b-versatile": 128_000,
+    "llama-3.1-8b-instant": 128_000,
+    "mixtral-8x7b-32768": 32_768,
+    "gemma2-9b-it": 8_192,
+}
