@@ -200,9 +200,23 @@ class AccountRouter:
                 server_tools=attempt.server_tools,
             )
 
-    async def settle_unknown(self, attempt: RouterAttempt, reason: str) -> None:
+    async def settle_unknown(
+        self,
+        attempt: RouterAttempt,
+        reason: str,
+        *,
+        provider_error_type: str | None = None,
+        rejection_class: str | None = None,
+    ) -> None:
         with CancelScope(shield=True):
-            await self.ledger.settle(attempt.attempt_id, UnknownOutcome(reason))
+            await self.ledger.settle(
+                attempt.attempt_id,
+                UnknownOutcome(
+                    reason,
+                    provider_error_type=provider_error_type,
+                    rejection_class=rejection_class,
+                ),
+            )
 
     async def settle_not_sent(
         self, attempt: RouterAttempt, *, caller_cancelled: bool = False
