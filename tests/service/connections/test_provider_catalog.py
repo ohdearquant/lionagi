@@ -8,6 +8,9 @@ Rules the composition mirrors, as the registry applies them today:
   provider alias, and drops repeated aliases.
 * ``EndpointRegistry._match_registered`` lowercases the provider it is asked for and does not
   strip it; endpoint names are compared exactly, against the endpoint key and its aliases.
+  An empty endpoint name selects the provider's first entry (the catalog uses the provider's
+  default endpoint), and an unmatched non-empty name selects the provider's entry when it has
+  exactly one.
 * ``token_budget._longest_prefix_match`` returns the window of the longest key contained in the
   lowercased model name; the first key declared wins a tie.
 """
@@ -211,7 +214,7 @@ def test_context_window_values_must_be_positive_ints(bad):
 
 
 @pytest.mark.parametrize("version", [None, "1", True, 2, 0])
-def test_construction_does_not_check_contract_versions(version):
+def test_fragment_and_manifest_construction_do_not_check_contract_versions(version):
     assert make_fragment(contract_version=version).contract_version is version
     assert make_manifest(contract_version=version).contract_version is version
 
@@ -267,6 +270,38 @@ def test_manifest_version_is_checked_before_collisions():
     assert info.value.observed == 2
 
 
+@pytest.mark.parametrize("observed", [None, "1", True, 1.0, 2])
+def test_direct_catalog_construction_checks_every_fragment_version(observed):
+    fragments = (make_fragment(), make_fragment(key="beta", contract_version=observed))
+    with pytest.raises(ProviderContractVersionError) as info:
+        ProviderCatalog(providers=fragments, source="direct-src")
+    assert info.value.source == "direct-src"
+    assert info.value.observed is observed
+    assert info.value.expected == SUPPORTED_CONTRACT_VERSIONS
+
+
+def test_direct_catalog_construction_checks_versions_before_collisions():
+    fragments = (make_fragment(), make_fragment(), make_fragment(key="beta", contract_version="1"))
+    with pytest.raises(ProviderContractVersionError) as info:
+        ProviderCatalog(providers=fragments, source="src")
+    assert info.value.observed == "1"
+
+
+def test_direct_catalog_construction_checks_versions_before_repeated_declarations():
+    repeated = make_fragment(contract_version=2)
+    with pytest.raises(ProviderContractVersionError) as info:
+        ProviderCatalog(providers=(repeated, repeated), source="src")
+    assert info.value.observed == 2
+
+
+def test_replacing_the_providers_of_a_catalog_checks_versions_again():
+    catalog = compose(make_fragment())
+    with pytest.raises(ProviderContractVersionError) as info:
+        dataclasses.replace(catalog, providers=(make_fragment(contract_version=2),))
+    assert info.value.observed == 2
+    assert info.value.source == "src"
+
+
 def test_manifest_source_is_used_and_must_match_the_keyword():
     manifest = make_manifest(source="manifest-src")
     catalog = compose_provider_catalog(manifest, source="manifest-src")
@@ -274,6 +309,36 @@ def test_manifest_source_is_used_and_must_match_the_keyword():
     assert [fragment.key for fragment in catalog.providers] == ["alpha"]
     with pytest.raises(ValueError, match="source"):
         compose_provider_catalog(manifest, source="other")
+
+
+@pytest.mark.parametrize(
+    ("manifest_version", "fragment_version", "observed"),
+    [(None, 1, None), (2, 1, 2), (1, "1", "1"), (1, 2, 2)],
+)
+def test_versions_are_checked_before_the_manifest_source_is_compared(
+    manifest_version, fragment_version, observed
+):
+    manifest = make_manifest(
+        contract_version=manifest_version,
+        source="manifest-src",
+        fragments=(make_fragment(contract_version=fragment_version),),
+    )
+    with pytest.raises(ProviderContractVersionError) as info:
+        compose_provider_catalog(manifest, source="other")
+    assert info.value.observed == observed
+
+
+def test_version_disagreement_is_reported_before_the_manifest_source_is_compared(monkeypatch):
+    monkeypatch.setattr(provider_catalog, "SUPPORTED_CONTRACT_VERSIONS", (1, 2))
+    manifest = make_manifest(
+        contract_version=1,
+        source="manifest-src",
+        fragments=(make_fragment(contract_version=2),),
+    )
+    with pytest.raises(ProviderContractVersionError) as info:
+        compose_provider_catalog(manifest, source="other")
+    assert info.value.observed == 2
+    assert info.value.expected == (1,)
 
 
 def test_compose_rejects_bad_input_shapes():
@@ -403,6 +468,39 @@ def test_endpoint_lookup_lowercases_the_provider_and_matches_endpoint_names_exac
     assert catalog.endpoint("missing") is None
     assert catalog.endpoint("missing", "chat") is None
     assert catalog.endpoint("  alpha ") is None
+
+
+def test_empty_endpoint_name_selects_the_default_endpoint():
+    chat = make_endpoint()
+    stream = make_endpoint(key="stream", diagnostic_id="example.stream")
+    catalog = compose(make_fragment(endpoints=(chat, stream), default_endpoint="stream"))
+    assert catalog.endpoint("alpha", "") is stream
+    assert catalog.endpoint("alpha", None) is stream
+    assert catalog.endpoint("alpha") is stream
+
+
+def test_unmatched_endpoint_name_on_a_one_endpoint_provider_returns_its_endpoint():
+    chat = make_endpoint(aliases=("fast",))
+    catalog = compose(make_fragment(endpoints=(chat,)))
+    assert catalog.endpoint("alpha", "missing") is chat
+    assert catalog.endpoint("alpha", "CHAT") is chat
+    assert catalog.endpoint("alpha", " chat") is chat
+    assert catalog.endpoint("missing", "chat") is None
+
+
+def test_unmatched_endpoint_name_on_a_two_endpoint_provider_returns_none():
+    chat = make_endpoint()
+    stream = make_endpoint(key="stream", diagnostic_id="example.stream")
+    catalog = compose(make_fragment(endpoints=(chat, stream)))
+    assert catalog.endpoint("alpha", "missing") is None
+    assert catalog.endpoint("alpha", "CHAT") is None
+
+
+def test_exact_key_and_alias_still_match_on_a_one_endpoint_provider():
+    chat = make_endpoint(aliases=("fast",))
+    catalog = compose(make_fragment(endpoints=(chat,)))
+    assert catalog.endpoint("alpha", "chat") is chat
+    assert catalog.endpoint("alpha", "fast") is chat
 
 
 def test_same_endpoint_name_resolves_per_provider():

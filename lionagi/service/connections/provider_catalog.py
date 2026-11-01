@@ -11,7 +11,9 @@ endpoint factory.
 Key rules mirror the ones ``EndpointRegistry.register`` applies today: a provider key and its
 aliases are stored as ``strip().lower()`` with repeated aliases dropped, a provider is looked
 up by its lowercased name only (padded names do not match), and endpoint names are compared
-exactly against an endpoint key or one of its aliases.
+exactly against an endpoint key or one of its aliases. Like the registry, an empty endpoint
+name selects a default (here the provider's ``default_endpoint``) and an unmatched name
+selects the provider's only endpoint when it declares exactly one.
 """
 
 from __future__ import annotations
@@ -183,7 +185,8 @@ class ProviderFragment:
 
     ``default_endpoint`` is the key of one of ``endpoints``. ``context_windows`` maps a model
     name fragment to a positive token count; ``None`` states that the provider's window
-    metadata is unknown. ``contract_version`` is stored as given: composition checks it.
+    metadata is unknown. ``contract_version`` is stored as given: composition and catalog
+    construction check it.
     """
 
     contract_version: object
@@ -354,10 +357,11 @@ def _longest_match(model_lower: str, windows: Mapping[str, int]) -> int | None:
 class ProviderCatalog:
     """An immutable, validated set of provider fragments from one source.
 
-    Build it with :func:`compose_provider_catalog`, which also checks contract versions.
-    Construction refuses any key collision, so a catalog never holds two claimants for one
-    name. ``providers`` keeps the order the fragments were declared in; two catalogs
-    composed from equal input compare equal.
+    Build it with :func:`compose_provider_catalog`. Construction, by either route, refuses a
+    fragment whose contract version is not supported (``ProviderContractVersionError``) and
+    any key collision, so a catalog never holds an unsupported fragment or two claimants for
+    one name; the version check comes first. ``providers`` keeps the order the fragments were
+    declared in; two catalogs composed from equal input compare equal.
     """
 
     providers: tuple[ProviderFragment, ...]
@@ -372,6 +376,8 @@ class ProviderCatalog:
     def __post_init__(self) -> None:
         _check_str("ProviderCatalog", "source", self.source)
         providers = _typed_tuple("ProviderCatalog", "providers", self.providers, ProviderFragment)
+        for fragment in providers:
+            _require_supported_version(self.source, fragment.contract_version)
         object.__setattr__(self, "providers", providers)
         _reject_repeated_declarations(providers, self.source)
         by_name = _index_providers(providers, self.source)
@@ -389,17 +395,28 @@ class ProviderCatalog:
     def endpoint(
         self, provider: str, endpoint_key_or_alias: str | None = None
     ) -> EndpointDeclaration | None:
-        """Return one endpoint of a provider, or ``None`` when either name is unknown.
+        """Return one endpoint of a provider, or ``None`` when no endpoint is selected.
 
-        ``provider`` is matched like :meth:`fragment`. ``endpoint_key_or_alias`` is matched
-        exactly; ``None`` selects the provider's default endpoint.
+        ``provider`` is matched like :meth:`fragment`. The endpoint name follows the matching
+        ``EndpointRegistry`` applies to a provider's registered endpoints, with the provider's
+        ``default_endpoint`` standing in for its first registered one:
+
+        * ``None`` or ``""`` selects the provider's default endpoint.
+        * A non-empty name equal to an endpoint key or alias, compared exactly, selects that
+          endpoint.
+        * Any other non-empty name selects the provider's only endpoint when it declares
+          exactly one, and gives ``None`` otherwise.
         """
         fragment = self.fragment(provider)
         if fragment is None:
             return None
         endpoints = self._endpoints_by_provider[_normalize_key(fragment.key)]
-        name = fragment.default_endpoint if endpoint_key_or_alias is None else endpoint_key_or_alias
-        return endpoints.get(name)
+        if not endpoint_key_or_alias:
+            return endpoints[fragment.default_endpoint]
+        matched = endpoints.get(endpoint_key_or_alias)
+        if matched is None and len(fragment.endpoints) == 1:
+            return fragment.endpoints[0]
+        return matched
 
     def context_window(self, model: str, provider: str | None = None) -> int | None:
         """Return the context window declared for ``model``, or ``None`` when none matches.
@@ -444,10 +461,11 @@ def compose_provider_catalog(
     ``fragments`` is an iterable of :class:`ProviderFragment` or a :class:`ProviderManifest`;
     for a manifest, ``source`` must equal the manifest's own source and the manifest's
     version must agree with every fragment's. Every declared contract version is checked
-    first, and nothing else about the declarations is examined until all of them pass: a
-    missing, non-``int``, ``bool`` or unsupported version raises
-    ``ProviderContractVersionError``, and so does a fragment whose version differs from its
-    manifest's. Then the keys are indexed and any collision raises ``ProviderCollisionError``
+    first, ahead of the source comparison, and nothing else about the declarations is
+    examined until all of them pass: a missing, non-``int``, ``bool`` or unsupported version
+    raises ``ProviderContractVersionError``, and so does a fragment whose version differs
+    from its manifest's. Then a ``source`` that differs from the manifest's raises
+    ``ValueError``, the keys are indexed and any collision raises ``ProviderCollisionError``
     naming both claimants. The result never depends on declaration order beyond
     ``providers`` keeping it, and an empty input gives a valid empty catalog.
     """
@@ -455,10 +473,6 @@ def compose_provider_catalog(
     manifest: ProviderManifest | None = None
     if isinstance(fragments, ProviderManifest):
         manifest = fragments
-        if manifest.source != source:
-            raise ValueError(
-                f"source {source!r} does not match the manifest source {manifest.source!r}"
-            )
         declared = manifest.fragments
     else:
         declared = _typed_tuple(
@@ -477,5 +491,9 @@ def compose_provider_catalog(
                     expected=(manifest.contract_version,),
                     observed=fragment.contract_version,
                 )
+        if manifest.source != source:
+            raise ValueError(
+                f"source {source!r} does not match the manifest source {manifest.source!r}"
+            )
 
     return ProviderCatalog(providers=declared, source=source)
