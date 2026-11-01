@@ -958,6 +958,9 @@
     "lionagi/service/connections/mcp_wrapper.py": [
       "__all__ = (\n    \"MCPSecurityConfig\",\n    \"MCPConnectionPool\",\n    \"create_mcp_tool\",\n    \"is_synthetic_mcp_wrapper_schema\",\n    \"validate_mcp_tool_admission\",\n)"
     ],
+    "lionagi/service/connections/provider_catalog.py": [
+      "__all__ = (\n    \"SUPPORTED_CONTRACT_VERSIONS\",\n    \"DependencyRequirement\",\n    \"EndpointDeclaration\",\n    \"ProviderCatalog\",\n    \"ProviderFragment\",\n    \"ProviderManifest\",\n    \"compose_provider_catalog\",\n)"
+    ],
     "lionagi/service/connections/registry.py": [
       "__all__ = (\n    \"EndpointType\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)"
     ],
@@ -1349,6 +1352,7 @@
       "ProviderAdapterError",
       "ProviderAuthError",
       "ProviderCapacityError",
+      "ProviderCollisionError",
       "ProviderCompositionError",
       "ProviderContextError",
       "ProviderContractVersionError",
@@ -2736,6 +2740,14 @@
       "create_mcp_tool",
       "is_synthetic_mcp_wrapper_schema",
       "validate_mcp_tool_admission"
+    ],
+    "lionagi/service/connections/provider_catalog.py": [
+      "DependencyRequirement",
+      "EndpointDeclaration",
+      "ProviderCatalog",
+      "ProviderFragment",
+      "ProviderManifest",
+      "compose_provider_catalog"
     ],
     "lionagi/service/connections/provider_config.py": [
       "LazyType",

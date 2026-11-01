@@ -410,3 +410,47 @@ class ProviderCompositionError(ValueError):
 
     def __reduce__(self):
         return (type(self), ())
+
+
+class ProviderCollisionError(ValueError):
+    """Two declarations in one provider catalog claim the same identity.
+
+    ``kind`` names what collided: ``"provider"`` (two fragments with one provider key),
+    ``"provider_alias"`` (a provider alias claimed twice, or equal to another provider's
+    key), ``"endpoint"`` (an endpoint key or alias claimed twice inside one provider) or
+    ``"duplicate_declaration"`` (the same declaration object repeated inside one input);
+    any other value raises ``ValueError``. ``key`` is the contested name and
+    ``first_owner`` / ``second_owner`` identify the two claimants.
+
+    No catalog was composed. This is neither a ``ProviderCompositionError`` (which means
+    no catalog was supplied, and a handler for it must not catch a collision) nor a
+    ``ProviderError``.
+    """
+
+    _KINDS: ClassVar[tuple[str, ...]] = (
+        "provider",
+        "provider_alias",
+        "endpoint",
+        "duplicate_declaration",
+    )
+
+    def __init__(self, *, key: str, kind: str, first_owner: str, second_owner: str) -> None:
+        if kind not in self._KINDS:
+            raise ValueError(f"kind must be one of {', '.join(self._KINDS)}; got {kind!r}")
+        super().__init__(
+            f"Provider catalog collision ({kind}) on {key!r}: "
+            f"{first_owner} conflicts with {second_owner}"
+        )
+        self.key: str = key
+        self.kind: str = kind
+        self.first_owner: str = first_owner
+        self.second_owner: str = second_owner
+
+    def __reduce__(self):
+        fields = {
+            "key": self.key,
+            "kind": self.kind,
+            "first_owner": self.first_owner,
+            "second_owner": self.second_owner,
+        }
+        return (_rebuild_contract_error, (type(self), fields))
