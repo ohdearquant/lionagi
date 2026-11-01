@@ -1425,6 +1425,10 @@
       "layer": "sdk",
       "owner": "model_invocation"
     },
+    "lionagi.service._output_limit": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
     "lionagi.service._prompt_cache": {
       "layer": "sdk",
       "owner": "model_invocation"

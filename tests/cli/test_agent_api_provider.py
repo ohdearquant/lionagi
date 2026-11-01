@@ -1430,11 +1430,12 @@ def test_a_refused_response_is_read_in_each_provider_shape(response, expected):
 
 
 class _Reply:
-    """Stands in for an assistant message: an id and the raw provider response."""
+    """Stands in for an assistant message: an id, the raw provider response and its metadata."""
 
     def __init__(self, response):
         self.id = object()
         self.model_response = response
+        self.metadata = {}
 
 
 def _window(monkeypatch, *responses):

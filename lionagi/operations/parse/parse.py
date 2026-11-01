@@ -162,7 +162,17 @@ async def parse(
     text: str,
     parse_param: ParseParam,
     return_res_message: bool = False,
+    *,
+    stopped_at_output_limit: bool = False,
 ) -> Any | tuple[Any, AssistantResponse | None]:
+    """Parse ``text`` into the response format of ``parse_param``.
+
+    A text that does not parse is sent to a repair request, which reformats it. With
+    ``stopped_at_output_limit`` the text came from a response that stopped at its output token
+    limit: it is incomplete, so no repair request is sent and ``handle_validation`` decides at
+    once: under ``"raise"`` the error names the stop, and ``"return_value"`` gives the text as an
+    ``UnparsedResponse`` of kind ``"extraction"``. A text that parses as it is is still used.
+    """
     structure = parse_param.structure if isinstance(parse_param.structure, Structure) else None
     attempts = _ReformatAttempts()
 
@@ -246,6 +256,15 @@ async def parse(
         _call = AlcallParams(**parse_param.alcall_params)
 
     try:
+        if stopped_at_output_limit:
+            # The reply is cut off, so a repair request could only reformat what was written and
+            # would send all of it a second time. Fail without one, naming the stop.
+            cut_off = ExtractionError(
+                "the response stopped at its output token limit, so its text is incomplete "
+                "and no repair request was sent"
+            )
+            attempts.record_failure(cut_off)
+            raise cut_off
         if not str(text or "").strip():
             # Nothing to reformat. A repair request carries the conversation, so what it would
             # get back is a new answer written from that, not this reply: a retry under a
