@@ -21,6 +21,7 @@ import pytest
 from lionagi._feature_errors import MissingFeatureError
 from lionagi._provider_errors import (
     ProviderActivationError,
+    ProviderCollisionError,
     ProviderCompositionError,
     ProviderContractVersionError,
     ProviderError,
@@ -74,12 +75,22 @@ def _composition_error() -> ProviderCompositionError:
     return ProviderCompositionError()
 
 
+def _collision_error() -> ProviderCollisionError:
+    return ProviderCollisionError(
+        key="alpha",
+        kind="provider",
+        first_owner="alpha (source-a)",
+        second_owner="alpha (source-b)",
+    )
+
+
 FACTORIES = [
     _missing_with_extra,
     _missing_without_extra,
     _contract_error,
     _activation_error,
     _composition_error,
+    _collision_error,
 ]
 
 
@@ -93,6 +104,7 @@ FACTORIES = [
         (ProviderContractVersionError, ValueError),
         (ProviderActivationError, RuntimeError),
         (ProviderCompositionError, ValueError),
+        (ProviderCollisionError, ValueError),
     ],
 )
 def test_each_error_has_exactly_the_specified_base(cls, base):
@@ -106,10 +118,17 @@ def test_each_error_has_exactly_the_specified_base(cls, base):
         ProviderContractVersionError,
         ProviderActivationError,
         ProviderCompositionError,
+        ProviderCollisionError,
     ],
 )
 def test_no_error_belongs_to_the_provider_error_family(cls):
     assert not issubclass(cls, ProviderError)
+
+
+def test_a_collision_is_not_a_composition_error_and_the_reverse():
+    # A handler for "no catalog was supplied" must never catch a collision.
+    assert not issubclass(ProviderCollisionError, ProviderCompositionError)
+    assert not issubclass(ProviderCompositionError, ProviderCollisionError)
 
 
 def test_missing_feature_error_is_an_import_error():
@@ -214,6 +233,41 @@ def test_composition_error_names_the_catalog_and_never_a_distribution():
     )
     assert "distribution" not in str(err)
     assert "install" not in str(err).lower()
+
+
+def test_collision_error_fields_and_message():
+    err = _collision_error()
+    assert (err.key, err.kind) == ("alpha", "provider")
+    assert (err.first_owner, err.second_owner) == ("alpha (source-a)", "alpha (source-b)")
+    assert str(err) == (
+        "Provider catalog collision (provider) on 'alpha': "
+        "alpha (source-a) conflicts with alpha (source-b)"
+    )
+
+
+def test_collision_error_takes_keyword_arguments_only():
+    with pytest.raises(TypeError):
+        ProviderCollisionError("alpha", "provider", "a", "b")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "kind", ["provider", "provider_alias", "endpoint", "duplicate_declaration"]
+)
+def test_collision_error_accepts_each_collision_kind(kind):
+    err = ProviderCollisionError(key="k", kind=kind, first_owner="a", second_owner="b")
+    assert err.kind == kind
+    assert f"({kind})" in str(err)
+
+
+@pytest.mark.parametrize("kind", ["", "Provider", "alias", None])
+def test_collision_error_rejects_a_kind_outside_the_four(kind):
+    with pytest.raises(ValueError):
+        ProviderCollisionError(
+            key="k",
+            kind=kind,  # type: ignore[arg-type]
+            first_owner="a",
+            second_owner="b",
+        )
 
 
 # --- Pickling ---

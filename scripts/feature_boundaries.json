@@ -1509,6 +1509,10 @@
       "layer": "adapter",
       "owner": "provider_connections"
     },
+    "lionagi.service.connections.provider_catalog": {
+      "layer": "contracts",
+      "owner": "provider_contracts"
+    },
     "lionagi.service.connections.provider_config": {
       "layer": "adapter",
       "owner": "provider_connections"
