@@ -1010,9 +1010,8 @@ def test_a_dev_launch_looks_for_a_running_daemon_on_the_host_it_binds(
     ],
 )
 def test_the_health_probe_asks_where_a_client_reaches_the_bind_host(monkeypatch, host, url):
-    import urllib.request
-
     import lionagi.studio.cli as studio_mod
+    from lionagi.ln import _ssrf
 
     asked = []
 
@@ -1020,7 +1019,7 @@ def test_the_health_probe_asks_where_a_client_reaches_the_bind_host(monkeypatch,
         asked.append(target)
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(_ssrf, "open_url", refuse)
     kwargs = {} if host is None else {"host": host}
 
     assert studio_mod._daemon_health(8765, **kwargs) is None
@@ -1181,27 +1180,26 @@ def test_the_health_probe_gives_up_on_a_daemon_that_trickles_its_answer():
 
 def test_the_health_probe_reads_a_malformed_http_answer_as_no_daemon(monkeypatch):
     import http.client
-    import urllib.request
 
     import lionagi.studio.cli as studio_mod
+    from lionagi.ln import _ssrf
 
     def malformed(target, timeout=None):
         raise http.client.BadStatusLine("not http")
 
-    monkeypatch.setattr(urllib.request, "urlopen", malformed)
+    monkeypatch.setattr(_ssrf, "open_url", malformed)
 
     assert studio_mod._daemon_health(8765) is None
 
 
 def test_the_health_probe_still_raises_an_error_it_does_not_expect(monkeypatch):
-    import urllib.request
-
     import lionagi.studio.cli as studio_mod
+    from lionagi.ln import _ssrf
 
     def broken(target, timeout=None):
         raise RuntimeError("not a network failure")
 
-    monkeypatch.setattr(urllib.request, "urlopen", broken)
+    monkeypatch.setattr(_ssrf, "open_url", broken)
 
     with pytest.raises(RuntimeError, match="not a network failure"):
         studio_mod._daemon_health(8765)

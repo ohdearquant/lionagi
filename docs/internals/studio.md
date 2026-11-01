@@ -109,6 +109,11 @@ right daemon from another port, is refused and `li studio` exits 1 without
 printing the code. It never stops a running daemon; on a platform without unix
 sockets it says to restart the daemon. A process running as the daemon's own OS user can obtain a
 code this way, which is outside what the HTTP-only guarantee covers.
+The HTTP requests `li studio` sends its daemon, the `li schedule` clients and the `li doctor` daemon check open a URL
+whose host is `localhost`, a 127.0.0.0/8 address or `::1` without any proxy
+(`open_url` in `lionagi/ln/_ssrf.py`): a proxy named in the environment or, on macOS,
+in the system settings cannot reach this machine's loopback interface, so with one
+configured a running daemon would read as absent. Other hosts keep the proxy settings.
 
 **Decision capabilities** (`launch_access.py`) — a page pairs with an admission
 bearer and, separately, a decision capability: a random 256-bit secret the

@@ -11,8 +11,8 @@ f"{_base_url()}/schedules{path}" (missing the /api prefix), so every
 `li schedule` subcommand 404'd against a running `li studio` daemon.
 
 This exercises the real argparse + dispatch + _api() URL construction for
-every CLI subcommand, stubbing only the socket boundary
-(urllib.request.urlopen), then checks the resulting (method, path) against
+every CLI subcommand, stubbing only the request boundary
+(lionagi.ln._ssrf.open_url), then checks the resulting (method, path) against
 the live FastAPI app's actual route table — so a future prefix or path
 change on either side fails this test instead of silently 404ing at runtime.
 """
@@ -45,7 +45,7 @@ def _is_served(method: str, path: str) -> bool:
 
 
 class _FakeResponse:
-    """Stand-in for the `with urllib.request.urlopen(...) as resp:` context."""
+    """Stand-in for the `with open_url(...) as resp:` context."""
 
     def __init__(self, body: bytes) -> None:
         self._body = body
@@ -73,7 +73,7 @@ def _run_and_capture(monkeypatch, args: argparse.Namespace) -> tuple[str, str, s
         captured["content_type"] = req.get_header("Content-type")
         return _FakeResponse(b"{}")
 
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("lionagi.ln._ssrf.open_url", _fake_urlopen)
     result = run_schedule(args)
     assert result == 0, f"dispatch failed unexpectedly: action={args.schedule_action}"
     method = captured["method"]

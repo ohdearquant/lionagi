@@ -274,7 +274,8 @@ def _daemon_health(
     """
     import http.client
     import urllib.parse
-    import urllib.request
+
+    from lionagi.ln._ssrf import open_url
 
     url = f"http://{_url_authority(host)}:{port}/health"
     if challenge is not None:
@@ -283,7 +284,7 @@ def _daemon_health(
 
     def _probe() -> None:
         try:
-            with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+            with open_url(url, timeout=2) as resp:
                 outcome.append(json.loads(resp.read()))
         except (OSError, ValueError, http.client.HTTPException):
             outcome.append(None)
@@ -1199,6 +1200,8 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     import urllib.error
     import urllib.request
 
+    from lionagi.ln._ssrf import open_url
+
     url = f"{_base_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
     declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
@@ -1210,7 +1213,7 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     )
     started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:  # noqa: S310
+        with open_url(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         msg = exc.read().decode(errors="replace")
