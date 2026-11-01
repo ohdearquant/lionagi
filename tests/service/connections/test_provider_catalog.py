@@ -18,6 +18,7 @@ Rules the composition mirrors, as the registry applies them today:
 from __future__ import annotations
 
 import ast
+import collections.abc
 import dataclasses
 import json
 import os
@@ -158,6 +159,34 @@ def test_context_windows_are_read_only_and_copied():
     assert dict(fragment.context_windows) == {"model-a": 100}
 
 
+@pytest.mark.parametrize(
+    "make",
+    [
+        make_endpoint,
+        make_fragment,
+        make_manifest,
+        lambda: make_manifest(fragments=()),
+        lambda: compose(make_fragment()),
+        lambda: compose(),
+    ],
+    ids=["endpoint", "fragment", "manifest", "empty-manifest", "catalog", "empty-catalog"],
+)
+def test_types_holding_mappings_are_explicitly_unhashable(make):
+    declaration = make()
+    with pytest.raises(TypeError):
+        hash(declaration)
+    assert not isinstance(declaration, collections.abc.Hashable)
+
+
+def test_dependency_requirement_stays_hashable():
+    first = make_requirement()
+    second = make_requirement()
+    assert isinstance(first, collections.abc.Hashable)
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({first, second}) == 1
+
+
 # --- shape validation --------------------------------------------------------
 
 
@@ -183,6 +212,11 @@ def test_tuple_fields_are_stored_as_tuples():
         (make_requirement, {"import_roots": ("",)}, ValueError, "import_roots"),
         (make_requirement, {"version_constraint": 5}, TypeError, "version_constraint"),
         (make_requirement, {"install_hint": None}, TypeError, "install_hint"),
+        (make_requirement, {"install_hint": ""}, ValueError, "install_hint"),
+        (make_requirement, {"install_hint": "  "}, ValueError, "install_hint"),
+        (make_requirement, {"import_roots": ("a.b",)}, ValueError, "import_roots"),
+        (make_requirement, {"import_roots": ("1x",)}, ValueError, "import_roots"),
+        (make_requirement, {"import_roots": ("has space",)}, ValueError, "import_roots"),
         (make_endpoint, {"key": ""}, ValueError, "key"),
         (make_endpoint, {"key": None}, TypeError, "key"),
         (make_endpoint, {"aliases": "x"}, TypeError, "aliases"),
@@ -198,6 +232,8 @@ def test_tuple_fields_are_stored_as_tuples():
         (make_fragment, {"default_endpoint": "missing"}, ValueError, "default_endpoint"),
         (make_fragment, {"context_windows": []}, TypeError, "context_windows"),
         (make_fragment, {"context_windows": {"": 1}}, ValueError, "context_windows"),
+        (make_fragment, {"context_windows": {"GPT-4o": 1}}, ValueError, "context_windows"),
+        (make_fragment, {"context_windows": {" gpt": 1}}, ValueError, "context_windows"),
         (make_manifest, {"source": ""}, ValueError, "source"),
         (make_manifest, {"fragments": ("x",)}, TypeError, "fragments"),
     ],
@@ -205,6 +241,30 @@ def test_tuple_fields_are_stored_as_tuples():
 def test_construction_rejects_bad_shape_naming_the_field(make, overrides, error, field):
     with pytest.raises(error, match=field):
         make(**overrides)
+
+
+@pytest.mark.parametrize("bad", ["a.b", "1x", "has space"])
+def test_import_roots_must_be_module_names_and_the_error_names_the_value(bad):
+    with pytest.raises(ValueError, match="import_roots") as info:
+        make_requirement(import_roots=("google", bad))
+    assert repr(bad) in str(info.value)
+
+
+def test_import_roots_accept_top_level_module_names():
+    requirement = make_requirement(import_roots=["google", "_private", "pkg2"])
+    assert requirement.import_roots == ("google", "_private", "pkg2")
+
+
+@pytest.mark.parametrize("bad", ["GPT-4o", " gpt", "gpt ", "Gpt"])
+def test_context_window_keys_must_be_lowercase_and_unpadded_and_the_error_names_the_key(bad):
+    with pytest.raises(ValueError, match="context_windows") as info:
+        make_fragment(context_windows={"model-a": 1, bad: 2})
+    assert repr(bad) in str(info.value)
+
+
+def test_lowercase_context_window_keys_are_accepted():
+    fragment = make_fragment(context_windows={"gpt-4o": 1})
+    assert dict(fragment.context_windows) == {"gpt-4o": 1}
 
 
 @pytest.mark.parametrize("bad", [0, -1, True, 1.5, "100"])
@@ -309,6 +369,27 @@ def test_manifest_source_is_used_and_must_match_the_keyword():
     assert [fragment.key for fragment in catalog.providers] == ["alpha"]
     with pytest.raises(ValueError, match="source"):
         compose_provider_catalog(manifest, source="other")
+
+
+def test_compose_of_a_manifest_without_a_source_uses_the_manifest_source():
+    manifest = make_manifest(source="manifest-src")
+    catalog = compose_provider_catalog(manifest)
+    assert catalog.source == "manifest-src"
+    assert catalog == compose_provider_catalog(manifest, source="manifest-src")
+
+
+def test_compose_of_a_manifest_without_a_source_reports_versions_against_its_source():
+    manifest = make_manifest(source="manifest-src", contract_version=2)
+    with pytest.raises(ProviderContractVersionError) as info:
+        compose_provider_catalog(manifest)
+    assert info.value.source == "manifest-src"
+
+
+@pytest.mark.parametrize("fragments", [[], [make_fragment()]], ids=["empty", "one-fragment"])
+@pytest.mark.parametrize("keyword", [{}, {"source": None}], ids=["omitted", "none"])
+def test_compose_of_fragments_requires_a_source(fragments, keyword):
+    with pytest.raises(TypeError, match="source is required when composing fragments directly"):
+        compose_provider_catalog(fragments, **keyword)
 
 
 @pytest.mark.parametrize(
@@ -451,6 +532,39 @@ def test_keys_are_normalized_as_the_registry_registers_them():
     assert catalog.fragment("  alpha ") is None
     assert catalog.fragment(" a1") is None
     assert catalog.fragment("missing") is None
+
+
+def test_fragment_stores_its_key_and_aliases_canonical():
+    fragment = make_fragment(key="  Alpha ", aliases=(" A1 ", "a1", "B2"))
+    assert fragment.key == "alpha"
+    assert fragment.aliases == ("a1", "b2")
+
+
+def test_fragment_drops_repeated_aliases_and_an_alias_equal_to_its_key():
+    fragment = make_fragment(key="Alpha", aliases=("Z", "alpha", " ALPHA ", "y", "z", "Y "))
+    assert fragment.key == "alpha"
+    assert fragment.aliases == ("z", "y")
+
+
+def test_endpoint_key_and_aliases_stay_exact():
+    endpoint = make_endpoint(key=" Chat ", aliases=(" Fast ", "Fast"))
+    assert endpoint.key == " Chat "
+    assert endpoint.aliases == (" Fast ", "Fast")
+
+
+def test_collision_owners_name_the_canonical_provider_key():
+    error = collision(make_fragment(key="  Alpha "), make_fragment(key="alpha"))
+    assert error.first_owner == "alpha #0 (src)"
+    assert error.second_owner == "alpha #1 (src)"
+
+
+def test_catalog_lookup_lowercases_only_and_finds_a_canonical_fragment():
+    fragment = make_fragment(key="  Alpha ", aliases=("A1",))
+    catalog = compose(fragment)
+    assert catalog.fragment("Alpha") is fragment
+    assert catalog.fragment("a1") is fragment
+    assert catalog.fragment("  alpha ") is None
+    assert catalog.fragment("a1 ") is None
 
 
 def test_endpoint_lookup_lowercases_the_provider_and_matches_endpoint_names_exactly():

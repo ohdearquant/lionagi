@@ -9,8 +9,9 @@ it never imports an endpoint implementation or the endpoint registry, and it nev
 endpoint factory.
 
 Key rules mirror the ones ``EndpointRegistry.register`` applies today: a provider key and its
-aliases are stored as ``strip().lower()`` with repeated aliases dropped, a provider is looked
-up by its lowercased name only (padded names do not match), and endpoint names are compared
+aliases are stored on the fragment as ``strip().lower()``, with repeated aliases and any alias
+equal to the key dropped; a provider is looked up by its lowercased name only (padded names do
+not match); and endpoint names, whose keys and aliases are stored as given, are compared
 exactly against an endpoint key or one of its aliases. Like the registry, an empty endpoint
 name selects a default (here the provider's ``default_endpoint``) and an unmatched name
 selects the provider's only endpoint when it declares exactly one.
@@ -109,8 +110,10 @@ def _normalize_key(value: str) -> str:
 class DependencyRequirement:
     """One distribution an endpoint needs, and how to tell the user to install it.
 
-    ``import_roots`` are the top-level module names the distribution provides;
-    ``version_constraint`` is a requirement specifier or ``None`` for any version.
+    ``import_roots`` are the top-level module names the distribution provides, each a valid
+    Python identifier (no dots or spaces); ``version_constraint`` is a requirement specifier
+    or ``None`` for any version; ``install_hint`` is the non-blank text shown to a user who
+    needs to install the distribution. Requirements are hashable.
     """
 
     distribution: str
@@ -120,21 +123,20 @@ class DependencyRequirement:
 
     def __post_init__(self) -> None:
         _check_str("DependencyRequirement", "distribution", self.distribution)
-        object.__setattr__(
-            self,
-            "import_roots",
-            _str_tuple("DependencyRequirement", "import_roots", self.import_roots),
-        )
+        import_roots = _str_tuple("DependencyRequirement", "import_roots", self.import_roots)
+        for root in import_roots:
+            if not root.isidentifier():
+                raise ValueError(
+                    "DependencyRequirement.import_roots must contain top-level module names; "
+                    f"got {root!r}"
+                )
+        object.__setattr__(self, "import_roots", import_roots)
         if self.version_constraint is not None and not isinstance(self.version_constraint, str):
             raise TypeError(
                 "DependencyRequirement.version_constraint must be a str or None; "
                 f"got {type(self.version_constraint).__name__}"
             )
-        if not isinstance(self.install_hint, str):
-            raise TypeError(
-                "DependencyRequirement.install_hint must be a str; "
-                f"got {type(self.install_hint).__name__}"
-            )
+        _check_str("DependencyRequirement", "install_hint", self.install_hint)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,8 +145,13 @@ class EndpointDeclaration:
 
     ``kind`` is ``"api"`` or ``"agentic"``. ``factory`` takes no arguments and returns the
     endpoint; the catalog stores it and never calls it. ``settings`` is the settings
-    specification, kept as a read-only view over a shallow copy of the mapping given.
+    specification, kept as a read-only view over a shallow copy of the mapping given:
+    replacing a top-level entry of the caller's mapping does not change it, but nested
+    values are the caller's own objects, not copies. Declarations are unhashable, because
+    they hold a mapping.
     """
+
+    __hash__ = None
 
     key: str
     aliases: tuple[str, ...]
@@ -183,11 +190,17 @@ class EndpointDeclaration:
 class ProviderFragment:
     """One provider: its key and aliases, its endpoints and its context-window metadata.
 
-    ``default_endpoint`` is the key of one of ``endpoints``. ``context_windows`` maps a model
-    name fragment to a positive token count; ``None`` states that the provider's window
+    ``key`` and ``aliases`` are stored canonical: each is ``strip().lower()``, repeated
+    aliases and any alias equal to the key are dropped, and the first occurrence order is
+    kept. ``default_endpoint`` is the key of one of ``endpoints``. ``context_windows`` maps a
+    model name fragment to a positive token count; each key is a lowercase fragment with no
+    surrounding whitespace, because it is matched against the lowercased model name, and a
+    key written any other way is refused. ``None`` states that the provider's window
     metadata is unknown. ``contract_version`` is stored as given: composition and catalog
-    construction check it.
+    construction check it. Fragments are unhashable, because they hold mappings.
     """
+
+    __hash__ = None
 
     contract_version: object
     key: str
@@ -198,7 +211,14 @@ class ProviderFragment:
 
     def __post_init__(self) -> None:
         _check_str("ProviderFragment", "key", self.key)
-        object.__setattr__(self, "aliases", _str_tuple("ProviderFragment", "aliases", self.aliases))
+        key = _normalize_key(self.key)
+        aliases = _str_tuple("ProviderFragment", "aliases", self.aliases)
+        object.__setattr__(self, "key", key)
+        object.__setattr__(
+            self,
+            "aliases",
+            tuple(dict.fromkeys(a for a in map(_normalize_key, aliases) if a != key)),
+        )
         endpoints = _typed_tuple(
             "ProviderFragment", "endpoints", self.endpoints, EndpointDeclaration
         )
@@ -214,6 +234,11 @@ class ProviderFragment:
         if self.context_windows is not None:
             windows = _frozen_mapping("ProviderFragment", "context_windows", self.context_windows)
             for model, window in windows.items():
+                if model != _normalize_key(model):
+                    raise ValueError(
+                        f"ProviderFragment.context_windows key {model!r} must be lowercase "
+                        "with no surrounding whitespace"
+                    )
                 if isinstance(window, bool) or not isinstance(window, int):
                     raise TypeError(
                         f"ProviderFragment.context_windows[{model!r}] must be a positive int; "
@@ -232,8 +257,11 @@ class ProviderManifest:
     """A named set of provider fragments sharing one contract version.
 
     ``source`` is the stable identity of whoever supplied the fragments; composition errors
-    carry it. ``contract_version`` is stored as given: composition checks it.
+    carry it. ``contract_version`` is stored as given: composition checks it. Manifests are
+    unhashable, as the fragments they hold are.
     """
+
+    __hash__ = None
 
     contract_version: object
     source: str
@@ -253,14 +281,14 @@ class ProviderManifest:
 
 def _provider_owner(fragment: ProviderFragment, position: int, source: str) -> str:
     """Name a provider declaration by its key, its position in the input and its source."""
-    return f"{_normalize_key(fragment.key)} #{position} ({source})"
+    return f"{fragment.key} #{position} ({source})"
 
 
 def _endpoint_owner(
     fragment: ProviderFragment, endpoint: EndpointDeclaration, position: int, source: str
 ) -> str:
     """Name an endpoint declaration by provider, endpoint key, position in its provider, source."""
-    return f"{_normalize_key(fragment.key)}/{endpoint.key} #{position} ({source})"
+    return f"{fragment.key}/{endpoint.key} #{position} ({source})"
 
 
 def _reject_repeated_declarations(providers: tuple[ProviderFragment, ...], source: str) -> None:
@@ -271,7 +299,7 @@ def _reject_repeated_declarations(providers: tuple[ProviderFragment, ...], sourc
         first = seen_fragments.get(id(fragment))
         if first is not None:
             raise ProviderCollisionError(
-                key=_normalize_key(fragment.key),
+                key=fragment.key,
                 kind="duplicate_declaration",
                 first_owner=first,
                 second_owner=owner,
@@ -297,15 +325,15 @@ def _index_providers(
 ) -> dict[str, ProviderFragment]:
     """Map every normalized provider key and alias to its fragment, refusing any collision.
 
-    Keys and aliases share one namespace. A declaration repeating its own alias, or using its
-    own key as an alias, claims the name once.
+    Keys and aliases share one namespace. A fragment holds its key and aliases canonical and
+    distinct, so only claims made by different fragments collide.
     """
     claims: dict[str, tuple[int, bool, str]] = {}
     by_name: dict[str, ProviderFragment] = {}
     for position, fragment in enumerate(providers):
         owner = _provider_owner(fragment, position, source)
-        names = [(_normalize_key(fragment.key), True)]
-        names.extend((_normalize_key(alias), False) for alias in fragment.aliases)
+        names = [(fragment.key, True)]
+        names.extend((alias, False) for alias in fragment.aliases)
         for name, is_key in names:
             held = claims.get(name)
             if held is None:
@@ -361,8 +389,11 @@ class ProviderCatalog:
     fragment whose contract version is not supported (``ProviderContractVersionError``) and
     any key collision, so a catalog never holds an unsupported fragment or two claimants for
     one name; the version check comes first. ``providers`` keeps the order the fragments were
-    declared in; two catalogs composed from equal input compare equal.
+    declared in; two catalogs composed from equal input compare equal. Catalogs are
+    unhashable, as the fragments they hold are.
     """
+
+    __hash__ = None
 
     providers: tuple[ProviderFragment, ...]
     source: str
@@ -382,7 +413,7 @@ class ProviderCatalog:
         _reject_repeated_declarations(providers, self.source)
         by_name = _index_providers(providers, self.source)
         endpoints = {
-            _normalize_key(fragment.key): MappingProxyType(_index_endpoints(fragment, self.source))
+            fragment.key: MappingProxyType(_index_endpoints(fragment, self.source))
             for fragment in providers
         }
         object.__setattr__(self, "_providers_by_name", MappingProxyType(by_name))
@@ -410,7 +441,7 @@ class ProviderCatalog:
         fragment = self.fragment(provider)
         if fragment is None:
             return None
-        endpoints = self._endpoints_by_provider[_normalize_key(fragment.key)]
+        endpoints = self._endpoints_by_provider[fragment.key]
         if not endpoint_key_or_alias:
             return endpoints[fragment.default_endpoint]
         matched = endpoints.get(endpoint_key_or_alias)
@@ -454,27 +485,38 @@ def _require_supported_version(source: str, version: object) -> None:
 
 
 def compose_provider_catalog(
-    fragments: Iterable[ProviderFragment] | ProviderManifest, *, source: str
+    fragments: Iterable[ProviderFragment] | ProviderManifest, *, source: str | None = None
 ) -> ProviderCatalog:
     """Compose provider fragments into one immutable catalog.
 
-    ``fragments`` is an iterable of :class:`ProviderFragment` or a :class:`ProviderManifest`;
-    for a manifest, ``source`` must equal the manifest's own source and the manifest's
-    version must agree with every fragment's. Every declared contract version is checked
-    first, ahead of the source comparison, and nothing else about the declarations is
-    examined until all of them pass: a missing, non-``int``, ``bool`` or unsupported version
-    raises ``ProviderContractVersionError``, and so does a fragment whose version differs
-    from its manifest's. Then a ``source`` that differs from the manifest's raises
-    ``ValueError``, the keys are indexed and any collision raises ``ProviderCollisionError``
-    naming both claimants. The result never depends on declaration order beyond
-    ``providers`` keeping it, and an empty input gives a valid empty catalog.
+    ``fragments`` is an iterable of :class:`ProviderFragment` or a :class:`ProviderManifest`.
+    For a manifest, ``source`` may be left out (``None``), which means the manifest's own
+    source; an explicit ``source`` must equal it, and the manifest's version must agree with
+    every fragment's. For an iterable of fragments, ``source`` is required, because it names
+    who supplied them in collision and version errors; leaving it out raises ``TypeError``.
+    Every declared contract version is checked first, ahead of the source comparison, and
+    nothing else about the declarations is examined until all of them pass: a missing,
+    non-``int``, ``bool`` or unsupported version raises ``ProviderContractVersionError``, and
+    so does a fragment whose version differs from its manifest's. Then a ``source`` that
+    differs from the manifest's raises ``ValueError``, the keys are indexed and any collision
+    raises ``ProviderCollisionError`` naming both claimants. The result never depends on
+    declaration order beyond ``providers`` keeping it, and an empty input gives a valid empty
+    catalog.
     """
-    _check_str("compose_provider_catalog", "source", source)
+    if source is not None:
+        _check_str("compose_provider_catalog", "source", source)
     manifest: ProviderManifest | None = None
     if isinstance(fragments, ProviderManifest):
         manifest = fragments
         declared = manifest.fragments
+        if source is None:
+            source = manifest.source
     else:
+        if source is None:
+            raise TypeError(
+                "compose_provider_catalog.source is required when composing fragments "
+                "directly; it names who supplied them in collision and version errors"
+            )
         declared = _typed_tuple(
             "compose_provider_catalog", "fragments", fragments, ProviderFragment
         )
