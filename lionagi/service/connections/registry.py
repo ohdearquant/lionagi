@@ -224,11 +224,21 @@ class EndpointRegistry:
         openai_compatible: bool = False,
         **kwargs,
     ) -> Any:
-        """Find and instantiate the best matching endpoint. On a registry miss,
+        """Find and instantiate the best matching endpoint. With no endpoint named, a
+        provider the bundled provider catalog declares resolves to its declared default
+        endpoint, unless the provider's first registered entry is a class the catalog
+        does not declare (for example one a caller registered before the built-ins
+        loaded), which then resolves as it always has; every other lookup, and every
+        lookup while the catalog cannot load, scans the registered entries. On a registry miss,
         consults the plugin registry before falling back to the generic
         OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
         for the provider-vs-endpoint rejection contract."""
         cls._ensure_loaded()
+
+        if not endpoint:
+            declared = cls._match_declared_default(provider, kwargs)
+            if declared is not None:
+                return declared
 
         matched = cls._match_registered(provider, endpoint, kwargs)
         if matched is not None:
@@ -267,6 +277,52 @@ class EndpointRegistry:
             openai_compatible=True,
         )
         return Endpoint(config, **kwargs)
+
+    @classmethod
+    def _match_declared_default(cls, provider: str, kwargs: dict[str, Any]) -> Any | None:
+        """Build the declared default endpoint of ``provider`` from the bundled provider
+        catalog. ``None`` when the catalog does not declare ``provider``, cannot load, or
+        its declared implementation module fails to import, so the caller falls back to
+        scanning the registered entries; the registry skipped that module with a warning
+        when it loaded, so the scan reports the provider as it did before. Also ``None``
+        when the provider's first registered entry is a class the catalog does not
+        declare, so the scan returns that entry as it always has."""
+        from lionagi._feature_errors import MissingFeatureError
+        from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
+
+        from ._provider_compat import default_provider_catalog
+
+        try:
+            catalog = default_provider_catalog()
+        except (MissingFeatureError, ProviderActivationError, ProviderContractVersionError):
+            return None
+        fragment = catalog.fragment(provider)
+        if fragment is None:
+            return None
+        try:
+            endpoint_cls = catalog.endpoint(provider, "").factory()
+        except ImportError:
+            return None
+        name = provider.lower()
+        first = next(
+            (
+                entry
+                for entry in tuple(cls._entries)
+                if (name == entry.meta.provider or name in entry.meta.provider_aliases)
+                and cls._revalidate_plugin_entry(entry)
+            ),
+            None,
+        )
+        if first is not None:
+            declared_classes = []
+            for declaration in fragment.endpoints:
+                try:
+                    declared_classes.append(declaration.factory())
+                except ImportError:
+                    continue
+            if not any(first.cls is declared for declared in declared_classes):
+                return None
+        return endpoint_cls(None, **kwargs)
 
     @classmethod
     def _is_known_provider(cls, provider: str) -> bool:

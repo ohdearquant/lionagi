@@ -4,19 +4,20 @@
 
 ``ROWS`` is a literal table of the built-in endpoints: provider, provider
 aliases, endpoint key, endpoint aliases, the endpoint class as
-``module:qualname`` and whether it is the provider's default (the first endpoint
-registered for it). The resolution tests go through the public
-``match_endpoint`` and compare against that table, with one exception: with no
-endpoint named, the provider's default is the first entry registered for it,
-and which entry registers first depends on which provider modules the process
-imported before the registry loaded. So the in-process test pins that rule
-against the registry's own entries, and the table's absolute defaults are
-pinned in a fresh interpreter, where nothing else has been imported first. One
-more fresh-interpreter test records what importing a provider module ahead of
-the registry does to the default today. A separate group of tests checks the
-table against what is registered, so a stale table fails loudly. Order across
-providers is not significant; order inside one provider matters only through
-its default.
+``module:qualname`` and whether it is the provider's default endpoint, the one
+an empty endpoint resolves to. The resolution tests go through the public
+``match_endpoint`` and compare against that table. With no endpoint named, a
+provider the bundled catalog declares resolves to its declared default whatever
+the process imported before the registry loaded; a provider the catalog does not
+declare, such as the scripted test endpoint, resolves to the first entry
+registered for it. The table's absolute defaults are also pinned in a fresh
+interpreter, and a second fresh-interpreter test imports a provider module ahead
+of the registry to show that the default does not move. Further tests pin the
+catalog route against a stub catalog and the fall-back to the registry scan when
+the catalog cannot load. A separate group of tests checks the table against what
+is registered, so a stale table fails loudly. Order across providers is not
+significant; order inside one provider matters only for a provider the catalog
+does not declare.
 """
 
 import importlib
@@ -29,6 +30,9 @@ from typing import NamedTuple
 
 import pytest
 
+from lionagi._feature_errors import MissingFeatureError
+from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
+from lionagi.service.connections import _provider_compat
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.connections.registry import EndpointRegistry, ProviderNotFoundError
@@ -222,6 +226,14 @@ DEFAULT_CLASS = {
     name: r.cls for r in ROWS if r.default for name in (r.provider, *r.provider_aliases)
 }
 
+
+def _default_class(name: str) -> type:
+    """Import and return the class the table names as the default for ``name``,
+    a provider name or provider alias."""
+    module, _, qualname = DEFAULT_CLASS[name].partition(":")
+    return getattr(importlib.import_module(module), qualname)
+
+
 SINGLE_ENTRY_CASES = [
     pytest.param(rows[0], name, id=name)
     for rows in BY_PROVIDER.values()
@@ -332,10 +344,9 @@ def test_padded_provider_with_base_url_warns_and_routes_generic():
 
 
 @pytest.mark.parametrize("provider", list(DEFAULT_CLASS))
-def test_no_endpoint_named_resolves_to_the_first_registered_entry(provider):
-    expected = _first_registered_class(provider)
+def test_no_endpoint_named_resolves_to_the_declared_default(provider):
     result = match_endpoint(provider=provider, endpoint="")
-    assert type(result) is expected
+    assert type(result) is _default_class(provider)
 
 
 _DEFAULTS_CHILD = r"""
@@ -371,18 +382,271 @@ print(
 """
 
 
+_RUNTIME_REGISTRATION_CHILD = r"""
+import importlib
+import json
+import sys
+
+from lionagi.service.connections.match_endpoint import match_endpoint
+from lionagi.service.connections.registry import EndpointRegistry
+
+
+class RuntimeEndpoint:
+    def __init__(self, config=None, **kwargs):
+        self.config = config
+        self.kwargs = kwargs
+
+
+for step in sys.argv[1:]:
+    if step == "register":
+        EndpointRegistry.register(provider="openai", endpoint="pin-runtime-key")(RuntimeEndpoint)
+    else:
+        importlib.import_module(step)
+
+loaded_before_match = EndpointRegistry._loaded
+cls = type(match_endpoint(provider="openai", endpoint=""))
+print(
+    json.dumps(
+        {
+            "loaded_before_match": loaded_before_match,
+            "cls": f"{cls.__module__}:{cls.__qualname__}",
+        }
+    )
+)
+"""
+
+
 def test_default_endpoint_in_a_fresh_interpreter_is_the_table_default():
     classes = _run_child(_DEFAULTS_CHILD, *DEFAULT_CLASS)
     assert classes == DEFAULT_CLASS
 
 
-def test_default_endpoint_follows_import_order_today():
-    # Records today's behaviour, not a promise: a provider module imported before the
-    # registry loads registers its endpoints first, and the first one registered for a
-    # provider is what an empty endpoint resolves to.
+def test_default_endpoint_ignores_import_order():
+    # A provider module imported before the registry loads registers its endpoints
+    # first, but an empty endpoint still resolves to the provider's declared default.
     result = _run_child(_AUDIO_FIRST_CHILD)
     assert result["loaded_before_match"] is False
-    assert result["cls"] == "lionhub.providers.openai.audio:OpenaiAudioSpeechEndpoint"
+    assert result["cls"] == DEFAULT_CLASS["openai"]
+
+
+_AUDIO_MODULE = "lionhub.providers.openai.audio"
+_RUNTIME_ENDPOINT = "__main__:RuntimeEndpoint"
+
+
+def test_endpoint_registered_before_the_built_ins_load_resolves_with_no_endpoint():
+    # A class registered under a built-in provider before anything loads the registry is
+    # that provider's first entry, and an empty endpoint keeps resolving to it.
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, "register")
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == _RUNTIME_ENDPOINT
+
+
+def test_endpoint_registered_after_a_built_in_module_keeps_the_declared_default():
+    # The first entry is a built-in the catalog declares, so the declared default wins
+    # over it and over the later registration.
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, _AUDIO_MODULE, "register")
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == DEFAULT_CLASS["openai"]
+
+
+def test_endpoint_registered_before_a_built_in_module_still_resolves_with_no_endpoint():
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, "register", _AUDIO_MODULE)
+    assert result["loaded_before_match"] is False
+    assert result["cls"] == _RUNTIME_ENDPOINT
+
+
+# -- 3b. no endpoint named: the catalog route and its fall-backs -------------
+
+
+class _Recorder:
+    """Stands in for an endpoint class; keeps what it was built with."""
+
+    def __init__(self, config=None, **kwargs):
+        self.config = config
+        self.kwargs = kwargs
+
+
+class _StubDeclaration:
+    """The one thing ``match`` asks of a catalog's endpoint declaration."""
+
+    def __init__(self, cls):
+        self._cls = cls
+
+    def factory(self):
+        return self._cls
+
+
+class _StubFragment:
+    """The one thing ``match`` asks of a catalog's provider fragment: its declarations."""
+
+    def __init__(self, endpoints):
+        self.endpoints = endpoints
+
+
+class _StubCatalog:
+    """The two catalog methods ``match`` uses, recording every call. A declared provider's
+    fragment lists the stub's own declaration and the classes the registry already holds
+    for that provider, so the stub's default is the result whichever class registered first."""
+
+    def __init__(self, declared):
+        self._declared = {name: _StubDeclaration(cls) for name, cls in declared.items()}
+        self.fragment_calls = []
+        self.endpoint_calls = []
+
+    def fragment(self, name):
+        self.fragment_calls.append(name)
+        lowered = name.lower()
+        if lowered not in self._declared:
+            return None
+        registered = [
+            _StubDeclaration(entry.cls)
+            for entry in list(EndpointRegistry._entries)
+            if lowered == entry.meta.provider or lowered in entry.meta.provider_aliases
+        ]
+        return _StubFragment([self._declared[lowered], *registered])
+
+    def endpoint(self, provider, name=None):
+        self.endpoint_calls.append((provider, name))
+        return self._declared[provider.lower()]
+
+
+def _install_catalog(monkeypatch, catalog):
+    """Make ``default_provider_catalog`` return ``catalog`` for the rest of the test."""
+    monkeypatch.setattr(_provider_compat, "default_provider_catalog", lambda: catalog)
+    return catalog
+
+
+def _throwaway(name):
+    """A fresh endpoint class, so every registration owns its own."""
+    return type(name, (_Recorder,), {})
+
+
+@pytest.fixture
+def register_throwaway():
+    """Register throwaway endpoints and remove them again through the registry's own
+    removal path, so later tests see the registry unchanged."""
+    # Load the built-ins first, so the snapshot below is the whole registry and a later
+    # lookup does not change it.
+    EndpointRegistry.list_providers()
+    entries_before = list(EndpointRegistry._entries)
+    owners_before = set(EndpointRegistry._alias_owners)
+    added = []
+
+    def register(provider, endpoint):
+        cls = _throwaway(f"Throwaway{len(added)}")
+        EndpointRegistry.register(provider=provider, endpoint=endpoint)(cls)
+        added.extend(e for e in EndpointRegistry._entries if e.cls is cls)
+        return cls
+
+    try:
+        yield register
+    finally:
+        with EndpointRegistry._lock:
+            EndpointRegistry._remove_entries(added)
+    assert list(EndpointRegistry._entries) == entries_before
+    assert set(EndpointRegistry._alias_owners) <= owners_before
+
+
+@pytest.mark.parametrize("provider", ["openai", "OpenAI"])
+def test_declared_provider_with_no_endpoint_builds_the_catalog_default(monkeypatch, provider):
+    catalog = _install_catalog(monkeypatch, _StubCatalog({"openai": _Recorder}))
+    result = match_endpoint(provider=provider, endpoint="", model="a-model")
+    assert type(result) is _Recorder
+    assert result.config is None
+    assert result.kwargs == {"model": "a-model"}
+    assert catalog.fragment_calls == [provider]
+    assert catalog.endpoint_calls == [(provider, "")]
+
+
+@pytest.mark.parametrize("row", KEY_CASES)
+def test_a_named_endpoint_never_consults_the_catalog(monkeypatch, row):
+    catalog = _install_catalog(monkeypatch, _StubCatalog({row.provider: _Recorder}))
+    result = match_endpoint(provider=row.provider, endpoint=row.endpoint)
+    assert type(result) is _class_of(row)
+    assert catalog.fragment_calls == []
+    assert catalog.endpoint_calls == []
+
+
+def test_an_unlisted_endpoint_never_consults_the_catalog(monkeypatch):
+    catalog = _install_catalog(monkeypatch, _StubCatalog({"openai": _Recorder}))
+    result = match_endpoint(provider="openai", endpoint=UNLISTED_ENDPOINT)
+    assert type(result) is Endpoint
+    assert catalog.fragment_calls == []
+    assert catalog.endpoint_calls == []
+
+
+def test_provider_the_catalog_does_not_declare_keeps_the_registry_scan(monkeypatch):
+    catalog = _install_catalog(monkeypatch, _StubCatalog({}))
+    result = match_endpoint(provider="scripted", endpoint="")
+    assert type(result) is _first_registered_class("scripted")
+    assert catalog.fragment_calls == ["scripted"]
+    assert catalog.endpoint_calls == []
+
+
+def test_new_runtime_provider_with_no_endpoint_resolves_to_its_first_entry(register_throwaway):
+    first = register_throwaway("runtime-pin-provider", "alpha")
+    second = register_throwaway("runtime-pin-provider", "beta")
+    assert type(match_endpoint(provider="runtime-pin-provider", endpoint="")) is first
+    assert type(match_endpoint(provider="runtime-pin-provider", endpoint="beta")) is second
+
+
+def test_runtime_endpoint_under_a_built_in_provider_resolves_by_its_key(register_throwaway):
+    added = register_throwaway("openai", "pin-runtime-key")
+    assert type(match_endpoint(provider="openai", endpoint="pin-runtime-key")) is added
+    assert type(match_endpoint(provider="openai", endpoint="")) is _default_class("openai")
+
+
+def _missing_feature_error():
+    return MissingFeatureError(
+        feature="provider hub", missing_distribution="lionhub", install_hint="reinstall lionagi"
+    )
+
+
+def _activation_error():
+    return ProviderActivationError(
+        provider="openai", endpoint=None, source="a stub", reason="activation_failed"
+    )
+
+
+def _contract_version_error():
+    return ProviderContractVersionError(source="a stub", expected=(1,), observed=99)
+
+
+LOAD_FAILURES = [
+    pytest.param(_missing_feature_error, id="missing-feature"),
+    pytest.param(_activation_error, id="activation"),
+    pytest.param(_contract_version_error, id="contract-version"),
+]
+
+
+@pytest.mark.parametrize("provider", ["openai", "scripted"])
+@pytest.mark.parametrize("make_error", LOAD_FAILURES)
+def test_catalog_load_failure_keeps_the_registry_scan(monkeypatch, make_error, provider):
+    loads = []
+
+    def cannot_load():
+        loads.append(provider)
+        raise make_error()
+
+    monkeypatch.setattr(_provider_compat, "default_provider_catalog", cannot_load)
+    result = match_endpoint(provider=provider, endpoint="")
+    assert type(result) is _first_registered_class(provider)
+    assert loads == [provider]
+
+
+class _UnimportableDeclaration:
+    """A declaration whose implementation module fails to import."""
+
+    def factory(self):
+        raise ImportError("No module named 'a_broken_provider_module'")
+
+
+def test_declared_default_that_fails_to_import_keeps_the_registry_scan(monkeypatch):
+    catalog = _install_catalog(monkeypatch, _StubCatalog({}))
+    catalog._declared["openai"] = _UnimportableDeclaration()
+    result = match_endpoint(provider="openai", endpoint="")
+    assert type(result) is _first_registered_class("openai")
+    assert catalog.endpoint_calls == [("openai", "")]
 
 
 # -- 4. an endpoint the provider does not list ------------------------------
