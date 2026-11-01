@@ -167,6 +167,8 @@ print(json.dumps({
         "lionhub.providers.firecrawl.scrape",
         "lionhub.providers.firecrawl.map",
         "lionhub.providers.firecrawl.crawl",
+        "lionhub.providers.outcrawl.scrape",
+        "lionhub.providers.outcrawl.search",
         "lionhub.providers.perplexity.chat",
         "lionhub.providers.nvidia_nim.chat",
         "lionhub.providers.nvidia_nim.embed",

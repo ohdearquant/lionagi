@@ -176,6 +176,8 @@ _CLASS_DECORATORS = frozenset(
         "lionhub.providers.openai._config.OpenAIConfigs.IMAGE_GENERATION.register",
         "lionhub.providers.openai._config.OpenAIConfigs.RESPONSE.register",
         "lionhub.providers.openrouter._config.OpenRouterConfigs.CHAT.register",
+        "lionhub.providers.outcrawl._config.OutcrawlConfigs.SCRAPE.register",
+        "lionhub.providers.outcrawl._config.OutcrawlConfigs.SEARCH.register",
         "lionhub.providers.perplexity._config.PerplexityConfigs.CHAT.register",
         "lionhub.providers.pi._config.PiConfigs.CLI.register",
         "lionhub.providers.tavily._config.TavilyConfigs.EXTRACT.register",

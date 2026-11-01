@@ -654,6 +654,8 @@ def _import_all_providers():
         "lionhub.providers.firecrawl.scrape",
         "lionhub.providers.firecrawl.map",
         "lionhub.providers.firecrawl.crawl",
+        "lionhub.providers.outcrawl.scrape",
+        "lionhub.providers.outcrawl.search",
         # Chat / LLM providers
         "lionhub.providers.perplexity.chat",
         "lionhub.providers.nvidia_nim.chat",

@@ -20,6 +20,7 @@ ENUMS = [
     ("lionhub.providers.exa.search", "SearchCategory"),
     ("lionhub.providers.exa.search", "SearchType"),
     ("lionhub.providers.firecrawl._schemas", "OutputFormat"),
+    ("lionhub.providers.outcrawl._schemas", "OutputFormat"),
     ("lionhub.providers.perplexity.chat", "PerplexityModels"),
     ("lionhub.providers.tavily.search", "SearchDepth"),
     ("lionhub.providers.tavily.search", "SearchTopic"),

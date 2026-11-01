@@ -184,6 +184,7 @@ def test_owned_sources_supply_names_without_constructing_or_resolving_secrets(mo
             "EXA_API_KEY",
             "TAVILY_API_KEY",
             "FIRECRAWL_API_KEY",
+            "OUTCRAWL_API_KEY",
             "PERPLEXITY_API_KEY",
             "GROQ_API_KEY",
             "ANTHROPIC_API_KEY",
