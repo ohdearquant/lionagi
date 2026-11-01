@@ -701,9 +701,9 @@ async def kill_one(
     return result
 
 
-def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
-    """Return a degraded run's readable manifest without following links."""
-    from ._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RUNS_ROOT
+def _run_manifest_path(run_id: str) -> Path | None:
+    """Return the run.json path a run id names, or None when the id is not safe to join."""
+    from ._runs import RUNS_ROOT
 
     # a run id names one directory under RUNS_ROOT: anything that is not a single path
     # component is no run id, and is never joined onto the path
@@ -713,6 +713,16 @@ def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
     # read, and later written, is the one in the directory the id names
     path = RUNS_ROOT.resolve() / run_id / "run.json"
     if path.resolve() != path:
+        return None
+    return path
+
+
+def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
+    """Return a degraded run's readable manifest without following links."""
+    from ._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+
+    path = _run_manifest_path(run_id)
+    if path is None:
         return None
     try:
         manifest = json.loads(path.read_text())
@@ -765,27 +775,52 @@ def _signal_degraded_process(
 
 
 def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, str | None]:
-    """Classify a degraded imported run's recorded process.
+    """Classify the process an imported run's manifest recorded, degraded or not.
 
-    A live process whose identity cannot be checked (Linux epoch disagreement, start-time
-    mismatch, permission denied, unknown identity) is `unverifiable` with its reason, never
-    `not_ours`: it is kept, not swept as a stranger.
+    The manifest is the run's own record, so it is read whether or not it carries the degraded
+    marker. An id that names no run directory, no manifest, a run that is not ``running`` and a
+    recorded process that is gone (one from an earlier boot included) are `not_ours`. Whatever
+    leaves it unknown whether the run still owns a live process is `unverifiable` with its reason,
+    never `not_ours`: a pid recorded on another host, in an identity mode this CLI cannot signal,
+    or as a shared in-process host that is still alive (the `NOT_JUDGEABLE_HERE` reasons); a
+    manifest that is present but unreadable (``manifest_unreadable``); no recorded pid
+    (``no_recorded_process``); a Linux boot epoch disagreement (``boot_disagreement``); no
+    recorded start time (``no_recorded_identity``); or the identity check's own reason for a live
+    process it cannot confirm (start-time mismatch, permission denied). Such a run is kept, not
+    swept as a stranger.
     """
-    run = _degraded_run(run_id)
-    if run is None:
+    path = _run_manifest_path(run_id)
+    if path is None:
         return "not_ours", None
-    manifest = run[1]
-    status = manifest.get("status")
-    if status != "running":
+    try:
+        manifest = json.loads(path.read_text())
+    except (FileNotFoundError, NotADirectoryError):
+        return "not_ours", None
+    except (OSError, ValueError):
+        return "unverifiable", "manifest_unreadable"
+    if not isinstance(manifest, dict):
+        return "unverifiable", "manifest_unreadable"
+    if manifest.get("status") != "running":
         return "not_ours", None
     try:
         pid = int(manifest["pid"])
-        expected_create_time = float(manifest["pid_create_time"])
     except (KeyError, TypeError, ValueError, OverflowError):
-        return "not_ours", None
+        return "unverifiable", "no_recorded_process"
     if pid <= 0:
-        return "not_ours", None
+        return "unverifiable", "no_recorded_process"
     unaddressable, alive = _pid_addressability(unaddressable_pid_reason(manifest), pid)
+    if unaddressable in NOT_JUDGEABLE_HERE:
+        # The recorded pid cannot say from here whether the run still holds a process: it is
+        # another host's, it uses an identity mode this CLI cannot signal, or it is the host
+        # process the run shares. Only a shared host process on this machine that is gone
+        # settles it.
+        if (
+            unaddressable == "in_process"
+            and not _recorded_pid_is_foreign(manifest)
+            and not _pid_alive(pid)
+        ):
+            return "not_ours", None
+        return "unverifiable", unaddressable
     if unaddressable is not None and unaddressable != "boot_unverifiable":
         return "not_ours", None
     if alive is None:
@@ -794,6 +829,10 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
         return "not_ours", None
     if unaddressable == "boot_unverifiable":
         return "unverifiable", "boot_disagreement"
+    try:
+        expected_create_time = float(manifest["pid_create_time"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return "unverifiable", "no_recorded_identity"
     reason: list[str] = []
     verdict = check_pid_identity(
         pid, "lionagi", expected_create_time=expected_create_time, _reason_out=reason
@@ -802,7 +841,11 @@ def _imported_degraded_process_identity(run_id: str) -> tuple[_IdentityVerdict, 
 
 
 def imported_degraded_process_is_live(run_id: str) -> bool:
-    """Keep unknown imported identities out of legacy boolean reapers."""
+    """Whether an imported run's recorded process may still be alive, for the boolean reapers.
+
+    True for a process that is ours and for a run whose process cannot be ruled out
+    (`unverifiable`); False when the run is `not_ours` or its recorded process is a zombie.
+    """
     verdict, _ = _imported_degraded_process_identity(run_id)
     return verdict in ("ours", "unverifiable")
 

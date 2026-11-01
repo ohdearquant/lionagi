@@ -801,6 +801,121 @@ async def test_doctor_keeps_an_imported_degraded_run_whose_identity_cannot_be_ch
     assert row["status"] == "running"
 
 
+def _imported_running_manifest(run_id: str, **overrides) -> str:
+    """A running manifest with no degraded marker; a ``None`` override drops that field."""
+    manifest = {"run_id": run_id, "status": "running", "pid": 12345, "pid_create_time": 1.0}
+    manifest.update(overrides)
+    return json.dumps({key: value for key, value in manifest.items() if value is not None})
+
+
+@pytest.mark.parametrize(
+    ("manifest", "alive", "identity", "expected"),
+    [
+        pytest.param({}, True, ("ours", None), "running", id="live-process-ours"),
+        pytest.param(
+            {},
+            True,
+            ("unverifiable", "start_mismatch"),
+            "running",
+            id="live-process-identity-unverifiable",
+        ),
+        pytest.param(
+            {"pid_create_time": None},
+            True,
+            ("ours", None),
+            "running",
+            id="live-process-without-start-time",
+        ),
+        pytest.param(
+            {"pid": None, "pid_create_time": None},
+            True,
+            ("ours", None),
+            "running",
+            id="no-recorded-process",
+        ),
+        pytest.param('{"status":', True, ("ours", None), "running", id="unreadable-manifest"),
+        pytest.param("[]", True, ("ours", None), "running", id="manifest-not-an-object"),
+        pytest.param(
+            {"pid_host": "another-host.invalid"}, True, ("ours", None), "running", id="another-host"
+        ),
+        pytest.param(
+            {"process_identity_mode": "container"},
+            True,
+            ("ours", None),
+            "running",
+            id="identity-mode-not-signallable",
+        ),
+        pytest.param(
+            {"process_identity_mode": "in_process"},
+            True,
+            ("ours", None),
+            "running",
+            id="in-process-host-alive",
+        ),
+        pytest.param(
+            {"process_identity_mode": "in_process"},
+            False,
+            ("ours", None),
+            "aborted",
+            id="in-process-host-gone",
+        ),
+        pytest.param({}, False, ("ours", None), "aborted", id="dead-process"),
+        pytest.param({}, True, ("not_ours", None), "aborted", id="live-process-not-ours"),
+        pytest.param({"status": "completed"}, True, ("ours", None), "aborted", id="finished-run"),
+        pytest.param(None, True, ("ours", None), "aborted", id="missing-manifest"),
+    ],
+)
+async def test_doctor_judges_an_imported_run_by_its_recorded_process(
+    tmp_path, temp_db_path, monkeypatch, manifest, alive, identity, expected
+):
+    old = time.time() - (48 * 3600)
+    run_id = str(uuid.uuid4())
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / run_id
+    run_dir.mkdir(parents=True)
+    if manifest is not None:
+        text = (
+            manifest
+            if isinstance(manifest, str)
+            else _imported_running_manifest(run_id, **manifest)
+        )
+        (run_dir / "run.json").write_text(text)
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    patched_pid_alive = lambda _pid: alive
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", patched_pid_alive)
+    monkeypatch.setattr("lionagi.cli._kill_service._pid_alive", patched_pid_alive)
+
+    def judged(*args, _reason_out=None, **kwargs):
+        if _reason_out is not None and identity[1] is not None:
+            _reason_out.append(identity[1])
+        return identity[0]
+
+    monkeypatch.setattr("lionagi.cli.kill.check_pid_identity", judged)
+    monkeypatch.setattr("lionagi.cli._kill_service.check_pid_identity", judged)
+
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "running",
+                "started_at": old,
+                "node_metadata": None,
+                "source_kind": "imported_fs",
+            }
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    kept = expected == "running"
+    assert result == {"running": 1, "swept": 0 if kept else 1, "skipped": 1 if kept else 0}
+    async with StateDB() as db:
+        row = await db.get_session(run_id)
+    assert row["status"] == expected
+
+
 async def test_doctor_sweeps_a_session_whose_pid_was_recycled(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
