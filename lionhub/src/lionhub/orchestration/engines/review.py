@@ -523,22 +523,48 @@ def _verify_instruction(issue: IssueFound, ref: str) -> str:
     )
 
 
-def _verify_clean_instruction(artifact: str, clean: list[DimensionClean], ref: str) -> str:
+def _verify_clean_instruction(
+    artifact: str, clean: list[DimensionClean], ref: str, *, can_execute: bool = True
+) -> str:
+    """The clean-verdict audit prompt. ``can_execute`` is whether the auditing leg can run a command.
+
+    A leg that cannot (an API leg, which runs no tool calls) is told so instead of being
+    asked to run a check: asked to execute and name the command it ran, it writes tool-call
+    markup as its reply, which is no emission and costs a repair round.
+    """
     claims = "\n".join(f"- {c.dimension}: {c.rationale or 'affirmed clean'}" for c in clean) or (
         "- (no affirmative clean events on record; the review surfaced no "
         "issues severe enough to verify)"
     )
+    if can_execute:
+        check = (
+            "You MUST execute at least one concrete check against the artifact "
+            "before answering: resolve one central claim or citation the artifact "
+            "makes, or run the check it claims passes. Your rationale MUST name "
+            "the exact command you ran or the specific claim you resolved and "
+            "what you observed — a rationale naming no executed check is invalid "
+            "and will be rejected. "
+        )
+    else:
+        check = (
+            "You have no tools in this turn: do not write tool calls, shell "
+            "commands or function-call markup, and answer from the artifact text "
+            "below. You MUST resolve at least one central claim or citation the "
+            "artifact makes against the rest of the artifact. Your rationale MUST "
+            "name the specific claim you resolved and what the artifact shows — a "
+            "rationale naming no resolved claim is invalid and will be rejected. "
+        )
+    did = (
+        "what you executed, what you observed"
+        if can_execute
+        else "what you resolved, what you found"
+    )
     return (
         "Adversarially audit this review's CLEAN verdict — try to REFUTE it. "
-        "You MUST execute at least one concrete check against the artifact "
-        "before answering: resolve one central claim or citation the artifact "
-        "makes, or run the check it claims passes. Your rationale MUST name "
-        "the exact command you ran or the specific claim you resolved and "
-        "what you observed — a rationale naming no executed check is invalid "
-        "and will be rejected. Emit a verify_result with issue='CLEAN: review "
+        f"{check}Emit a verify_result with issue='CLEAN: review "
         f"affirmed no blocking issues', ref='{ref}' exactly as given, holds "
         "(true only if the clean verdict survives your strongest refutation) "
-        "and rationale (what you executed, what you observed, why the clean "
+        f"and rationale ({did}, why the clean "
         "verdict does or does not hold).\n\n"
         f"# Clean claims under audit\n{claims}\n\n# Artifact\n{artifact}"
     )
@@ -949,7 +975,14 @@ class ReviewEngine(Engine):
             )
             await run.operate_with_repair(
                 verifier,
-                _verify_clean_instruction(artifact, clean, ref),
+                _verify_clean_instruction(
+                    artifact,
+                    clean,
+                    ref,
+                    can_execute=bool(
+                        getattr(getattr(verifier, "chat_model", None), "is_cli", False)
+                    ),
+                ),
                 arrived=lambda: bool(_fresh()),
                 emits=emits,
                 retries=self.repair_retries,

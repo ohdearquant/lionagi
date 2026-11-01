@@ -783,6 +783,62 @@ def test_verify_clean_instruction_mandates_an_executed_check():
     assert _clean_ref(("other",)) != ref
 
 
+def test_verify_clean_instruction_for_a_leg_that_cannot_execute_asks_for_no_command():
+    dims = ("correctness", "security")
+    ref = _clean_ref(dims)
+    clean = [DimensionClean(dimension="correctness", rationale="looked sound")]
+    text = _verify_clean_instruction("ARTIFACT-BODY", clean, ref, can_execute=False)
+    assert "You have no tools in this turn" in text
+    assert "MUST execute" not in text and "the exact command you ran" not in text
+    assert "what you executed" not in text
+    assert f"ref='{ref}'" in text and "ARTIFACT-BODY" in text
+    assert "correctness: looked sound" in text
+    # The default is the executing wording, unchanged.
+    assert _verify_clean_instruction("A", clean, ref) == _verify_clean_instruction(
+        "A", clean, ref, can_execute=True
+    )
+
+
+def _clean_audit_instruction_for(chat_model) -> str:
+    """Run a clean round where the verify-clean leg carries ``chat_model``; return what it was asked."""
+    import asyncio
+
+    dims = ("correctness",)
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    ref = _clean_ref(dims)
+    made: list = []
+    emitters: dict = {}
+    inner = _counting_make(
+        run,
+        {
+            "review-correctness": DimensionClean(dimension="correctness", rationale="checked"),
+            "verify-clean": VerifyResult(issue="CLEAN", ref=ref, holds=True),
+        },
+        made,
+        emitters,
+    )
+
+    async def make(role, *, name=None, **kw):
+        agent = await inner(role, name=name, **kw)
+        if name == "verify-clean" and chat_model is not None:
+            agent.chat_model = chat_model
+        return agent
+
+    run.make_agent = make
+    asyncio.run(eng._run(run, "ARTIFACT"))
+    return emitters["verify-clean"].calls[0]
+
+
+def test_the_clean_audit_asks_an_api_leg_for_no_command_and_a_cli_leg_for_one():
+    from types import SimpleNamespace
+
+    api = _clean_audit_instruction_for(SimpleNamespace(is_cli=False))
+    assert "You have no tools in this turn" in api and "MUST execute" not in api
+    cli = _clean_audit_instruction_for(SimpleNamespace(is_cli=True))
+    assert "MUST execute" in cli and "You have no tools in this turn" not in cli
+
+
 def test_verdict_instruction_inverts_polarity_for_refuted_clean_audit():
     # The generic guidance says "weigh refuted issues down" — read onto a
     # clean audit, that polarity is backwards: holds=false there REFUTES the
