@@ -103,13 +103,16 @@ async def test_cancellation_recovers_committed_session(
     # Recovery closes the row under a deadline a loaded runner can overrun. This test checks what
     # recovery does to the committed row, not how fast the runner is, so it runs under a bound
     # a slow runner can still meet.
-    monkeypatch.setattr(isolated_setup, "_SETUP_RECOVERY_TIMEOUT_SECONDS", 30)
+    bound = 30
+    monkeypatch.setattr(isolated_setup, "_SETUP_RECOVERY_TIMEOUT_SECONDS", bound)
     task = asyncio.create_task(isolated_setup.setup_agent_persist(fake_branch(), share_db=False))
     try:
         await asyncio.wait_for(entered.wait(), 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            # The guarded update and the database close each run under the bound, so the wait
+            # covers both; a shorter wait would be the real limit instead of the bound.
+            await asyncio.wait_for(task, 2 * bound + 15)
         async with StateDB(tmp_path / "state.db") as check:
             row = await check.get_session(observed["id"])
         assert row["status"] == "cancelled"
