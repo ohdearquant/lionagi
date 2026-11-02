@@ -1264,7 +1264,7 @@
     },
     "accessRequired": {
       "title": "Daemon ini memerlukan token akses",
-      "body": "Daemon lionagi menjawab di {base}, tetapi menolak halaman ini. Daemon hanya menerima halaman dari origin lain yang membawa token akses, dan perintah li studio memberikannya ke halaman ini saat membukanya. Memuat ulang halaman akan menghilangkan token tersebut.",
+      "body": "Daemon lionagi menjawab di {base}, tetapi menolak halaman ini. Daemon hanya menerima halaman dari origin lain yang membawa token akses, dan perintah li studio memberikannya ke halaman ini saat membukanya.",
       "fix": "Jalankan ini di tempat daemon berjalan untuk membuka Studio dengan akses:",
       "command": "li studio"
     },

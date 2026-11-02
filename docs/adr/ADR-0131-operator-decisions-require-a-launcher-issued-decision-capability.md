@@ -47,7 +47,8 @@ describes the daemon before the HTTP mint route was retired (its line numbers ar
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
 variable (`apps/studio/frontend/src/lib/pairing.ts:27`); a reload loses it. Nothing reachable over
-HTTP can read it.
+HTTP can read it. This paragraph describes the page before it kept a launch bearer in
+`localStorage` (its line number is at `47fe93701`; `docs/internals/studio.md` has the current rule).
 
 **P4 — the permission bridge reads storage, not HTTP.** The provider-permission bridge polls the
 proposal's status from the store whose path it is given (`lionagi/studio/operator/permission_mcp.py`),

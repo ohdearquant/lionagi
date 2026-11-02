@@ -1264,7 +1264,7 @@
     },
     "accessRequired": {
       "title": "Dieser Daemon braucht ein Zugriffstoken",
-      "body": "Ein lionagi-Daemon hat unter {base} geantwortet, diese Seite aber abgelehnt. Ein Daemon akzeptiert eine Seite von einem anderen Origin nur mit einem Zugriffstoken, und der Befehl li studio gibt dieser Seite eines, wenn er sie öffnet. Beim Neuladen der Seite geht das Token verloren.",
+      "body": "Ein lionagi-Daemon hat unter {base} geantwortet, diese Seite aber abgelehnt. Ein Daemon akzeptiert eine Seite von einem anderen Origin nur mit einem Zugriffstoken, und der Befehl li studio gibt dieser Seite eines, wenn er sie öffnet.",
       "fix": "Führe dies dort aus, wo der Daemon läuft, um Studio mit Zugriff zu öffnen:",
       "command": "li studio"
     },

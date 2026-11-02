@@ -1264,7 +1264,7 @@
     },
     "accessRequired": {
       "title": "Este daemon precisa de um token de acesso",
-      "body": "Um daemon do lionagi respondeu em {base}, mas recusou esta página. Um daemon só aceita uma página de outra origem com um token de acesso, e o comando li studio entrega um a esta página ao abri-la. Recarregar a página descarta o token.",
+      "body": "Um daemon do lionagi respondeu em {base}, mas recusou esta página. Um daemon só aceita uma página de outra origem com um token de acesso, e o comando li studio entrega um a esta página ao abri-la.",
       "fix": "Execute isto onde o daemon está rodando para abrir o Studio com acesso:",
       "command": "li studio"
     },
