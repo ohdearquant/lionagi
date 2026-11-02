@@ -480,7 +480,7 @@ selection reads it: the D4 ledger.
      (`lionagi/ln/concurrency/utils.py:64-65`).
 
      Before this amendment, when a 401, 403, 429, 5xx or other non-200 status was being recorded
-     (`messages.py:511-541`, `:981-1011`, line numbers at `04e03ffef292f1dad08549cdbf23b53f9b1d5644`),
+     (`lionagi/providers/anthropic/messages.py:511-541`, `:981-1011`, line numbers at `04e03ffef292f1dad08549cdbf23b53f9b1d5644`),
      the adapter's cancellation handler then recorded `cancelled` instead: no clear, no block for a
      401 or 403 whose cancellation was already pending when `block` was called, and a held ceiling
      for a 200 whose settlement never started. A cancellation that arrived while `block` ran let the
