@@ -151,6 +151,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   order in which `ProviderCatalog.context_window` scans providers after the hinted one. When
   set it must name every provider that declares context windows exactly once.
 
+- `match_endpoint`, `EndpointRegistry.match` and `iModel` accept a keyword-only
+  `provider_catalog`. When one is supplied the endpoint is selected from that catalog alone,
+  never from the bundled catalog, the registered entries or the plugin registry, and an empty
+  catalog is not the same as omitting the argument. A declared endpoint whose implementation
+  fails to import raises the `ImportError`. Omitting the argument keeps the existing behaviour.
+
+- `iModel` keeps the catalog as `provider_catalog`: `copy()` and
+  `from_dict(provider_catalog=...)` carry it, `to_dict()` does not write it, and
+  `get_context_window` reads the chat model's catalog. Passing an `Endpoint` instance together
+  with a catalog raises `ValueError`.
+
+- `POST /api/studio/pair` returns `token_source`: `"launch"` for the daemon's per-start launch
+  bearer, `"configured"` when `LIONAGI_STUDIO_AUTH_TOKEN` is set.
+
 ### Changed
 
 - Session gate denials now store a redacted `GateDenied` signal and deliver it
@@ -378,6 +392,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   lookups while the catalog cannot load keep the registry scan. An endpoint registered under a
   built-in provider before the built-ins load still resolves when no endpoint is named.
 
+- `EndpointRegistry` now registers the built-in providers from the bundled provider catalog,
+  calling every endpoint declaration's factory in catalog order, instead of importing a fixed
+  list of provider modules. `match` results and each provider's endpoint order are unchanged.
+  `list_providers()` lists the `codex` endpoint after the OpenAI endpoints instead of second.
+  When the catalog cannot load, the registry logs one warning naming the failure and registers
+  no built-in provider.
+
 ### Deprecated
 
 - Filtering emitted events through a Session gate is deprecated. Use route
@@ -431,6 +452,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   refused as `not_found`. Use the namespaced verb instead, for example `agent.submit`
   for `submit_agent` and `job.list` for `jobs_list`. The catalog and `server.info`
   drop their `synonyms_removed_after` field.
+
+- The private `_import_all_providers()` helper in `lionagi.service.connections.registry` and
+  its module list. A new built-in provider is added as a row in the hub's provider manifest;
+  see "Adding a new provider" in the provider reference.
 
 ### Fixed
 
@@ -678,6 +703,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   budget runs out during the state reads before the delivery effect starts. The first attempt of
   each such test is repeated, with a doubled budget, only when it ended without the effect having
   begun; every attempt still ends on the reconciler's own budget, and every assertion is kept.
+
+- PostgreSQL test teardowns that delete an imported session no longer fail a passing test when
+  another backend holds a conflicting table lock for an instant. The delete, which takes its locks
+  without waiting, is retried for a bounded time; a lock still held after that fails the teardown
+  with the holding backends listed.
+
+- A hosted Studio page paired by `li studio` no longer loses access on reload, in a new tab or
+  from a bookmark. The page keeps the daemon's launch bearer in `localStorage`, bound to the
+  daemon's API base, checks it once with the daemon before the app mounts, and forgets it on the
+  first 401 that carried it, so a restarted daemon asks for `li studio` again. A configured
+  `LIONAGI_STUDIO_AUTH_TOKEN` is held in memory for the page load only and never stored.
+
+- `li studio`, the `li schedule` clients and the `li doctor` daemon check reach a daemon on
+  `localhost`, `127.0.0.0/8` or `::1` without going through a configured proxy
+  (`http_proxy`, `https_proxy`, `all_proxy`, or the macOS system proxy settings). With a proxy
+  set, `li studio` used to miss a daemon already running on its port and open the hosted page
+  with a pairing code that daemon refused ("This daemon needs an access token"). Other hosts
+  keep the proxy settings, and a redirect from loopback to any other host is not followed.
+
+- `li studio` checks that it can bind its port before it issues a pairing link. When nothing
+  answers as a lionagi daemon and the port cannot be bound (in use by another program, a
+  `--host` this machine cannot listen on, a port that needs privileges), the launch stops with
+  an error naming the cause, and no link is printed or opened.
 
 ## [0.36.0] - 2026-10-24
 
