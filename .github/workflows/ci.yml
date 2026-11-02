@@ -591,13 +591,23 @@ jobs:
           compat:
             - 'pyproject.toml'
             - 'uv.lock'
-            # The lionagi code the compatibility tests depend on: the set of packages
-            # and modules that lionagi/state and those tests import directly, one
-            # entry per top-level name in an absolute `import lionagi.X` or
-            # `from lionagi.X import ...` (`X/**` for a package, `X.py` for a module).
-            # It does not follow what those packages import in turn.
+            # The lionagi code the compatibility tests import directly. These
+            # entries are the packages and modules named by the imports (including
+            # imports inside functions) in every .py file under lionagi/state and in
+            # the three tests/ entries below: `X/**` for a package, `X.py` for a
+            # module, and lionagi/__init__.py for `import lionagi` or
+            # `from lionagi import ...`. A relative import counts when it leads out of
+            # lionagi/state. Importing any lionagi module runs lionagi/__init__.py
+            # first, so the packages and modules that file imports when it loads count
+            # as imported by every source: its imports under `if TYPE_CHECKING:` and
+            # inside functions do not. What those packages import in turn is not
+            # followed, and a module named only in a string is not read. A test in
+            # tests/scripts/test_advisory_pr_checks.py recomputes the list from the
+            # sources and fails when this one differs.
+            - 'lionagi/__init__.py'
             - 'lionagi/_cli_worker_context.py'
             - 'lionagi/_log_channels.py'
+            - 'lionagi/_moved.py'
             - 'lionagi/_paths.py'
             - 'lionagi/_provider_errors.py'
             - 'lionagi/_settings.py'
@@ -607,12 +617,14 @@ jobs:
             - 'lionagi/libs/**'
             - 'lionagi/ln/**'
             - 'lionagi/operations/**'
+            - 'lionagi/plugins/**'
             - 'lionagi/protocols/**'
             - 'lionagi/service/**'
             - 'lionagi/session/**'
             - 'lionagi/state/**'
             - 'lionagi/studio/**'
             - 'lionagi/testing/**'
+            - 'lionagi/version.py'
             - 'tests/conftest.py'
             - 'tests/state/conftest.py'
             - 'tests/state/test_compatibility_*.py'
