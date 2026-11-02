@@ -7,6 +7,7 @@ import contextlib
 import http.client
 import io
 import socket
+import sys
 import urllib.error
 import urllib.request
 from unittest.mock import patch
@@ -338,12 +339,23 @@ def test_open_url_does_not_follow_a_redirect_from_loopback_to_another_host(
     assert wire.connections == [_LOOPBACK]
 
 
+# urllib's HTTPRedirectHandler follows 308 only from Python 3.11 (http_error_308 is absent in 3.10).
+_URLLIB_FOLLOWS_308 = sys.version_info >= (3, 11)
+
+
 @pytest.mark.parametrize(
     ("status", "location", "second_host"),
     [
         (307, "http://127.0.0.1:8765/api/schedules/", "127.0.0.1:8765"),
         (301, "/api/schedules/", "127.0.0.1:8765"),
-        (308, "http://localhost:8765/api/schedules/", "localhost:8765"),
+        pytest.param(
+            308,
+            "http://localhost:8765/api/schedules/",
+            "localhost:8765",
+            marks=pytest.mark.skipif(
+                not _URLLIB_FOLLOWS_308, reason="urllib follows 308 only from Python 3.11"
+            ),
+        ),
         (302, "http://[::1]:8765/api/schedules/", "[::1]:8765"),
     ],
 )
@@ -363,6 +375,19 @@ def test_open_url_follows_a_redirect_from_loopback_to_loopback(
         "/api/schedules/",
     ]
     assert wire.connections == [_LOOPBACK, second_host]
+
+
+@pytest.mark.skipif(_URLLIB_FOLLOWS_308, reason="urllib follows 308 from Python 3.11")
+def test_open_url_does_not_follow_a_308_where_urllib_has_no_308_handler(monkeypatch):
+    """On Python 3.10 urllib follows no 308, so even a loopback 308 surfaces as HTTPError."""
+    wire = _Wire({f"{_LOOPBACK}/api/schedules": (308, "http://localhost:8765/api/schedules/")})
+    wire.install(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        _ssrf.open_url(f"http://{_LOOPBACK}/api/schedules", timeout=2.0)
+
+    assert caught.value.code == 308
+    assert wire.connections == [_LOOPBACK]
 
 
 @pytest.mark.parametrize("status", [302, 307])
