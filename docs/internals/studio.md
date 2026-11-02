@@ -102,8 +102,9 @@ that check or to any later request that carried it, clears that value; a bearer
 another tab stored since is kept. A restarted daemon draws a new launch bearer,
 so its first answer sends the page back to the access-required screen with
 `li studio` as the remedy. Any other answer to the check, or none within 15
-seconds, shows the same screen and keeps the stored bearer for Retry, and a
-check that does not reach the daemon keeps it too.
+seconds (`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), shows
+the same screen and keeps the stored bearer for Retry, and a check that does not
+reach the daemon keeps it too.
 
 Why storing the launch bearer is acceptable: a daemon with no configured token
 already admits any local caller that sends no `Origin`, a command-line client
