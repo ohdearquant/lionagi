@@ -58,7 +58,7 @@ class RouterErrorCode(str, Enum):
     TRANSPORT_ERROR = "transport_error"
 
 
-# The closed sets written in ADR-0126 Amendment 7. A provider table added there
+# The closed sets written in ADR-0126 Amendments 7 and 8. A provider table added there
 # extends _PROVIDER_ERROR_TYPES.
 _PROVIDER_ERROR_TYPES = frozenset(
     {
@@ -86,6 +86,8 @@ _REJECTION_CLASSES = frozenset(
         "tool_choice_unsupported",
         "tool_type_unsupported",
         "image_too_large",
+        "credit_balance_low",
+        "spend_limit_reached",
         "other",
     }
 )
