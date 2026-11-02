@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-02
+
+Provider integrations and LNDL move to the `lionhub` import root inside the same distribution;
+the old `lionagi.providers` and `lionagi.lndl` paths keep working with a warning until 2.0.0. A
+hosted Studio page paired by `li studio` with no access token configured now keeps its access
+across reloads, tabs and bookmarks until the daemon restarts. The MCP server no longer accepts
+the flat operation names of its earlier surface, such as `submit_agent`; if you call it with
+those, read "Removed" first.
+
 ### Added
 
 - Provider exception types are available from `lionagi.providers.errors`, so
