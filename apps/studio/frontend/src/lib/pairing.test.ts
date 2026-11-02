@@ -608,7 +608,7 @@ describe("a bearer kept across reloads", () => {
     expect((await reload()).pairedBearer(BASE)).toBe("configured-token");
   });
 
-  it("forgets a stored configured token on the first refusal", async () => {
+  it("forgets a stored configured token as it does a launch bearer", async () => {
     await pairAnswering({ token: "configured-token", token_source: "configured" });
     expect(storage.getItem(BEARER_KEY)).not.toBeNull();
 
