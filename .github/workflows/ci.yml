@@ -217,9 +217,10 @@ jobs:
     # pushed branch share one concurrency group and are never cancelled, every
     # push in the meantime queues behind it and all but the newest are cancelled
     # without running. A leg takes 11 to 29 minutes; the 3.10 leg under coverage,
-    # which runs only on pushes, has taken 22 to 44 minutes on main. The plain
-    # test step stops at 45 and the coverage step at 60, both before the job's
-    # 75, so a stopped leg still runs the failure telemetry and the peak-RSS
+    # which runs only on pushes, has taken 22 to 44 minutes on main (per-run
+    # times in issue #4121). The plain test step stops at 45 and the coverage
+    # step at 60, both before the job's 75; the steps around them take under a
+    # minute, so a stopped leg still runs the failure telemetry and the peak-RSS
     # report, which names the test a crashed worker was running.
     timeout-minutes: 75
     strategy:
