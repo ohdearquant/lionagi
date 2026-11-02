@@ -1132,6 +1132,7 @@ CI_GATE_CONDITIONAL_GATES = {
     "studio-docker": "studio",
     "minimal-import": "imports",
     "no-eager-heavies": "imports",
+    "compat-deps": "compat",
     "lionrs": "lionrs",
     "lion1": "lion1",
 }
@@ -1166,6 +1167,15 @@ CI_CHANGES_FILTERS = {
         "lionhub/**",
         "pyproject.toml",
         "uv.lock",
+        ".github/workflows/ci.yml",
+    ],
+    "compat": [
+        "pyproject.toml",
+        "uv.lock",
+        "lionagi/state/**",
+        "tests/conftest.py",
+        "tests/state/conftest.py",
+        "tests/state/test_compatibility_*.py",
         ".github/workflows/ci.yml",
     ],
     "lionrs": ["lionrs/**", ".github/workflows/ci.yml"],
@@ -1281,8 +1291,9 @@ def test_a_repeated_filter_name_is_refused(tmp_path: Path) -> None:
         "            - 'uv.lock'\n",
         "            - 'docs/adr/**'\n",
         "            - 'lionrs/**'\n",
+        "            - 'lionagi/state/**'\n",
     ],
-    ids=["lion1", "studio", "imports", "adr", "lionrs"],
+    ids=["lion1", "studio", "imports", "adr", "lionrs", "compat"],
 )
 def test_the_changes_job_pin_refuses_a_dropped_path(path: str, tmp_path: Path) -> None:
     # One arm per filter, so dropping a path from any of them is caught: a path
