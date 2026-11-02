@@ -43,7 +43,7 @@ predicate can also group rows across the tag table (`lionagi/studio/services/ses
 page/per_page, total, total_pages, has_next and has_prev; sessions returns limit/offset,
 total and truncated (`lionagi/studio/services/runs.py:257`,
 `lionagi/studio/services/sessions.py:1741-1748`). The runs client requires those numeric fields
-(`apps/studio/frontend/src/lib/api.ts:979`). The visible history control already uses
+(`apps/studio/frontend/src/lib/api.ts:998`). The visible history control already uses
 Load more, but its pager increments page numbers and consumes has_next
 (`apps/studio/frontend/src/components/fleet/FleetView.tsx:489`,
 `apps/studio/frontend/src/components/fleet/fleetReducer.ts:316`).

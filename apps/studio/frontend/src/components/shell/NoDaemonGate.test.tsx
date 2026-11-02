@@ -18,6 +18,10 @@
  * - a page `li studio` opened redeems its pairing code once the daemon answers
  * - accessRequired (the daemon refused the code, or refused a request later),
  *   which names `li studio` as the remedy and does not poll
+ * - a bearer an earlier load stored is checked with one request before the
+ *   app mounts: only a 2xx mounts the app, a 401 forgets it and asks to pair
+ *   again, any other answer or none in time shows accessRequired and keeps it,
+ *   a network failure keeps it and shows unreachable
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -27,7 +31,12 @@ import { IntlProvider } from "use-intl";
 import NoDaemonGate from "./NoDaemonGate";
 import enMessages from "@/messages/en.json";
 import { reportAccessRefused, reportConnectivityFailure } from "@/lib/connectivity";
-import { pairedBearer, resetPairingForTests, takePairingCodeFromLocation } from "@/lib/pairing";
+import {
+  PAIRING_TIMEOUT_MS,
+  pairedBearer,
+  resetPairingForTests,
+  takePairingCodeFromLocation,
+} from "@/lib/pairing";
 
 const apiConfig = vi.hoisted(() => ({ base: "http://127.0.0.1:8765" }));
 
@@ -58,6 +67,23 @@ describe("NoDaemonGate", () => {
     unmounted = false;
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    // jsdom's `window.localStorage` has no Storage methods in this vitest
+    // environment, so the page's storage is a working in-memory one.
+    const data = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        data.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        data.delete(key);
+      },
+      clear: () => data.clear(),
+      key: () => null,
+      get length() {
+        return data.size;
+      },
+    } as Storage);
     vi.useFakeTimers();
     resetPairingForTests();
     window.history.replaceState(null, "", "/");
@@ -215,6 +241,131 @@ describe("NoDaemonGate", () => {
       for (let i = 0; i < 10; i++) await Promise.resolve();
     });
   }
+
+  const BEARER_KEY = "studio.pairedBearer";
+
+  function storeBearer(token: string) {
+    window.localStorage.setItem(
+      BEARER_KEY,
+      JSON.stringify({ base: "http://127.0.0.1:8765", token }),
+    );
+  }
+
+  function daemonCheckingBearer(check: (init?: RequestInit) => Promise<Response>) {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok" }));
+      if (url.endsWith("/api/casts/")) return check(init);
+      return Promise.reject(new Error(`unexpected request: ${url}`));
+    });
+  }
+
+  function checkCalls() {
+    return fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/casts/"));
+  }
+
+  it("checks a stored bearer before mounting and, on a 401, forgets it and asks to pair again", async () => {
+    storeBearer("stale-bearer");
+    daemonCheckingBearer(() => Promise.resolve(jsonResponse({ detail: "refused" }, false, 401)));
+
+    await mount();
+    await settle();
+
+    expect(checkCalls()).toHaveLength(1);
+    expect(checkCalls()[0][1]).toMatchObject({
+      headers: { Authorization: "Bearer stale-bearer" },
+    });
+    expect(checkCalls()[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "This daemon needs an access token",
+    );
+    expect(window.localStorage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer("http://127.0.0.1:8765")).toBeUndefined();
+  });
+
+  it("does not mount the app while the check is pending, and reads no answer in time as unvalidated", async () => {
+    storeBearer("stored-bearer");
+    daemonCheckingBearer(
+      (init) =>
+        new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
+
+    await mount();
+    await settle();
+
+    expect(checkCalls()).toHaveLength(1);
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PAIRING_TIMEOUT_MS);
+    });
+    await settle();
+
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "This daemon needs an access token",
+    );
+    expect(window.localStorage.getItem(BEARER_KEY)).not.toBeNull();
+  });
+
+  for (const status of [404, 500]) {
+    it(`does not mount the app on a ${status} to the check, and keeps the stored bearer`, async () => {
+      storeBearer("stored-bearer");
+      daemonCheckingBearer(() => Promise.resolve(jsonResponse({ detail: "no" }, false, status)));
+
+      await mount();
+      await settle();
+
+      expect(container.querySelector('[data-testid="child"]')).toBeNull();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "This daemon needs an access token",
+      );
+      expect(window.localStorage.getItem(BEARER_KEY)).not.toBeNull();
+      expect(pairedBearer("http://127.0.0.1:8765")).toBe("stored-bearer");
+    });
+  }
+
+  it("mounts the app once the daemon accepts a stored bearer", async () => {
+    storeBearer("stored-bearer");
+    daemonCheckingBearer(() => Promise.resolve(jsonResponse({ roles: [] })));
+
+    await mount();
+    await settle();
+
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+    expect(window.localStorage.getItem(BEARER_KEY)).not.toBeNull();
+    expect(pairedBearer("http://127.0.0.1:8765")).toBe("stored-bearer");
+  });
+
+  it("keeps a stored bearer and shows unreachable when its check does not reach the daemon", async () => {
+    storeBearer("stored-bearer");
+    daemonCheckingBearer(() => Promise.reject(new TypeError("Failed to fetch")));
+
+    await mount();
+    await settle();
+
+    expect(container.querySelector('[data-testid="child"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain(
+      "This daemon needs an access token",
+    );
+    expect(window.localStorage.getItem(BEARER_KEY)).not.toBeNull();
+  });
+
+  it("sends no check when nothing is stored", async () => {
+    daemonCheckingBearer(() => Promise.resolve(jsonResponse({ roles: [] })));
+
+    await mount();
+    await settle();
+
+    expect(checkCalls()).toHaveLength(0);
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+  });
 
   function pairCalls() {
     return fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/studio/pair"));
