@@ -25,8 +25,17 @@ from pathlib import Path
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 SWITCH = "vars.ADVISORY_PR_CHECKS != 'off' && !github.event.pull_request.draft"
 
@@ -1172,7 +1181,23 @@ CI_CHANGES_FILTERS = {
     "compat": [
         "pyproject.toml",
         "uv.lock",
+        "lionagi/_cli_worker_context.py",
+        "lionagi/_log_channels.py",
+        "lionagi/_paths.py",
+        "lionagi/_provider_errors.py",
+        "lionagi/_settings.py",
+        "lionagi/cli/**",
+        "lionagi/config.py",
+        "lionagi/hooks/**",
+        "lionagi/libs/**",
+        "lionagi/ln/**",
+        "lionagi/operations/**",
+        "lionagi/protocols/**",
+        "lionagi/service/**",
+        "lionagi/session/**",
         "lionagi/state/**",
+        "lionagi/studio/**",
+        "lionagi/testing/**",
         "tests/conftest.py",
         "tests/state/conftest.py",
         "tests/state/test_compatibility_*.py",
@@ -1501,3 +1526,222 @@ def test_a_conditional_job_that_is_not_success_fails_a_changed_run(
     outputs = {CI_GATE_CONDITIONAL_GATES[job]: "true"}
     rc, out = _run_ci_gate(_needs_context({job: result}, outputs), monkeypatch, capsys)
     assert rc == 1, out
+
+
+# The compat-deps job swaps the locked aiosqlite and SQLAlchemy for a matrix row's
+# versions and runs the compatibility tests on them. That tests those versions
+# only while three things hold, and each is read from the job's own YAML, so a row
+# can be added or removed without touching this pin:
+#   - no `uv run` after the swap omits `--no-sync`: a plain `uv run` syncs the
+#     environment back to uv.lock, and the tests then run on the locked pair;
+#   - a step between the swap and pytest reads `importlib.metadata` versions, so a
+#     swap that did not take stops the job before the tests run;
+#   - the lowest SQLAlchemy and aiosqlite in the matrix are the floors that
+#     pyproject.toml declares, so the supported range is tested down to its edge.
+# The `uv run` search reads the uv options up to the program name, so
+# `--no-sync` placed after the program does not count.
+COMPAT_UV_RUN = re.compile(r"\buv\s+run\b([^\n;&|]*)")
+COMPAT_VERSION_READ = re.compile(r"importlib\.metadata(?:\.version\b|\s+import\s[^\n]*\bversion\b)")
+COMPAT_ASSERT_STEP = "Assert the interpreter has the matrix versions"
+COMPAT_PYTEST_STEP = "Run the compatibility-mode tests"
+
+
+def _compat_step_text(step: dict) -> str:
+    """A step's shell text, with backslash line continuations joined."""
+    return re.sub(r"\\\n\s*", " ", step.get("run", ""))
+
+
+def _compat_step_label(step: dict) -> str:
+    return repr(step.get("name") or step.get("uses") or "an unnamed step")
+
+
+def _compat_uv_runs_that_sync(step: dict) -> list[str]:
+    """Each `uv run` command in *step* whose uv options do not include `--no-sync`."""
+    syncing = []
+    for match in COMPAT_UV_RUN.finditer(_compat_step_text(step)):
+        options = []
+        for token in match.group(1).split():
+            if not token.startswith("-"):
+                break
+            options.append(token)
+        if "--no-sync" not in options:
+            syncing.append(match.group(0).strip())
+    return syncing
+
+
+def _compat_declared_floor(
+    pyproject: Path, package: str, extra: str | None
+) -> tuple[str, Version | None]:
+    """The core requirement for *package* in pyproject.toml, and the `>=` floor it declares."""
+    for text in tomllib.loads(pyproject.read_text())["project"]["dependencies"]:
+        requirement = Requirement(text)
+        if canonicalize_name(requirement.name) != package:
+            continue
+        if extra is not None and extra not in requirement.extras:
+            continue
+        floors = [Version(spec.version) for spec in requirement.specifier if spec.operator == ">="]
+        return text, (max(floors) if floors else None)
+    return package, None
+
+
+def _compat_deps_problems(workflows: Path = WORKFLOWS, pyproject: Path = PYPROJECT) -> list[str]:
+    """Each way the compat-deps job stops testing the versions its matrix names."""
+    job = _parse((workflows / "ci.yml").read_text())["jobs"]["compat-deps"]
+    steps = job["steps"]
+    texts = [_compat_step_text(step).lower() for step in steps]
+    installs = [
+        i
+        for i, text in enumerate(texts)
+        if re.search(r"\buv\s+pip\s+install\b", text)
+        and "aiosqlite" in text
+        and "sqlalchemy" in text
+    ]
+    pytests = [i for i, text in enumerate(texts) if re.search(r"\bpytest\b", text)]
+    problems = []
+    if not installs:
+        problems.append(
+            "compat-deps has no step that installs the matrix row's aiosqlite and SQLAlchemy "
+            "with `uv pip install`"
+        )
+    if not pytests:
+        problems.append("compat-deps has no step that runs pytest")
+    if installs:
+        installing = _compat_step_label(steps[installs[0]])
+        for step in steps[installs[0] + 1 :]:
+            for command in _compat_uv_runs_that_sync(step):
+                problems.append(
+                    f"step {_compat_step_label(step)} runs `{command}` without --no-sync after "
+                    f"{installing}: uv syncs the environment back to uv.lock, so the tests run "
+                    "on the locked versions"
+                )
+        if pytests:
+            between = steps[installs[0] + 1 : pytests[0]]
+            if not any(COMPAT_VERSION_READ.search(_compat_step_text(step)) for step in between):
+                problems.append(
+                    f"no step between {installing} and {_compat_step_label(steps[pytests[0]])} "
+                    "reads importlib.metadata versions, so an install that did not take would "
+                    "pass on the locked versions"
+                )
+    rows = job["strategy"]["matrix"]["include"]
+    for key, extra, name in (
+        ("sqlalchemy", "asyncio", "SQLAlchemy"),
+        ("aiosqlite", None, "aiosqlite"),
+    ):
+        declared, floor = _compat_declared_floor(pyproject, key, extra)
+        lowest = min(Version(row[key]) for row in rows)
+        if floor is None:
+            problems.append(f"pyproject.toml declares no >= floor for {declared!r}")
+        elif lowest != floor:
+            problems.append(
+                f"the lowest {name} in the compat-deps matrix is {lowest}, but pyproject.toml "
+                f"declares {declared!r}, whose floor is {floor}"
+            )
+    return problems
+
+
+def test_the_compat_deps_job_tests_the_versions_it_installs() -> None:
+    problems = _compat_deps_problems()
+    assert not problems, "\n".join(problems)
+
+
+def _compat_step(workflow: dict, name: str) -> dict:
+    steps = workflow["jobs"]["compat-deps"]["steps"]
+    return next(step for step in steps if step.get("name", "").startswith(name))
+
+
+def _drop_no_sync(name: str):
+    def mutate(workflow: dict) -> None:
+        step = _compat_step(workflow, name)
+        edited = step["run"].replace("uv run --no-sync", "uv run")
+        assert edited != step["run"]
+        step["run"] = edited
+
+    return mutate
+
+
+def _delete_step(name: str):
+    def mutate(workflow: dict) -> None:
+        workflow["jobs"]["compat-deps"]["steps"].remove(_compat_step(workflow, name))
+
+    return mutate
+
+
+def _move_step_last(name: str):
+    def mutate(workflow: dict) -> None:
+        steps = workflow["jobs"]["compat-deps"]["steps"]
+        step = _compat_step(workflow, name)
+        steps.remove(step)
+        steps.append(step)
+
+    return mutate
+
+
+def _raise_the_lowest(key: str):
+    def mutate(workflow: dict) -> None:
+        rows = workflow["jobs"]["compat-deps"]["strategy"]["matrix"]["include"]
+        lowest = min(Version(row[key]) for row in rows)
+        for row in rows:
+            if Version(row[key]) == lowest:
+                row[key] = f"{lowest.major}.{lowest.minor}.{lowest.micro + 1}"
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        pytest.param(
+            _drop_no_sync(COMPAT_PYTEST_STEP),
+            ["--no-sync", COMPAT_PYTEST_STEP],
+            id="pytest-step-syncs",
+        ),
+        pytest.param(
+            _drop_no_sync(COMPAT_ASSERT_STEP),
+            ["--no-sync", COMPAT_ASSERT_STEP],
+            id="assert-step-syncs",
+        ),
+        pytest.param(
+            _delete_step(COMPAT_ASSERT_STEP), ["importlib.metadata"], id="no-version-assert"
+        ),
+        pytest.param(
+            _move_step_last(COMPAT_ASSERT_STEP),
+            ["importlib.metadata"],
+            id="version-assert-after-pytest",
+        ),
+        pytest.param(
+            _raise_the_lowest("sqlalchemy"), ["lowest SQLAlchemy"], id="sqlalchemy-floor-unreached"
+        ),
+        pytest.param(
+            _raise_the_lowest("aiosqlite"), ["lowest aiosqlite"], id="aiosqlite-floor-unreached"
+        ),
+    ],
+)
+def test_the_compat_deps_pin_refuses_an_edit(mutate, expected: list[str], tmp_path: Path) -> None:
+    # Each edit leaves the job parsing and its tests green on whatever versions are
+    # installed; only the pin notices that they are no longer the matrix row's, or
+    # that the matrix no longer reaches the declared floor.
+    workflow = _load("ci.yml")
+    mutate(workflow)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(yaml.safe_dump(workflow))
+    problems = _compat_deps_problems(workflows)
+    assert any(all(part in problem for part in expected) for problem in problems), problems
+
+
+@pytest.mark.parametrize(
+    ("package", "name"),
+    [(r"sqlalchemy\[asyncio\]", "SQLAlchemy"), ("aiosqlite", "aiosqlite")],
+)
+def test_the_compat_deps_pin_refuses_a_floor_the_matrix_does_not_reach(
+    package: str, name: str, tmp_path: Path
+) -> None:
+    text = PYPROJECT.read_text()
+    edited = re.sub(
+        rf'("{package}>=\d+\.\d+\.)(\d+)', lambda m: f"{m[1]}{int(m[2]) + 1}", text, count=1
+    )
+    assert edited != text
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(edited)
+    problems = _compat_deps_problems(pyproject=pyproject)
+    assert any(f"lowest {name}" in problem for problem in problems), problems

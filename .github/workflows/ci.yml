@@ -591,7 +591,28 @@ jobs:
           compat:
             - 'pyproject.toml'
             - 'uv.lock'
+            # The lionagi code the compatibility tests depend on: the set of packages
+            # and modules that lionagi/state and those tests import directly, one
+            # entry per top-level name in an absolute `import lionagi.X` or
+            # `from lionagi.X import ...` (`X/**` for a package, `X.py` for a module).
+            # It does not follow what those packages import in turn.
+            - 'lionagi/_cli_worker_context.py'
+            - 'lionagi/_log_channels.py'
+            - 'lionagi/_paths.py'
+            - 'lionagi/_provider_errors.py'
+            - 'lionagi/_settings.py'
+            - 'lionagi/cli/**'
+            - 'lionagi/config.py'
+            - 'lionagi/hooks/**'
+            - 'lionagi/libs/**'
+            - 'lionagi/ln/**'
+            - 'lionagi/operations/**'
+            - 'lionagi/protocols/**'
+            - 'lionagi/service/**'
+            - 'lionagi/session/**'
             - 'lionagi/state/**'
+            - 'lionagi/studio/**'
+            - 'lionagi/testing/**'
             - 'tests/conftest.py'
             - 'tests/state/conftest.py'
             - 'tests/state/test_compatibility_*.py'
