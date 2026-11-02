@@ -86,10 +86,35 @@ bearer. That route requires an Origin in `CORS_ORIGINS` (checked before the code
 is spent); a code is bound to the origins the launcher named, works once, and
 expires after 120 seconds. The answer is the configured token when one is set,
 else the launch bearer, plus a decision capability bound to the page's origin
-(see below). The page keeps the bearer in memory only, so a reload loses it and
-the page then shows the access-required screen with `li studio` as the remedy;
-the capability is kept in `sessionStorage` for that tab, so it survives the
-reload and is gone with the tab.
+(see below). The answer also carries `token_source`: `"launch"` for the launch
+bearer, `"configured"` for the configured token.
+
+The page stores the bearer only when the daemon says it is the launch bearer
+(`token_source: "launch"`). A configured `LIONAGI_STUDIO_AUTH_TOKEN` is never
+stored: it stays in memory for that page load, and a reload shows the
+access-required screen again. So does an answer without `token_source`, from a
+daemon released before the field. A stored launch bearer is kept in
+`localStorage` for the page's own origin, bound to the daemon's API base, and
+survives reloads, tabs and bookmarks. Before the app mounts, the page checks a
+stored bearer with one authenticated request (`GET /api/casts/`), so nothing
+renders on it unchecked. Only a 2xx answer mounts the app. The first 401, to
+that check or to any later request that carried it, clears that value; a bearer
+another tab stored since is kept. A restarted daemon draws a new launch bearer,
+so its first answer sends the page back to the access-required screen with
+`li studio` as the remedy. Any other answer to the check, or none within 15
+seconds (`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), shows
+the same screen and keeps the stored bearer for Retry, and a check that does not
+reach the daemon keeps it too.
+
+Why storing the launch bearer is acceptable: a daemon with no configured token
+already admits any local caller that sends no `Origin`, a command-line client
+for one, and pages on loopback origins, so the launch bearer gates only pages on
+other origins. The stored value is readable only by scripts served from the
+page's own origin, which receive it at every pairing anyway, and it stops
+working when the daemon restarts. A configured token is a long-lived operator
+credential that the operator chose, so the page does not extend where it lives.
+The capability is kept in `sessionStorage` for that tab, so it survives a reload
+and is gone with the tab.
 
 **The reconnect socket** (`reconnect.py`) — a unix socket in a `studio/`
 directory beside the StateDB file, created with mode 0600 inside a 0700
@@ -109,6 +134,17 @@ right daemon from another port, is refused and `li studio` exits 1 without
 printing the code. It never stops a running daemon; on a platform without unix
 sockets it says to restart the daemon. A process running as the daemon's own OS user can obtain a
 code this way, which is outside what the HTTP-only guarantee covers.
+The HTTP requests `li studio` sends its daemon, the `li schedule` clients and the `li doctor` daemon check open a URL
+whose host is `localhost`, a 127.0.0.0/8 address or `::1` without any proxy
+(`open_url` in `lionagi/ln/_ssrf.py`): a proxy named in the environment or, on macOS,
+in the system settings cannot reach this machine's loopback interface, so with one
+configured a running daemon would read as absent. Other hosts keep the proxy settings, and
+a redirect from loopback to any other host is not followed.
+When nothing answers as a daemon, the hosted launch (`li studio` without `--no-frontend`,
+`--dev` or `--docker`) tries to bind its port once, the way the daemon will, before it
+mints a code: a port it cannot bind stops the launch with an error that names the cause,
+and no link is printed or opened. This is a probe at launch, not a reservation: another
+program can still take the port before the daemon binds.
 
 **Decision capabilities** (`launch_access.py`) — a page pairs with an admission
 bearer and, separately, a decision capability: a random 256-bit secret the

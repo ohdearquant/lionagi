@@ -20,6 +20,7 @@ from sqlalchemy import event, text
 
 from lionagi.cli import state as state_mod
 from lionagi.state.db import StateDB
+from tests.state._pg_cleanup import delete_imported_session_with_retry
 
 
 def _uid() -> str:
@@ -91,8 +92,8 @@ async def _seeded_store(pg_url: str, original: dict[str, Any]):
                 # second preserves its shared message until the keeper is gone.
                 for session_id in (run_id, keeper_id):
                     if await db.get_session(session_id) is not None:
-                        deleted = await db.delete_imported_session(
-                            session_id, require_source_kind="imported_fs"
+                        deleted = await delete_imported_session_with_retry(
+                            db, session_id, require_source_kind="imported_fs"
                         )
                         if not deleted:
                             raise RuntimeError("could not clean up test session")

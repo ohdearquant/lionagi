@@ -16,7 +16,11 @@ from lionagi.state.db import StateDB
 from lionagi.state.lifecycle import reconciler as reconciliation
 from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
 from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
-from tests.state.lifecycle.test_exact_terminal_attempt import _seed, _wait_for_attempt_release
+from tests.state.lifecycle.test_exact_terminal_attempt import (
+    _first_attempt,
+    _seed,
+    _wait_for_attempt_release,
+)
 from tests.state.lifecycle.test_late_foreign_awaitables import _ForeignOwner, _wait_thread_event
 
 
@@ -51,8 +55,14 @@ async def _exercise_settled_future(tmp_path, monkeypatch, adapter, value, *, clo
         finally:
             finish_called.set()
 
+    invoked = threading.Event()
+
+    def deliver():
+        invoked.set()
+        return owner.future
+
     async def prepare(_row, _db):
-        return PreparedDelivery(lambda: owner.future)
+        return PreparedDelivery(deliver)
 
     monkeypatch.setattr(reconciliation, "_finish_late", record_finish)
     try:
@@ -74,7 +84,7 @@ async def _exercise_settled_future(tmp_path, monkeypatch, adapter, value, *, clo
             key = (reconciliation._store_identity(db), "settled", event_id)
             runner = TerminalReconciler("settled", prepare, batch_size=1, timeout=1.0)
             try:
-                result = await getattr(runner, adapter)(db, event_id)
+                result = await _first_attempt(runner, adapter, db, event_id, key, invoked)
                 assert result.attempted is True
                 await _wait_thread_event(finish_called)
                 await _wait_for_attempt_release(key)
@@ -169,7 +179,10 @@ async def test_pending_stopped_foreign_future_warns_without_watchdog_and_stays_r
             second = TerminalReconciler("pending", prepare, batch_size=1, timeout=1.0)
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
-                    result = await asyncio.wait_for(getattr(first, adapter)(db, event_id), 4)
+                    # A budget that expired before the hook began is repeated with a wider one.
+                    result = await asyncio.wait_for(
+                        _first_attempt(first, adapter, db, event_id, key, invoked), 10
+                    )
                     assert invoked.is_set() and result.attempted is True
 
                     async def wait_for_stopped_warning():
@@ -225,7 +238,10 @@ async def test_pending_stopped_foreign_future_acknowledges_after_owner_resumes(
             second = TerminalReconciler("resumed", prepare, batch_size=1, timeout=1.0)
             try:
                 with caplog.at_level("WARNING", logger=reconciliation.__name__):
-                    result = await asyncio.wait_for(getattr(first, adapter)(db, event_id), 4)
+                    # A budget that expired before the hook began is repeated with a wider one.
+                    result = await asyncio.wait_for(
+                        _first_attempt(first, adapter, db, event_id, key, invoked), 10
+                    )
                     assert result.attempted is True and invoked.is_set()
 
                     async def wait_for_warning():
@@ -287,7 +303,10 @@ async def test_pending_closed_foreign_future_warns_and_stays_reserved(tmp_path, 
         second = TerminalReconciler("closed-pending", prepare, batch_size=1, timeout=1.0)
         try:
             with caplog.at_level("WARNING", logger=reconciliation.__name__):
-                result = await asyncio.wait_for(getattr(first, adapter)(db, event_id), 4)
+                # A budget that expired before the hook began is repeated with a wider one.
+                result = await asyncio.wait_for(
+                    _first_attempt(first, adapter, db, event_id, key, invoked), 10
+                )
                 assert result.attempted is True and invoked.is_set()
 
                 async def wait_for_warning():

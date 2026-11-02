@@ -215,11 +215,12 @@ async def test_timed_out_sync_effect_stays_reserved_and_late_success_acks(tmp_pa
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "late", start="all")
+        key = (reconciliation._store_identity(db), "late", event_id)
         # Allow database setup to finish before timing out the blocked effect.
         first = TerminalReconciler("late", prepare, batch_size=1, timeout=1.0)
         second = TerminalReconciler("late", prepare, batch_size=1, timeout=0.05)
         try:
-            result = await first.attempt_exact(db, event_id)
+            result = await _first_attempt(first, "attempt_exact", db, event_id, key, started)
             assert started.is_set() and result.status == "failed"
             assert (await second.attempt_exact(db, event_id)).status == "busy"
             assert calls == ["effect"]
@@ -287,17 +288,16 @@ async def test_cancel_resistant_async_effect_keeps_event_admission_until_finishe
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "async-late", start="all")
+        key = (reconciliation._store_identity(db), "async-late", event_id)
         first = TerminalReconciler("async-late", prepare, batch_size=1, timeout=1.0)
         second = TerminalReconciler("async-late", prepare, batch_size=1, timeout=1.0)
         try:
-            result = await getattr(first, adapter)(db, event_id)
+            result = await _first_attempt(first, adapter, db, event_id, key, entered)
             assert result.status == "failed" and result.attempted is True
             await entered.wait()
             assert (await second.attempt_exact(db, event_id)).status == "busy"
             assert calls == ["effect"]
             release.set()
-
-            key = (reconciliation._store_identity(db), "async-late", event_id)
 
             await _wait_for_attempt_release(key)
             assert await is_acknowledged(db, event_id, "async-late") is acknowledged
@@ -356,15 +356,15 @@ async def test_late_sync_outcome_obeys_exact_policy(tmp_path, adapter, late_outc
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "late-policy", start="all")
+        key = (reconciliation._store_identity(db), "late-policy", event_id)
         reconciler = TerminalReconciler("late-policy", prepare, batch_size=1, timeout=1.0)
         try:
-            result = await getattr(reconciler, adapter)(db, event_id)
+            result = await _first_attempt(reconciler, adapter, db, event_id, key, started)
             assert result.status == "failed" and result.attempted is True
             # The delivery thread was launched before the budget ended; wait
             # for it to reach the effect instead of assuming it already has.
             while not started.is_set():
                 await asyncio.sleep(0.005)
-            key = (reconciliation._store_identity(db), "late-policy", event_id)
             with reconciliation._workers_lock:
                 assert key in reconciliation._workers
             release.set()
@@ -418,17 +418,22 @@ async def test_late_async_success_retains_admission_until_ack_settles(
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "async-late-ack", start="all")
+        key = (reconciliation._store_identity(db), "async-late-ack", event_id)
         first = TerminalReconciler("async-late-ack", prepare, batch_size=1, timeout=1.0)
         second = TerminalReconciler("async-late-ack", prepare, batch_size=1, timeout=1.0)
-        task = asyncio.create_task(first.attempt_exact(db, event_id))
+        task = asyncio.create_task(
+            _first_attempt(first, "attempt_exact", db, event_id, key, effect_entered)
+        )
         try:
-            await asyncio.wait_for(effect_entered.wait(), 3)
+            # A first attempt that expired before the effect began is repeated with a wider
+            # budget, so the effect can begin later than one budget after the attempt starts.
+            await asyncio.wait_for(effect_entered.wait(), 10)
             if origin == "direct-cancel":
                 task.cancel("caller cancellation")
                 with pytest.raises(asyncio.CancelledError):
                     await asyncio.wait_for(task, 3)
             else:
-                assert (await asyncio.wait_for(task, 3)).status == "failed"
+                assert (await asyncio.wait_for(task, 10)).status == "failed"
             assert (await second.attempt_exact(db, event_id)).status == "busy"
             assert calls == ["effect"]
             release_effect.set()
@@ -437,7 +442,6 @@ async def test_late_async_success_retains_admission_until_ack_settles(
                 assert (await second.attempt_exact(db, event_id)).status == "busy"
                 assert not await is_acknowledged(db, event_id, "async-late-ack")
                 release_ack.set()
-                key = (reconciliation._store_identity(db), "async-late-ack", event_id)
 
                 async def wait_for_admission_release():
                     while True:
@@ -470,10 +474,44 @@ async def _wait_for_attempt_release(key):
         await asyncio.sleep(0.01)
 
 
-def _late_async_prepare(release, calls):
+async def _first_attempt(runner, adapter, db, event_id, key, started, tries=3):
+    """Run the first attempt, repeating it only while the delivery hook never began.
+
+    One time budget covers the state reads before the hook as well as the hook, so a
+    loaded runner can spend all of it before the hook starts; the attempt is then
+    correctly reported as not attempted. Repeating it is valid only for that case:
+    ``started`` is unset and the attempt ran for nearly its whole budget, so the budget
+    expired rather than the attempt failing at once. The slot is released before the
+    repeat, and the repeat runs with twice the previous budget, because the same budget
+    would be spent the same way on a runner that is still slow. The runner's own budget
+    is restored before returning. An attempt whose hook ran but is reported as not
+    attempted, one that fails before the hook without spending its budget, and one that
+    never begins within ``tries`` attempts are returned unchanged, so the caller's
+    assertion still fails.
+    """
+    loop = asyncio.get_running_loop()
+    bound = runner.timeout
+    begun = loop.time()
+    try:
+        result = await getattr(runner, adapter)(db, event_id)
+        for _ in range(tries - 1):
+            expired = loop.time() - begun >= 0.9 * runner.timeout
+            if started.is_set() or result.status != "failed" or result.attempted or not expired:
+                break
+            await _wait_for_attempt_release(key)
+            runner.timeout *= 2
+            begun = loop.time()
+            result = await getattr(runner, adapter)(db, event_id)
+    finally:
+        runner.timeout = bound
+    return result
+
+
+def _late_async_prepare(release, calls, started):
     async def prepare(_row, _db):
         async def deliver():
             calls.append("effect")
+            started.set()
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -488,15 +526,18 @@ def _late_async_prepare(release, calls):
 @pytest.mark.asyncio
 async def test_late_async_success_acks_after_file_handle_closed(tmp_path):
     path = tmp_path / "late.db"
-    release, calls = asyncio.Event(), []
+    release, calls, started = asyncio.Event(), [], threading.Event()
     first = StateDB(path)
     await first.open()
     try:
         event_id = await _seed(first)
         await register_consumer(first, "late-file", start="all")
         key = (reconciliation._store_identity(first), "late-file", event_id)
-        runner = TerminalReconciler("late-file", _late_async_prepare(release, calls), timeout=1.0)
-        assert (await runner.attempt_exact(first, event_id)).status == "failed"
+        runner = TerminalReconciler(
+            "late-file", _late_async_prepare(release, calls, started), timeout=1.0
+        )
+        result = await _first_attempt(runner, "attempt_exact", first, event_id, key, started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         await first.close()
         release.set()
@@ -518,7 +559,7 @@ async def test_late_async_ack_rejects_file_replaced_between_check_and_connect(
     path, replacement, original = (
         tmp_path / name for name in ("state.db", "replacement.db", "old.db")
     )
-    release, calls = asyncio.Event(), []
+    release, calls, started = asyncio.Event(), [], threading.Event()
     first = StateDB(path)
     await first.open()
     try:
@@ -531,8 +572,11 @@ async def test_late_async_ack_rejects_file_replaced_between_check_and_connect(
                 "UPDATE status_transitions SET id = ? WHERE id = ?", (event_id, other_id)
             )
             await register_consumer(other, "late-race", start="all")
-        runner = TerminalReconciler("late-race", _late_async_prepare(release, calls), timeout=1.0)
-        assert (await runner.attempt_exact(first, event_id)).status == "failed"
+        runner = TerminalReconciler(
+            "late-race", _late_async_prepare(release, calls, started), timeout=1.0
+        )
+        result = await _first_attempt(runner, "attempt_exact", first, event_id, key, started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         await first.close()
         real_make_engine = engine_module.make_engine
@@ -563,7 +607,7 @@ async def test_late_async_ack_rejects_file_replaced_between_check_and_connect(
 
 @pytest.mark.asyncio
 async def test_late_async_private_memory_close_does_not_ack_new_generation(caplog):
-    release, calls = asyncio.Event(), []
+    release, calls, started = asyncio.Event(), [], threading.Event()
     db = StateDB(":memory:")
     await db.open()
     try:
@@ -571,9 +615,10 @@ async def test_late_async_private_memory_close_does_not_ack_new_generation(caplo
         await register_consumer(db, "late-private", start="all")
         key = (reconciliation._store_identity(db), "late-private", event_id)
         runner = TerminalReconciler(
-            "late-private", _late_async_prepare(release, calls), timeout=1.0
+            "late-private", _late_async_prepare(release, calls, started), timeout=1.0
         )
-        assert (await runner.attempt_exact(db, event_id)).status == "failed"
+        result = await _first_attempt(runner, "attempt_exact", db, event_id, key, started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         await db.close()
         await db.open()
@@ -595,15 +640,18 @@ async def test_late_async_private_memory_close_does_not_ack_new_generation(caplo
 async def test_late_async_shared_memory_keeper_survives_closed_handle():
     name = "late-async-" + uuid.uuid4().hex
     url = f"sqlite+aiosqlite:///file:{name}?mode=memory&cache=shared&uri=true"
-    release, calls = asyncio.Event(), []
+    release, calls, started = asyncio.Event(), [], threading.Event()
     first = StateDB(url=url)
     await first.open()
     try:
         event_id = await _seed(first)
         await register_consumer(first, "late-shared", start="all")
         key = (reconciliation._store_identity(first), "late-shared", event_id)
-        runner = TerminalReconciler("late-shared", _late_async_prepare(release, calls), timeout=1.0)
-        assert (await runner.attempt_exact(first, event_id)).status == "failed"
+        runner = TerminalReconciler(
+            "late-shared", _late_async_prepare(release, calls, started), timeout=1.0
+        )
+        result = await _first_attempt(runner, "attempt_exact", first, event_id, key, started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         await first.close()
         # Reconnect while the reservation's keeper pins the original generation.
@@ -626,6 +674,7 @@ async def test_cancelled_late_shared_ack_observes_failed_keeper_future(monkeypat
     url = f"sqlite+aiosqlite:///file:{name}?mode=memory&cache=shared&uri=true"
     release_effect = asyncio.Event()
     keeper_started, release_keeper = asyncio.Event(), threading.Event()
+    effect_started = threading.Event()
     calls, ack_tasks, loop_errors = [], [], []
     secret = "PRIVATE_KEEPER_ERROR_SENTINEL"
     loop = asyncio.get_running_loop()
@@ -652,10 +701,11 @@ async def test_cancelled_late_shared_ack_observes_failed_keeper_future(monkeypat
         event_id = await _seed(db)
         await register_consumer(db, "late-keeper-failure", start="all")
         key = (reconciliation._store_identity(db), "late-keeper-failure", event_id)
-        prepare = _late_async_prepare(release_effect, calls)
+        prepare = _late_async_prepare(release_effect, calls, effect_started)
         first = TerminalReconciler("late-keeper-failure", prepare, batch_size=1, timeout=1.0)
         second = TerminalReconciler("late-keeper-failure", prepare, batch_size=1, timeout=0.05)
-        assert (await first.attempt_exact(db, event_id)).status == "failed"
+        result = await _first_attempt(first, "attempt_exact", db, event_id, key, effect_started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         release_effect.set()
         with caplog.at_level("INFO", logger=reconciliation.__name__):
@@ -700,7 +750,7 @@ async def test_late_async_ack_never_recreates_missing_sqlite_file(
     moved = tmp_path / "original.db"
     url = f"sqlite+aiosqlite:///{path.as_uri()}?mode=rwc&uri=true&timeout=5"
     db = StateDB(path) if location == "ordinary" else StateDB(url=url)
-    release, calls = asyncio.Event(), []
+    release, calls, started = asyncio.Event(), [], threading.Event()
     removed = []
 
     def remove_path():
@@ -716,9 +766,10 @@ async def test_late_async_ack_never_recreates_missing_sqlite_file(
         await register_consumer(db, "late-missing", start="all")
         key = (reconciliation._store_identity(db), "late-missing", event_id)
         runner = TerminalReconciler(
-            "late-missing", _late_async_prepare(release, calls), timeout=1.0
+            "late-missing", _late_async_prepare(release, calls, started), timeout=1.0
         )
-        assert (await runner.attempt_exact(db, event_id)).status == "failed"
+        result = await _first_attempt(runner, "attempt_exact", db, event_id, key, started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         await db.close()
         if timing == "before-success":
@@ -754,7 +805,7 @@ async def test_late_async_ack_never_recreates_missing_sqlite_file(
 async def test_late_async_ack_preserves_encoded_sqlite_uri_and_options(tmp_path):
     path = tmp_path / "state #?% space.db"
     url = f"sqlite+aiosqlite:///{path.as_uri()}?mode=rwc&uri=true&timeout=5"
-    release, calls = asyncio.Event(), []
+    release, calls, started = asyncio.Event(), [], threading.Event()
     db = StateDB(url=url)
     await db.open()
     try:
@@ -762,9 +813,10 @@ async def test_late_async_ack_preserves_encoded_sqlite_uri_and_options(tmp_path)
         await register_consumer(db, "late-encoded", start="all")
         key = (reconciliation._store_identity(db), "late-encoded", event_id)
         runner = TerminalReconciler(
-            "late-encoded", _late_async_prepare(release, calls), timeout=1.0
+            "late-encoded", _late_async_prepare(release, calls, started), timeout=1.0
         )
-        assert (await runner.attempt_exact(db, event_id)).status == "failed"
+        result = await _first_attempt(runner, "attempt_exact", db, event_id, key, started)
+        assert result.status == "failed"
         assert calls == ["effect"]
         await db.close()
         release.set()

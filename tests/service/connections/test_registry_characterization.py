@@ -102,25 +102,41 @@ def test_list_providers_exposes_only_the_six_existing_fields(registry):
 def test_documented_provider_registers_when_its_endpoint_module_is_imported(
     registry, tmp_path, monkeypatch
 ):
+    from lionhub.providers import manifest
+
     document = Path(__file__).resolve().parents[3] / "docs/reference/providers.md"
     guide = document.read_text(encoding="utf-8").split("## Adding a new provider", 1)[1]
-    config, endpoint, bootstrap = re.findall(r"```python\n(.*?)\n```", guide, re.DOTALL)[:3]
+    config, endpoint, declaration = re.findall(r"```python\n(.*?)\n```", guide, re.DOTALL)[:3]
     package = "_provider_docs_example"
     assert package not in sys.modules
-    directory = tmp_path / package
-    directory.mkdir()
+    directory = tmp_path / package / "myprovider"
+    directory.mkdir(parents=True)
+    (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
     (directory / "__init__.py").write_text("", encoding="utf-8")
     (directory / "_config.py").write_text(
-        config.replace("lionhub.providers.myprovider", package), encoding="utf-8"
+        config.replace("lionhub.providers.myprovider", package + ".myprovider"), encoding="utf-8"
     )
     (directory / "chat.py").write_text(endpoint, encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
+    # The manifest resolves a row's package and endpoint module under this root, so the row the
+    # guide shows loads the example package instead of the hub's providers.
+    monkeypatch.setattr(manifest, "_PROVIDERS", package)
+    namespace = {"_Provider": manifest._Provider, "_Endpoint": manifest._Endpoint}
+    exec(declaration, namespace)
+    (row,) = namespace["_DECLARATIONS"]
 
     try:
-        importlib.import_module(package + "._config")
+        importlib.import_module(package + ".myprovider._config")
         assert registry.list_providers() == []
 
-        imported = importlib.import_module(package + ".chat")
+        # The row the guide shows is declared the way the built-ins are: reading the config
+        # registers nothing, and calling each declaration's factory registers the provider.
+        fragment = manifest._declare_provider(row)
+        assert registry.list_providers() == []
+
+        classes = [declared.factory() for declared in fragment.endpoints]
+        imported = importlib.import_module(package + ".myprovider.chat")
+        assert classes == [imported.MyProviderChatEndpoint]
         assert registry.list_providers() == [
             {
                 "provider": "myprovider",
@@ -132,13 +148,6 @@ def test_documented_provider_registers_when_its_endpoint_module_is_imported(
             }
         ]
         assert imported.MyProviderChatEndpoint._ENDPOINT_META.options is imported.MyChatRequest
-
-        from lionagi.service.connections.registry import _import_provider_module
-
-        namespace = {"_import_provider_module": _import_provider_module}
-        exec(bootstrap.replace("lionhub.providers.myprovider", package), namespace)
-        namespace["_import_all_providers"]()
-        assert len(registry.list_providers()) == 1
     finally:
         for name in tuple(sys.modules):
             if name == package or name.startswith(package + "."):

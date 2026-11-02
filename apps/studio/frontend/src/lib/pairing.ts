@@ -6,15 +6,23 @@
  * launch. `li studio` opens the page with a one-time code in the URL fragment
  * (`#pair=<code>`), which a browser never sends to a server. The code is read
  * once at startup and removed from the address bar, then exchanged with the
- * daemon for the bearer and a decision capability. The bearer is held in memory
- * only: nothing is written to storage, so a reload loses it and `li studio`
- * pairs the page again. The decision capability is kept in `sessionStorage` for
- * that tab: it survives a reload of the tab, is gone with the tab, and is not
- * readable over HTTP. It is sent in `X-Studio-Decision-Token` on the two
- * Operator decision requests, and to no other request.
+ * daemon for the bearer and a decision capability. When the daemon answers that
+ * the bearer is its launch bearer (`token_source: "launch"`), it is kept in
+ * `localStorage` for the page's own origin, bound to the daemon's API base: it
+ * survives reloads, tabs and bookmarks until the daemon refuses it, and the page
+ * then forgets it and `li studio` pairs it again. The gate checks a stored
+ * bearer with one request before the app mounts. A configured
+ * `LIONAGI_STUDIO_AUTH_TOKEN` (`token_source: "configured"`), or an answer that
+ * does not say which bearer it is, is held in memory for that page load only
+ * and never written to storage. The decision capability is
+ * kept in `sessionStorage` for that tab: it survives a reload of the tab, is
+ * gone with the tab, and is not readable over HTTP. It is sent in
+ * `X-Studio-Decision-Token` on the two Operator decision requests, and to no
+ * other request.
  */
 
 const DECISION_STORAGE_KEY = "studio.decisionToken";
+const BEARER_STORAGE_KEY = "studio.pairedBearer";
 // An exchange that never settles would hold every later attempt on it, Retry
 // included. Past this it counts as not having reached the daemon, so the code
 // is kept for the next attempt.
@@ -56,6 +64,40 @@ function writeDecisionCapability(value: Paired | undefined): void {
     else window.sessionStorage.setItem(DECISION_STORAGE_KEY, JSON.stringify(value));
   } catch {
     // Storage unavailable: the capability lives for this page load only.
+  }
+}
+
+/**
+ * The bearer an earlier load of this page stored, if it is well formed. A
+ * storage that refuses the read, or holds anything else, yields nothing.
+ */
+function readStoredBearer(): Paired | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(BEARER_STORAGE_KEY);
+    if (raw === null) return undefined;
+    const parsed = JSON.parse(raw) as { base?: unknown; token?: unknown } | null;
+    if (
+      parsed == null ||
+      typeof parsed.base !== "string" ||
+      typeof parsed.token !== "string" ||
+      !parsed.token
+    ) {
+      return undefined;
+    }
+    return { base: parsed.base, token: parsed.token };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredBearer(value: Paired | undefined): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value === undefined) window.localStorage.removeItem(BEARER_STORAGE_KEY);
+    else window.localStorage.setItem(BEARER_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Storage unavailable: the bearer lives for this page load only.
   }
 }
 
@@ -133,15 +175,25 @@ async function sendPairingCode(
   if (!response.ok) return "refused";
   let token: unknown;
   let decisionToken: unknown;
+  let tokenSource: unknown;
   try {
-    const body = (await response.json()) as { token?: unknown; decision_token?: unknown } | null;
+    const body = (await response.json()) as {
+      token?: unknown;
+      decision_token?: unknown;
+      token_source?: unknown;
+    } | null;
     token = body?.token;
     decisionToken = body?.decision_token;
+    tokenSource = body?.token_source;
   } catch {
     return "refused";
   }
   if (typeof token !== "string" || !token) return "refused";
   paired = { base: apiBase, token };
+  // Only the daemon's launch bearer is stored. A configured token, or an answer
+  // from a daemon that does not say which bearer it sent, stays in memory for
+  // this page load, and any bearer stored earlier is removed.
+  writeStoredBearer(tokenSource === "launch" ? paired : undefined);
   writeDecisionCapability(
     typeof decisionToken === "string" && decisionToken
       ? { base: apiBase, token: decisionToken }
@@ -150,9 +202,36 @@ async function sendPairingCode(
   return "paired";
 }
 
-/** The bearer this page was paired with, for requests to the same daemon only. */
+/**
+ * The bearer this page was paired with, for requests to the same daemon only:
+ * the one paired in this load, or else the one an earlier load stored for
+ * exactly this API base.
+ */
 export function pairedBearer(apiBase: string): string | undefined {
-  return paired !== undefined && paired.base === apiBase ? paired.token : undefined;
+  if (paired !== undefined) return paired.base === apiBase ? paired.token : undefined;
+  const stored = readStoredBearer();
+  return stored !== undefined && stored.base === apiBase ? stored.token : undefined;
+}
+
+/**
+ * The bearer an earlier load stored for exactly this API base, when this load
+ * has not paired: the one the gate checks with the daemon before the app mounts.
+ */
+export function storedBearerToCheck(apiBase: string): string | undefined {
+  if (paired !== undefined) return undefined;
+  const stored = readStoredBearer();
+  return stored !== undefined && stored.base === apiBase ? stored.token : undefined;
+}
+
+/**
+ * Forget a bearer the daemon refused, in memory and in storage, so the page
+ * asks to be paired again. Only that value is forgotten: a bearer another tab
+ * stored since, or this load paired with since, is kept. The decision
+ * capability is left alone.
+ */
+export function forgetPairedBearer(refused: string): void {
+  if (paired?.token === refused) paired = undefined;
+  if (readStoredBearer()?.token === refused) writeStoredBearer(undefined);
 }
 
 /**
@@ -173,5 +252,6 @@ export function resetPairingForTests(): void {
   pendingCode = undefined;
   redeeming = undefined;
   paired = undefined;
+  writeStoredBearer(undefined);
   writeDecisionCapability(undefined);
 }

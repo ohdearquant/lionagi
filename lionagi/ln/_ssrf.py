@@ -1,12 +1,21 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SSRF guard (CWE-918): validate caller-controlled hostnames before outbound HTTP."""
+"""Outbound HTTP host checks.
+
+``is_ssrf_safe`` is the SSRF guard (CWE-918): it validates caller-controlled hostnames
+before outbound HTTP. ``open_url`` opens a urllib request and sends one addressed to this
+machine's loopback interface past any configured proxy.
+"""
 
 from __future__ import annotations
 
 import ipaddress
 import socket
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import urllib.request
 
 _BLOCKED_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network(cidr)
@@ -113,3 +122,79 @@ def is_ssrf_safe(hostname: str, *, allow_local: bool = False) -> bool:
             return False
 
     return True
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    """True for ``localhost``, an address in 127.0.0.0/8, ``::1``, or an IPv4-mapped loopback.
+
+    *host* is a URL's hostname as ``urllib.parse.urlsplit`` returns it: lowercased, IPv6
+    brackets removed. Names are not resolved, so no lookup decides where a request goes.
+    """
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in _LOOPBACK_NETS)
+
+
+def _is_loopback_url(url: str) -> bool:
+    """True when the host of *url* is loopback; a URL that cannot be split is not."""
+    import urllib.parse
+
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return False
+    return _is_loopback_host(host)
+
+
+def _loopback_only_redirects() -> urllib.request.HTTPRedirectHandler:
+    """A redirect handler that follows a redirect only when its target host is loopback.
+
+    For any other target it returns no new request, so urllib raises its own
+    ``urllib.error.HTTPError`` for the redirect status instead of sending a request, and the
+    headers of the original one, to a host the loopback opener has no proxy settings for.
+    """
+    import urllib.request
+
+    class _LoopbackOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(
+            self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+        ) -> urllib.request.Request | None:
+            if not _is_loopback_url(newurl):
+                return None
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return _LoopbackOnlyRedirectHandler()
+
+
+def open_url(request: str | urllib.request.Request, *, timeout: float) -> Any:
+    """Open *request* with urllib, sending a request for a loopback host past any proxy.
+
+    ``urllib.request.urlopen`` sends every request through the proxy that the environment
+    (``http_proxy``, ``https_proxy``, ``all_proxy``) or, on macOS, the system settings name,
+    loopback hosts included, and a proxy cannot reach this machine's own loopback interface.
+    So a URL whose host is ``localhost``, an address in 127.0.0.0/8 or ``::1`` (bracketed in
+    the URL) is opened by an opener with no proxy handler, and every other URL keeps
+    ``urlopen`` and its proxies. A URL that cannot be split goes to ``urlopen`` too, which
+    reports it as before. A loopback request follows a redirect only to another loopback host;
+    a redirect to any other host is not followed and raises ``urllib.error.HTTPError`` for the
+    redirect status, so the request and its headers never go on to a host without the proxy.
+    The response and the exceptions are urllib's own, so callers keep their ``with`` blocks
+    and ``except`` clauses.
+    """
+    import urllib.request
+
+    url = request.full_url if isinstance(request, urllib.request.Request) else request
+    if _is_loopback_url(url):
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _loopback_only_redirects()
+        )
+        return opener.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310

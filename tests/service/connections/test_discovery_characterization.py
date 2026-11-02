@@ -56,6 +56,7 @@ print(
 """
 
 _FAILING_IMPORT_CHILD = r"""
+import importlib
 import json
 import logging
 import sys
@@ -64,7 +65,7 @@ import lionagi.service.connections.registry as registry
 from lionagi.service.connections.registry import EndpointRegistry
 
 BAD = sys.argv[1]
-real_import_module = registry.import_module
+real_import_module = importlib.import_module
 
 
 def import_module_failing_for_one(name, *args, **kwargs):
@@ -85,7 +86,7 @@ class Capture(logging.Handler):
 capture = Capture()
 registry.logger.addHandler(capture)
 registry.logger.setLevel(logging.DEBUG)
-registry.import_module = import_module_failing_for_one
+importlib.import_module = import_module_failing_for_one
 EndpointRegistry._ensure_loaded()
 print(
     json.dumps(
@@ -166,9 +167,11 @@ _EXPECTED_ROWS = [
     ("scripted", "chat/completions", ("chat", "cli", "query_cli")),
 ]
 
-# Every provider implementation module (and the scripted test endpoint module) a cold load leaves
-# in sys.modules. Today the load imports every provider implementation. ADR-0140 D1 makes
-# selecting one endpoint load only that factory's implementation closure and says merely listing
+# Every provider module (and the scripted test endpoint module) a cold load leaves in
+# sys.modules. The load imports the hub's provider manifest, which the catalog is composed
+# from, and, through each declaration's factory, every implementation module the manifest
+# names, so it still imports every provider implementation. ADR-0140 D1 makes selecting one
+# endpoint load only that factory's implementation closure and says merely listing
 # declarations must not load endpoint implementations, so this set shrinks on purpose.
 _EXPECTED_PROVIDER_MODULES = frozenset(
     {
@@ -212,6 +215,7 @@ _EXPECTED_PROVIDER_MODULES = frozenset(
         "lionhub.providers.lattice._config",
         "lionhub.providers.lattice.chat",
         "lionhub.providers.lattice.embed",
+        "lionhub.providers.manifest",
         "lionhub.providers.nvidia_nim",
         "lionhub.providers.nvidia_nim._config",
         "lionhub.providers.nvidia_nim.chat",
@@ -302,6 +306,9 @@ def test_cold_load_imports_exact_provider_modules(cold_load):
 def test_provider_import_failure_is_skipped_with_warning_and_others_register():
     result = _run_child(_FAILING_IMPORT_CHILD, _FAILED_MODULE)
 
+    # The child raises the ImportError from importlib.import_module, the call a declaration's
+    # factory makes to import its endpoint module, for the one module named, and passes every
+    # other name through.
     # Today an ImportError from one provider module is logged as one warning that names the
     # module, and the load goes on. ADR-0140 D4 replaces that skip, for an internal import
     # failure, with a ProviderActivationError raised when the failed endpoint is selected, and D7

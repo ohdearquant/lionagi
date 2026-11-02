@@ -7,12 +7,15 @@ import logging
 import threading
 import warnings
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
 from lionagi.ln import HashAlgorithm, compute_hash, hash_file, import_module, is_import_installed
 from lionagi.ln.types import Enum
+
+if TYPE_CHECKING:
+    from .provider_catalog import ProviderCatalog
 
 __all__ = (
     "EndpointType",
@@ -222,13 +225,40 @@ class EndpointRegistry:
         endpoint: str = "",
         *,
         openai_compatible: bool = False,
+        provider_catalog: ProviderCatalog | None = None,
         **kwargs,
     ) -> Any:
-        """Find and instantiate the best matching endpoint. On a registry miss,
+        """Find and instantiate the best matching endpoint. With no endpoint named, a
+        provider the bundled provider catalog declares resolves to its declared default
+        endpoint, unless the provider's first registered entry is a class the catalog
+        does not declare (for example one a caller registered before the built-ins
+        loaded), which then resolves as it always has; every other lookup, and every
+        lookup while the catalog cannot load, scans the registered entries. On a registry miss,
         consults the plugin registry before falling back to the generic
         OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
-        for the provider-vs-endpoint rejection contract."""
+        for the provider-vs-endpoint rejection contract.
+
+        Supplying ``provider_catalog`` selects from that catalog's declarations alone, in
+        declaration order, by the same provider, endpoint and single-endpoint rules: the
+        bundled catalog, the registered entries and the plugin registry are never read, and
+        an empty catalog is not the same as omitting the argument. A declaration whose
+        implementation fails to import raises instead of being skipped. A provider the
+        catalog does not declare gets the same ``openai_compatible=`` and ``base_url=``
+        outcomes, and otherwise a ``ProviderNotFoundError`` naming the catalog."""
+        if provider_catalog is not None:
+            matched = cls._match_catalog(provider_catalog, provider, endpoint, kwargs)
+            if matched is not None:
+                return matched
+            return cls._generic_endpoint(
+                provider, endpoint, openai_compatible, kwargs, provider_catalog
+            )
+
         cls._ensure_loaded()
+
+        if not endpoint:
+            declared = cls._match_declared_default(provider, kwargs)
+            if declared is not None:
+                return declared
 
         matched = cls._match_registered(provider, endpoint, kwargs)
         if matched is not None:
@@ -239,7 +269,41 @@ class EndpointRegistry:
             if matched is not None:
                 return matched
 
-        if not openai_compatible and not cls._is_known_provider(provider):
+        return cls._generic_endpoint(provider, endpoint, openai_compatible, kwargs, None)
+
+    @classmethod
+    def _match_catalog(
+        cls, catalog: ProviderCatalog, provider: str, endpoint: str, kwargs: dict[str, Any]
+    ) -> Any | None:
+        """Build the endpoint ``catalog`` declares for ``provider`` and ``endpoint``: the
+        declaration :meth:`ProviderCatalog.endpoint` selects. ``None`` when the catalog
+        declares no such provider, or declares several endpoints for it and none matches the
+        named one. The declaration's ``factory()`` runs outside any ``try``, so an exception
+        it raises, ``ImportError`` included, reaches the caller instead of selecting another
+        declaration."""
+        declaration = catalog.endpoint(provider, endpoint)
+        if declaration is None:
+            return None
+        return declaration.factory()(None, **kwargs)
+
+    @classmethod
+    def _generic_endpoint(
+        cls,
+        provider: str,
+        endpoint: str,
+        openai_compatible: bool,
+        kwargs: dict[str, Any],
+        catalog: ProviderCatalog | None,
+    ) -> Any:
+        """Settle a lookup no declared or registered endpoint matched: reject an unrecognized
+        ``provider`` or route it to the generic OpenAI-compatible endpoint. A provider is
+        recognized when a registered entry claimed it or, with ``catalog`` supplied, when that
+        catalog declares it."""
+        if catalog is None:
+            known = cls._is_known_provider(provider)
+        else:
+            known = catalog.fragment(provider) is not None
+        if not openai_compatible and not known:
             if kwargs.get("base_url"):
                 warnings.warn(
                     f"provider {provider!r} is not registered; routing to the "
@@ -249,10 +313,12 @@ class EndpointRegistry:
                     "match_endpoint(..., openai_compatible=True)) to silence "
                     "this warning.",
                     DeprecationWarning,
-                    stacklevel=3,
+                    stacklevel=4,
                 )
-            else:
+            elif catalog is None:
                 raise cls._provider_not_found_error(provider)
+            else:
+                raise cls._catalog_not_found_error(provider, catalog)
 
         from .endpoint import Endpoint, EndpointConfig
 
@@ -267,6 +333,52 @@ class EndpointRegistry:
             openai_compatible=True,
         )
         return Endpoint(config, **kwargs)
+
+    @classmethod
+    def _match_declared_default(cls, provider: str, kwargs: dict[str, Any]) -> Any | None:
+        """Build the declared default endpoint of ``provider`` from the bundled provider
+        catalog. ``None`` when the catalog does not declare ``provider``, cannot load, or
+        its declared implementation module fails to import, so the caller falls back to
+        scanning the registered entries; the registry skipped that module with a warning
+        when it loaded, so the scan reports the provider as it did before. Also ``None``
+        when the provider's first registered entry is a class the catalog does not
+        declare, so the scan returns that entry as it always has."""
+        from lionagi._feature_errors import MissingFeatureError
+        from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
+
+        from ._provider_compat import default_provider_catalog
+
+        try:
+            catalog = default_provider_catalog()
+        except (MissingFeatureError, ProviderActivationError, ProviderContractVersionError):
+            return None
+        fragment = catalog.fragment(provider)
+        if fragment is None:
+            return None
+        try:
+            endpoint_cls = catalog.endpoint(provider, "").factory()
+        except ImportError:
+            return None
+        name = provider.lower()
+        first = next(
+            (
+                entry
+                for entry in tuple(cls._entries)
+                if (name == entry.meta.provider or name in entry.meta.provider_aliases)
+                and cls._revalidate_plugin_entry(entry)
+            ),
+            None,
+        )
+        if first is not None:
+            declared_classes = []
+            for declaration in fragment.endpoints:
+                try:
+                    declared_classes.append(declaration.factory())
+                except ImportError:
+                    continue
+            if not any(first.cls is declared for declared in declared_classes):
+                return None
+        return endpoint_cls(None, **kwargs)
 
     @classmethod
     def _is_known_provider(cls, provider: str) -> bool:
@@ -287,6 +399,18 @@ class EndpointRegistry:
             f"providers: {', '.join(sorted(known)) or '(none)'}. Pass "
             "openai_compatible=True to route unrecognized providers to the "
             "generic OpenAI-compatible endpoint explicitly."
+        )
+
+    @classmethod
+    def _catalog_not_found_error(
+        cls, provider: str, catalog: ProviderCatalog
+    ) -> ProviderNotFoundError:
+        declared = ", ".join(fragment.key for fragment in catalog.providers) or "(none)"
+        return ProviderNotFoundError(
+            f"no endpoint declared for provider {provider!r} by the provider catalog "
+            f"{catalog.source!r}, which was supplied explicitly; declared providers: "
+            f"{declared}. Pass openai_compatible=True to route unrecognized providers "
+            "to the generic OpenAI-compatible endpoint explicitly."
         )
 
     @classmethod
@@ -536,7 +660,46 @@ class EndpointRegistry:
         with cls._lock:
             if cls._loaded:
                 return
-            _import_all_providers()
+            from lionagi._feature_errors import MissingFeatureError
+            from lionagi._provider_errors import (
+                ProviderActivationError,
+                ProviderContractVersionError,
+            )
+
+            from ._provider_compat import default_provider_catalog
+
+            # Built-in providers register by importing the module each declaration of the
+            # bundled provider catalog names; importing a provider module runs its
+            # registration decorators. A catalog that cannot load leaves no built-in
+            # provider registered, and one warning says why.
+            try:
+                catalog = default_provider_catalog()
+            except (
+                MissingFeatureError,
+                ProviderActivationError,
+                ProviderContractVersionError,
+            ) as error:
+                logger.warning(
+                    "built-in providers were not registered: "
+                    "the provider catalog could not load: %s: %s",
+                    type(error).__name__,
+                    error,
+                )
+            else:
+                for provider in catalog.providers:
+                    for declaration in provider.endpoints:
+                        try:
+                            declaration.factory()
+                        except ImportError as error:
+                            logger.warning(
+                                "provider module %r failed to import and was not registered: %s",
+                                declaration.diagnostic_id.partition(":")[0],
+                                error,
+                            )
+            # Test-only scripted provider (provider="scripted"): a leaf core module,
+            # always loadable, gated behind LIONAGI_CHAT_PROVIDER=scripted. Imported after
+            # the declared providers so it stays last among the registered entries.
+            _import_provider_module("lionagi.testing._endpoint")
             cls._loaded = True
 
     @classmethod
@@ -593,10 +756,10 @@ def register_endpoint(
     )
 
 
-# Declared, not inferred: the optional third-party dependency each fixed
-# provider module needs, keyed by dotted module path. A module with no entry
-# here has none; add one the day a provider module imports its optional
-# dependency at module scope (all current ones defer past module scope).
+# Declared, not inferred: the optional third-party dependency each module
+# imported through ``_import_provider_module`` needs, keyed by dotted module
+# path. A module with no entry here has none; add one the day such a module
+# imports its optional dependency at module scope (none does today).
 _PROVIDER_OPTIONAL_DEPENDENCIES: dict[str, tuple[str, ...]] = {}
 
 
@@ -623,55 +786,3 @@ def _import_provider_module(mod: str) -> None:
             mod,
             e,
         )
-
-
-def _import_all_providers():
-    """Import all provider modules to trigger registration decorators."""
-    _modules = [
-        # OpenAI family
-        "lionhub.providers.openai.chat",
-        "lionhub.providers.openai.codex",
-        "lionhub.providers.openai.audio",
-        "lionhub.providers.openai.batch",
-        "lionhub.providers.openai.images",
-        "lionhub.providers.openai.embed",
-        "lionhub.providers.openai.response",
-        # Anthropic
-        "lionhub.providers.anthropic.messages",
-        "lionhub.providers.anthropic.claude_code",
-        # Ollama
-        "lionhub.providers.ollama.chat",
-        "lionhub.providers.ollama.embed",
-        "lionhub.providers.ollama.generate",
-        # Lattice
-        "lionhub.providers.lattice.chat",
-        "lionhub.providers.lattice.embed",
-        # Search & scraping
-        "lionhub.providers.tavily.search",
-        "lionhub.providers.exa.search",
-        "lionhub.providers.exa.contents",
-        "lionhub.providers.exa.find_similar",
-        "lionhub.providers.firecrawl.scrape",
-        "lionhub.providers.firecrawl.map",
-        "lionhub.providers.firecrawl.crawl",
-        # Chat / LLM providers
-        "lionhub.providers.perplexity.chat",
-        "lionhub.providers.nvidia_nim.chat",
-        "lionhub.providers.nvidia_nim.embed",
-        "lionhub.providers.deepseek.chat",
-        "lionhub.providers.google.chat",
-        "lionhub.providers.google.gemini_code",
-        "lionhub.providers.groq.chat",
-        "lionhub.providers.groq.audio_transcription",
-        "lionhub.providers.pi.cli",
-        "lionhub.providers.openrouter.chat",
-        # Agentic
-        "lionhub.providers.ag2.groupchat",
-        "lionhub.providers.ag2.agent",
-        "lionhub.providers.ag2.nlip",
-        # Test-only scripted provider (provider="scripted") — leaf module,
-        # always loadable; gated behind LIONAGI_CHAT_PROVIDER=scripted.
-        "lionagi.testing._endpoint",
-    ]
-    for mod in _modules:
-        _import_provider_module(mod)

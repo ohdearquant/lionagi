@@ -449,7 +449,7 @@ that code on one of two paths, and the two paths differ:
   out, so the flag reaches the mark code and one ephemeral five-minute mark lands on the last
   message's last block.
 
-`iModel` then pops the same flag from the request (`service/imodel.py:403`) and, in `Endpoint.call`,
+`iModel` then pops the same flag from the request (`service/imodel.py:432`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
 (`service/connections/endpoint.py:707`, `:780-799`), a different feature.
 

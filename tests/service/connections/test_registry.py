@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import logging
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+from lionagi._feature_errors import MissingFeatureError
+from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
+from lionagi.service.connections import _provider_compat
 from lionagi.service.connections import registry as _registry_mod
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import (
@@ -478,3 +482,172 @@ def test_provider_import_failures_warn_without_reclassifying_exception_metadata(
         assert reported.name is None
         assert reported.path is None
         assert reported.__cause__ is original
+
+
+# -- built-in providers load from the provider catalog's declarations --------------------
+
+_CORE_SCRIPTED_MODULE = "lionagi.testing._endpoint"
+
+
+@pytest.fixture
+def cold_registry(monkeypatch):
+    """Make the next ``_ensure_loaded`` a cold load that registers nothing.
+
+    Returns the list that records, in order, every declared factory the load calls and every
+    core module it imports (as ``core:<module>``). The restore of the registry state is the
+    autouse fixture above.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(EndpointRegistry, "_loaded", False)
+    monkeypatch.setattr(
+        _registry_mod, "_import_provider_module", lambda mod: calls.append(f"core:{mod}")
+    )
+    return calls
+
+
+def _install_catalog(monkeypatch, outcome):
+    """Make ``default_provider_catalog`` return ``outcome``, or raise it when it is an error."""
+
+    def load():
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(_provider_compat, "default_provider_catalog", load)
+
+
+def _declared(calls, module, name="Endpoint", error=None):
+    """A declaration whose factory records its call and then raises ``error`` if one is given."""
+
+    def factory():
+        calls.append(f"{module}:{name}")
+        if error is not None:
+            raise error
+
+    return SimpleNamespace(factory=factory, diagnostic_id=f"{module}:{name}")
+
+
+def _catalog_of(*providers):
+    """A catalog of providers, each given as the declarations of its endpoints, in order."""
+    return SimpleNamespace(
+        providers=tuple(SimpleNamespace(endpoints=tuple(group)) for group in providers)
+    )
+
+
+def test_cold_load_calls_every_declared_factory_in_catalog_order(
+    monkeypatch, cold_registry, caplog
+):
+    calls = cold_registry
+    catalog = _catalog_of(
+        [
+            _declared(calls, "stub_providers.alpha.chat"),
+            _declared(calls, "stub_providers.alpha.embed"),
+        ],
+        [_declared(calls, "stub_providers.beta.search")],
+    )
+    _install_catalog(monkeypatch, catalog)
+
+    with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+        EndpointRegistry._ensure_loaded()
+
+    # The scripted core module is imported through the shared helper after the declared
+    # providers, so it stays last among the registered entries.
+    assert calls == [
+        "stub_providers.alpha.chat:Endpoint",
+        "stub_providers.alpha.embed:Endpoint",
+        "stub_providers.beta.search:Endpoint",
+        f"core:{_CORE_SCRIPTED_MODULE}",
+    ]
+    assert EndpointRegistry._loaded is True
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_cold_load_warns_for_a_declaration_whose_module_fails_to_import_and_goes_on(
+    monkeypatch, cold_registry, caplog
+):
+    calls = cold_registry
+    failure = ImportError("No module named 'a_missing_provider_dependency'")
+    catalog = _catalog_of(
+        [_declared(calls, "stub_providers.alpha.chat")],
+        [_declared(calls, "stub_providers.beta.broken", name="BrokenEndpoint", error=failure)],
+        [_declared(calls, "stub_providers.gamma.chat")],
+    )
+    _install_catalog(monkeypatch, catalog)
+
+    with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+        EndpointRegistry._ensure_loaded()
+
+    assert calls == [
+        "stub_providers.alpha.chat:Endpoint",
+        "stub_providers.beta.broken:BrokenEndpoint",
+        "stub_providers.gamma.chat:Endpoint",
+        f"core:{_CORE_SCRIPTED_MODULE}",
+    ]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].name == _registry_mod.logger.name
+    assert "failed to import and was not registered" in warnings[0].getMessage()
+    assert warnings[0].args[0] == "stub_providers.beta.broken"
+    assert warnings[0].args[1] is failure
+    assert EndpointRegistry._loaded is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            MissingFeatureError(
+                feature="provider hub",
+                missing_distribution="lionhub",
+                install_hint="reinstall lionagi",
+            ),
+            id="missing-feature",
+        ),
+        pytest.param(
+            ProviderActivationError(
+                provider="openai", endpoint=None, source="a stub", reason="activation_failed"
+            ),
+            id="activation",
+        ),
+        pytest.param(
+            ProviderContractVersionError(source="a stub", expected=(1,), observed=99),
+            id="contract-version",
+        ),
+    ],
+)
+def test_cold_load_logs_one_warning_when_the_catalog_cannot_load(
+    monkeypatch, cold_registry, caplog, error
+):
+    calls = cold_registry
+    _install_catalog(monkeypatch, error)
+
+    with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+        EndpointRegistry._ensure_loaded()
+
+    assert calls == [f"core:{_CORE_SCRIPTED_MODULE}"]
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].name == _registry_mod.logger.name
+    assert warnings[0].levelno == logging.WARNING
+    assert (
+        warnings[0]
+        .getMessage()
+        .startswith(
+            "built-in providers were not registered: the provider catalog could not load: "
+            f"{type(error).__name__}"
+        )
+    )
+    assert EndpointRegistry._loaded is True
+
+
+def test_cold_load_lets_an_unexpected_catalog_error_propagate(monkeypatch, cold_registry, caplog):
+    failure = RuntimeError("the catalog failed in a way the registry does not expect")
+    _install_catalog(monkeypatch, failure)
+
+    with caplog.at_level(logging.DEBUG, logger=_registry_mod.logger.name):
+        with pytest.raises(RuntimeError) as raised:
+            EndpointRegistry._ensure_loaded()
+
+    assert raised.value is failure
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert EndpointRegistry._loaded is False

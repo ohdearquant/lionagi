@@ -731,6 +731,15 @@ same signal a caller already needs to point the fallback at a real custom
 host. Anything else raises `ProviderNotFoundError` naming the requested
 provider and every provider currently registered.
 
+Passing `provider_catalog=` (also accepted by `match_endpoint`) changes the
+source of declarations: the endpoint is selected from that catalog alone, never
+from the bundled catalog, the registered entries or the plugin registry, and an
+empty catalog is not the same as omitting the argument. A declaration whose
+implementation fails to import raises instead of being skipped. For a provider
+the catalog does not declare, `openai_compatible=True` and the deprecated
+`base_url` route behave as above; anything else raises `ProviderNotFoundError`
+naming the catalog's source and its declared providers.
+
 ### ActionManager plugin-shadow diagnostics
 
 A registered local tool remains authoritative when a plugin declares the same

@@ -624,7 +624,7 @@ lines:
   system section, and the history section is shaped before compilation by the active view rather
   than by a bound. What exists for history and tool results is the model-window lookup
   (`lookup_context_window()`, `lionagi/service/token_budget.py:18`, reached through
-  `get_context_window()` at `:72-91`, the limit `get_token_budget()` at `:94` measures usage
+  `get_context_window()` at `:72-99`, the limit `get_token_budget()` at `:102` measures usage
   against), whose result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
   cuts or records anything.
 

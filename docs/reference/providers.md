@@ -318,29 +318,49 @@ module registers the endpoint. The registration decorator resolves the member's
 List the endpoint and request classes in `__all__` — the `__init__.py` lazy map derives
 its export set from each module's `__all__`.
 
-**Step 4 — add the import to `registry.py`**
+**Step 4 — add the provider to the built-in manifest**
 
-In `lionagi/service/connections/registry.py`, add the module to `_modules` inside
-`_import_all_providers()`:
+In `lionhub/src/lionhub/providers/manifest.py`, add a `_Provider(...)` row to
+`_DECLARATIONS`. The row names the provider package, the config enum in that package's
+`_config.py`, the context-window table in `_config.py` (or `None` when the provider has
+none), and one `_Endpoint(member, "module:Class")` per endpoint:
 
 ```python
-def _import_all_providers():
-    _modules: list[str] = [
-        # ... existing entries ...
-        "lionhub.providers.myprovider.chat",
-    ]
-    for mod in _modules:
-        _import_provider_module(mod)
+_DECLARATIONS = (
+    # ... existing rows ...
+    _Provider(
+        "myprovider",
+        "MyProviderConfigs",
+        None,
+        (_Endpoint("CHAT", "myprovider.chat:MyProviderChatEndpoint"),),
+    ),
+)
 ```
 
-Keep the shared `_import_provider_module` helper in this loop. If the endpoint module
-needs an optional third-party dependency at module scope, declare it in
-`_PROVIDER_OPTIONAL_DEPENDENCIES`. A missing declared dependency skips the import with
-a debug diagnostic. Once dependencies resolve, any `ImportError` is reported as a
-provider-load failure at warning level; it is not silently discarded.
+`member` is the name of the enum member, and `module:Class` names the endpoint class and
+its module, relative to `lionhub.providers`. Put the provider's default endpoint first: the
+first endpoint is the one `EndpointRegistry.match(provider="myprovider")` resolves to when
+no endpoint is named. Keep the rows in registration order, so add the new row after the
+existing ones.
+
+If the provider has a context-window table, name it in the row instead of `None` and add
+the provider's key to `_CONTEXT_WINDOW_ORDER` in the same file. That order decides which
+table answers when two tables hold the same model name, and a non-empty order that leaves
+out a provider with a table raises a `ValueError`.
+
+The manifest reads `_config.py` for the provider's keys, aliases and settings and imports no
+endpoint module. The first time the registry is used, it calls each declaration's factory,
+which imports the endpoint module and so runs its registration decorator. If that import
+raises an `ImportError`, for example because the module needs an optional third-party
+dependency that is not installed, the registry logs a warning (`provider module
+'lionhub.providers.myprovider.chat' failed to import and was not registered: ...`) and
+registers the rest; the error is not silently discarded. `_PROVIDER_OPTIONAL_DEPENDENCIES` in
+`registry.py` does not apply to these modules: it covers only modules imported through
+`_import_provider_module`, which today is the test-only scripted provider, and it has no
+entries.
 
 `EndpointRegistry.match(provider="myprovider", endpoint="chat")` will then find the
-endpoint automatically. This registry edit is for built-in providers. Third-party
+endpoint automatically. This manifest row is for built-in providers. Third-party
 providers should normally be declared by a plugin; trusted, enabled plugin provider
 targets are imported lazily after a built-in miss, and cannot override a built-in
 provider name.
