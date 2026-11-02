@@ -216,7 +216,7 @@ class UnknownOutcome:
     """Settlement evidence that closes an attempt with a reason code and no usage.
 
     ``provider_error_type`` and ``rejection_class`` are closed-set strings that only a
-    ``request_rejected`` outcome may carry. The ledger records ``reason_code`` only.
+    ``request_rejected`` outcome may carry. The ledger records all three on the attempt.
     """
 
     reason_code: str
