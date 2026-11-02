@@ -248,18 +248,23 @@ class TestConcurrentRegistrationAndRemoval:
 
         assert EndpointRegistry._alias_owners["old-plugin-provider"] == "old-plugin-provider"
 
-    def test_builtin_collision_rejection_releases_unique_alias_for_replacement(self):
+    def test_builtin_collision_rejection_releases_unique_alias_for_replacement(self, monkeypatch):
         """A plugin entry whose canonical provider collides with a built-in
         (openai) is dropped by ``_reject_builtin_collisions``; its otherwise
-        unique alias must not stay claimed in ``_alias_owners`` afterward."""
+        unique alias must not stay claimed in ``_alias_owners`` afterward.
+        ``register`` refuses a name the bundled catalog declares, so the entry
+        is registered while the catalog cannot be read."""
 
-        @EndpointRegistry.register(
-            provider="openai",
-            endpoint="chat",
-            provider_aliases=["orphan-alias-f2359"],
-        )
-        class _RejectedPluginEndpoint(Endpoint):
-            pass
+        with monkeypatch.context() as patch:
+            _install_catalog(patch, _missing_hub())
+
+            @EndpointRegistry.register(
+                provider="openai",
+                endpoint="chat",
+                provider_aliases=["orphan-alias-f2359"],
+            )
+            class _RejectedPluginEndpoint(Endpoint):
+                pass
 
         entry = next(e for e in EndpointRegistry._entries if e.cls is _RejectedPluginEndpoint)
         entry.plugin_name = "rejected-plugin"
@@ -286,21 +291,24 @@ class TestConcurrentRegistrationAndRemoval:
 
         assert EndpointRegistry._alias_owners["orphan-alias-f2359"] == "replacement-provider-f2359"
 
-    def test_builtin_collision_rejection_covers_helper_module_registration(self):
+    def test_builtin_collision_rejection_covers_helper_module_registration(self, monkeypatch):
         """A provider module may register an endpoint class that a helper or
         generated module supplies. The entry carries the activation's
         provenance but a different ``__module__``, and the built-in must
-        still win."""
+        still win. ``register`` refuses a name the bundled catalog declares,
+        so the entry is registered while the catalog cannot be read."""
 
         class _HelperSuppliedEndpoint(Endpoint):
             pass
 
         _HelperSuppliedEndpoint.__module__ = "helper_plugin._generated_endpoints"
-        EndpointRegistry.register(
-            provider="openai",
-            endpoint="chat",
-            provider_aliases=["orphan-alias-a71c4"],
-        )(_HelperSuppliedEndpoint)
+        with monkeypatch.context() as patch:
+            _install_catalog(patch, _missing_hub())
+            EndpointRegistry.register(
+                provider="openai",
+                endpoint="chat",
+                provider_aliases=["orphan-alias-a71c4"],
+            )(_HelperSuppliedEndpoint)
 
         entry = next(e for e in EndpointRegistry._entries if e.cls is _HelperSuppliedEndpoint)
         entry.plugin_name = "helper-plugin"
@@ -514,6 +522,13 @@ def _install_catalog(monkeypatch, outcome):
         return outcome
 
     monkeypatch.setattr(_provider_compat, "default_provider_catalog", load)
+
+
+def _missing_hub():
+    """The error ``default_provider_catalog`` raises when the provider hub is not installed."""
+    return MissingFeatureError(
+        feature="provider hub", missing_distribution="lionhub", install_hint="reinstall lionagi"
+    )
 
 
 def _declared(calls, module, name="Endpoint", error=None):

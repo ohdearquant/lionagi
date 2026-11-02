@@ -930,8 +930,8 @@ class iModel:  # noqa: N801
             allow_local_network=allow_local_network,
         )
 
-        # openai_compatible=True: rehydrating a persisted iModel must never
-        # raise just because its provider isn't (or is no longer) registered.
+        # openai_compatible=True: rehydrating does not raise for a provider that isn't registered;
+        # a declared provider whose activation failed still raises its ProviderActivationError.
         # This lookup only recovers a registered subclass, its env-sourced API key
         # and its local-network setting; `endpoint` is already complete.
         if e1 := match_endpoint(
