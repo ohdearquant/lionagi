@@ -2,7 +2,13 @@
 
 - **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01 and 2026-11-02 (see Amendments 1 to 8)
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — D1 to D5 and Amendments 1 to 8 are implemented, and so are
+  D6's failure classes and shielded settlement. Two clauses remain. D4's single-use runtime ticket:
+  the reserve call returns a plain reservation. The ledger refuses a duplicate attempt id and settles
+  an attempt once (an identical repeat changes nothing, a different one blocks the account), but
+  nothing is consumed when the request is dispatched. D6's revoke-and-join before
+  "not sent": the not-sent settle is chosen by whether the request was entered, with no ticket to
+  revoke and no join of the worker.
 - **Area**: service-providers
 - **Date**: 2026-10-12
 - **Relations**: extends ADR-0027; follows ADR-0119 and ADR-0125 D1 and D8 (carries lion1 ADR-0024 and lion1 ADR-0028 by concept); keeps ADR-0029 D4's retry classes; preserves the boundaries of ADR-0028, ADR-0030 and ADR-0043
@@ -907,7 +913,8 @@ diagnosis, and no code path may branch on that class.
    then the error is raised.
 4. **The drop rule.** The body, the decoded object and the message string exist only inside the one
    function that returns the two field values. That function catches its own failures and returns
-   `other` for both. Nothing in it logs. Its input is never stored, never placed in an exception's
+   `other` for both. Its only log line is a debug record of a failure's exception type name, with no
+   traceback. Its input is never logged, never stored, never placed in an exception's
    arguments, and never left reachable from `__context__` or `__cause__`. The error is raised after
    that function has returned, outside any `except` block, so the attempt's error has no context
    from the read. This is the same rule the decode error already follows on the success path. On
@@ -967,7 +974,8 @@ full documented list is kept so that a type arriving with an unexpected status i
 | `other` | anything else, and any body without a message string | |
 
 Documented conditions with no stated wording are not classes and record `other`: a request over a
-spend limit (the errors page says it returns a 400 but gives no message), `max_tokens` above a
+spend limit (the errors page says it returns a 400 but gives no message; Amendment 8 supersedes this
+for the spend limit, citing the rate-limits page's wording), `max_tokens` above a
 model's output limit, and the hard image and page limits. A class is added only from a provider
 documentation line or a captured message, cited in this table.
 
@@ -1113,7 +1121,7 @@ output limit and the hard image and page limits, still record `other`.
 
 ### Verification
 
-Each item is a test that fails without this change:
+Each of the first four items is a test that fails without this change; the last is a regression check:
 
 - The pinned copy of the closed set and the tests' copy of the class table carry both classes, after
   Amendment 7's rows and in this order.
