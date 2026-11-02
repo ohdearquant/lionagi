@@ -843,6 +843,10 @@ jobs:
         uv pip install --python .venv/bin/python \
           "aiosqlite==${EXPECTED_AIOSQLITE}" \
           "sqlalchemy[asyncio]==${EXPECTED_SQLALCHEMY}"
+    # Only the next two steps may follow the replacement, and
+    # tests/scripts/test_advisory_pr_checks.py fixes the shape of both: the script
+    # ends at the first line that is exactly PY with nothing after it, and the tests
+    # run as one `uv run --no-sync pytest` command on one line.
     - name: Assert the interpreter has the matrix versions
       run: |
         uv run --no-sync python - <<'PY'
