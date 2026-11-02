@@ -41,6 +41,10 @@ from tests.service.accounts.test_routed_endpoint import (
 )
 
 STREAMED = pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+# The hang guard of a test that patches the body read bound down: below the default bound, so
+# only the patched bound ends the read in time, and far above the patched one, so the store
+# write after the read fits on a loaded test worker.
+READ_HANG_GUARD = 2.0
 
 INVALID = "invalid_request_error"
 PROMPT = "prompt is too long"
@@ -429,10 +433,11 @@ async def test_a_streamed_body_is_not_read_past_the_bound(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 async def test_a_streamed_body_that_does_not_arrive_in_time_records_other(monkeypatch, tmp_path):
+    assert READ_HANG_GUARD < messages_module._REJECTION_READ_SECONDS
     monkeypatch.setattr(messages_module, "_REJECTION_READ_SECONDS", 0.05)
     path = _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_HangingRejection(400, b"")])
-    with anyio.fail_after(DEADLINE):
+    with anyio.fail_after(READ_HANG_GUARD):
         with pytest.raises(AccountRoutingError) as caught:
             await _send(model, True)
 
