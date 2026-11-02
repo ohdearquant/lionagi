@@ -165,6 +165,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `POST /api/studio/pair` returns `token_source`: `"launch"` for the daemon's per-start launch
   bearer, `"configured"` when `LIONAGI_STUDIO_AUTH_TOKEN` is set.
 
+- A routed Anthropic request that the provider rejects with any non-200 status below 500 other
+  than 401, 403 or 429 now records two names on its attempt in the credential ledger and on the routed error: the
+  provider error type and a rejection class, each from a closed set. A refusal can be told
+  apart without keeping any of the provider's message. A body over 64 KiB, or one that does not
+  parse, is recorded as `other`. This covers the non-streamed attempt and the streamed one. A
+  streamed rejection body is read for at most five seconds and no further once it passes
+  64 KiB; a body that does not arrive in that time, or whose read fails, is recorded as `other`.
+
 ### Changed
 
 - Session gate denials now store a redacted `GateDenied` signal and deliver it
@@ -398,6 +406,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `list_providers()` lists the `codex` endpoint after the OpenAI endpoints instead of second.
   When the catalog cannot load, the registry logs one warning naming the failure and registers
   no built-in provider.
+
+- `AccountRoutingError` now raises `ValueError` when `provider_error_type` or `rejection_class`
+  is set with any code other than `request_rejected`. The message names the rule and does not
+  echo either value.
+
+- When a routed Anthropic rejection body cannot be classified, the classifier logs one debug
+  record that names only the exception type, and still records `other` for both names.
 
 ### Deprecated
 
