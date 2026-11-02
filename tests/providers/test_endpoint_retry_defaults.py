@@ -19,6 +19,8 @@ ENDPOINTS = [
     ("lionhub.providers.openai.audio", "OpenaiAudioTranscriptionEndpoint"),
     ("lionhub.providers.openai.images", "OpenaiImageGenerationEndpoint"),
     ("lionhub.providers.openai.images", "OpenaiImageEditEndpoint"),
+    ("lionhub.providers.outcrawl.scrape", "OutcrawlScrapeEndpoint"),
+    ("lionhub.providers.outcrawl.search", "OutcrawlSearchEndpoint"),
     ("lionhub.providers.tavily.search", "TavilySearchEndpoint"),
     ("lionhub.providers.tavily.search", "TavilyExtractEndpoint"),
 ]
