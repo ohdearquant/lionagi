@@ -55,9 +55,7 @@ BUILDERS = [build_error, build_outcome]
 BUILDER_IDS = ["error", "outcome"]
 
 NOT_MEMBERS = [
-    (field, value)
-    for field in FIELDS
-    for value in ("Other", "other ", "", 7, ["other"])
+    (field, value) for field in FIELDS for value in ("Other", "other ", "", 7, ["other"])
 ] + [
     ("provider_error_type", "prompt_too_long"),
     ("rejection_class", "invalid_request_error"),
@@ -298,9 +296,7 @@ def quote() -> Quote:
 
 def spy_router() -> tuple[AccountRouter, SpyLedger, RouterAttempt]:
     spy = SpyLedger()
-    router = AccountRouter(
-        sources=None, ledger=spy, accounts=(ALPHA,), revision=CURRENT_REVISION
-    )
+    router = AccountRouter(sources=None, ledger=spy, accounts=(ALPHA,), revision=CURRENT_REVISION)
     reservation = Reservation(
         uuid4(), Scope("branch", uuid4(), "anthropic"), "alpha", "2026-01", quote()
     )

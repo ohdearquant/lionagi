@@ -239,8 +239,12 @@ async def test_a_ledger_missing_one_column_is_not_passed_by_the_fast_path(tmp_pa
     await make_ledger(path).status("anthropic")
     drop_columns(path, missing)
     with closing(sqlite3.connect(path)) as connection:
-        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        indexes = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        tables = {
+            r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        indexes = {
+            r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
     assert _ledger._TABLES | {"warm_prefix"} <= tables
     assert {"warm_prefix_cert", "warm_prefix_expiry"} <= indexes
 
@@ -268,5 +272,7 @@ async def test_the_ledger_refuses_a_value_outside_its_set(tmp_path, field):
     assert SENTINEL not in str(caught.value)
     assert read_fields(path, attempt_id) == (None, None, None)
     with closing(sqlite3.connect(path)) as connection:
-        row = connection.execute("SELECT * FROM attempt WHERE id = ?", (str(attempt_id),)).fetchone()
+        row = connection.execute(
+            "SELECT * FROM attempt WHERE id = ?", (str(attempt_id),)
+        ).fetchone()
     assert all(SENTINEL not in str(value) for value in row)
