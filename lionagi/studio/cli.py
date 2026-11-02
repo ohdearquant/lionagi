@@ -439,9 +439,13 @@ def _ignore_sigpipe() -> None:
 def _bind_refusal(host: str, port: int) -> OSError | None:
     """Why the daemon could not listen on ``host`` and ``port`` now, or None when it can.
 
-    Opens a listener with ``asyncio``'s ``create_server`` for that host and port, the
-    call uvicorn makes when it serves this launch, so the probe binds the same
-    addresses with the same socket options, and closes it before returning.
+    Opens a listener with ``asyncio``'s ``create_server`` for that host and port and
+    closes it before returning. The daemon's uvicorn start binds with
+    ``loop.create_server(host=..., port=...)`` plus its own protocol factory, ``ssl``
+    (None here) and ``backlog``; neither call passes reuse or family options, so
+    whether the bind succeeds depends on the same host and port. This is a probe at
+    launch, not a reservation: another program can still take the port before the
+    daemon binds.
     """
 
     async def _listen_once() -> None:
@@ -460,6 +464,7 @@ def _bind_refusal(host: str, port: int) -> OSError | None:
 
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
     import errno
+    import socket
 
     from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
 
@@ -479,17 +484,25 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
         # holds a code no daemon will redeem.
         refusal = _bind_refusal(host, port)
         if refusal is not None:
-            if refusal.errno == errno.EADDRINUSE:
+            # The advice has to fit the cause. A host that does not resolve raises
+            # ``gaierror``, whose errno is an EAI_* code that can equal a real errno, so
+            # it is told apart by type before any errno comparison.
+            if isinstance(refusal, socket.gaierror) or refusal.errno == errno.EADDRNOTAVAIL:
+                reason = f"{host} is not an address this machine can listen on ({refusal})"
+                advice = "Check `--host`."
+            elif refusal.errno == errno.EADDRINUSE:
                 reason = (
-                    f"a program already holds port {port} but did not answer as a lionagi "
-                    f"daemon at {daemon_url}/health"
+                    f"port {port} is in use, and nothing answered {daemon_url}/health as a "
+                    f"lionagi daemon in time"
                 )
+                advice = "Stop that program, or choose another port with `li studio --port <port>`."
+            elif refusal.errno == errno.EACCES:
+                reason = f"port {port} needs privileges ({refusal})"
+                advice = "Choose another port with `li studio --port <port>`."
             else:
                 reason = f"this process cannot listen on {host}:{port} ({refusal})"
-            log_error(
-                f"Lion Studio did not start: {reason}. Stop that program, or choose another "
-                f"port with `li studio --port <port>`."
-            )
+                advice = "Choose another port with `li studio --port <port>`."
+            log_error(f"Lion Studio did not start: {reason}. {advice}")
             return 1
         code = mint_pairing_code(for_launch=True)
     url = _hosted_launch_url(port, code)

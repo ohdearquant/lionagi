@@ -115,9 +115,11 @@ whose host is `localhost`, a 127.0.0.0/8 address or `::1` without any proxy
 in the system settings cannot reach this machine's loopback interface, so with one
 configured a running daemon would read as absent. Other hosts keep the proxy settings, and
 a redirect from loopback to any other host is not followed.
-When nothing answers as a daemon, `li studio` binds its port once, the way the daemon
-will, before it mints a code: a port held by another program stops the launch with an
-error naming the port, and no link is printed or opened.
+When nothing answers as a daemon, the hosted launch (`li studio` without `--no-frontend`,
+`--dev` or `--docker`) tries to bind its port once, the way the daemon will, before it
+mints a code: a port it cannot bind stops the launch with an error that names the cause,
+and no link is printed or opened. This is a probe at launch, not a reservation: another
+program can still take the port before the daemon binds.
 
 **Decision capabilities** (`launch_access.py`) — a page pairs with an admission
 bearer and, separately, a decision capability: a random 256-bit secret the
