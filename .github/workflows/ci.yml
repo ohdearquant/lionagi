@@ -216,10 +216,12 @@ jobs:
     # Unbounded, that leg runs to the six-hour job limit, and because runs on a
     # pushed branch share one concurrency group and are never cancelled, every
     # push in the meantime queues behind it and all but the newest are cancelled
-    # without running. A leg takes 11 to 29 minutes. The test steps stop at 45,
-    # before the job's 60, so a stopped leg still runs the failure telemetry and
-    # the peak-RSS report, which names the test a crashed worker was running.
-    timeout-minutes: 60
+    # without running. A leg takes 11 to 29 minutes; the 3.10 leg under coverage,
+    # which runs only on pushes, has taken 22 to 44 minutes on main. The plain
+    # test step stops at 45 and the coverage step at 60, both before the job's
+    # 75, so a stopped leg still runs the failure telemetry and the peak-RSS
+    # report, which names the test a crashed worker was running.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -283,7 +285,7 @@ jobs:
     # plain one.
     - name: Run tests with coverage
       if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
-      timeout-minutes: 45
+      timeout-minutes: 60
       run: scripts/ci.sh test-python-cov
       env:
         MAXFAIL: 25
