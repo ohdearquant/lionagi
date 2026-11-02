@@ -35,7 +35,7 @@ class ReActAnalysis(HashableModel):
     analysis: str = Field(
         default="",
         description=(
-            "Free-form reasoning or chain-of-thought summary. Must be consistent with"
+            "Free-form notes on progress so far. Must be consistent with"
             " the plan. Commonly used for divide_and_conquer, brainstorming, reflections, "
             "regurgitation, review_checkpoints ...etc."
         ),
