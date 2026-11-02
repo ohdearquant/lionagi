@@ -740,6 +740,23 @@ the catalog does not declare, `openai_compatible=True` and the deprecated
 `base_url` route behave as above; anything else raises `ProviderNotFoundError`
 naming the catalog's source and its declared providers.
 
+A bundled-catalog provider whose activation fails while the registry loads (for
+example, its `_config` module cannot be imported) does not stop the load: the
+registry logs one warning for that provider and the other providers register as
+usual. Selecting the failed provider by its key or any of its aliases, through
+`match`, `match_endpoint` or `iModel`, raises its `ProviderActivationError`,
+chained from the original exception. It never resolves to another endpoint or to
+the generic OpenAI-compatible endpoint, whatever `openai_compatible` or
+`base_url` say, and it is never reported as `ProviderNotFoundError`. A provider
+key or alias that the bundled catalog declares can be registered only by the
+built-in endpoints the catalog names for it, whether or not that provider
+activated; any other registration under it raises `ProviderAliasCollisionError`,
+and a plugin provider module that attempts one is rejected with a warning naming
+the plugin. `EndpointRegistry.failed_providers()` returns one row per failed
+provider with `provider`, `endpoint` (or `None`), `source` and `reason`, and no
+exception text; it is empty when every provider activated. The rows of
+`list_providers()` are unchanged.
+
 ### ActionManager plugin-shadow diagnostics
 
 A registered local tool remains authoritative when a plugin declares the same

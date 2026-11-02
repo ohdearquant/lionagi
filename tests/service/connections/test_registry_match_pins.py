@@ -35,7 +35,11 @@ from lionagi._provider_errors import ProviderActivationError, ProviderContractVe
 from lionagi.service.connections import _provider_compat
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.match_endpoint import match_endpoint
-from lionagi.service.connections.registry import EndpointRegistry, ProviderNotFoundError
+from lionagi.service.connections.registry import (
+    EndpointRegistry,
+    ProviderAliasCollisionError,
+    ProviderNotFoundError,
+)
 from tests._core_imports import ROOT
 
 
@@ -388,7 +392,7 @@ import json
 import sys
 
 from lionagi.service.connections.match_endpoint import match_endpoint
-from lionagi.service.connections.registry import EndpointRegistry
+from lionagi.service.connections.registry import EndpointRegistry, ProviderAliasCollisionError
 
 
 class RuntimeEndpoint:
@@ -397,9 +401,15 @@ class RuntimeEndpoint:
         self.kwargs = kwargs
 
 
+refused = False
 for step in sys.argv[1:]:
     if step == "register":
-        EndpointRegistry.register(provider="openai", endpoint="pin-runtime-key")(RuntimeEndpoint)
+        try:
+            EndpointRegistry.register(provider="openai", endpoint="pin-runtime-key")(
+                RuntimeEndpoint
+            )
+        except ProviderAliasCollisionError:
+            refused = True
     else:
         importlib.import_module(step)
 
@@ -409,6 +419,7 @@ print(
     json.dumps(
         {
             "loaded_before_match": loaded_before_match,
+            "refused": refused,
             "cls": f"{cls.__module__}:{cls.__qualname__}",
         }
     )
@@ -430,29 +441,33 @@ def test_default_endpoint_ignores_import_order():
 
 
 _AUDIO_MODULE = "lionhub.providers.openai.audio"
-_RUNTIME_ENDPOINT = "__main__:RuntimeEndpoint"
 
 
-def test_endpoint_registered_before_the_built_ins_load_resolves_with_no_endpoint():
-    # A class registered under a built-in provider before anything loads the registry is
-    # that provider's first entry, and an empty endpoint keeps resolving to it.
+def test_endpoint_registered_before_the_built_ins_load_is_refused():
+    # The bundled catalog declares "openai", so a class registered under that name before
+    # anything loads the registry is refused and an empty endpoint still resolves to the
+    # declared default.
     result = _run_child(_RUNTIME_REGISTRATION_CHILD, "register")
     assert result["loaded_before_match"] is False
-    assert result["cls"] == _RUNTIME_ENDPOINT
-
-
-def test_endpoint_registered_after_a_built_in_module_keeps_the_declared_default():
-    # The first entry is a built-in the catalog declares, so the declared default wins
-    # over it and over the later registration.
-    result = _run_child(_RUNTIME_REGISTRATION_CHILD, _AUDIO_MODULE, "register")
-    assert result["loaded_before_match"] is False
+    assert result["refused"] is True
     assert result["cls"] == DEFAULT_CLASS["openai"]
 
 
-def test_endpoint_registered_before_a_built_in_module_still_resolves_with_no_endpoint():
+def test_endpoint_registered_after_a_built_in_module_is_refused():
+    # The registration is refused after a built-in module registered too, and the declared
+    # default stays.
+    result = _run_child(_RUNTIME_REGISTRATION_CHILD, _AUDIO_MODULE, "register")
+    assert result["loaded_before_match"] is False
+    assert result["refused"] is True
+    assert result["cls"] == DEFAULT_CLASS["openai"]
+
+
+def test_endpoint_registered_before_a_built_in_module_is_refused():
+    # The built-in module still registers after the refusal and the declared default stays.
     result = _run_child(_RUNTIME_REGISTRATION_CHILD, "register", _AUDIO_MODULE)
     assert result["loaded_before_match"] is False
-    assert result["cls"] == _RUNTIME_ENDPOINT
+    assert result["refused"] is True
+    assert result["cls"] == DEFAULT_CLASS["openai"]
 
 
 # -- 3b. no endpoint named: the catalog route and its fall-backs -------------
@@ -590,9 +605,10 @@ def test_new_runtime_provider_with_no_endpoint_resolves_to_its_first_entry(regis
     assert type(match_endpoint(provider="runtime-pin-provider", endpoint="beta")) is second
 
 
-def test_runtime_endpoint_under_a_built_in_provider_resolves_by_its_key(register_throwaway):
-    added = register_throwaway("openai", "pin-runtime-key")
-    assert type(match_endpoint(provider="openai", endpoint="pin-runtime-key")) is added
+def test_runtime_endpoint_under_a_built_in_provider_is_refused(register_throwaway):
+    with pytest.raises(ProviderAliasCollisionError):
+        register_throwaway("openai", "pin-runtime-key")
+    assert type(match_endpoint(provider="openai", endpoint="pin-runtime-key")) is Endpoint
     assert type(match_endpoint(provider="openai", endpoint="")) is _default_class("openai")
 
 

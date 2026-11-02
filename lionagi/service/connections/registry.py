@@ -15,6 +15,8 @@ from lionagi.ln import HashAlgorithm, compute_hash, hash_file, import_module, is
 from lionagi.ln.types import Enum
 
 if TYPE_CHECKING:
+    from lionagi._provider_errors import ProviderActivationError
+
     from .provider_catalog import ProviderCatalog
 
 __all__ = (
@@ -96,6 +98,19 @@ class EndpointMeta:
         return config
 
 
+@dataclass(frozen=True, slots=True)
+class _FailedProvider:
+    """A provider the bundled catalog declares whose activation failed when the registry loaded.
+
+    ``names`` holds the provider's key and aliases; ``error`` is the activation error its
+    factory raised.
+    """
+
+    provider: str
+    names: tuple[str, ...]
+    error: ProviderActivationError
+
+
 class _RegistryEntry:
     __slots__ = (
         "meta",
@@ -134,6 +149,9 @@ class EndpointRegistry:
     # provider trying to claim a name or alias someone else already owns.
     _alias_owners: ClassVar[dict[str, str]] = {}
 
+    # The bundled-catalog providers whose activation failed in the last load, in catalog order.
+    _failed: ClassVar[tuple[_FailedProvider, ...]] = ()
+
     @classmethod
     def register(
         cls,
@@ -154,6 +172,9 @@ class EndpointRegistry:
         )
 
         def decorator(endpoint_cls: type) -> type:
+            cls._refuse_declared_provider(
+                endpoint_cls, canonical_provider, canonical_provider_aliases
+            )
             meta = EndpointMeta(
                 provider=canonical_provider,
                 endpoint=endpoint,
@@ -181,6 +202,39 @@ class EndpointRegistry:
             return endpoint_cls
 
         return decorator
+
+    @classmethod
+    def _refuse_declared_provider(
+        cls, endpoint_cls: type, provider: str, provider_aliases: tuple[str, ...]
+    ) -> None:
+        """Refuse a provider key or alias that the bundled provider catalog declares, unless
+        ``endpoint_cls`` is one of the endpoints the catalog declares for that provider.
+
+        The built-in provider modules register the classes the catalog names, so they pass.
+        The refusal holds whether or not the built-in provider activated: a provider whose
+        activation failed has registered nothing, yet its names stay its own. When the
+        catalog cannot load it declares nothing and nothing is refused here."""
+        from lionagi._feature_errors import MissingFeatureError
+        from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
+
+        from ._provider_compat import default_provider_catalog
+
+        try:
+            catalog = default_provider_catalog()
+        except (MissingFeatureError, ProviderActivationError, ProviderContractVersionError):
+            return
+        implementation = f"{endpoint_cls.__module__}:{endpoint_cls.__qualname__}"
+        for name in (provider, *provider_aliases):
+            fragment = catalog.fragment(name)
+            if fragment is None or any(
+                declaration.diagnostic_id == implementation for declaration in fragment.endpoints
+            ):
+                continue
+            raise ProviderAliasCollisionError(
+                f"provider name {name!r} is declared by the bundled provider catalog for "
+                f"provider {fragment.key!r}; only that provider's own endpoints can register "
+                f"under it"
+            )
 
     @classmethod
     def _claim_provider_identity(cls, provider: str, provider_aliases: tuple[str, ...]) -> None:
@@ -228,11 +282,14 @@ class EndpointRegistry:
         provider_catalog: ProviderCatalog | None = None,
         **kwargs,
     ) -> Any:
-        """Find and instantiate the best matching endpoint. With no endpoint named, a
-        provider the bundled provider catalog declares resolves to its declared default
+        """Find and instantiate the best matching endpoint. A provider key or alias that the
+        bundled provider catalog declares, and whose activation failed when the registry
+        loaded, raises that provider's ``ProviderActivationError`` before anything else is
+        tried: it never resolves to another endpoint or to the generic OpenAI-compatible
+        endpoint, whatever ``openai_compatible`` or ``base_url`` say. With no endpoint named,
+        a provider the bundled provider catalog declares resolves to its declared default
         endpoint, unless the provider's first registered entry is a class the catalog
-        does not declare (for example one a caller registered before the built-ins
-        loaded), which then resolves as it always has; every other lookup, and every
+        does not declare, which then resolves as it always has; every other lookup, and every
         lookup while the catalog cannot load, scans the registered entries. On a registry miss,
         consults the plugin registry before falling back to the generic
         OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
@@ -254,6 +311,7 @@ class EndpointRegistry:
             )
 
         cls._ensure_loaded()
+        cls._raise_activation_failure(provider)
 
         if not endpoint:
             declared = cls._match_declared_default(provider, kwargs)
@@ -270,6 +328,26 @@ class EndpointRegistry:
                 return matched
 
         return cls._generic_endpoint(provider, endpoint, openai_compatible, kwargs, None)
+
+    @classmethod
+    def _raise_activation_failure(cls, provider: str) -> None:
+        """Raise ``provider``'s ``ProviderActivationError`` when ``provider`` is the key or an
+        alias of a bundled-catalog provider whose activation failed when the registry loaded.
+
+        The error is a new one with the recorded error's fields, chained from the same cause,
+        so repeated lookups neither lengthen one traceback nor share one exception object."""
+        from lionagi._provider_errors import ProviderActivationError
+
+        name = provider.lower()
+        for failed in cls._failed:
+            if name in failed.names:
+                recorded = failed.error
+                raise ProviderActivationError(
+                    provider=recorded.provider,
+                    endpoint=recorded.endpoint,
+                    source=recorded.source,
+                    reason=recorded.reason,
+                ) from recorded.__cause__
 
     @classmethod
     def _match_catalog(
@@ -342,7 +420,9 @@ class EndpointRegistry:
         scanning the registered entries; the registry skipped that module with a warning
         when it loaded, so the scan reports the provider as it did before. Also ``None``
         when the provider's first registered entry is a class the catalog does not
-        declare, so the scan returns that entry as it always has."""
+        declare, so the scan returns that entry as it always has. A declaration whose
+        factory raises ``ProviderActivationError`` is not skipped: the error reaches the
+        caller, and no other endpoint is selected in its place."""
         from lionagi._feature_errors import MissingFeatureError
         from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
 
@@ -600,7 +680,16 @@ class EndpointRegistry:
                             entry.plugin_target = module
                     cls._reject_builtin_collisions(plugin_name, module)
                     imported = True
-                except PluginActivationError:
+                except PluginActivationError as exc:
+                    # A provider module that registers a name another provider owns fails
+                    # to run, and the plugin registry reports that as an activation error.
+                    if isinstance(exc.__cause__, ProviderAliasCollisionError):
+                        logger.warning(
+                            "plugin %r provider module %r rejected: %s",
+                            plugin_name,
+                            module,
+                            exc.__cause__,
+                        )
                     continue
                 except ProviderAliasCollisionError as exc:
                     # Fail-soft, same as a built-in collision: reject only this
@@ -671,7 +760,10 @@ class EndpointRegistry:
             # Built-in providers register by importing the module each declaration of the
             # bundled provider catalog names; importing a provider module runs its
             # registration decorators. A catalog that cannot load leaves no built-in
-            # provider registered, and one warning says why.
+            # provider registered, and one warning says why. A provider whose activation
+            # fails is recorded with one warning and registers nothing further; the other
+            # providers still load.
+            failed: list[_FailedProvider] = []
             try:
                 catalog = default_provider_catalog()
             except (
@@ -696,10 +788,26 @@ class EndpointRegistry:
                                 declaration.diagnostic_id.partition(":")[0],
                                 error,
                             )
+                        except ProviderActivationError as error:
+                            logger.warning(
+                                "provider %r could not be activated (reason: %s) and was not "
+                                "registered; selecting it raises ProviderActivationError",
+                                provider.key,
+                                error.reason,
+                            )
+                            failed.append(
+                                _FailedProvider(
+                                    provider=provider.key,
+                                    names=(provider.key, *provider.aliases),
+                                    error=error.with_traceback(None),
+                                )
+                            )
+                            break
             # Test-only scripted provider (provider="scripted"): a leaf core module,
             # always loadable, gated behind LIONAGI_CHAT_PROVIDER=scripted. Imported after
             # the declared providers so it stays last among the registered entries.
             _import_provider_module("lionagi.testing._endpoint")
+            cls._failed = tuple(failed)
             cls._loaded = True
 
     @classmethod
@@ -726,6 +834,23 @@ class EndpointRegistry:
                 "options": e.meta.options.__name__ if e.meta.options else None,
             }
             for e in cls._entries
+        ]
+
+    @classmethod
+    def failed_providers(cls) -> list[dict[str, Any]]:
+        """One row per provider the bundled provider catalog declares whose activation failed
+        when the registry loaded, in catalog order; empty when none failed. Each row has the
+        ``provider`` key, the ``endpoint`` key the failure was raised for (or ``None``), the
+        ``source`` of the declaration and the ``reason``. A row carries no exception text."""
+        cls._ensure_loaded()
+        return [
+            {
+                "provider": failed.provider,
+                "endpoint": failed.error.endpoint,
+                "source": failed.error.source,
+                "reason": failed.error.reason,
+            }
+            for failed in cls._failed
         ]
 
 

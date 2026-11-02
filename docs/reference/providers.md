@@ -322,8 +322,9 @@ its export set from each module's `__all__`.
 
 In `lionhub/src/lionhub/providers/manifest.py`, add a `_Provider(...)` row to
 `_DECLARATIONS`. The row names the provider package, the config enum in that package's
-`_config.py`, the context-window table in `_config.py` (or `None` when the provider has
-none), and one `_Endpoint(member, "module:Class")` per endpoint:
+`_config.py`, the provider's key and aliases as the enum declares them, the context-window
+table in `_config.py` (or `None` when the provider has none), and one
+`_Endpoint(member, key, aliases, kind, "module:Class")` per endpoint:
 
 ```python
 _DECLARATIONS = (
@@ -331,14 +332,27 @@ _DECLARATIONS = (
     _Provider(
         "myprovider",
         "MyProviderConfigs",
+        "myprovider",
+        (),
         None,
-        (_Endpoint("CHAT", "myprovider.chat:MyProviderChatEndpoint"),),
+        (
+            _Endpoint(
+                "CHAT",
+                "chat/completions",
+                ("chat",),
+                "api",
+                "myprovider.chat:MyProviderChatEndpoint",
+            ),
+        ),
     ),
 )
 ```
 
 `member` is the name of the enum member, and `module:Class` names the endpoint class and
-its module, relative to `lionhub.providers`. Put the provider's default endpoint first: the
+its module, relative to `lionhub.providers`. `key`, `aliases` and `kind` are the member's
+endpoint path, aliases and endpoint type (`"api"` or `"agentic"`), and the provider's key and
+aliases are its enum's `_PROVIDER` and `_PROVIDER_ALIASES`. A test compares every row with
+its enum and fails when they differ. Put the provider's default endpoint first: the
 first endpoint is the one `EndpointRegistry.match(provider="myprovider")` resolves to when
 no endpoint is named. Keep the rows in registration order, so add the new row after the
 existing ones.
@@ -348,8 +362,11 @@ the provider's key to `_CONTEXT_WINDOW_ORDER` in the same file. That order decid
 table answers when two tables hold the same model name, and a non-empty order that leaves
 out a provider with a table raises a `ValueError`.
 
-The manifest reads `_config.py` for the provider's keys, aliases and settings and imports no
-endpoint module. The first time the registry is used, it calls each declaration's factory,
+The manifest reads `_config.py` for the provider's settings and context windows and imports no
+endpoint module. If `_config.py` itself raises an `ImportError`, the manifest still names the
+provider from its row, with no settings and no context windows, and each of its endpoint
+factories raises `ProviderActivationError` chained from that `ImportError`; any other
+exception from `_config.py` propagates. The first time the registry is used, it calls each declaration's factory,
 which imports the endpoint module and so runs its registration decorator. If that import
 raises an `ImportError`, for example because the module needs an optional third-party
 dependency that is not installed, the registry logs a warning (`provider module
