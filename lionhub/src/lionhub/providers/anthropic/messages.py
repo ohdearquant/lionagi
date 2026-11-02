@@ -11,6 +11,7 @@ from typing import Any, Literal, Union
 import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from lionagi.ln.concurrency import CancelScope
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
@@ -419,6 +420,10 @@ _REJECTION_CLASS_MESSAGES = (
 # byte more than this, which is enough to tell that a body is too long.
 _REJECTION_BODY_LIMIT = 65536
 
+# A streamed rejection body is read for at most this many seconds. A body that has not arrived
+# by then is classified as ``other``.
+_REJECTION_READ_SECONDS = 5.0
+
 
 def _classify_rejection(body: bytes) -> tuple[str, str]:
     """Name the provider error type and the rejection class of a rejected request's body.
@@ -453,6 +458,33 @@ def _classify_rejection(body: bytes) -> tuple[str, str]:
         if rejection_class not in _REJECTION_CLASSES:
             rejection_class = "other"
         return error_type, rejection_class
+    except Exception:
+        return "other", "other"
+
+
+async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
+    """Name the provider error type and the rejection class of a streamed rejection.
+
+    Reads the response's decoded byte stream (``aiter_bytes``) until it holds more than
+    ``_REJECTION_BODY_LIMIT`` bytes or ends, reads no further piece after that, and returns what
+    ``_classify_rejection`` names for the first ``_REJECTION_BODY_LIMIT + 1`` bytes. The read is
+    shielded from cancellation, so a caller that cancelled still has its attempt recorded, and
+    bounded by ``_REJECTION_READ_SECONDS``: a body that has not arrived by then is
+    ``("other", "other")``. Nothing of the body is logged, kept or raised: it is bound only in
+    this frame, only the two names leave this function, and every failure returns
+    ``("other", "other")``.
+    """
+    try:
+        body = b""
+        deadline = anyio.current_time() + _REJECTION_READ_SECONDS
+        with CancelScope(deadline=deadline, shield=True) as scope:
+            async for piece in response.aiter_bytes():
+                body += piece
+                if len(body) > _REJECTION_BODY_LIMIT:
+                    break
+        if scope.cancelled_caught:
+            return "other", "other"
+        return _classify_rejection(body[: _REJECTION_BODY_LIMIT + 1])
     except Exception:
         return "other", "other"
 
@@ -1098,12 +1130,25 @@ class AnthropicMessagesEndpoint(Endpoint):
                         )
                     if status != 200:
                         settled = True
-                        await router.settle_unknown(attempt, "request_rejected")
+                        # Only the two names leave the classifier: it reads the body in its own
+                        # frame and no local here holds it.
+                        (
+                            provider_error_type,
+                            rejection_class,
+                        ) = await _classify_streamed_rejection(response)
+                        await router.settle_unknown(
+                            attempt,
+                            "request_rejected",
+                            provider_error_type=provider_error_type,
+                            rejection_class=rejection_class,
+                        )
                         raise AccountRoutingError(
                             RouterErrorCode.REQUEST_REJECTED,
                             account=attempt.account,
                             attempt_id=attempt.attempt_id,
                             http_status=status,
+                            provider_error_type=provider_error_type,
+                            rejection_class=rejection_class,
                         ) from None
 
                     # Only a failure of the byte source itself is held back, so the events it

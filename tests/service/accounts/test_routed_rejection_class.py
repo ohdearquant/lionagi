@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """A routed Anthropic request rejection records its class and never provider text.
 
-The non-streamed attempt runs through the real endpoint with a stub transport, as in
-``test_routed_endpoint``. ``STREAMED`` holds only ``False`` until the streamed attempt
-classifies its rejections too.
+Both attempts run through the real endpoint with a stub transport, as in
+``test_routed_endpoint``: a test marked ``STREAMED`` runs through the non-streamed and the
+streamed attempt.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from contextlib import closing
 from pathlib import Path
 
 import anyio
+import anyio.lowlevel
 import pytest
 
 import lionagi
@@ -35,7 +36,7 @@ from tests.service.accounts.test_routed_endpoint import (
     _warm_rows,
 )
 
-STREAMED = pytest.mark.parametrize("streamed", [False], ids=["call"])
+STREAMED = pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
 
 INVALID = "invalid_request_error"
 PROMPT = "prompt is too long"
@@ -71,11 +72,40 @@ def _body_of(size: int) -> bytes:
 
 
 class _Rejection(StubResponse):
-    """A rejection as the HTTP client returns it: the whole body is ``content``, as bytes."""
+    """A rejection as the HTTP client returns it.
 
-    def __init__(self, status: int, body: bytes) -> None:
+    The whole body is ``content``, as bytes, for the non-streamed attempt. For the streamed
+    attempt ``aiter_bytes`` yields the body in pieces of ``piece_size`` bytes, each after a
+    checkpoint, and ``yielded`` counts the pieces handed out.
+    """
+
+    def __init__(self, status: int, body: bytes, piece_size: int = 4096) -> None:
         super().__init__(status)
         self.content = body
+        self.piece_size = piece_size
+        self.yielded = 0
+
+    async def aiter_bytes(self):
+        for start in range(0, len(self.content), self.piece_size):
+            await anyio.lowlevel.checkpoint()
+            self.yielded += 1
+            yield self.content[start : start + self.piece_size]
+
+
+class _HangingRejection(_Rejection):
+    """A rejection whose body stream never finishes: it waits for an event that is never set."""
+
+    async def aiter_bytes(self):
+        await anyio.Event().wait()
+        yield b""
+
+
+class _BrokenRejection(_Rejection):
+    """A rejection whose body stream fails after its first piece with an error naming the body."""
+
+    async def aiter_bytes(self):
+        yield self.content[:10]
+        raise RuntimeError(self.content.decode())
 
 
 def _rejected(body: bytes) -> StubResponse:
@@ -277,6 +307,53 @@ async def test_a_body_over_64_kib_is_not_decoded(
 
 
 @pytest.mark.asyncio
+async def test_a_streamed_body_is_not_read_past_the_bound(monkeypatch, tmp_path):
+    seen = []
+    classify = messages_module._classify_rejection
+
+    def recording(body):
+        seen.append(len(body))
+        return classify(body)
+
+    monkeypatch.setattr(messages_module, "_classify_rejection", recording)
+    rejection = _Rejection(400, _body_of(200_000), piece_size=16_384)
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [rejection])
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, True)
+
+    # 65,537 bytes arrive with the fifth piece of 16,384 bytes, and no piece after it is read.
+    assert seen == [messages_module._REJECTION_BODY_LIMIT + 1]
+    assert rejection.yielded == 5
+    _assert_recorded(path, caught.value, "other", "other")
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_body_that_does_not_arrive_in_time_records_other(monkeypatch, tmp_path):
+    monkeypatch.setattr(messages_module, "_REJECTION_READ_SECONDS", 0.05)
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [_HangingRejection(400, b"")])
+    with anyio.fail_after(DEADLINE):
+        with pytest.raises(AccountRoutingError) as caught:
+            await _send(model, True)
+
+    _assert_recorded(path, caught.value, "other", "other")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_body_that_fails_midway_records_other(monkeypatch, tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [_BrokenRejection(400, _typed(f"{PROMPT}: {SENTINEL}"))])
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, True)
+
+    _assert_recorded(path, caught.value, "other", "other")
+    _assert_no_sentinel(caught.value, caplog, path)
+
+
+@pytest.mark.asyncio
 @STREAMED
 @pytest.mark.parametrize(
     ("earlier", "later"),
@@ -335,14 +412,29 @@ async def test_the_message_check_passes_when_nothing_is_classified(
 async def test_the_message_check_fails_when_the_error_carries_the_message(
     monkeypatch, tmp_path, caplog, streamed
 ):
-    original = Endpoint._public_routed_failure
+    if streamed:
+        # A streamed failure does not pass the public failure wrapper, so the message is
+        # added where the streamed attempt's error leaves the endpoint.
+        original_stream = Endpoint.stream
 
-    def leaky(exc):
-        error = original(exc)
-        error.args = (*error.args, SENTINEL)
-        return error
+        async def leaky_stream(self, *args, **kwargs):
+            try:
+                async for chunk in original_stream(self, *args, **kwargs):
+                    yield chunk
+            except AccountRoutingError as error:
+                error.args = (*error.args, SENTINEL)
+                raise
 
-    monkeypatch.setattr(Endpoint, "_public_routed_failure", staticmethod(leaky))
+        monkeypatch.setattr(Endpoint, "stream", leaky_stream)
+    else:
+        original = Endpoint._public_routed_failure
+
+        def leaky(exc):
+            error = original(exc)
+            error.args = (*error.args, SENTINEL)
+            return error
+
+        monkeypatch.setattr(Endpoint, "_public_routed_failure", staticmethod(leaky))
     path, _, error = await _reject_with_sentinel(monkeypatch, tmp_path, caplog, streamed)
     assert SENTINEL in repr(error.args)
     with pytest.raises(AssertionError):
