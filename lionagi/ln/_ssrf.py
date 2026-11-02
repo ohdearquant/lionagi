@@ -143,6 +143,37 @@ def _is_loopback_host(host: str | None) -> bool:
     return any(ip in net for net in _LOOPBACK_NETS)
 
 
+def _is_loopback_url(url: str) -> bool:
+    """True when the host of *url* is loopback; a URL that cannot be split is not."""
+    import urllib.parse
+
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return False
+    return _is_loopback_host(host)
+
+
+def _loopback_only_redirects() -> urllib.request.HTTPRedirectHandler:
+    """A redirect handler that follows a redirect only when its target host is loopback.
+
+    For any other target it returns no new request, so urllib raises its own
+    ``urllib.error.HTTPError`` for the redirect status instead of sending a request, and the
+    headers of the original one, to a host the loopback opener has no proxy settings for.
+    """
+    import urllib.request
+
+    class _LoopbackOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(
+            self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+        ) -> urllib.request.Request | None:
+            if not _is_loopback_url(newurl):
+                return None
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return _LoopbackOnlyRedirectHandler()
+
+
 def open_url(request: str | urllib.request.Request, *, timeout: float) -> Any:
     """Open *request* with urllib, sending a request for a loopback host past any proxy.
 
@@ -152,18 +183,18 @@ def open_url(request: str | urllib.request.Request, *, timeout: float) -> Any:
     So a URL whose host is ``localhost``, an address in 127.0.0.0/8 or ``::1`` (bracketed in
     the URL) is opened by an opener with no proxy handler, and every other URL keeps
     ``urlopen`` and its proxies. A URL that cannot be split goes to ``urlopen`` too, which
-    reports it as before. The response and the exceptions are urllib's own, so callers keep
-    their ``with`` blocks and ``except`` clauses.
+    reports it as before. A loopback request follows a redirect only to another loopback host;
+    a redirect to any other host is not followed and raises ``urllib.error.HTTPError`` for the
+    redirect status, so the request and its headers never go on to a host without the proxy.
+    The response and the exceptions are urllib's own, so callers keep their ``with`` blocks
+    and ``except`` clauses.
     """
-    import urllib.parse
     import urllib.request
 
     url = request.full_url if isinstance(request, urllib.request.Request) else request
-    try:
-        host = urllib.parse.urlsplit(url).hostname
-    except ValueError:
-        host = None
-    if _is_loopback_host(host):
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if _is_loopback_url(url):
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _loopback_only_redirects()
+        )
         return opener.open(request, timeout=timeout)
     return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310

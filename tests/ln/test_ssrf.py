@@ -3,7 +3,11 @@
 
 """Tests for lionagi.ln._ssrf: is_ssrf_safe and open_url."""
 
+import contextlib
+import http.client
+import io
 import socket
+import urllib.error
 import urllib.request
 from unittest.mock import patch
 
@@ -181,7 +185,7 @@ def _forbidden(*args, **kwargs):
     ],
 )
 def test_open_url_loopback_host_opens_without_proxy_handler(url, monkeypatch):
-    """A loopback host is opened by an opener whose only handler has no proxies."""
+    """A loopback host is opened by an opener whose proxy handler has no proxies."""
     handlers_built = []
     opened = []
 
@@ -196,9 +200,10 @@ def test_open_url_loopback_host_opens_without_proxy_handler(url, monkeypatch):
 
     assert opened == [(url, 3.5)]
     (handlers,) = handlers_built
-    assert len(handlers) == 1
+    assert len(handlers) == 2
     assert isinstance(handlers[0], urllib.request.ProxyHandler)
     assert handlers[0].proxies == {}
+    assert isinstance(handlers[1], urllib.request.HTTPRedirectHandler)
 
 
 @pytest.mark.parametrize(
@@ -245,3 +250,154 @@ def test_open_url_classifies_request_objects_by_their_url(monkeypatch):
 
     assert opened == [(loopback, 1.0)]
     assert proxied == [(elsewhere, 2.0)]
+
+
+class _RawSocket:
+    """Hands ``http.client`` the bytes of one response."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def makefile(self, mode="rb", *args, **kwargs):
+        return io.BytesIO(self._data)
+
+
+class _Wire:
+    """Stands in for the HTTP connection class, so no socket is opened.
+
+    ``answers`` maps ``"host:port/path"`` to ``(status, location)``; an address that is not
+    listed answers 200. Every connection urllib opens and every request it sends is recorded.
+    """
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.connections = []
+        self.requests = []
+
+    def install(self, monkeypatch):
+        wire = self
+
+        class Connection:
+            # urllib reads this class attribute when it builds its HTTP handler.
+            debuglevel = 0
+
+            def __init__(self, host, timeout=None, **kwargs):
+                self.host = host
+                self.sock = None
+                self._selector = ""
+                wire.connections.append(host)
+
+            def set_debuglevel(self, level):
+                pass
+
+            def close(self):
+                pass
+
+            def request(self, method, selector, body=None, headers=None, **kwargs):
+                self._selector = selector
+                wire.requests.append((self.host, selector, dict(headers or {})))
+
+            def getresponse(self):
+                status, location = wire.answers.get(f"{self.host}{self._selector}", (200, None))
+                reason = http.client.responses.get(status, "Status")
+                head = [f"HTTP/1.1 {status} {reason}"]
+                if location is not None:
+                    head.append(f"Location: {location}")
+                head += ["Content-Length: 2", "Connection: close", "", "{}"]
+                response = http.client.HTTPResponse(_RawSocket("\r\n".join(head).encode()))
+                response.begin()
+                return response
+
+        monkeypatch.setattr(http.client, "HTTPConnection", Connection)
+
+
+_LOOPBACK = "127.0.0.1:8765"
+_OTHER = "studio.example.test:9000"
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize(
+    "target",
+    [
+        f"http://{_OTHER}/health",
+        "http://10.0.0.5:9000/health",
+        "http://localhost.example.test:9000/health",
+    ],
+)
+def test_open_url_does_not_follow_a_redirect_from_loopback_to_another_host(
+    status, target, monkeypatch
+):
+    """The redirect surfaces as urllib's own HTTPError and the other host is never contacted."""
+    wire = _Wire({f"{_LOOPBACK}/health": (status, target)})
+    wire.install(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        _ssrf.open_url(f"http://{_LOOPBACK}/health", timeout=2.0)
+
+    assert caught.value.code == status
+    assert wire.connections == [_LOOPBACK]
+
+
+@pytest.mark.parametrize(
+    ("status", "location", "second_host"),
+    [
+        (307, "http://127.0.0.1:8765/api/schedules/", "127.0.0.1:8765"),
+        (301, "/api/schedules/", "127.0.0.1:8765"),
+        (308, "http://localhost:8765/api/schedules/", "localhost:8765"),
+        (302, "http://[::1]:8765/api/schedules/", "[::1]:8765"),
+    ],
+)
+def test_open_url_follows_a_redirect_from_loopback_to_loopback(
+    status, location, second_host, monkeypatch
+):
+    """A redirect that stays on loopback, such as a trailing-slash redirect, is followed."""
+    wire = _Wire({f"{_LOOPBACK}/api/schedules": (status, location)})
+    wire.install(monkeypatch)
+
+    with _ssrf.open_url(f"http://{_LOOPBACK}/api/schedules", timeout=2.0) as response:
+        assert response.status == 200
+        assert response.read() == b"{}"
+
+    assert [selector for _host, selector, _headers in wire.requests] == [
+        "/api/schedules",
+        "/api/schedules/",
+    ]
+    assert wire.connections == [_LOOPBACK, second_host]
+
+
+@pytest.mark.parametrize("status", [302, 307])
+def test_open_url_never_sends_authorization_to_a_non_loopback_host(status, monkeypatch):
+    wire = _Wire({f"{_LOOPBACK}/health": (status, f"http://{_OTHER}/health")})
+    wire.install(monkeypatch)
+    request = urllib.request.Request(
+        f"http://{_LOOPBACK}/health", headers={"Authorization": "Bearer example-token"}
+    )
+
+    with contextlib.suppress(urllib.error.HTTPError):
+        _ssrf.open_url(request, timeout=2.0)
+
+    def has_authorization(headers):
+        return "authorization" in {name.lower() for name in headers}
+
+    carrying_authorization = [
+        host for host, _selector, headers in wire.requests if has_authorization(headers)
+    ]
+    # The request to the loopback server carries it; no other host sees it.
+    assert carrying_authorization == [_LOOPBACK]
+
+
+def test_open_url_stops_at_the_redirect_that_leaves_loopback(monkeypatch):
+    """A chain of redirects is followed on loopback and stops at the hop that leaves it."""
+    wire = _Wire(
+        {
+            f"{_LOOPBACK}/first": (307, "http://localhost:8765/second"),
+            "localhost:8765/second": (307, f"http://{_OTHER}/third"),
+        }
+    )
+    wire.install(monkeypatch)
+
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        _ssrf.open_url(f"http://{_LOOPBACK}/first", timeout=2.0)
+
+    assert caught.value.code == 307
+    assert wire.connections == [_LOOPBACK, "localhost:8765"]

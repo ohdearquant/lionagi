@@ -113,7 +113,8 @@ The HTTP requests `li studio` sends its daemon, the `li schedule` clients and th
 whose host is `localhost`, a 127.0.0.0/8 address or `::1` without any proxy
 (`open_url` in `lionagi/ln/_ssrf.py`): a proxy named in the environment or, on macOS,
 in the system settings cannot reach this machine's loopback interface, so with one
-configured a running daemon would read as absent. Other hosts keep the proxy settings.
+configured a running daemon would read as absent. Other hosts keep the proxy settings, and
+a redirect from loopback to any other host is not followed.
 When nothing answers as a daemon, `li studio` binds its port once, the way the daemon
 will, before it mints a code: a port held by another program stops the launch with an
 error naming the port, and no link is printed or opened.
