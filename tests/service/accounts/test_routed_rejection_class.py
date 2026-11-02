@@ -103,7 +103,10 @@ class _Rejection(StubResponse):
 class _HangingRejection(_Rejection):
     """A rejection whose body stream never finishes: it waits for an event that is never set."""
 
+    entered = False
+
     async def aiter_bytes(self):
+        self.entered = True
         await anyio.Event().wait()
         yield b""
 
@@ -436,11 +439,14 @@ async def test_a_streamed_body_that_does_not_arrive_in_time_records_other(monkey
     assert READ_HANG_GUARD < messages_module._REJECTION_READ_SECONDS
     monkeypatch.setattr(messages_module, "_REJECTION_READ_SECONDS", 0.05)
     path = _install_accounts(monkeypatch, tmp_path)
-    model, transport = _model(monkeypatch, [_HangingRejection(400, b"")])
+    hanging = _HangingRejection(400, b"")
+    model, transport = _model(monkeypatch, [hanging])
     with anyio.fail_after(READ_HANG_GUARD):
         with pytest.raises(AccountRoutingError) as caught:
             await _send(model, True)
 
+    # The empty body classifies as other unread too, so the read itself must have begun.
+    assert hanging.entered
     _assert_recorded(path, caught.value, "other", "other")
     assert len(transport.calls) == 1
 
