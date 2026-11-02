@@ -844,9 +844,10 @@ jobs:
           "aiosqlite==${EXPECTED_AIOSQLITE}" \
           "sqlalchemy[asyncio]==${EXPECTED_SQLALCHEMY}"
     # Only the next two steps may follow the replacement, and
-    # tests/scripts/test_advisory_pr_checks.py fixes the shape of both: the script
-    # ends at the first line that is exactly PY with nothing after it, and the tests
-    # run as one `uv run --no-sync pytest` command on one line.
+    # tests/scripts/test_advisory_pr_checks.py pins both to its own copies of their
+    # names and run text, byte for byte, so an edit to either step here is an edit to
+    # that file as well. The same file runs the version check below against wrong
+    # versions to show that it stops the job.
     - name: Assert the interpreter has the matrix versions
       run: |
         uv run --no-sync python - <<'PY'

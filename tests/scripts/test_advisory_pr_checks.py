@@ -23,7 +23,6 @@ import json
 import os
 import posixpath
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -1532,68 +1531,51 @@ def test_a_conditional_job_that_is_not_success_fails_a_changed_run(
 # The compat-deps job swaps the locked aiosqlite and SQLAlchemy for a matrix row's
 # versions and runs the compatibility tests on them. `_compat_deps_problems` reads
 # that job from the workflow, so a matrix row can be added or removed without
-# touching it, and requires:
-#   - After the step named "Replace aiosqlite and SQLAlchemy with the matrix
-#     versions" there are exactly two steps, in this order, and each has no key
-#     besides `name`, `run` and `timeout-minutes`:
-#       1. "Assert the interpreter has the matrix versions". Its `run` is the line
-#          `uv run --no-sync python - <<'PY'`, then the script, then a line that is
-#          exactly `PY`, then nothing but an optional final newline. The shell ends
-#          a quoted heredoc at the first such line, so the script is the text before
-#          it and anything after it is refused. The script is run here on the
-#          interpreter running this test: with the installed versions as the
-#          expected ones it must exit 0, and with either package's expected version
-#          set to 0.0.0 (below any release) and then to 999999.0 (above any release)
-#          each of those four runs must exit non-zero without printing a Python
-#          traceback. So a check that compares in one direction only, never
-#          compares, or stops by crashing is refused.
-#       2. "Run the compatibility-mode tests". Its `run` is one line holding one
-#          command: it may not contain a newline or any character of
-#          COMPAT_PYTEST_REFUSED, and its first four words, split as a POSIX shell
-#          splits them, are `uv run --no-sync pytest`. A plain `uv run` syncs the
-#          environment back to uv.lock, and the tests then run on the locked pair.
-#   - On the job and on every step of it: no `continue-on-error`, no `defaults:` on
-#     the job, no `if:`, `shell:` or `working-directory:` on a step, no step `env:`
-#     that sets an expected-version variable, no `run` text that mentions
-#     GITHUB_ENV, and no `strategy.matrix` key other than `include`. The job's env
-#     takes both expected versions from the matrix row.
-#   - A matrix whose lowest SQLAlchemy and lowest aiosqlite are the `>=` floors that
-#     pyproject.toml declares for them.
-# Not read: what a script file or an action that a step calls does; the text of the
-# steps before the replacement step and of the replacement step itself, which may
-# sync or install freely and are not shape-pinned (the assertion step stops the job
-# when the replacement did not take); the `with:` inputs of a `uses:` step; and
-# settings outside the job, such as workflow-level `env:` and `defaults:`.
-COMPAT_HEREDOC_OPEN = "uv run --no-sync python - <<'PY'"
-COMPAT_PYTEST_WORDS = ["uv", "run", "--no-sync", "pytest"]
+# touching it.
+#
+# The text that decides whether the right tests run on the right versions is pinned
+# exactly: this file holds a copy of it, and changing it in ci.yml means changing the
+# copy here in the same commit. That refuses harmless edits as well, such as another
+# pytest option, or another version check that also compares both versions exactly.
+# Those edits have to touch this file too, which is the cost of an exact pin.
+#
+# Pinned exactly:
+#   - After the step named "Replace aiosqlite and SQLAlchemy with the matrix versions"
+#     there are exactly two steps, in this order: COMPAT_ASSERT_STEP, then
+#     COMPAT_PYTEST_STEP. Each step's `name` equals its constant, and its `run`, as
+#     YAML parses the value (so a block scalar and a quoted scalar with `\n` escapes
+#     that hold the same text are the same), equals COMPAT_ASSERT_RUN or
+#     COMPAT_PYTEST_RUN byte for byte. The only other key a step may have is
+#     `timeout-minutes`, which must then be a positive integer.
+#   - The job's `env` is exactly COMPAT_JOB_ENV: UV_PYTHON, EXPECTED_AIOSQLITE and
+#     EXPECTED_SQLALCHEMY, each taken from the matrix row.
+#   - The job's keys are among COMPAT_JOB_KEYS, so `container`, `services`, `defaults`,
+#     `continue-on-error` and any other key are refused. `strategy` holds only
+#     `fail-fast` and `matrix`, and `matrix` only `include`. The lowest SQLAlchemy and
+#     the lowest aiosqlite in the rows are the `>=` floors that pyproject.toml declares.
+#
+# Checked on every step of the job, the steps before the replacement included: no
+# `continue-on-error`, `if`, `shell` or `working-directory`, no step `env` that sets an
+# expected version, and no `run` text that mentions GITHUB_ENV.
+#
+# The version check is also run, in a test of its own. With the installed versions as the
+# expected ones, COMPAT_ASSERT_SCRIPT must exit 0. For each package it must exit non-zero
+# without a Python traceback when the expected version is any of five: 0.0.0, 999999.0,
+# the installed version with its last number raised by one, the installed version with
+# `.1` appended, or the installed version with its last number removed (0.22.1 becomes
+# 0.22). That tests the copy in this file, so it stays correct when someone edits it.
+#
+# Not read: the `run` text of the steps before the replacement and of the replacement
+# step (only their switches and GITHUB_ENV mention are read, as above); a write to
+# GITHUB_PATH in those steps (the uv install step writes one, and a later step's `uv`
+# resolves through PATH); the `with:` inputs of a `uses:` step; what a script file or an
+# action that a step calls does; and workflow-level `env:` and `defaults:`.
 COMPAT_AFTER_REPLACE_KEYS = {"name", "run", "timeout-minutes"}
-# The pytest step's text is refused when it holds any of these, because each lets a
-# one-line `run:` do more than start pytest. `"` and `*` stay allowed: the marker
-# expression is quoted and the test files are a glob. This is a list of characters and
-# not a parse of the shell: a character that is not here is accepted unless it changes
-# the first four words.
-COMPAT_PYTEST_REFUSED = {
-    "\n": ("a newline", "starts another command"),
-    ";": ("a semicolon", "ends the command and starts another"),
-    "&": ("an ampersand", "starts another command (`&&`) or puts this one in the background"),
-    "|": ("a bar", "pipes the output to another command or runs one on failure (`||`)"),
-    "$": ("a dollar sign", "expands a variable or runs a command substitution"),
-    "`": ("a backtick", "runs a command substitution"),
-    "\\": ("a backslash", "continues the line or escapes a character"),
-    "<": ("a less-than sign", "reads input from a file, a here-string or a process"),
-    ">": ("a greater-than sign", "writes output to a file"),
-    "(": ("an opening parenthesis", "starts a subshell or a substitution"),
-    ")": ("a closing parenthesis", "ends a subshell or a substitution"),
-    "'": (
-        "a single quote",
-        "quotes with single quotes, so the only quoting left is double quotes, "
-        "inside which `$`, a backtick and a backslash are refused",
-    ),
-}
-# Version strings handed to the assertion script as the expected ones. 0.0.0 sorts
-# below and 999999.0 above every release as strings, so a check that compares with
-# only `<` or only `>` passes one of them. A string such as `not-1.0` sorts above
-# every digit, which would hide a `<` check.
+# Version strings handed to the assertion script as the expected ones, besides the
+# installed versions and three derived from them. 0.0.0 sorts below and 999999.0 above
+# every release as strings, so a check that compares with only `<` or only `>` passes
+# one of them. A string such as `not-1.0` sorts above every digit, which would hide a
+# `<` check.
 COMPAT_BELOW = "0.0.0"
 COMPAT_ABOVE = "999999.0"
 COMPAT_EXPECTED_VARIABLES = {"EXPECTED_AIOSQLITE": "aiosqlite", "EXPECTED_SQLALCHEMY": "sqlalchemy"}
@@ -1601,6 +1583,52 @@ COMPAT_LOCK_STEP = "Install dependencies from the lock"
 COMPAT_REPLACE_STEP = "Replace aiosqlite and SQLAlchemy with the matrix versions"
 COMPAT_ASSERT_STEP = "Assert the interpreter has the matrix versions"
 COMPAT_PYTEST_STEP = "Run the compatibility-mode tests"
+
+
+def _compat_run(script: str) -> str:
+    """The `run` text that hands *script* to `python -` through a quoted heredoc."""
+    return f"uv run --no-sync python - <<'PY'\n{script}PY\n"
+
+
+# The script of the assertion step, and the two `run` texts the pin requires. The
+# script is a constant of its own so that a test can run it, and the step's `run` is
+# built from it; it may not hold a line that is exactly `PY`, which would end the
+# heredoc early in the shell.
+COMPAT_ASSERT_SCRIPT = """\
+import os
+from importlib.metadata import version
+
+expected = {
+    "aiosqlite": os.environ["EXPECTED_AIOSQLITE"],
+    "sqlalchemy": os.environ["EXPECTED_SQLALCHEMY"],
+}
+mismatched = []
+for name, wanted in expected.items():
+    found = version(name)
+    print(f"{name}: installed {found}, matrix {wanted}")
+    if found != wanted:
+        mismatched.append(f"{name} {found} (matrix {wanted})")
+if mismatched:
+    raise SystemExit("not the matrix versions: " + ", ".join(mismatched))
+"""
+COMPAT_ASSERT_RUN = _compat_run(COMPAT_ASSERT_SCRIPT)
+COMPAT_PYTEST_RUN = (
+    "uv run --no-sync pytest -n 0 --maxfail=0 "
+    '-m "not performance and not flaky_quarantine" '
+    "--disable-warnings tests/state/test_compatibility_*.py"
+)
+# The steps after the replacement: (name, the constant's name for messages, its `run` text).
+COMPAT_PINNED_STEPS = [
+    (COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN", COMPAT_ASSERT_RUN),
+    (COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN", COMPAT_PYTEST_RUN),
+]
+COMPAT_JOB_ENV = {
+    "UV_PYTHON": "${{ matrix.python-version }}",
+    "EXPECTED_AIOSQLITE": "${{ matrix.aiosqlite }}",
+    "EXPECTED_SQLALCHEMY": "${{ matrix.sqlalchemy }}",
+}
+COMPAT_JOB_KEYS = {"name", "needs", "if", "runs-on", "timeout-minutes", "strategy", "env", "steps"}
+COMPAT_STRATEGY_KEYS = {"fail-fast", "matrix"}
 
 
 def _compat_step_label(step: dict) -> str:
@@ -1637,88 +1665,92 @@ def _compat_run_check(body: str, aiosqlite: str, sqlalchemy: str) -> tuple[int, 
     return result.returncode, result.stderr.strip()
 
 
-def _compat_heredoc(run: str) -> tuple[str | None, str | None]:
-    """The script a step's `run` text hands to `python -`, or why it is not just that.
+def _compat_raise_last_number(version: str) -> str:
+    """*version* with its last run of digits raised by one: 0.22.1 becomes 0.22.2."""
+    return re.sub(r"\d+(?=\D*$)", lambda match: str(int(match[0]) + 1), version, count=1)
 
-    The text must be COMPAT_HEREDOC_OPEN, the script, and a line that is exactly `PY`,
-    with nothing after that line but an optional final newline. The shell ends the
-    heredoc at the first line that is exactly `PY`, so the script is what lies before it.
-    Returns (script, None) or (None, the reason, which does not name the step).
+
+def _compat_drop_last_number(version: str) -> str | None:
+    """*version* without its last dot-separated number: 0.22.1 becomes 0.22.
+
+    None when *version* has a single number, because nothing would be left to compare with.
     """
-    lines = run.split("\n")
-    if lines[0] != COMPAT_HEREDOC_OPEN:
-        return None, (
-            f"must start with the line {COMPAT_HEREDOC_OPEN!r}, but its first line is {lines[0]!r}"
-        )
-    for i, line in enumerate(lines[1:], start=1):
-        if line == "PY":
-            after = lines[i + 1 :]
-            if after not in ([], [""]):
-                text = "\n".join(after)
-                return None, (
-                    "has text after the first line that is exactly PY, where the shell ends "
-                    f"the heredoc and runs what follows as commands: {text!r}"
-                )
-            return "".join(f"{script_line}\n" for script_line in lines[1:i]), None
-    return None, "has no line that is exactly PY to end the heredoc"
+    shorter, dot, _ = version.rpartition(".")
+    return shorter if dot else None
 
 
-def _compat_assert_problems(label: str, run: str) -> list[str]:
-    """Why the assertion step's `run` text cannot be relied on to stop the job on a wrong version."""
-    body, problem = _compat_heredoc(run)
-    if body is None:
-        return [f"step {label} {problem}"]
+def _compat_probe_problems(script: str) -> list[str]:
+    """Why *script* cannot be relied on to stop a job on a version other than the expected one.
+
+    The script is run on this interpreter. It must exit 0 when the expected versions are
+    the installed ones. For each package, it must then exit non-zero, and without a Python
+    traceback, when that package's expected version is any of five versions that differ
+    from the installed one: one below every release, one above every release, the installed
+    version with its last number raised by one, the installed version with `.1` appended,
+    and the installed version with its last number removed. The last one catches a check
+    that accepts an expected version which the installed version starts with. When the
+    installed version has a single number that probe cannot be built, and that is reported.
+    """
     installed = {name: importlib.metadata.version(name) for name in ("aiosqlite", "sqlalchemy")}
-    code, error = _compat_run_check(body, installed["aiosqlite"], installed["sqlalchemy"])
+    code, error = _compat_run_check(script, installed["aiosqlite"], installed["sqlalchemy"])
     if code != 0:
         return [
-            f"step {label} exited {code} when the expected versions were the installed ones: {error}"
+            f"the script exited {code} when the expected versions were the installed ones: {error}"
         ]
     problems = []
     for variable, package in COMPAT_EXPECTED_VARIABLES.items():
-        for side, wrong in (("below", COMPAT_BELOW), ("above", COMPAT_ABOVE)):
+        probes = [
+            (COMPAT_BELOW, "a version below every release"),
+            (COMPAT_ABOVE, "a version above every release"),
+            (
+                _compat_raise_last_number(installed[package]),
+                f"the installed {package} {installed[package]} with its last number raised by one",
+            ),
+            (
+                f"{installed[package]}.1",
+                f"the installed {package} {installed[package]} with .1 appended",
+            ),
+        ]
+        shorter = _compat_drop_last_number(installed[package])
+        if shorter is None:
+            problems.append(
+                f"the installed {package} {installed[package]} has a single number, so the probe "
+                "with its last number removed cannot be built"
+            )
+        else:
+            probes.append(
+                (
+                    shorter,
+                    f"the installed {package} {installed[package]} with its last number removed",
+                )
+            )
+        for wrong, described in probes:
             expected = {**installed, package: wrong}
-            code, error = _compat_run_check(body, expected["aiosqlite"], expected["sqlalchemy"])
+            code, error = _compat_run_check(script, expected["aiosqlite"], expected["sqlalchemy"])
             if code == 0:
                 problems.append(
-                    f"step {label} exited 0 with {variable}={wrong!r}, a version {side} the "
-                    f"installed {package} {installed[package]}, so a wrong {package} version passes"
+                    f"the script exited 0 with {variable}={wrong!r}, {described}, "
+                    f"so a wrong {package} version passes"
                 )
             elif "Traceback" in error:
                 problems.append(
-                    f"step {label} ended in a Python Traceback with {variable}={wrong!r} instead "
-                    f"of stopping with a message, so it crashes where it should compare: "
-                    f"{error.splitlines()[-1]}"
+                    f"the script ended in a Python Traceback with {variable}={wrong!r}, "
+                    f"{described}, instead of stopping with a message, so it crashes where it "
+                    f"should compare: {error.splitlines()[-1]}"
                 )
     return problems
 
 
-def _compat_pytest_problems(label: str, run: str) -> list[str]:
-    """Why the pytest step's `run` text is not one `uv run --no-sync pytest` command."""
-    refused = [
-        f"{name} ({char!r}), which {reason}"
-        for char, (name, reason) in COMPAT_PYTEST_REFUSED.items()
-        if char in run
-    ]
-    if refused:
-        return [
-            f"step {label} has this in its run text: " + "; and ".join(refused) + ". It can do "
-            "more than start pytest, so write it as one line holding one command"
-        ]
-    try:
-        words = shlex.split(run)
-    except ValueError as error:
-        return [f"step {label} cannot be split into words ({error})"]
-    if words[:4] != COMPAT_PYTEST_WORDS:
-        return [
-            f"step {label} must start with `{' '.join(COMPAT_PYTEST_WORDS)}`, but its first "
-            f"words are {words[:4]}"
-        ]
-    return []
+def _compat_first_difference(found: str, pinned: str) -> str:
+    """Where *found* first departs from *pinned*, with a little of each text around it."""
+    at = next(
+        (n for n, (a, b) in enumerate(zip(found, pinned)) if a != b), min(len(found), len(pinned))
+    )
+    return f"they first differ at character {at}: found {found[at : at + 40]!r}, pinned {pinned[at : at + 40]!r}"
 
 
 def _compat_step_problems(steps: list[dict]) -> list[str]:
-    """Why the steps after the replacement are not the assertion step and the pytest step."""
+    """Why the steps after the replacement are not the pinned assertion step and pytest step."""
     replacing = [i for i, step in enumerate(steps) if step.get("name") == COMPAT_REPLACE_STEP]
     if len(replacing) != 1:
         return [
@@ -1727,12 +1759,13 @@ def _compat_step_problems(steps: list[dict]) -> list[str]:
         ]
     after = steps[replacing[0] + 1 :]
     problems = []
-    if [step.get("name") for step in after] != [COMPAT_ASSERT_STEP, COMPAT_PYTEST_STEP]:
+    if [step.get("name") for step in after] != [name for name, _, _ in COMPAT_PINNED_STEPS]:
         found = ", ".join(_compat_step_label(step) for step in after) or "none"
         problems.append(
             f"the steps after {COMPAT_REPLACE_STEP!r} must be exactly {COMPAT_ASSERT_STEP!r} "
             f"then {COMPAT_PYTEST_STEP!r}, but they are {found}"
         )
+    pinned_runs = {name: (constant, run) for name, constant, run in COMPAT_PINNED_STEPS}
     for step in after:
         label = _compat_step_label(step)
         extra = sorted(set(step) - COMPAT_AFTER_REPLACE_KEYS)
@@ -1741,31 +1774,59 @@ def _compat_step_problems(steps: list[dict]) -> list[str]:
                 f"step {label} has the keys {extra}; after {COMPAT_REPLACE_STEP!r} a step may "
                 "have only name, run and timeout-minutes"
             )
-        if step.get("name") not in (COMPAT_ASSERT_STEP, COMPAT_PYTEST_STEP):
+        timeout = step.get("timeout-minutes", 1)
+        if type(timeout) is not int or timeout < 1:
+            problems.append(
+                f"step {label} sets timeout-minutes to {timeout!r}; it must be a positive integer"
+            )
+        if step.get("name") not in pinned_runs:
             continue
+        constant, pinned = pinned_runs[step["name"]]
         run = step.get("run")
         if not isinstance(run, str):
-            problems.append(f"step {label} has no run text")
-        elif step["name"] == COMPAT_ASSERT_STEP:
-            problems.extend(_compat_assert_problems(label, run))
+            problems.append(f"step {label} has no run text, where {constant} pins one")
+        elif run != pinned:
+            problems.append(
+                f"step {label} has a run text other than {constant}, which this test pins byte "
+                f"for byte; {_compat_first_difference(run, pinned)}"
+            )
+    return problems
+
+
+def _compat_job_problems(job: dict) -> list[str]:
+    """Why the job's own keys, env or strategy are not the pinned ones."""
+    problems = []
+    extra = sorted(set(job) - COMPAT_JOB_KEYS)
+    if extra:
+        problems.append(
+            f"the compat-deps job has the keys {extra}; it may have only {sorted(COMPAT_JOB_KEYS)}, "
+            "so that nothing here changes where its steps run or whether a failure fails the job"
+        )
+    env = job.get("env")
+    if env != COMPAT_JOB_ENV:
+        if not isinstance(env, dict):
+            problems.append(f"the compat-deps env is {env!r}, not a mapping of three variables")
         else:
-            problems.extend(_compat_pytest_problems(label, run))
+            for key in sorted(set(env) | set(COMPAT_JOB_ENV)):
+                found = repr(env[key]) if key in env else "unset"
+                wanted = repr(COMPAT_JOB_ENV[key]) if key in COMPAT_JOB_ENV else "unset"
+                if found != wanted:
+                    problems.append(
+                        f"the compat-deps env has {key} {found}, but this test pins it to {wanted}"
+                    )
+    strategy = job.get("strategy")
+    others = sorted(set(strategy) - COMPAT_STRATEGY_KEYS) if isinstance(strategy, dict) else []
+    if others:
+        problems.append(
+            f"the compat-deps strategy has the keys {others}; it may have only "
+            f"{sorted(COMPAT_STRATEGY_KEYS)}"
+        )
     return problems
 
 
 def _compat_switch_problems(job: dict) -> list[str]:
-    """Settings that let the job pass without its tests or checks having run or succeeded."""
+    """Step settings that let a step be skipped, fail unnoticed or change the later steps' environment."""
     problems = []
-    if "continue-on-error" in job:
-        problems.append(
-            f"the compat-deps job sets continue-on-error ({job['continue-on-error']!r}), "
-            "so a failing row can still pass"
-        )
-    if "defaults" in job:
-        problems.append(
-            f"the compat-deps job sets defaults ({job['defaults']!r}), which can give every "
-            "step another shell or working directory"
-        )
     for step in job["steps"]:
         label = _compat_step_label(step)
         if "continue-on-error" in step:
@@ -1794,18 +1855,19 @@ def _compat_switch_problems(job: dict) -> list[str]:
                     f"step {label} sets {variable} in its own env, so it can expect other "
                     "versions than the matrix row's"
                 )
-    for variable, key in COMPAT_EXPECTED_VARIABLES.items():
-        found = (job.get("env") or {}).get(variable)
-        wanted = "${{ matrix." + key + " }}"
-        if found != wanted:
-            problems.append(f"the compat-deps env has {variable}={found!r}, not {wanted}")
     return problems
 
 
 def _compat_deps_problems(workflows: Path = WORKFLOWS, pyproject: Path = PYPROJECT) -> list[str]:
-    """Each way the compat-deps job stops testing the versions its matrix names."""
+    """What the compat-deps job has that the pin refuses.
+
+    Checks the job's keys and env, the strategy and matrix keys, the matrix floors, the
+    switches on every step, and that the two steps after the replacement are exactly the
+    pinned ones. It does not run the pinned version check; a test of its own does.
+    """
     job = _parse((workflows / "ci.yml").read_text())["jobs"]["compat-deps"]
-    problems = _compat_switch_problems(job)
+    problems = _compat_job_problems(job)
+    problems.extend(_compat_switch_problems(job))
     problems.extend(_compat_step_problems(job["steps"]))
     matrix = job["strategy"]["matrix"]
     others = sorted(set(matrix) - {"include"})
@@ -1924,23 +1986,19 @@ def _replace_in_run(name: str, old: str, new: str):
     return mutate
 
 
-# Replacement texts for the version-check step. Each reads the installed versions;
-# the first three do not stop the job when one of them differs from the expected
-# one, and the fourth stops it even when they match.
-COMPAT_PRINT_ONLY = (
-    "uv run --no-sync python - <<'PY'\n"
-    "from importlib.metadata import version\n"
-    "print(version('aiosqlite'), version('sqlalchemy'))\n"
-    "PY\n"
-)
-COMPAT_CHECKS_SQLALCHEMY_ONLY = (
-    "uv run --no-sync python - <<'PY'\n"
-    "import os\n"
-    "from importlib.metadata import version\n"
-    "if version('sqlalchemy') != os.environ['EXPECTED_SQLALCHEMY']:\n"
-    "    raise SystemExit('not the matrix versions')\n"
-    "PY\n"
-)
+# Replacement scripts for the version-check step. Each reads the installed versions.
+# The first three do not stop the job when one of them differs from the expected one,
+# and the fourth stops it even when they match.
+COMPAT_PRINT_ONLY = """\
+from importlib.metadata import version
+print(version('aiosqlite'), version('sqlalchemy'))
+"""
+COMPAT_CHECKS_SQLALCHEMY_ONLY = """\
+import os
+from importlib.metadata import version
+if version('sqlalchemy') != os.environ['EXPECTED_SQLALCHEMY']:
+    raise SystemExit('not the matrix versions')
+"""
 COMPAT_CHECKS_AIOSQLITE_ONLY = COMPAT_CHECKS_SQLALCHEMY_ONLY.replace(
     "sqlalchemy", "aiosqlite"
 ).replace("SQLALCHEMY", "AIOSQLITE")
@@ -1948,42 +2006,91 @@ COMPAT_ONE_LINER = (
     'uv run --no-sync python -c "from importlib.metadata import version; '
     "print(version('aiosqlite'), version('sqlalchemy'))\"\n"
 )
-COMPAT_ALWAYS_FAILS = (
-    "uv run --no-sync python - <<'PY'\n"
-    "from importlib.metadata import version\n"
-    "raise SystemExit('never matches ' + version('aiosqlite'))\n"
-    "PY\n"
-)
+COMPAT_ALWAYS_FAILS = """\
+from importlib.metadata import version
+raise SystemExit('never matches ' + version('aiosqlite'))
+"""
 # These three exit 0 when the installed versions are the expected ones. The first two
 # compare version strings with an ordering operator, so each stops the job on one side
 # of the expected version only; the third stops it by raising a NameError, which is a
 # crash rather than a comparison.
-COMPAT_CHECKS_WITH_LESS_THAN = (
-    "uv run --no-sync python - <<'PY'\n"
-    "import os\n"
-    "from importlib.metadata import version\n"
-    "if (version('aiosqlite') < os.environ['EXPECTED_AIOSQLITE']\n"
-    "        or version('sqlalchemy') < os.environ['EXPECTED_SQLALCHEMY']):\n"
-    "    raise SystemExit('older than the matrix')\n"
-    "PY\n"
-)
+COMPAT_CHECKS_WITH_LESS_THAN = """\
+import os
+from importlib.metadata import version
+if (version('aiosqlite') < os.environ['EXPECTED_AIOSQLITE']
+        or version('sqlalchemy') < os.environ['EXPECTED_SQLALCHEMY']):
+    raise SystemExit('older than the matrix')
+"""
 COMPAT_CHECKS_WITH_GREATER_THAN = COMPAT_CHECKS_WITH_LESS_THAN.replace(" < ", " > ").replace(
     "older", "newer"
 )
-COMPAT_CRASHES_ON_A_MISMATCH = (
-    "uv run --no-sync python - <<'PY'\n"
-    "import os\n"
-    "from importlib.metadata import version\n"
-    "if (version('aiosqlite') != os.environ['EXPECTED_AIOSQLITE']\n"
-    "        or version('sqlalchemy') != os.environ['EXPECTED_SQLALCHEMY']):\n"
-    "    not_the_matrix_versions\n"
-    "PY\n"
-)
+COMPAT_CRASHES_ON_A_MISMATCH = """\
+import os
+from importlib.metadata import version
+if (version('aiosqlite') != os.environ['EXPECTED_AIOSQLITE']
+        or version('sqlalchemy') != os.environ['EXPECTED_SQLALCHEMY']):
+    not_the_matrix_versions
+"""
+# These three also exit 0 on the installed versions. The first compares only the major
+# and minor numbers, so a different patch release passes. The second tests whether the
+# expected version starts with the installed one, so the installed version followed by
+# more text passes. The third tests the other way round, whether the installed version
+# starts with the expected one, so a shorter expected version (0.22 for 0.22.1) passes.
+COMPAT_CHECKS_MAJOR_MINOR = """\
+import os
+from importlib.metadata import version
+for name in ('aiosqlite', 'sqlalchemy'):
+    found = version(name)
+    wanted = os.environ['EXPECTED_' + name.upper()]
+    if found.split('.')[:2] != wanted.split('.')[:2]:
+        raise SystemExit(f'{name} {found} is not the matrix version {wanted}')
+"""
+COMPAT_CHECKS_STARTSWITH = """\
+import os
+from importlib.metadata import version
+for name in ('aiosqlite', 'sqlalchemy'):
+    found = version(name)
+    wanted = os.environ['EXPECTED_' + name.upper()]
+    if not wanted.startswith(found):
+        raise SystemExit(f'{name} {found} is not the matrix version {wanted}')
+"""
+COMPAT_CHECKS_INSTALLED_STARTSWITH = """\
+import os
+from importlib.metadata import version
+for name in ('aiosqlite', 'sqlalchemy'):
+    found = version(name)
+    wanted = os.environ['EXPECTED_' + name.upper()]
+    if not found.startswith(wanted):
+        raise SystemExit(f'{name} {found} is not the matrix version {wanted}')
+"""
+# A script other than the one in ci.yml that compares both versions exactly and stops
+# with a message. It would do what the step is for, and the exact pin refuses it.
+COMPAT_ALTERNATIVE_CHECK = """\
+import os
+import sys
+from importlib import metadata
+
+wanted = {
+    'aiosqlite': os.environ['EXPECTED_AIOSQLITE'],
+    'sqlalchemy': os.environ['EXPECTED_SQLALCHEMY'],
+}
+wrong = [name for name, value in wanted.items() if metadata.version(name) != value]
+if wrong:
+    sys.exit('not the matrix versions: ' + ', '.join(wrong))
+"""
 
 # (id, edit applied to a copy of the workflow, the parts one reported problem must hold)
 COMPAT_ARMS = [
-    ("pytest-step-syncs", _drop_no_sync(COMPAT_PYTEST_STEP), ["--no-sync", COMPAT_PYTEST_STEP]),
-    ("assert-step-syncs", _drop_no_sync(COMPAT_ASSERT_STEP), ["--no-sync", COMPAT_ASSERT_STEP]),
+    (
+        "pytest-step-syncs",
+        _drop_no_sync(COMPAT_PYTEST_STEP),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "assert-step-syncs",
+        _drop_no_sync(COMPAT_ASSERT_STEP),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
     (
         "no-version-assert",
         _delete_step(COMPAT_ASSERT_STEP),
@@ -1993,28 +2100,28 @@ COMPAT_ARMS = [
     ("aiosqlite-floor-unreached", _raise_the_lowest("aiosqlite"), ["lowest aiosqlite"]),
     (
         "check-only-prints",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_PRINT_ONLY),
-        ["exited 0", "EXPECTED_AIOSQLITE"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_PRINT_ONLY)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "check-skips-aiosqlite",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_CHECKS_SQLALCHEMY_ONLY),
-        ["exited 0", "EXPECTED_AIOSQLITE"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_SQLALCHEMY_ONLY)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "check-skips-sqlalchemy",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_CHECKS_AIOSQLITE_ONLY),
-        ["exited 0", "EXPECTED_SQLALCHEMY"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_AIOSQLITE_ONLY)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "check-fails-on-a-match",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_ALWAYS_FAILS),
-        ["exited 1", "were the installed ones"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_ALWAYS_FAILS)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "check-is-a-one-liner",
         _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_ONE_LINER),
-        [COMPAT_ASSERT_STEP, "must start with the line"],
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "expected-version-not-from-the-matrix",
@@ -2075,18 +2182,18 @@ COMPAT_ARMS = [
     ),
     (
         "a-check-with-less-than",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_CHECKS_WITH_LESS_THAN),
-        ["exited 0", "'0.0.0'"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_WITH_LESS_THAN)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "b-check-with-greater-than",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_CHECKS_WITH_GREATER_THAN),
-        ["exited 0", "'999999.0'"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_WITH_GREATER_THAN)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "c-check-that-raises-a-name-error",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_CRASHES_ON_A_MISMATCH),
-        ["Traceback", "EXPECTED_AIOSQLITE"],
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CRASHES_ON_A_MISMATCH)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "d-a-prefix-before-the-heredoc-line",
@@ -2095,7 +2202,7 @@ COMPAT_ARMS = [
             "uv run --no-sync python - <<'PY'",
             "uv run --no-sync touch prepared && uv run --no-sync python - <<'PY'",
         ),
-        [COMPAT_ASSERT_STEP, "must start with the line"],
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "e-pytest-through-uv-project",
@@ -2104,7 +2211,7 @@ COMPAT_ARMS = [
             "run",
             value="uv --project . run pytest -n 0 tests/state/test_compatibility_*.py",
         ),
-        [COMPAT_PYTEST_STEP, "uv run --no-sync pytest"],
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
     ),
     (
         "f-pytest-through-uvx",
@@ -2113,12 +2220,12 @@ COMPAT_ARMS = [
             "run",
             value="uvx --with-editable . pytest -n 0 tests/state/test_compatibility_*.py",
         ),
-        [COMPAT_PYTEST_STEP, "uv run --no-sync pytest"],
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
     ),
     (
         "g-pytest-step-with-a-second-line",
         _append_to_run(COMPAT_PYTEST_STEP, "\nuv --color auto sync\n"),
-        [COMPAT_PYTEST_STEP, "newline"],
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
     ),
     (
         "h-a-step-after-pytest",
@@ -2128,12 +2235,12 @@ COMPAT_ARMS = [
     (
         "i-a-command-after-the-heredoc-end",
         _append_to_run(COMPAT_ASSERT_STEP, "python -mpip install x\n"),
-        [COMPAT_ASSERT_STEP, "after the first line that is exactly PY"],
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "j-a-PY-line-inside-the-script",
         _replace_in_run(COMPAT_ASSERT_STEP, "if mismatched:\n", "PY\nif mismatched:\n"),
-        [COMPAT_ASSERT_STEP, "after the first line that is exactly PY"],
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
     ),
     (
         "k-github-env-before-the-replacement",
@@ -2165,6 +2272,101 @@ COMPAT_ARMS = [
         "o-defaults-on-the-job",
         _set_in_job("defaults", value={"run": {"shell": "bash", "working-directory": "x"}}),
         ["defaults"],
+    ),
+    # A check that compares only the major and minor numbers lets a patch release
+    # through, and 0.0.0 and 999999.0 differ from every installed version in the first
+    # two numbers, so only a difference in the last number shows it.
+    (
+        "p-check-of-major-and-minor-only",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_CHECKS_MAJOR_MINOR)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    # The pytest options below leave the first four words alone and run no test, or
+    # run something other than the tests.
+    (
+        "q-pytest-that-only-collects-with-co",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--co -q -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "r-pytest-that-only-collects",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--collect-only -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "s-pytest-that-prints-help",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--help -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "t-pytest-that-prints-its-version",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "--version -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    (
+        "u-pytest-that-loads-a-plugin",
+        _replace_in_run(COMPAT_PYTEST_STEP, "-n 0", "-p some_plugin -n 0"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    # Both edits leave the job honest, and the exact pin refuses them all the same:
+    # changing either step's text means changing its constant in this file.
+    (
+        "v-another-check-that-compares-both-versions",
+        _set_in_step(COMPAT_ASSERT_STEP, "run", value=_compat_run(COMPAT_ALTERNATIVE_CHECK)),
+        [COMPAT_ASSERT_STEP, "COMPAT_ASSERT_RUN"],
+    ),
+    (
+        "w-another-pytest-option",
+        _replace_in_run(COMPAT_PYTEST_STEP, "--disable-warnings", "--disable-warnings -q"),
+        [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
+    ),
+    # The job's env is exactly three variables.
+    (
+        "x-uv-python-fixed-to-one-version",
+        _set_in_job("env", "UV_PYTHON", value="3.14"),
+        ["UV_PYTHON", "matrix.python-version"],
+    ),
+    (
+        "y-an-extra-env-variable-on-the-job",
+        _set_in_job("env", "UV_NO_SYNC", value="0"),
+        ["UV_NO_SYNC", "unset"],
+    ),
+    (
+        "z-a-missing-env-variable-on-the-job",
+        lambda workflow: workflow["jobs"]["compat-deps"]["env"].pop("UV_PYTHON"),
+        ["UV_PYTHON", "unset"],
+    ),
+    # The job's keys are a fixed set.
+    (
+        "aa-container-on-the-job",
+        _set_in_job("container", value="python:3.12"),
+        ["container", "may have only"],
+    ),
+    (
+        "ab-services-on-the-job",
+        _set_in_job("services", value={"db": {"image": "postgres:16"}}),
+        ["services", "may have only"],
+    ),
+    (
+        "ac-a-strategy-key-other-than-fail-fast-and-matrix",
+        _set_in_job("strategy", "max-parallel", value=1),
+        ["strategy", "max-parallel"],
+    ),
+    # timeout-minutes on a step after the replacement is a positive integer or absent.
+    (
+        "ad-a-timeout-of-zero",
+        _set_in_step(COMPAT_PYTEST_STEP, "timeout-minutes", value=0),
+        [COMPAT_PYTEST_STEP, "timeout-minutes", "positive integer"],
+    ),
+    (
+        "ae-a-timeout-that-is-text",
+        _set_in_step(COMPAT_ASSERT_STEP, "timeout-minutes", value="5"),
+        [COMPAT_ASSERT_STEP, "timeout-minutes", "positive integer"],
+    ),
+    (
+        "af-a-timeout-that-is-true",
+        _set_in_step(COMPAT_ASSERT_STEP, "timeout-minutes", value=True),
+        [COMPAT_ASSERT_STEP, "timeout-minutes", "positive integer"],
     ),
 ]
 
@@ -2200,36 +2402,10 @@ def _add_matrix_row(row: dict):
     return mutate
 
 
-# A check that is not the one in ci.yml but compares both versions and stops with a
-# message, so it is what the pin asks of the step and is accepted.
-COMPAT_ALTERNATIVE_CHECK = (
-    "uv run --no-sync python - <<'PY'\n"
-    "import os\n"
-    "import sys\n"
-    "from importlib import metadata\n"
-    "\n"
-    "wanted = {\n"
-    "    'aiosqlite': os.environ['EXPECTED_AIOSQLITE'],\n"
-    "    'sqlalchemy': os.environ['EXPECTED_SQLALCHEMY'],\n"
-    "}\n"
-    "wrong = [name for name, value in wanted.items() if metadata.version(name) != value]\n"
-    "if wrong:\n"
-    "    sys.exit('not the matrix versions: ' + ', '.join(wrong))\n"
-    "PY\n"
-)
-
 # (id, edit applied to a copy of the workflow); the pin has nothing to say about any of them.
 COMPAT_ALLOWED_EDITS = [
     ("an-unedited-copy", lambda workflow: None),
-    (
-        "another-check-that-compares-both-versions",
-        _set_in_step(COMPAT_ASSERT_STEP, "run", value=COMPAT_ALTERNATIVE_CHECK),
-    ),
     ("a-timeout-on-the-assert-step", _set_in_step(COMPAT_ASSERT_STEP, "timeout-minutes", value=5)),
-    (
-        "another-pytest-option",
-        _replace_in_run(COMPAT_PYTEST_STEP, "--disable-warnings", "--disable-warnings -q"),
-    ),
     (
         "a-longer-timeout-on-the-pytest-step",
         _set_in_step(COMPAT_PYTEST_STEP, "timeout-minutes", value=30),
@@ -2260,87 +2436,121 @@ def test_the_compat_deps_pin_accepts_these_edits(mutate, tmp_path: Path) -> None
     assert _compat_problems_of_a_copy(workflow, tmp_path) == []
 
 
+def test_the_compat_pin_compares_the_text_the_yaml_parser_returns(tmp_path: Path) -> None:
+    # The pin compares each step's `run` as parsed, not as spelled. The workflow here
+    # holds the version check as one double-quoted scalar with `\n` escapes and the pytest
+    # command as another, in place of the block scalars of ci.yml.
+    text = (WORKFLOWS / "ci.yml").read_text()
+    check_block = re.compile(
+        r"      run: \|\n        uv run --no-sync python - <<'PY'\n(?:        .*\n|\n)*?        PY\n"
+    )
+    pytest_block = re.compile(
+        r"      run: >-\n        uv run --no-sync pytest\b(?:.*\n)*?"
+        r"        tests/state/test_compatibility_\*\.py\n"
+    )
+    text, checks = check_block.subn(lambda _: f"      run: {json.dumps(COMPAT_ASSERT_RUN)}\n", text)
+    text, pytests = pytest_block.subn(
+        lambda _: f"      run: {json.dumps(COMPAT_PYTEST_RUN)}\n", text
+    )
+    assert (checks, pytests) == (1, 1)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text)
+    assert _compat_deps_problems(workflows) == []
+
+
+def test_the_compat_assertion_script_stops_on_a_wrong_version() -> None:
+    # The step's text is pinned to COMPAT_ASSERT_RUN, which is the script below inside a
+    # heredoc. A `PY` line in the script would end that heredoc early in the shell, so the
+    # script run here would not be the script the job runs.
+    assert "PY" not in COMPAT_ASSERT_SCRIPT.splitlines()
+    problems = _compat_probe_problems(COMPAT_ASSERT_SCRIPT)
+    assert not problems, "\n".join(problems)
+
+
+# (id, a script, the parts one reported problem must hold). None of these stops the job
+# on every wrong version, and each is reported for the first version it lets through.
+COMPAT_PROBE_CASES = [
+    ("only-prints", COMPAT_PRINT_ONLY, ["exited 0", "EXPECTED_AIOSQLITE", "'0.0.0'"]),
+    (
+        "checks-sqlalchemy-only",
+        COMPAT_CHECKS_SQLALCHEMY_ONLY,
+        ["exited 0", "EXPECTED_AIOSQLITE", "'0.0.0'"],
+    ),
+    (
+        "checks-aiosqlite-only",
+        COMPAT_CHECKS_AIOSQLITE_ONLY,
+        ["exited 0", "EXPECTED_SQLALCHEMY", "'0.0.0'"],
+    ),
+    ("fails-on-a-match", COMPAT_ALWAYS_FAILS, ["exited 1", "were the installed ones"]),
+    ("less-than", COMPAT_CHECKS_WITH_LESS_THAN, ["exited 0", "'0.0.0'", "below every release"]),
+    (
+        "greater-than",
+        COMPAT_CHECKS_WITH_GREATER_THAN,
+        ["exited 0", "'999999.0'", "above every release"],
+    ),
+    ("crashes-on-a-mismatch", COMPAT_CRASHES_ON_A_MISMATCH, ["Traceback", "EXPECTED_AIOSQLITE"]),
+    (
+        "major-and-minor-only",
+        COMPAT_CHECKS_MAJOR_MINOR,
+        ["exited 0", "last number raised by one"],
+    ),
+    # The expected version starts with the installed one: only the `.1` probe gets through.
+    ("startswith", COMPAT_CHECKS_STARTSWITH, ["exited 0", ".1 appended"]),
+    # The installed version starts with the expected one: 0.0.0, 999999.0, the raised and
+    # the `.1` versions are all refused by this check, so only the shortened version
+    # passes it.
+    (
+        "installed-startswith-expected",
+        COMPAT_CHECKS_INSTALLED_STARTSWITH,
+        ["exited 0", "last number removed"],
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    ("run", "body"),
-    [
-        ("uv run --no-sync python - <<'PY'\nprint(1)\nPY\n", "print(1)\n"),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\nPY", "print(1)\n"),
-        ("uv run --no-sync python - <<'PY'\nPY\n", ""),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\nPY\n\n", None),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\nPY\nuv sync\n", None),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\nPY\nprint(2)\nPY\n", None),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\n", None),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\n PY\n", None),
-        ("uv run --no-sync python - <<'PY'\nprint(1)\nPY \n", None),
-        ("uv run --no-sync python - <<'PY' \nprint(1)\nPY\n", None),
-        ("python - <<'PY'\nprint(1)\nPY\n", None),
-        ("uv run python - <<'PY'\nprint(1)\nPY\n", None),
-        ("", None),
-    ],
+    ("script", "expected"),
+    [pytest.param(script, expected, id=case) for case, script, expected in COMPAT_PROBE_CASES],
 )
-def test_the_compat_heredoc_ends_at_the_first_line_that_is_exactly_PY(
-    run: str, body: str | None
+def test_the_compat_probe_refuses_a_script_that_lets_a_wrong_version_pass(
+    script: str, expected: list[str]
 ) -> None:
-    found, problem = _compat_heredoc(run)
-    assert found == body, (found, problem)
-    assert (problem is None) is (body is not None), problem
+    problems = _compat_probe_problems(script)
+    assert any(all(part in problem for part in expected) for problem in problems), problems
 
 
-COMPAT_PYTEST_COMMAND = (
-    'uv run --no-sync pytest -n 0 --maxfail=0 -m "not performance and not flaky_quarantine" '
-    "--disable-warnings tests/state/test_compatibility_*.py"
-)
+def test_the_compat_probe_raises_the_last_number_of_a_version() -> None:
+    assert _compat_raise_last_number("0.22.1") == "0.22.2"
+    assert _compat_raise_last_number("2.0.49") == "2.0.50"
+    assert _compat_raise_last_number("2.1.9") == "2.1.10"
+    assert _compat_raise_last_number("2.1.0rc1") == "2.1.0rc2"
 
 
-@pytest.mark.parametrize(
-    "run",
-    [
-        COMPAT_PYTEST_COMMAND,
-        "uv run --no-sync pytest",
-        'uv run --no-sync pytest -k "sync" tests',
-        'uv run --no-sync pytest --maxfail=0 -m "a and b" tests/state/test_compatibility_*.py',
-    ],
-)
-def test_the_compat_pytest_text_that_is_accepted(run: str) -> None:
-    assert _compat_pytest_problems("'step'", run) == []
+def test_the_compat_probe_drops_the_last_number_of_a_version() -> None:
+    assert _compat_drop_last_number("0.22.1") == "0.22"
+    assert _compat_drop_last_number("2.0.52") == "2.0"
+    assert _compat_drop_last_number("2.1.0rc1") == "2.1"
+    assert _compat_drop_last_number("1.0") == "1"
+    assert _compat_drop_last_number("3") is None
 
 
-@pytest.mark.parametrize(
-    ("run", "named"),
-    [
-        (COMPAT_PYTEST_COMMAND + "\n", "newline"),
-        (COMPAT_PYTEST_COMMAND + "\nuv sync", "newline"),
-        (COMPAT_PYTEST_COMMAND + "; uv sync", "';'"),
-        (COMPAT_PYTEST_COMMAND + " && uv sync", "'&'"),
-        (COMPAT_PYTEST_COMMAND + " & uv sync", "'&'"),
-        (COMPAT_PYTEST_COMMAND + " | tee out", "'|'"),
-        (COMPAT_PYTEST_COMMAND + " || true", "'|'"),
-        (COMPAT_PYTEST_COMMAND + " $EXTRA", "'$'"),
-        (COMPAT_PYTEST_COMMAND + " `uv sync`", "'`'"),
-        (COMPAT_PYTEST_COMMAND + " \\", "'\\\\'"),
-        (COMPAT_PYTEST_COMMAND + " < input", "'<'"),
-        (COMPAT_PYTEST_COMMAND + " > out", "'>'"),
-        (COMPAT_PYTEST_COMMAND + " (uv sync)", "'('"),
-        ("uv run --no-sync pytest -k 'sync'", '"\'"'),
-        ("uv --project . run pytest tests", "uv run --no-sync pytest"),
-        ("uvx pytest tests", "uv run --no-sync pytest"),
-        ("uv --index-url https://example.invalid/simple lock", "uv run --no-sync pytest"),
-        ("uv --color auto sync", "uv run --no-sync pytest"),
-        ("pip3.12 install x", "uv run --no-sync pytest"),
-        ("python -mpip install x", "uv run --no-sync pytest"),
-        ("uv run pytest tests", "uv run --no-sync pytest"),
-        ("uv run --frozen --no-sync pytest tests", "uv run --no-sync pytest"),
-        ("uv run --no-sync python -m pytest tests", "uv run --no-sync pytest"),
-        ("UV_NO_SYNC=1 uv run --no-sync pytest", "uv run --no-sync pytest"),
-        ("env uv run --no-sync pytest tests", "uv run --no-sync pytest"),
-        ("", "uv run --no-sync pytest"),
-        ('uv run --no-sync pytest -m "not slow', "cannot be split"),
-    ],
-)
-def test_the_compat_pytest_text_that_is_refused(run: str, named: str) -> None:
-    problems = _compat_pytest_problems("'step'", run)
-    assert problems and all("'step'" in problem for problem in problems), problems
-    assert any(named in problem for problem in problems), problems
+def test_the_compat_probe_reports_a_version_it_cannot_shorten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # aiosqlite is reported as installed at the single-number version 3. The script exits 0
+    # only for exactly these two expected versions, so every probe that can be built gets
+    # the non-zero exit it should, and the one that cannot be built is the only problem.
+    installed = {"aiosqlite": "3", "sqlalchemy": "2.0.52"}
+    monkeypatch.setattr(importlib.metadata, "version", installed.__getitem__)
+    script = (
+        "import os, sys\n"
+        "sys.exit(0 if (os.environ['EXPECTED_AIOSQLITE'], os.environ['EXPECTED_SQLALCHEMY'])"
+        " == ('3', '2.0.52') else 1)\n"
+    )
+    problems = _compat_probe_problems(script)
+    assert len(problems) == 1, problems
+    assert "aiosqlite 3 has a single number" in problems[0]
+    assert "cannot be built" in problems[0]
 
 
 @pytest.mark.parametrize(
