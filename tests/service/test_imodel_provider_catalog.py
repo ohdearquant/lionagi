@@ -13,6 +13,8 @@ automatic load fails the test.
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -388,6 +390,102 @@ def test_single_endpoint_providers_select_their_endpoint_from_the_catalog(
             assert type(model.endpoint) is not Endpoint, where
             assert model.endpoint.config.endpoint == declaration.key, where
             assert model.provider_catalog is manifest_catalog, where
+
+
+_DEFAULT_ENDPOINT_NAME = inspect.signature(iModel.__init__).parameters["endpoint"].default
+
+
+def _split_by_default_endpoint(catalog):
+    """Split ``catalog``'s providers by what ``iModel``'s default endpoint name selects.
+
+    Returns ``(refused, built)``. ``refused`` holds each provider that declares several
+    endpoints, none of them keyed or aliased with the default name, so the catalog selects no
+    endpoint for it. ``built`` holds every other provider.
+    """
+    assert isinstance(_DEFAULT_ENDPOINT_NAME, str) and _DEFAULT_ENDPOINT_NAME
+    refused, built = [], []
+    for fragment in catalog.providers:
+        names_default = any(
+            _DEFAULT_ENDPOINT_NAME == declaration.key
+            or _DEFAULT_ENDPOINT_NAME in declaration.aliases
+            for declaration in fragment.endpoints
+        )
+        (built if len(fragment.endpoints) == 1 or names_default else refused).append(fragment)
+    return refused, built
+
+
+def _unmet_requirements(declaration):
+    """The requirements of ``declaration`` with an import root that cannot be imported now."""
+    return [
+        requirement
+        for requirement in declaration.requirements
+        if not all(importlib.util.find_spec(root) is not None for root in requirement.import_roots)
+    ]
+
+
+def test_default_endpoint_name_is_refused_where_the_catalog_selects_no_endpoint(
+    manifest_catalog, forbid_automatic_source
+):
+    """With no endpoint argument, a manifest provider that declares several endpoints and none
+    under the default endpoint name is refused, not routed to the generic endpoint."""
+    refused, _ = _split_by_default_endpoint(manifest_catalog)
+    assert refused
+    assert "tavily" in {fragment.key for fragment in refused}
+    forbid_automatic_source()
+
+    for fragment in refused:
+        try:
+            iModel(provider=fragment.key, provider_catalog=manifest_catalog, api_key=_API_KEY)
+        except ProviderNotFoundError as error:
+            message = str(error)
+        else:
+            pytest.fail(f"{fragment.key!r} was built although the catalog selects no endpoint")
+        assert repr(fragment.key) in message, fragment.key
+        assert repr(_DEFAULT_ENDPOINT_NAME) in message, fragment.key
+        assert _declared_keys(manifest_catalog, fragment.key) in message, fragment.key
+
+
+def test_default_endpoint_name_builds_every_other_manifest_provider(
+    manifest_catalog, forbid_automatic_source, monkeypatch
+):
+    """The control for the refusal above: every other manifest provider is built from its
+    declared endpoint with the same call, and the generic endpoint is never built.
+
+    Some declared endpoints need an optional extra. When every import root of the selected
+    declaration's requirements is importable, the provider must build. When one is not, the
+    declared endpoint may refuse with a ``ModuleNotFoundError`` that names the missing
+    requirement's install hint, or build without importing the extra, as the ``ag2`` endpoint
+    does: either way the call reached the declared endpoint, since the generic one raises here.
+    """
+    refused, built = _split_by_default_endpoint(manifest_catalog)
+    assert built
+    assert len(refused) + len(built) == len(manifest_catalog.providers)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the generic endpoint must not be built for a selected endpoint")
+
+    # Importing a provider module registers it against the automatic source, so load the
+    # registry before that source is forbidden; the test then runs alone as well as in the module.
+    EndpointRegistry._ensure_loaded()
+    forbid_automatic_source()
+    monkeypatch.setattr(EndpointRegistry, "_generic_endpoint", classmethod(refuse))
+
+    for fragment in built:
+        declaration = manifest_catalog.endpoint(fragment.key, _DEFAULT_ENDPOINT_NAME)
+        assert declaration is not None, fragment.key
+        unmet = _unmet_requirements(declaration)
+        try:
+            model = iModel(
+                provider=fragment.key, provider_catalog=manifest_catalog, api_key=_API_KEY
+            )
+        except ModuleNotFoundError as error:
+            if not unmet:
+                raise
+            assert any(req.install_hint in str(error) for req in unmet), (fragment.key, str(error))
+            continue
+        assert type(model.endpoint) is declaration.factory(), fragment.key
+        assert type(model.endpoint) is not Endpoint, fragment.key
+        assert model.provider_catalog is manifest_catalog, fragment.key
 
 
 def _stand_in_branch(chat_model_extra):
