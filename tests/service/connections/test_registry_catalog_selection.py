@@ -6,7 +6,9 @@
 catalog is the only source of declarations: automatic loading, plugin providers and the
 process registry are bypassed, and an empty catalog is distinct from omitting the argument.
 Selection follows the rules the automatic path applies to registered entries, with the
-catalog's declarations, in declaration order, in their place.
+catalog's declarations, in declaration order, in their place. The one difference is a provider
+the catalog declares: where the automatic path hands an endpoint the provider does not expose
+to the generic endpoint, a supplied catalog refuses it.
 """
 
 from __future__ import annotations
@@ -56,6 +58,20 @@ def no_plugin_providers(monkeypatch):
     monkeypatch.setattr(
         EndpointRegistry, "_consult_plugin_providers", classmethod(lambda cls: False)
     )
+
+
+@pytest.fixture
+def generic_endpoints(monkeypatch):
+    """The list of generic ``Endpoint`` objects built during a test; empty when none was."""
+    built = []
+    original = Endpoint.__init__
+
+    def record(self, *args, **kwargs):
+        built.append(self)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Endpoint, "__init__", record)
+    return built
 
 
 @pytest.fixture
@@ -211,10 +227,26 @@ def test_explicit_selection_matches_the_automatic_path(manifest_catalog, no_plug
     EndpointRegistry._alias_owners = {}
     explicit = {combo: _outcome(*combo, provider_catalog=manifest_catalog) for combo in combos}
 
+    # A declared provider asked for an endpoint it does not declare is the one place the two
+    # paths part: the automatic path builds the generic endpoint, the catalog refuses.
+    refused = {
+        combo
+        for combo in combos
+        if manifest_catalog.fragment(combo[0]) is not None
+        and manifest_catalog.endpoint(*combo) is None
+    }
+    assert refused
+    not_refused = {
+        combo: explicit[combo]
+        for combo in refused
+        if explicit[combo][:2] != ("raises", ProviderNotFoundError)
+    }
+    assert not not_refused, f"first: {next(iter(not_refused.items()))}"
+
     differing = {
         combo: (automatic[combo], explicit[combo])
         for combo in automatic
-        if automatic[combo] != explicit[combo]
+        if combo not in refused and automatic[combo] != explicit[combo]
     }
     assert not differing, (
         f"{len(differing)} of {len(automatic)} selections differ; "
@@ -303,12 +335,127 @@ def test_single_endpoint_provider_is_selected_whatever_endpoint_is_named(endpoin
     assert type(selected) is _OnlyEndpoint
 
 
-def test_declared_provider_with_an_unmatched_endpoint_gets_the_generic_endpoint():
-    selected = EndpointRegistry.match("acme", "nonesuch", provider_catalog=_acme_catalog())
+_URL = "https://example.invalid/v1"
+_FLAG_OPTIONS = pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"openai_compatible": True},
+        {"base_url": _URL},
+        {"openai_compatible": True, "base_url": _URL},
+    ],
+    ids=["no-flags", "openai-compatible", "base-url", "both"],
+)
+
+
+def _match_recording_warnings(*args, **kwargs):
+    """``EndpointRegistry.match`` and the warning categories it emitted; an error propagates."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        selected = EndpointRegistry.match(*args, **kwargs)
+    return selected, [warning.category for warning in caught]
+
+
+@_FLAG_OPTIONS
+@pytest.mark.parametrize("provider", ["acme", "acme-ai"])
+def test_declared_provider_with_an_undeclared_endpoint_is_refused(
+    provider, options, generic_endpoints
+):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(ProviderNotFoundError) as raised:
+            EndpointRegistry.match(
+                provider, "nonesuch", provider_catalog=_acme_catalog(), **options
+            )
+
+    assert generic_endpoints == []
+    assert not [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    message = str(raised.value)
+    assert repr(provider) in message
+    assert "'nonesuch'" in message
+    assert "'catalog-one'" in message
+    assert "declared endpoints: chat, embed" in message
+    assert "supplied explicitly" in message
+    assert "not extended by the generic" in message
+    assert "regist" not in message.lower()
+    assert "install" not in message.lower()
+
+
+def test_refusal_without_a_named_endpoint_says_none_was_named(generic_endpoints):
+    with pytest.raises(ProviderNotFoundError) as raised:
+        EndpointRegistry._generic_endpoint("acme", "", True, {}, _acme_catalog())
+
+    assert generic_endpoints == []
+    message = str(raised.value)
+    assert "'acme'" in message
+    assert "names no endpoint" in message
+    assert "'catalog-one'" in message
+    assert "declared endpoints: chat, embed" in message
+
+
+@_FLAG_OPTIONS
+def test_declared_provider_with_no_endpoint_named_selects_its_default(options, generic_endpoints):
+    selected, categories = _match_recording_warnings(
+        "acme", "", provider_catalog=_acme_catalog(), **options
+    )
+
+    assert type(selected) is _EmbedEndpoint
+    assert generic_endpoints == []
+    assert DeprecationWarning not in categories
+
+
+@_FLAG_OPTIONS
+def test_declared_endpoint_is_built_whatever_the_flags_say(options, generic_endpoints):
+    selected, categories = _match_recording_warnings(
+        "acme", "chat", provider_catalog=_acme_catalog(), **options
+    )
+
+    assert type(selected) is _ChatEndpoint
+    assert generic_endpoints == []
+    assert DeprecationWarning not in categories
+
+
+@_FLAG_OPTIONS
+def test_single_endpoint_provider_takes_an_undeclared_endpoint_name(options, generic_endpoints):
+    selected, categories = _match_recording_warnings(
+        "solo", "nonesuch", provider_catalog=_solo_catalog(), **options
+    )
+
+    assert type(selected) is _OnlyEndpoint
+    assert generic_endpoints == []
+    assert DeprecationWarning not in categories
+
+
+def test_undeclared_provider_with_openai_compatible_builds_the_generic_endpoint(generic_endpoints):
+    selected, categories = _match_recording_warnings(
+        "nonesuch", "chat", openai_compatible=True, provider_catalog=_acme_catalog()
+    )
 
     assert type(selected) is Endpoint
-    assert selected.config.provider == "acme"
-    assert selected.config.endpoint == "nonesuch"
+    assert generic_endpoints == [selected]
+    assert selected.config.provider == "nonesuch"
+    assert selected.config.endpoint == "chat"
+    assert DeprecationWarning not in categories
+
+
+def test_undeclared_provider_with_base_url_alone_warns_and_builds_the_generic_endpoint(
+    generic_endpoints,
+):
+    selected, categories = _match_recording_warnings(
+        "nonesuch", "chat", base_url=_URL, provider_catalog=_acme_catalog()
+    )
+
+    assert type(selected) is Endpoint
+    assert generic_endpoints == [selected]
+    assert selected.config.provider == "nonesuch"
+    assert DeprecationWarning in categories
+
+
+def test_undeclared_provider_with_no_flags_is_refused_naming_the_catalog(generic_endpoints):
+    with pytest.raises(ProviderNotFoundError, match="catalog-one"):
+        EndpointRegistry.match("nonesuch", "chat", provider_catalog=_acme_catalog())
+
+    assert generic_endpoints == []
 
 
 def test_undeclared_provider_error_names_the_catalog():
@@ -340,3 +487,5 @@ def test_match_endpoint_passes_the_catalog_through():
     assert selected.kwargs == {"model": "m"}
     with pytest.raises(ProviderNotFoundError, match="catalog-one"):
         match_endpoint("nonesuch", "chat", provider_catalog=_acme_catalog())
+    with pytest.raises(ProviderNotFoundError, match="declared endpoints: chat, embed"):
+        match_endpoint("acme", "nonesuch", openai_compatible=True, provider_catalog=_acme_catalog())

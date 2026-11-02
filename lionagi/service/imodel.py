@@ -175,7 +175,9 @@ class iModel:  # noqa: N801
         suffix of a model name. The model keeps it as ``provider_catalog``; ``copy`` and
         ``from_dict`` carry it and ``to_dict`` does not write it. Without it the automatic
         source is used. It cannot be combined with an ``endpoint`` that is already an
-        ``Endpoint`` instance, which has been selected already.
+        ``Endpoint`` instance, which has been selected already. A catalog that declares
+        ``provider`` but selects none of its endpoints for ``endpoint`` raises
+        ``ProviderNotFoundError``, whatever ``openai_compatible`` or ``base_url`` say.
         """
         self.id = None
         self.created_at = None
@@ -922,6 +924,8 @@ class iModel:  # noqa: N801
         ``retry_config`` and ``circuit_breaker`` are kept. ``provider_catalog`` is the catalog
         the registered subclass is recovered from, and the restored model carries it as
         ``copy`` does; ``to_dict`` does not write it. Without it the automatic source is used.
+        A catalog that declares the stored provider but selects none of its endpoints for the
+        stored endpoint name raises ``ProviderNotFoundError``, as selection does.
         """
         endpoint = Endpoint.from_dict(
             data.get("endpoint", {}),
@@ -930,10 +934,13 @@ class iModel:  # noqa: N801
             allow_local_network=allow_local_network,
         )
 
-        # openai_compatible=True: rehydrating does not raise for a provider that isn't registered;
-        # a declared provider whose activation failed still raises its ProviderActivationError.
         # This lookup only recovers a registered subclass, its env-sourced API key
         # and its local-network setting; `endpoint` is already complete.
+        # openai_compatible=True keeps a provider that is not registered, or that a supplied
+        # catalog does not declare, from raising. A supplied catalog that declares the stored
+        # provider but selects none of its endpoints for the stored endpoint name raises
+        # ProviderNotFoundError, whatever openai_compatible says; a declared provider whose
+        # activation failed still raises its ProviderActivationError.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,

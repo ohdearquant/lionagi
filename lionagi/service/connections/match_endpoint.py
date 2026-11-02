@@ -30,9 +30,14 @@ def match_endpoint(
     authorizes the same fallback with a deprecation warning).
 
     ``provider_catalog``, when given, is the only source of endpoint declarations: the
-    bundled catalog, the registered endpoints and the plugin registry are not consulted, an
-    empty catalog selects nothing, and a provider it does not declare is rejected with an
-    error naming the catalog. Omitting it keeps the default selection.
+    bundled catalog, the registered endpoints and the plugin registry are not consulted, and
+    an empty catalog selects nothing. A provider the catalog declares is never routed to the
+    generic endpoint: asked for an endpoint that matches none of the endpoints it declares
+    (when it declares more than one), it raises ``ProviderNotFoundError`` naming the catalog
+    and those endpoints, whatever ``openai_compatible`` or ``base_url`` say. A provider the
+    catalog does not declare is rejected with an error naming the catalog, unless
+    ``openai_compatible=True`` or ``base_url=`` authorizes the generic endpoint as above.
+    Omitting it keeps the default selection.
     """
     return EndpointRegistry.match(
         provider,

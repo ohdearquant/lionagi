@@ -323,8 +323,13 @@ class EndpointRegistry:
         bundled catalog, the registered entries and the plugin registry are never read, and
         an empty catalog is not the same as omitting the argument. A declaration whose
         implementation fails to import raises instead of being skipped. A provider the
-        catalog does not declare gets the same ``openai_compatible=`` and ``base_url=``
-        outcomes, and otherwise a ``ProviderNotFoundError`` naming the catalog."""
+        catalog declares, asked for an endpoint it does not declare when it declares more
+        than one, raises a ``ProviderNotFoundError`` naming the catalog and the endpoints it
+        declares for that provider; ``openai_compatible=`` and ``base_url=`` do not change
+        that, because the generic endpoint never extends an explicitly supplied catalog. A
+        provider the catalog does not declare gets the same ``openai_compatible=`` and
+        ``base_url=`` outcomes, and otherwise a ``ProviderNotFoundError`` naming the
+        catalog."""
         if provider_catalog is not None:
             matched = cls._match_catalog(provider_catalog, provider, endpoint, kwargs)
             if matched is not None:
@@ -399,11 +404,16 @@ class EndpointRegistry:
         """Settle a lookup no declared or registered endpoint matched: reject an unrecognized
         ``provider`` or route it to the generic OpenAI-compatible endpoint. A provider is
         recognized when a registered entry claimed it or, with ``catalog`` supplied, when that
-        catalog declares it."""
+        catalog declares it. Without ``catalog``, a recognized provider always reaches the
+        generic endpoint. With ``catalog`` supplied, a provider that catalog declares raises
+        ``ProviderNotFoundError`` instead, whatever ``openai_compatible`` or ``base_url``
+        say: an explicitly supplied catalog is not extended by the generic endpoint."""
         if catalog is None:
             known = cls._is_known_provider(provider)
         else:
             known = catalog.fragment(provider) is not None
+            if known:
+                raise cls._catalog_endpoint_not_declared_error(provider, endpoint, catalog)
         if not openai_compatible and not known:
             if kwargs.get("base_url"):
                 warnings.warn(
@@ -523,6 +533,22 @@ class EndpointRegistry:
             f"{catalog.source!r}, which was supplied explicitly; declared providers: "
             f"{declared}. Pass openai_compatible=True to route unrecognized providers "
             "to the generic OpenAI-compatible endpoint explicitly."
+        )
+
+    @classmethod
+    def _catalog_endpoint_not_declared_error(
+        cls, provider: str, endpoint: str, catalog: ProviderCatalog
+    ) -> ProviderNotFoundError:
+        declared = ", ".join(
+            declaration.key for declaration in catalog.fragment(provider).endpoints
+        )
+        requested = f"endpoint {endpoint!r}" if endpoint else "a request that names no endpoint"
+        return ProviderNotFoundError(
+            f"the provider catalog {catalog.source!r}, which was supplied explicitly, declares "
+            f"provider {provider!r} but selects none of its endpoints for {requested}; declared "
+            f"endpoints: {declared}. An explicitly supplied catalog is not extended by the "
+            "generic OpenAI-compatible endpoint, so openai_compatible= and base_url= do not "
+            "apply."
         )
 
     @classmethod

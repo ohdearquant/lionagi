@@ -4,18 +4,21 @@
 
 A model built with a provider catalog selects its endpoint from that catalog only, routes an
 effort-suffixed model name through the catalog's own provider keys, carries the catalog through
-``copy`` and ``from_dict``, and reads its context window from it. In every test that supplies a
-catalog the automatic source is patched to raise, so a hidden automatic load fails the test.
+``copy`` and ``from_dict``, and reads its context window from it. A catalog that declares the
+provider but not the requested endpoint refuses it, at construction and in ``from_dict`` alike.
+In every test that supplies a catalog the automatic source is patched to raise, so a hidden
+automatic load fails the test.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
 
 from lionagi.service.connections import _provider_compat
-from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.connections.endpoint import Endpoint, EndpointConfig
 from lionagi.service.connections.provider_catalog import (
     EndpointDeclaration,
     ProviderFragment,
@@ -229,6 +232,162 @@ def test_from_dict_without_catalog_carries_none():
     restored = iModel.from_dict(data, api_key=_API_KEY)
 
     assert restored.provider_catalog is None
+
+
+_URL = "https://example.invalid/v1"
+_UNDECLARED_ENDPOINT = "no-such-endpoint"
+
+
+def _declared_keys(catalog, provider):
+    """The endpoint keys ``catalog`` declares for ``provider``, as the refusal message lists them."""
+    return ", ".join(declaration.key for declaration in catalog.fragment(provider).endpoints)
+
+
+@pytest.fixture
+def narrow_openai_catalog(manifest_catalog):
+    """The manifest's catalog with ``openai`` cut down to its first two endpoints."""
+    fragments = []
+    for fragment in manifest_catalog.providers:
+        if fragment.key == "openai":
+            kept = fragment.endpoints[:2]
+            fragment = dataclasses.replace(fragment, endpoints=kept, default_endpoint=kept[0].key)
+        fragments.append(fragment)
+    return compose_provider_catalog(fragments, source="catalog-narrow")
+
+
+def _responses_dump():
+    """The dump of a model built from the automatic source on openai's ``responses`` endpoint."""
+    model = _build({"provider": "openai", "model": "gpt-4.1-mini", "endpoint": "responses"})
+    assert model.endpoint.config.endpoint == "responses"
+    return model.to_dict()
+
+
+def _hand_built_dump():
+    """The dump of a model that wraps a hand-built endpoint of provider ``openai``."""
+    config = EndpointConfig(
+        provider="openai",
+        endpoint="v1/custom",
+        name="custom",
+        auth_type="bearer",
+        content_type="application/json",
+        method="POST",
+        requires_tokens=True,
+        openai_compatible=True,
+        base_url=_URL,
+        api_key=_API_KEY,
+    )
+    return iModel(endpoint=Endpoint(config)).to_dict()
+
+
+@pytest.fixture(params=["built-model", "hand-built-endpoint"])
+def stored_undeclared_endpoint(request, manifest_catalog, narrow_openai_catalog):
+    """``(dump, catalog, stored endpoint name)``: the catalog declares the dump's provider
+    (several endpoints) but not the endpoint the dump stores."""
+    if request.param == "built-model":
+        data, catalog, stored = _responses_dump(), narrow_openai_catalog, "responses"
+    else:
+        data, catalog, stored = _hand_built_dump(), manifest_catalog, "v1/custom"
+    assert len(catalog.fragment("openai").endpoints) > 1
+    assert catalog.endpoint("openai", stored) is None
+    return data, catalog, stored
+
+
+def test_from_dict_refuses_an_endpoint_the_supplied_catalog_does_not_declare(
+    stored_undeclared_endpoint, forbid_automatic_source
+):
+    data, catalog, stored = stored_undeclared_endpoint
+    forbid_automatic_source()
+
+    with pytest.raises(ProviderNotFoundError) as raised:
+        iModel.from_dict(data, provider_catalog=catalog, api_key=_API_KEY)
+
+    message = str(raised.value)
+    assert repr(catalog.source) in message
+    assert "'openai'" in message
+    assert repr(stored) in message
+    assert _declared_keys(catalog, "openai") in message
+
+
+def test_from_dict_without_a_catalog_keeps_the_stored_endpoint(stored_undeclared_endpoint):
+    data, _, stored = stored_undeclared_endpoint
+
+    restored = iModel.from_dict(data, api_key=_API_KEY)
+
+    assert restored.provider_catalog is None
+    assert restored.endpoint.config.endpoint == stored
+
+
+def test_from_dict_with_a_catalog_that_declares_the_stored_endpoint(
+    manifest_catalog, forbid_automatic_source
+):
+    data = _responses_dump()
+    declaration = manifest_catalog.endpoint("openai", "responses")
+    assert declaration is not None
+    forbid_automatic_source()
+
+    restored = iModel.from_dict(data, provider_catalog=manifest_catalog, api_key=_API_KEY)
+
+    assert restored.provider_catalog is manifest_catalog
+    assert type(restored.endpoint) is declaration.factory()
+    assert restored.endpoint.config.endpoint == "responses"
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"base_url": _URL}, {"openai_compatible": True}],
+    ids=["base-url", "openai-compatible"],
+)
+def test_construction_refuses_an_endpoint_the_supplied_catalog_does_not_declare(
+    options, manifest_catalog, forbid_automatic_source
+):
+    assert len(manifest_catalog.fragment("openai").endpoints) > 1
+    assert manifest_catalog.endpoint("openai", _UNDECLARED_ENDPOINT) is None
+    forbid_automatic_source()
+
+    with pytest.raises(ProviderNotFoundError) as raised:
+        iModel(
+            provider="openai",
+            endpoint=_UNDECLARED_ENDPOINT,
+            provider_catalog=manifest_catalog,
+            api_key=_API_KEY,
+            **options,
+        )
+
+    message = str(raised.value)
+    assert repr(manifest_catalog.source) in message
+    assert "'openai'" in message
+    assert repr(_UNDECLARED_ENDPOINT) in message
+    assert _declared_keys(manifest_catalog, "openai") in message
+
+
+def test_single_endpoint_providers_select_their_endpoint_from_the_catalog(
+    manifest_catalog, forbid_automatic_source, monkeypatch
+):
+    """Every manifest provider that declares exactly one endpoint is built as an ``iModel`` with
+    a dummy ``api_key``, so no credential is read. The provider's only endpoint is selected
+    whether none or an undeclared one is named, and the generic endpoint is never built."""
+    single = [fragment for fragment in manifest_catalog.providers if len(fragment.endpoints) == 1]
+    assert single
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "the generic endpoint must not be built for a single-endpoint provider"
+        )
+
+    forbid_automatic_source()
+    monkeypatch.setattr(EndpointRegistry, "_generic_endpoint", classmethod(refuse))
+
+    for fragment in single:
+        declaration = fragment.endpoints[0]
+        for named in ({}, {"endpoint": _UNDECLARED_ENDPOINT}):
+            model = iModel(
+                provider=fragment.key, provider_catalog=manifest_catalog, api_key=_API_KEY, **named
+            )
+            where = f"{fragment.key} {named}"
+            assert type(model.endpoint) is declaration.factory(), where
+            assert type(model.endpoint) is not Endpoint, where
+            assert model.endpoint.config.endpoint == declaration.key, where
+            assert model.provider_catalog is manifest_catalog, where
 
 
 def _stand_in_branch(chat_model_extra):
