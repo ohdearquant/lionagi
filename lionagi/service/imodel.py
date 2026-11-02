@@ -945,7 +945,7 @@ class iModel:  # noqa: N801
         # recorded for a bundled-catalog provider that failed to activate when it loaded,
         # before anything else is tried. With a catalog, those recorded failures are not read:
         # the error comes from the factory of the declaration the catalog selects, so it is
-        # raised only for a stored endpoint the catalog selects, and only when that factory raises it.
+        # raised only for a stored endpoint the catalog selects, and only if that factory raises it.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
