@@ -8,10 +8,10 @@ from __future__ import annotations
 import re
 import weakref
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 import anyio
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi._errors import ConfigurationError
 from lionagi._provider_errors import (
@@ -37,6 +37,7 @@ __all__ = (
     "DimensionClean",
     "VerifyResult",
     "ProposedVerdict",
+    "StageServed",
     "ReviewVerdict",
     "ReviewEngine",
     "ReviewRun",
@@ -279,6 +280,37 @@ class ProposedVerdict(EngineEvent):
     )
 
 
+_ServedStage = Literal["review", "review_fallback", "verify", "verify_clean", "verdict"]
+
+
+class StageServed(BaseModel):
+    """What one leg of a review run asked for and what its provider reported answering with."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: _ServedStage = Field(description="Which step of the run the leg served.")
+    dimension: str | None = Field(
+        default=None,
+        description="The review lens the leg worked on; None for a leg that spans several or none.",
+    )
+    ref: str | None = Field(
+        default=None,
+        description="The claim ref the engine assigned a verification leg; None for the other legs.",
+    )
+    agent: str = Field(description="The leg's name.")
+    requested: str | None = Field(
+        default=None,
+        description="The model the engine asked for; None when it named none and the role's default applied.",
+    )
+    served: str | None = Field(
+        default=None,
+        description=(
+            "The model the provider named after the leg's last call; None when it named none "
+            "(the requested model is never substituted)."
+        ),
+    )
+
+
 class ReviewVerdict(Verdict):
     """Terminal review decision; extends Verdict with the list of blocking issues."""
 
@@ -290,6 +322,13 @@ class ReviewVerdict(Verdict):
         description=(
             "The model the provider named for the last synthesis call; None when it "
             "named none or no call was made."
+        ),
+    )
+    served_models: list[StageServed] = Field(
+        default_factory=list,
+        description=(
+            "One row per leg the run made, in the order the legs finished: each reviewer, a "
+            "fallback reviewer when one ran, each verifier, the clean audit and the synthesis."
         ),
     )
 
@@ -344,6 +383,8 @@ class ReviewRun(EngineRun):
         self.shares_session: bool = False
         self._dimension_failures: dict[str, str] = {}
         self._artifact_turn: _ArtifactTurn | None = None
+        # One row per leg, appended as each leg finishes. Per run, so two runs never share it.
+        self.stage_served: list[StageServed] = []
         peers = _SESSION_RUNS.setdefault(self.session, [])
         live = []
         for ref in peers:
@@ -379,6 +420,45 @@ _DIM_MODE: dict[str, str] = {
 
 # The stages ReviewEngine builds agents for, i.e. the keys stage_max_tokens can name.
 _MAX_TOKENS_STAGES: tuple[str, ...] = ("review", "review_fallback", "verify", "verdict")
+
+
+def _served_by(leg: Any) -> str | None:
+    """The model the leg's provider named for its last call, else None.
+
+    The model-level value is the last call's, not call-correlated; it belongs to this leg
+    because a leg's branch and model are made for it alone and call in sequence, and a call
+    that reports no model clears it.
+    """
+    metadata = getattr(getattr(leg, "chat_model", None), "provider_metadata", None)
+    served = metadata.get("served_model") if isinstance(metadata, dict) else None
+    if not isinstance(served, str) or not served.strip():
+        return None
+    return served
+
+
+def _record_served(
+    run: EngineRun,
+    leg: Any,
+    *,
+    stage: _ServedStage,
+    agent: str,
+    requested: str | None,
+    dimension: str | None = None,
+    ref: str | None = None,
+) -> None:
+    """Append the leg's row to the run; a run class that keeps no rows records nothing."""
+    if not isinstance(run, ReviewRun):
+        return
+    run.stage_served.append(
+        StageServed(
+            stage=stage,
+            dimension=dimension,
+            ref=ref,
+            agent=agent,
+            requested=None if requested is None else str(requested),
+            served=_served_by(leg),
+        )
+    )
 
 
 _LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
@@ -828,60 +908,97 @@ class ReviewEngine(Engine):
         # share a cached prefix.
         mode = _DIM_MODE.get(dimension)
         async with run._sem:
+            agent_name = f"review-{dimension}"
+            requested = self.model_for("review")
             agent = await run.make_agent(
                 self.reviewer_role,
-                name=f"review-{dimension}",
-                model=self.model_for("review"),
+                name=agent_name,
+                model=requested,
                 max_tokens=self.max_tokens_for("review"),
                 emits=emits,
             )
-            # The artifact turn this dimension's history starts with, if any.
-            held: tuple[Any, Any] | None = None
-            if leading:
-                held = await self._send_artifact_turn(run, agent, artifact)
-                turn.share(held)
-            elif turn is not None and turn.messages is not None:
-                held = turn.messages
-                await _seed_artifact_turn(agent, held)
             # `models["review_fallback"]` names ONE more attempt on a different model
             # for a dimension whose reviewer stayed silent through its repairs. Read
             # with optional_model_for(), not model_for(): that falls back to the
             # engine's base model, which would turn "unset" into a retry on the same model.
             fallback_model = self.optional_model_for("review_fallback")
+            fallback_name = f"review-{dimension}-fallback"
+            fallback_legs: list[Any] = []
+            first_recorded = False
 
-            async def _fallback_agent() -> Any:
-                # A fresh leg: repair replays the whole conversation onto the same
-                # branch, so asking that branch again only grows its context.
-                leg = await run.make_agent(
-                    self.reviewer_role,
-                    name=f"review-{dimension}-fallback",
-                    model=fallback_model,
-                    max_tokens=self.max_tokens_for("review_fallback"),
-                    emits=emits,
-                )
-                # The fallback is handed the first leg's instruction, which names
-                # the artifact only when no artifact turn precedes it.
+            def _record_first_leg() -> None:
+                # Once, and as soon as the first leg is done: the fallback leg is built
+                # only after it, so its row must not wait behind the fallback's.
+                nonlocal first_recorded
+                if not first_recorded:
+                    first_recorded = True
+                    _record_served(
+                        run,
+                        agent,
+                        stage="review",
+                        dimension=dimension,
+                        agent=agent_name,
+                        requested=requested,
+                    )
+
+            try:
+                # The artifact turn this dimension's history starts with, if any.
+                held: tuple[Any, Any] | None = None
+                if leading:
+                    held = await self._send_artifact_turn(run, agent, artifact)
+                    turn.share(held)
+                elif turn is not None and turn.messages is not None:
+                    held = turn.messages
+                    await _seed_artifact_turn(agent, held)
+
+                async def _fallback_agent() -> Any:
+                    _record_first_leg()
+                    # A fresh leg: repair replays the whole conversation onto the same
+                    # branch, so asking that branch again only grows its context.
+                    leg = await run.make_agent(
+                        self.reviewer_role,
+                        name=fallback_name,
+                        model=fallback_model,
+                        max_tokens=self.max_tokens_for("review_fallback"),
+                        emits=emits,
+                    )
+                    fallback_legs.append(leg)
+                    # The fallback is handed the first leg's instruction, which names
+                    # the artifact only when no artifact turn precedes it.
+                    if held is not None:
+                        await _seed_artifact_turn(leg, held)
+                    return leg
+
                 if held is not None:
-                    await _seed_artifact_turn(leg, held)
-                return leg
-
-            if held is not None:
-                instruction = _dimension_task(dimension, mode)
-            else:
-                instruction = _dimension_instruction(artifact, dimension, mode)
-            # Repair re-prompts a reviewer that emitted prose instead of a
-            # fenced emission. A clean dimension arrives as an affirmative
-            # dimension_clean, so reaching the repair path means transport
-            # failed — not that the dimension was clean.
-            await run.operate_with_repair(
-                agent,
-                instruction,
-                arrived=lambda: dimension in self._reported_dimensions(run),
-                emits=emits,
-                retries=self.repair_retries,
-                fallback=_fallback_agent if fallback_model else None,
-                fallback_model=fallback_model,
-            )
+                    instruction = _dimension_task(dimension, mode)
+                else:
+                    instruction = _dimension_instruction(artifact, dimension, mode)
+                # Repair re-prompts a reviewer that emitted prose instead of a
+                # fenced emission. A clean dimension arrives as an affirmative
+                # dimension_clean, so reaching the repair path means transport
+                # failed — not that the dimension was clean.
+                await run.operate_with_repair(
+                    agent,
+                    instruction,
+                    arrived=lambda: dimension in self._reported_dimensions(run),
+                    emits=emits,
+                    retries=self.repair_retries,
+                    fallback=_fallback_agent if fallback_model else None,
+                    fallback_model=fallback_model,
+                )
+            finally:
+                # A leg whose call failed still ran on some model; its row is read here,
+                # after the last call, whether the call returned or raised.
+                _record_first_leg()
+                for leg in fallback_legs:
+                    _record_served(
+                        run,
+                        leg,
+                        stage="review_fallback",
+                        dimension=dimension,
+                        agent=fallback_name,
+                        requested=fallback_model,
+                    )
 
     async def _send_artifact_turn(
         self, run: EngineRun, agent: Any, artifact: str
@@ -918,24 +1035,37 @@ class ReviewEngine(Engine):
         emits = (VerifyResult,)
         ref = _verify_ref(issue)
         async with run._sem:
+            agent_name = f"verify-{issue.dimension}"
+            requested = self.model_for("verify")
             verifier = await run.make_agent(
                 self.verifier_role,
-                name=f"verify-{issue.dimension}",
+                name=agent_name,
                 modes=["adversarial"],
-                model=self.model_for("verify"),
+                model=requested,
                 max_tokens=self.max_tokens_for("verify"),
                 emits=emits,
             )
-            # Arrival keys on the echoed ref token; the verbatim-description
-            # match stays only as a fallback for a verifier that filled issue
-            # exactly but dropped the ref.
-            await run.operate_with_repair(
-                verifier,
-                _verify_instruction(issue, ref),
-                arrived=lambda: self._verification_arrived(run, issue),
-                emits=emits,
-                retries=self.repair_retries,
-            )
+            try:
+                # Arrival keys on the echoed ref token; the verbatim-description
+                # match stays only as a fallback for a verifier that filled issue
+                # exactly but dropped the ref.
+                await run.operate_with_repair(
+                    verifier,
+                    _verify_instruction(issue, ref),
+                    arrived=lambda: self._verification_arrived(run, issue),
+                    emits=emits,
+                    retries=self.repair_retries,
+                )
+            finally:
+                _record_served(
+                    run,
+                    verifier,
+                    stage="verify",
+                    dimension=issue.dimension,
+                    ref=ref,
+                    agent=agent_name,
+                    requested=requested,
+                )
 
     async def _verify_clean(
         self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]
@@ -965,28 +1095,39 @@ class ReviewEngine(Engine):
             return run.by_type(VerifyResult)[before:]
 
         async with run._sem:
+            requested = self.model_for("verify")
             verifier = await run.make_agent(
                 self.verifier_role,
                 name="verify-clean",
                 modes=["adversarial"],
-                model=self.model_for("verify"),
+                model=requested,
                 max_tokens=self.max_tokens_for("verify"),
                 emits=emits,
             )
-            await run.operate_with_repair(
-                verifier,
-                _verify_clean_instruction(
-                    artifact,
-                    clean,
-                    ref,
-                    can_execute=bool(
-                        getattr(getattr(verifier, "chat_model", None), "is_cli", False)
+            try:
+                await run.operate_with_repair(
+                    verifier,
+                    _verify_clean_instruction(
+                        artifact,
+                        clean,
+                        ref,
+                        can_execute=bool(
+                            getattr(getattr(verifier, "chat_model", None), "is_cli", False)
+                        ),
                     ),
-                ),
-                arrived=lambda: bool(_fresh()),
-                emits=emits,
-                retries=self.repair_retries,
-            )
+                    arrived=lambda: bool(_fresh()),
+                    emits=emits,
+                    retries=self.repair_retries,
+                )
+            finally:
+                _record_served(
+                    run,
+                    verifier,
+                    stage="verify_clean",
+                    ref=ref,
+                    agent="verify-clean",
+                    requested=requested,
+                )
             # THE TOKEN IS STILL LOAD-BEARING DOWNSTREAM, so stamp it here rather
             # than teaching every reader to live without it: `_verdict_instruction`
             # partitions clean audits from issue verifications by `v.ref == clean
@@ -1018,7 +1159,12 @@ class ReviewEngine(Engine):
             # artifact's findings in this verdict and could credit a dimension
             # this run never covered. Refuse before the prompt is built.
             note = _shared_session_note()
-            final = ReviewVerdict(verdict="REQUEST-CHANGES", rationale=note, blocking=[])
+            final = ReviewVerdict(
+                verdict="REQUEST-CHANGES",
+                rationale=note,
+                blocking=[],
+                served_models=list(getattr(run, "stage_served", ())),
+            )
             run.notify("verdict", shared_session=True)
             await run.emit(final)
             return note
@@ -1029,10 +1175,11 @@ class ReviewEngine(Engine):
         run.notify(
             "verdict", issues=len(issues), verifications=len(verifications), clean=len(clean)
         )
+        requested = self.model_for("verdict")
         synth = await run.make_agent(
             self.synthesis_role,
             name="verdict",
-            model=self.model_for("verdict"),
+            model=requested,
             max_tokens=self.max_tokens_for("verdict"),
             emits=(ProposedVerdict,),
             exempt=True,
@@ -1046,14 +1193,9 @@ class ReviewEngine(Engine):
                 instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
             )
         text = str(res) if res is not None else ""
-        # The provider's own report on the synthesis model. The model-level value is the
-        # last call's, not call-correlated; it is this call's because this branch and its
-        # model were made for the synthesis alone and call in sequence, and a call that
-        # reports no model clears it.
-        metadata = getattr(getattr(synth, "chat_model", None), "provider_metadata", None)
-        served = metadata.get("served_model") if isinstance(metadata, dict) else None
-        if not isinstance(served, str) or not served.strip():
-            served = None
+        # The provider's own report on the synthesis model (see _served_by).
+        served = _served_by(synth)
+        _record_served(run, synth, stage="verdict", agent="verdict", requested=requested)
 
         unevidenced = self._unevidenced_dimensions(run, dimensions)
         unverified = self._unverified_findings(run)
@@ -1063,6 +1205,7 @@ class ReviewEngine(Engine):
         proposed = proposals[-1] if proposals else None
         final = self._rule(proposed, unevidenced, unverified, text, unaudited=unaudited)
         final.served_model = served
+        final.served_models = list(getattr(run, "stage_served", ()))
         await run.emit(final)
 
         notes = []
