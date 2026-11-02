@@ -62,6 +62,11 @@ class ByteStream:
             raise piece
         return piece
 
+    def __getitem__(self, key):
+        # The real client hands a non-streamed response's body over as bytes, which a caller may
+        # slice: this slices the bytes pieces the same way and skips a piece that is an error.
+        return b"".join(piece for piece in self.pieces if isinstance(piece, bytes))[key]
+
 
 class StubResponse:
     def __init__(self, status: int = 200, body: dict | None = None, pieces=None) -> None:

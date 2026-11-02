@@ -5,17 +5,22 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, Literal, Union
 
 import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from lionagi.ln.concurrency import CancelScope
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import ANTHROPIC_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import AnthropicConfigs
+
+logger = logging.getLogger("lionagi.providers.anthropic.messages")
 
 __all__ = ("ANTHROPIC_DEFAULT_MAX_TOKENS", "CreateMessageRequest", "AnthropicMessagesEndpoint")
 
@@ -375,6 +380,119 @@ def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
         call.placement = placement
 
 
+# The classes a rejected request is recorded under (ADR-0126 Amendment 7): the first row with a
+# text the provider's error message contains, compared case-sensitively, names the class. A
+# message that matches no row, or no message at all, is recorded as ``other``.
+_REJECTION_CLASS_MESSAGES = (
+    ("prompt_too_long", ("prompt is too long",)),
+    (
+        "tool_result_missing",
+        (
+            "tool_use ids were found without tool_result blocks immediately after",
+            "was found without a corresponding",
+        ),
+    ),
+    ("prefill_unsupported", ("does not support assistant message prefill",)),
+    (
+        "thinking_config_unsupported",
+        (
+            '"thinking.type.enabled" is not supported',
+            '"thinking.type.disabled" is not supported',
+            '"thinking.type.between_tools" is not supported',
+            "adaptive thinking is not supported on this model",
+            "is not supported when thinking is disabled on this model",
+            "effort cannot change when thinking is disabled",
+        ),
+    ),
+    (
+        "thinking_block_invalid",
+        (
+            "blocks in the latest assistant message cannot be modified",
+            "The block is bound to a different conversation",
+        ),
+    ),
+    (
+        "tool_choice_unsupported",
+        ('tool_choice: type "tool" and "any" are not supported for this model',),
+    ),
+    ("tool_type_unsupported", ("does not support tool types:",)),
+    ("image_too_large", ("exceed the maximum image size", "many-image requests")),
+)
+
+# A rejection body longer than this many bytes is not decoded. The caller hands over at most one
+# byte more than this, which is enough to tell that a body is too long.
+_REJECTION_BODY_LIMIT = 65536
+
+# A streamed rejection body is read for at most this many seconds. A body that has not arrived
+# by then is classified as ``other``.
+_REJECTION_READ_SECONDS = 5.0
+
+
+def _classify_rejection(body: bytes) -> tuple[str, str]:
+    """Name the provider error type and the rejection class of a rejected request's body.
+
+    Returns ``(provider_error_type, rejection_class)``, each a member of the closed sets in
+    ``lionagi.service.accounts._types``. The error type is the body's ``error.type`` when it is
+    one of the documented types, else ``other``. The class is the first row of
+    ``_REJECTION_CLASS_MESSAGES`` whose text ``error.message`` contains, else ``other``. A body
+    longer than ``_REJECTION_BODY_LIMIT`` bytes is not decoded. Nothing of the body is logged,
+    kept or raised: the two names are returned, and every failure returns ``("other", "other")``
+    after one debug log that names only the type of the exception.
+    """
+    try:
+        from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
+
+        if len(body) > _REJECTION_BODY_LIMIT:
+            return "other", "other"
+        decoded = json.loads(body)
+        error = decoded.get("error") if isinstance(decoded, dict) else None
+        if not isinstance(error, dict):
+            return "other", "other"
+        error_type = error.get("type")
+        if not (isinstance(error_type, str) and error_type in _PROVIDER_ERROR_TYPES):
+            error_type = "other"
+        rejection_class = "other"
+        message = error.get("message")
+        if isinstance(message, str):
+            for name, texts in _REJECTION_CLASS_MESSAGES:
+                if any(text in message for text in texts):
+                    rejection_class = name
+                    break
+        if rejection_class not in _REJECTION_CLASSES:
+            rejection_class = "other"
+        return error_type, rejection_class
+    except Exception as exc:
+        logger.debug("rejection body could not be classified: %s", type(exc).__name__)
+        return "other", "other"
+
+
+async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
+    """Name the provider error type and the rejection class of a streamed rejection.
+
+    Reads the response's decoded byte stream (``aiter_bytes``) until it holds more than
+    ``_REJECTION_BODY_LIMIT`` bytes or ends, reads no further piece after that, and returns what
+    ``_classify_rejection`` names for the first ``_REJECTION_BODY_LIMIT + 1`` bytes. The read is
+    shielded from cancellation, so a caller that cancelled still has its attempt recorded, and
+    bounded by ``_REJECTION_READ_SECONDS``: a body that has not arrived by then is
+    ``("other", "other")``. Nothing of the body is logged, kept or raised: it is bound only in
+    this frame, only the two names leave this function, and every failure returns
+    ``("other", "other")``.
+    """
+    try:
+        body = b""
+        deadline = anyio.current_time() + _REJECTION_READ_SECONDS
+        with CancelScope(deadline=deadline, shield=True) as scope:
+            async for piece in response.aiter_bytes():
+                body += piece
+                if len(body) > _REJECTION_BODY_LIMIT:
+                    break
+        if scope.cancelled_caught:
+            return "other", "other"
+        return _classify_rejection(body[: _REJECTION_BODY_LIMIT + 1])
+    except Exception:
+        return "other", "other"
+
+
 @AnthropicConfigs.MESSAGES.register
 class AnthropicMessagesEndpoint(Endpoint):
     _account_routing_provider = "anthropic"
@@ -525,12 +643,24 @@ class AnthropicMessagesEndpoint(Endpoint):
                         http_status=status,
                     )
                 if status != 200:
-                    await router.settle_unknown(attempt, "request_rejected")
+                    # Only the two names leave the classifier: the bounded slice of the body is
+                    # passed straight on and no local holds it.
+                    provider_error_type, rejection_class = _classify_rejection(
+                        response.content[: _REJECTION_BODY_LIMIT + 1]
+                    )
+                    await router.settle_unknown(
+                        attempt,
+                        "request_rejected",
+                        provider_error_type=provider_error_type,
+                        rejection_class=rejection_class,
+                    )
                     raise _RoutedNoRetryError(
                         RouterErrorCode.REQUEST_REJECTED.value,
                         account=attempt.account,
                         attempt_id=attempt.attempt_id,
                         http_status=status,
+                        provider_error_type=provider_error_type,
+                        rejection_class=rejection_class,
                     )
 
                 # The decode error is dropped, not chained: it can quote the body.
@@ -1004,12 +1134,25 @@ class AnthropicMessagesEndpoint(Endpoint):
                         )
                     if status != 200:
                         settled = True
-                        await router.settle_unknown(attempt, "request_rejected")
+                        # Only the two names leave the classifier: it reads the body in its own
+                        # frame and no local here holds it.
+                        (
+                            provider_error_type,
+                            rejection_class,
+                        ) = await _classify_streamed_rejection(response)
+                        await router.settle_unknown(
+                            attempt,
+                            "request_rejected",
+                            provider_error_type=provider_error_type,
+                            rejection_class=rejection_class,
+                        )
                         raise AccountRoutingError(
                             RouterErrorCode.REQUEST_REJECTED,
                             account=attempt.account,
                             attempt_id=attempt.attempt_id,
                             http_status=status,
+                            provider_error_type=provider_error_type,
+                            rejection_class=rejection_class,
                         ) from None
 
                     # Only a failure of the byte source itself is held back, so the events it
