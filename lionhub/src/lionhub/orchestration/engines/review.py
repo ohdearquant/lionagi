@@ -305,8 +305,9 @@ class StageServed(BaseModel):
     served: str | None = Field(
         default=None,
         description=(
-            "The model the provider named after the leg's last call; None when it named none "
-            "(the requested model is never substituted)."
+            "The model the provider named for the leg's most recent call that reached it; None "
+            "when it named none or that call failed. A call that never left the client does not "
+            "change it. Never filled in from requested."
         ),
     )
 
@@ -327,8 +328,9 @@ class ReviewVerdict(Verdict):
     served_models: list[StageServed] = Field(
         default_factory=list,
         description=(
-            "One row per leg the run made, in the order the legs finished: each reviewer, a "
-            "fallback reviewer when one ran, each verifier, the clean audit and the synthesis."
+            "One row per leg the run built, in the order the legs finished: each reviewer, a "
+            "fallback reviewer when one ran, each verifier, the clean audit and the synthesis. "
+            "A leg whose construction fails makes no call and has no row."
         ),
     )
 
@@ -423,11 +425,11 @@ _MAX_TOKENS_STAGES: tuple[str, ...] = ("review", "review_fallback", "verify", "v
 
 
 def _served_by(leg: Any) -> str | None:
-    """The model the leg's provider named for its last call, else None.
+    """The model the provider named for the leg's most recent call that reached it, else None.
 
-    The model-level value is the last call's, not call-correlated; it belongs to this leg
-    because a leg's branch and model are made for it alone and call in sequence, and a call
-    that reports no model clears it.
+    The model-level value is not call-correlated; it belongs to this leg because a leg's branch
+    and model are made for it alone and call in sequence. A call that was sent and reported no
+    model, or failed, clears it; a call that never left the client leaves it as it was.
     """
     metadata = getattr(getattr(leg, "chat_model", None), "provider_metadata", None)
     served = metadata.get("served_model") if isinstance(metadata, dict) else None

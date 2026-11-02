@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ReviewVerdict.served_models: one row per leg the review run made, with what each leg's provider reported.
+"""ReviewVerdict.served_models: one row per leg the review run built, with what each leg's provider reported.
 
 The verdict's own ``served_model`` names the synthesis call only. Each review,
 fallback, verify and clean-audit leg is a separate model call, so a verdict that
@@ -19,6 +19,8 @@ import anyio
 import pytest
 import yaml
 
+import lionagi.cli._providers as providers_mod
+import lionhub.orchestration.engines.engine as engine_mod
 from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 from lionhub.orchestration.engines.review import (
     IssueFound,
@@ -393,3 +395,155 @@ def test_served_models_round_trip_and_old_payloads_load_empty():
     )
     assert old.served_models == []
     assert old.served_model == "m"
+
+
+class _WaitingLeg(_Leg):
+    """A review leg whose ``operate`` waits for ``ready()`` before it reports its dimension."""
+
+    def __init__(self, name: str, dimension: str, state: dict, *, ready=None, served=None) -> None:
+        super().__init__(name, [], state, served=served)
+        self._dimension = dimension
+        self._ready = ready
+
+    async def operate(self, *, instruction: str) -> str:
+        if self._ready is not None:
+
+            async def _until() -> None:
+                while not self._ready():
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_until(), timeout=5)
+        self._state["reported"].add(self._dimension)
+        return "reply"
+
+
+@pytest.mark.asyncio
+async def test_rows_are_in_the_order_the_legs_finish_not_the_order_they_start():
+    state: dict[str, Any] = {"reported": set()}
+    engine = ReviewEngine(
+        dimensions=("correctness", "security"), verify_clean=False, model="base-model"
+    )
+    engine._reported_dimensions = lambda run: set(state["reported"])
+    run = engine.new_run()
+    # The dimension that starts first holds its call open until the other's row exists.
+    legs = {
+        "review-correctness": _WaitingLeg(
+            "review-correctness",
+            "correctness",
+            state,
+            ready=lambda: any(r.agent == "review-security" for r in run.stage_served),
+            served="served-correctness",
+        ),
+        "review-security": _WaitingLeg(
+            "review-security", "security", state, served="served-security"
+        ),
+    }
+    started: list[str] = []
+
+    async def make_agent(role, *, name=None, **_):
+        started.append(name)
+        return legs[name]
+
+    run.make_agent = make_agent
+
+    await asyncio.gather(
+        *(engine._review_dimension_isolated(run, ARTIFACT, d) for d in engine.dimensions)
+    )
+
+    assert started == ["review-correctness", "review-security"]
+    assert [(r.agent, r.served) for r in run.stage_served] == [
+        ("review-security", "served-security"),
+        ("review-correctness", "served-correctness"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_verify_leg_whose_call_fails_still_has_a_row_and_the_run_still_has_its_verdict(
+    tmp_path, monkeypatch
+):
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        [
+            _named("for **correctness** only", "served-review", _fenced(ISSUE)),
+            _named("Issue a single ProposedVerdict", "served-verdict", "REQUEST-CHANGES: fix."),
+        ],
+    )
+    eng = ReviewEngine(
+        **HERMETIC,
+        dimensions=("correctness",),
+        verify_clean=False,
+        models={
+            "review": "scripted/review-req",
+            "verify": "scripted/verify-req",
+            "verdict": "scripted/verdict-req",
+        },
+    )
+    run = eng.new_run()
+    verifier = _Leg("verify-correctness", [anyio.BrokenResourceError()], {"arrived": False})
+    real_make_agent = run.make_agent
+
+    async def make_agent(role, *, name=None, **kwargs):
+        if name == "verify-correctness":
+            return verifier
+        return await real_make_agent(role, name=name, **kwargs)
+
+    run.make_agent = make_agent
+
+    await eng._run(run, ARTIFACT)
+
+    assert run.emission_failures == ["verify-correctness (BrokenResourceError)"]
+    verdicts = run.by_type(ReviewVerdict)
+    assert len(verdicts) == 1
+    issue = run.by_type(IssueFound)[0]
+    rows = _rows(verdicts[0])
+    # The verifier is spawned while the reviewer's call is still open, so which of the two
+    # finishes first is not fixed; the synthesis always runs after both.
+    assert len(rows) == 3
+    assert rows[-1]["agent"] == "verdict"
+    assert rows[-1]["served"] == "served-verdict"
+    by_agent = {row["agent"]: row for row in rows}
+    assert by_agent["review-correctness"]["served"] == "served-review"
+    assert by_agent["verify-correctness"] == {
+        "stage": "verify",
+        "dimension": "correctness",
+        "ref": _verify_ref(issue),
+        "agent": "verify-correctness",
+        "requested": "scripted/verify-req",
+        "served": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_requested_is_none_when_the_engine_names_no_model_and_the_role_profile_applies(
+    tmp_path, monkeypatch
+):
+    # No `model`, no `models`: the engine names nothing, so each leg runs on its role's
+    # profile model, and its row says the engine asked for none.
+    monkeypatch.setattr(engine_mod, "_ROLE_PROFILE_CACHE", {})
+    monkeypatch.setattr(
+        providers_mod,
+        "load_agent_profile",
+        lambda role: SimpleNamespace(model="scripted/profile-model", effort=None),
+    )
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        [
+            _named("for **correctness** only", "served-review", _fenced(ISSUE)),
+            _named("Adversarially verify", "served-verify", _fenced(VERIFY)),
+            _named("Issue a single ProposedVerdict", "served-verdict", "REQUEST-CHANGES: fix."),
+        ],
+    )
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
+    assert eng.model is None and eng.models == {}
+    run = eng.new_run()
+
+    await eng._run(run, ARTIFACT)
+
+    rows = _rows(run.by_type(ReviewVerdict)[-1])
+    assert [(r["stage"], r["requested"], r["served"]) for r in rows] == [
+        ("review", None, "served-review"),
+        ("verify", None, "served-verify"),
+        ("verdict", None, "served-verdict"),
+    ]
