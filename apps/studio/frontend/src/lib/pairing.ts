@@ -6,15 +6,16 @@
  * launch. `li studio` opens the page with a one-time code in the URL fragment
  * (`#pair=<code>`), which a browser never sends to a server. The code is read
  * once at startup and removed from the address bar, then exchanged with the
- * daemon for the bearer and a decision capability. When the daemon answers that
- * the bearer is its launch bearer (`token_source: "launch"`), it is kept in
- * `localStorage` for the page's own origin, bound to the daemon's API base: it
- * survives reloads, tabs and bookmarks until the daemon refuses it, and the page
- * then forgets it and `li studio` pairs it again. The gate checks a stored
- * bearer with one request before the app mounts. A configured
- * `LIONAGI_STUDIO_AUTH_TOKEN` (`token_source: "configured"`), or an answer that
- * does not say which bearer it is, is held in memory for that page load only
- * and never written to storage. The decision capability is
+ * daemon for the bearer and a decision capability. The bearer is kept in
+ * `localStorage` for the page's own origin, bound to the daemon's API base,
+ * whichever bearer the daemon sent: its launch bearer or a configured
+ * `LIONAGI_STUDIO_AUTH_TOKEN`. It survives reloads, tabs and bookmarks until the
+ * daemon refuses it, and the page then forgets it and `li studio` pairs it
+ * again. The gate checks a stored bearer with one request before the app
+ * mounts. A stored bearer is readable only by scripts on the page's own origin
+ * and is sent to no other API base. A configured token is an operator
+ * credential: an operator who does not want it kept in a browser clears that
+ * site's data or pairs in a private window. The decision capability is
  * kept in `sessionStorage` for that tab: it survives a reload of the tab, is
  * gone with the tab, and is not readable over HTTP. It is sent in
  * `X-Studio-Decision-Token` on the two Operator decision requests, and to no
@@ -175,25 +176,23 @@ async function sendPairingCode(
   if (!response.ok) return "refused";
   let token: unknown;
   let decisionToken: unknown;
-  let tokenSource: unknown;
   try {
     const body = (await response.json()) as {
       token?: unknown;
       decision_token?: unknown;
-      token_source?: unknown;
     } | null;
     token = body?.token;
     decisionToken = body?.decision_token;
-    tokenSource = body?.token_source;
   } catch {
     return "refused";
   }
   if (typeof token !== "string" || !token) return "refused";
   paired = { base: apiBase, token };
-  // Only the daemon's launch bearer is stored. A configured token, or an answer
-  // from a daemon that does not say which bearer it sent, stays in memory for
-  // this page load, and any bearer stored earlier is removed.
-  writeStoredBearer(tokenSource === "launch" ? paired : undefined);
+  // The bearer is stored whichever bearer the daemon sent (its launch bearer, a
+  // configured token, or an older daemon's answer that says nothing about it),
+  // replacing any bearer stored earlier. It is bound to this API base and
+  // forgotten on the first refusal.
+  writeStoredBearer(paired);
   writeDecisionCapability(
     typeof decisionToken === "string" && decisionToken
       ? { base: apiBase, token: decisionToken }

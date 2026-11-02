@@ -63,10 +63,13 @@ origin that is neither loopback nor its own unless they carry the bearer of its 
 which it keeps in memory only. `li studio` opens the hosted page with a one-time
 pairing code in the URL fragment (`#pair=<code>`, single use, 120 seconds); the
 page removes the code from the address bar on load, exchanges it for that bearer
-and a decision capability at `POST /api/studio/pair`, and keeps that launch bearer
-in `localStorage` for its own origin, bound to the daemon's API base. A configured
-`LIONAGI_STUDIO_AUTH_TOKEN` returned by the same route is held in memory for that
-page load only and never stored. The capability is kept in `sessionStorage` for
+and a decision capability at `POST /api/studio/pair`, and keeps the bearer in
+`localStorage` for its own origin, bound to the daemon's API base. It keeps whichever
+bearer the route returns, including a configured `LIONAGI_STUDIO_AUTH_TOKEN`. A stored
+bearer is readable only by scripts on the page's own origin, is sent to no other API
+base, and is forgotten on the first refusal. A configured token is an operator
+credential: an operator who does not want it kept in this browser clears the site's data
+or uses a private window. The capability is kept in `sessionStorage` for
 that tab and sent in `X-Studio-Decision-Token` on the two Operator decision
 requests only. The stored bearer is checked with one request before the app
 mounts, and the app mounts only on a 2xx answer. The bearer stays usable across
