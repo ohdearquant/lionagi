@@ -61,6 +61,10 @@ NOT_MEMBERS = [
     ("rejection_class", "invalid_request_error"),
 ]
 
+NOT_REJECTED_CODES = [
+    code for code in RouterErrorCode if code is not RouterErrorCode.REQUEST_REJECTED
+]
+
 
 # --- the sets ---------------------------------------------------------------------------------
 
@@ -172,6 +176,47 @@ def test_without_the_two_fields_the_message_is_unchanged():
 )
 def test_one_present_field_joins_the_message_alone(given, expected):
     assert str(build_error(http_status=400, **given)) == expected
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        {"provider_error_type": "invalid_request_error"},
+        {"rejection_class": "prompt_too_long"},
+        {"provider_error_type": "invalid_request_error", "rejection_class": "prompt_too_long"},
+    ],
+    ids=["type_only", "class_only", "both"],
+)
+@pytest.mark.parametrize("code", NOT_REJECTED_CODES, ids=lambda code: code.value)
+def test_the_fields_are_refused_on_any_other_error_code(code, given):
+    with pytest.raises(ValueError) as caught:
+        AccountRoutingError(code, **given)
+
+    assert "request_rejected" in str(caught.value)
+    for value in given.values():
+        assert value not in str(caught.value)
+
+
+@pytest.mark.parametrize("code", NOT_REJECTED_CODES, ids=lambda code: code.value)
+def test_an_error_code_without_the_fields_is_accepted(code):
+    error = AccountRoutingError(code, provider_error_type=None, rejection_class=None)
+
+    assert error.code is code
+    assert error.provider_error_type is None
+    assert error.rejection_class is None
+    assert str(error) == code.value
+
+
+def test_both_fields_are_accepted_on_a_rejected_error():
+    error = AccountRoutingError(
+        RouterErrorCode.REQUEST_REJECTED,
+        provider_error_type="overloaded_error",
+        rejection_class="image_too_large",
+    )
+
+    assert error.provider_error_type == "overloaded_error"
+    assert error.rejection_class == "image_too_large"
+    assert str(error) == "request_rejected type=overloaded_error class=image_too_large"
 
 
 # --- UnknownOutcome ---------------------------------------------------------------------------

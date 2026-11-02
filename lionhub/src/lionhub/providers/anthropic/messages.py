@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Literal, Union
 
 import anyio.lowlevel
@@ -18,6 +19,8 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import ANTHROPIC_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import AnthropicConfigs
+
+logger = logging.getLogger("lionagi.providers.anthropic.messages")
 
 __all__ = ("ANTHROPIC_DEFAULT_MAX_TOKENS", "CreateMessageRequest", "AnthropicMessagesEndpoint")
 
@@ -433,8 +436,8 @@ def _classify_rejection(body: bytes) -> tuple[str, str]:
     one of the documented types, else ``other``. The class is the first row of
     ``_REJECTION_CLASS_MESSAGES`` whose text ``error.message`` contains, else ``other``. A body
     longer than ``_REJECTION_BODY_LIMIT`` bytes is not decoded. Nothing of the body is logged,
-    kept or raised: only the two names leave this function, and every failure returns
-    ``("other", "other")``.
+    kept or raised: the two names are returned, and every failure returns ``("other", "other")``
+    after one debug log that names only the type of the exception.
     """
     try:
         from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
@@ -458,7 +461,8 @@ def _classify_rejection(body: bytes) -> tuple[str, str]:
         if rejection_class not in _REJECTION_CLASSES:
             rejection_class = "other"
         return error_type, rejection_class
-    except Exception:
+    except Exception as exc:
+        logger.debug("rejection body could not be classified: %s", type(exc).__name__)
         return "other", "other"
 
 
