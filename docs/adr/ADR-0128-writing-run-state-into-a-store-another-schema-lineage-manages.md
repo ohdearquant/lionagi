@@ -2,10 +2,10 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: partial: D1-D7 are implemented. D8 is not complete: no test covers
-  item 7's writer-hold, busy-rate and WAL-growth limits declared before a run, or item 9's recovery
-  after lionagi's writes stop, and item 8's authorizer tests run on each supported Python against
-  one aiosqlite version.
+- **Implementation-status**: partial: D1-D7 are implemented. D8 is not complete: item 8's
+  authorizer tests run on each supported Python against one aiosqlite version. Items 7 and 9 have
+  tests (`tests/state/test_compatibility_concurrency.py` and
+  `tests/state/test_compatibility_recovery.py`).
 - **Area**: persistence-state
 - **Date**: 2026-10-14
 - **Relations**: extends ADR-0122 (optional runtime profiles); constrains every writable `StateDB` open;
