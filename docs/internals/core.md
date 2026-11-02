@@ -735,10 +735,15 @@ Passing `provider_catalog=` (also accepted by `match_endpoint`) changes the
 source of declarations: the endpoint is selected from that catalog alone, never
 from the bundled catalog, the registered entries or the plugin registry, and an
 empty catalog is not the same as omitting the argument. A declaration whose
-implementation fails to import raises instead of being skipped. For a provider
-the catalog does not declare, `openai_compatible=True` and the deprecated
-`base_url` route behave as above; anything else raises `ProviderNotFoundError`
-naming the catalog's source and its declared providers.
+implementation fails to import raises instead of being skipped. A provider the
+catalog declares is never routed to the generic endpoint: when the endpoint
+asked for matches none of its declared endpoints and it declares more than one,
+`match` raises `ProviderNotFoundError` naming the catalog's source and the
+endpoints it declares for that provider, whatever `openai_compatible` or
+`base_url` say. For a provider the catalog does not declare,
+`openai_compatible=True` and the deprecated `base_url` route behave as above;
+anything else raises `ProviderNotFoundError` naming the catalog's source and its
+declared providers.
 
 A bundled-catalog provider whose activation fails while the registry loads (for
 example, its `_config` module cannot be imported) does not stop the load: the
