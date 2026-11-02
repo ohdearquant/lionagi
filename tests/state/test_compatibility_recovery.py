@@ -6,20 +6,20 @@
 Once the framework stops writing, the application that manages the store must still read every
 row the framework wrote, with the column values the framework wrote, and its own integrity and
 foreign-key checks must come back clean. The managing application is kept running (it holds a
-connection of its own to the store), so the framework's rows are still in the write-ahead log
-when the framework stops, and are then read again after the managing application's checkpoint
-and after it reopens the store. A write the framework abandoned part way, because a later
-statement of its transaction was denied, leaves nothing of that transaction for the managing
-application to see.
+connection of its own to the store), so the framework's rows are still in the write-ahead log,
+and not yet in the store file, when the framework stops; they are then read again after the
+managing application's checkpoint and after it reopens the store. A write the framework
+abandoned part way, because a later statement of its transaction was denied, leaves nothing of
+that transaction for the managing application to see.
 
-The store is the synthetic managed store of ``test_compatibility_owner_ops``, built by the
-managing application's own initializer, and the managing side reads it through that module's
-helpers.
+The store is the synthetic managed store of ``test_compatibility_owner_ops``, and the managing
+side reads it through that module's helpers.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
 from collections.abc import Awaitable, Callable
 from contextlib import closing, contextmanager
@@ -226,7 +226,14 @@ async def test_the_managing_application_reads_every_row_the_framework_wrote(
         await _end_the_run(handle)
 
     assert set(inserts.keys) == _WRITTEN_TABLES
-    assert wal.stat().st_size > 0, "the rows are still in the write-ahead log when the run ends"
+    assert wal.stat().st_size > 0, "the write-ahead log is empty when the run ends"
+    # The store file alone, without its write-ahead log, does not hold the run's session yet, so
+    # the first read below is served from the log.
+    store_file_only = store.parent / "store-file-only.db"
+    shutil.copyfile(store, store_file_only)
+    assert _rows(store_file_only, 'SELECT COUNT(*) FROM "sessions" WHERE "id" = ?', ("s",)) == [
+        (0,)
+    ], "the run's session is already in the store file when the run ends"
     assert seen[("sessions", "s")]["status"] == "completed"
     assert seen[("progressions", "bp")]["collection"] == '["m1","m-sys2"]'
     _assert_every_row_is_read(store, seen, earlier, "after the framework stops")
@@ -239,9 +246,10 @@ async def test_the_managing_application_reads_every_row_the_framework_wrote(
     _assert_every_row_is_read(store, seen, earlier, "after the managing application reopens")
 
     # What the framework did not write is where the managing application left it.
+    after = _contents(store)
     for table, rows in contents.items():
         if table not in _WRITTEN_TABLES:
-            assert _contents(store)[table] == rows, table
+            assert after[table] == rows, table
 
 
 def _without_the_grant(store: Path, table: str, column: str):
