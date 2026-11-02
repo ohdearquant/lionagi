@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from contextlib import closing
+from contextlib import closing, suppress
 from pathlib import Path
 
 import anyio
@@ -98,6 +98,32 @@ class _HangingRejection(_Rejection):
     async def aiter_bytes(self):
         await anyio.Event().wait()
         yield b""
+
+
+class _LateRejection(_Rejection):
+    """A rejection whose whole body arrives ``delay`` seconds after the read starts."""
+
+    delay = 0.3
+
+    async def aiter_bytes(self):
+        await anyio.sleep(self.delay)
+        yield self.content
+
+
+class _CancellingRejection(_Rejection):
+    """A rejection whose body stream cancels ``scope`` after its first piece.
+
+    The cancellation is pending at the checkpoint that follows, before the rest of the body is
+    yielded. ``scope`` is set by the test.
+    """
+
+    scope: anyio.CancelScope | None = None
+
+    async def aiter_bytes(self):
+        yield self.content[:10]
+        self.scope.cancel()
+        await anyio.lowlevel.checkpoint()
+        yield self.content[10:]
 
 
 class _BrokenRejection(_Rejection):
@@ -228,6 +254,21 @@ ORDERED_PAIRS = [
     for index, (earlier, _) in enumerate(CLASS_MESSAGES)
     for later, _ in CLASS_MESSAGES[index + 1 :]
 ]
+# Every wording of an earlier row with every wording of each later row, as positions in WORDINGS.
+WORDING_INDEX_PAIRS = [
+    (first, second)
+    for first, (earlier, _) in enumerate(WORDINGS)
+    for second, (later, _) in enumerate(WORDINGS)
+    if first < second and earlier != later
+]
+# (earlier class, a wording of the earlier row, a wording of the later row) and the test ids.
+WORDING_PAIRS = [
+    (WORDINGS[first][0], WORDINGS[first][1], WORDINGS[second][1])
+    for first, second in WORDING_INDEX_PAIRS
+]
+WORDING_PAIR_IDS = [
+    f"{WORDING_IDS[first]}-before-{WORDING_IDS[second]}" for first, second in WORDING_INDEX_PAIRS
+]
 
 # Bodies that fall to ``other``: (id, body, provider_error_type, rejection_class).
 OTHER_BODIES = [
@@ -261,6 +302,11 @@ OTHER_BODIES = [
     ("empty", b"", "other", "other"),
     ("seventy_thousand_bytes", _body_of(70_000), "other", "other"),
 ]
+
+
+def test_the_class_table_matches_the_production_table():
+    """``CLASS_MESSAGES`` is a literal copy: the same classes and wordings, in the same order."""
+    assert messages_module._REJECTION_CLASS_MESSAGES == CLASS_MESSAGES
 
 
 @pytest.mark.asyncio
@@ -307,6 +353,23 @@ async def test_a_body_over_64_kib_is_not_decoded(
 
 
 @pytest.mark.asyncio
+async def test_a_non_streamed_body_is_cut_before_the_classifier(monkeypatch, tmp_path):
+    """An oversize body reaches the classifier cut to one byte past the bound."""
+    seen = []
+    classify = messages_module._classify_rejection
+
+    def recording(body):
+        seen.append(len(body))
+        return classify(body)
+
+    monkeypatch.setattr(messages_module, "_classify_rejection", recording)
+    path, _, error = await _reject(monkeypatch, tmp_path, _body_of(200_000), False)
+
+    assert seen == [messages_module._REJECTION_BODY_LIMIT + 1]
+    _assert_recorded(path, error, "other", "other")
+
+
+@pytest.mark.asyncio
 async def test_a_streamed_body_is_not_read_past_the_bound(monkeypatch, tmp_path):
     seen = []
     classify = messages_module._classify_rejection
@@ -342,6 +405,35 @@ async def test_a_streamed_body_that_does_not_arrive_in_time_records_other(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_streamed_body_that_arrives_after_the_read_limit_records_other(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(messages_module, "_REJECTION_READ_SECONDS", 0.05)
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [_LateRejection(400, _typed(PROMPT))])
+    with pytest.raises(AccountRoutingError) as caught:
+        await _send(model, True)
+
+    _assert_recorded(path, caught.value, "other", "other")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
+    monkeypatch, tmp_path
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    rejection = _CancellingRejection(400, _typed(PROMPT))
+    model, _ = _model(monkeypatch, [rejection])
+    with anyio.CancelScope() as caller:
+        rejection.scope = caller
+        with suppress(AccountRoutingError):
+            await _send(model, True)
+
+    assert caller.cancel_called
+    assert _rejection_columns(path) == [("request_rejected", INVALID, "prompt_too_long")]
+
+
+@pytest.mark.asyncio
 async def test_a_streamed_body_that_fails_midway_records_other(monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     path = _install_accounts(monkeypatch, tmp_path)
@@ -364,6 +456,19 @@ async def test_a_message_naming_two_classes_gets_the_earlier_row(
     monkeypatch, tmp_path, streamed, earlier, later
 ):
     body = _typed(f"{FIRST_WORDING[later]} and also {FIRST_WORDING[earlier]}")
+    path, _, error = await _reject(monkeypatch, tmp_path, body, streamed)
+    _assert_recorded(path, error, INVALID, earlier)
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize(
+    ("earlier", "earlier_wording", "later_wording"), WORDING_PAIRS, ids=WORDING_PAIR_IDS
+)
+async def test_every_wording_of_an_earlier_row_wins_over_every_wording_of_a_later_row(
+    monkeypatch, tmp_path, streamed, earlier, earlier_wording, later_wording
+):
+    body = _typed(f"{later_wording} and also {earlier_wording}")
     path, _, error = await _reject(monkeypatch, tmp_path, body, streamed)
     _assert_recorded(path, error, INVALID, earlier)
 
