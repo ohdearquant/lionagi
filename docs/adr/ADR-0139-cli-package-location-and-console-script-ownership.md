@@ -83,8 +83,8 @@ Representative edges include shared run persistence, scheduler parser constructi
 and schedule declaration/export
 (`lionagi/studio/operator/coordinator.py:539`,
 `lionagi/studio/scheduler/subprocess.py:279`,
-`lionagi/cli/machine_schedule.py:322`,
-`lionagi/cli/machine_schedule.py:382`).
+`lionagi/cli/machine_schedule.py:324`,
+`lionagi/cli/machine_schedule.py:384`).
 There is additionally a literal dynamic import of the mixed Studio CLI module;
 it is not one of the eleven static statements (`lionagi/cli/main.py:33`).
 The full 46-file partition is specified in D2.

@@ -102,8 +102,9 @@ that check or to any later request that carried it, clears that value; a bearer
 another tab stored since is kept. A restarted daemon draws a new launch bearer,
 so its first answer sends the page back to the access-required screen with
 `li studio` as the remedy. Any other answer to the check, or none within 15
-seconds, shows the same screen and keeps the stored bearer for Retry, and a
-check that does not reach the daemon keeps it too.
+seconds (`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), shows
+the same screen and keeps the stored bearer for Retry, and a check that does not
+reach the daemon keeps it too.
 
 Why storing the launch bearer is acceptable: a daemon with no configured token
 already admits any local caller that sends no `Origin`, a command-line client
@@ -133,6 +134,17 @@ right daemon from another port, is refused and `li studio` exits 1 without
 printing the code. It never stops a running daemon; on a platform without unix
 sockets it says to restart the daemon. A process running as the daemon's own OS user can obtain a
 code this way, which is outside what the HTTP-only guarantee covers.
+The HTTP requests `li studio` sends its daemon, the `li schedule` clients and the `li doctor` daemon check open a URL
+whose host is `localhost`, a 127.0.0.0/8 address or `::1` without any proxy
+(`open_url` in `lionagi/ln/_ssrf.py`): a proxy named in the environment or, on macOS,
+in the system settings cannot reach this machine's loopback interface, so with one
+configured a running daemon would read as absent. Other hosts keep the proxy settings, and
+a redirect from loopback to any other host is not followed.
+When nothing answers as a daemon, the hosted launch (`li studio` without `--no-frontend`,
+`--dev` or `--docker`) tries to bind its port once, the way the daemon will, before it
+mints a code: a port it cannot bind stops the launch with an error that names the cause,
+and no link is printed or opened. This is a probe at launch, not a reservation: another
+program can still take the port before the daemon binds.
 
 **Decision capabilities** (`launch_access.py`) — a page pairs with an admission
 bearer and, separately, a decision capability: a random 256-bit secret the

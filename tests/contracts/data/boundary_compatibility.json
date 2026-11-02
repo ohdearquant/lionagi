@@ -2082,7 +2082,8 @@
       "terminate_process_group"
     ],
     "lionagi/ln/_ssrf.py": [
-      "is_ssrf_safe"
+      "is_ssrf_safe",
+      "open_url"
     ],
     "lionagi/ln/_structural.py": [
       "UnhashableStructuralValueError"
