@@ -376,6 +376,11 @@ def test_single_endpoint_providers_select_their_endpoint_from_the_catalog(
             "the generic endpoint must not be built for a single-endpoint provider"
         )
 
+    # Importing a provider module registers its endpoints, and registering asks the automatic
+    # source whether the name is a built-in one. Import every provider first, so that what the
+    # test forbids is the selection reaching the automatic source and not an import that has
+    # not happened yet.
+    EndpointRegistry._ensure_loaded()
     forbid_automatic_source()
     monkeypatch.setattr(EndpointRegistry, "_generic_endpoint", classmethod(refuse))
 

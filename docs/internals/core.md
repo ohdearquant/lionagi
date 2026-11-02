@@ -745,14 +745,38 @@ endpoints it declares for that provider, whatever `openai_compatible` or
 anything else raises `ProviderNotFoundError` naming the catalog's source and its
 declared providers.
 
-A bundled-catalog provider whose activation fails while the registry loads (for
-example, its `_config` module cannot be imported) does not stop the load: the
-registry logs one warning for that provider and the other providers register as
-usual. Selecting the failed provider by its key or any of its aliases, through
-`match`, `match_endpoint` or `iModel`, raises its `ProviderActivationError`,
-chained from the original exception. It never resolves to another endpoint or to
-the generic OpenAI-compatible endpoint, whatever `openai_compatible` or
-`base_url` say, and it is never reported as `ProviderNotFoundError`. While the
+With no `provider_catalog`, `match` reads the bundled catalog's declarations (the
+hub's manifest imports no endpoint implementation) and imports only the
+declaration the request selects. The provider is matched by key or alias with
+letter case folded; a request naming no endpoint selects the declared default
+endpoint; an endpoint key or alias selects that endpoint; and a provider that
+declares exactly one endpoint selects it for any endpoint name. A declared
+provider is answered by its declarations alone, never by the registered entries,
+which hold only the endpoints activated so far. Asked for an endpoint it does not
+declare (when it declares more than one), it activates its default declaration
+and then routes to the generic endpoint, so a provider that cannot activate
+raises there instead. A provider the catalog does not declare (the test-only
+scripted provider, plugin providers, classes registered by the caller) is found
+by scanning the registered entries, then the plugin registry, before the generic
+endpoint.
+
+A declaration whose activation fails raises at selection, through `match`,
+`match_endpoint` or `iModel`, whatever `openai_compatible` or `base_url` say. It
+never resolves to another endpoint or to the generic OpenAI-compatible endpoint,
+and it is never reported as `ProviderNotFoundError`. An internal import failure, a
+syntax error or a defect in the factory raises `ProviderActivationError` (reason
+`activation_failed`) with the original exception chained. A `ModuleNotFoundError`
+whose `name` equals a top-level import root that a requirement of the endpoint
+declares raises `MissingFeatureError` naming the provider, endpoint, distribution
+and install hint; an endpoint that raises it from its constructor is translated
+the same way. Any other `ModuleNotFoundError` is a defect, not an absence. The
+failure of a factory is kept per declaration, so later selections raise a copy of
+it without calling the factory again and without repeating its warning (an absent
+dependency is logged at debug level). When the bundled catalog cannot load, the
+registered entries and plugins still answer the names they know; any other
+request raises the load failure, which is a `MissingFeatureError` for feature
+`providers` naming the requested provider and the distribution `lionagi` when the
+hub is absent. The generic endpoint never replaces it. While the
 bundled catalog can load, `register` refuses a provider key or alias that it
 declares, whether or not that provider activated, unless the class's
 `"<module>:<qualified name>"` equals the `diagnostic_id` of one of the endpoints
@@ -762,10 +786,14 @@ refused registration raises `ProviderAliasCollisionError`. Inside a plugin
 provider module the refused class is skipped instead and a warning names the
 plugin, the module and the refused name; the module keeps executing and its
 other endpoints register. When the catalog cannot load, nothing is refused.
-`EndpointRegistry.failed_providers()` returns one row per failed provider with
-`provider`, `endpoint` (or `None`), `source` and `reason`, and no exception
-text; it is empty when every provider activated. The rows of `list_providers()`
-are unchanged.
+`EndpointRegistry.failed_providers()` returns one row per provider whose
+activation failed when the registry loaded every provider, with `provider`,
+`endpoint` (or `None`), `source` and `reason`, and no exception text; it is empty
+when every provider activated. The rows of `list_providers()` describe every
+built-in class, so `list_providers()` and `failed_providers()` import every
+declared provider, as before (their row order follows the order the providers
+first imported in, with the scripted provider last). `canonical_provider()` and
+selection import none they do not need.
 
 ### ActionManager plugin-shadow diagnostics
 

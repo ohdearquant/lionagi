@@ -11,13 +11,20 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
-from lionagi.ln import HashAlgorithm, compute_hash, hash_file, import_module, is_import_installed
+from lionagi.ln import (
+    HashAlgorithm,
+    compute_hash,
+    copy,
+    hash_file,
+    import_module,
+    is_import_installed,
+)
 from lionagi.ln.types import Enum
 
 if TYPE_CHECKING:
     from lionagi._provider_errors import ProviderActivationError
 
-    from .provider_catalog import ProviderCatalog
+    from .provider_catalog import EndpointDeclaration, ProviderCatalog, ProviderFragment
 
 __all__ = (
     "EndpointType",
@@ -29,6 +36,11 @@ __all__ = (
 )
 
 logger = logging.getLogger(__name__)
+
+# The module that registers the test-only scripted provider, and the feature name the
+# registry's typed absence errors carry.
+_SCRIPTED_MODULE = "lionagi.testing._endpoint"
+_PROVIDERS_FEATURE = "providers"
 
 # (mtime_ns, ctime_ns, size, inode) for one file -- see _plugin_entry_stat.
 # A cheap first gate only; see _plugin_entry_digest for the correctness guarantee.
@@ -149,8 +161,15 @@ class EndpointRegistry:
     # provider trying to claim a name or alias someone else already owns.
     _alias_owners: ClassVar[dict[str, str]] = {}
 
-    # The bundled-catalog providers whose activation failed in the last load, in catalog order.
+    # The bundled-catalog providers whose activation failed in the last full load, in catalog
+    # order. Only the full load (``_ensure_loaded``) fills it; a selection records its own
+    # failures in ``_activation_failures``.
     _failed: ClassVar[tuple[_FailedProvider, ...]] = ()
+
+    # The failure of each bundled-catalog declaration whose factory raised during a selection,
+    # keyed by ``id(declaration)``. The declaration rides along so the id stays unique while the
+    # failure is kept.
+    _activation_failures: ClassVar[dict[int, tuple[EndpointDeclaration, Exception]]] = {}
 
     @classmethod
     def register(
@@ -303,20 +322,35 @@ class EndpointRegistry:
         provider_catalog: ProviderCatalog | None = None,
         **kwargs,
     ) -> Any:
-        """Find and instantiate the best matching endpoint. A provider key or alias that the
-        bundled provider catalog declares, and whose activation failed when the registry
-        loaded, raises that provider's ``ProviderActivationError`` before anything else is
-        tried: it never resolves to another endpoint or to the generic OpenAI-compatible
-        endpoint, whatever ``openai_compatible`` or ``base_url`` say. With no endpoint named,
-        a provider the bundled provider catalog declares resolves to its declared default
-        endpoint, unless the provider's first registered entry is a class the catalog
-        does not declare, in which case the scan returns that entry. ``register`` refuses such
-        a class while the catalog can load, so the case needs an entry that did not pass that
-        check (see :meth:`_match_declared_default`). Every other lookup, and every lookup while
-        the catalog cannot load, scans the registered entries. On a registry miss,
-        consults the plugin registry before falling back to the generic
-        OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
-        for the provider-vs-endpoint rejection contract.
+        """Find and instantiate the best matching endpoint. With no supplied catalog the
+        bundled provider catalog is read first, for its declarations only, and a request it
+        selects imports that one declaration's implementation and nothing else: the provider
+        is matched by key or alias with letter case folded, a request naming no endpoint
+        selects the declared default endpoint, an endpoint key or alias selects that endpoint,
+        and a provider declaring exactly one endpoint selects it for any endpoint name. A
+        failure to activate the selected declaration raises at once, and neither the generic
+        OpenAI-compatible endpoint nor another endpoint answers in its place, whatever
+        ``openai_compatible`` or ``base_url`` say: an internal import failure, a syntax error or
+        a defect in the factory raises ``ProviderActivationError`` with the original exception
+        chained, and a declared optional dependency that is not installed raises
+        ``MissingFeatureError`` naming the provider, endpoint and distribution. A
+        ``ModuleNotFoundError`` counts as an absent dependency only when its ``name`` equals one
+        of the declared top-level import roots. The failure of a factory is kept per
+        declaration: later selections raise a copy of it without calling the factory again and
+        without repeating its warning. A declared provider is answered by its declarations
+        alone, never by the registered entries, which hold only what has activated so far: asked
+        for an endpoint it does not declare (when it declares more than one), it activates its
+        default declaration, so a provider that cannot activate still raises, and otherwise
+        routes to the generic endpoint.
+
+        A provider the catalog does not declare scans the registered entries (the test-only
+        scripted provider, plugin entries and classes registered by the caller). On a registry
+        miss, consults the plugin registry before falling back to the generic OpenAI-compatible
+        endpoint. When the bundled catalog cannot load, only the registered entries and plugins
+        answer: a request they do not answer raises the load failure, with the requested
+        provider named on a ``MissingFeatureError``, and the generic endpoint never replaces
+        it. See docs/internals/core.md#endpointregistry-match for the provider-vs-endpoint
+        rejection contract.
 
         Supplying ``provider_catalog`` selects from that catalog's declarations alone, in
         declaration order, by the same provider, endpoint and single-endpoint rules: the
@@ -338,15 +372,23 @@ class EndpointRegistry:
                 provider, endpoint, openai_compatible, kwargs, provider_catalog
             )
 
-        cls._ensure_loaded()
-        cls._raise_activation_failure(provider)
-
-        if not endpoint:
-            declared = cls._match_declared_default(provider, kwargs)
-            if declared is not None:
-                return declared
+        catalog, unavailable = cls._bundled_catalog()
+        if catalog is not None:
+            fragment = catalog.fragment(provider)
+            if fragment is not None:
+                # A declared provider is answered by its declarations alone. The registered
+                # entries hold only the endpoints that happened to activate earlier, so
+                # scanning them would make the answer depend on that history.
+                declared = cls._match_declared(catalog, fragment, provider, endpoint, kwargs)
+                if declared is not None:
+                    return declared
+                return cls._generic_endpoint(provider, endpoint, openai_compatible, kwargs, None)
 
         matched = cls._match_registered(provider, endpoint, kwargs)
+        if matched is None:
+            # The scripted provider registers on the first lookup nothing else answered.
+            _import_provider_module(_SCRIPTED_MODULE)
+            matched = cls._match_registered(provider, endpoint, kwargs)
         if matched is not None:
             return matched
 
@@ -355,27 +397,195 @@ class EndpointRegistry:
             if matched is not None:
                 return matched
 
+        if unavailable is not None:
+            raise cls._unavailable_catalog_error(unavailable, provider)
         return cls._generic_endpoint(provider, endpoint, openai_compatible, kwargs, None)
 
     @classmethod
-    def _raise_activation_failure(cls, provider: str) -> None:
-        """Raise ``provider``'s ``ProviderActivationError`` when ``provider`` is the key or an
-        alias of a bundled-catalog provider whose activation failed when the registry loaded.
+    def _bundled_catalog(cls) -> tuple[ProviderCatalog | None, Exception | None]:
+        """The catalog of the bundled provider manifest, or the typed error that kept it from
+        loading, as ``(catalog, None)`` or ``(None, error)``. Reading the catalog imports no
+        endpoint implementation."""
+        from lionagi._feature_errors import MissingFeatureError
+        from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
 
-        The error is a new one with the recorded error's fields, chained from the same cause,
-        so repeated lookups neither lengthen one traceback nor share one exception object."""
+        from ._provider_compat import default_provider_catalog
+
+        try:
+            return default_provider_catalog(), None
+        except (
+            MissingFeatureError,
+            ProviderActivationError,
+            ProviderContractVersionError,
+        ) as error:
+            return None, error
+
+    @classmethod
+    def _unavailable_catalog_error(cls, error: Exception, provider: str) -> Exception:
+        """The error a selection raises when the bundled catalog could not load: ``error``
+        itself, except that a ``MissingFeatureError`` is rebuilt with the requested
+        ``provider`` named on it and chained from the same cause."""
+        from lionagi._feature_errors import MissingFeatureError
+
+        if not isinstance(error, MissingFeatureError):
+            return error
+        named = MissingFeatureError(
+            feature=error.feature,
+            missing_distribution=error.missing_distribution,
+            install_hint=error.install_hint,
+            extra=error.extra,
+            requested_symbol=error.requested_symbol,
+            provider=provider,
+            endpoint=error.endpoint,
+            reason=error.reason,
+            source=error.source,
+            import_root=error.name,
+        )
+        named.__cause__ = error.__cause__
+        return named
+
+    @classmethod
+    def _match_declared(
+        cls,
+        catalog: ProviderCatalog,
+        fragment: ProviderFragment,
+        provider: str,
+        endpoint: str,
+        kwargs: dict[str, Any],
+    ) -> Any | None:
+        """Build the endpoint ``catalog`` declares for ``provider`` (whose fragment is
+        ``fragment``) and ``endpoint``, importing only the selected declaration's
+        implementation. ``None`` when the provider declares several endpoints and none matches
+        the named one. The provider's default declaration is activated first in that case (see
+        :meth:`_activate`), so a provider that cannot activate raises here rather than reaching
+        the generic endpoint."""
+        declaration = catalog.endpoint(provider, endpoint)
+        if declaration is None:
+            cls._activate(catalog, fragment, catalog.endpoint(provider))
+            return None
+        endpoint_cls = cls._activate(catalog, fragment, declaration)
+        try:
+            return endpoint_cls(None, **kwargs)
+        except ModuleNotFoundError as error:
+            # Constructors check their optional dependency too: an endpoint can raise this
+            # for a declared import root only when it is built.
+            absent = cls._absent_dependency(catalog, fragment, declaration, error)
+            if absent is None:
+                raise
+            raise absent from error
+
+    @classmethod
+    def _activate(
+        cls, catalog: ProviderCatalog, fragment: ProviderFragment, declaration: EndpointDeclaration
+    ) -> type:
+        """Call ``declaration``'s factory and return the endpoint class it names.
+
+        An exception from the factory becomes the typed error :meth:`_activation_failure`
+        builds. That error is kept for ``declaration``, logged once, and raised as a copy on this
+        and every later selection, so the factory is not called again and no traceback or
+        exception object is shared between callers. Only ``Exception`` is translated; an
+        interrupt passes through and is not kept."""
+        key = id(declaration)
+        kept = cls._activation_failures.get(key)
+        if kept is None:
+            try:
+                return declaration.factory()
+            except Exception as error:
+                failure = cls._activation_failure(catalog, fragment, declaration, error)
+            failure.with_traceback(None)
+            kept = cls._activation_failures.setdefault(key, (declaration, failure))
+            if kept[1] is failure:
+                cls._log_activation_failure(fragment, declaration, failure)
+        raise copy(kept[1], deep=False) from kept[1].__cause__
+
+    @classmethod
+    def _activation_failure(
+        cls,
+        catalog: ProviderCatalog,
+        fragment: ProviderFragment,
+        declaration: EndpointDeclaration,
+        error: Exception,
+    ) -> Exception:
+        """The typed error for ``error``, raised by ``declaration``'s factory, chained from it.
+
+        A ``MissingFeatureError`` or ``ProviderActivationError`` the factory raised itself is
+        already typed and is returned as it is. A ``ModuleNotFoundError`` for a declared
+        top-level import root is an absent optional dependency (``MissingFeatureError``).
+        Everything else, an internal import failure, a syntax error or a defect in the factory,
+        is a ``ProviderActivationError`` with reason ``activation_failed``."""
+        from lionagi._feature_errors import MissingFeatureError
         from lionagi._provider_errors import ProviderActivationError
 
-        name = provider.lower()
-        for failed in cls._failed:
-            if name in failed.names:
-                recorded = failed.error
-                raise ProviderActivationError(
-                    provider=recorded.provider,
-                    endpoint=recorded.endpoint,
-                    source=recorded.source,
-                    reason=recorded.reason,
-                ) from recorded.__cause__
+        if isinstance(error, (MissingFeatureError, ProviderActivationError)):
+            return error
+        absent = cls._absent_dependency(catalog, fragment, declaration, error)
+        if absent is not None:
+            return absent
+        failure = ProviderActivationError(
+            provider=fragment.key,
+            endpoint=declaration.key,
+            source=catalog.source,
+            reason="activation_failed",
+        )
+        failure.__cause__ = error
+        return failure
+
+    @classmethod
+    def _absent_dependency(
+        cls,
+        catalog: ProviderCatalog,
+        fragment: ProviderFragment,
+        declaration: EndpointDeclaration,
+        error: BaseException,
+    ) -> Exception | None:
+        """A ``MissingFeatureError`` for the dependency ``error`` reports absent, or ``None``.
+
+        ``error`` counts only when it is a ``ModuleNotFoundError`` whose ``name`` equals, exactly,
+        one of the top-level import roots a requirement of ``declaration`` lists. A module
+        missing from inside the provider's own packages, or a submodule of a declared root, is
+        a defect and not an absence."""
+        from lionagi._feature_errors import MissingFeatureError
+
+        if not isinstance(error, ModuleNotFoundError) or error.name is None:
+            return None
+        for requirement in declaration.requirements:
+            if error.name in requirement.import_roots:
+                absent = MissingFeatureError(
+                    feature=_PROVIDERS_FEATURE,
+                    missing_distribution=requirement.distribution,
+                    install_hint=requirement.install_hint,
+                    provider=fragment.key,
+                    endpoint=declaration.key,
+                    reason="missing_dependency",
+                    source=catalog.source,
+                    import_root=error.name,
+                )
+                absent.__cause__ = error
+                return absent
+        return None
+
+    @classmethod
+    def _log_activation_failure(
+        cls, fragment: ProviderFragment, declaration: EndpointDeclaration, failure: Exception
+    ) -> None:
+        """Log the first failure of one declaration. The message holds no exception text; the
+        original exception is the ``__cause__`` of what selection raises."""
+        from lionagi._feature_errors import MissingFeatureError
+
+        if isinstance(failure, MissingFeatureError):
+            logger.debug(
+                "provider %r endpoint %r is not available: a declared dependency is not installed",
+                fragment.key,
+                declaration.key,
+            )
+            return
+        logger.warning(
+            "provider %r endpoint %r could not be activated (%s); selecting it raises %s",
+            fragment.key,
+            declaration.key,
+            getattr(failure, "reason", type(failure).__name__),
+            type(failure).__name__,
+        )
 
     @classmethod
     def _match_catalog(
@@ -446,69 +656,16 @@ class EndpointRegistry:
         return Endpoint(config, **kwargs)
 
     @classmethod
-    def _match_declared_default(cls, provider: str, kwargs: dict[str, Any]) -> Any | None:
-        """Build the declared default endpoint of ``provider`` from the bundled provider
-        catalog. ``None`` when the catalog does not declare ``provider``, cannot load, or
-        its declared implementation module fails to import, so the caller falls back to
-        scanning the registered entries; the registry skipped that module with a warning
-        when it loaded, so the scan reports the provider as it did before. Also ``None``
-        when the provider's first registered entry is a class the catalog does not
-        declare, so the scan returns that entry. Entries reach the registry through
-        ``register``, which refuses a class the catalog does not declare under a name the
-        catalog declares, but compares the class by its module and qualified name. The case
-        therefore arises only for an entry that did not pass that check: a class with the
-        module and qualified name of a declared endpoint that is not the object the catalog
-        loads (for example after its module was reloaded), or an entry put into the
-        registry's entry list without calling ``register``. A class registered while the
-        catalog could not load was not checked either, but the catalog's load failure is
-        kept for the life of the process, so this method returns before it reads the
-        entries. A declaration whose factory raises ``ProviderActivationError`` is not
-        skipped: the error reaches the caller, and no other endpoint is selected in its
-        place."""
-        from lionagi._feature_errors import MissingFeatureError
-        from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
-
-        from ._provider_compat import default_provider_catalog
-
-        try:
-            catalog = default_provider_catalog()
-        except (MissingFeatureError, ProviderActivationError, ProviderContractVersionError):
-            return None
-        fragment = catalog.fragment(provider)
-        if fragment is None:
-            return None
-        try:
-            endpoint_cls = catalog.endpoint(provider, "").factory()
-        except ImportError:
-            return None
-        name = provider.lower()
-        first = next(
-            (
-                entry
-                for entry in tuple(cls._entries)
-                if (name == entry.meta.provider or name in entry.meta.provider_aliases)
-                and cls._revalidate_plugin_entry(entry)
-            ),
-            None,
-        )
-        if first is not None:
-            declared_classes = []
-            for declaration in fragment.endpoints:
-                try:
-                    declared_classes.append(declaration.factory())
-                except ImportError:
-                    continue
-            if not any(first.cls is declared for declared in declared_classes):
-                return None
-        return endpoint_cls(None, **kwargs)
-
-    @classmethod
     def _is_known_provider(cls, provider: str) -> bool:
         """Whether ``provider`` (case-insensitive) is a canonical provider
-        name or provider-alias that some registered entry already claimed --
-        i.e. whether rejecting it as unrecognized would be wrong regardless
-        of which specific endpoint was requested for it."""
-        return provider.lower() in cls._alias_owners
+        name or provider-alias that some registered entry already claimed or the
+        bundled provider catalog declares -- i.e. whether rejecting it as
+        unrecognized would be wrong regardless of which specific endpoint was
+        requested for it."""
+        if provider.lower() in cls._alias_owners:
+            return True
+        catalog, _ = cls._bundled_catalog()
+        return catalog is not None and catalog.fragment(provider) is not None
 
     @classmethod
     def _provider_not_found_error(cls, provider: str) -> ProviderNotFoundError:
@@ -516,6 +673,11 @@ class EndpointRegistry:
         for entry in cls._entries:
             known.add(entry.meta.provider)
             known.update(entry.meta.provider_aliases)
+        catalog, _ = cls._bundled_catalog()
+        if catalog is not None:
+            for fragment in catalog.providers:
+                known.add(fragment.key)
+                known.update(fragment.aliases)
         return ProviderNotFoundError(
             f"no endpoint registered for provider {provider!r}; registered "
             f"providers: {', '.join(sorted(known)) or '(none)'}. Pass "
@@ -802,6 +964,10 @@ class EndpointRegistry:
 
     @classmethod
     def _ensure_loaded(cls):
+        """Import every declared provider implementation, once. Only the methods whose result
+        needs every built-in class (``list_providers``, ``failed_providers``) call this; a
+        selection through :meth:`match` and :meth:`canonical_provider` activate only what they
+        need and never do."""
         if cls._loaded:
             return
         with cls._lock:
@@ -863,8 +1029,14 @@ class EndpointRegistry:
                             break
             # Test-only scripted provider (provider="scripted"): a leaf core module,
             # always loadable, gated behind LIONAGI_CHAT_PROVIDER=scripted. Imported after
-            # the declared providers so it stays last among the registered entries.
-            _import_provider_module("lionagi.testing._endpoint")
+            # the declared providers so it stays last among the registered entries. A lookup
+            # no declared provider answered may have registered it earlier; its entries move
+            # behind everything else registered since, as a cold load leaves them.
+            _import_provider_module(_SCRIPTED_MODULE)
+            scripted = [e for e in cls._entries if e.cls.__module__ == _SCRIPTED_MODULE]
+            if scripted:
+                moved = {id(e) for e in scripted}
+                cls._entries[:] = [e for e in cls._entries if id(e) not in moved] + scripted
             cls._failed = tuple(failed)
             cls._loaded = True
 
@@ -874,9 +1046,16 @@ class EndpointRegistry:
         ("openai-codex" -> "codex", "claude" -> "claude_code"); a name no entry
         claims comes back folded the same way. The name is folded as the match
         folds it, letter case only, so a padded name comes back padded and names
-        no provider, as the match finds none for it."""
-        cls._ensure_loaded()
+        no provider, as the match finds none for it. A provider the bundled
+        provider catalog declares resolves from its declaration, without importing
+        an endpoint implementation; any other name resolves from the registered
+        entries' claims."""
         key = provider.lower()
+        catalog, _ = cls._bundled_catalog()
+        if catalog is not None:
+            fragment = catalog.fragment(key)
+            if fragment is not None:
+                return fragment.key
         return cls._alias_owners.get(key, key)
 
     @classmethod

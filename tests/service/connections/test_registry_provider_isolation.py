@@ -388,11 +388,12 @@ def test_register_refuses_a_built_in_name_when_nothing_failed():
 
 
 @pytest.mark.parametrize("how", ["entry-list", "same-name-other-class"])
-def test_a_first_entry_the_catalog_does_not_declare_is_what_an_empty_endpoint_resolves_to(how):
+def test_a_first_entry_the_catalog_does_not_declare_leaves_the_declared_default_selected(how):
     """``register`` accepts a class under a declared name only when it has the module and
     qualified name of a declared endpoint, so a first entry the catalog does not declare
     comes from a class that is not the object the catalog loads, or from an entry put into
-    the registry's entry list without passing ``register``."""
+    the registry's entry list without passing ``register``. A declared provider is answered
+    by its declarations alone, so the entry does not change the selection."""
     declared = type(match_endpoint("groq", ""))
     with EndpointRegistry._lock:
         EndpointRegistry._remove_entries(
@@ -419,7 +420,7 @@ def test_a_first_entry_the_catalog_does_not_declare_is_what_an_empty_endpoint_re
         with EndpointRegistry._lock:
             EndpointRegistry._entries.insert(0, registry_module._RegistryEntry(meta, other))
     assert other is not declared
-    assert type(match_endpoint("groq", "")) is other
+    assert type(match_endpoint("groq", "")) is declared
 
 
 def test_register_accepts_a_name_the_bundled_catalog_does_not_declare():

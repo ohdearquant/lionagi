@@ -131,8 +131,9 @@ print(json.dumps({
     # loading lazy (first provider or context-window request); only the flag
     # that records it can change.
     assert report["cold_before"] is False
-    # Pins: an absent hub does not make the loader raise. A typed error at
-    # provider selection (MissingFeatureError, feature=providers) is a later change.
+    # Pins: an absent hub does not make the loader raise. This loader serves
+    # the full listing; the typed error (MissingFeatureError, feature=providers)
+    # is raised when a provider is selected, as the next test shows.
     assert report["raised"] is None
     # Pins: the warning comes from the registry module's logger; its name does
     # not change.
@@ -151,7 +152,7 @@ print(json.dumps({
     assert report["providers"] == [["scripted", "chat/completions"]]
 
 
-def test_openai_model_without_hub_fails_as_unknown_provider(tmp_path):
+def test_openai_model_without_hub_raises_missing_feature_error(tmp_path):
     report = _run_blocked(
         """
 from lionagi.service.imodel import iModel
@@ -159,7 +160,16 @@ from lionagi.service.imodel import iModel
 try:
     model = iModel(provider="openai", model="gpt-4o-mini")
 except BaseException as exc:
-    out = {"constructed": False, "error_type": type(exc).__name__, "error_text": str(exc)}
+    out = {
+        "constructed": False,
+        "error_type": type(exc).__name__,
+        "is_import_error": isinstance(exc, ImportError),
+        "feature": getattr(exc, "feature", None),
+        "provider": getattr(exc, "provider", None),
+        "distribution": getattr(exc, "missing_distribution", None),
+        "hint": getattr(exc, "install_hint", None),
+        "name": getattr(exc, "name", None),
+    }
 else:
     out = {"constructed": True, "endpoint_class": type(model.endpoint).__name__}
 print(json.dumps(out))
@@ -167,17 +177,80 @@ print(json.dumps(out))
         tmp_path,
     )
 
-    # Pins: with the hub absent the model is not built, and the failure is the
-    # same ProviderNotFoundError (a ValueError) an unknown provider name gets,
-    # so a missing hub cannot be told apart from a misspelled provider. ADR-0140
-    # D4 and ADR-0136 Amendment 3 C3 change this on purpose: in a 1.x
-    # installation the hub is bundled, so its absence is reported as
-    # MissingFeatureError (an ImportError) for feature ``providers``, naming the
-    # requested provider and asking to repair the installation of ``lionagi``.
-    # ProviderNotFoundError stays for names the catalog really lacks.
+    # Pins the ADR-0140 D4 row "Hub physically absent from a 1.x installation": with
+    # the hub absent the model is not built, and the failure is a MissingFeatureError
+    # (an ImportError) for feature ``providers``, naming the requested provider and
+    # the missing distribution ``lionagi``, with guidance to repair that
+    # installation. It used to be the ProviderNotFoundError an unknown provider name
+    # gets, which a missing hub could not be told apart from.
     assert report["constructed"] is False, report
-    assert report["error_type"] == "ProviderNotFoundError", report
-    assert report["error_text"].startswith("no endpoint registered for provider 'openai'"), report
+    assert report["error_type"] == "MissingFeatureError", report
+    assert report["is_import_error"] is True, report
+    assert report["feature"] == "providers", report
+    assert report["provider"] == "openai", report
+    assert report["distribution"] == "lionagi", report
+    assert report["name"] == "lionhub", report
+    assert "reinstall the matching lionagi release" in report["hint"], report
+
+
+def test_selection_without_hub_is_not_masked_and_core_providers_still_resolve(tmp_path):
+    report = _run_blocked(
+        """
+import logging
+import warnings
+
+from lionagi._feature_errors import MissingFeatureError
+from lionagi.service.connections.match_endpoint import match_endpoint
+from lionagi.service.connections.registry import ProviderNotFoundError
+
+records = []
+
+
+class _Capture(logging.Handler):
+    def emit(self, record):
+        records.append(record)
+
+
+logging.getLogger("lionagi").addHandler(_Capture(level=logging.WARNING))
+warnings.simplefilter("ignore")
+
+out = {"attempts": []}
+for provider, extra in (
+    ("openai", {}),
+    ("openai", {"openai_compatible": True}),
+    ("openai", {"base_url": "https://llm.example.test/v1"}),
+    ("some-other-host", {"openai_compatible": True}),
+    ("openai", {}),
+):
+    try:
+        match_endpoint(provider=provider, endpoint="chat/completions", **extra)
+    except MissingFeatureError as exc:
+        out["attempts"].append([type(exc).__name__, exc.provider, exc.missing_distribution])
+    except ProviderNotFoundError as exc:
+        out["attempts"].append(["ProviderNotFoundError", provider, None])
+    else:
+        out["attempts"].append(["selected", provider, None])
+out["warnings"] = [record.getMessage() for record in records]
+scripted = match_endpoint(provider="scripted", endpoint="")
+out["scripted"] = type(scripted).__name__
+print(json.dumps(out))
+""",
+        tmp_path,
+    )
+
+    # Pins the same D4 row for the generic routes: neither openai_compatible= nor
+    # base_url= turns the missing hub into a generic endpoint, and a provider the
+    # catalog cannot be consulted about gets the same error. Repeated selection raises
+    # again without logging a warning. The core scripted provider still resolves.
+    assert report["attempts"] == [
+        ["MissingFeatureError", "openai", "lionagi"],
+        ["MissingFeatureError", "openai", "lionagi"],
+        ["MissingFeatureError", "openai", "lionagi"],
+        ["MissingFeatureError", "some-other-host", "lionagi"],
+        ["MissingFeatureError", "openai", "lionagi"],
+    ], report
+    assert report["warnings"] == [], report
+    assert report["scripted"] == "ScriptedEndpoint", report
 
 
 def test_context_window_without_hub_raises_missing_feature_error(tmp_path):
