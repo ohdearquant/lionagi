@@ -229,7 +229,7 @@ class EndpointRegistry:
         declared endpoint passes whether or not it is the object the catalog loads. The
         built-in provider modules register the classes the catalog names, so they pass.
         The refusal holds whether or not the built-in provider activated: a provider whose
-        activation failed has registered nothing, yet its names stay its own. When the
+        activation failed still owns its names. When the
         catalog cannot load it declares nothing and nothing is refused here.
 
         Raises ``ProviderAliasCollisionError`` for a refused name. ``register`` lets it reach
