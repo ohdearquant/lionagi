@@ -1,6 +1,6 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30 and 2026-11-01 (see Amendments 1 to 7)
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01 and 2026-11-02 (see Amendments 1 to 8)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
@@ -1036,6 +1036,93 @@ Each item is a test that fails without this change:
   settlement with any other outcome leaves both columns null, and a later reason written to an
   attempt that already records `request_rejected` changes neither the reason nor the two fields.
 - The unrouted error-body path is unchanged.
+
+## Amendment 8 (2026-11-02) — rejections caused by the account's billing state get their own classes
+
+Purpose: tell a routed rejection caused by the account's billing state apart from one caused by the
+request, through the class field Amendment 7 added, without changing any behaviour.
+
+### Context
+
+Amendment 7's class table names causes in the request only. A routed request on an account whose
+prepaid credit has run out is rejected with HTTP 400 and `invalid_request_error`, the same type as a
+malformed request. Its message matches no row of that table, so it records `other`, and the account
+cannot be told apart from a request defect without reproducing the request on the unrouted path. A
+one-token request with a single user line, sent on 2026-11-02 to such an account, received this
+body (its request id removed):
+
+```json
+{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}
+```
+
+No documentation page read for this amendment states that wording, so the row below cites the
+captured message, as Amendment 7's vocabulary allows.
+
+Amendment 7's vocabulary lists "a request over a spend limit" among the documented conditions with
+no stated wording. The rate-limits page does state it, under "Setting your own spend limit"
+(https://platform.claude.com/docs/en/api/rate-limits, read on 2026-11-02): "When usage reaches a
+spend limit you set, requests return HTTP 400 with error type `invalid_request_error`. The message
+starts with `You have reached your specified API usage limits`, or `You have reached your specified
+workspace API usage limits` for a workspace limit, and states when access resumes." That clause of
+Amendment 7 is superseded for this condition. Its other two conditions, `max_tokens` above a model's
+output limit and the hard image and page limits, still record `other`.
+
+### Decision
+
+1. **Two classes.** `credit_balance_low` and `spend_limit_reached` join the provider-neutral
+   rejection class set. Their Anthropic rows follow the eight rows of Amendment 7's table, in this
+   order, under the same rule: a case-sensitive substring of `error.message`, first match wins.
+
+   | Class | Anthropic message contains | Source |
+   |---|---|---|
+   | `credit_balance_low` | `Your credit balance is too low` | the captured message quoted in the Context |
+   | `spend_limit_reached` | `You have reached your specified API usage limits`, or `You have reached your specified workspace API usage limits` | rate-limits page, "Setting your own spend limit", quoted in the Context |
+
+2. **Still diagnosis only.** Amendment 7, Decision 6 holds for both classes. Neither one blocks the
+   account, moves the request to another account, retries it or changes warm-prefix clearing. As
+   Amendment 5 says, an account whose credit is exhausted stays a candidate; an operator who reads
+   the class from the error or the ledger row blocks the account through the ledger's `block`. Blocking an account on a
+   class would key behaviour on message text, which Amendment 7 rules out, and needs its own
+   decision.
+3. **Nothing else changes.** The two fields, the 64 KiB bound, the drop rule, the ledger columns and
+   the set validation are as Amendment 7 states them. No provider text is stored.
+
+### Conditions that still record `other`, or no class at all
+
+- An organization or workspace the provider has disabled. No documentation page read for this
+  amendment states the message and none has been captured, so it is not a class (Amendment 7: a
+  class is added only from a documentation line or a captured message).
+- `billing_error` (402). The errors page states no message for it. Its type is recorded as
+  `billing_error`, which already names the cause.
+- A usage tier's monthly spend cap. The rate-limits page, under "Reaching your spend cap", says it
+  returns HTTP 429 `rate_limit_error` with `error.details.error_code` `enforced_spend_limit_reached`
+  and keeps failing until access resumes. A 429 takes D6's rate-limited branch, which settles the
+  attempt `rate_limited` and raises a retryable error without reading the body, so this table never
+  sees it. Whether that branch should tell the spend cap apart from a rate limit is a separate
+  decision.
+
+### What it guarantees, and what it does not
+
+- A routed rejection whose message contains one of the three wordings records its class on the
+  error, the settled outcome and the ledger row, on the non-streamed and the streamed attempt.
+- An account out of credit is still reserved and still rejects each request routed to it, until it
+  is blocked (Decision 2). Each such rejection is now recorded with a class that names the account
+  as the cause.
+- The credit-balance row rests on one captured wording, not a documented one. If the provider
+  rewords the message, the row stops matching and the rejection records `other`, with no error.
+
+### Verification
+
+Each item is a test that fails without this change:
+
+- The pinned copy of the closed set and the tests' copy of the class table carry both classes, after
+  Amendment 7's rows and in this order.
+- Each of the three wordings, inside a longer message, through the non-streamed and the streamed
+  routed attempt, records `invalid_request_error` and its class on the error and the ledger row.
+- The captured credit-balance body, whole, through both attempts, records `credit_balance_low`.
+- A message holding wordings of two different rows records the earlier row's class, for every pair
+  that includes a new row.
+- Amendment 7's sentinel, cancellation and bound tests run unchanged and pass.
 
 ## Requirements
 

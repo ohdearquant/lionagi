@@ -380,9 +380,9 @@ def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
         call.placement = placement
 
 
-# The classes a rejected request is recorded under (ADR-0126 Amendment 7): the first row with a
-# text the provider's error message contains, compared case-sensitively, names the class. A
-# message that matches no row, or no message at all, is recorded as ``other``.
+# The classes a rejected request is recorded under (ADR-0126 Amendments 7 and 8): the first row
+# with a text the provider's error message contains, compared case-sensitively, names the class.
+# A message that matches no row, or no message at all, is recorded as ``other``.
 _REJECTION_CLASS_MESSAGES = (
     ("prompt_too_long", ("prompt is too long",)),
     (
@@ -417,6 +417,15 @@ _REJECTION_CLASS_MESSAGES = (
     ),
     ("tool_type_unsupported", ("does not support tool types:",)),
     ("image_too_large", ("exceed the maximum image size", "many-image requests")),
+    # Amendment 8: rejections caused by the account's billing state, not by the request.
+    ("credit_balance_low", ("Your credit balance is too low",)),
+    (
+        "spend_limit_reached",
+        (
+            "You have reached your specified API usage limits",
+            "You have reached your specified workspace API usage limits",
+        ),
+    ),
 )
 
 # A rejection body longer than this many bytes is not decoded. The caller hands over at most one

@@ -254,6 +254,14 @@ CLASS_MESSAGES = (
     ),
     ("tool_type_unsupported", ("does not support tool types:",)),
     ("image_too_large", ("exceed the maximum image size", "many-image requests")),
+    ("credit_balance_low", ("Your credit balance is too low",)),
+    (
+        "spend_limit_reached",
+        (
+            "You have reached your specified API usage limits",
+            "You have reached your specified workspace API usage limits",
+        ),
+    ),
 )
 WORDINGS = [(name, text) for name, texts in CLASS_MESSAGES for text in texts]
 WORDING_IDS = [
@@ -361,6 +369,22 @@ async def test_a_documented_message_records_its_class(
     body = _typed(f"messages.1.content.0: {wording} (see the documentation)")
     path, _, error = await _reject(monkeypatch, tmp_path, body, streamed)
     _assert_recorded(path, error, INVALID, rejection_class)
+
+
+# The whole body a one-token request received from an account whose prepaid credit had run out
+# (ADR-0126 Amendment 8, Context), with its request id replaced.
+CAPTURED_CREDIT_BALANCE_BODY = (
+    b'{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is'
+    b" too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase"
+    b' credits."},"request_id":"req_0000000000000000000000000"}'
+)
+
+
+@pytest.mark.asyncio
+@STREAMED
+async def test_the_captured_credit_balance_body_records_its_class(monkeypatch, tmp_path, streamed):
+    path, _, error = await _reject(monkeypatch, tmp_path, CAPTURED_CREDIT_BALANCE_BODY, streamed)
+    _assert_recorded(path, error, INVALID, "credit_balance_low")
 
 
 @pytest.mark.asyncio

@@ -98,6 +98,8 @@ def test_the_sets_are_the_ones_written_in_the_decision_record():
             "tool_choice_unsupported",
             "tool_type_unsupported",
             "image_too_large",
+            "credit_balance_low",
+            "spend_limit_reached",
             "other",
         }
     )
