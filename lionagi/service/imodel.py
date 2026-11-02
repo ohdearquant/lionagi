@@ -939,8 +939,13 @@ class iModel:  # noqa: N801
         # openai_compatible=True keeps a provider that is not registered, or that a supplied
         # catalog does not declare, from raising. A supplied catalog that declares the stored
         # provider but selects none of its endpoints for the stored endpoint name raises
-        # ProviderNotFoundError, whatever openai_compatible says; a declared provider whose
-        # activation failed still raises its ProviderActivationError.
+        # ProviderNotFoundError, whatever openai_compatible says, before any endpoint is
+        # built. A provider whose activation failed raises ProviderActivationError in two
+        # ways. Without a catalog, the lookup raises the error the registry recorded for a
+        # bundled-catalog provider that failed to activate when it loaded, before anything
+        # else is tried. With a catalog, those recorded failures are not read: the error
+        # comes from the factory of the declaration the catalog selects, so it is raised
+        # only for a stored endpoint the catalog selects, and only when that factory raises it.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
