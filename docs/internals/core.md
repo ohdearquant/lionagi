@@ -748,15 +748,19 @@ usual. Selecting the failed provider by its key or any of its aliases, through
 chained from the original exception. It never resolves to another endpoint or to
 the generic OpenAI-compatible endpoint, whatever `openai_compatible` or
 `base_url` say, and it is never reported as `ProviderNotFoundError`. While the
-bundled catalog can load, a provider key or alias that it declares can be
-registered only by the built-in endpoints the catalog names for it, whether or
-not that provider activated; any other registration under it raises
-`ProviderAliasCollisionError`, and a plugin provider module that attempts one is
-rejected with a warning naming the plugin. When the catalog cannot load, nothing
-is refused. `EndpointRegistry.failed_providers()` returns one row per failed
-provider with `provider`, `endpoint` (or `None`), `source` and `reason`, and no
-exception text; it is empty when every provider activated. The rows of
-`list_providers()` are unchanged.
+bundled catalog can load, `register` refuses a provider key or alias that it
+declares, whether or not that provider activated, unless the class's
+`"<module>:<qualified name>"` equals the `diagnostic_id` of one of the endpoints
+the catalog declares for that provider. Only that string is compared, so a
+class with the module and qualified name of a declared endpoint passes. A
+refused registration raises `ProviderAliasCollisionError`. Inside a plugin
+provider module the refused class is skipped instead and a warning names the
+plugin, the module and the refused name; the module keeps executing and its
+other endpoints register. When the catalog cannot load, nothing is refused.
+`EndpointRegistry.failed_providers()` returns one row per failed provider with
+`provider`, `endpoint` (or `None`), `source` and `reason`, and no exception
+text; it is empty when every provider activated. The rows of `list_providers()`
+are unchanged.
 
 ### ActionManager plugin-shadow diagnostics
 

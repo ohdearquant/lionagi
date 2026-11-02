@@ -172,9 +172,24 @@ class EndpointRegistry:
         )
 
         def decorator(endpoint_cls: type) -> type:
-            cls._refuse_declared_provider(
-                endpoint_cls, canonical_provider, canonical_provider_aliases
-            )
+            provenance = getattr(cls._plugin_registration, "provenance", None)
+            try:
+                cls._refuse_declared_provider(
+                    endpoint_cls, canonical_provider, canonical_provider_aliases
+                )
+            except ProviderAliasCollisionError as exc:
+                if provenance is None:
+                    raise
+                # A plugin provider module keeps running: only the refused class is skipped,
+                # so the module's other endpoints still register.
+                logger.warning(
+                    "plugin %r provider module %r rejected endpoint class %r: %s",
+                    provenance[0],
+                    provenance[1],
+                    endpoint_cls.__qualname__,
+                    exc,
+                )
+                return endpoint_cls
             meta = EndpointMeta(
                 provider=canonical_provider,
                 endpoint=endpoint,
@@ -189,7 +204,6 @@ class EndpointRegistry:
             )
             endpoint_cls._ENDPOINT_META = meta
             entry = _RegistryEntry(meta=meta, cls=endpoint_cls)
-            provenance = getattr(cls._plugin_registration, "provenance", None)
             if provenance is not None:
                 entry.plugin_name, entry.plugin_target = provenance
             # Alias-ownership check and the claim itself run as one atomic
@@ -208,12 +222,19 @@ class EndpointRegistry:
         cls, endpoint_cls: type, provider: str, provider_aliases: tuple[str, ...]
     ) -> None:
         """Refuse a provider key or alias that the bundled provider catalog declares, unless
-        ``endpoint_cls`` is one of the endpoints the catalog declares for that provider.
+        ``f"{endpoint_cls.__module__}:{endpoint_cls.__qualname__}"`` equals the
+        ``diagnostic_id`` of one of the endpoints the catalog declares for that provider.
 
-        The built-in provider modules register the classes the catalog names, so they pass.
+        Only that string is compared, so a class with the module and qualified name of a
+        declared endpoint passes whether or not it is the object the catalog loads. The
+        built-in provider modules register the classes the catalog names, so they pass.
         The refusal holds whether or not the built-in provider activated: a provider whose
         activation failed has registered nothing, yet its names stay its own. When the
-        catalog cannot load it declares nothing and nothing is refused here."""
+        catalog cannot load it declares nothing and nothing is refused here.
+
+        Raises ``ProviderAliasCollisionError`` for a refused name. ``register`` lets it reach
+        its caller, except while a plugin provider module is registering: there the refused
+        class is skipped with a warning and the module keeps executing."""
         from lionagi._feature_errors import MissingFeatureError
         from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
 
