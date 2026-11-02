@@ -37,7 +37,21 @@ def test_a_light_codex_agent_is_sandboxed_to_its_cwd_with_no_network(tmp_path, k
     overrides = _pairs(args, "-c")
     assert "sandbox_workspace_write.writable_roots=[]" in overrides
     assert "sandbox_workspace_write.network_access=false" in overrides
+    # Neither /tmp nor $TMPDIR stays writable: the working directory is all it writes.
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in overrides
+    assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in overrides
     assert "--add-dir" not in args
+
+
+@pytest.mark.parametrize("kw", [{}, {"full_auto": True}, {"bypass_approvals": True}])
+def test_a_heavy_codex_agent_is_given_neither_temp_directory_pin(tmp_path, kw):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for workload in ({}, {"workload": "heavy"}):
+            overrides = _pairs(_codex(tmp_path, **workload, **kw), "-c")
+            assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
 
 
 @pytest.mark.parametrize("kw", [{}, {"enable_features": ["apps", "plugins"]}])
@@ -93,6 +107,14 @@ def test_a_light_codex_agent_in_a_linked_worktree_gets_no_writable_git_dir(tmp_p
         ({"add_dir": ["/tmp/elsewhere"]}, "add_dir"),
         ({"config_overrides": {"sandbox_workspace_write.network_access": True}}, "network_access"),
         ({"config_overrides": {"sandbox_workspace_write": {"writable_roots": ["/"]}}}, "sandbox_"),
+        (
+            {"config_overrides": {"sandbox_workspace_write.exclude_slash_tmp": False}},
+            "exclude_slash_tmp",
+        ),
+        (
+            {"config_overrides": {"sandbox_workspace_write": {"exclude_tmpdir_env_var": False}}},
+            "sandbox_workspace_write",
+        ),
         ({"config_overrides": {"sandbox_mode": "danger-full-access"}}, "sandbox_mode"),
         ({"account_connectors": ["calendar"]}, "account_connectors"),
     ],
@@ -111,6 +133,8 @@ def test_a_light_codex_agent_that_could_write_elsewhere_is_refused_at_constructi
         ({'"sandbox_mode"': "danger-full-access"}, "sandbox_mode"),
         ({"sandbox_workspace_write . writable_roots": ["/tmp"]}, "sandbox_workspace_write"),
         ({'"sandbox_workspace_write"."network_access"': True}, "sandbox_workspace_write"),
+        ({'"sandbox_workspace_write"."exclude_slash_tmp"': False}, "sandbox_workspace_write"),
+        ({"sandbox_workspace_write . exclude_tmpdir_env_var": False}, "sandbox_workspace_write"),
         ({"profile": "unconfined"}, "profile"),
         ({"profiles.unconfined.sandbox_mode": "danger-full-access"}, "profiles"),
         ({"default_permissions": "wide"}, "set default_permissions"),
@@ -271,31 +295,35 @@ def test_a_light_codex_agent_refuses_a_codex_config_it_cannot_read(tmp_path):
         _codex(tmp_path, workload="light", env=env)
 
 
+_LIGHT_PINS = [
+    "sandbox_workspace_write.writable_roots=[]",
+    "sandbox_workspace_write.network_access=false",
+    "sandbox_workspace_write.exclude_slash_tmp=true",
+    "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+]
+
+
 def test_the_light_pins_come_after_every_caller_override(tmp_path):
     args = _codex(tmp_path, workload="light", config_overrides={"model_verbosity": "low"})
     overrides = _pairs(args, "-c")
-    assert overrides[-2:] == [
-        "sandbox_workspace_write.writable_roots=[]",
-        "sandbox_workspace_write.network_access=false",
-    ]
-    assert overrides.index('model_verbosity="low"') < len(overrides) - 2
+    assert overrides[-4:] == _LIGHT_PINS
+    assert overrides.index('model_verbosity="low"') < len(overrides) - 4
 
 
 def test_the_light_pins_come_after_the_settings_carried_beside_ignore_user_config(tmp_path):
     env = _home_with_config(
         tmp_path,
         "[sandbox_workspace_write]\nnetwork_access = true\n"
-        f"writable_roots = [{str(tmp_path / 'elsewhere')!r}]\n",
+        f"writable_roots = [{str(tmp_path / 'elsewhere')!r}]\n"
+        "exclude_slash_tmp = true\nexclude_tmpdir_env_var = true\n",
     )
     args = _codex(tmp_path, workload="light", ignore_user_config=True, env=env)
     assert "--ignore-user-config" in args
     sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write.")]
-    # The user config's grants are carried, and the pins still have the last word.
-    assert "sandbox_workspace_write.network_access=true" in sandbox[:-2]
-    assert sandbox[-2:] == [
-        "sandbox_workspace_write.writable_roots=[]",
-        "sandbox_workspace_write.network_access=false",
-    ]
+    # The user config's settings are carried, and the pins still have the last word.
+    assert "sandbox_workspace_write.network_access=true" in sandbox[:-4]
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in sandbox[:-4]
+    assert sandbox[-4:] == _LIGHT_PINS
 
 
 def test_a_copied_request_cannot_slip_a_light_agent_past_the_refusal(tmp_path):

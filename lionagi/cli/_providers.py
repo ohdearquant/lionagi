@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import iModel
+from lionagi._errors import ConfigurationError
 from lionagi._paths import (
     AmbiguousProfileNameError,
     _name_spellings,
@@ -109,6 +110,65 @@ def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
         extra["workload"] = workload
 
 
+# The tool-set fields a profile may declare for a Claude Code agent.
+_PROFILE_TOOL_FIELDS = ("tools", "allowed_tools", "disallowed_tools")
+
+
+def _profile_tool_settings(profile: Any) -> dict[str, Any]:
+    """The tool-set fields *profile* declares, as Claude Code request settings.
+
+    ``tools`` names the built-in tools the agent has at all and becomes the one
+    comma-separated value ``--tools`` takes; ``allowed_tools`` and ``disallowed_tools`` stay
+    lists. Each declared field must be a list of non-empty tool names, and ``tools`` must
+    name at least one: an empty list there is refused rather than read as either "no tools"
+    or "no restriction". A value of any other shape is refused naming the field. A field the
+    profile does not declare is left out, so a profile with none yields ``{}``.
+    """
+    extra = getattr(profile, "extra", None) or {}
+    name = getattr(profile, "name", "<unknown>")
+    settings: dict[str, Any] = {}
+    for key in _PROFILE_TOOL_FIELDS:
+        if key not in extra:
+            continue
+        raw = extra[key]
+        if not isinstance(raw, list) or not all(isinstance(t, str) and t.strip() for t in raw):
+            raise ConfigurationError(
+                f"agent profile {name!r} sets {key} to {raw!r}; it must be a list of "
+                "non-empty tool names."
+            )
+        names = [t.strip() for t in raw]
+        if key != "tools":
+            settings[key] = names
+        elif names:
+            settings[key] = ",".join(names)
+        else:
+            raise ConfigurationError(
+                f"agent profile {name!r} sets {key} to an empty list; name at least one tool, "
+                "or leave the field out to keep every tool available."
+            )
+    return settings
+
+
+def _add_claude_tool_kwargs(kwargs: dict, endpoint: Any, settings: dict[str, Any]) -> None:
+    """Put a profile's non-empty tool-set settings on a Claude Code request, or refuse any
+    other model.
+
+    Only a Claude Code endpoint has these options. Any other provider would drop them or send
+    them as payload keys, so a profile that declares them for another model is refused rather
+    than run with a tool set it did not ask for. The endpoint decides, not the name: a
+    slashless name takes the default chat provider.
+    """
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    provider = EndpointRegistry.canonical_provider(endpoint.config.provider)
+    if not endpoint.is_cli or provider not in _CLAUDE_PROVIDER_NAMES:
+        raise ConfigurationError(
+            f"an agent profile declares {', '.join(settings)}, which apply only to a claude_code "
+            f"model; this agent's model runs on provider {provider!r}."
+        )
+    kwargs.update(settings)
+
+
 def _is_light_codex(imodel: iModel) -> bool:
     # A light codex worker writes only its working directory and the artifact directory
     # the run gives it, and codex refuses it any other writable root.
@@ -134,11 +194,14 @@ def build_imodel_from_spec(
     contain_account_integrations: bool = False,
     workload: str = DEFAULT_WORKLOAD,
     ignore_user_config: bool = False,
+    tool_settings: dict[str, Any] | None = None,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
 
     ``ignore_user_config`` builds a codex request that loads no user config, so no
-    effort is derived from that config either.
+    effort is derived from that config either. ``tool_settings`` is a profile's tool set
+    (``_profile_tool_settings``): it goes on a Claude Code request, and any other model is
+    refused.
     """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
@@ -225,6 +288,10 @@ def build_imodel_from_spec(
             _add_codex_account_integration_kwargs(
                 endpoint.config.kwargs, account_connectors, contain_account_integrations
             )
+    if tool_settings:
+        _add_claude_tool_kwargs(
+            model_instance.endpoint.config.kwargs, model_instance.endpoint, tool_settings
+        )
     if workload != DEFAULT_WORKLOAD:
         endpoint = model_instance.endpoint
         _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
@@ -245,12 +312,15 @@ def build_chat_model(
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
     workload: str = DEFAULT_WORKLOAD,
+    tool_settings: dict[str, Any] | None = None,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
     Returns the bare spec string only when no flag is set and no effort was
     given or derived (a codex request may derive one from the global config);
-    any such setting needs an iModel to carry it.
+    any such setting needs an iModel to carry it. ``tool_settings`` is a profile's tool
+    set (``_profile_tool_settings``): it goes on a Claude Code request, and any other model
+    is refused.
     """
     from lionagi.service.connections.registry import EndpointRegistry
 
@@ -329,7 +399,7 @@ def build_chat_model(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    if extra or workload != DEFAULT_WORKLOAD:
+    if extra or workload != DEFAULT_WORKLOAD or tool_settings:
         model_instance = iModel(
             provider=provider,
             endpoint="query_cli",
@@ -337,6 +407,10 @@ def build_chat_model(
             api_key="dummy",
             **extra,
         )
+        if tool_settings:
+            _add_claude_tool_kwargs(
+                model_instance.endpoint.config.kwargs, model_instance.endpoint, tool_settings
+            )
         if workload != DEFAULT_WORKLOAD:
             endpoint = model_instance.endpoint
             _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
