@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi.cli.machine import MachineError
+from lionagi.ln import _ssrf
 
 
 class _FailingUrlopen:
@@ -45,7 +46,7 @@ def test_human_schedule_transport_keeps_connection_refused_restart_hint(
 
     monkeypatch.setenv("LIONAGI_STUDIO_URL", "http://127.0.0.1:8765")
     urlopen = _FailingUrlopen(urllib.error.URLError(ConnectionRefusedError("connection refused")))
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_ssrf, "open_url", urlopen)
 
     assert schedule_cli._api("/") is None
 
@@ -69,7 +70,7 @@ def test_human_schedule_mutation_timeout_reports_uncertain_completion_once(
         SimpleNamespace(monotonic=iter((100.0, 110.25)).__next__),
     )
     urlopen = _FailingUrlopen(TimeoutError("timed out"))
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_ssrf, "open_url", urlopen)
 
     assert schedule_cli._api("/sched-1", method="DELETE") is None
 
@@ -119,7 +120,7 @@ def test_machine_schedule_transport_keeps_connection_refused_unavailable(
 
     monkeypatch.setenv("LIONAGI_STUDIO_URL", "http://127.0.0.1:8765")
     urlopen = _FailingUrlopen(urllib.error.URLError(ConnectionRefusedError("connection refused")))
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_ssrf, "open_url", urlopen)
 
     with pytest.raises(MachineError) as raised:
         machine_schedule._studio("/")
@@ -142,7 +143,7 @@ def test_machine_schedule_mutation_timeout_is_structured_and_not_retried(
         SimpleNamespace(monotonic=iter((200.0, 215.5)).__next__),
     )
     urlopen = _FailingUrlopen(urllib.error.URLError(TimeoutError("timed out")))
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_ssrf, "open_url", urlopen)
 
     with pytest.raises(MachineError) as raised:
         machine_schedule._studio("/sched-1/disable", method="POST")

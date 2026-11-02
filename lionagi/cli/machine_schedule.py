@@ -51,6 +51,8 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
     import urllib.error
     import urllib.request
 
+    from lionagi.ln._ssrf import open_url
+
     url = f"{_studio_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
     declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
@@ -62,7 +64,7 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
     )
     started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=STUDIO_TIMEOUT_SECONDS) as response:  # noqa: S310
+        with open_url(request, timeout=STUDIO_TIMEOUT_SECONDS) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:2000]

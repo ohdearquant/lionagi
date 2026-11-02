@@ -1,13 +1,15 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.ln._ssrf.is_ssrf_safe."""
+"""Tests for lionagi.ln._ssrf: is_ssrf_safe and open_url."""
 
 import socket
+import urllib.request
 from unittest.mock import patch
 
 import pytest
 
+from lionagi.ln import _ssrf
 from lionagi.ln._ssrf import is_ssrf_safe
 
 
@@ -150,3 +152,96 @@ def test_localhost_blocked():
     """'localhost' resolves to 127.0.0.1 or ::1, both blocked."""
     # Do not mock — use real DNS for this test (localhost is always loopback)
     assert is_ssrf_safe("localhost") is False
+
+
+class _RecordingOpener:
+    """Stands in for the opener that is built without proxy handlers."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def open(self, request, timeout):
+        self._calls.append((request, timeout))
+        return "opened without proxy"
+
+
+def _forbidden(*args, **kwargs):
+    raise AssertionError("the wrong way of opening the request was used")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8765/health",
+        "http://LOCALHOST:8765/health",
+        "http://127.0.0.1:8765/health",
+        "http://127.8.9.10:8765/health",
+        "http://[::1]:8765/health",
+        "http://[::ffff:127.0.0.1]:8765/health",
+    ],
+)
+def test_open_url_loopback_host_opens_without_proxy_handler(url, monkeypatch):
+    """A loopback host is opened by an opener whose only handler has no proxies."""
+    handlers_built = []
+    opened = []
+
+    def fake_build_opener(*handlers):
+        handlers_built.append(handlers)
+        return _RecordingOpener(opened)
+
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+    monkeypatch.setattr(urllib.request, "urlopen", _forbidden)
+
+    assert _ssrf.open_url(url, timeout=3.5) == "opened without proxy"
+
+    assert opened == [(url, 3.5)]
+    (handlers,) = handlers_built
+    assert len(handlers) == 1
+    assert isinstance(handlers[0], urllib.request.ProxyHandler)
+    assert handlers[0].proxies == {}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://studio.example.test:8765/health",
+        "https://example.com/",
+        "http://10.0.0.5:8765/health",
+        "http://[2001:db8::1]:8765/health",
+        "http://localhost.example.test:8765/health",
+        "http://127.0.0.1.example.test:8765/health",
+        "http://[::1/health",  # malformed: no loopback verdict, urlopen decides
+    ],
+)
+def test_open_url_other_hosts_keep_urlopen(url, monkeypatch):
+    """Any host that is not loopback keeps the standard opener, proxies included."""
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append((request, timeout))
+        return "opened through urlopen"
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(urllib.request, "build_opener", _forbidden)
+
+    assert _ssrf.open_url(url, timeout=2.5) == "opened through urlopen"
+
+    assert calls == [(url, 2.5)]
+
+
+def test_open_url_classifies_request_objects_by_their_url(monkeypatch):
+    loopback = urllib.request.Request("http://127.0.0.1:8765/api/schedules/", method="GET")
+    elsewhere = urllib.request.Request("http://studio.example.test/api/schedules/", method="GET")
+    opened = []
+    proxied = []
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *h: _RecordingOpener(opened))
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda request, timeout: proxied.append((request, timeout))
+    )
+
+    _ssrf.open_url(loopback, timeout=1.0)
+    _ssrf.open_url(elsewhere, timeout=2.0)
+
+    assert opened == [(loopback, 1.0)]
+    assert proxied == [(elsewhere, 2.0)]

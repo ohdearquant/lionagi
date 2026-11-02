@@ -1,12 +1,21 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SSRF guard (CWE-918): validate caller-controlled hostnames before outbound HTTP."""
+"""Outbound HTTP host checks.
+
+``is_ssrf_safe`` is the SSRF guard (CWE-918): it validates caller-controlled hostnames
+before outbound HTTP. ``open_url`` opens a urllib request and sends one addressed to this
+machine's loopback interface past any configured proxy.
+"""
 
 from __future__ import annotations
 
 import ipaddress
 import socket
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import urllib.request
 
 _BLOCKED_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network(cidr)
@@ -113,3 +122,48 @@ def is_ssrf_safe(hostname: str, *, allow_local: bool = False) -> bool:
             return False
 
     return True
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    """True for ``localhost``, an address in 127.0.0.0/8, ``::1``, or an IPv4-mapped loopback.
+
+    *host* is a URL's hostname as ``urllib.parse.urlsplit`` returns it: lowercased, IPv6
+    brackets removed. Names are not resolved, so no lookup decides where a request goes.
+    """
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in _LOOPBACK_NETS)
+
+
+def open_url(request: str | urllib.request.Request, *, timeout: float) -> Any:
+    """Open *request* with urllib, sending a request for a loopback host past any proxy.
+
+    ``urllib.request.urlopen`` sends every request through the proxy that the environment
+    (``http_proxy``, ``https_proxy``, ``all_proxy``) or, on macOS, the system settings name,
+    loopback hosts included, and a proxy cannot reach this machine's own loopback interface.
+    So a URL whose host is ``localhost``, an address in 127.0.0.0/8 or ``::1`` (bracketed in
+    the URL) is opened by an opener with no proxy handler, and every other URL keeps
+    ``urlopen`` and its proxies. A URL that cannot be split goes to ``urlopen`` too, which
+    reports it as before. The response and the exceptions are urllib's own, so callers keep
+    their ``with`` blocks and ``except`` clauses.
+    """
+    import urllib.parse
+    import urllib.request
+
+    url = request.full_url if isinstance(request, urllib.request.Request) else request
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        host = None
+    if _is_loopback_host(host):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return opener.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310

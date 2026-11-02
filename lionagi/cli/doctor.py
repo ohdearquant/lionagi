@@ -174,10 +174,12 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
     import urllib.error
     import urllib.request
 
+    from lionagi.ln._ssrf import open_url
+
     target = url or _STUDIO_READINESS_URL_DEFAULT
     try:
         req = urllib.request.Request(target, method="GET")  # noqa: S310
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        with open_url(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return _result("warn", f"Studio daemon at {target} returned HTTP {resp.status}")
             body = resp.read()

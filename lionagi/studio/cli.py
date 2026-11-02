@@ -274,7 +274,8 @@ def _daemon_health(
     """
     import http.client
     import urllib.parse
-    import urllib.request
+
+    from lionagi.ln._ssrf import open_url
 
     url = f"http://{_url_authority(host)}:{port}/health"
     if challenge is not None:
@@ -283,7 +284,7 @@ def _daemon_health(
 
     def _probe() -> None:
         try:
-            with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+            with open_url(url, timeout=2) as resp:
                 outcome.append(json.loads(resp.read()))
         except (OSError, ValueError, http.client.HTTPException):
             outcome.append(None)
@@ -435,7 +436,31 @@ def _ignore_sigpipe() -> None:
         signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 
+def _bind_refusal(host: str, port: int) -> OSError | None:
+    """Why the daemon could not listen on ``host`` and ``port`` now, or None when it can.
+
+    Opens a listener with ``asyncio``'s ``create_server`` for that host and port, the
+    call uvicorn makes when it serves this launch, so the probe binds the same
+    addresses with the same socket options, and closes it before returning.
+    """
+
+    async def _listen_once() -> None:
+        server = await asyncio.get_running_loop().create_server(
+            asyncio.Protocol, host=host, port=port
+        )
+        server.close()
+        await server.wait_closed()
+
+    try:
+        asyncio.run(_listen_once())
+    except OSError as exc:
+        return exc
+    return None
+
+
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
+    import errno
+
     from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
 
     daemon_url = f"http://127.0.0.1:{port}"
@@ -449,6 +474,23 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
         return 1
     already_running = code is not None
     if code is None:
+        # Nothing answered as a daemon, so this process serves the page. A port it
+        # cannot bind would fail only after the link is out, leaving a page that
+        # holds a code no daemon will redeem.
+        refusal = _bind_refusal(host, port)
+        if refusal is not None:
+            if refusal.errno == errno.EADDRINUSE:
+                reason = (
+                    f"a program already holds port {port} but did not answer as a lionagi "
+                    f"daemon at {daemon_url}/health"
+                )
+            else:
+                reason = f"this process cannot listen on {host}:{port} ({refusal})"
+            log_error(
+                f"Lion Studio did not start: {reason}. Stop that program, or choose another "
+                f"port with `li studio --port <port>`."
+            )
+            return 1
         code = mint_pairing_code(for_launch=True)
     url = _hosted_launch_url(port, code)
     print(f"Lion Studio: {_HOSTED_URL}")
@@ -1199,6 +1241,8 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     import urllib.error
     import urllib.request
 
+    from lionagi.ln._ssrf import open_url
+
     url = f"{_base_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
     declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
@@ -1210,7 +1254,7 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     )
     started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:  # noqa: S310
+        with open_url(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         msg = exc.read().decode(errors="replace")
