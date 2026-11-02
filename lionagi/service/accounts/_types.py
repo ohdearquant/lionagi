@@ -105,6 +105,9 @@ class AccountRoutingError(Exception):
     content or key material can reach it. Raise it ``from None`` where it replaces
     another exception, so a traceback does not print the replaced one. That exception
     stays reachable as ``__context__``, so it must carry no key material either.
+
+    ``provider_error_type`` and ``rejection_class`` are accepted only with
+    ``RouterErrorCode.REQUEST_REJECTED``: with any other code they raise ``ValueError``.
     """
 
     def __init__(
@@ -119,6 +122,12 @@ class AccountRoutingError(Exception):
     ) -> None:
         _check_member("provider_error_type", provider_error_type, _PROVIDER_ERROR_TYPES)
         _check_member("rejection_class", rejection_class, _REJECTION_CLASSES)
+        if (
+            provider_error_type is not None or rejection_class is not None
+        ) and code is not RouterErrorCode.REQUEST_REJECTED:
+            raise ValueError(
+                "provider_error_type and rejection_class are set only on a request_rejected error"
+            )
         self.code = code
         self.account = account
         self.attempt_id = attempt_id

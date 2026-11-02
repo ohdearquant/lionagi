@@ -20,7 +20,11 @@ import pytest
 
 import lionagi
 import lionagi.service.accounts._router as router_module
-from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+from lionagi.service.accounts._types import (
+    _REJECTION_CLASSES,
+    AccountRoutingError,
+    RouterErrorCode,
+)
 from lionagi.service.connections.endpoint import Endpoint
 from lionhub.providers.anthropic import messages as messages_module
 from tests.service.accounts.test_routed_endpoint import (
@@ -307,6 +311,38 @@ OTHER_BODIES = [
 def test_the_class_table_matches_the_production_table():
     """``CLASS_MESSAGES`` is a literal copy: the same classes and wordings, in the same order."""
     assert messages_module._REJECTION_CLASS_MESSAGES == CLASS_MESSAGES
+
+
+def test_every_class_the_message_table_names_is_in_the_closed_set():
+    """A row named outside ``_REJECTION_CLASSES`` would be recorded as ``other``."""
+    names = [name for name, _ in messages_module._REJECTION_CLASS_MESSAGES]
+
+    assert names
+    assert [name for name in names if name not in _REJECTION_CLASSES] == []
+    assert "other" not in names
+
+
+def test_a_classifier_failure_logs_only_the_exception_type(caplog):
+    # The package logger is held at INFO, so the level is set on the logger that emits.
+    caplog.set_level(logging.DEBUG, logger=messages_module.logger.name)
+    body = b"\x80" + SENTINEL.encode()
+    with pytest.raises(UnicodeDecodeError):
+        json.loads(body)
+
+    assert messages_module._classify_rejection(body) == ("other", "other")
+
+    named = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.DEBUG and "UnicodeDecodeError" in record.getMessage()
+    ]
+    assert len(named) == 1
+    assert named[0].exc_info is None
+    for record in caplog.records:
+        carried = [record.getMessage(), str(record.msg), repr(record.args)]
+        carried += [repr(record.exc_info), str(record.exc_text)]
+        assert SENTINEL not in " ".join(carried)
+    assert SENTINEL not in caplog.text
 
 
 @pytest.mark.asyncio
