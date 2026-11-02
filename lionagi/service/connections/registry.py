@@ -289,8 +289,10 @@ class EndpointRegistry:
         endpoint, whatever ``openai_compatible`` or ``base_url`` say. With no endpoint named,
         a provider the bundled provider catalog declares resolves to its declared default
         endpoint, unless the provider's first registered entry is a class the catalog
-        does not declare, which then resolves as it always has; every other lookup, and every
-        lookup while the catalog cannot load, scans the registered entries. On a registry miss,
+        does not declare, in which case the scan returns that entry. ``register`` refuses such
+        a class while the catalog can load, so the case needs an entry that did not pass that
+        check (see :meth:`_match_declared_default`). Every other lookup, and every lookup while
+        the catalog cannot load, scans the registered entries. On a registry miss,
         consults the plugin registry before falling back to the generic
         OpenAI-compatible endpoint. See docs/internals/core.md#endpointregistry-match
         for the provider-vs-endpoint rejection contract.
@@ -420,9 +422,18 @@ class EndpointRegistry:
         scanning the registered entries; the registry skipped that module with a warning
         when it loaded, so the scan reports the provider as it did before. Also ``None``
         when the provider's first registered entry is a class the catalog does not
-        declare, so the scan returns that entry as it always has. A declaration whose
-        factory raises ``ProviderActivationError`` is not skipped: the error reaches the
-        caller, and no other endpoint is selected in its place."""
+        declare, so the scan returns that entry. Entries reach the registry through
+        ``register``, which refuses a class the catalog does not declare under a name the
+        catalog declares, but compares the class by its module and qualified name. The case
+        therefore arises only for an entry that did not pass that check: a class with the
+        module and qualified name of a declared endpoint that is not the object the catalog
+        loads (for example after its module was reloaded), or an entry put into the
+        registry's entry list without calling ``register``. A class registered while the
+        catalog could not load was not checked either, but the catalog's load failure is
+        kept for the life of the process, so this method returns before it reads the
+        entries. A declaration whose factory raises ``ProviderActivationError`` is not
+        skipped: the error reaches the caller, and no other endpoint is selected in its
+        place."""
         from lionagi._feature_errors import MissingFeatureError
         from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
 

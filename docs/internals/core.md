@@ -747,12 +747,13 @@ usual. Selecting the failed provider by its key or any of its aliases, through
 `match`, `match_endpoint` or `iModel`, raises its `ProviderActivationError`,
 chained from the original exception. It never resolves to another endpoint or to
 the generic OpenAI-compatible endpoint, whatever `openai_compatible` or
-`base_url` say, and it is never reported as `ProviderNotFoundError`. A provider
-key or alias that the bundled catalog declares can be registered only by the
-built-in endpoints the catalog names for it, whether or not that provider
-activated; any other registration under it raises `ProviderAliasCollisionError`,
-and a plugin provider module that attempts one is rejected with a warning naming
-the plugin. `EndpointRegistry.failed_providers()` returns one row per failed
+`base_url` say, and it is never reported as `ProviderNotFoundError`. While the
+bundled catalog can load, a provider key or alias that it declares can be
+registered only by the built-in endpoints the catalog names for it, whether or
+not that provider activated; any other registration under it raises
+`ProviderAliasCollisionError`, and a plugin provider module that attempts one is
+rejected with a warning naming the plugin. When the catalog cannot load, nothing
+is refused. `EndpointRegistry.failed_providers()` returns one row per failed
 provider with `provider`, `endpoint` (or `None`), `source` and `reason`, and no
 exception text; it is empty when every provider activated. The rows of
 `list_providers()` are unchanged.
