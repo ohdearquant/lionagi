@@ -306,8 +306,8 @@ class StageServed(BaseModel):
         default=None,
         description=(
             "The model the provider named for the leg's most recent call that reached it; None "
-            "when it named none or reported that call failed (a client error after it named one "
-            "keeps it). An unsent call does not change it. Never filled in from requested."
+            "when it named none or the call failed; a client error after it named one keeps it "
+            "only on a stream. An unsent call does not change it. Never filled in from requested."
         ),
     )
 
@@ -428,8 +428,8 @@ def _served_by(leg: Any) -> str | None:
     """The model the provider named for the leg's most recent call that reached it, else None.
 
     The model-level value is not call-correlated; it belongs to this leg because a leg's branch
-    and model are made for it alone and call in sequence. A sent call that reports no model or
-    a failure clears it; a client error after it named one keeps it; an unsent call leaves it.
+    and model are made for it alone and call in sequence. A failed call or one naming no model
+    clears it; a client error after it named one keeps it only on a stream; unsent calls leave it.
     """
     metadata = getattr(getattr(leg, "chat_model", None), "provider_metadata", None)
     served = metadata.get("served_model") if isinstance(metadata, dict) else None
