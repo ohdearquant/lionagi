@@ -12,6 +12,7 @@ on whether a helper was called.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
@@ -1346,7 +1347,6 @@ async def test_a_contained_worker_whose_role_widens_tools_is_refused(
         (None, "mcp__other__search"),
         (None, "mcp__knowledgebase__search"),
         (None, "mcp__*"),
-        (None, "(anything)"),
     ],
 )
 async def test_a_contained_worker_whose_role_allows_a_tool_it_does_not_have_is_refused(
@@ -1415,13 +1415,22 @@ def _contained_tool_model(**tool_settings):
     return build_imodel_from_spec("claude_code/sonnet", tool_settings=tool_settings)
 
 
-def test_a_refused_containment_leaves_the_model_as_it_was():
+@pytest.mark.parametrize(
+    ("settings", "refused"),
+    [
+        ({"tools": "Read,NotebookEdit"}, "NotebookEdit"),
+        ({"allowed_tools": ["Read", "Skill"]}, "Skill"),
+        ({"allowed_tools": ["Read", "Read(x) mcp__evil__*"]}, "mcp__evil__"),
+    ],
+    ids=["tools", "allow-outside", "allow-two-rules"],
+)
+def test_a_refused_containment_leaves_the_model_as_it_was(settings, refused):
     """The refusal comes before containment changes anything, so the model is not left
-    half contained."""
-    model = _contained_tool_model(tools="Read,NotebookEdit")
-    before = dict(model.endpoint.config.kwargs)
+    half contained, and the lists it holds are the ones it held."""
+    model = _contained_tool_model(disallowed_tools=["WebFetch"], **settings)
+    before = copy.deepcopy(model.endpoint.config.kwargs)
 
-    with pytest.raises(ConfigurationError, match="NotebookEdit"):
+    with pytest.raises(ConfigurationError, match=refused):
         orch_mod._isolate_worker_cli_config(model, contain_user_settings=True, role="reader")
 
     assert model.endpoint.config.kwargs == before
@@ -1439,7 +1448,7 @@ def test_the_second_containment_pass_of_a_narrowed_worker_changes_nothing():
     orch_mod._isolate_worker_cli_config(
         model, contain_user_settings=True, mcp_server_names=["b", "a"], role="reader"
     )
-    once = dict(kwargs)
+    once = copy.deepcopy(kwargs)
     orch_mod._isolate_worker_cli_config(
         model, contain_user_settings=True, mcp_server_names=["b", "a"], role="reader"
     )
@@ -1457,13 +1466,72 @@ def test_the_second_containment_pass_of_a_narrowed_worker_changes_nothing():
     assert kwargs["disallowed_tools"] == ["WebFetch", "Agent", "Task"]
 
 
-def test_a_refusal_without_a_known_role_still_says_whose_tools_they_are():
+def test_a_refusal_without_a_known_role_names_the_workers_tool_settings_not_a_profile():
+    """A worker copied from another worker's branch has no role of its own to cite: the
+    tools came from the settings that branch carries, and the message says so."""
     model = _contained_tool_model(tools="Skill")
 
     with pytest.raises(ConfigurationError, match="'Skill'") as refused:
         orch_mod._isolate_worker_cli_config(model, contain_user_settings=True)
 
-    assert "agent profile" in str(refused.value)
+    assert str(refused.value).startswith("the worker's tool settings: tools include 'Skill'")
+    assert "agent profile" not in str(refused.value)
+
+
+_ONE_RULE_REFUSED = [
+    "Read(./docs/**) mcp__evil__*",
+    "Read, Grep",
+    "Read,Grep",
+    " Read",
+    "",
+    "Bash(a,b)",
+    "Bash(x) ",
+    "Bash(x",
+    "Bash(a)(b)",
+    "(anything)",
+]
+_ONE_RULE_ACCEPTED = ["Bash(git status:*)", "mcp__control__*", "Read", "Bash(a(b))"]
+
+
+@pytest.mark.parametrize("entry", _ONE_RULE_REFUSED, ids=lambda e: repr(e))
+def test_a_contained_worker_refuses_an_allow_entry_that_is_not_one_rule(entry):
+    """The CLI takes each ``allowed_tools`` entry as one argument and the check cannot know how
+    it would split one that carries two rules, so an entry is a tool name, optionally followed
+    by one parenthesised pattern closing at its last character."""
+    model = _contained_tool_model(allowed_tools=[entry])
+    before = copy.deepcopy(model.endpoint.config.kwargs)
+
+    with pytest.raises(ConfigurationError) as refused:
+        orch_mod._isolate_worker_cli_config(
+            model, contain_user_settings=True, mcp_server_names=["control"], role="reader"
+        )
+
+    assert str(refused.value).startswith(
+        f"agent profile 'reader': allowed_tools entry {entry!r} is not one rule."
+    )
+    assert model.endpoint.config.kwargs == before
+
+
+@pytest.mark.parametrize("entry", _ONE_RULE_ACCEPTED, ids=lambda e: repr(e))
+def test_a_contained_worker_accepts_an_allow_entry_that_is_one_rule(entry):
+    model = _contained_tool_model(allowed_tools=[entry])
+
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["control"], role="reader"
+    )
+
+    assert model.endpoint.config.kwargs["allowed_tools"].count(entry) == 1
+
+
+@pytest.mark.parametrize("entry", ["Read(./docs/**) mcp__evil__*", "Read, Grep", ""])
+def test_an_allow_entry_that_is_not_one_rule_is_left_alone_without_containment(entry):
+    """Containment is what bounds the entries; a worker that runs on the operator's settings
+    keeps what its role declares."""
+    model = _contained_tool_model(allowed_tools=[entry])
+
+    orch_mod._isolate_worker_cli_config(model, mcp_server_names=["control"], role="reader")
+
+    assert model.endpoint.config.kwargs["allowed_tools"] == [entry]
 
 
 @pytest.mark.asyncio

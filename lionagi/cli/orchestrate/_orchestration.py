@@ -13,6 +13,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
+from itertools import accumulate
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -736,7 +737,8 @@ def _isolate_worker_cli_config(
     config's sandbox settings and its hook and project trust records ride beside
     the flag (codex.py names which), so what it trusts stays trusted. A Claude worker
     keeps its settings sources, unless its role sets ``contain_user_settings``
-    (``_contain_claude_worker``, which names *role* when it refuses a tool set).
+    (``_contain_claude_worker``, which names *role*, or the worker's tool settings when
+    there is none, when it refuses a tool set).
     Applied before the MCP hand-off, which reads the codex flag.
     """
     if not getattr(imodel, "is_cli", False):
@@ -753,8 +755,9 @@ def _isolate_worker_cli_config(
         _contain_claude_worker(kwargs, mcp_server_names, role)
 
 
-# The built-in tools a contained Claude worker is given. Agent and Task, which start
-# subagents inside the worker's own process, are not among them.
+# The most a contained Claude worker gets: a role may narrow this list, never widen it.
+# Agent and Task, which start subagents inside the worker's own process, are not among
+# them.
 _CONTAINED_CLAUDE_TOOLS = ("Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch")
 
 
@@ -776,15 +779,19 @@ def _contain_claude_worker(
     and never widen it. The tools the role declares must all be in
     ``_CONTAINED_CLAUDE_TOOLS``; they replace that list, and the worker is granted only
     the tools it has. What the role's ``allowed_tools`` names is granted beside those, and
-    must be a tool the worker has, given with or without an argument pattern (``Bash(git
-    status:*)`` is judged by ``Bash``), or a tool of an MCP server the run hands the
-    worker (``mcp__<name>`` or ``mcp__<name>__...``). The role's ``disallowed_tools`` are
-    kept, added to Agent and Task. Anything beyond that raises ``ConfigurationError``
-    naming the entry, the role and the contained set, before the request is changed.
+    each entry must be one rule: a name with no whitespace, comma or parenthesis, then
+    optionally one parenthesised argument pattern with balanced parentheses and no comma
+    that closes at the entry's last character. The name must be a tool the worker has
+    (``Bash(git status:*)`` is judged by ``Bash``) or a tool of an MCP server the run
+    hands the worker (``mcp__<name>`` or ``mcp__<name>__...``). The role's
+    ``disallowed_tools`` are kept, added to Agent and Task. Anything beyond that raises
+    ``ConfigurationError`` naming the entry, where it was set and the contained set, before
+    the request is changed. Where it was set is the role when one is known and otherwise the
+    worker's tool settings, which a spawn copied from another worker's branch carries.
     """
     servers = sorted(mcp_server_names)
     grants = [f"mcp__{name}__*" for name in servers]
-    who = f"agent profile {role!r}" if role else "the worker's agent profile"
+    source = f"agent profile {role!r}" if role else "the worker's tool settings"
     contained = ", ".join(_CONTAINED_CLAUDE_TOOLS)
     declared = kwargs.get("tools")
     tools = (
@@ -795,19 +802,39 @@ def _contain_claude_worker(
     outside = [t for t in tools if t not in _CONTAINED_CLAUDE_TOOLS]
     if outside:
         raise ConfigurationError(
-            f"{who} sets tools to include {', '.join(map(repr, outside))}, which a worker run "
+            f"{source}: tools include {', '.join(map(repr, outside))}, which a worker run "
             f"with contain_user_settings does not get. Containment gives a worker only "
             f"{contained}; a role may narrow that list, never widen it."
         )
     contained_grants = [*tools, *grants]
     role_grants: list[str] = []
     for entry in kwargs.get("allowed_tools") or []:
-        tool = entry.split("(", 1)[0].strip()
+        # The CLI takes each entry as one argument, and nothing here knows how it would
+        # split one that carries two rules. So an entry is one rule: a tool name, then
+        # optionally one parenthesised argument pattern that closes at the entry's end.
+        tool, opened, pattern = entry.partition("(")
+        # The parenthesis depth after each character of the pattern, which starts inside
+        # the first "(".
+        depth = list(accumulate(((c == "(") - (c == ")") for c in pattern), initial=1))
+        one_rule = (
+            bool(tool)
+            and not any(c.isspace() or c in ",)" for c in tool)
+            and (
+                not opened or ("," not in pattern and 0 in depth and depth.index(0) == len(pattern))
+            )
+        )
+        if not one_rule:
+            raise ConfigurationError(
+                f"{source}: allowed_tools entry {entry!r} is not one rule. An entry is a tool "
+                "name with no whitespace, comma or parenthesis, then optionally one "
+                "parenthesised argument pattern that has balanced parentheses, no comma, and "
+                "closes at the end of the entry."
+            )
         if tool not in tools and not any(
             tool == f"mcp__{name}" or tool.startswith(f"mcp__{name}__") for name in servers
         ):
             raise ConfigurationError(
-                f"{who} allows {entry!r} in allowed_tools, which is neither one of the "
+                f"{source}: allowed_tools include {entry!r}, which is neither one of the "
                 f"worker's tools ({', '.join(tools)}) nor a tool of an MCP server the run "
                 f"hands it ({', '.join(servers) or 'none'}). Containment gives a worker only "
                 f"{contained} and those servers; a role may narrow that, never widen it."

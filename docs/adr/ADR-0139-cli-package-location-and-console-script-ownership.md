@@ -215,7 +215,7 @@ boundaries, and step 6 moves the remaining CLI
 | `lionagi/cli/_logging.py:1` | `lionhub.orchestration.console` | Entire module: the channel names re-exported from core, the bare, error and warning formatters, the lazy stderr handler, channel setup, and `configure_cli_logging`. Imports only the standard library and `lionagi._log_channels`. |
 | `lionagi/cli/_mcp_resolve.py:22` | `lionhub.orchestration.mcp_config` | Entire module and its resolution data type. |
 | `lionagi/cli/_project.py:19` | `lionhub.orchestration.project` | Entire module and project-detection helper closure. |
-| `lionagi/cli/_providers.py:124` | `lionhub.orchestration.spawn` | Entire module: construction, profiles, and common argument declarations. |
+| `lionagi/cli/_providers.py:184` | `lionhub.orchestration.spawn` | Entire module: construction, profiles, and common argument declarations. |
 | `lionagi/cli/_runs.py:37` | `lionhub.orchestration.runs` | Entire module, including its sole run-allocation and persistence state. |
 | `lionagi/cli/_schedule_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.schedule.parsing` | Entire module: flow-option declarations, create-request builder, schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. Imports no execution handler. |
 | `lionagi/cli/_util.py:14` | `lionhub.orchestration.job` | Entire module: status codes, invocation state, process identity and entity lookup. |
@@ -234,7 +234,7 @@ Copying these bindings into a facade is not equivalent.
 | Source at this HEAD | Step-3 public owner | Extraction; retained adapter |
 | --- | --- | --- |
 | `lionagi/cli/orchestrate/__init__.py:394`, `lionagi/cli/orchestrate/__init__.py:425` | `lionhub.orchestration.flow.parsing` | Orchestration parser construction and its MCP-argument helper; retain command dispatch and execution wrappers. The common argument declarations come from `orchestration.spawn`. |
-| `lionagi/cli/orchestrate/_orchestration.py:2187` | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
+| `lionagi/cli/orchestrate/_orchestration.py:2262` | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
 | `lionagi/cli/status.py:37`, `lionagi/cli/status.py:55` | `lionhub.orchestration.inspection` | Status constants and the resolution functions from `_fetch_by_id` through `_resolve_primary_session` (`lionagi/cli/status.py:262`); retain the subsequent progress, presentation and dispatch helpers. |
 | `lionagi/cli/kill.py:43`, `lionagi/cli/kill.py:508`, `lionagi/cli/kill.py:794` | `lionhub.orchestration.kill` | Process identity, child lookup, termination, cancellation persistence and degraded-run handling through the helper group preceding `_do_kill`; retain command selection, parser and presentation. |
 | `lionagi/cli/team.py:42` | `lionhub.orchestration.team` | `read_team_json`, the concrete shared reader; retain other team command functions. |
@@ -458,8 +458,8 @@ Update the dynamic adapter load at
 Self-recognition must accept both canonical and compatibility spellings during 1.x,
 rather than silently dropping old subprocess recognition. Its current module/script
 sets and path-tail comparison are at
-`lionagi/cli/orchestrate/_orchestration.py:621` and
-`lionagi/cli/orchestrate/_orchestration.py:664`.
+`lionagi/cli/orchestrate/_orchestration.py:623` and
+`lionagi/cli/orchestrate/_orchestration.py:666`.
 Old spellings retained solely for recognition are compatibility data, never import
 or launch targets. The existing old-reference checker distinguishes imports/call
 arguments from set data (`tests/test_moved_modules.py:593`); keep canonical

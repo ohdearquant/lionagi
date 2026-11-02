@@ -36,7 +36,7 @@ from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
 from .._agent_depth import stamp_worker_depth
 from .._logging import progress
 from .._logging import warn as _warn
-from .._providers import _is_light_codex, parse_model_spec
+from .._providers import _PROFILE_TOOL_FIELDS, _is_light_codex, parse_model_spec
 from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
@@ -2355,6 +2355,15 @@ async def _execute_dag(
 
         if not is_cli:
             return
+        if getattr(branch, "metadata", {}).get("clone_from") is env.orc_branch:
+            # A copy of the orchestrator's model carries the tool settings of the
+            # orchestrator's profile, which confine the orchestrator's own process. With
+            # no role behind the request the spawn runs as a planned worker with no role
+            # does: contained, it gets the contained tool set and the run's servers;
+            # otherwise it has no tool settings. A class's denials (``workload: light``)
+            # come from the workload, set below, not from these.
+            for tool_field in _PROFILE_TOOL_FIELDS:
+                chat_model.endpoint.config.kwargs.pop(tool_field, None)
         # A spawned node is a worker the run starts: a codex one keeps the user's
         # CLI config out, as a planned worker does. Its model is a copy (Branch.clone).
         # A copy of a contained Claude branch stays contained, its model a copy too. A
