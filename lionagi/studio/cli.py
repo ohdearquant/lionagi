@@ -436,7 +436,31 @@ def _ignore_sigpipe() -> None:
         signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 
+def _bind_refusal(host: str, port: int) -> OSError | None:
+    """Why the daemon could not listen on ``host`` and ``port`` now, or None when it can.
+
+    Opens a listener with ``asyncio``'s ``create_server`` for that host and port, the
+    call uvicorn makes when it serves this launch, so the probe binds the same
+    addresses with the same socket options, and closes it before returning.
+    """
+
+    async def _listen_once() -> None:
+        server = await asyncio.get_running_loop().create_server(
+            asyncio.Protocol, host=host, port=port
+        )
+        server.close()
+        await server.wait_closed()
+
+    try:
+        asyncio.run(_listen_once())
+    except OSError as exc:
+        return exc
+    return None
+
+
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
+    import errno
+
     from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
 
     daemon_url = f"http://127.0.0.1:{port}"
@@ -450,6 +474,23 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
         return 1
     already_running = code is not None
     if code is None:
+        # Nothing answered as a daemon, so this process serves the page. A port it
+        # cannot bind would fail only after the link is out, leaving a page that
+        # holds a code no daemon will redeem.
+        refusal = _bind_refusal(host, port)
+        if refusal is not None:
+            if refusal.errno == errno.EADDRINUSE:
+                reason = (
+                    f"a program already holds port {port} but did not answer as a lionagi "
+                    f"daemon at {daemon_url}/health"
+                )
+            else:
+                reason = f"this process cannot listen on {host}:{port} ({refusal})"
+            log_error(
+                f"Lion Studio did not start: {reason}. Stop that program, or choose another "
+                f"port with `li studio --port <port>`."
+            )
+            return 1
         code = mint_pairing_code(for_launch=True)
     url = _hosted_launch_url(port, code)
     print(f"Lion Studio: {_HOSTED_URL}")

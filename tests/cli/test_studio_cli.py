@@ -49,7 +49,8 @@ def _stop(proc):
 
 @pytest.fixture(autouse=True)
 def daemon_probe(monkeypatch):
-    """Find no running daemon, so no test pairs with a real Studio on the developer's port.
+    """Find no running daemon and a free port, so no test pairs with, or is refused by, a
+    real Studio on the developer's port.
 
     The fixture's value is the real probe, for the tests that aim it at a server of their own.
     """
@@ -57,6 +58,7 @@ def daemon_probe(monkeypatch):
 
     real = studio_cli._code_from_running_daemon
     monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: None)
+    monkeypatch.setattr(studio_cli, "_bind_refusal", lambda host, port: None)
     return real
 
 
