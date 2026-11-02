@@ -1633,7 +1633,7 @@ class CodexCodeRequest(BaseModel):
         exclude=True,
         description=(
             "'light' runs codex in its workspace-write sandbox (writable in its working "
-            "directory and the temporary directories that sandbox keeps writable) with no "
+            "directory only: /tmp and $TMPDIR are excluded) with no "
             "network, with the account's apps and plugins turned off as "
             "`contain_account_integrations` turns them off, and counts against the total and "
             "codex agent caps. The MCP servers it is given run outside that sandbox. 'heavy' "
@@ -2001,11 +2001,15 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-c", f"projects={rendered}"])
         if light:
             # Pinned against the user's config, read by codex or carried above, which may
-            # grant extra writable roots or the network to every workspace-write session.
-            # Emitted after every caller override and carried setting, so codex, which keeps
-            # the last `-c` of a key, reads these whatever came before.
+            # grant extra writable roots or the network to every workspace-write session, or
+            # leave /tmp and $TMPDIR writable. Together the pins leave the working directory
+            # the only place a light agent writes. Emitted after every caller override and
+            # carried setting, so codex, which keeps the last `-c` of a key, reads these
+            # whatever came before.
             args.extend(["-c", "sandbox_workspace_write.writable_roots=[]"])
             args.extend(["-c", "sandbox_workspace_write.network_access=false"])
+            args.extend(["-c", "sandbox_workspace_write.exclude_slash_tmp=true"])
+            args.extend(["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])

@@ -72,10 +72,12 @@ from ._providers import (
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
+    _add_claude_tool_kwargs,
     _add_codex_account_integration_kwargs,
     _add_workload_kwarg,
     _clamp_claude_effort,
     _clamp_codex_effort,
+    _profile_tool_settings,
     add_common_cli_args,
     build_chat_model,
     build_deadline_preamble,
@@ -1693,6 +1695,9 @@ async def _run_agent(
         # neither field, the leg's argv is what it was before these fields existed.
         account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
         contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+        # A role's tool set is checked here, before any run is allocated; whether the agent's
+        # model can take it is decided where the request is built.
+        tool_settings = _profile_tool_settings(profile)
         # The flag wins over the role; with neither the leg is heavy, which keeps its configured
         # sandbox and counts against both machine-wide caps.
         if workload is None:
@@ -1861,6 +1866,7 @@ async def _run_agent(
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
+                tool_settings=tool_settings,
             )
             requested_effort = effort
             effort = resolve_persisted_effort(provider, chat_model, effort)
@@ -2156,6 +2162,10 @@ async def _run_agent(
             # Like the connectors: the class belongs to this launch, not to the stored row.
             cfg.pop("workload", None)
             _add_workload_kwarg(cfg, branch.chat_model.endpoint, workload)
+            # A role's tool-set fields replace the stored ones; a field it leaves out keeps
+            # the stored value, so resuming without a role does not widen a narrowed agent.
+            if tool_settings:
+                _add_claude_tool_kwargs(cfg, branch.chat_model.endpoint, tool_settings)
             # A resumed leg re-spawns a CLI child, so it needs the server set handed
             # to it just as a new one does; the persisted branch carries the model,
             # not the caller's directory. Which providers can be given a set, and

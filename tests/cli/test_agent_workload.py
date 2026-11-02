@@ -3,7 +3,9 @@
 
 """A leg's workload class comes from ``--workload``, else its role's ``workload``, else
 heavy; it reaches the CLI provider on a new run, a resume and every orchestration
-worker; and a leg refused a slot exits 75 with the refusal on one line."""
+worker; and an agent refused a slot exits 75 with the refusal on one line. A role's
+``tools``, ``allowed_tools`` and ``disallowed_tools`` reach a Claude Code agent, and a role
+that declares any of them for another provider is refused."""
 
 from __future__ import annotations
 
@@ -15,9 +17,11 @@ from unittest.mock import patch
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionagi.cli._providers import (
     _is_light_codex,
     _parse_profile,
+    _profile_tool_settings,
     build_chat_model,
     build_imodel_from_spec,
     profile_config,
@@ -417,3 +421,303 @@ def test_the_run_row_names_a_wrapped_refusal_as_a_retryable_provider_failure():
         code, summary, _ = resolve_run_reason(status="failed", exception=wrapped)
     assert code == RunReasons.FAILED_PROVIDER_RETRYABLE
     assert summary.startswith("SubagentAdmissionRefusedError: subagent admission refused")
+
+
+# ── a role's tool set for a Claude Code agent ─────────────────────────────────
+
+_TOOL_FIELDS = ("tools", "allowed_tools", "disallowed_tools")
+_TOOL_FLAGS = {
+    "tools": "--tools",
+    "allowed_tools": "--allowedTools",
+    "disallowed_tools": "--disallowedTools",
+}
+_ROLE_TOOLS = {
+    "tools": ["Read", "Grep", "Glob"],
+    "allowed_tools": ["Read", "Grep"],
+    "disallowed_tools": ["WebFetch"],
+}
+# What each field puts on the command line: ``--tools`` takes one comma-separated token.
+_ROLE_ARGV = {
+    "tools": ["Read,Grep,Glob"],
+    "allowed_tools": ["Read", "Grep"],
+    "disallowed_tools": ["WebFetch"],
+}
+
+
+def _role_declaring(model: str | None = "claude_code/sonnet", **fields):
+    """A role whose frontmatter sets each field; JSON is valid YAML for the values."""
+    lines = "".join(f"{key}: {json.dumps(value)}\n" for key, value in fields.items())
+    head = f"model: {model}\n" if model else ""
+    return _parse_profile("role", f"---\n{head}{lines}---\n\nRead.\n")
+
+
+def _claude_argv(model) -> list[str]:
+    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+    return payload["request"].as_cmd_args()
+
+
+def _values_after(args: list[str], flag: str) -> list[str]:
+    start = args.index(flag) + 1
+    end = next((i for i in range(start, len(args)) if args[i].startswith("-")), len(args))
+    return args[start:end]
+
+
+def _both_builders(settings, **kw):
+    """The same agent built the two ways a launch builds it."""
+    return (
+        build_imodel_from_spec("claude_code/sonnet", tool_settings=settings, **kw),
+        build_chat_model("claude_code", "sonnet", False, False, None, tool_settings=settings, **kw),
+    )
+
+
+@pytest.mark.parametrize("field", _TOOL_FIELDS)
+def test_a_roles_tool_field_reaches_a_claude_request_and_its_argv(field):
+    settings = _profile_tool_settings(_role_declaring(**{field: _ROLE_TOOLS[field]}))
+    for model in _both_builders(settings):
+        argv = _claude_argv(model)
+        assert _values_after(argv, _TOOL_FLAGS[field]) == _ROLE_ARGV[field]
+        for other in set(_TOOL_FIELDS) - {field}:
+            assert _TOOL_FLAGS[other] not in argv
+
+
+def test_a_roles_three_tool_fields_reach_one_claude_request_together():
+    settings = _profile_tool_settings(_role_declaring(**_ROLE_TOOLS))
+    for model in _both_builders(settings):
+        argv = _claude_argv(model)
+        for field in _TOOL_FIELDS:
+            assert argv.count(_TOOL_FLAGS[field]) == 1
+            assert _values_after(argv, _TOOL_FLAGS[field]) == _ROLE_ARGV[field]
+
+
+def test_a_light_claude_agent_denies_the_roles_tools_and_the_file_writing_ones():
+    settings = _profile_tool_settings(_role_declaring(**_ROLE_TOOLS))
+    for model in _both_builders(settings, workload="light"):
+        argv = _claude_argv(model)
+        assert argv.count("--disallowedTools") == 1
+        assert _values_after(argv, "--disallowedTools") == [
+            "WebFetch",
+            "Edit",
+            "Write",
+            "NotebookEdit",
+        ]
+        assert _values_after(argv, "--tools") == ["Read,Grep,Glob"]
+        assert _values_after(argv, "--allowedTools") == ["Read", "Grep"]
+
+
+def test_a_role_that_names_no_tool_field_adds_nothing_to_a_claude_request():
+    assert _profile_tool_settings(_role_declaring()) == {}
+    assert _profile_tool_settings(None) == {}
+    assert _profile_tool_settings(SimpleNamespace(name="stub")) == {}
+    for settings in (None, {}):
+        model = build_imodel_from_spec("claude_code/sonnet", tool_settings=settings)
+        assert not set(_TOOL_FLAGS.values()) & set(_claude_argv(model))
+        assert not set(_TOOL_FIELDS) & set(_kwargs(model))
+        # Nothing to carry, so the legacy builder still answers with the bare spec.
+        assert (
+            build_chat_model("claude_code", "sonnet", False, False, None, tool_settings=settings)
+            == "claude_code/sonnet"
+        )
+
+
+def test_a_roles_tool_names_are_trimmed():
+    settings = _profile_tool_settings(
+        _role_declaring(tools=[" Read ", "Grep"], allowed_tools=["Bash(git status:*) "])
+    )
+    assert settings == {"tools": "Read,Grep", "allowed_tools": ["Bash(git status:*)"]}
+
+
+@pytest.mark.parametrize("field", ["allowed_tools", "disallowed_tools"])
+def test_an_empty_allow_or_deny_list_is_a_list_of_nothing(field):
+    settings = _profile_tool_settings(_role_declaring(**{field: []}))
+    assert settings == {field: []}
+    for model in _both_builders(settings):
+        assert _TOOL_FLAGS[field] not in _claude_argv(model)
+
+
+@pytest.mark.parametrize("field", _TOOL_FIELDS)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Read",
+        "Read, Grep",
+        None,
+        5,
+        True,
+        {"Read": True},
+        [""],
+        ["Read", ""],
+        ["  "],
+        ["Read", 3],
+        ["Read", None],
+        [["Read"]],
+    ],
+    ids=repr,
+)
+def test_a_tool_field_that_is_not_a_list_of_names_is_refused(field, value):
+    role = _role_declaring(**{field: value})
+    with pytest.raises(ConfigurationError, match=rf"(?<![a-z_]){field}(?![a-z_])") as refused:
+        _profile_tool_settings(role)
+    assert "list of" in str(refused.value)
+
+
+def test_an_empty_tools_list_is_refused_rather_than_read_as_no_restriction():
+    with pytest.raises(ConfigurationError, match=r"(?<![a-z_])tools(?![a-z_])"):
+        _profile_tool_settings(_role_declaring(tools=[]))
+
+
+def _named_as_a_whole_word(field: str) -> str:
+    return rf"(?<![a-z_]){field}(?![a-z_])"
+
+
+@pytest.mark.parametrize("field", _TOOL_FIELDS)
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "codex/gpt-5.5",
+        "openai-codex/gpt-5.5",
+        "gemini-cli/gemini-3-pro",
+        "pi/m",
+        "openai/gpt-4.1-mini",
+    ],
+)
+def test_a_role_that_declares_a_tool_field_for_another_provider_is_refused(field, spec):
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    settings = _profile_tool_settings(_role_declaring(**{field: _ROLE_TOOLS[field]}))
+    provider = EndpointRegistry.canonical_provider(spec.split("/")[0])
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word(field)) as refused:
+        build_imodel_from_spec(spec, tool_settings=settings)
+    assert provider in str(refused.value)
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word(field)) as refused:
+        build_chat_model(
+            spec.split("/")[0], spec.split("/", 1)[1], False, False, None, tool_settings=settings
+        )
+    assert provider in str(refused.value)
+
+
+def test_a_refusal_names_every_tool_field_the_role_declared():
+    settings = _profile_tool_settings(_role_declaring(**_ROLE_TOOLS))
+    with pytest.raises(ConfigurationError) as refused:
+        build_imodel_from_spec("codex/gpt-5.5", tool_settings=settings)
+    for field in _TOOL_FIELDS:
+        assert field in str(refused.value)
+
+
+@pytest.mark.parametrize("settings", [None, {}])
+@pytest.mark.parametrize("spec", ["codex/gpt-5.5", "openai/gpt-4.1-mini"])
+def test_a_role_without_tool_fields_is_not_refused_on_another_provider(spec, settings):
+    model = build_imodel_from_spec(spec, tool_settings=settings)
+    assert not set(_TOOL_FIELDS) & set(_kwargs(model))
+
+
+_CLAUDE_TOOLS_ROLE = (
+    "---\nmodel: claude_code/sonnet\ntools: [Read, Grep, Glob]\n"
+    "allowed_tools: [Read, Grep]\ndisallowed_tools: [WebFetch]\n---\n\nRead.\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_hands_the_roles_tool_set_to_a_claude_agent(monkeypatch, tmp_path):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, _CLAUDE_TOOLS_ROLE)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent("claude_code/sonnet", "do the thing", agent_name="role")
+
+    assert captured[-1]["tools"] == "Read,Grep,Glob"
+    assert captured[-1]["allowed_tools"] == ["Read", "Grep"]
+    assert captured[-1]["disallowed_tools"] == ["WebFetch"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["codex/gpt-5.5", "openai/gpt-4.1-mini"])
+async def test_a_new_run_on_another_provider_refuses_the_roles_tool_set(
+    monkeypatch, tmp_path, model
+):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, _CLAUDE_TOOLS_ROLE)
+    _capture_chat_kwargs(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        await _run_agent(model, "do the thing", agent_name="role")
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_refuses_a_tool_field_that_is_not_a_list(monkeypatch, tmp_path):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, "---\nmodel: claude_code/sonnet\ntools: Read\n---\n\nRead.\n")
+    _capture_chat_kwargs(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        await _run_agent("claude_code/sonnet", "do the thing", agent_name="role")
+
+
+def _stored_branch(tmp_path: Path, provider: str, model: str, **kwargs: Any) -> tuple[str, Path]:
+    from lionagi import Branch, iModel
+
+    branch = Branch(chat_model=iModel(provider=provider, model=model))
+    data = branch.to_dict()
+    data["chat_model"]["endpoint"]["config"]["kwargs"].update(kwargs)
+    path = tmp_path / f"{branch.id}.json"
+    path.write_text(json.dumps(data))
+    return str(branch.id), path
+
+
+_STORED_TOOLS = {"tools": "Bash", "allowed_tools": ["Bash"], "disallowed_tools": ["Write"]}
+
+
+@pytest.mark.asyncio
+async def test_a_resume_takes_the_tool_fields_its_role_declares_and_keeps_the_rest(
+    monkeypatch, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_branch(tmp_path, "claude_code", "sonnet", **_STORED_TOOLS)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, "---\nmodel: claude_code/sonnet\ntools: [Read]\n---\n\nRead.\n")
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent(None, "continue", resume=branch_id, agent_name="role")
+
+    assert captured[-1]["tools"] == "Read"
+    assert captured[-1]["allowed_tools"] == ["Bash"]
+    assert captured[-1]["disallowed_tools"] == ["Write"]
+
+
+@pytest.mark.asyncio
+async def test_a_resume_without_a_role_keeps_the_stored_tool_set(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_branch(tmp_path, "claude_code", "sonnet", **_STORED_TOOLS)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent(None, "continue", resume=branch_id)
+
+    for field, value in _STORED_TOOLS.items():
+        assert captured[-1][field] == value
+
+
+@pytest.mark.asyncio
+async def test_a_resume_of_another_provider_refuses_the_roles_tool_set(monkeypatch, tmp_path):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_branch(tmp_path, "codex", "gpt-5.5")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, "---\ntools: [Read]\n---\n\nRead.\n")
+    _capture_chat_kwargs(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        await _run_agent(None, "continue", resume=branch_id, agent_name="role")

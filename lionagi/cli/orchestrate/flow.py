@@ -2368,6 +2368,7 @@ async def _execute_dag(
             chat_model,
             contain_user_settings=bool(operation.metadata.get("emitter_contains_user_settings")),
             mcp_server_names=worker_mcp_servers or (),
+            role=operation.metadata.get("assignee"),
         )
         contained = _claude_worker_contained(chat_model)
         if getattr(branch, "metadata", {}).get("clone_from") is env.orc_branch and not env.effort:

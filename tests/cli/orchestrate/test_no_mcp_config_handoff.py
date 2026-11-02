@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 import lionagi.cli.orchestrate._orchestration as orch_mod
+from lionagi._errors import ConfigurationError
 from lionagi.cli._providers import AgentProfile
 from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
@@ -1161,6 +1162,356 @@ async def test_a_contained_light_claude_worker_keeps_its_class(tmp_run, monkeypa
         "NotebookEdit",
     ]
     assert _flag_values(args, "--setting-sources") == [""]
+
+
+_READER_TOOLS = {
+    "tools": ["Read", "Grep"],
+    "allowed_tools": ["Bash(git status:*)"],
+    "disallowed_tools": ["WebFetch"],
+}
+
+
+@pytest.mark.asyncio
+async def test_a_worker_runs_with_the_tool_set_its_role_declares(tmp_run, monkeypatch):
+    """A role's ``tools``, ``allowed_tools`` and ``disallowed_tools`` reach the worker's
+    command line; a role in the same run that declares none gets none of those flags."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader={"extra": dict(_READER_TOOLS)}, plain={}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "reader")
+    control = await _worker_args(env, "plain")
+
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+    assert _flag_values(args, "--allowedTools") == ["Bash(git status:*)"]
+    assert _flag_values(args, "--disallowedTools") == ["WebFetch"]
+    assert [f for f in ("--tools", "--allowedTools", "--disallowedTools") if f in control] == []
+
+
+@pytest.mark.asyncio
+async def test_a_light_worker_denies_its_roles_tools_and_the_file_writing_ones(
+    tmp_run, monkeypatch
+):
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader={"workload": "light", "extra": dict(_READER_TOOLS)}),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "reader")
+
+    assert args.count("--disallowedTools") == 1
+    assert _flag_values(args, "--disallowedTools") == [
+        "WebFetch",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+    ]
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+
+
+def _hand_knowledge_server(tmp_run) -> None:
+    (tmp_run / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"knowledge": {"command": "kkernel", "args": ["mcp"]}}})
+    )
+
+
+def _contained_role(**fields) -> dict:
+    """A contained role whose frontmatter declares *fields* (as a loaded profile keeps them)."""
+    return {"contain_user_settings": True, "extra": fields}
+
+
+async def _contained_worker_args(monkeypatch, tmp_run, role: dict):
+    """The argv of a contained worker with *role* and of a contained one that declares nothing,
+    in a run that hands its workers one server, ``knowledge``."""
+    _hand_knowledge_server(tmp_run)
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader=role, plain={"contain_user_settings": True}),
+    )
+    env = await _setup(no_mcp_config=False)
+    return await _worker_args(env, "reader"), await _worker_args(env, "plain")
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_whose_role_narrows_tools_runs_with_that_list(
+    tmp_run, monkeypatch
+):
+    """Containment names a default tool list, and a role that names its own narrower one
+    runs with it: the worker is not handed the tools the role left out, nor pre-approved
+    for them. What the role allows (inside its own tools or the handed servers) and denies
+    is added to the contained grants and denials."""
+    args, control = await _contained_worker_args(
+        monkeypatch,
+        tmp_run,
+        _contained_role(
+            tools=["Read", "Grep"],
+            allowed_tools=["Read(./docs/**)", "mcp__knowledge__search"],
+            disallowed_tools=["WebFetch"],
+        ),
+    )
+
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+    assert _flag_values(args, "--allowedTools") == [
+        "Read",
+        "Grep",
+        "mcp__knowledge__*",
+        "Read(./docs/**)",
+        "mcp__knowledge__search",
+    ]
+    assert _flag_values(args, "--disallowedTools") == ["WebFetch", "Agent", "Task"]
+    assert _flag_values(args, "--permission-mode") == ["dontAsk"]
+    assert _flag_values(control, "--tools") == [",".join(_CONTAINED_TOOLS)]
+    assert _flag_values(control, "--allowedTools") == [*_CONTAINED_TOOLS, "mcp__knowledge__*"]
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_grants_a_tool_with_an_argument_pattern_by_its_name(
+    tmp_run, monkeypatch
+):
+    """``Bash(git status:*)`` narrows one tool's use, so it is judged by the tool it names:
+    granted when the worker has Bash, refused when its role's tools leave Bash out."""
+    args, _ = await _contained_worker_args(
+        monkeypatch, tmp_run, _contained_role(allowed_tools=["Bash(git status:*)"])
+    )
+    assert _flag_values(args, "--allowedTools")[-1] == "Bash(git status:*)"
+
+    with pytest.raises(ConfigurationError, match=r"Bash\(git status:\*\)"):
+        await _contained_worker_args(
+            monkeypatch,
+            tmp_run,
+            _contained_role(tools=["Read", "Grep"], allowed_tools=["Bash(git status:*)"]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_grants_the_tools_of_a_server_the_run_hands_it(
+    tmp_run, monkeypatch
+):
+    args, _ = await _contained_worker_args(
+        monkeypatch,
+        tmp_run,
+        _contained_role(allowed_tools=["mcp__knowledge__search", "mcp__knowledge"]),
+    )
+
+    assert _flag_values(args, "--allowedTools") == [
+        *_CONTAINED_TOOLS,
+        "mcp__knowledge__*",
+        "mcp__knowledge__search",
+        "mcp__knowledge",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["NotebookEdit", "Skill", "Agent", "Task", "default", "bash"])
+@pytest.mark.parametrize("with_grant", [False, True], ids=["tool-only", "and-allowed"])
+async def test_a_contained_worker_whose_role_widens_tools_is_refused(
+    tmp_run, monkeypatch, name, with_grant
+):
+    """A tool outside the contained set stays outside it, whether the role only lists it in
+    ``tools`` or grants it in ``allowed_tools`` as well; the error names the tool, the role
+    and the set, and nothing is built."""
+    fields = {"tools": ["Read", name]}
+    if with_grant:
+        fields["allowed_tools"] = [name]
+    _hand_knowledge_server(tmp_run)
+    monkeypatch.setattr(
+        orch_mod, "load_agent_profile", _claude_roles(reader=_contained_role(**fields))
+    )
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError) as refused:
+        await build_worker_branch(env, agent_id="reader", role="reader")
+
+    message = str(refused.value)
+    assert repr(name) in message
+    assert "'reader'" in message
+    assert ", ".join(_CONTAINED_TOOLS) in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tools", "allowed"),
+    [
+        (None, "Skill"),
+        (None, "NotebookEdit"),
+        (None, "Agent"),
+        (["Read", "Grep"], "Bash"),
+        (["Read", "Grep"], "Edit"),
+        (None, "mcp__other__search"),
+        (None, "mcp__knowledgebase__search"),
+        (None, "mcp__*"),
+        (None, "(anything)"),
+    ],
+)
+async def test_a_contained_worker_whose_role_allows_a_tool_it_does_not_have_is_refused(
+    tmp_run, monkeypatch, tools, allowed
+):
+    """An allow entry may name a tool the worker has or a tool of a server the run hands
+    it. A server name that only begins like a handed one is not that server."""
+    fields = {"allowed_tools": [allowed]}
+    if tools is not None:
+        fields["tools"] = tools
+    _hand_knowledge_server(tmp_run)
+    monkeypatch.setattr(
+        orch_mod, "load_agent_profile", _claude_roles(reader=_contained_role(**fields))
+    )
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError) as refused:
+        await build_worker_branch(env, agent_id="reader", role="reader")
+
+    message = str(refused.value)
+    assert repr(allowed) in message
+    assert "'reader'" in message
+    assert "allowed_tools" in message
+    assert ", ".join(_CONTAINED_TOOLS) in message
+
+
+@pytest.mark.asyncio
+async def test_a_contained_worker_given_no_servers_is_granted_the_tools_of_none(
+    tmp_run, monkeypatch
+):
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(reader=_contained_role(allowed_tools=["mcp__knowledge__search"])),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError, match="mcp__knowledge__search"):
+        await build_worker_branch(env, agent_id="reader", role="reader")
+
+
+@pytest.mark.asyncio
+async def test_a_role_that_is_not_contained_keeps_the_tools_it_declares(tmp_run, monkeypatch):
+    """The subset rule belongs to containment: a role that runs on the operator's settings
+    is bounded by them, and may name any tool."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(
+            reader={
+                "extra": {"tools": ["Read", "Skill"], "allowed_tools": ["Skill", "mcp__any__x"]}
+            }
+        ),
+    )
+    env = await _setup(no_mcp_config=False)
+
+    args = await _worker_args(env, "reader")
+
+    assert _flag_values(args, "--tools") == ["Read,Skill"]
+    assert _flag_values(args, "--allowedTools") == ["Skill", "mcp__any__x"]
+
+
+def _contained_tool_model(**tool_settings):
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    return build_imodel_from_spec("claude_code/sonnet", tool_settings=tool_settings)
+
+
+def test_a_refused_containment_leaves_the_model_as_it_was():
+    """The refusal comes before containment changes anything, so the model is not left
+    half contained."""
+    model = _contained_tool_model(tools="Read,NotebookEdit")
+    before = dict(model.endpoint.config.kwargs)
+
+    with pytest.raises(ConfigurationError, match="NotebookEdit"):
+        orch_mod._isolate_worker_cli_config(model, contain_user_settings=True, role="reader")
+
+    assert model.endpoint.config.kwargs == before
+    assert not orch_mod._claude_worker_contained(model)
+
+
+def test_the_second_containment_pass_of_a_narrowed_worker_changes_nothing():
+    model = _contained_tool_model(
+        tools="Read,Grep",
+        allowed_tools=["Read(./docs/**)", "mcp__a__search"],
+        disallowed_tools=["WebFetch"],
+    )
+    kwargs = model.endpoint.config.kwargs
+
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["b", "a"], role="reader"
+    )
+    once = dict(kwargs)
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["b", "a"], role="reader"
+    )
+
+    assert kwargs == once
+    assert kwargs["tools"] == "Read,Grep"
+    assert kwargs["allowed_tools"] == [
+        "Read",
+        "Grep",
+        "mcp__a__*",
+        "mcp__b__*",
+        "Read(./docs/**)",
+        "mcp__a__search",
+    ]
+    assert kwargs["disallowed_tools"] == ["WebFetch", "Agent", "Task"]
+
+
+def test_a_refusal_without_a_known_role_still_says_whose_tools_they_are():
+    model = _contained_tool_model(tools="Skill")
+
+    with pytest.raises(ConfigurationError, match="'Skill'") as refused:
+        orch_mod._isolate_worker_cli_config(model, contain_user_settings=True)
+
+    assert "agent profile" in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_a_worker_whose_role_declares_a_tool_set_for_another_provider_is_refused(
+    tmp_run, monkeypatch
+):
+    def _load_profile(name):
+        body = "Use the configured provider."
+        return AgentProfile(
+            name=name,
+            model="codex/gpt-5",
+            system_prompt=body,
+            raw_body=body,
+            extra={"tools": ["Read"]},
+        )
+
+    monkeypatch.setattr(orch_mod, "load_agent_profile", _load_profile)
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError, match=r"(?<![a-z_])tools(?![a-z_])") as refused:
+        await build_worker_branch(env, agent_id="reader", role="reader")
+    assert "codex" in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_the_orchestrator_runs_with_the_tool_set_its_role_declares(tmp_run, monkeypatch):
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(lead={"extra": dict(_READER_TOOLS)}),
+    )
+
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec=None,
+        agent_name="lead",
+        save_dir=None,
+        cwd=None,
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+    )
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _flag_values(args, "--tools") == ["Read,Grep"]
+    assert _flag_values(args, "--allowedTools") == ["Bash(git status:*)"]
+    assert _flag_values(args, "--disallowedTools") == ["WebFetch"]
 
 
 def test_the_contained_boundary_keeps_what_a_worker_denies_and_is_idempotent():

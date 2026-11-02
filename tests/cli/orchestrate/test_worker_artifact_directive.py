@@ -710,6 +710,7 @@ async def _spawned_branch_kwargs(
     role_alias: str | None = None,
     role_contained: bool = False,
     role_provider: str = "claude_code",
+    role_kwargs: dict | None = None,
     handed: list | None = None,
     expected: list | None = None,
     refuses: bool = False,
@@ -725,7 +726,8 @@ async def _spawned_branch_kwargs(
     settings files read (``contain_user_settings``). With *independent* false the request is a
     dependent one, cloned from that worker's branch. With *assignee* the request names a
     role of that name on *role_provider* (Claude unless named), and is cloned from its
-    branch, which *role_contained* runs with no settings files read. *role_alias* plans a
+    branch, which *role_contained* runs with no settings files read and *role_kwargs* adds
+    request settings to (a role's tool set, say). *role_alias* plans a
     worker of that name on the role and has the request name the worker, as a team
     instance (``reviewer-2``) is named. *handed* collects the
     server set each hand-off gives the spawn and whether it is the whole set. *expected*
@@ -794,6 +796,7 @@ async def _spawned_branch_kwargs(
     role_branch = None
     if assignee is not None:
         role_branch = _branch(assignee, branch_provider=role_provider)
+        role_branch.chat_model.endpoint.config.kwargs.update(role_kwargs or {})
         if role_contained:
             from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
 
@@ -1135,6 +1138,51 @@ async def test_an_agent_a_contained_claude_worker_asks_for_by_role_reads_no_sett
     assert kwargs["setting_sources"] == ""
     assert kwargs["permission_mode"] == "dontAsk"
     assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_contained", [False, True])
+async def test_an_agent_a_contained_worker_asks_for_by_role_keeps_that_roles_narrower_tools(
+    tmp_path, monkeypatch, role_contained
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_contained=role_contained,
+        role_kwargs={"tools": "Read,Grep"},
+    )
+
+    assert kwargs["tools"] == "Read,Grep"
+    assert kwargs["allowed_tools"] == ["Read", "Grep"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_a_contained_worker_asks_for_by_role_cannot_widen_its_tools(
+    tmp_path, monkeypatch
+):
+    """Naming a role is no way past the contained tool set: a role whose tools reach
+    outside it is refused where the spawn is set up, and the error names the role."""
+    from lionagi._errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError) as refused:
+        await _spawned_branch_kwargs(
+            tmp_path,
+            monkeypatch,
+            DEFAULT_WORKLOAD,
+            provider="claude_code",
+            emitted_by=DEFAULT_WORKLOAD,
+            emitter_contained=True,
+            assignee="reviewer",
+            role_kwargs={"tools": "Read,NotebookEdit"},
+        )
+
+    assert "'reviewer'" in str(refused.value)
+    assert "'NotebookEdit'" in str(refused.value)
 
 
 @pytest.mark.asyncio
