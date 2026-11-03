@@ -142,7 +142,11 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
             validation_errors = (PydanticValidationError,)
 
         try:
-            cls._validate_dataframe_structure(obj, many, required_columns)
+            try:
+                cls._validate_dataframe_structure(obj, many, required_columns)
+            except ImportError as e:
+                # The optional dependency check precedes record processing.
+                cls._handle_error(e, "validation", unexpected=True)
             if obj.empty and many:
                 return []
             records = cls._convert_dataframe_to_records(obj, many)
@@ -168,7 +172,11 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
     ) -> Any:  # pd.DataFrame
         try:
             items = subj if isinstance(subj, list) else [subj]
-            return cls._models_to_dataframe(items, adapt_meth, adapt_kw, **kw)
+            try:
+                return cls._models_to_dataframe(items, adapt_meth, adapt_kw, **kw)
+            except ImportError as e:
+                # _models_to_dataframe checks the optional dependency first.
+                cls._handle_error(e, "validation", unexpected=True)
         except AdapterError:
             raise
         except Exception:

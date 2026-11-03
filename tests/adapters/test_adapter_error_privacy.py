@@ -406,3 +406,30 @@ def test_validation_error_builder_does_not_inspect_custom_exception_class():
     assert not CustomError.inspected
     if _contains_marker(error):
         pytest.fail("error builder exposed a custom exception", pytrace=False)
+
+
+@pytest.mark.parametrize("direction", ["from", "to"])
+def test_dataframe_missing_dependency_preserves_existing_diagnostic(monkeypatch, direction):
+    import builtins
+
+    from lionagi.adapters.pandas_ import DataFrameAdapter
+
+    real_import = builtins.__import__
+
+    def without_pandas(name, *args, **kwargs):
+        if name == "pandas":
+            raise ModuleNotFoundError("No module named 'pandas'", name="pandas")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_pandas)
+    with pytest.raises(AdapterValidationError) as captured:
+        if direction == "from":
+            DataFrameAdapter.from_obj(_Validated, object())
+        else:
+            DataFrameAdapter.to_obj([])
+    error = captured.value
+    assert "pandas is required" in error.message
+    assert "pip install pandas" in error.message
+    assert error.details["unexpected"] is True
+    assert isinstance(error.__cause__, ImportError)
+    assert isinstance(error.__cause__.__cause__, ModuleNotFoundError)
