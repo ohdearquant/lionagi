@@ -789,6 +789,219 @@ async def test_claude_ndjson_uses_repair_callback():
     assert kw["tail_repair"] is not None, "tail_repair must not be None for Claude"
 
 
+# One command-line argument of this many bytes does not start a CLI on macOS.
+_ARGUMENT_MAX_BYTES = 1_048_576
+# The most piped input the Claude Code CLI takes: "10MB" in its documentation.
+_CLAUDE_PIPED_INPUT_MAX_BYTES = 10_000_000
+
+
+async def _claude_spawn_seen(monkeypatch, tmp_path, seen: list, **request_kwargs) -> None:
+    """Drive Claude's spawn path against a stand-in for the shared spawner, which records the
+    command and keyword arguments it is handed in ``seen`` and starts nothing."""
+    from lionhub.providers.anthropic import claude_code as cc
+
+    async def _fake_ndjson(cmd, **kwargs):
+        seen.append((list(cmd), kwargs))
+        return
+        yield
+
+    monkeypatch.setattr(cc, "CLAUDE_CLI", "/fake/claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", _fake_ndjson)
+    request = cc.ClaudeCodeRequest(repo=tmp_path, **request_kwargs)
+    async for _ in cc._ndjson_from_cli(request):
+        pass
+
+
+@pytest.mark.parametrize("input_format", [None, "text"])
+def test_claude_as_cmd_args_carries_no_prompt_when_the_prompt_goes_on_stdin(input_format):
+    """``-p`` is the print-mode switch; the prompt it would otherwise carry is read from stdin."""
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    kwargs = {} if input_format is None else {"input_format": input_format}
+    args = ClaudeCodeRequest(prompt="a distinctive prompt", **kwargs).as_cmd_args()
+
+    assert args[:3] == ["-p", "--output-format", "stream-json"]
+    assert not any("a distinctive prompt" in arg for arg in args)
+
+
+def test_claude_as_cmd_args_keeps_the_prompt_for_stream_json_input():
+    """With ``stream-json`` input the argument list is what it has always been."""
+    from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    args = ClaudeCodeRequest(prompt="hi", input_format="stream-json").as_cmd_args()
+
+    assert args == [
+        "-p",
+        "hi",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "claude-sonnet-5-5",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_format", [None, "text"])
+async def test_claude_ndjson_writes_the_prompt_to_the_child_stdin(
+    monkeypatch, tmp_path, input_format
+):
+    kwargs = {} if input_format is None else {"input_format": input_format}
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, prompt="what is 2 + 2?", **kwargs)
+
+    assert len(seen) == 1
+    cmd, spawn_kwargs = seen[0]
+    assert spawn_kwargs["stdin_data"] == "what is 2 + 2?"
+    assert cmd[:3] == ["/fake/claude", "-p", "--output-format"]
+    assert not any("what is 2 + 2?" in arg for arg in cmd)
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_sends_a_history_past_the_argument_limit_on_stdin(
+    monkeypatch, tmp_path
+):
+    """A branch with no resumable session renders its whole history as the prompt; it used to
+    ride the command line and fail to start once it passed the operating system's limit."""
+    messages = [{"role": "system", "content": "be brief"}] + [
+        {"role": "user" if n % 2 == 0 else "assistant", "content": f"turn {n} " + "h" * 400_000}
+        for n in range(3)
+    ]
+    expected = "\n".join(m["content"] for m in messages[1:])
+    assert len(expected.encode()) > _ARGUMENT_MAX_BYTES
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, messages=messages)
+
+    cmd, spawn_kwargs = seen[0]
+    assert spawn_kwargs["stdin_data"] == expected
+    assert sum(len(arg.encode()) for arg in cmd) < 10_000
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_writes_only_the_last_message_of_a_resumed_session(
+    monkeypatch, tmp_path
+):
+    messages = [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+    ]
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, messages=messages, resume="sess-1")
+
+    cmd, spawn_kwargs = seen[0]
+    assert spawn_kwargs["stdin_data"] == "second question"
+    assert cmd[cmd.index("--resume") + 1] == "sess-1"
+    assert not any("question" in arg or "answer" in arg for arg in cmd)
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_keeps_the_prompt_in_the_arguments_for_stream_json_input(
+    monkeypatch, tmp_path
+):
+    """The spawner is handed what it was before: the prompt in the argument list, and no stdin
+    data, so the child's stdin stays the spawner's default."""
+    seen: list = []
+
+    await _claude_spawn_seen(monkeypatch, tmp_path, seen, prompt="hi", input_format="stream-json")
+
+    cmd, spawn_kwargs = seen[0]
+    assert cmd[:3] == ["/fake/claude", "-p", "hi"]
+    assert spawn_kwargs.get("stdin_data") is None
+    assert "stdin" not in spawn_kwargs
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_refuses_a_prompt_past_the_piped_input_cap(monkeypatch, tmp_path):
+    seen: list = []
+
+    with pytest.raises(ValueError, match="10 MB") as refused:
+        await _claude_spawn_seen(
+            monkeypatch, tmp_path, seen, prompt="x" * (_CLAUDE_PIPED_INPUT_MAX_BYTES + 1)
+        )
+
+    assert seen == [], "the CLI must not be started with a prompt it will refuse"
+    assert "10,000,001" in str(refused.value)
+    assert "xxxxxxxx" not in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_measures_the_prompt_cap_in_utf8_bytes(monkeypatch, tmp_path):
+    """The cap is on the bytes written to the pipe: a 2-byte character counts twice."""
+    at_the_cap: list = []
+    await _claude_spawn_seen(
+        monkeypatch, tmp_path, at_the_cap, prompt="é" * (_CLAUDE_PIPED_INPUT_MAX_BYTES // 2)
+    )
+    assert len(at_the_cap) == 1
+
+    past_the_cap: list = []
+    with pytest.raises(ValueError, match="10 MB"):
+        await _claude_spawn_seen(
+            monkeypatch,
+            tmp_path,
+            past_the_cap,
+            prompt="é" * (_CLAUDE_PIPED_INPUT_MAX_BYTES // 2 + 1),
+        )
+    assert past_the_cap == []
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_refuses_an_argument_past_the_operating_system_limit(
+    monkeypatch, tmp_path
+):
+    seen: list = []
+
+    with pytest.raises(ValueError, match="--system-prompt") as refused:
+        await _claude_spawn_seen(
+            monkeypatch,
+            tmp_path,
+            seen,
+            prompt="hi",
+            system_prompt="s" * _ARGUMENT_MAX_BYTES,
+        )
+
+    assert seen == [], "the CLI must not be started with an argument it cannot take"
+    message = str(refused.value)
+    assert "Claude Code CLI" in message
+    assert f"{_ARGUMENT_MAX_BYTES:,} bytes" in message
+    assert "sssssss" not in message
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_takes_an_argument_just_under_the_limit(monkeypatch, tmp_path):
+    seen: list = []
+
+    await _claude_spawn_seen(
+        monkeypatch, tmp_path, seen, prompt="hi", system_prompt="s" * (_ARGUMENT_MAX_BYTES - 1)
+    )
+
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_claude_ndjson_names_the_prompt_argument_for_stream_json_input(monkeypatch, tmp_path):
+    """With ``stream-json`` input the prompt is still an argument, so it is held to the limit
+    too, and named as the value of ``-p``."""
+    seen: list = []
+
+    with pytest.raises(ValueError, match="value of -p"):
+        await _claude_spawn_seen(
+            monkeypatch,
+            tmp_path,
+            seen,
+            prompt="p" * _ARGUMENT_MAX_BYTES,
+            input_format="stream-json",
+        )
+
+    assert seen == []
+
+
 @pytest.mark.asyncio
 async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
     """Codex _ndjson_from_cli must NOT pass cwd= to ndjson_from_cli.

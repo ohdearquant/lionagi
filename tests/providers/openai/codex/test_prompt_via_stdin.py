@@ -166,15 +166,16 @@ class TestPromptArrivesOverStdin:
 
 
 class TestOtherProvidersUnchanged:
-    """The prompt is still assembled the same way for everyone; only the codex
-    request shape changed, so the other CLI providers must keep passing it on
-    the command line."""
+    """The prompt is still assembled the same way for everyone. Claude Code
+    also reads it from stdin; the Gemini CLI provider still takes it on the
+    command line."""
 
-    def test_claude_code_still_passes_the_prompt_in_argv(self, tmp_path):
+    def test_claude_code_no_longer_passes_the_prompt_in_argv(self, tmp_path):
         from lionhub.providers.anthropic.claude_code import ClaudeCodeRequest
 
         args = ClaudeCodeRequest(prompt="hello there", repo=tmp_path).as_cmd_args()
-        assert "hello there" in args
+        assert args[0] == "-p"
+        assert not any("hello there" in arg for arg in args)
 
     def test_gemini_still_passes_the_prompt_in_argv(self, tmp_path):
         from lionhub.providers.google.gemini_code import GeminiCodeRequest

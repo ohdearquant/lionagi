@@ -249,7 +249,8 @@ class TestCLIProviderRequestModels:
         args = req.as_cmd_args()
         assert isinstance(args, list)
         assert "-p" in args
-        assert "hello" in args
+        # The prompt is written to the CLI's stdin, not passed as an argument.
+        assert "hello" not in args
         assert "--output-format" in args
 
     def test_gemini_code_request_import(self):
