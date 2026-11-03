@@ -98,13 +98,15 @@ async def _cli_args(imodel) -> list[str]:
     return request.as_cmd_args()
 
 
-async def _codex_cli_args(imodel) -> list[str]:
+async def _codex_cli_args(imodel, *, hook_expected: bool = True) -> list[str]:
     """The argv the codex child would be spawned with, off the live request.
 
     A worker that ignores the user config gets its command line at launch, from
     the spawn helper's argv hook; the request's own ``as_cmd_args`` refuses that
     shape. So the request goes through the same launch path with only the spawn
-    itself stubbed: no process starts and no host config is read.
+    itself stubbed: no process starts and no host config is read. A request that
+    loads the user config and selects no servers by name has no hook, and
+    ``hook_expected=False`` reads its command line as given.
     """
     api_call = await imodel.create_event(prompt="hi")
     request = api_call.payload["request"]
@@ -113,10 +115,14 @@ async def _codex_cli_args(imodel) -> list[str]:
 
     async def _stub_stream(cmd, **kwargs):
         prepare = kwargs.get("_prepare_argv")
-        assert prepare is not None, (
-            "a worker that ignores the user config is launched through the argv hook"
-        )
-        cmd = prepare(dict(kwargs.get("env") or os.environ))
+        if hook_expected:
+            assert prepare is not None, (
+                "a worker that ignores the user config is launched through the argv hook"
+            )
+        else:
+            assert prepare is None, "a request that selects no servers has no argv hook"
+        if prepare is not None:
+            cmd = prepare(dict(kwargs.get("env") or os.environ))
         spawned.append(list(cmd))
         return
         yield
@@ -958,6 +964,93 @@ async def test_a_codex_orchestrator_handed_an_empty_set_takes_no_effort_from_the
     assert kwargs.get("reasoning_effort") == expected
     assert env.orc_effort == expected
     assert env.effort == expected
+
+
+def _config_values(args: list[str]) -> list[str]:
+    """The ``-c`` values on a codex command line."""
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-c"]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrator_takes_a_named_server_set_as_its_whole_set(
+    tmp_run, tmp_path, codex_home
+):
+    """A set named with ``--mcp-config`` is the whole set for the orchestrator, as for a
+    worker: the servers the user's own codex config declares are not loaded beside it, in
+    the planning call or in any later call on that model."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False, mcp_config=str(named), model_spec="codex/gpt-5")
+
+    kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert kwargs.get("exclusive_mcp_names") == ["run-set"]
+    args = await _codex_cli_args(env.orc_branch.chat_model)
+    config = _config_values(args)
+    # A non-empty set keeps the user config loaded and disables, by name, what it declares
+    # outside the set; only the empty set takes the flag.
+    assert "mcp_servers.ambient.enabled=false" in config
+    assert "--ignore-user-config" not in args
+    assert 'mcp_servers.run-set.command="run-set-server"' in config
+    assert 'mcp_servers.ambient.command="ambient-mcp"' not in config
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrator_adds_a_discovered_server_set_to_its_own(tmp_run, codex_home):
+    """A set found by the ambient ``.mcp.json`` lookup is not the caller's word that it is
+    the whole set, so the orchestrator keeps the servers its own codex config declares."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
+    args = await _codex_cli_args(env.orc_branch.chat_model, hook_expected=False)
+
+    kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    config = _config_values(args)
+    assert "ignore_user_config" not in kwargs
+    assert "exclusive_mcp_names" not in kwargs
+    assert "--ignore-user-config" not in args
+    assert 'mcp_servers.run-set.command="run-set-server"' in config
+    assert not [value for value in config if value.startswith("mcp_servers.ambient.")]
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrator_under_no_mcp_config_loads_no_user_config(tmp_run, codex_home):
+    """``--no-mcp-config`` is the empty set, whole: the orchestrator runs with no user
+    config, and a ``.mcp.json`` it could have found adds nothing."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=True, model_spec="codex/gpt-5")
+    args = await _codex_cli_args(env.orc_branch.chat_model)
+
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["ignore_user_config"] is True
+    assert "--ignore-user-config" in args
+    assert not [value for value in _config_values(args) if value.startswith("mcp_servers.")]
+
+
+@pytest.mark.asyncio
+async def test_a_named_server_set_is_the_claude_orchestrators_whole_set(tmp_run, tmp_path):
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False, mcp_config=str(named))
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert "--strict-mcp-config" in args
+
+
+@pytest.mark.asyncio
+async def test_a_discovered_server_set_is_added_to_the_claude_orchestrators_own(tmp_run):
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": _RUN_SERVER}))
+
+    env = await _setup(no_mcp_config=False)
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert _mcp_config_arg(args) == {"mcpServers": _RUN_SERVER}
+    assert "--strict-mcp-config" not in args
 
 
 class _RecordReached(Exception):
