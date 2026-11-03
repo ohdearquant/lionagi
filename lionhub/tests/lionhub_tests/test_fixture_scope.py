@@ -1,5 +1,6 @@
 """The repository test configuration also applies to the hub test tree."""
 
+import ast
 import os
 from pathlib import Path
 
@@ -21,3 +22,22 @@ def test_shared_isolation_and_fixtures(test_data_loader):
 
 async def test_shared_async_marker():
     assert True
+
+
+def test_hub_tests_do_not_require_a_separate_absolute_import_root():
+    root = Path(__file__).parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and not node.level:
+                if node.module == "lionhub_tests" or (node.module or "").startswith(
+                    "lionhub_tests."
+                ):
+                    offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+            elif isinstance(node, ast.Import):
+                if any(
+                    alias.name == "lionhub_tests" or alias.name.startswith("lionhub_tests.")
+                    for alias in node.names
+                ):
+                    offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert not offenders, offenders

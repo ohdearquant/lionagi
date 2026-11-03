@@ -46,3 +46,8 @@ uv run pytest lionhub/tests
 
 Some integration tests exercise optional dependencies or local subprocesses.
 Tests that also cover core behavior remain under the repository's `tests/` tree.
+The LionHub tests currently depend on the repository's `tests/` package: they
+share `tests/_shared_conftest.py` and use helpers from `tests/providers/` and
+`tests/mcp/`. Run them from a complete repository checkout with both test trees
+available. A separately distributed LionHub test suite will need those shared
+fixtures and helpers supplied or moved with it.
