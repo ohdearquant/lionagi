@@ -690,9 +690,14 @@ async def kill_one(
         # including absent identity keys, rather than re-reading after signalling.
         if not generation_present:
             if offload_signals:
-                raise _CancelPersistenceError(
-                    entity_type=entity_type, entity_id=entity_id, signal_sent=bool(signal_record)
-                )
+                return {
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "signal": signal_used,
+                    "pid": pid,
+                    "cancel_status": "generation_unavailable",
+                    "cancel_error": "session generation was not available in the snapshot",
+                }
             cancel_status = "unavailable"
             cancel_error = "session generation was not available in the snapshot"
         else:

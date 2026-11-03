@@ -565,7 +565,7 @@ async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"], **effects()}
 
         cancel_status = outcome.get("cancel_status")
-        if cancel_status in {"conflict", "missing", "rejected"}:
+        if cancel_status in {"conflict", "missing", "rejected", "generation_unavailable"}:
             return {
                 "status": "not_stopped",
                 "id": run_id,
@@ -587,7 +587,9 @@ async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         reason = "missing"
     elif after_dict.get("cli_worker_generation") != row_dict.get("cli_worker_generation"):
         reason = "conflict"
-    elif after_dict.get("status") == "cancelled" and cancel_status == "applied":
+    elif after_dict.get("status") == "cancelled" and (
+        cancel_status == "applied" or (cancel_status == "already_terminal" and signal_record)
+    ):
         return {"status": "terminal", "id": run_id, "signal": outcome["signal"]}
     elif after_dict.get("status") in SESSION_TERMINAL_STATUSES:
         return {
