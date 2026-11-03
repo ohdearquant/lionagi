@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Monitor reads the live normalized stream without exposing non-text chunks."""
 
+import errno
 import json
 import time
 import uuid
@@ -176,7 +177,17 @@ async def test_detail_view_reads_the_live_run_and_keeps_legacy_fallback(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("view", ["session", "play"])
 @pytest.mark.parametrize(
-    "kind", ["empty", "dotdot", "traversal", "absolute", "nul", "linked-out", "linked-alias"]
+    "kind",
+    [
+        "empty",
+        "dotdot",
+        "traversal",
+        "absolute",
+        "nul",
+        "linked-out",
+        "linked-alias",
+        "linked-loop",
+    ],
 )
 async def test_present_invalid_or_linked_run_id_never_falls_back(tmp_path, monkeypatch, view, kind):
     db_path = tmp_path / "state.db"
@@ -198,6 +209,7 @@ async def test_present_invalid_or_linked_run_id_never_falls_back(tmp_path, monke
     _write_live_buffer(other_run, branch_id, [{"text": "wrong aliased target"}])
     (runs_root / "link-out").symlink_to(outside, target_is_directory=True)
     (runs_root / "link-alias").symlink_to(other_run, target_is_directory=True)
+    (runs_root / "link-loop").symlink_to("link-loop", target_is_directory=True)
     run_id = {
         "empty": "",
         "dotdot": "..",
@@ -206,6 +218,7 @@ async def test_present_invalid_or_linked_run_id_never_falls_back(tmp_path, monke
         "nul": "bad\x00name",
         "linked-out": "link-out",
         "linked-alias": "link-alias",
+        "linked-loop": "link-loop",
     }[kind]
     async with StateDB(db_path) as db:
         progression = str(uuid.uuid4())
@@ -250,3 +263,17 @@ def test_missing_run_id_uses_session_id_but_invalid_present_id_does_not(tmp_path
     assert monitor._session_run_dir("session", None) == (runs / "session").resolve()
     for invalid in ("", ".", "..", "bad/name", "bad\x00name", 42):
         assert monitor._session_run_dir("session", invalid) is None
+
+
+def test_run_resolution_only_suppresses_symlink_loop_errors(monkeypatch):
+    def fail(error):
+        def resolve(_run_id):
+            raise error
+
+        monkeypatch.setattr(monitor, "_resolved_run_state_dir", resolve)
+
+    fail(OSError(errno.ELOOP, "loop"))
+    assert monitor._session_run_dir("session", "run") is None
+    fail(PermissionError(errno.EACCES, "denied"))
+    with pytest.raises(PermissionError):
+        monitor._session_run_dir("session", "run")

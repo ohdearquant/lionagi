@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -77,6 +77,15 @@ def _buffer_text(value: Any) -> str | None:
     return str.__str__(value) if isinstance(value, str) else None
 
 
+def _buffer_mapping_get(value: Any, key: str) -> Any:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return dict.get(value, key) if isinstance(value, dict) else value.get(key)
+    except Exception:
+        return None
+
+
 async def _append_chunk(buffer_path, chunk) -> None:
     """Append a strict JSON projection, retaining text if serialization fails."""
     payload = None
@@ -104,7 +113,7 @@ async def _append_chunk(buffer_path, chunk) -> None:
                 "serialization_error": failure,
             }
         else:
-            data = payload if type(payload) is dict else {}
+            data = payload if isinstance(payload, Mapping) else {}
             if payload is None:
                 # A failing legacy adapter may still expose its text directly.
                 # Read only these fields and never call its serializer again.
@@ -115,11 +124,11 @@ async def _append_chunk(buffer_path, chunk) -> None:
                         value = None
                     if (value := _buffer_text(value)) is not None:
                         data[name] = value
-            text = _buffer_text(data.get("content"))
+            text = _buffer_text(_buffer_mapping_get(data, "content"))
             if text is None:
-                text = _buffer_text(data.get("text"))
-            if text is None and type(data.get("delta")) is dict:
-                text = _buffer_text(data["delta"].get("text"))
+                text = _buffer_text(_buffer_mapping_get(data, "text"))
+            if text is None:
+                text = _buffer_text(_buffer_mapping_get(_buffer_mapping_get(data, "delta"), "text"))
             text = text or ""
             fallback = {"text": text, "serialization_error": failure}
         line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))

@@ -326,6 +326,39 @@ async def test_legacy_fallback_preserves_text_in_a_legacy_record(tmp_path, paylo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mapping_kind", ["dict-subclass", "mapping"])
+@pytest.mark.parametrize("nested", [False, True], ids=["text", "delta-text"])
+async def test_legacy_mapping_fallback_keeps_text(tmp_path, mapping_kind, nested):
+    from collections import UserDict
+
+    class DictSubclass(dict):
+        pass
+
+    wrap = DictSubclass if mapping_kind == "dict-subclass" else UserDict
+    text = {"delta": wrap({"text": "visible"})} if nested else {"text": "visible"}
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(path, _LegacyChunk(wrap({**text, "bad": object()})))
+    row = json.loads(path.read_text())
+    assert row["text"] == "visible"
+    assert row["serialization_error"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_mapping_fallback_survives_failing_field_access(tmp_path):
+    from collections import UserDict
+
+    class BrokenAccess(UserDict):
+        def get(self, key, default=None):
+            raise ValueError("unreadable")
+
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(path, _LegacyChunk(BrokenAccess(text="visible", bad=object())))
+    row = json.loads(path.read_text())
+    assert row["text"] == ""
+    assert row["serialization_error"]
+
+
+@pytest.mark.asyncio
 async def test_append_marks_an_unserializable_leaf_and_continues(tmp_path):
     class Unserializable:
         def __repr__(self):

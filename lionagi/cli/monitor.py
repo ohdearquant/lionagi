@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import re
@@ -281,7 +282,14 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
 
 def _session_run_dir(session_id: str, run_id: Any) -> Path | None:
     """Resolve the recorded run, using the session ID only for legacy rows."""
-    return _resolved_run_state_dir(session_id if run_id is None else run_id)
+    try:
+        return _resolved_run_state_dir(session_id if run_id is None else run_id)
+    except RuntimeError:
+        return None  # pathlib reports symlink loops as RuntimeError on Python < 3.13.
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+        raise
 
 
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
