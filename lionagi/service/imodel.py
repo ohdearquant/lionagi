@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 from collections.abc import AsyncGenerator, Callable, Mapping
-from contextlib import nullcontext
+from contextlib import aclosing, nullcontext
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from lionagi._errors import CredentialMissingError, InputTokenCapError
 from lionagi.ln import is_coro_func, now_utc
-from lionagi.protocols.generic import Event, EventStatus, Log
+from lionagi.ln.concurrency._compat import BaseExceptionGroup, ExceptionGroup
+from lionagi.protocols.generic import Event, EventStatus, Execution, Log
 from lionagi.protocols.ids import to_uuid
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
@@ -40,6 +42,105 @@ if TYPE_CHECKING:
 
 # A request under this many counted tokens does not calibrate input_token_scale.
 _CALIBRATION_FLOOR = 4_000
+
+
+def _safe_validation_details(error: ValidationError) -> str:
+    """Count validation failures without rendering caller-controlled details."""
+    try:
+        count = ValidationError.error_count(error)
+    except Exception:
+        return "validation failed"
+    label = "error" if count == 1 else "errors"
+    return f"{count} validation {label}"
+
+
+def _sanitize_execution_error(error: Any) -> Any:
+    """Replace validation errors while preserving other errors and group structure."""
+    if isinstance(error, ValidationError):
+        return ValueError(f"API call failed: {_safe_validation_details(error)}")
+    if not isinstance(error, BaseExceptionGroup):
+        return error
+
+    # Preserve an unrelated group exactly, including a cyclic compatibility shim.
+    scanned: set[int] = set()
+    inspect_pending = [error]
+    while inspect_pending:
+        candidate = inspect_pending.pop()
+        if isinstance(candidate, ValidationError):
+            break
+        if isinstance(candidate, BaseExceptionGroup) and id(candidate) not in scanned:
+            scanned.add(id(candidate))
+            inspect_pending.extend(candidate.exceptions)
+    else:
+        return error
+
+    # Walk iteratively: callers may supply groups deeper than Python's call stack.
+    replacements: dict[int, BaseException] = {}
+    active: set[int] = set()
+    results: list[BaseException] = []
+    pending = [(error, False)]
+    while pending:
+        current, expanded = pending.pop()
+        if expanded:
+            count = len(current.exceptions)
+            members = results[-count:] if count else []
+            if count:
+                del results[-count:]
+            active.remove(id(current))
+            if all(new is old for new, old in zip(members, current.exceptions, strict=True)):
+                replacement = current
+            elif hasattr(BaseExceptionGroup, "derive"):
+                replacement = BaseExceptionGroup.derive(current, members)
+            else:
+                group_type = (
+                    ExceptionGroup if isinstance(current, ExceptionGroup) else BaseExceptionGroup
+                )
+                replacement = group_type(current.message, members)
+            replacements[id(current)] = replacement
+            results.append(replacement)
+        elif isinstance(current, ValidationError):
+            results.append(ValueError(f"API call failed: {_safe_validation_details(current)}"))
+        elif not isinstance(current, BaseExceptionGroup):
+            results.append(current)
+        elif id(current) in active:
+            results.append(ValueError("API call failed: cyclic exception group"))
+        elif id(current) in replacements:
+            results.append(replacements[id(current)])
+        else:
+            active.add(id(current))
+            pending.append((current, True))
+            pending.extend((child, False) for child in reversed(current.exceptions))
+    return results[0]
+
+
+class _ValidationSafeExecution(Execution):
+    """Filter validation inputs before generic error recording can inspect them."""
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "error":
+            value = _sanitize_execution_error(value)
+        super().__setattr__(name, value)
+
+    def add_error(self, exc: BaseException) -> None:
+        super().add_error(_sanitize_execution_error(exc))
+
+
+def _accepts_execution_keyword(event_type: type[Event]) -> bool:
+    """Leave strict custom event constructors unchanged."""
+    if event_type.__init__ is HookedEvent.__init__:
+        return True
+    try:
+        parameters = inspect.signature(event_type.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+    explicit = parameters.get("execution")
+    return bool(
+        explicit
+        and explicit.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    )
 
 
 def reported_input_tokens(usage: Any) -> int | None:
@@ -377,6 +478,8 @@ class iModel:  # noqa: N801
             elif create_event_type is APICalling:
                 api_call = self.create_api_calling(**kwargs)
             else:
+                if "execution" not in kwargs and _accepts_execution_keyword(create_event_type):
+                    kwargs["execution"] = _ValidationSafeExecution()
                 api_call = create_event_type(**kwargs)
             if h_ev:
                 h_ev.associated_event_info["event_id"] = str(api_call.id)
@@ -444,6 +547,7 @@ class iModel:  # noqa: N801
 
         try:
             api_call = APICalling(
+                execution=_ValidationSafeExecution(),
                 payload=payload,
                 headers=headers,
                 endpoint=self.endpoint,
@@ -644,6 +748,21 @@ class iModel:  # noqa: N801
             self.provider_metadata["served_model"] = served_model
 
     async def stream(self, api_call=None, **kw) -> AsyncGenerator:
+        """Stream a call, with cleanup exceptions taking precedence over validation refusals.
+
+        Cleanup BaseExceptions outside Exception, including cancellation, propagate unchanged.
+        """
+        validation_details = None
+        try:
+            async with aclosing(self._stream_impl(api_call=api_call, **kw)) as chunks:
+                async for chunk in chunks:
+                    yield chunk
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
+        if validation_details is not None:
+            raise ValueError(f"Failed to stream API call: {validation_details}") from None
+
+    async def _stream_impl(self, api_call=None, **kw) -> AsyncGenerator:
         served_model = None
         # What the stream's events report about the request, for _calibrate_input_scale.
         usage: dict[str, Any] = {}
@@ -665,6 +784,7 @@ class iModel:  # noqa: N801
 
         stream_error = None
         failed = False
+        validation_details = None
         try:
             await self.executor.pile.ainclude(api_call)
             if self.executor.processor is None or self.executor.processor.is_stopped():
@@ -693,6 +813,8 @@ class iModel:  # noqa: N801
                         # surface it after iteration so the caller sees the error.
                         stream_error = _terminal_stream_error(api_call)
                     except Exception as e:
+                        if isinstance(e, ValidationError):
+                            raise
                         if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                             raise
                         raise ValueError(f"Failed to stream API call: {e}") from e
@@ -711,19 +833,31 @@ class iModel:  # noqa: N801
                         yield result if result is not None else i
                     stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
+                    if isinstance(e, ValidationError):
+                        raise
                     if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                         raise
                     raise ValueError(f"Failed to stream API call: {e}") from e
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
         finally:
             # Runs on every exit from the point this generator owns the call: a
             # clean end, a consumer that stops early, cancellation (including
             # while waiting for the concurrency slot), an endpoint failure, and
             # a processor start that raises.
+            if validation_details is not None:
+                try:
+                    raise ValueError(f"Failed to stream API call: {validation_details}") from None
+                finally:
+                    self._store_served_model(api_call, served_model)
+                    self.executor.pile.pop(api_call.id, None)
             self._store_served_model(api_call, served_model)
             # Pop without yielding — yield-in-finally would swallow CancelledError
             # during generator cleanup, breaking anyio.fail_after timeout enforcement.
             self.executor.pile.pop(api_call.id, None)
         if stream_error is not None:
+            if isinstance(stream_error, ValidationError):
+                raise stream_error from None
             if isinstance(stream_error, CredentialMissingError) or self._is_routing_error(
                 stream_error
             ):
@@ -747,6 +881,20 @@ class iModel:  # noqa: N801
         self.input_token_scale = max(self.input_token_scale, reported / counted)
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
+        """Invoke a call, with cleanup exceptions taking precedence over validation refusals.
+
+        Cleanup BaseExceptions outside Exception, including cancellation, propagate unchanged.
+        """
+        validation_details = None
+        try:
+            return await self._invoke_impl(api_call=api_call, **kw)
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
+        if validation_details is not None:
+            raise ValueError(f"Failed to invoke API call: {validation_details}") from None
+
+    async def _invoke_impl(self, api_call: APICalling = None, **kw) -> APICalling:
+        validation_details = None
         try:
             restored_resume = None
             if api_call is None:
@@ -826,16 +974,25 @@ class iModel:  # noqa: N801
             # Preserve typed pre-send refusals instead of hiding them in the generic wrapper.
             raise
         except Exception as e:
-            if self._is_routing_error(e):
-                raise
-            if api_call is not None:
-                self._store_served_model(api_call, None)
-            raise ValueError(f"Failed to invoke API call: {e}") from e
+            if isinstance(e, ValidationError):
+                validation_details = _safe_validation_details(e)
+            else:
+                if self._is_routing_error(e):
+                    raise
+                if api_call is not None:
+                    self._store_served_model(api_call, None)
+                raise ValueError(f"Failed to invoke API call: {e}") from e
         except BaseException:
             # Cancelled (a caller's timeout included) before any response was read.
             if api_call is not None:
                 self._store_served_model(api_call, None)
             raise
+        if validation_details is not None:
+            try:
+                raise ValueError(f"Failed to invoke API call: {validation_details}") from None
+            finally:
+                if api_call is not None:
+                    self._store_served_model(api_call, None)
 
     @property
     def is_cli(self) -> bool:

@@ -852,6 +852,19 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
     assert started == []
 
 
+def _assert_refusal_chain_omits_path(error, path):
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        assert str(path) not in str(current)
+        assert str(path) not in repr(current)
+        pending.extend((current.__cause__, current.__context__))
+
+
 async def test_the_judge_refuses_a_working_directory_that_is_a_symlink_to_itself(
     tmp_path, monkeypatch
 ):
@@ -870,14 +883,18 @@ async def test_the_judge_refuses_a_working_directory_that_is_a_symlink_to_itself
     events: list[tuple] = []
     monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
 
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
+    # Some Python versions resolve a self-loop and then find no directory there.
+    with pytest.raises(
+        ContainmentRefusedError, match=r"working directory: it (cannot be resolved|is unavailable)"
+    ) as refused:
         await engine.judge(run, "e1", "a subject")
+    _assert_refusal_chain_omits_path(refused.value, loop)
     assert started == []
     assert events == []
 
 
 async def test_the_judge_refuses_a_working_directory_that_does_not_exist(tmp_path, monkeypatch):
-    """Same as above for a cwd that is absent: the refusal names the directory."""
+    """Same as above for a cwd that is absent, without naming the directory."""
     import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
@@ -892,8 +909,11 @@ async def test_the_judge_refuses_a_working_directory_that_does_not_exist(tmp_pat
     events: list[tuple] = []
     monkeypatch.setattr(run, "notify", lambda kind, **kw: events.append((kind, kw)))
 
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))):
+    with pytest.raises(
+        ContainmentRefusedError, match="working directory: it is unavailable"
+    ) as refused:
         await engine.judge(run, "e1", "a subject")
+    _assert_refusal_chain_omits_path(refused.value, missing)
     assert started == []
     assert events == []
 
@@ -931,7 +951,7 @@ async def test_an_uncontained_judge_still_reads_an_error_as_a_pass(monkeypatch):
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
 async def test_the_judge_refuses_a_working_directory_it_cannot_enter(tmp_path, monkeypatch):
-    """A cwd with no permissions is refused before any process starts, naming it."""
+    """A cwd with no permissions is refused before any process starts, without naming it."""
     import lionhub.providers.openai.codex as codex_mod
     from lionagi._errors import ContainmentRefusedError
 
@@ -946,10 +966,11 @@ async def test_the_judge_refuses_a_working_directory_it_cannot_enter(tmp_path, m
     monkeypatch.setattr(run, "notify", lambda kind, **kw: None)
     locked.chmod(0o000)
     try:
-        with pytest.raises(ContainmentRefusedError, match=re.escape(str(locked))):
+        with pytest.raises(ContainmentRefusedError, match="cannot list and enter") as refused:
             await engine.judge(run, "e1", "a subject")
     finally:
         locked.chmod(0o755)
+    _assert_refusal_chain_omits_path(refused.value, locked)
     assert started == []
 
 

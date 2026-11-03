@@ -24,7 +24,8 @@ class TestResolveCliWorkspaceCwdValidation:
         bad = tmp_path / "does-not-exist"
         with pytest.raises(ValueError) as exc_info:
             resolve_cli_workspace(bad, None)
-        assert str(bad) in str(exc_info.value)
+        assert "cwd does not exist or is not a directory" in str(exc_info.value)
+        assert str(bad) not in str(exc_info.value)
 
     def test_repo_that_is_a_file_raises(self, tmp_path):
         f = tmp_path / "im-a-file.txt"

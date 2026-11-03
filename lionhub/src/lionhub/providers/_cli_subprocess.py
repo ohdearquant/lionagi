@@ -31,7 +31,12 @@ from lionagi._errors import (
     _ExclusiveMcpSelectionError,
 )
 from lionagi._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
-from lionagi.libs.path_safety import contain_and_resolve, has_traversal
+from lionagi.libs.path_safety import (
+    _path_error_category,
+    _resolve_allow_missing,
+    contain_and_resolve,
+    has_traversal,
+)
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
     SignalGate,
@@ -1808,25 +1813,52 @@ async def ndjson_from_cli(
     )
 
 
+def _resolve_cli_path(path: Path, field_name: str) -> Path:
+    """Resolve a CLI path without retaining a filesystem error that names it."""
+    failure = None
+    try:
+        resolved = _resolve_allow_missing(path)
+    except (ValueError, OSError, RuntimeError) as exc:
+        failure = _path_error_category(exc)
+    if failure is not None:
+        raise failure(f"{field_name} cannot be resolved") from None
+    return resolved
+
+
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     if repo is None:
         repo = Path.cwd()
     # Fail here, before any caller spawns into a nonexistent cwd — every
     # CLI-backed provider's spawn path shares this helper.
-    if not repo.is_dir():
-        raise ValueError(f"cwd does not exist or is not a directory: {repo}")
+    inspection_failure = None
+    try:
+        is_directory = repo.is_dir()
+    except (ValueError, OSError, RuntimeError) as exc:
+        inspection_failure = _path_error_category(exc)
+    if inspection_failure is not None:
+        raise inspection_failure("cwd cannot be inspected") from None
+    if not is_directory:
+        raise ValueError("cwd does not exist or is not a directory")
     if not workspace:
         return repo
 
     ws_path = Path(workspace)
 
     if ws_path.is_absolute():
-        raise ValueError(f"Workspace path must be relative, got absolute: {workspace}")
+        raise ValueError("Workspace path must be relative, got absolute path")
 
     if has_traversal(ws_path):
-        raise ValueError(f"Directory traversal detected in workspace path: {workspace}")
+        raise ValueError("Directory traversal detected in workspace path")
 
-    return contain_and_resolve(ws_path, repo)
+    failure = None
+    try:
+        _resolve_allow_missing(repo / ws_path)
+        resolved = contain_and_resolve(ws_path, repo)
+    except (ValueError, OSError, RuntimeError) as exc:
+        failure = _path_error_category(exc)
+    if failure is not None:
+        raise failure("Workspace path cannot be resolved within repository bounds") from None
+    return resolved
 
 
 def validate_message_prompt(data: dict) -> dict:

@@ -791,20 +791,21 @@ def test_a_root_profile_key_that_is_not_a_string_is_named_by_its_type(tmp_path, 
 
 def test_containment_refuses_a_working_directory_that_is_a_symlink_to_itself(tmp_path):
     """The config walk cannot resolve such a directory, so it cannot read the configs
-    codex would apply. The refusal names the directory and the reason it cannot be used."""
+    codex would apply. The refusal gives the reason without naming the directory."""
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
     # Python before 3.13 cannot resolve the loop; 3.13 and later resolve it and find no
-    # directory there. Either way the refusal names the directory.
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(loop))):
+    # directory there. Either way the refusal omits the directory.
+    with pytest.raises(ContainmentRefusedError, match="cannot use the working directory") as raised:
         CodexCodeRequest(prompt="hi", repo=loop, contain_account_integrations=True)
+    assert str(loop) not in str(raised.value)
 
 
 def test_containment_refuses_a_working_directory_that_does_not_exist(tmp_path):
     missing = tmp_path / "missing"
-    with pytest.raises(ContainmentRefusedError, match=re.escape(str(missing))) as raised:
+    with pytest.raises(ContainmentRefusedError, match="working directory.*unavailable") as raised:
         CodexCodeRequest(prompt="hi", repo=missing, contain_account_integrations=True)
-    assert "does not exist or is not a directory" in str(raised.value)
+    assert str(missing) not in str(raised.value)
 
 
 def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp_path):
@@ -817,7 +818,8 @@ def test_without_containment_an_unusable_working_directory_is_left_as_it_was(tmp
         looped = CodexCodeRequest(prompt="hi", repo=loop)
     except RuntimeError as exc:
         # Python before 3.13 raises while resolving the loop, as it did before containment.
-        assert "Symlink loop" in str(exc)
+        assert "working directory cannot be resolved" in str(exc)
+        assert str(loop) not in str(exc)
     else:
         with pytest.raises(ValueError, match="does not exist or is not a directory"):
             looped.as_cmd_args()
@@ -846,13 +848,16 @@ def _unusable_directory(tmp_path, kind):
 @pytest.mark.parametrize("kind", ["no-permissions", "read-without-search", "child-of-locked"])
 def test_containment_refuses_a_working_directory_it_cannot_enter(tmp_path, kind):
     """Without permission to list and enter the directory the walk cannot read the
-    configs codex would apply, so containment refuses it, naming the directory."""
+    configs codex would apply, so containment refuses it without naming the directory."""
     target, modes = _unusable_directory(tmp_path, kind)
     for path, mode in modes:
         path.chmod(mode)
     try:
-        with pytest.raises(ContainmentRefusedError, match=re.escape(str(target))):
+        with pytest.raises(
+            ContainmentRefusedError, match="cannot use the working directory"
+        ) as raised:
             CodexCodeRequest(prompt="hi", repo=target, contain_account_integrations=True)
+        assert str(target) not in str(raised.value)
     finally:
         for path, _ in modes:
             path.chmod(0o755)

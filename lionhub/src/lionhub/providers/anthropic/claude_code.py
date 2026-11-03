@@ -12,7 +12,7 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from lionagi import ln
@@ -34,6 +34,7 @@ from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
+    _resolve_cli_path,
     build_declarative_cli_args,
     declarative_cli_flags,
     discover_cli,
@@ -178,6 +179,8 @@ def _unencodable_claude_text(value: str, what: str) -> ValueError | None:
 
 class ClaudeCodeRequest(BaseModel):
     """Configuration + prompt for a Claude Code CLI invocation."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Claude Code")
@@ -484,9 +487,19 @@ class ClaudeCodeRequest(BaseModel):
         mode="before",
     )
     @classmethod
-    def _validate_path_fields(cls, v):
+    def _validate_path_fields(cls, v, info: ValidationInfo):
         if v is None:
             return v
+        if info.field_name in {"mcp_config", "settings"} and isinstance(v, str):
+            if str.__str__(v).lstrip().startswith("{"):
+                invalid = False
+                try:
+                    json.loads(str.__str__(v))
+                except (ValueError, RecursionError):
+                    invalid = True
+                if invalid:
+                    raise ValueError(f"{info.field_name} contains invalid inline JSON")
+                return v
         check_path_safe(str(v), "system_prompt_file/append_system_prompt_file/mcp_config/settings")
         return v
 
@@ -567,27 +580,32 @@ class ClaudeCodeRequest(BaseModel):
 
         # Workspace bounds check for bypassPermissions
         if self.permission_mode == "bypassPermissions":
-            repo_resolved = self.repo.resolve()
-            cwd_resolved = self.cwd().resolve()
+            repo_resolved = _resolve_cli_path(self.repo, "working directory")
+            cwd_resolved = _resolve_cli_path(self.cwd(), "workspace")
+            outside = False
             try:
                 cwd_resolved.relative_to(repo_resolved)
             except ValueError:
+                outside = True
+            if outside:
                 raise ValueError(
-                    f"With bypassPermissions, workspace must be within "
-                    f"repository bounds. Repository: {repo_resolved}, "
-                    f"Workspace: {cwd_resolved}"
+                    "With bypassPermissions, workspace must be within repository bounds."
                 ) from None
 
         # Repo-containment on write-target path fields; add_dir is excluded
         # (read-only grant, validated separately) — see docs/internals/runtime.md.
-        repo_root = self.repo.resolve()
+        repo_root = _resolve_cli_path(self.repo, "working directory")
         for fname, fval in (
             ("system_prompt_file", self.system_prompt_file),
             ("append_system_prompt_file", self.append_system_prompt_file),
             ("mcp_config", self.mcp_config),
             ("settings", self.settings),
         ):
-            if fval is not None:
+            if fval is not None and not (
+                fname in {"mcp_config", "settings"}
+                and isinstance(fval, str)
+                and str.__str__(fval).lstrip().startswith("{")
+            ):
                 contain_paths_in_repo([str(fval)], repo_root, fname)
 
         return self

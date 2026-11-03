@@ -15,7 +15,7 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lionagi._errors import CLIInputRefusedError
 from lionagi._provider_errors import classify_provider_error
@@ -32,6 +32,7 @@ from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
     _INHERIT_STDIN,
+    _resolve_cli_path,
     build_declarative_cli_args,
     discover_cli,
     ndjson_from_cli,
@@ -81,6 +82,8 @@ _PI_MODEL_PROVIDER_MAP: list[tuple[str, str, bool]] = [
 
 class PiCodeRequest(BaseModel):
     """Configuration + prompt for a Pi coding agent CLI invocation."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Pi CLI")
@@ -214,7 +217,7 @@ class PiCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _contain_file_args_in_repo(self) -> PiCodeRequest:
-        repo_root = self.repo.resolve()
+        repo_root = _resolve_cli_path(self.repo, "working directory")
         contain_paths_in_repo(self.file_args, repo_root, "file_args", strip_at=True)
         if self.extension:
             contain_paths_in_repo(self.extension, repo_root, "extension")
