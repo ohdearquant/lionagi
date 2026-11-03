@@ -1005,6 +1005,16 @@ async def test_reconciled_legacy_child_may_refire_root_chain(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_value", ["old", ["old"], 1, True, [], 0])
+async def test_legacy_non_object_chain_values_round_trip_via_sqlite(tmp_path, legacy_value):
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_schedule(_schedule_row("legacy-shape", on_fail=legacy_value))
+        stored = await db.get_schedule("legacy-shape")
+    assert stored["on_fail"] == legacy_value
+    assert type(stored["on_fail"]) is type(legacy_value)
+
+
+@pytest.mark.asyncio
 async def test_reconcile_leaves_row_running_when_session_still_nonterminal(tmp_path, monkeypatch):
     """Positive control for the above: when the linked session has NOT
     reached a terminal status, the row must be left exactly as-is -- unknown

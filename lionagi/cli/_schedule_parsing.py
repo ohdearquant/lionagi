@@ -290,7 +290,7 @@ def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
             if previous_action is not None and field not in previous_action:
                 label += " (inherited)"
             if not isinstance(action, dict):
-                return f"{label}: must be a JSON object, got {type(action).__name__}"
+                return f"{label}: malformed chain must be an object; clear this chain to proceed"
             err = _validate_chain_kinds(action, label, parent["action_kind"])
             if err:
                 return err

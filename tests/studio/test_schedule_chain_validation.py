@@ -629,6 +629,36 @@ def test_modified_chain_still_requires_valid_structure():
     updated.update_schedule.assert_not_called()
 
 
+@pytest.mark.parametrize("legacy_value", ["old", ["old"], 1, True])
+def test_clearing_other_chain_with_non_object_legacy_sibling(legacy_value):
+    stored = _existing(on_fail=legacy_value)
+    updated, error = _run_update({"on_success": None}, existing=stored)
+    assert error is not None
+    assert "on_fail" in str(error) and "malformed" in str(error) and "clear" in str(error)
+    assert "old" not in str(error)
+    updated.update_schedule.assert_not_called()
+
+    updated, error = _run_update({"action_kind": "flow"}, existing=stored)
+    assert error is not None and "malformed" in str(error) and "clear" in str(error)
+    updated.update_schedule.assert_not_called()
+
+    updated, error = _run_update({"on_fail": None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", on_fail=None)
+
+    updated, error = _run_update({"description": "changed"}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", description="changed")
+
+
+@pytest.mark.parametrize("legacy_value", [None, "", [], 0, False])
+def test_clearing_other_chain_with_falsy_non_object_sibling(legacy_value):
+    stored = _existing(on_fail=legacy_value)
+    updated, error = _run_update({"on_success": None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", on_success=None)
+
+
 def test_edit_still_checks_legacy_sibling_reachable_kind():
     stored = _existing(
         action_kind="command",
