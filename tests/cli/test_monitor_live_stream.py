@@ -90,6 +90,19 @@ def test_stream_tail_keeps_old_reader_behavior_for_legacy_type_names(tmp_path):
     assert monitor._stream_tail(tmp_path / "run", "branch", n_lines=20) == old_reader_output
 
 
+def test_stream_tail_waits_for_a_newline_and_keeps_terminated_malformed_fallback(tmp_path):
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    path = stream / "branch.buffer.jsonl"
+    partial = '{"_lionagi_stream_chunk":true,"type":"thinking","content":"private'
+    path.write_text("malformed legacy line\n" + partial)
+    assert monitor._stream_tail(tmp_path, "branch") == ["malformed legacy line"]
+    path.write_text("malformed legacy line\n" + partial + '"}\n')
+    assert monitor._stream_tail(tmp_path, "branch") == ["malformed legacy line"]
+    path.write_text('{"text":"not yet complete"}')
+    assert monitor._stream_tail(tmp_path, "branch") == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("view", ["session", "play"])
 @pytest.mark.parametrize("legacy", [False, True], ids=["distinct-run-id", "legacy-no-run-id"])

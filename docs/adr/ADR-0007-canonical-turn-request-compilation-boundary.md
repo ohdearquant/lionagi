@@ -568,7 +568,7 @@ lines:
   one more block (`:232-233`, `:529-530`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
-  and render per session (`lionagi/cli/monitor.py:687-698`), and `branch.last_context_report`
+  and render per session (`lionagi/cli/monitor.py:689-700`), and `branch.last_context_report`
   exposes one turn's names (`lionagi/session/branch.py:298-310`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;

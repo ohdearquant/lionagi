@@ -300,8 +300,10 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     try:
         import json as _json
 
-        lines = buf_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        tail = lines[-n_lines:]
+        data = buf_path.read_text(encoding="utf-8", errors="replace")
+        tail = data.splitlines()[-n_lines:]
+        if data and not data.endswith("\n"):
+            tail = tail[:-1]
         texts: list[str] = []
         for line in tail:
             try:
