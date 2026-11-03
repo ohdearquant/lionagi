@@ -19,6 +19,7 @@ import pydantic
 import pytest
 
 from lionagi._errors import CLIInputRefusedError
+from lionhub.providers._cli_subprocess import CLI_ARGUMENT_MAX_BYTES as ARGUMENT_MAX_BYTES
 from lionhub.providers.openai import codex as codex_mod
 from lionhub.providers.openai.codex import (
     CODEX_MAX_TURN_INPUT_CHARS,
@@ -32,7 +33,6 @@ try:
 except ModuleNotFoundError:  # Python 3.10 has no tomllib
     tomllib = None  # type: ignore[assignment]
 
-ARGUMENT_MAX_BYTES = codex_mod._CLI_ARGUMENT_MAX_BYTES
 # developer_instructions=<system prompt> is one argument; the prefix counts toward it, and
 # the prompt is written as a TOML string, so its two quotes do too.
 PREFIX = len("developer_instructions=")
