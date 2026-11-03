@@ -26,6 +26,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.session_naming import resolve_display_name
 
 from . import _common
@@ -473,7 +474,7 @@ async def _await_deferred_cancel(operation):
     cancelled = None
     while not task.done():
         try:
-            await asyncio.shield(task)
+            await shield_quietly(task)
         except asyncio.CancelledError as exc:
             if task.cancelled():
                 raise
