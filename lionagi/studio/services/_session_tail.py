@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from lionagi.ln.concurrency import CancelScope, Event, ExceptionGroup, Lock, move_on_after, sleep
+from lionagi.ln.concurrency.errors import shield_quietly
 
 from ._db import open_db, store_path
 
@@ -363,7 +364,7 @@ class SessionTailRegistry:
             tail = self.tails.get(session_id)
             if tail is not None and tail.closing and tail.task is not None:
                 try:
-                    await asyncio.shield(tail.task)
+                    await shield_quietly(tail.task)
                 except StreamResyncError:
                     raise
                 except Exception as error:

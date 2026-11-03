@@ -25,6 +25,7 @@ from lionagi.ln import (
 )
 from lionagi.ln._proc import env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
+from lionagi.ln.concurrency.errors import shield_quietly
 
 __all__ = (
     "OneNameLookup",
@@ -287,19 +288,23 @@ async def _await_cleanup(operation: Awaitable[None]) -> None:
     # retaining a cancellation that arrives after cleanup has started.
     cleanup = asyncio.ensure_future(operation)
     try:
-        await asyncio.shield(cleanup)
+        await shield_quietly(cleanup)
     except asyncio.CancelledError:
         with CancelScope(shield=True):
             while not cleanup.done():
                 try:
-                    await asyncio.shield(cleanup)
+                    await shield_quietly(cleanup)
                 except asyncio.CancelledError:
                     continue
                 except Exception:  # noqa: BLE001 -- preserve the caller's cancellation
                     break
-        # A cleanup failure must not replace the caller's cancellation.
-        if not cleanup.cancelled():
-            cleanup.exception()
+        # A cleanup failure must not replace the caller's cancellation. It is reported by type
+        # only: the message can carry the lookup command's output.
+        if not cleanup.cancelled() and cleanup.exception() is not None:
+            logger.warning(
+                "secret lookup cleanup failed after cancellation (%s)",
+                type(cleanup.exception()).__name__,
+            )
         raise
 
 
@@ -392,7 +397,8 @@ async def lookup_one_name(
     The child gets ``env`` (the caller removes what it must not see) and the same
     timeout, process-group cleanup and cancellation handling as the CLI fill.
     Unlike that path the output is returned unstripped and undecoded, and
-    nothing about the command, its output or its exceptions is logged.
+    nothing about the command or its output is logged; an exception is named
+    by its type alone.
     """
     if name not in lookup.names:
         raise ValueError("name is not declared for lookup")

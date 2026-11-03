@@ -29,6 +29,7 @@ from lionagi.ln.concurrency import (
     move_on_after,
     sleep,
 )
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 from lionhub.orchestration import normalize_dep_indices, plan, role_node_builder
@@ -1727,7 +1728,7 @@ async def _execute_dag(
         # scope or a direct cancel(), reaches only this await and not the drain.
         drain = _asyncio.ensure_future(_drain())
         try:
-            await _asyncio.shield(drain)
+            await shield_quietly(drain)
         except _asyncio.CancelledError as exc:
             late_cancel = exc
             # Links already waiting out their retry budget get the grace period from now on.
@@ -1744,7 +1745,7 @@ async def _execute_dag(
             with CancelScope(shield=True):
                 while not drain.done():
                     with contextlib.suppress(_asyncio.CancelledError):
-                        await _asyncio.shield(drain)
+                        await shield_quietly(drain)
         if not drain.cancelled() and drain.exception() is not None:
             logger.warning("observer write drain failed", exc_info=drain.exception())
         if late_cancel is not None:

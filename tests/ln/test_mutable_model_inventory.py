@@ -209,7 +209,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.messages.message:198:13": "a render-input field set by name",
     "lionhub.providers.anthropic.claude_code:1125:17": "a runtime field copied by name",
     "lionagi.service.connections.endpoint_config:258:17": "a config key set by name",
-    "lionagi.service.connections.mcp_wrapper:86:9": "a probe attribute set on an exception",
+    "lionagi.service.connections.mcp_wrapper:87:9": "a probe attribute set on an exception",
     "lionagi.state.compat:1702:13": (
         "a frozen dataclass folding its own string fields in __post_init__"
     ),

@@ -21,6 +21,7 @@ from typing import Any, Literal, TypeVar
 from anyio.lowlevel import checkpoint_if_cancelled
 
 from .concurrency import move_on_after, shield, sleep
+from .concurrency.errors import shield_quietly
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -1347,7 +1348,7 @@ async def communicate_in_process_group(
         # child's group. The done-callback kills the group once the handle arrives.
         spawn = asyncio.ensure_future(_spawn_in_group(argv, child_env, group_marker))
         try:
-            proc, leader_created = await asyncio.shield(spawn)
+            proc, leader_created = await shield_quietly(spawn)
         except BaseException:
             spawn.add_done_callback(partial(_end_abandoned_spawn, group_marker))
             raise
