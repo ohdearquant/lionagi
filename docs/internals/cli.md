@@ -333,7 +333,13 @@ choice — the budget is still enforced on these ops, they're just never told
 about it, so this case logs a warning and returns no preambles rather than
 inventing a value.
 
-**`_hand_mcp_servers`** — the orchestrator is handed the set the run resolved.
+**`_hand_mcp_servers`** — the orchestrator is handed the set the run resolved,
+under the rule a single agent follows: a set named with `--mcp-config`, or an
+empty one (`--no-mcp-config`, or a named config listing no servers), is its whole
+set, so a Claude orchestrator is run with `--strict-mcp-config` and a codex one
+loads none of the servers its own config declares outside it (see the codex
+paragraph below for how), while a set found only by the `.mcp.json` lookup is
+added to what its CLI discovers. With no set resolved it is handed nothing.
 When the run resolved a set, leaf workers, nodes spawned while the flow runs
 and the fanout synthesis branch are handed an exact set: when the run's set
 came from discovery, lionagi's own job-control server (`li mcp`, `python -m
@@ -368,7 +374,8 @@ so set it in the worker's `env` or in this process's environment. A
 `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an absolute
 path is refused before either read or any process starts, from either
 environment. A worker therefore has none of the servers its CLI would load
-from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them.
+from `$CODEX_HOME/config.toml`, a withheld one included; an orchestrator handed a
+discovered set, or no set, keeps them.
 A Claude worker is not isolated here and keeps its settings sources, as an
 interactive run does, unless its role sets `contain_user_settings`
 (`_contain_claude_worker`): then the CLI loads no settings files for it, so the

@@ -264,9 +264,9 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1672)
+        _line("lionagi/cli/orchestrate/_orchestration.py", 1680)
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1708)
+    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1716)
     assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2089)
 
 

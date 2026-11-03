@@ -1108,7 +1108,15 @@ async def setup_orchestration(
         tool_settings=_profile_tool_settings(orc_profile),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
-    _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
+    # The orchestrator takes the run's set as a single agent does: a set the caller
+    # named with --mcp-config, or an empty one, is its whole set, so the servers its own
+    # CLI config declares are left out; a set only found by the .mcp.json lookup joins them.
+    _hand_mcp_servers(
+        orc_imodel,
+        run_mcp_servers,
+        label="orchestrator",
+        exclusive=not run_mcp_servers or mcp_resolution.explicit,
+    )
     effort_requested = effort is not None or parse_model_spec(model_spec).effort is not None
     if not effort_requested and orc_imodel.endpoint.config.kwargs.get("ignore_user_config"):
         # An empty set left the orchestrator loading no user config, so the effort
