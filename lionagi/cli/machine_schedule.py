@@ -35,7 +35,7 @@ _RUNS_LIMIT_MAX = 200
 
 
 def _studio_url() -> str:
-    from lionagi.studio.cli import _base_url
+    from lionagi.cli._schedule_parsing import _base_url
 
     return _base_url()
 

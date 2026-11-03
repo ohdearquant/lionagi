@@ -15,6 +15,7 @@ import contextlib
 import ipaddress
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,59 @@ from typing import Any
 from lionagi._log_channels import warn
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.ln import now_utc
+
+_warned_api_suffix = False
+
+
+def _url_authority(host: str) -> str:
+    """*host* as the authority of a URL: something a client can connect to.
+
+    An unspecified address (`0.0.0.0`, `::`) names no host a client opens, so a
+    URL built on it is one the daemon refuses as a Host: it maps to the loopback
+    address of the same family. An IPv6 literal is bracketed, or its own colons
+    read as the port separator and the URL fails to parse. Anything else is left
+    as the caller wrote it.
+
+    Every value is read through `normalize_host` first, so a URL is built from the
+    address the value names rather than from its spelling: a blank value is a URL
+    with no host at all (`http://:8765` does not even parse), `[localhost]` is a
+    bracketed name, and an IPv4-mapped address is the IPv4 address a client
+    connects to. The authority here is also the Host the URL sends, so each of
+    these has to be one the daemon's Host guard admits under the same value.
+    """
+    normalized = normalize_host(host)
+    if not normalized:
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
+    return f"[{normalized}]" if address.version == 6 else normalized
+
+
+def _base_url() -> str:
+    if url := os.environ.get("LIONAGI_STUDIO_URL"):
+        url = url.rstrip("/")
+        # Endpoint paths below add /api themselves; strip a base URL that
+        # already carries it to avoid hitting /api/api/... and 404ing.
+        if url.endswith("/api"):
+            url = url.removesuffix("/api")
+            global _warned_api_suffix
+            if not _warned_api_suffix:
+                _warned_api_suffix = True
+                warn(
+                    f"LIONAGI_STUDIO_URL ends with /api; using {url} as the Studio "
+                    "root because endpoint paths add /api themselves. If your proxy "
+                    "prefix intentionally ends in /api, point LIONAGI_STUDIO_URL at "
+                    "the Studio root instead."
+                )
+        return url
+    host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
+    port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
+    return f"http://{_url_authority(host)}:{port}"
+
 
 _MAX_CHAIN_DEPTH = 10
 
