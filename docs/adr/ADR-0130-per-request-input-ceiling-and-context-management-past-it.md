@@ -114,7 +114,7 @@ renders branch history for every turn and does not resume a Codex thread
 (`lionagi/providers/openai/codex.py:2801-2806`). Today no resuming adapter makes
 that statement: the Claude Code adapter yields only its terminal `result` usage, a total
 whenever the session ran more than one request. The run attaches that metadata to an
-`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:672-694`),
+`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:672-691`),
 although it separately accumulates usage and passes it to `API_POST_CALL` even without a text
 response (`lionagi/operations/run/run.py:850-855,959-967`). The Gemini CLI path reports one
 summary per invocation. Landing step 2 makes the Claude Code adapter report the input count of the
