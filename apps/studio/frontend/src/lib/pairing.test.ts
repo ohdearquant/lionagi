@@ -461,7 +461,7 @@ describe("a bearer kept across reloads", () => {
 
     expect(pairedBearer(BASE)).toBe("launch-bearer");
     expect(pairedBearer(OTHER)).toBeUndefined();
-    expect(() => forgetPairedBearer("launch-bearer")).not.toThrow();
+    expect(() => forgetPairedBearer("launch-bearer", BASE)).not.toThrow();
     expect(pairedBearer(BASE)).toBeUndefined();
   });
 
@@ -492,7 +492,7 @@ describe("a bearer kept across reloads", () => {
   it("forgets the bearer from memory and from storage", async () => {
     await pair();
 
-    forgetPairedBearer("launch-bearer");
+    forgetPairedBearer("launch-bearer", BASE);
 
     expect(storage.getItem(BEARER_KEY)).toBeNull();
     expect(pairedBearer(BASE)).toBeUndefined();
@@ -506,7 +506,7 @@ describe("a bearer kept across reloads", () => {
       JSON.stringify({ base: BASE, token: "second-bearer", token_source: "launch" }),
     );
 
-    forgetPairedBearer("first-bearer");
+    forgetPairedBearer("first-bearer", BASE);
 
     expect(pairedBearer(BASE)).toBe("second-bearer");
     expect((await reload()).pairedBearer(BASE)).toBe("second-bearer");
@@ -515,7 +515,7 @@ describe("a bearer kept across reloads", () => {
   it("keeps the bearer this load paired with when an older one is refused", async () => {
     await pair("current-bearer");
 
-    forgetPairedBearer("older-bearer");
+    forgetPairedBearer("older-bearer", BASE);
 
     expect(pairedBearer(BASE)).toBe("current-bearer");
     expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
@@ -535,7 +535,7 @@ describe("a bearer kept across reloads", () => {
     );
     await redeemPairingCode(BASE);
 
-    forgetPairedBearer("launch-bearer");
+    forgetPairedBearer("launch-bearer", BASE);
 
     expect(pairedBearer(BASE)).toBeUndefined();
     expect(pairedDecisionToken(BASE)).toBe("decision-capability");
@@ -577,7 +577,7 @@ describe("a bearer kept across reloads", () => {
 
   it("forgets a session-only configured token after refusal", async () => {
     await pairAnswering({ token: "configured-token", token_source: "configured" });
-    forgetPairedBearer("configured-token");
+    forgetPairedBearer("configured-token", BASE);
     expect(storage.getItem(BEARER_KEY)).toBeNull();
     expect(pairedBearer(BASE)).toBeUndefined();
     expect((await reload()).storedBearerToCheck(BASE)).toBeUndefined();

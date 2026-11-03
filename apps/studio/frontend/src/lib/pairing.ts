@@ -28,6 +28,7 @@ const BEARER_STORAGE_KEY = "studio.pairedBearer";
 export const PAIRING_TIMEOUT_MS = 15_000;
 
 type Paired = { base: string; token: string };
+type BearerToStore = Paired & { token_source?: unknown };
 
 let pendingCode: string | undefined;
 let redeeming: { base: string; result: Promise<PairingResult> } | undefined;
@@ -104,20 +105,28 @@ function readStoredBearer(storage: "localStorage" | "sessionStorage"): Paired | 
 
 function writeStoredBearer(
   storage: "localStorage" | "sessionStorage",
-  value: Paired | undefined,
+  value: BearerToStore | undefined,
 ): void {
+  if (storage === "localStorage" && value !== undefined && value.token_source !== "launch") return;
   if (typeof window === "undefined") return;
   try {
     if (value === undefined) window[storage].removeItem(BEARER_STORAGE_KEY);
     else
       window[storage].setItem(
         BEARER_STORAGE_KEY,
-        JSON.stringify(storage === "localStorage" ? { ...value, token_source: "launch" } : value),
+        JSON.stringify(
+          storage === "localStorage"
+            ? { base: value.base, token: value.token, token_source: value.token_source }
+            : { base: value.base, token: value.token },
+        ),
       );
   } catch {
     // Storage unavailable: the bearer lives for this page load only.
   }
 }
+
+// Internal test seam for the storage guard.
+export { writeStoredBearer as writeStoredBearerForTests };
 
 // Remove an unmarked bearer even when this page has no request to authenticate.
 readStoredBearer("localStorage");
@@ -214,7 +223,7 @@ async function sendPairingCode(
   const destination = tokenSource === "launch" ? "localStorage" : "sessionStorage";
   const other = destination === "localStorage" ? "sessionStorage" : "localStorage";
   if (readStoredBearer(other)?.base === apiBase) writeStoredBearer(other, undefined);
-  writeStoredBearer(destination, paired);
+  writeStoredBearer(destination, { ...paired, token_source: tokenSource });
   writeDecisionCapability(
     typeof decisionToken === "string" && decisionToken
       ? { base: apiBase, token: decisionToken }
@@ -238,7 +247,7 @@ export function pairedBearer(apiBase: string): string | undefined {
 
 /**
  * The bearer an earlier load stored for exactly this API base, when this load
- * has not paired: the one the gate checks with the daemon before the app mounts.
+ * has not paired with that base. The gate checks it before the app mounts.
  */
 export function storedBearerToCheck(apiBase: string): string | undefined {
   if (paired?.base === apiBase) return undefined;
@@ -251,9 +260,9 @@ export function storedBearerToCheck(apiBase: string): string | undefined {
  * stored since, or this load paired with since, is kept. The decision
  * capability is left alone.
  */
-export function forgetPairedBearer(refused: string, apiBase?: string): void {
+export function forgetPairedBearer(refused: string, apiBase: string): void {
   const matches = (value: Paired | undefined) =>
-    value?.token === refused && (apiBase === undefined || value.base === apiBase);
+    value?.token === refused && value.base === apiBase;
   if (matches(paired)) paired = undefined;
   for (const storage of ["localStorage", "sessionStorage"] as const) {
     if (matches(readStoredBearer(storage))) writeStoredBearer(storage, undefined);

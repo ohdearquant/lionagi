@@ -82,6 +82,21 @@ describe("pairing bearer storage", () => {
     expect((await reload()).storedBearerToCheck(BASE)).toBe("launch");
   });
 
+  it.each(["configured", undefined, "other"])(
+    "refuses to write source %s to local storage even if asked directly",
+    async (token_source) => {
+      const pairing = await reload();
+      const localWrite = vi.spyOn(local, "setItem");
+      pairing.writeStoredBearerForTests("localStorage", {
+        base: BASE,
+        token: "configured-secret",
+        token_source,
+      });
+      expect(localWrite).not.toHaveBeenCalled();
+      expect(local.getItem(KEY)).toBeNull();
+    },
+  );
+
   it("removes legacy local records at module load and never offers their bearer", async () => {
     local.setItem(KEY, JSON.stringify({ base: BASE, token: "old-credential" }));
     const pairing = await reload();
@@ -108,7 +123,7 @@ describe("pairing bearer storage", () => {
   it("does not let a late refusal remove a newer session token", async () => {
     const pairing = await pair({ token: "old", token_source: "configured" });
     await pair({ token: "new", token_source: "configured" });
-    pairing.forgetPairedBearer("old");
+    pairing.forgetPairedBearer("old", BASE);
     expect(pairing.pairedBearer(BASE)).toBe("new");
     expect((await reload()).pairedBearer(BASE)).toBe("new");
   });
