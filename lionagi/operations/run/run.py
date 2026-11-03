@@ -27,6 +27,8 @@ from lionagi.protocols.messages import (
 )
 from lionagi.service._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
+from lionagi.service.connections import AgenticEndpoint
+from lionagi.service.connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
@@ -336,6 +338,100 @@ async def _stream_with_liveness(
             return
 
 
+async def _stream_resending_unheld_session(
+    model,
+    kw: dict,
+    stream_deadline: float | None,
+    liveness_timeout: float | None,
+    api_call_holder: list,
+    *,
+    idle_timeout: float | None = None,
+) -> AsyncGenerator:
+    """``_stream_with_liveness``, with one more send for a restored session the CLI does not hold.
+
+    A turn that resumes a session carries only its new instruction. A branch restored from a
+    snapshot resumes the id the snapshot stored, which no stream in this process has reported,
+    and the CLI keeps its sessions on its own disk, which a saved branch outlives: it can refuse
+    that id before producing any output. The branch still holds the whole history in
+    ``kw["messages"]``, so the turn is sent once more with no id and that history. The endpoint
+    drops the refused id, so the session the CLI starts for the second send, which its first
+    event reports, is the one later turns resume. A refusal of an id a stream in this process
+    reported is raised as it is, and so is any other failure and a failure of the second send.
+
+    While the first send can still be refused, its chunks are held until the first one that is
+    neither a usage ``result`` nor an ``error``, then handed out in order. A refusal discards
+    them, so nothing of the refused send reaches the caller.
+    """
+    endpoint = model.endpoint
+    # The id the turn resumes must be the one the model holds, which run() sets ``kw["resume"]``
+    # from, and no stream in this process may have reported it.
+    restored = (
+        isinstance(endpoint, AgenticEndpoint)
+        and kw.get("resume") is not None
+        and endpoint.reported_session_id is None
+        and model.provider_session_id == kw["resume"]
+    )
+    for attempt in range(2):
+        holding = attempt == 0 and restored
+        held: list = []
+        stream = _stream_with_liveness(
+            model,
+            kw,
+            stream_deadline,
+            liveness_timeout,
+            api_call_holder,
+            idle_timeout=idle_timeout,
+        )
+        refused = False
+        try:
+            async for chunk in stream:
+                if holding:
+                    if chunk.type == "error" and _UNHELD_SESSION_TEXT in str(chunk.content).lower():
+                        refused = True
+                        break
+                    held.append(chunk)
+                    if chunk.type in ("result", "error"):
+                        continue
+                    holding = False
+                    while held:
+                        yield held.pop(0)
+                    continue
+                yield chunk
+        except Exception as exc:
+            if not (holding and _UNHELD_SESSION_TEXT in str(exc).lower()):
+                # Not a refusal: what the send produced before it failed is still its output.
+                while held:
+                    yield held.pop(0)
+                raise
+            refused = True
+        finally:
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await stream.aclose()
+            except Exception as close_exc:
+                logger.debug("run: resend stream.aclose() raised during cleanup: %r", close_exc)
+            except BaseException as close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: resend stream.aclose() raised %r while another exception was "
+                    "already propagating; suppressing the secondary cleanup failure",
+                    close_exc,
+                )
+        if not refused:
+            # The send ended with only result and error chunks held.
+            while held:
+                yield held.pop(0)
+            return
+        logger.warning(
+            "run: the CLI holds no session for the saved id; sending the turn again with the "
+            "whole history"
+        )
+        kw.pop("resume", None)
+        endpoint.session_id = None
+        api_call_holder.clear()
+
+
 # Result-chunk metadata fields some CLI providers (codex) emit as a per-turn
 # delta rather than a running total; providers emitting one result chunk per
 # call sum correctly here too since there's nothing else to add.
@@ -500,7 +596,6 @@ async def run(
 
         model = branch.chat_model
         endpoint = model.endpoint
-        prev_stream_func = model.streaming_process_func
         bfp = None
 
         if param.stream_persist:
@@ -516,19 +611,6 @@ async def run(
                 ".jsonl",
                 file_exist_ok=True,
             )
-
-            async def _persist_chunk(chunk):
-                if hasattr(chunk, "to_dict"):
-                    await _append_chunk(bfp, chunk)
-                if prev_stream_func is not None:
-                    from lionagi.ln import is_coro_func
-
-                    if is_coro_func(prev_stream_func):
-                        return await prev_stream_func(chunk)
-                    return prev_stream_func(chunk)
-                return None
-
-            model.streaming_process_func = _persist_chunk
 
         thinking_parts: list[str] = []
         text_parts: list[str] = []
@@ -622,7 +704,7 @@ async def run(
         _api_call_holder: list = []
         await emit_api_pre_call(branch, model)
         _api_call_started = True
-        stream_gen = _stream_with_liveness(
+        stream_gen = _stream_resending_unheld_session(
             model,
             kw,
             _stream_deadline,
@@ -655,6 +737,10 @@ async def run(
         try:
             try:
                 async for chunk in stream_gen:
+                    # The buffer holds the chunks this loop reads, so a send the stream
+                    # discards (see _stream_resending_unheld_session) never reaches it.
+                    if bfp is not None and hasattr(chunk, "to_dict"):
+                        await _append_chunk(bfp, chunk)
                     if branch._hooks is not None:
                         await emit_api_stream_chunk(branch, model, chunk)
                     match chunk.type:
@@ -790,7 +876,6 @@ async def run(
             # catch) — preserve whatever exception is already propagating instead
             # of letting a secondary cleanup failure replace it.
             await _close_stream_gen()
-            model.streaming_process_func = prev_stream_func
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir
                 await _write_branch_snapshot(branch, snapshot_dir)

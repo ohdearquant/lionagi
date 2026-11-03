@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
-from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from .endpoint import Endpoint
@@ -11,23 +10,12 @@ from .endpoint_config import EndpointConfig
 __all__ = ("AgenticEndpoint",)
 
 # A stored session id is restored only as a UUID in its canonical lowercase form, the shape of the
-# ids the Claude Code CLI issues. A value read from a file in any other shape is ignored, so it can
-# never become a flag or any other argument of the spawned CLI.
+# ids the Claude Code CLI issues. A value read from a file in any other shape restores nothing, so
+# it can never become a flag or any other argument of the spawned CLI.
 _SESSION_ID_SHAPE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
-
-def _stored_session_id(stored: Any) -> str | None:
-    """The session id in a stored endpoint (``AgenticEndpoint.to_dict`` output), or None.
-
-    None when nothing is stored or the stored value is not a string in the lowercase UUID shape
-    the CLI issues; such a value is ignored without an error.
-    """
-    if not isinstance(stored, Mapping):
-        return None
-    value = stored.get("session_id")
-    if isinstance(value, str) and _SESSION_ID_SHAPE.fullmatch(value):
-        return value
-    return None
+# What the Claude Code CLI says when asked to resume a session it holds no transcript of.
+_UNHELD_SESSION_TEXT = "no conversation found with session id"
 
 
 class AgenticEndpoint(Endpoint):
@@ -62,13 +50,17 @@ class AgenticEndpoint(Endpoint):
         self._session_id = value
         self._session_id_reported = value is not None
 
-    def restore_session_id(self, value: str | None) -> None:
+    def restore_session_id(self, value: Any) -> None:
         """Set the id a snapshot stored, which the next request resumes.
 
-        Unlike ``session_id``, this does not mark the id as reported by the CLI in this process,
-        so ``reported_session_id`` stays None until the stream reports one.
+        Only a string in the lowercase UUID shape the CLI issues is an id. Any other value, a
+        flag or a non-string included, restores nothing, without an error, and leaves the
+        endpoint with no id to resume. Unlike ``session_id``, this does not mark the id as
+        reported by the CLI in this process, so ``reported_session_id`` stays None until the
+        stream reports one.
         """
-        self._session_id = value
+        is_id = isinstance(value, str) and _SESSION_ID_SHAPE.fullmatch(value) is not None
+        self._session_id = value if is_id else None
         self._session_id_reported = False
 
     @property

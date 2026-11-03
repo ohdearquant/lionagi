@@ -680,7 +680,14 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     except RuntimeError as exc:
         if refusal is None or isinstance(exc, ProviderError):
             raise
-        said = str(refusal.get("result") or "").strip() or "an error result with no text"
+        said = str(refusal.get("result") or "").strip()
+        if not said and isinstance(refusal.get("errors"), list):
+            # A result with no text of its own names its failure in ``errors``.
+            listed = [e.get("message") if isinstance(e, dict) else e for e in refusal["errors"]]
+            said = "; ".join(
+                dict.fromkeys(e.strip() for e in listed if isinstance(e, str) and e.strip())
+            )
+        said = said or "an error result with no text"
         status = refusal.get("api_error_status")
         if status is not None:
             said = f"{said} (api_error_status {status})"

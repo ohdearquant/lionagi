@@ -18,7 +18,7 @@ from lionagi.protocols.generic import Event, EventStatus, Log
 from lionagi.protocols.ids import to_uuid
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
-from .connections.agentic_endpoint import _stored_session_id
+from .connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 from .connections.endpoint import (
     _event_reports_call_failure,
     _names_credential_setting,
@@ -413,6 +413,19 @@ class iModel:  # noqa: N801
             f"Unsupported event type: {create_event_type}. Only APICalling is supported."
         )
 
+    def _auto_resume_id(self, kwargs: dict) -> str | None:
+        """The session id a CLI endpoint resumes of its own accord, else None.
+
+        A call whose ``kwargs`` name a ``resume`` or a ``session_id`` resumes what the caller named.
+        """
+        if (
+            isinstance(self.endpoint, AgenticEndpoint)
+            and "resume" not in kwargs
+            and "session_id" not in kwargs
+        ):
+            return self.endpoint.session_id or None
+        return None
+
     def create_api_calling(
         self, include_token_usage_to_model: bool = False, **kwargs
     ) -> APICalling:
@@ -420,13 +433,8 @@ class iModel:  # noqa: N801
         if self.input_cap_refusal is not None:
             raise self.input_cap_refusal
         # Auto-inject session_id for CLI endpoint resume
-        if (
-            isinstance(self.endpoint, AgenticEndpoint)
-            and "resume" not in kwargs
-            and "session_id" not in kwargs
-            and self.endpoint.session_id
-        ):
-            kwargs["resume"] = self.endpoint.session_id
+        if (resume := self._auto_resume_id(kwargs)) is not None:
+            kwargs["resume"] = resume
 
         transport_arg_keys = getattr(self.endpoint, "transport_arg_keys", ())
         call_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in transport_arg_keys}
@@ -740,8 +748,14 @@ class iModel:  # noqa: N801
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
         try:
+            restored_resume = None
             if api_call is None:
                 kw.pop("stream", None)
+                # The id this call is about to resume, when it is one a snapshot restored that no
+                # stream in this process has reported.
+                restored_resume = self._auto_resume_id(kw)
+                if restored_resume is not None and self.endpoint.reported_session_id is not None:
+                    restored_resume = None
                 api_call = await self.create_event(**kw)
             api_call.endpoint._require_api_key()
             self._capture_routing_scope(api_call)
@@ -784,6 +798,17 @@ class iModel:  # noqa: N801
                 and isinstance(response, dict)
             ):
                 self._calibrate_input_scale(completed_call, response.get("usage"))
+            if (
+                restored_resume is not None
+                and completed_call is not None
+                and completed_call.status == EventStatus.FAILED
+                and _UNHELD_SESSION_TEXT in str(completed_call.execution.error).lower()
+                and self.endpoint.reported_session_id is None
+                and self.endpoint.session_id == restored_resume
+            ):
+                # The CLI holds no session for the id the snapshot stored. Dropping it makes the
+                # next call send the whole history instead of failing the same way again.
+                self.endpoint.session_id = None
             if response:
                 # An empty id never erases the last confirmed one: a call whose
                 # stream carried no id-bearing chunk returns the field empty,
@@ -982,12 +1007,15 @@ class iModel:  # noqa: N801
             e1 = endpoint
 
         # A CLI endpoint continues the CLI's own session, so the id it stored comes back with
-        # it, recorded as restored: no stream in this process has reported it. Only an id in the
-        # shape the CLI issues is taken; any other stored value is ignored.
-        if isinstance(e1, AgenticEndpoint) and (
-            session_id := _stored_session_id(data.get("endpoint"))
+        # it, recorded as restored: no stream in this process has reported it. The endpoint
+        # takes only an id in the shape the CLI issues; any other stored value restores nothing.
+        stored_endpoint = data.get("endpoint")
+        if (
+            isinstance(e1, AgenticEndpoint)
+            and isinstance(stored_endpoint, Mapping)
+            and "session_id" in stored_endpoint
         ):
-            e1.restore_session_id(session_id)
+            e1.restore_session_id(stored_endpoint["session_id"])
 
         # The executor's rate limits only: any other key would reach __init__ as an
         # endpoint setting, such as a base_url or an env, past the rules above.

@@ -369,6 +369,14 @@ it has one. `from_dict` restores it, so `restored.provider_session_id` is the sa
 next request resumes that session (`--resume <id>` for Claude Code) and sends only the new
 instruction rather than the whole conversation. The id is restored only when it is a UUID in its
 canonical lowercase form; any other stored value is ignored without an error, as is a snapshot
-that has none.
+that has none. The CLI keeps its sessions on its own disk, so it may no longer hold the stored
+one. When a streamed turn (`branch.run`, and `branch.operate` on a CLI model) resumes the
+restored id and the CLI refuses it with "No conversation found with session ID" before it
+produces any output, the turn is sent once more without the id and with the whole history, and
+the model resumes the session the CLI starts for it from then on. Nothing the refused attempt
+produced reaches the branch or the stream buffer. An id the CLI reported in the current process
+is not sent again: its refusal is raised. A non-streamed call (`branch.chat` on a CLI model) is
+never sent again: when the CLI refuses the restored id, the model drops it and the call raises
+the failure, so the next call sends the whole history.
 
 Next: [Operations & extension](operations.md) — Middle protocol and param types

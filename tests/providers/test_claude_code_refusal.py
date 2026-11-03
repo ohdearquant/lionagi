@@ -155,3 +155,31 @@ async def test_a_clean_exits_error_chunk_carries_a_429_status(tmp_path, monkeypa
     chunks = [c async for c in endpoint.stream(cc.ClaudeCodeRequest(prompt="go", repo=tmp_path))]
 
     assert [c.metadata for c in chunks if c.type == "error"] == [{"error_status": 429}]
+
+
+@pytest.mark.asyncio
+async def test_an_error_result_that_names_its_failure_in_errors_carries_that_text(
+    tmp_path, monkeypatch
+):
+    """An error result with no text of its own lists what failed in ``errors``; that text rides
+    the raised error, in place of a statement that the result had none."""
+    listed = {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "errors": [
+            "No conversation found with session ID: 7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f",
+            {"message": "second problem"},
+            "  ",
+        ],
+    }
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: _cli(tmp_path, [listed], 1))
+
+    with pytest.raises(ProviderError) as info:
+        await _drain(tmp_path)
+
+    text = str(info.value)
+    assert "No conversation found with session ID: 7d1c2e90" in text
+    assert "second problem" in text
+    assert "no text" not in text
+    assert "exited with code 1" in text

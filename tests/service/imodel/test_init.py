@@ -985,6 +985,101 @@ class TestiModel:
         # An id the stream reported stays reported in the copy.
         assert imodel.copy(share_session=True).endpoint.reported_session_id == session_id
 
+    def test_an_endpoint_restores_a_session_id_only_in_the_shape_the_cli_issues(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        endpoint = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        ).endpoint
+
+        endpoint.restore_session_id(session_id)
+        assert endpoint.provider_session_id == session_id
+        assert endpoint.reported_session_id is None
+
+        # A value in any other shape is no id: nothing is restored, so nothing is resumed.
+        for stored in ("--dangerous", session_id.upper(), f"{session_id}\n--dangerous", 12345, ""):
+            endpoint.restore_session_id(stored)
+            assert endpoint.provider_session_id is None
+            assert endpoint.reported_session_id is None
+            endpoint.restore_session_id(session_id)
+
+    @staticmethod
+    def _a_cli_model_restored_with(session_id: str) -> iModel:
+        saved = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        saved.endpoint.session_id = session_id
+        return iModel.from_dict(json.loads(json.dumps(saved.to_dict())))
+
+    @pytest.mark.asyncio
+    async def test_a_restored_session_the_cli_refuses_is_dropped_so_the_next_call_sends_history(
+        self,
+    ):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        restored = self._a_cli_model_restored_with(session_id)
+        history = [
+            {"role": "user", "content": "first instruction"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second instruction"},
+        ]
+        sent = []
+
+        async def refused(request, cache_control=False, **kwargs):
+            sent.append(request["request"])
+            raise RuntimeError(f"No conversation found with session ID: {session_id}")
+
+        with patch.object(restored.endpoint, "call", side_effect=refused):
+            failed = await restored.invoke(messages=history)
+
+        # The call resumed the restored id and sent only the newest message, and it failed ...
+        assert failed.status == EventStatus.FAILED
+        assert sent[0].resume == session_id
+        assert sent[0].prompt == "second instruction"
+        # ... so the endpoint no longer holds the id the CLI does not know.
+        assert restored.endpoint.session_id is None
+        assert restored.provider_session_id is None
+
+        next_call = restored.create_api_calling(messages=history)
+        request = next_call.payload["request"]
+        assert request.resume is None
+        for earlier in ("first instruction", "first answer", "second instruction"):
+            assert earlier in request.prompt
+
+    @pytest.mark.parametrize(
+        ("restored", "failure"),
+        [
+            (True, "the CLI hit an unexpected error"),
+            (False, "No conversation found with session ID: {session_id}"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_session_id_is_dropped_only_when_the_cli_refuses_a_restored_one(
+        self, restored, failure
+    ):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        if restored:
+            imodel = self._a_cli_model_restored_with(session_id)
+        else:
+            imodel = iModel(
+                provider="claude_code",
+                model="claude-3-5-sonnet-20241022",
+                api_key="test-key",
+            )
+            # An id the CLI reported in this process.
+            imodel.endpoint.session_id = session_id
+
+        async def failing(request, cache_control=False, **kwargs):
+            raise RuntimeError(failure.format(session_id=session_id))
+
+        with patch.object(imodel.endpoint, "call", side_effect=failing):
+            failed = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+
+        assert failed.status == EventStatus.FAILED
+        assert imodel.endpoint.session_id == session_id
+
     @pytest.mark.asyncio
     async def test_imodel_unsupported_event_type(self):
         from lionagi.protocols.types import Event
