@@ -71,6 +71,11 @@ lint-quarantine() {
   uv run python "$QUARANTINE_SCRIPT" check --max-entries 15
 }
 
+lint-data-files() {
+  echo "==> changed data files"
+  uv run --no-sync python "$REPO_ROOT/scripts/check_data_files.py" "$@"
+}
+
 fmt-python() {
   echo "==> ruff format"
   uv run ruff format "${@:-.}"
@@ -516,6 +521,7 @@ lint-hygiene() {
 lint() {
   lint-python "$@"
   lint-quarantine
+  lint-data-files
   lint-frontend
   lint-marketplace
   lint-hygiene
@@ -530,6 +536,7 @@ ci() {
   echo "=== CI: lint ==="
   lint-python
   lint-quarantine
+  lint-data-files
   lint-frontend
   lint-marketplace
   lint-hygiene
@@ -554,14 +561,14 @@ cmd="${1:-help}"
 shift 2>/dev/null || true
 
 case "$cmd" in
-  lint-python|lint-quarantine|fmt-python|test-python|test-python-cov|test-python-quarantine) "$cmd" "$@" ;;
+  lint-python|lint-quarantine|lint-data-files|fmt-python|test-python|test-python-cov|test-python-quarantine) "$cmd" "$@" ;;
   lint-frontend|fmt-frontend|fmt-check-frontend|build-frontend|typecheck-frontend|fe-install) "$cmd" "$@" ;;
   lint-marketplace|lint-hygiene) "$cmd" "$@" ;;
   lint|fmt|ci) "$cmd" "$@" ;;
   help|--help|-h)
     echo "Usage: scripts/ci.sh <command>"
     echo ""
-    echo "Python:      lint-python, lint-quarantine, fmt-python, test-python,"
+    echo "Python:      lint-python, lint-quarantine, lint-data-files, fmt-python, test-python,"
     echo "             test-python-cov, test-python-quarantine"
     echo "Frontend:    fe-install, lint-frontend, fmt-frontend, fmt-check-frontend,"
     echo "             build-frontend, typecheck-frontend"
