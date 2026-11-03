@@ -318,9 +318,12 @@ async def test_allowed_project_names_are_retained(fixture):
         '[mcp_servers.permitted]\ncommand = "project-permitted"\n'
         '[mcp_servers.excluded]\ncommand = "project-excluded"\n',
     )
+    # `permitted` is selected by name and not forwarded, so a project layer may declare it:
+    # the same-name refusal covers forwarded servers only, and this run starts.
     request = _request(project, env, allowed_names=["permitted", "keep"])
     await _run(request)
     args = _config_args(calls[-1])
+    # The forwarded server still reaches codex beside the retained project servers.
     assert any(arg.startswith("mcp_servers.selected.command=") for arg in args)
     assert "mcp_servers.excluded.enabled=false" in args
     assert "mcp_servers.permitted.enabled=false" not in args

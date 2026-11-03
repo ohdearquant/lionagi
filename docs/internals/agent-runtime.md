@@ -137,8 +137,11 @@ and one implementation.
   read; servers enabled by managed or cloud configuration are outside it.
   An explicit per-call MCP override replaces the configured selection for that
   call; servers declared only in project configuration stay disabled unless
-  that override names them. A selected server that a project layer also
-  declares by name is refused (see the same-name rule below).
+  that override names them. A selected server that lionagi forwards is
+  refused when a project layer also declares it by name (see the same-name
+  rule below). A server selected by name that lionagi does not forward is not
+  checked: codex merges that name's declarations across its layers as usual,
+  so a same-name project definition can still merge fields into it.
   A request carrying an exclusive selection may configure only selected servers;
   an MCP override naming another server is refused at launch.
   An exclusive selection also replaces the MCP configuration already carried
@@ -196,7 +199,9 @@ and one implementation.
   checked, unless the run ignores it. The system config, the user config under
   the codex home the child's environment names and a profile file the caller
   named (never the generated one) are read when the set is forwarded; a layer
-  that cannot be read there is left to the launch-time census. The project
+  that cannot be read or parsed there is skipped. An exclusive run over such
+  a layer is refused at launch, where the census reads it again; an additive
+  run is not checked against it. The project
   layers depend on the directory the child runs in, so they are read before each
   launch, counted whether or not the project is trusted. The managed config
   (`managed_config.toml`), configuration delivered by device management and an
