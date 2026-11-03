@@ -511,7 +511,7 @@ def test_changing_parent_kind_revalidates_effective_stored_chain(field):
         action_kind="command", action_command="echo", **{field: {"kind": "command", field: None}}
     )
     updated, error = _run_update({"action_kind": "agent"}, existing=stored)
-    assert error is not None and _flag(field) in str(error)
+    assert error is not None and field in str(error)
     updated.update_schedule.assert_not_called()
 
     updated, error = _run_update({"description": "unrelated"}, existing=stored)
@@ -587,3 +587,69 @@ def test_reachable_walk_stops_at_scheduler_depth_limit():
     with patch.object(parsing, "_merge_chain_action", wraps=parsing._merge_chain_action) as merge:
         assert parsing._validate_reachable_chain_actions(parent) is None
     assert merge.call_count == 2 ** (parsing._MAX_CHAIN_DEPTH + 1) - 2
+
+
+@pytest.mark.parametrize("cleared,legacy", [("on_success", "on_fail"), ("on_fail", "on_success")])
+def test_clearing_chain_does_not_revalidate_unmodified_legacy_structure(cleared, legacy):
+    stored = _existing(**{legacy: {"prompt": "old", "legacy_key": True, legacy: None}})
+    updated, error = _run_update({cleared: None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", **{cleared: None})
+
+
+def test_kind_change_and_clear_do_not_revalidate_unmodified_legacy_structure():
+    stored = _existing(on_fail={"kind": "agent", "legacy_key": True, "on_fail": None})
+    updated, error = _run_update({"action_kind": "flow", "on_success": None}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with(
+        "sid-chain-1", action_kind="flow", on_success=None
+    )
+
+
+def test_kind_change_checks_reachable_kinds_without_rechecking_legacy_structure():
+    stored = _existing(on_fail={"kind": "agent", "legacy_key": True, "on_fail": None})
+    updated, error = _run_update({"action_kind": "flow"}, existing=stored)
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", action_kind="flow")
+
+    stored = _existing(
+        action_kind="command",
+        action_command="echo",
+        on_fail={"kind": "command", "legacy_key": True, "on_fail": None},
+    )
+    updated, error = _run_update({"action_kind": "agent"}, existing=stored)
+    assert error is not None and "on_fail" in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+def test_modified_chain_still_requires_valid_structure():
+    stored = _existing(on_fail={"kind": "agent", "legacy_key": True, "on_fail": None})
+    updated, error = _run_update({"on_fail": stored["on_fail"]}, existing=stored)
+    assert error is not None and "unknown key" in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+def test_edit_still_checks_legacy_sibling_reachable_kind():
+    stored = _existing(
+        action_kind="command",
+        action_command="echo",
+        on_fail={"kind": "command", "legacy_key": True, "on_fail": None},
+    )
+    updated, error = _run_update(
+        {"on_success": {"kind": "agent", "on_success": None}}, existing=stored
+    )
+    assert error is not None and "on_success.on_fail" in str(error)
+    assert "inherited" in str(error)
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("key", ["kind", "action_kind"])
+def test_direct_service_accepts_valid_string_subclass_without_calling_hash(key):
+    class HashTrap(str):
+        def __hash__(self):
+            raise AssertionError("kind hash called")
+
+    chain = {key: HashTrap("agent"), "on_success": {"kind": "agent", "on_success": None}}
+    created, error = _run_create(_create_data(on_success=chain))
+    assert error is None
+    created.create_schedule.assert_awaited_once()

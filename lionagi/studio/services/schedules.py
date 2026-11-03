@@ -1284,7 +1284,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         )
         if {"on_success", "on_fail"} & fields.keys() or kind_changed:
             for field in ("on_success", "on_fail"):
-                _svc_validate_chain_action(effective.get(field), field, effective["action_kind"])
+                if field in fields:
+                    _svc_validate_chain_action(
+                        effective.get(field), field, effective["action_kind"]
+                    )
             _svc_validate_reachable_chains(effective)
         # Checked only when the update sets a field it reads, so a row stored before the check
         # can still be paused or edited elsewhere.

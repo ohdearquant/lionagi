@@ -189,6 +189,7 @@ def _schedule_request_timeout_message(
 
 
 def _validate_chain_kinds(action: dict, label: str, parent_kind: str) -> str | None:
+    parent_kind = str.__str__(parent_kind)
     parent_kind = _ALIAS_ACTION_KINDS.get(parent_kind, parent_kind)
     for kind_key in ("kind", "action_kind"):
         if kind_key not in action:
@@ -235,6 +236,7 @@ def _validate_chain_action_node(
     if err:
         return err
     effective_kind = action.get("kind", action.get("action_kind", parent_kind))
+    effective_kind = str.__str__(effective_kind)
     effective_kind = _ALIAS_ACTION_KINDS.get(effective_kind, effective_kind)
 
     if self_field not in action:
