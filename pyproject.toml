@@ -29,7 +29,9 @@ dependencies = [
     # lionagi/state/engine.py reads the private Connection._thread; widen the
     # bound once a new release is checked (tests/state/test_failed_open_worker.py).
     "aiosqlite>=0.22.0,<0.23",
-    "sqlalchemy[asyncio]>=2.0.0",
+    # 2.0.38 is the first release whose aiosqlite dialect pools file databases;
+    # compatibility mode is tested only with pooled connections.
+    "sqlalchemy[asyncio]>=2.0.38",
     "orjson>=3.11.8",
     "psutil>=5.9.0",
     "pyyaml>=6.0",

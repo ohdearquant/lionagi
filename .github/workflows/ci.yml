@@ -554,6 +554,7 @@ jobs:
       studio: ${{ steps.filter.outputs.studio }}
       adr: ${{ steps.filter.outputs.adr }}
       imports: ${{ steps.filter.outputs.imports }}
+      compat: ${{ steps.filter.outputs.compat }}
       lionrs: ${{ steps.filter.outputs.lionrs }}
       lion1: ${{ steps.filter.outputs.lion1 }}
     steps:
@@ -586,6 +587,47 @@ jobs:
             - 'lionhub/**'
             - 'pyproject.toml'
             - 'uv.lock'
+            - '.github/workflows/ci.yml'
+          compat:
+            - 'pyproject.toml'
+            - 'uv.lock'
+            # The lionagi code the compatibility tests import directly. These
+            # entries are the packages and modules named by the imports (including
+            # imports inside functions) in every .py file under lionagi/state and in
+            # the three tests/ entries below: `X/**` for a package, `X.py` for a
+            # module, and lionagi/__init__.py for `import lionagi` or
+            # `from lionagi import ...`. A relative import counts when it leads out of
+            # lionagi/state. Importing any lionagi module runs lionagi/__init__.py
+            # first, so the packages and modules that file imports when it loads count
+            # as imported by every source: its imports under `if TYPE_CHECKING:` and
+            # inside functions do not. What those packages import in turn is not
+            # followed, and a module named only in a string is not read. A test in
+            # tests/scripts/test_advisory_pr_checks.py recomputes the list from the
+            # sources and fails when this one differs.
+            - 'lionagi/__init__.py'
+            - 'lionagi/_cli_worker_context.py'
+            - 'lionagi/_log_channels.py'
+            - 'lionagi/_moved.py'
+            - 'lionagi/_paths.py'
+            - 'lionagi/_provider_errors.py'
+            - 'lionagi/_settings.py'
+            - 'lionagi/cli/**'
+            - 'lionagi/config.py'
+            - 'lionagi/hooks/**'
+            - 'lionagi/libs/**'
+            - 'lionagi/ln/**'
+            - 'lionagi/operations/**'
+            - 'lionagi/plugins/**'
+            - 'lionagi/protocols/**'
+            - 'lionagi/service/**'
+            - 'lionagi/session/**'
+            - 'lionagi/state/**'
+            - 'lionagi/studio/**'
+            - 'lionagi/testing/**'
+            - 'lionagi/version.py'
+            - 'tests/conftest.py'
+            - 'tests/state/conftest.py'
+            - 'tests/state/test_compatibility_*.py'
             - '.github/workflows/ci.yml'
           lionrs:
             - 'lionrs/**'
@@ -719,6 +761,122 @@ jobs:
           print(f"::notice::bare import loaded none of the {len(heavies)} guarded heavy modules")
           EOF
 
+  # uv.lock holds one aiosqlite (0.22.1) and one SQLAlchemy (2.0.49), so every
+  # other job runs the state layer against that pair only, while pyproject.toml
+  # admits any aiosqlite 0.22.x and any SQLAlchemy from 2.0.38. Compatibility
+  # mode installs a SQLite authorizer through aiosqlite's
+  # Connection.set_authorizer (first released in aiosqlite 0.22.0) from
+  # SQLAlchemy's connect event, so this job runs the compatibility tests on the
+  # ends of both ranges instead of on the lock.
+  #
+  # 2.0.38 is the SQLAlchemy floor because it is the first release whose
+  # aiosqlite dialect pools file databases. Earlier releases open a new
+  # connection for each use and close it on release, so neither a connection
+  # nor the store's WAL file (which SQLite removes at the last close) outlives
+  # an operation; compatibility mode is tested and supported with pooled
+  # connections only.
+  #
+  # The environment is synced from the lock and the two packages are then
+  # replaced. `uv run` syncs the environment back to the lock unless told not
+  # to, so every command after the replacement passes --no-sync, and the
+  # assertion step stops the job unless the interpreter imports the matrix
+  # versions: without it, a replacement that did not take would pass the tests
+  # on the locked pair.
+  #
+  # SQLAlchemy 2.1 requires Python 3.11 or later and does not resolve on 3.10,
+  # so the aiosqlite 0.22.0 + SQLAlchemy 2.1.6 row runs on 3.11, the lowest
+  # Python that installs it. Add a row when aiosqlite or SQLAlchemy releases a
+  # version inside the supported range that no row covers.
+  compat-deps:
+    name: Compatibility mode (aiosqlite ${{ matrix.aiosqlite }}, SQLAlchemy ${{ matrix.sqlalchemy }}, Python ${{ matrix.python-version }})
+    needs: changes
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.compat == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor of both ranges, on the lowest supported Python.
+          - python-version: "3.10"
+            aiosqlite: "0.22.0"
+            sqlalchemy: "2.0.38"
+          # The other aiosqlite release in the range, against the SQLAlchemy floor.
+          - python-version: "3.10"
+            aiosqlite: "0.22.1"
+            sqlalchemy: "2.0.38"
+          # The aiosqlite floor against the newest SQLAlchemy (see above for 3.11).
+          - python-version: "3.11"
+            aiosqlite: "0.22.0"
+            sqlalchemy: "2.1.6"
+          # The newest of both, on the highest Python the suite runs on.
+          - python-version: "3.14"
+            aiosqlite: "0.22.1"
+            sqlalchemy: "2.1.6"
+    env:
+      # Force every `uv` call onto the matrix interpreter; the repo's
+      # .python-version (3.10) otherwise pins all rows to 3.10.
+      UV_PYTHON: ${{ matrix.python-version }}
+      EXPECTED_AIOSQLITE: ${{ matrix.aiosqlite }}
+      EXPECTED_SQLALCHEMY: ${{ matrix.sqlalchemy }}
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ matrix.python-version }}
+        allow-prereleases: true
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Install dependencies from the lock
+      run: |
+        uv venv
+        uv sync --all-extras
+    # The interpreter is named by path: with UV_PYTHON set to a version, a bare
+    # `uv pip install` is free to pick another interpreter than the project's.
+    - name: Replace aiosqlite and SQLAlchemy with the matrix versions
+      run: |
+        uv pip install --python .venv/bin/python \
+          "aiosqlite==${EXPECTED_AIOSQLITE}" \
+          "sqlalchemy[asyncio]==${EXPECTED_SQLALCHEMY}"
+    # Only the next two steps may follow the replacement, and
+    # tests/scripts/test_advisory_pr_checks.py pins both to its own copies of their
+    # names and run text, byte for byte, so an edit to either step here is an edit to
+    # that file as well. The same file runs the version check below against wrong
+    # versions to show that it stops the job.
+    - name: Assert the interpreter has the matrix versions
+      run: |
+        uv run --no-sync python - <<'PY'
+        import os
+        from importlib.metadata import version
+
+        expected = {
+            "aiosqlite": os.environ["EXPECTED_AIOSQLITE"],
+            "sqlalchemy": os.environ["EXPECTED_SQLALCHEMY"],
+        }
+        mismatched = []
+        for name, wanted in expected.items():
+            found = version(name)
+            print(f"{name}: installed {found}, matrix {wanted}")
+            if found != wanted:
+                mismatched.append(f"{name} {found} (matrix {wanted})")
+        if mismatched:
+            raise SystemExit("not the matrix versions: " + ", ".join(mismatched))
+        PY
+    # The markers match scripts/ci.sh's test lanes, so a test the lock-based
+    # jobs keep out of the required set is kept out here too.
+    - name: Run the compatibility-mode tests
+      timeout-minutes: 15
+      run: >-
+        uv run --no-sync pytest -n 0 --maxfail=0
+        -m "not performance and not flaky_quarantine"
+        --disable-warnings
+        tests/state/test_compatibility_*.py
+
   lionrs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lionrs == 'true' }}
@@ -821,13 +979,13 @@ jobs:
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
   # The conditional jobs (studio-docker, minimal-import, no-eager-heavies,
-  # lionrs, lion1) may
+  # compat-deps, lionrs, lion1) may
   # skip only when the changes path-filter job itself succeeded and reported
   # their inputs unchanged; any other skip, failure, or cancellation fails the
   # aggregate.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, lionrs, lion1, vscode, marketplace]
+    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, compat-deps, lionrs, lion1, vscode, marketplace]
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -865,6 +1023,7 @@ jobs:
             "studio-docker": "studio",
             "minimal-import": "imports",
             "no-eager-heavies": "imports",
+            "compat-deps": "compat",
             "lionrs": "lionrs",
             "lion1": "lion1",
         }

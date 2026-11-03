@@ -157,9 +157,20 @@ The separate `quarantine` job runs only `flaky_quarantine` tests on Python 3.12.
 It is `continue-on-error` and intentionally absent from `ci-gate`; its result is
 visible but cannot block a merge. `performance` and `publish` are not among
 `ci-gate`'s needs either. `ci-gate` is fail-closed for every job it needs: each
-hard gate must succeed, and the five path-filtered gates (Studio Docker, minimal
-import, no eager heavies, lionrs and lion1) may skip only when the `changes` job
-succeeded and reported their inputs unchanged.
+hard gate must succeed, and the six path-filtered gates (Studio Docker, minimal
+import, no eager heavies, compatibility mode on dependency versions, lionrs and
+lion1) may skip only when the `changes` job succeeded and reported their inputs
+unchanged.
+
+The `compat-deps` job runs `tests/state/test_compatibility_*.py` against pinned
+aiosqlite and SQLAlchemy releases instead of the versions in `uv.lock`, because
+`pyproject.toml` admits more than the locked pair and compatibility mode installs
+its SQLite authorizer through both libraries. It syncs the lock, replaces the two
+packages with the row's versions, and asserts the versions the interpreter
+reports before pytest starts; every later `uv run` there passes `--no-sync`, as
+a sync would restore the locked versions. SQLAlchemy 2.1 requires Python 3.11 or
+later, so the rows that use it start at 3.11. Add a row when either library
+releases a version inside the supported range that no row covers.
 
 ## Quarantine lifecycle
 
