@@ -46,6 +46,24 @@ async def test_claude_does_not_name_a_codex_flag_used_as_a_value(tmp_path, monke
     assert "Command-line argument" in str(caught.value)
 
 
+@pytest.mark.asyncio
+async def test_claude_known_flag_spelling_as_list_value_does_not_leak_other_values(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(claude, "resolve_claude_cli", lambda: "claude")
+    oversized = "y" * 1_048_576
+    request = claude.ClaudeCodeRequest(
+        repo=tmp_path, prompt="hello", disallowed_tools=[_SECRET, "--model", oversized]
+    )
+    with pytest.raises(ValueError) as caught:
+        async for _ in claude._ndjson_from_cli(request):
+            pass
+    message = str(caught.value)
+    assert "value of --model" in message or "Command-line argument" in message
+    assert _SECRET not in message
+    assert "y" * 100 not in message
+
+
 @pytest.mark.parametrize("bad", ["y" * 1_048_576, "bad\x00value"], ids=["oversize", "nul"])
 def test_codex_value_is_not_named_as_a_flag(bad):
     with pytest.raises(ValueError) as caught:
