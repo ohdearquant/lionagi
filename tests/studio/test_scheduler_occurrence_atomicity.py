@@ -937,6 +937,39 @@ async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evide
 
 
 @pytest.mark.asyncio
+async def test_reconciled_chain_keeps_parent_command_target(tmp_path, monkeypatch):
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    sid, run_id = "sched-target", "run-target"
+    async with StateDB(db_path) as db:
+        await _seed_dispatched_run_with_session(
+            db,
+            sid=sid,
+            run_id=run_id,
+            inv_id="inv-target",
+            sess_id="sess-target",
+            session_status="completed",
+        )
+        await db.update_schedule(
+            sid,
+            action_kind="command",
+            action_command="echo inherited",
+            on_success={"kind": "command"},
+        )
+
+    engine = SchedulerEngine(svc=_DBSchedulerStateService())
+    children = []
+    engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
+    await engine._reconcile_dispatched_orphans()
+
+    assert len(children) == 1
+    assert children[0]["action_kind"] == "command"
+    assert children[0]["action_command"] == "echo inherited"
+
+
+@pytest.mark.asyncio
 async def test_reconcile_leaves_row_running_when_session_still_nonterminal(tmp_path, monkeypatch):
     """Positive control for the above: when the linked session has NOT
     reached a terminal status, the row must be left exactly as-is -- unknown

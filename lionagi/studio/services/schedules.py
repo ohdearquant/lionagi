@@ -194,7 +194,7 @@ def _svc_validate_action_command(command: str | None) -> None:
     _validate_command_allowlisted(command)
 
 
-def _svc_validate_chain_action(value: Any, field: str) -> None:
+def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None:
     """Service-boundary check: an ``on_success`` / ``on_fail`` chain action must
     follow the same rules as the ``li schedule`` flag of the same name -- a JSON
     object whose keys the scheduler's chain-fire merge understands, nested no
@@ -212,6 +212,7 @@ def _svc_validate_chain_action(value: Any, field: str) -> None:
         field,
         chain_depth=1,
         max_chain_depth=_MAX_CHAIN_DEPTH,
+        parent_kind=parent_kind,
     )
     if err:
         raise ValueError(err)
@@ -1139,8 +1140,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_action_command(data.get("action_command"))
     _svc_validate_command_args(data.get("action_command_args"))
-    _svc_validate_chain_action(data.get("on_success"), "on_success")
-    _svc_validate_chain_action(data.get("on_fail"), "on_fail")
+    _svc_validate_chain_action(data.get("on_success"), "on_success", data["action_kind"])
+    _svc_validate_chain_action(data.get("on_fail"), "on_fail", data["action_kind"])
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
@@ -1252,10 +1253,6 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_action_command(fields["action_command"])
         if "action_command_args" in fields:
             _svc_validate_command_args(fields["action_command_args"])
-        if "on_success" in fields:
-            _svc_validate_chain_action(fields["on_success"], "on_success")
-        if "on_fail" in fields:
-            _svc_validate_chain_action(fields["on_fail"], "on_fail")
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
         if "github_filter" in fields:
@@ -1274,6 +1271,12 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_threshold_config(fields["threshold_config"])
 
         effective = {**schedule, **fields}
+        kind_changed = "action_kind" in fields and fields["action_kind"] != schedule.get(
+            "action_kind"
+        )
+        for field in ("on_success", "on_fail"):
+            if field in fields or kind_changed:
+                _svc_validate_chain_action(effective.get(field), field, effective["action_kind"])
         # Checked only when the update sets a field it reads, so a row stored before the check
         # can still be paused or edited elsewhere.
         if {"action_kind", "action_prompt", "action_playbook"} & set(fields):

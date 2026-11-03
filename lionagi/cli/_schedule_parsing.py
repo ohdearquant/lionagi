@@ -178,6 +178,7 @@ def _validate_chain_action_node(
     self_field: str,
     chain_depth: int,
     max_chain_depth: int,
+    parent_kind: str = "agent",
 ) -> str | None:
     """Validate one chain_action node, recursing into its own nested
     on_success/on_fail the same way the engine's chain-fire would reach them.
@@ -196,6 +197,22 @@ def _validate_chain_action_node(
     if unknown:
         allowed = ", ".join(sorted(_CHAIN_ACTION_ALLOWED_KEYS))
         return f"{label}: unknown key(s) {sorted(unknown)}; allowed: {allowed}"
+
+    effective_kind = _ALIAS_ACTION_KINDS.get(parent_kind, parent_kind)
+    for kind_key in ("kind", "action_kind"):
+        if kind_key not in action:
+            continue
+        value = action[kind_key]
+        if not isinstance(value, str):
+            return f"{label}.{kind_key}: must be a valid action kind"
+        value = str.__str__(value)
+        if value not in _VALID_ACTION_KINDS and value not in _ALIAS_ACTION_KINDS:
+            return f"{label}.{kind_key}: must be a valid action kind"
+        normalized = _ALIAS_ACTION_KINDS.get(value, value)
+        if normalized in {"command", "flow_yaml"} and normalized != parent_kind:
+            return f"{label}.{kind_key}: target-bearing action kind must match its parent kind"
+        if kind_key == "kind" or "kind" not in action:
+            effective_kind = normalized
 
     if self_field not in action:
         warn(
@@ -227,13 +244,16 @@ def _validate_chain_action_node(
                 nested_field,
                 chain_depth + 1,
                 max_chain_depth,
+                effective_kind,
             )
             if err:
                 return err
     return None
 
 
-def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str | None]:
+def _parse_chain_action(
+    raw: str, flag: str, parent_kind: str = "agent"
+) -> tuple[dict[str, Any] | None, str | None]:
     """Parse+validate a --on-success/--on-fail JSON blob, recursively.
 
     Returns (parsed_dict, error_message); error_message is None on success.
@@ -245,7 +265,12 @@ def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str
 
     field = "on_success" if flag == "--on-success" else "on_fail"
     err = _validate_chain_action_node(
-        parsed, flag, field, chain_depth=1, max_chain_depth=_MAX_CHAIN_DEPTH
+        parsed,
+        flag,
+        field,
+        chain_depth=1,
+        max_chain_depth=_MAX_CHAIN_DEPTH,
+        parent_kind=parent_kind,
     )
     if err:
         return None, err
@@ -388,12 +413,12 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
     if args.description:
         body["description"] = args.description
     if args.on_success:
-        parsed, err = _parse_chain_action(args.on_success, "--on-success")
+        parsed, err = _parse_chain_action(args.on_success, "--on-success", action_kind)
         if err:
             return None, err
         body["on_success"] = parsed
     if args.on_fail:
-        parsed, err = _parse_chain_action(args.on_fail, "--on-fail")
+        parsed, err = _parse_chain_action(args.on_fail, "--on-fail", action_kind)
         if err:
             return None, err
         body["on_fail"] = parsed
