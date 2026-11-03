@@ -14,6 +14,7 @@ import time
 from functools import cache
 from pathlib import Path
 from typing import Any
+from unicodedata import category
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
@@ -320,7 +321,14 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
                     texts.append(text[:120])
             except (ValueError, AttributeError):
                 texts.append(line[:120])
-        return texts
+        return [
+            "".join(
+                char
+                for char in text
+                if char == "\t" or category(char) not in {"Cc", "Cf", "Zl", "Zp"}
+            )
+            for text in texts
+        ]
     except OSError:
         return []
 

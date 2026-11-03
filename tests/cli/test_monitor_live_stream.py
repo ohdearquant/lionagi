@@ -110,9 +110,9 @@ def test_stream_tail_splits_only_on_line_feed(tmp_path):
     stream.mkdir()
     path = stream / "branch.buffer.jsonl"
     path.write_bytes(b"malformed\rline\n")
-    assert monitor._stream_tail(tmp_path, "branch") == ["malformed\rline"]
+    assert monitor._stream_tail(tmp_path, "branch") == ["malformedline"]
     path.write_bytes(b"malformed\rline\r\n")
-    assert monitor._stream_tail(tmp_path, "branch") == ["malformed\rline"]
+    assert monitor._stream_tail(tmp_path, "branch") == ["malformedline"]
     path.write_bytes(b"")
     assert monitor._stream_tail(tmp_path, "branch") == []
 
