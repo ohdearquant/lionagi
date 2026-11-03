@@ -197,13 +197,19 @@ and one implementation.
   exclusive and the additive path both refuse. Disabling the other servers by
   name keeps the user config loaded, so the user config is one of the layers
   checked, unless the run ignores it. The system config, the user config under
-  the codex home the child's environment names and a profile file the caller
-  named (never the generated one) are read when the set is forwarded; a layer
+  the codex home the child's environment names and the profile file the
+  request's `profile` option names (never the generated one; a profile a config
+  override or a root `profile` key selects is not read) are read when the set is
+  forwarded; a layer
   that cannot be read or parsed there is skipped. An exclusive run over such
   a layer is refused at launch, where the census reads it again; an additive
   run is not checked against it. The project
   layers depend on the directory the child runs in, so they are read before each
-  launch, counted whether or not the project is trusted. The managed config
+  launch, counted whether or not the project is trusted. A project layer this
+  Python's TOML parser cannot read refuses a run that forwards a server, since
+  whether it declares that name is then unknown; under `--ignore-user-config` such
+  a layer is read line by line instead, as above, and a line that reads as
+  declaring `mcp_servers` refuses the run. The managed config
   (`managed_config.toml`), configuration delivered by device management and an
   enterprise cloud configuration bundle are layers this process cannot read, so
   a same-named server declared only there is not caught.
