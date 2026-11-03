@@ -770,13 +770,20 @@ whose `name` equals a top-level import root that a requirement of the endpoint
 declares raises `MissingFeatureError` naming the provider, endpoint, distribution
 and install hint; an endpoint that raises it from its constructor is translated
 the same way. Any other `ModuleNotFoundError` is a defect, not an absence. The
-failure of a factory is kept per declaration, so later selections raise a copy of
-it without calling the factory again and without repeating its warning (an absent
-dependency is logged at debug level). When the bundled catalog cannot load, the
-registered entries and plugins still answer the names they know; any other
-request raises the load failure, which is a `MissingFeatureError` for feature
-`providers` naming the requested provider and the distribution `lionagi` when the
-hub is absent. The generic endpoint never replaces it. While the
+failure of a factory is kept per declaration, whether a selection or the full load
+of `list_providers()` and `failed_providers()` met it first, so later selections
+and listings raise a copy of it without calling the factory again and without
+repeating its warning (an absent dependency is logged at debug level). When the
+bundled catalog cannot load, the registered entries and plugins still answer the
+names they know; any other request raises the load failure, which is a
+`MissingFeatureError` for feature `providers` naming the requested provider and
+the distribution `lionagi` when the hub is absent. The generic endpoint never
+replaces it, whatever `openai_compatible` or `base_url` say: a 1.x installation
+without the hub is incomplete, so a request for a custom host with
+`openai_compatible=True` or `base_url=` raises the same error, and no deprecation
+warning is issued for a request that fails. A hub that is installed but cannot
+load (an unsupported contract version, a defect in the manifest) raises its load
+error whatever those arguments say. While the
 bundled catalog can load, `register` refuses a provider key or alias that it
 declares, whether or not that provider activated, unless the class's
 `"<module>:<qualified name>"` equals the `diagnostic_id` of one of the endpoints
@@ -789,11 +796,17 @@ other endpoints register. When the catalog cannot load, nothing is refused.
 `EndpointRegistry.failed_providers()` returns one row per provider whose
 activation failed when the registry loaded every provider, with `provider`,
 `endpoint` (or `None`), `source` and `reason`, and no exception text; it is empty
-when every provider activated. The rows of `list_providers()` describe every
-built-in class, so `list_providers()` and `failed_providers()` import every
-declared provider, as before (their row order follows the order the providers
-first imported in, with the scripted provider last). `canonical_provider()` and
-selection import none they do not need.
+when every provider activated. The failure it reports is the error a selection of
+that endpoint raises, a `ProviderActivationError` or a `MissingFeatureError`, and
+a provider that failed registers nothing further. The rows of `list_providers()`
+describe every built-in class, so `list_providers()` and `failed_providers()`
+import every declared provider, as before. Both list the bundled catalog's
+providers in the catalog's order, whichever providers a selection had imported
+first: `failed_providers()` has one row per failed provider in that order, and
+`list_providers()` lists the rows of the declared built-in endpoints first, in the
+catalog's order, then every other row in the order it registered in, with the
+scripted provider's rows behind the entries registered before the load.
+`canonical_provider()` and selection import none they do not need.
 
 ### ActionManager plugin-shadow diagnostics
 

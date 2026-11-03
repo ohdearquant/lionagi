@@ -22,6 +22,7 @@ from lionagi.ln import (
 from lionagi.ln.types import Enum
 
 if TYPE_CHECKING:
+    from lionagi._feature_errors import MissingFeatureError
     from lionagi._provider_errors import ProviderActivationError
 
     from .provider_catalog import EndpointDeclaration, ProviderCatalog, ProviderFragment
@@ -114,13 +115,14 @@ class EndpointMeta:
 class _FailedProvider:
     """A provider the bundled catalog declares whose activation failed when the registry loaded.
 
-    ``names`` holds the provider's key and aliases; ``error`` is the activation error its
-    factory raised.
+    ``names`` holds the provider's key and aliases; ``error`` is the typed error activating its
+    declaration raised: a ``ProviderActivationError``, or a ``MissingFeatureError`` when a
+    declared dependency is not installed.
     """
 
     provider: str
     names: tuple[str, ...]
-    error: ProviderActivationError
+    error: ProviderActivationError | MissingFeatureError
 
 
 class _RegistryEntry:
@@ -162,13 +164,12 @@ class EndpointRegistry:
     _alias_owners: ClassVar[dict[str, str]] = {}
 
     # The bundled-catalog providers whose activation failed in the last full load, in catalog
-    # order. Only the full load (``_ensure_loaded``) fills it; a selection records its own
-    # failures in ``_activation_failures``.
+    # order. Only the full load (``_ensure_loaded``) fills it.
     _failed: ClassVar[tuple[_FailedProvider, ...]] = ()
 
-    # The failure of each bundled-catalog declaration whose factory raised during a selection,
-    # keyed by ``id(declaration)``. The declaration rides along so the id stays unique while the
-    # failure is kept.
+    # The failure of each bundled-catalog declaration whose factory raised, whether a selection
+    # or the full load called it, keyed by ``id(declaration)``. The declaration rides along so
+    # the id stays unique while the failure is kept.
     _activation_failures: ClassVar[dict[int, tuple[EndpointDeclaration, Exception]]] = {}
 
     @classmethod
@@ -349,8 +350,10 @@ class EndpointRegistry:
         endpoint. When the bundled catalog cannot load, only the registered entries and plugins
         answer: a request they do not answer raises the load failure, with the requested
         provider named on a ``MissingFeatureError``, and the generic endpoint never replaces
-        it. See docs/internals/core.md#endpointregistry-match for the provider-vs-endpoint
-        rejection contract.
+        it, whatever ``openai_compatible`` or ``base_url`` say: a hub that is not installed leaves
+        the installation incomplete, and a hub that is installed but broken is a defect, and
+        neither is hidden. See docs/internals/core.md#endpointregistry-match for the
+        provider-vs-endpoint rejection contract.
 
         Supplying ``provider_catalog`` selects from that catalog's declarations alone, in
         declaration order, by the same provider, endpoint and single-endpoint rules: the
@@ -482,9 +485,9 @@ class EndpointRegistry:
 
         An exception from the factory becomes the typed error :meth:`_activation_failure`
         builds. That error is kept for ``declaration``, logged once, and raised as a copy on this
-        and every later selection, so the factory is not called again and no traceback or
-        exception object is shared between callers. Only ``Exception`` is translated; an
-        interrupt passes through and is not kept."""
+        and every later activation, whether a selection or the full load makes it, so the factory
+        is not called again and no traceback or exception object is shared between callers. Only
+        ``Exception`` is translated; an interrupt passes through and is not kept."""
         key = id(declaration)
         kept = cls._activation_failures.get(key)
         if kept is None:
@@ -984,9 +987,11 @@ class EndpointRegistry:
             # Built-in providers register by importing the module each declaration of the
             # bundled provider catalog names; importing a provider module runs its
             # registration decorators. A catalog that cannot load leaves no built-in
-            # provider registered, and one warning says why. A provider whose activation
-            # fails is recorded with one warning and registers nothing further; the other
-            # providers still load.
+            # provider registered, and one warning says why. Each declaration is activated
+            # the way a selection activates it, so its failure is translated to the typed
+            # error a selection raises, kept per declaration and logged once there; a
+            # provider whose activation fails is recorded and registers nothing further, and
+            # the other providers still load.
             failed: list[_FailedProvider] = []
             try:
                 catalog = default_provider_catalog()
@@ -1005,20 +1010,8 @@ class EndpointRegistry:
                 for provider in catalog.providers:
                     for declaration in provider.endpoints:
                         try:
-                            declaration.factory()
-                        except ImportError as error:
-                            logger.warning(
-                                "provider module %r failed to import and was not registered: %s",
-                                declaration.diagnostic_id.partition(":")[0],
-                                error,
-                            )
-                        except ProviderActivationError as error:
-                            logger.warning(
-                                "provider %r could not be activated (reason: %s) and was not "
-                                "registered; selecting it raises ProviderActivationError",
-                                provider.key,
-                                error.reason,
-                            )
+                            cls._activate(catalog, provider, declaration)
+                        except (MissingFeatureError, ProviderActivationError) as error:
                             failed.append(
                                 _FailedProvider(
                                     provider=provider.key,
@@ -1060,7 +1053,33 @@ class EndpointRegistry:
 
     @classmethod
     def list_providers(cls) -> list[dict[str, Any]]:
+        """One row per registered endpoint, after every declared provider has been imported.
+
+        The rows of the endpoints the bundled catalog declares come first, in the catalog's
+        order whichever providers were selected before. An entry is a declared endpoint's when
+        its class has the module and qualified name of that declaration's ``diagnostic_id``,
+        the rule :meth:`_refuse_declared_provider` uses. The rows of every other entry follow
+        in the order they registered in, with the test-only scripted provider's behind the
+        entries registered before the load. Without a bundled catalog every row keeps its
+        registration order."""
         cls._ensure_loaded()
+        entries = list(cls._entries)
+        catalog, _ = cls._bundled_catalog()
+        if catalog is not None:
+            position = {
+                declaration.diagnostic_id: index
+                for index, declaration in enumerate(
+                    d for fragment in catalog.providers for d in fragment.endpoints
+                )
+            }
+
+            def implementation(entry: _RegistryEntry) -> str:
+                return f"{entry.cls.__module__}:{entry.cls.__qualname__}"
+
+            entries = sorted(
+                (e for e in entries if implementation(e) in position),
+                key=lambda e: position[implementation(e)],
+            ) + [e for e in entries if implementation(e) not in position]
         return [
             {
                 "provider": e.meta.provider,
@@ -1070,15 +1089,18 @@ class EndpointRegistry:
                 "class": e.cls.__name__,
                 "options": e.meta.options.__name__ if e.meta.options else None,
             }
-            for e in cls._entries
+            for e in entries
         ]
 
     @classmethod
     def failed_providers(cls) -> list[dict[str, Any]]:
         """One row per provider the bundled provider catalog declares whose activation failed
-        when the registry loaded, in catalog order; empty when none failed. Each row has the
-        ``provider`` key, the ``endpoint`` key the failure was raised for (or ``None``), the
-        ``source`` of the declaration and the ``reason``. A row carries no exception text."""
+        when the registry loaded, in catalog order whichever providers were selected before;
+        empty when none failed. Each row has the ``provider`` key, the ``endpoint`` key the
+        failure was raised for (or ``None``), the ``source`` of the declaration and the
+        ``reason``. The failure is the error a selection of that endpoint raises, a
+        ``ProviderActivationError`` or a ``MissingFeatureError``, and a row carries no
+        exception text."""
         cls._ensure_loaded()
         return [
             {

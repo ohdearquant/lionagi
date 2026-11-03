@@ -212,24 +212,34 @@ class _Capture(logging.Handler):
 
 
 logging.getLogger("lionagi").addHandler(_Capture(level=logging.WARNING))
-warnings.simplefilter("ignore")
 
 out = {"attempts": []}
-for provider, extra in (
-    ("openai", {}),
-    ("openai", {"openai_compatible": True}),
-    ("openai", {"base_url": "https://llm.example.test/v1"}),
-    ("some-other-host", {"openai_compatible": True}),
-    ("openai", {}),
-):
-    try:
-        match_endpoint(provider=provider, endpoint="chat/completions", **extra)
-    except MissingFeatureError as exc:
-        out["attempts"].append([type(exc).__name__, exc.provider, exc.missing_distribution])
-    except ProviderNotFoundError as exc:
-        out["attempts"].append(["ProviderNotFoundError", provider, None])
-    else:
-        out["attempts"].append(["selected", provider, None])
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    for provider, extra in (
+        ("openai", {}),
+        ("some-other-host", {}),
+        ("some-other-host", {"openai_compatible": True}),
+        ("some-other-host", {"base_url": "https://llm.example.test/v1"}),
+        ("openai", {}),
+    ):
+        try:
+            endpoint = match_endpoint(provider=provider, endpoint="chat/completions", **extra)
+        except MissingFeatureError as exc:
+            out["attempts"].append(
+                [
+                    type(exc).__name__,
+                    exc.provider,
+                    exc.missing_distribution,
+                    exc.feature,
+                    exc.install_hint,
+                ]
+            )
+        except ProviderNotFoundError as exc:
+            out["attempts"].append(["ProviderNotFoundError", provider, None])
+        else:
+            out["attempts"].append(["selected", provider, type(endpoint).__name__])
+out["deprecations"] = [warning.category.__name__ for warning in caught]
 out["warnings"] = [record.getMessage() for record in records]
 scripted = match_endpoint(provider="scripted", endpoint="")
 out["scripted"] = type(scripted).__name__
@@ -239,16 +249,23 @@ print(json.dumps(out))
     )
 
     # Pins the same D4 row for the generic routes: neither openai_compatible= nor
-    # base_url= turns the missing hub into a generic endpoint, and a provider the
-    # catalog cannot be consulted about gets the same error. Repeated selection raises
-    # again without logging a warning. The core scripted provider still resolves.
-    assert report["attempts"] == [
-        ["MissingFeatureError", "openai", "lionagi"],
-        ["MissingFeatureError", "openai", "lionagi"],
-        ["MissingFeatureError", "openai", "lionagi"],
-        ["MissingFeatureError", "some-other-host", "lionagi"],
-        ["MissingFeatureError", "openai", "lionagi"],
+    # base_url= turns the missing hub into a generic endpoint, because a 1.x installation
+    # without the hub is incomplete. A provider the catalog cannot be consulted about gets
+    # the same error, with its feature, the missing distribution and the guidance to
+    # reinstall, and no routing warning is issued for a request that fails. Repeated
+    # selection raises again without logging a warning. The core scripted provider still
+    # resolves.
+    assert [row[:4] for row in report["attempts"]] == [
+        ["MissingFeatureError", "openai", "lionagi", "providers"],
+        ["MissingFeatureError", "some-other-host", "lionagi", "providers"],
+        ["MissingFeatureError", "some-other-host", "lionagi", "providers"],
+        ["MissingFeatureError", "some-other-host", "lionagi", "providers"],
+        ["MissingFeatureError", "openai", "lionagi", "providers"],
     ], report
+    assert all("reinstall the matching lionagi release" in row[4] for row in report["attempts"]), (
+        report
+    )
+    assert report["deprecations"] == [], report
     assert report["warnings"] == [], report
     assert report["scripted"] == "ScriptedEndpoint", report
 

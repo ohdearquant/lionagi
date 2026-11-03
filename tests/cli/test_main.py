@@ -9,6 +9,7 @@ import sys
 import pytest
 import yaml
 
+from lionagi._feature_errors import MissingFeatureError
 from lionagi.cli._util import EXIT_CODE_ENVIRONMENT_ERROR
 from lionagi.cli.main import _handle_play_shortcut, main
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
@@ -286,6 +287,16 @@ def test_play_check_playbook_with_contract(tmp_path, monkeypatch, capsys):
     ("raised", "expected_code", "expected_text"),
     [
         (ModuleNotFoundError("No module named 'thing'", name="thing"), 78, "thing"),
+        (
+            MissingFeatureError(
+                feature="providers",
+                missing_distribution="thing-dist",
+                install_hint="pip install lionagi[thing]",
+                import_root="thing",
+            ),
+            78,
+            "pip install lionagi[thing]",
+        ),
         (RuntimeError("profile is malformed"), 1, "could not be loaded"),
     ],
 )

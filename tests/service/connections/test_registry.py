@@ -577,15 +577,33 @@ def test_cold_load_calls_every_declared_factory_in_catalog_order(
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-def test_cold_load_warns_for_a_declaration_whose_module_fails_to_import_and_goes_on(
+def test_cold_load_records_a_declaration_whose_module_fails_to_import_and_goes_on(
     monkeypatch, cold_registry, caplog
 ):
     calls = cold_registry
+    # The load fills the record of failed providers and the per-declaration failure cache;
+    # both are put back when the test ends.
+    monkeypatch.setattr(EndpointRegistry, "_failed", ())
+    monkeypatch.setattr(EndpointRegistry, "_activation_failures", {})
     failure = ImportError("No module named 'a_missing_provider_dependency'")
-    catalog = _catalog_of(
-        [_declared(calls, "stub_providers.alpha.chat")],
-        [_declared(calls, "stub_providers.beta.broken", name="BrokenEndpoint", error=failure)],
-        [_declared(calls, "stub_providers.gamma.chat")],
+    broken = _declared(calls, "stub_providers.beta.broken", name="BrokenEndpoint", error=failure)
+    broken.key = "broken"
+    # What the failure is translated from: the catalog's source and the provider's key.
+    catalog = SimpleNamespace(
+        source="a stub source",
+        providers=(
+            SimpleNamespace(
+                key="alpha",
+                aliases=(),
+                endpoints=(_declared(calls, "stub_providers.alpha.chat"),),
+            ),
+            SimpleNamespace(key="beta", aliases=("b",), endpoints=(broken,)),
+            SimpleNamespace(
+                key="gamma",
+                aliases=(),
+                endpoints=(_declared(calls, "stub_providers.gamma.chat"),),
+            ),
+        ),
     )
     _install_catalog(monkeypatch, catalog)
 
@@ -601,9 +619,23 @@ def test_cold_load_warns_for_a_declaration_whose_module_fails_to_import_and_goes
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert warnings[0].name == _registry_mod.logger.name
-    assert "failed to import and was not registered" in warnings[0].getMessage()
-    assert warnings[0].args[0] == "stub_providers.beta.broken"
-    assert warnings[0].args[1] is failure
+    message = warnings[0].getMessage()
+    assert "'beta'" in message and "'broken'" in message
+    assert "activation_failed" in message
+    assert "a_missing_provider_dependency" not in message
+    # The failed provider is recorded with the typed error a selection of it raises.
+    (recorded,) = EndpointRegistry._failed
+    assert (recorded.provider, recorded.names) == ("beta", ("beta", "b"))
+    assert type(recorded.error) is ProviderActivationError
+    assert recorded.error.__cause__ is failure
+    assert EndpointRegistry.failed_providers() == [
+        {
+            "provider": "beta",
+            "endpoint": "broken",
+            "source": "a stub source",
+            "reason": "activation_failed",
+        }
+    ]
     assert EndpointRegistry._loaded is True
 
 

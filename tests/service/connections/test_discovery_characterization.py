@@ -94,6 +94,7 @@ print(
             "records": capture.records,
             "bad_module_imported": BAD in sys.modules,
             "rows": EndpointRegistry.list_providers(),
+            "failed": EndpointRegistry.failed_providers(),
         }
     )
 )
@@ -303,22 +304,31 @@ def test_cold_load_imports_exact_provider_modules(cold_load):
     assert sorted(cold_load["modules_after"]) == sorted(_EXPECTED_PROVIDER_MODULES)
 
 
-def test_provider_import_failure_is_skipped_with_warning_and_others_register():
+def test_provider_import_failure_is_recorded_with_warning_and_others_register():
     result = _run_child(_FAILING_IMPORT_CHILD, _FAILED_MODULE)
 
     # The child raises the ImportError from importlib.import_module, the call a declaration's
     # factory makes to import its endpoint module, for the one module named, and passes every
     # other name through.
-    # Today an ImportError from one provider module is logged as one warning that names the
-    # module, and the load goes on. ADR-0140 D4 replaces that skip, for an internal import
-    # failure, with a ProviderActivationError raised when the failed endpoint is selected, and D7
-    # requires a failed endpoint not to break unrelated providers.
+    # An ImportError from one provider module is an internal import failure (ADR-0140 D4): the
+    # load activates the declaration the way a selection does, so the failure becomes a
+    # ProviderActivationError, is logged as one warning that names the provider and endpoint
+    # and not the exception, and is reported by failed_providers(); the load goes on, as D7
+    # requires of a failed endpoint.
     assert result["records"] == [
         [
             "WARNING",
-            f"provider module '{_FAILED_MODULE}' failed to import and was not registered: "
-            f"simulated missing module for {_FAILED_MODULE}",
+            "provider 'groq' endpoint 'audio/transcriptions' could not be activated "
+            "(activation_failed); selecting it raises ProviderActivationError",
         ]
+    ]
+    assert result["failed"] == [
+        {
+            "provider": "groq",
+            "endpoint": "audio/transcriptions",
+            "source": "lionhub.providers",
+            "reason": "activation_failed",
+        }
     ]
     assert result["bad_module_imported"] is False
 

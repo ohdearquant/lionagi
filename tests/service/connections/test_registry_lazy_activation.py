@@ -203,6 +203,34 @@ rows = EndpointRegistry.list_providers()
 print(json.dumps({"rows": [[row["provider"], row["endpoint"]] for row in rows]}))
 """
 
+_LISTING_ORDER_CHILD = r"""
+import json
+
+from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.connections.match_endpoint import match_endpoint
+from lionagi.service.connections.registry import EndpointRegistry
+from lionhub.providers import manifest
+
+# Providers the catalog lists after others are selected before anything is listed.
+match_endpoint(provider="scripted", endpoint="")
+match_endpoint(provider="groq", endpoint="")
+match_endpoint(provider="claude", endpoint="")
+
+
+class Registered(Endpoint):
+    pass
+
+
+EndpointRegistry.register(provider="registered-provider", endpoint="chat")(Registered)
+rows = [[row["provider"], row["endpoint"]] for row in EndpointRegistry.list_providers()]
+catalog = [
+    [fragment.key, declaration.key]
+    for fragment in manifest.get_provider_manifest().fragments
+    for declaration in fragment.endpoints
+]
+print(json.dumps({"rows": rows, "catalog": catalog}))
+"""
+
 _ABSENT_DEPENDENCY_CHILD = r"""
 import json
 import sys
@@ -334,6 +362,18 @@ def test_listing_after_a_partial_selection_is_complete_and_keeps_scripted_last(t
     assert {tuple(row) for row in rows} == {(row.provider, row.endpoint) for row in ROWS}
     assert len(rows) == len(ROWS)
     assert rows[-1][0] == "scripted"
+
+
+def test_listing_rows_follow_catalog_order_whichever_provider_was_selected_first(tmp_path):
+    result = _run_child(_LISTING_ORDER_CHILD, tmp_path)
+    # The built-in rows come in the bundled catalog's order although groq and claude_code were
+    # selected, and so registered, before anything else; the row registered by the caller
+    # follows them, and the scripted provider's row is last.
+    assert result["rows"] == [
+        *result["catalog"],
+        ["registered-provider", "chat"],
+        ["scripted", "chat/completions"],
+    ]
 
 
 def test_an_absent_declared_dependency_of_a_built_in_provider_raises_a_missing_feature_error(
@@ -627,6 +667,119 @@ def test_a_failure_is_cached_per_declaration_and_warns_once(monkeypatch, caplog)
     assert all(failure.__cause__ is error for failure in raised)
 
 
+@pytest.fixture
+def cold_registry(monkeypatch):
+    """Make the next listing a cold load of whatever catalog the test installs.
+
+    The loaded flag, the record of failed providers, the entry list and the per-declaration
+    failure cache are replaced for the test and put back afterwards.
+    """
+    monkeypatch.setattr(EndpointRegistry, "_loaded", False)
+    monkeypatch.setattr(EndpointRegistry, "_failed", ())
+    monkeypatch.setattr(EndpointRegistry, "_entries", list(EndpointRegistry._entries))
+    monkeypatch.setattr(EndpointRegistry, "_activation_failures", {})
+
+
+def _warnings(caplog):
+    return [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+_ABSENT_DEPENDENCY = ModuleNotFoundError("No module named 'depx'", name="depx")
+
+
+def test_a_listing_does_not_call_again_a_factory_that_failed_in_a_selection(
+    monkeypatch, caplog, cold_registry
+):
+    calls = _failing_alpha(monkeypatch, ImportError("an internal module cannot be imported"))
+    with caplog.at_level(logging.WARNING, logger=registry_module.logger.name):
+        with pytest.raises(ProviderActivationError):
+            match_endpoint("alpha", "a")
+        EndpointRegistry.list_providers()
+    # The listing neither calls the failed factory again nor repeats its warning; the failed
+    # provider registers nothing further and the healthy one still loads.
+    assert calls == ["alpha/a", "beta/x"]
+    assert len(_warnings(caplog)) == 1
+    assert EndpointRegistry.failed_providers() == [
+        {"provider": "alpha", "endpoint": "a", "source": _SOURCE, "reason": "activation_failed"}
+    ]
+
+
+def test_a_failure_first_seen_by_a_listing_is_cached_for_later_selections(
+    monkeypatch, caplog, cold_registry
+):
+    error = ImportError("an internal module cannot be imported")
+    calls = _failing_alpha(monkeypatch, error)
+    with caplog.at_level(logging.WARNING, logger=registry_module.logger.name):
+        EndpointRegistry.list_providers()
+        raised = []
+        for _ in range(2):
+            with pytest.raises(ProviderActivationError) as caught:
+                match_endpoint("alpha", "a")
+            raised.append(caught.value)
+    assert calls == ["alpha/a", "beta/x"]
+    assert len(_warnings(caplog)) == 1
+    assert all(failure.__cause__ is error for failure in raised)
+
+
+@pytest.mark.parametrize(
+    "error", [*DEFECTS.values(), _ABSENT_DEPENDENCY], ids=[*DEFECTS, "absent-declared-dependency"]
+)
+def test_failed_providers_reports_every_activation_failure_a_selection_translates(
+    monkeypatch, cold_registry, error
+):
+    _failing_alpha(monkeypatch, error)
+    rows = EndpointRegistry.failed_providers()
+    with pytest.raises((ProviderActivationError, MissingFeatureError)) as raised:
+        match_endpoint("alpha", "a")
+    selected = raised.value
+    # The listing reports the typed error a selection of the same endpoint raises.
+    recorded = EndpointRegistry._failed[0].error
+    assert type(recorded) is type(selected)
+    assert recorded.__cause__ is selected.__cause__ is error
+    assert rows == [
+        {
+            "provider": "alpha",
+            "endpoint": selected.endpoint,
+            "source": selected.source,
+            "reason": selected.reason,
+        }
+    ]
+    assert selected.endpoint == "a"
+    assert selected.reason == (
+        "missing_dependency" if error is _ABSENT_DEPENDENCY else "activation_failed"
+    )
+
+
+@pytest.mark.parametrize("error", DEFECTS.values(), ids=DEFECTS.keys())
+def test_a_listing_completes_and_is_not_repeated_when_a_declaration_fails(
+    monkeypatch, cold_registry, error
+):
+    calls = _failing_alpha(monkeypatch, error)
+    rows = EndpointRegistry.list_providers()
+    assert EndpointRegistry._loaded is True
+    # The healthy provider loaded after the failed one, and the rows still describe the
+    # providers that were registered.
+    assert calls == ["alpha/a", "beta/x"]
+    assert rows == EndpointRegistry.list_providers()
+    EndpointRegistry.failed_providers()
+    assert calls == ["alpha/a", "beta/x"]
+
+
+def test_failed_providers_follow_catalog_order_whichever_failed_first_in_a_selection(
+    monkeypatch, cold_registry
+):
+    calls = []
+    failure = ImportError("an internal module cannot be imported")
+    alpha = _fragment("alpha", [_declaration("a", _raising(calls, "alpha/a", failure))])
+    beta = _fragment("beta", [_declaration("x", _factory(calls, "beta/x"))])
+    gamma = _fragment("gamma", [_declaration("g", _raising(calls, "gamma/g", failure))])
+    _install(monkeypatch, alpha, beta, gamma)
+    with pytest.raises(ProviderActivationError):
+        match_endpoint("gamma", "g")
+    assert [row["provider"] for row in EndpointRegistry.failed_providers()] == ["alpha", "gamma"]
+    assert calls == ["gamma/g", "alpha/a", "beta/x"]
+
+
 class _NeedsDependency(_Stub):
     """An endpoint whose constructor imports a module that is not installed."""
 
@@ -704,7 +857,11 @@ def _manifest_activation_error():
     [(_contract_version_error, type(None)), (_manifest_activation_error, SyntaxError)],
     ids=["contract-version", "manifest-activation"],
 )
-@pytest.mark.parametrize("extra", [{}, {"openai_compatible": True}], ids=["plain", "compatible"])
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"openai_compatible": True}, {"base_url": _CUSTOM_BASE_URL}],
+    ids=["plain", "compatible", "base-url"],
+)
 def test_a_catalog_that_cannot_load_fails_the_selection_of_a_built_in_provider(
     monkeypatch, make_error, cause_type, extra
 ):
@@ -714,13 +871,16 @@ def test_a_catalog_that_cannot_load_fails_the_selection_of_a_built_in_provider(
         raise make_error()
 
     monkeypatch.setattr(_provider_compat, "default_provider_catalog", cannot_load)
-    with pytest.raises(type(make_error())) as raised:
-        match_endpoint("openai", "", **extra)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(type(make_error())) as raised:
+            match_endpoint("openai", "", **extra)
     assert type(raised.value) is type(make_error())
     assert type(raised.value.__cause__) is cause_type
 
 
-def test_a_missing_hub_names_the_requested_provider(monkeypatch):
+def _missing_hub(monkeypatch):
+    """Leave nothing registered and make the bundled provider hub absent."""
     _empty_registry(monkeypatch)
 
     def cannot_load():
@@ -735,8 +895,12 @@ def test_a_missing_hub_names_the_requested_provider(monkeypatch):
         raise error
 
     monkeypatch.setattr(_provider_compat, "default_provider_catalog", cannot_load)
+
+
+def test_a_missing_hub_names_the_requested_provider(monkeypatch):
+    _missing_hub(monkeypatch)
     with pytest.raises(MissingFeatureError) as raised:
-        match_endpoint("OpenAI", "", openai_compatible=True)
+        match_endpoint("OpenAI", "")
     failure = raised.value
     assert (failure.feature, failure.provider, failure.missing_distribution) == (
         "providers",
@@ -745,6 +909,57 @@ def test_a_missing_hub_names_the_requested_provider(monkeypatch):
     )
     assert failure.name == "lionhub"
     assert isinstance(failure.__cause__, ModuleNotFoundError)
+
+
+def test_a_missing_hub_fails_a_custom_host_that_does_not_ask_for_the_generic_endpoint(
+    monkeypatch,
+):
+    _missing_hub(monkeypatch)
+    with pytest.raises(MissingFeatureError) as raised:
+        match_endpoint("my-own-host", "chat/completions")
+    assert raised.value.provider == "my-own-host"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"openai_compatible": True}, {"base_url": _CUSTOM_BASE_URL}],
+    ids=["compatible", "base-url"],
+)
+def test_a_missing_hub_fails_a_request_that_asks_for_the_generic_endpoint(monkeypatch, extra):
+    # A 1.x installation without the hub is incomplete, and the generic OpenAI-compatible
+    # endpoint does not hide that: a custom host that asks for it with ``openai_compatible=True``
+    # or ``base_url=`` gets the error a built-in name gets, and no routing warning is issued.
+    _missing_hub(monkeypatch)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(MissingFeatureError) as raised:
+            match_endpoint("my-own-host", "chat/completions", **extra)
+    failure = raised.value
+    assert (failure.feature, failure.provider, failure.missing_distribution) == (
+        "providers",
+        "my-own-host",
+        "lionagi",
+    )
+    assert "reinstall the matching lionagi release" in failure.install_hint
+    assert failure.name == "lionhub"
+    assert isinstance(failure.__cause__, ModuleNotFoundError)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"openai_compatible": True}, {"base_url": _CUSTOM_BASE_URL}],
+    ids=["plain", "compatible", "base-url"],
+)
+def test_a_provider_registered_by_the_caller_resolves_when_the_hub_is_missing(monkeypatch, extra):
+    _missing_hub(monkeypatch)
+
+    class Registered(_Stub):
+        pass
+
+    EndpointRegistry.register(provider="lazy-pin-provider", endpoint="chat")(Registered)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert type(match_endpoint("lazy-pin-provider", "", **extra)) is Registered
 
 
 def test_a_provider_registered_by_the_caller_resolves_when_the_catalog_cannot_load(monkeypatch):
