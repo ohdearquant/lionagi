@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import re
 from pathlib import Path
 
@@ -129,6 +130,18 @@ def _path_error_category(error: ValueError | OSError | RuntimeError) -> type[Exc
     return RuntimeError
 
 
+def _resolve_allow_missing(path: Path) -> Path:
+    """Resolve existing paths strictly, while allowing paths that do not yet exist."""
+    try:
+        return path.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return path.resolve()
+    except OSError as exc:
+        if exc.errno != errno.ELOOP:
+            raise
+    raise RuntimeError("path cannot be resolved") from None
+
+
 def contain_path_in_root(
     value: str | Path,
     root: Path,
@@ -140,7 +153,7 @@ def contain_path_in_root(
     entry = str(value).lstrip("@") if strip_at else str(value)
     resolution_error = None
     try:
-        resolved = (root / entry).resolve()
+        resolved = _resolve_allow_missing(root / entry)
     except (ValueError, OSError, RuntimeError) as exc:
         resolution_error = _path_error_category(exc)
     if resolution_error is not None:

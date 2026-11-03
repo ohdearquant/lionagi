@@ -31,7 +31,12 @@ from lionagi._errors import (
     _ExclusiveMcpSelectionError,
 )
 from lionagi._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
-from lionagi.libs.path_safety import _path_error_category, contain_and_resolve, has_traversal
+from lionagi.libs.path_safety import (
+    _path_error_category,
+    _resolve_allow_missing,
+    contain_and_resolve,
+    has_traversal,
+)
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
     SignalGate,
@@ -1812,7 +1817,7 @@ def _resolve_cli_path(path: Path, field_name: str) -> Path:
     """Resolve a CLI path without retaining a filesystem error that names it."""
     failure = None
     try:
-        resolved = path.resolve()
+        resolved = _resolve_allow_missing(path)
     except (ValueError, OSError, RuntimeError) as exc:
         failure = _path_error_category(exc)
     if failure is not None:
@@ -1847,6 +1852,7 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
 
     failure = None
     try:
+        _resolve_allow_missing(repo / ws_path)
         resolved = contain_and_resolve(ws_path, repo)
     except (ValueError, OSError, RuntimeError) as exc:
         failure = _path_error_category(exc)

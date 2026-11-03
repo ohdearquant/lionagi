@@ -61,3 +61,30 @@ def test_uninspectable_repo_omits_path_and_original_error(monkeypatch, tmp_path)
         pytest.fail("workspace inspection changed error type", pytrace=False)
     if marker in str(caught) or caught.__context__ is not None or caught.__cause__ is not None:
         pytest.fail("workspace inspection retained private input or original error", pytrace=False)
+
+
+def test_workspace_symlink_loop_is_refused_without_retaining_path(tmp_path):
+    marker = "sensitive fixture content"
+    (tmp_path / marker).symlink_to(marker, target_is_directory=True)
+    error = None
+    try:
+        resolve_cli_workspace(tmp_path, marker)
+    except (OSError, RuntimeError) as caught:
+        error = caught
+    if error is None:
+        pytest.fail("unresolvable workspace was accepted", pytrace=False)
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if marker in str(current) or marker in repr(current):
+            pytest.fail("workspace resolution retained caller input", pytrace=False)
+        pending.extend(x for x in (current.__cause__, current.__context__) if x is not None)
+
+
+def test_uncreated_workspace_is_still_permitted(tmp_path):
+    workspace = resolve_cli_workspace(tmp_path, "not-yet-created")
+    assert workspace == tmp_path / "not-yet-created"
+    assert not workspace.exists()
