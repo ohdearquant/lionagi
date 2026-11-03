@@ -289,6 +289,7 @@ class _SQLiteConnectionAwaitable:
             return await self._connection
         except BaseException as failed_open:
             from lionagi.ln.concurrency import CancelScope, run_sync
+            from lionagi.ln.concurrency.errors import shield_quietly
 
             worker = self._connection._thread
             if worker.ident is not None:
@@ -301,7 +302,7 @@ class _SQLiteConnectionAwaitable:
                     )
                     while not joining.done():
                         try:
-                            await asyncio.shield(joining)
+                            await shield_quietly(joining)
                         except asyncio.CancelledError as exc:
                             interrupted = exc
                     joining.result()

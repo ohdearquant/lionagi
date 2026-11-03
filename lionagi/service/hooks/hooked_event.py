@@ -9,6 +9,7 @@ import sniffio
 from pydantic import PrivateAttr
 
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class, move_on_after
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.protocols.types import DataLogger, Event, EventStatus
 from lionagi.service.hooks import HookEvent, HookEventTypes
 
@@ -250,7 +251,7 @@ class HookedEvent(Event):
 
         child = asyncio.get_running_loop().create_task(self._capture_post_stream_hook(h_ev))
         try:
-            hook_ended_with = await asyncio.shield(child)
+            hook_ended_with = await shield_quietly(child)
         except get_cancelled_exc_class():
             await self._stop_post_stream_hook(child)
             raise
@@ -289,7 +290,7 @@ class HookedEvent(Event):
         with CancelScope(shield=True):
             try:
                 with move_on_after(POST_STREAM_HOOK_STOP_GRACE):
-                    await asyncio.shield(child)
+                    await shield_quietly(child)
             finally:
                 if not child.done():
                     _abandoned_post_stream_hooks.add(child)

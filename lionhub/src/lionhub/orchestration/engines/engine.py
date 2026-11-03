@@ -30,6 +30,7 @@ from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
 )
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.ln.types import RoleFilter, TypeFilter
 from lionagi.protocols._concepts import Observable
 from lionagi.session.observer import SessionObserver
@@ -2165,7 +2166,7 @@ class Engine:
         # work burns tokens past budget exhaustion (no-op if _active is empty).
         if run._active or run._live_cli_processes():
             await run.cancel_active()
-        # asyncio.shield keeps the export running outside the cancelled scope;
+        # shield_quietly keeps the export running outside the cancelled scope;
         # the hard timeout bounds it so a hung synthesis call can't extend the run.
         partial_coro = self._partial_export(run, *args, **kwargs)
         from lionhub.providers._cli_subprocess import (  # noqa: PLC0415
@@ -2176,7 +2177,7 @@ class Engine:
             partial_task = asyncio.ensure_future(partial_coro)
         try:
             return await asyncio.wait_for(
-                asyncio.shield(partial_task),
+                shield_quietly(partial_task),
                 timeout=_PARTIAL_EXPORT_TIMEOUT_S,
             )
         except asyncio.CancelledError:
@@ -2301,7 +2302,7 @@ class Engine:
                 if run._active or run._live_cli_processes():
                     drain = asyncio.ensure_future(run.cancel_active())
                     try:
-                        await asyncio.shield(drain)
+                        await shield_quietly(drain)
                     except asyncio.CancelledError:
                         if drain.cancelled():
                             raise
@@ -2309,7 +2310,7 @@ class Engine:
                         # repeat cancels) so no run-owned task outlives run().
                         while not drain.done():
                             try:
-                                await asyncio.shield(drain)
+                                await shield_quietly(drain)
                             except asyncio.CancelledError:
                                 continue
                         if not drain.cancelled() and drain.exception() is not None:
@@ -2329,7 +2330,7 @@ class Engine:
         return self._wrap_result(result, run, degrade_reason=degrade_reason)
 
     async def _partial_export(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
-        """Called under asyncio.shield after budget cancellation; override in subclasses to return a partial result. Default returns None."""
+        """Called under shield_quietly after budget cancellation; override in subclasses to return a partial result. Default returns None."""
         return None
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:

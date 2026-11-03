@@ -21,6 +21,7 @@ from lionagi.cli._schedule_parsing import _CHAIN_ACTION_ALLOWED_KEYS, _MAX_CHAIN
 from lionagi.ln import coerce_created_at, short_id
 from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.ln.concurrency import sleep as _sleep
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
@@ -1073,7 +1074,7 @@ class SchedulerEngine:
         passes = asyncio.ensure_future(self._startup_recovery_passes())
         while True:
             try:
-                await asyncio.shield(passes)
+                await shield_quietly(passes)
                 return
             except asyncio.CancelledError:
                 if self._stopping:

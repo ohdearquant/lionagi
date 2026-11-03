@@ -25,6 +25,7 @@ from lionagi.ln import (
 )
 from lionagi.ln._proc import env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
+from lionagi.ln.concurrency.errors import shield_quietly
 
 __all__ = (
     "OneNameLookup",
@@ -287,12 +288,12 @@ async def _await_cleanup(operation: Awaitable[None]) -> None:
     # retaining a cancellation that arrives after cleanup has started.
     cleanup = asyncio.ensure_future(operation)
     try:
-        await asyncio.shield(cleanup)
+        await shield_quietly(cleanup)
     except asyncio.CancelledError:
         with CancelScope(shield=True):
             while not cleanup.done():
                 try:
-                    await asyncio.shield(cleanup)
+                    await shield_quietly(cleanup)
                 except asyncio.CancelledError:
                     continue
                 except Exception:  # noqa: BLE001 -- preserve the caller's cancellation

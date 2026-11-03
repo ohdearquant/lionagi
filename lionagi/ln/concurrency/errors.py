@@ -76,6 +76,43 @@ async def shield(func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwa
     return result  # type: ignore[return-value]
 
 
+def shield_quietly(arg: Awaitable[T]) -> asyncio.Future[T]:
+    """``asyncio.shield`` that never reports the inner's failure to the loop's exception handler.
+
+    Like ``asyncio.shield``: *arg* (a coroutine, task or future) keeps running when the caller
+    awaiting the returned future is cancelled, the caller gets its result or exception when it is
+    not, and a cancelled inner cancels the caller. An already finished future is returned as it is.
+
+    CPython 3.14.7 and 3.14.8 differ from other releases: when the caller was cancelled first and
+    the inner then fails, they pass the failure to the loop's exception handler, and the default
+    handler logs the exception text. A site that shields work whose failure it handles itself
+    must not do that. Here the inner's exception is marked retrieved when the caller is gone, so
+    nothing is reported then or when the inner is collected; a later ``await`` of the inner
+    still raises it.
+    """
+    inner = asyncio.ensure_future(arg)
+    if inner.done():
+        return inner
+    outer = inner.get_loop().create_future()
+
+    def _inner_done(inner: asyncio.Future[T]) -> None:
+        if outer.cancelled():
+            if not inner.cancelled():
+                inner.exception()
+            return
+        if inner.cancelled():
+            outer.cancel()
+            return
+        exc = inner.exception()
+        if exc is not None:
+            outer.set_exception(exc)
+        else:
+            outer.set_result(inner.result())
+
+    inner.add_done_callback(_inner_done)
+    return outer
+
+
 def split_cancellation(
     eg: BaseExceptionGroup,
 ) -> tuple[BaseExceptionGroup | None, BaseExceptionGroup | None]:

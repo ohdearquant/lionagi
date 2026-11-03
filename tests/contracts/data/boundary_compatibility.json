@@ -2133,6 +2133,7 @@
       "is_cancelled",
       "non_cancel_subgroup",
       "shield",
+      "shield_quietly",
       "split_cancellation"
     ],
     "lionagi/ln/concurrency/patterns.py": [

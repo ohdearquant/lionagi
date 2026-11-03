@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from lionagi.ln._hash import compute_hash
 from lionagi.ln._proc import env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, Lock, move_on_after
+from lionagi.ln.concurrency.errors import shield_quietly
 
 # Suppress MCP server logging by default
 logging.getLogger("mcp").setLevel(logging.WARNING)
@@ -2067,7 +2068,7 @@ class MCPConnectionPool:
         entering = asyncio.create_task(client.__aenter__())
         try:
             with move_on_after(timeout) as handshake:
-                await asyncio.shield(entering)
+                await shield_quietly(entering)
             if handshake.cancelled_caught:
                 raise TimeoutError(
                     f"MCP server {cls._server_label(config)!r} did not complete its "
@@ -2081,7 +2082,7 @@ class MCPConnectionPool:
             with CancelScope(shield=True):
                 while not closing.done():
                     try:
-                        await asyncio.shield(closing)
+                        await shield_quietly(closing)
                     except asyncio.CancelledError as exc:
                         cancelled = exc
                 closing.result()

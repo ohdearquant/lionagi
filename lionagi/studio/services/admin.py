@@ -33,6 +33,7 @@ from lionagi.cli._util import (
 )
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import run_sync as _run_sync
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
 from lionagi.state.lifecycle.models import ActorRecord, ReasonRecord, TransitionCommand
@@ -394,7 +395,7 @@ async def cached_ps_snapshot() -> str:
     try:
         # One cancelled request must not cancel the shared capture underneath
         # other viewers that are already awaiting it.
-        return await asyncio.shield(task)
+        return await shield_quietly(task)
     finally:
         # Clear only our own entry: a capture started on this loop after ours
         # must not be dropped by this one's cleanup.
