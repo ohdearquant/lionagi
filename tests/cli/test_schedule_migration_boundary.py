@@ -106,7 +106,12 @@ def _module_imports(source: str, package: str = _SCHEDULE_PACKAGE) -> list[tuple
                 and isinstance(func.value, ast.Name)
                 and func.value.id in importlib_names
             )
-            is_dunder_import = isinstance(func, ast.Name) and func.id == "__import__"
+            is_dunder_import = (isinstance(func, ast.Name) and func.id == "__import__") or (
+                isinstance(func, ast.Attribute)
+                and func.attr == "__import__"
+                and isinstance(func.value, ast.Name)
+                and (func.value.id == "builtins" or func.value.id in importlib_names)
+            )
             if not (is_import_module or is_dunder_import):
                 continue
             name_arg = (
@@ -206,6 +211,8 @@ def test_schedule_boundary_accepts_only_the_permitted_flow_edge(source):
         "import importlib\nimportlib.import_module('..flow.execution', package=__package__)\n",
         "from importlib import import_module as load\nload('lionhub.cli.main')\n",
         "__import__('lionagi.studio.cli')\n",
+        "builtins.__import__('lionagi.studio.cli')\n",
+        "importlib.__import__('lionhub.cli.main')\n",
         "__import__('lionagi', fromlist=['studio'])\n",
         "__import__('flow', globals(), None, ['checkpoint'], 2)\n",
     ],

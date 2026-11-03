@@ -9,8 +9,8 @@ so a spelling one reader understood and another did not was a separate bug: a
 bind host in brackets widened nothing, and a browser's canonical IPv6 form was
 refused for a bind written in its long form.
 
-This module is deliberately thin: the CLI imports it, so it must not pull the
-web stack into the CLI's import path. Host normalization is shared with the schedule client.
+This module keeps host admission helpers together and uses the same host
+normalization as the schedule client.
 
 Brackets and whitespace are the *name's* syntax, not part of the value. A
 non-canonical address is the same address -- ``2001:0db8::1`` and

@@ -32,7 +32,7 @@ def test_human_and_machine_url_calls_share_one_warning(monkeypatch, machine_firs
 
 
 def test_app_import_loads_no_new_modules_from_host_normalizer():
-    """Compare fresh imports against the original host source, in the same environment."""
+    """Compare app-import module sets using the original and current host source."""
     baseline = Path(__file__).parent / "data" / "studio_host_before_extraction.txt"
     script = """
 import importlib.util
@@ -56,9 +56,10 @@ print(json.dumps(sorted(sys.modules)))
             [sys.executable, "-c", script, mode, str(baseline)],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
             timeout=30,
         )
+        assert completed.returncode == 0, f"{mode} app import failed: {completed.stderr}"
         results.append(set(json.loads(completed.stdout)))
     baseline_modules, current_modules = results
     assert current_modules - baseline_modules == set()

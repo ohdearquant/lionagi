@@ -6,6 +6,8 @@ Shared by the human command path and the machine one. The chain-depth cap, the
 action-kind vocabulary and the identifier check are defined here; the scheduler
 imports these names from this module, and this module imports nothing from
 lionagi.studio, so importing it does not load the Studio scheduler.
+Host normalization and URL authority resolution are shared here, as is base URL
+resolution and its one-time warning for an explicit URL ending in /api.
 """
 
 from __future__ import annotations
