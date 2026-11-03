@@ -137,9 +137,7 @@ _LINE = re.compile(
     rf"(?<![\w./-])(?P<path>{_PATH}):(?P<lo>\d+)(?:[-–](?P<hi>\d+))?(?:@(?P<sha>[0-9a-f]+))?"
 )
 # ``path.py::Class.method`` and ``path.py::NAME``.
-_SYMBOL = re.compile(
-    rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
-)
+_SYMBOL = re.compile(rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
 # `path.py` followed by one backticked line of that file.
 _QUOTE = re.compile(rf"`(?P<path>{_PATH})` `(?P<quote>[^`\n]+)`")
 
@@ -261,9 +259,7 @@ def symbol_tokens(records: dict[str, str]) -> list[tuple[str, int, re.Match[str]
     ]
 
 
-def quote_tokens(
-    records: dict[str, str], source: Source
-) -> list[tuple[str, int, re.Match[str]]]:
+def quote_tokens(records: dict[str, str], source: Source) -> list[tuple[str, int, re.Match[str]]]:
     """Quoted citations: a full repository path and a code span, side by side.
 
     A path that does not start at a top-level directory of the repository (a bare
@@ -396,9 +392,7 @@ def check_quotes_unique(records: dict[str, str], source: Source) -> list[str]:
     return problems
 
 
-def check_pins_are_listed(
-    records: dict[str, str], known: dict[str, tuple[str, ...]]
-) -> list[str]:
+def check_pins_are_listed(records: dict[str, str], known: dict[str, tuple[str, ...]]) -> list[str]:
     """Check 5: outside the edit record, the pins are exactly the ones in ``known``."""
     problems: list[str] = []
     seen: dict[str, set[str]] = {}
@@ -490,8 +484,7 @@ def test_clean_fixture_passes_every_check() -> None:
 
 def test_line_citation_without_a_pin_is_reported() -> None:
     doc = (
-        "The registry matches a name (`pkg/registry.py:9`) "
-        "and reloads (`pkg/registry.py:12-15`).\n"
+        "The registry matches a name (`pkg/registry.py:9`) and reloads (`pkg/registry.py:12-15`).\n"
     )
     problems = check_no_line_citations({"ADR-0001-registry.md": doc})
     assert len(problems) == 2
@@ -579,10 +572,7 @@ def test_quote_in_an_untracked_file_is_reported() -> None:
 
 
 def test_path_pair_that_is_not_a_repository_path_is_not_a_quote() -> None:
-    doc = (
-        "| `registry.py` | `Registry` |\n"
-        "| `lib/registry.py` `Registry` | the registry class |\n"
-    )
+    doc = "| `registry.py` | `Registry` |\n| `lib/registry.py` `Registry` | the registry class |\n"
     records = {"ADR-0001-registry.md": doc}
     assert quote_tokens(records, TREE) == []
     assert check_quotes_unique(records, TREE) == []
