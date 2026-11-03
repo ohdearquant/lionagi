@@ -244,11 +244,16 @@ def test_failed_error_count_falls_back_without_rendering_the_exception():
 async def test_validation_error_subclass_cannot_override_its_count(monkeypatch, mode, raises):
     marker = "sensitive fixture content"
 
-    class UntrustedValidationError(ValidationError):
-        def error_count(self):
-            if raises:
-                raise RuntimeError(marker)
-            return marker
+    try:
+
+        class UntrustedValidationError(ValidationError):
+            def error_count(self):
+                if raises:
+                    raise RuntimeError(marker)
+                return marker
+
+    except TypeError:
+        pytest.skip("this Pydantic version does not allow ValidationError subclasses")
 
     original = UntrustedValidationError.from_exception_data(
         "OtherModel", [{"type": "int_parsing", "loc": (), "input": marker}]
