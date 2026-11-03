@@ -11,7 +11,12 @@ import pytest
 from pydantic import BaseModel, ValidationError, field_validator
 from pydantic_core import PydanticCustomError
 
-from lionagi.adapters._base import AdapterRegistry, AdapterValidationError, _safe_adapter_data
+from lionagi.adapters._base import (
+    AdapterParseError,
+    AdapterRegistry,
+    AdapterValidationError,
+    _safe_adapter_data,
+)
 from lionagi.adapters.csv_ import CsvAdapter
 from lionagi.adapters.json_ import JsonAdapter
 from lionagi.adapters.toml_ import TomlAdapter
@@ -85,6 +90,48 @@ def test_validation_failure_does_not_expose_input_or_render_context(kind):
     if _contains_marker(captured.value):
         pytest.fail("adapter error exposed rejected input or an original exception", pytrace=False)
     assert _TRAP.renders == 0
+
+
+@pytest.mark.parametrize("kind", ["json", "toml", "csv"])
+def test_unlisted_pydantic_validation_error_does_not_expose_input(kind):
+    class Record(BaseModel):
+        amount: int
+
+    adapters = {
+        "json": (JsonAdapter, json.dumps({"amount": _MARKER})),
+        "toml": (TomlAdapter, f'amount = "{_MARKER}"'),
+        "csv": (CsvAdapter, f"amount\n{_MARKER}\n"),
+    }
+    adapter, source = adapters[kind]
+    with pytest.raises(AdapterParseError) as captured:
+        adapter.from_obj(Record, source, validation_errors=(TypeError,))
+    if _contains_marker(captured.value):
+        pytest.fail("unlisted validation error exposed rejected input", pytrace=False)
+    expected_data = {"item_0": "<redacted>"}
+    assert captured.value.data == ([expected_data] if kind == "csv" else expected_data)
+    assert captured.value.message == "Validation failed"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+@pytest.mark.parametrize("kind", ["json", "toml", "csv"])
+def test_unexpected_non_validation_error_keeps_existing_diagnostic(kind):
+    adapters = {
+        "json": (JsonAdapter, '{"amount": "value"}'),
+        "toml": (TomlAdapter, 'amount = "value"'),
+        "csv": (CsvAdapter, "amount\nvalue\n"),
+    }
+    adapter, source = adapters[kind]
+
+    def reject(_):
+        raise RuntimeError("unexpected conversion")
+
+    with pytest.raises(AdapterParseError) as captured:
+        adapter.from_obj(_Validated, source, adapt_meth=reject, validation_errors=(TypeError,))
+    assert captured.value.message == "unexpected conversion"
+    assert captured.value.details["unexpected"] is True
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert captured.value.__context__ is captured.value.__cause__
 
 
 def test_json_many_non_array_does_not_expose_data():

@@ -16,6 +16,7 @@ from ._base import (
     Adapter,
     AdapterBase,
     AdapterError,
+    AdapterParseError,
     dispatch_adapt_meth,
 )
 
@@ -89,13 +90,18 @@ class TomlAdapter(AdapterBase, Adapter[T]):
         validation_errors: tuple[type[Exception], ...] = (ValidationError,),
         **kw,
     ) -> T | list[T]:
+        toml_data = None
         try:
             toml_data = cls._read_obj_to_toml(obj, **kw)
             return cls._validate(toml_data, subj_cls, many, adapt_meth, adapt_kw, validation_errors)
         except AdapterError:
             raise
         except Exception as e:
-            cls._handle_error(e, "parse", unexpected=True)
+            if not isinstance(e, ValidationError):
+                cls._handle_error(e, "parse", unexpected=True)
+            safe = cls._validation_error(e, toml_data)
+            error = AdapterParseError(safe.message, details=safe.details)
+        raise error from None
 
     @classmethod
     def to_obj(

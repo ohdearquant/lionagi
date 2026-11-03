@@ -16,6 +16,7 @@ from ._base import (
     Adapter,
     AdapterBase,
     AdapterError,
+    AdapterParseError,
     AdapterValidationError,
     _safe_adapter_data,
     dispatch_adapt_meth,
@@ -89,6 +90,7 @@ class JsonAdapter(AdapterBase, Adapter[T]):
         validation_errors: tuple[type[Exception], ...] = (ValidationError,),
         **kw,
     ) -> T | list[T]:
+        json_data = None
         try:
             json_data = cls._read_obj_to_json(obj, **kw)
             if many and not isinstance(json_data, list):
@@ -120,7 +122,11 @@ class JsonAdapter(AdapterBase, Adapter[T]):
         except AdapterError:
             raise
         except Exception as e:
-            cls._handle_error(e, "parse", unexpected=True)
+            if not isinstance(e, ValidationError):
+                cls._handle_error(e, "parse", unexpected=True)
+            safe = cls._validation_error(e, json_data)
+            error = AdapterParseError(safe.message, details=safe.details)
+        raise error from None
 
     @classmethod
     def to_obj(

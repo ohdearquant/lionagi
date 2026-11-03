@@ -17,6 +17,7 @@ from ._base import (
     Adapter,
     AdapterBase,
     AdapterError,
+    AdapterParseError,
     dispatch_adapt_meth,
 )
 
@@ -107,6 +108,7 @@ class CsvAdapter(AdapterBase, Adapter[T]):
         validation_errors: tuple[type[Exception], ...] = (ValidationError,),
         **kw,
     ) -> T | list[T]:
+        rows = None
         try:
             rows, fieldnames = cls._read_obj_to_csv(obj, **kw)
             if not rows:
@@ -117,7 +119,11 @@ class CsvAdapter(AdapterBase, Adapter[T]):
         except AdapterError:
             raise
         except Exception as e:
-            cls._handle_error(e, "parse", unexpected=True)
+            if not isinstance(e, ValidationError):
+                cls._handle_error(e, "parse", unexpected=True)
+            safe = cls._validation_error(e, rows)
+            error = AdapterParseError(safe.message, details=safe.details)
+        raise error from None
 
     @classmethod
     def to_obj(
