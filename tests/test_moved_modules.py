@@ -913,6 +913,8 @@ PROVIDER_INTERIM_EDGES = {
     "agent/factory.py": [
         *["lionhub.providers._cli_subprocess"] * 2,
         *["lionhub.providers.openai._codex_profile"] * 8,
+        # The forwarded-server check reads the project config layers a codex run would load.
+        "lionhub.providers.openai._codex_project_layers",
         *["lionhub.providers.openai.codex"] * 6,
     ],
     "operations/run/run.py": ["lionhub.providers.google.gemini_code"],
