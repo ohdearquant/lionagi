@@ -246,6 +246,7 @@ class RunDir:
         execution provenance reads the file for that time alone, and writes
         without it when the file cannot be read.
         """
+        _validate_manifest_run_id(self.run_id, data)
         ensure_lionagi_dir(self.state_root)
         with _run_manifest_lock(self.state_root, required=False):
             self._write_manifest_holding_lock(data)
@@ -253,6 +254,7 @@ class RunDir:
     def _write_manifest_holding_lock(self, data: dict) -> None:
         """:meth:`write_manifest` for a caller already holding the manifest lock,
         which is not reentrant."""
+        _validate_manifest_run_id(self.run_id, data)
         payload = {
             "run_id": self.run_id,
             "state_root": str(self.state_root),
@@ -610,10 +612,19 @@ def allocate_run(
     MCP reason ``not_resolved``) until :meth:`RunDir.with_execution_provenance` binds it."""
     global _ALLOCATED_RUN_ID
 
-    inherited_run_id = current_run_id()
-    rid = run_id or inherited_run_id or _new_run_id()
-    if inherited_run_id is not None:
-        os.environ.pop(_RUN_ID_ENV_VAR, None)
+    inherited_run_id = os.environ.pop(_RUN_ID_ENV_VAR, None) or None
+    if run_id:
+        rid, source = run_id, "run_id argument"
+    elif inherited_run_id is not None:
+        rid, source = inherited_run_id, _RUN_ID_ENV_VAR
+    else:
+        rid, source = _new_run_id(), "generated run_id"
+    try:
+        resolved_dir = _resolved_run_state_dir(rid)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"invalid run id {rid!r} from {source}") from exc
+    if resolved_dir is None:
+        raise ValueError(f"invalid run id {rid!r} from {source}")
     _ALLOCATED_RUN_ID = rid
     state_root = RUNS_ROOT / rid
 
@@ -2658,3 +2669,33 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
             if original_error is None:
                 raise
             _log.warning("session recovery database close did not complete: %s", close_error)
+
+
+def _resolved_run_state_dir(run_id: str) -> Path | None:
+    """Resolve a single run ID only when it names its own direct child directory."""
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in (".", "..")
+        or "\x00" in run_id
+        or "/" in run_id
+        or os.sep in run_id
+        or (os.altsep is not None and os.altsep in run_id)
+    ):
+        return None
+    root = RUNS_ROOT.resolve()
+    path = root / run_id
+    if path.resolve() != path:
+        return None
+    return path
+
+
+def _manifest_run_id_matches(run_id: str, data: dict) -> bool:
+    """Allow an omitted ID or one matching the run directory."""
+    return "run_id" not in data or data["run_id"] == run_id
+
+
+def _validate_manifest_run_id(run_id: str, data: dict) -> None:
+    """Prevent caller data from changing the run identity in a manifest."""
+    if not _manifest_run_id_matches(run_id, data):
+        raise ValueError(f"manifest run_id {data['run_id']!r} does not match run {run_id!r}")

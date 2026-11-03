@@ -15,7 +15,7 @@ from lionagi.ln import coerce_created_at, short_id
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionagi.state.session_naming import resolve_display_name
 
-from ._runs import RUNS_ROOT
+from ._runs import RUNS_ROOT, _manifest_run_id_matches
 from ._util import EXIT_CODE_BY_STATUS
 
 __all__ = [
@@ -1602,7 +1602,14 @@ async def _import_runs() -> dict[str, int]:
                 counts["errors"] += 1
                 continue
 
-            run_id = manifest.get("run_id") or run_dir.name
+            if not _manifest_run_id_matches(run_dir.name, manifest):
+                print(
+                    f"  [error] {run_dir.name!r}: manifest run_id "
+                    f"{manifest['run_id']!r} does not match its directory"
+                )
+                counts["errors"] += 1
+                continue
+            run_id = run_dir.name
 
             existing = await db.get_session(run_id)
             if existing is not None:

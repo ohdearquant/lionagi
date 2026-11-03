@@ -13,6 +13,7 @@ The endpoint's call is scripted here, so no request leaves the process.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1555,10 +1556,23 @@ def _run_record(tmp_path) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp_path):
+async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp_path, monkeypatch):
     import lionagi.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
 
+    # Keep project discovery offline while retaining the real run allocator.
+    monkeypatch.setattr("lionagi._paths._find_git_root", lambda _cwd: None)
+    monkeypatch.setattr("lionagi.cli._project._find_git_root", lambda _cwd: None)
+    monkeypatch.setattr("lionagi.ln._proc.current_pid_markers", lambda: {"pid": 4242})
+    allocated = []
+    allocate = agent_mod.allocate_run
+
+    def record_allocation(*args, **kwargs):
+        run_dir = allocate(*args, **kwargs)
+        allocated.append(run_dir)
+        return run_dir
+
+    monkeypatch.setattr(agent_mod, "allocate_run", record_allocation)
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _refused()])
 
@@ -1566,6 +1580,11 @@ async def test_the_run_record_of_a_refused_turn_carries_the_stop_reason(leg, tmp
         await leg.run(_profile(api_tools="read"))
 
     manifest = _run_record(tmp_path)
+    [manifest_path] = (tmp_path / "runs").glob("*/run.json")
+    [run_dir] = allocated
+    assert manifest["run_id"] == manifest_path.parent.name == run_dir.run_id
+    assert Path(manifest["state_root"]).resolve() == manifest_path.parent.resolve()
+    assert run_dir.state_root.resolve() == manifest_path.parent.resolve()
     assert manifest["stop_reason"] == "refusal"
     assert "the provider refused the response" in manifest["error"]
 
