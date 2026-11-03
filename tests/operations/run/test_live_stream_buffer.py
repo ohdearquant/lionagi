@@ -219,7 +219,7 @@ async def test_fallback_keeps_string_subclass_text_without_calling_its_str(tmp_p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029), chr(0x85)])
-async def test_reader_preserves_unicode_separators_from_producer(tmp_path, separator):
+async def test_reader_keeps_unicode_separators_in_one_record_but_hides_them(tmp_path, separator):
     from lionagi.cli.monitor import _stream_tail
 
     stream = tmp_path / "stream"
@@ -227,8 +227,12 @@ async def test_reader_preserves_unicode_separators_from_producer(tmp_path, separ
     path = stream / "branch.buffer.jsonl"
     content = f"before{separator}after"
     await _append_chunk(path, StreamChunk(type="text", content=content))
-    assert separator in path.read_text(encoding="utf-8")
-    assert _stream_tail(tmp_path, "branch") == [content]
+    data = path.read_text(encoding="utf-8")
+    assert data.endswith("\n")
+    records = data.removesuffix("\n").split("\n")
+    assert len(records) == 1
+    assert json.loads(records[0])["content"] == content
+    assert _stream_tail(tmp_path, "branch") == ["beforeafter"]
 
 
 @pytest.mark.asyncio
