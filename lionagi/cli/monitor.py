@@ -298,11 +298,10 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
         for line in tail:
             try:
                 obj = _json.loads(line)
-                kind = obj.get("type")
-                if kind in ("system", "thinking", "tool_use", "tool_result", "result", "error"):
-                    continue
-                if kind == "text" and isinstance(obj.get("content"), str):
-                    text = obj["content"]
+                if obj.get("_lionagi_stream_chunk") is True:
+                    if obj.get("type") != "text":
+                        continue
+                    text = obj.get("content") if isinstance(obj.get("content"), str) else ""
                 else:
                     # Older records use delta.text or text, sometimes with their own type.
                     text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""

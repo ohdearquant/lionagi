@@ -82,7 +82,10 @@ async def _append_chunk(buffer_path, chunk) -> None:
     payload = None
     try:
         payload = chunk if isinstance(chunk, StreamChunk) else chunk.to_dict()
-        line = json_dumps(_to_json_value(payload))
+        projected = _to_json_value(payload)
+        if isinstance(chunk, StreamChunk):
+            projected["_lionagi_stream_chunk"] = True
+        line = json_dumps(projected)
     except Exception as exc:
         nonfinite = (
             type(exc) is ValueError
@@ -94,38 +97,31 @@ async def _append_chunk(buffer_path, chunk) -> None:
         if isinstance(chunk, StreamChunk):
             kind = _buffer_text(chunk.type) or "error"
             content = _buffer_text(chunk.content) or ""
-            fallback = {"type": kind, "content": content, "serialization_error": failure}
+            fallback = {
+                "_lionagi_stream_chunk": True,
+                "type": kind,
+                "content": content,
+                "serialization_error": failure,
+            }
         else:
             data = payload if type(payload) is dict else {}
             if payload is None:
                 # A failing legacy adapter may still expose its text directly.
                 # Read only these fields and never call its serializer again.
-                for name in ("type", "content", "text"):
+                for name in ("content", "text"):
                     try:
                         value = getattr(chunk, name, None)
                     except Exception:
                         value = None
                     if (value := _buffer_text(value)) is not None:
                         data[name] = value
-            kind = _buffer_text(data.get("type"))
             text = _buffer_text(data.get("content"))
             if text is None:
                 text = _buffer_text(data.get("text"))
             if text is None and type(data.get("delta")) is dict:
                 text = _buffer_text(data["delta"].get("text"))
             text = text or ""
-            if kind in (
-                "system",
-                "thinking",
-                "text",
-                "tool_use",
-                "tool_result",
-                "result",
-                "error",
-            ):
-                fallback = {"type": kind, "content": text, "serialization_error": failure}
-            else:
-                fallback = {"text": text, "serialization_error": failure}
+            fallback = {"text": text, "serialization_error": failure}
         line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))
     async with await anyio.open_file(buffer_path, "a") as f:
         await f.write(line + "\n")

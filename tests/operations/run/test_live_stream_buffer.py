@@ -137,6 +137,20 @@ async def test_append_serializes_a_real_stream_chunk(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind", ["system", "thinking", "text", "tool_use", "tool_result", "result", "error"]
+)
+@pytest.mark.parametrize("bad", [False, True], ids=["normal", "fallback"])
+async def test_normalized_records_always_carry_the_reader_discriminator(tmp_path, kind, bad):
+    path = tmp_path / "buffer.jsonl"
+    metadata = {"bad": object()} if bad else {}
+    await _append_chunk(path, StreamChunk(type=kind, content="visible", metadata=metadata))
+    row = json.loads(path.read_text())
+    assert row["_lionagi_stream_chunk"] is True
+    assert bool(row.get("serialization_error")) == bad
+
+
+@pytest.mark.asyncio
 async def test_append_preserves_every_normalized_chunk_field(tmp_path):
     path = tmp_path / "buffer.jsonl"
     chunk = StreamChunk(
@@ -152,6 +166,7 @@ async def test_append_preserves_every_normalized_chunk_field(tmp_path):
     )
     await _append_chunk(path, chunk)
     assert json.loads(path.read_text()) == {
+        "_lionagi_stream_chunk": True,
         "type": "tool_use",
         "content": "summary",
         "tool_name": "lookup",
@@ -184,8 +199,8 @@ async def test_raising_legacy_serializer_keeps_accessible_text(tmp_path):
     path = tmp_path / "buffer.jsonl"
     await _append_chunk(path, BrokenLegacyChunk())
     row = json.loads(path.read_text())
-    assert row["type"] == "text"
-    assert row["content"] == "still visible"
+    assert row["text"] == "still visible"
+    assert "_lionagi_stream_chunk" not in row
     assert row["serialization_error"]
 
 
@@ -294,21 +309,19 @@ async def test_append_writes_a_marked_text_fallback_for_nonfinite_values(tmp_pat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("payload", "expected_type"),
+    "payload",
     [
-        ({"delta": {"text": "visible"}, "bad": object()}, None),
-        ({"type": "text", "content": "visible", "bad": object()}, "text"),
-        ({"type": "thinking", "content": "visible", "bad": object()}, "thinking"),
+        {"delta": {"text": "visible"}, "bad": object()},
+        {"type": "text", "content": "visible", "bad": object()},
+        {"type": "thinking", "content": "visible", "bad": object()},
     ],
 )
-async def test_legacy_fallback_preserves_text_and_known_chunk_type(
-    tmp_path, payload, expected_type
-):
+async def test_legacy_fallback_preserves_text_in_a_legacy_record(tmp_path, payload):
     path = tmp_path / "buffer.jsonl"
     await _append_chunk(path, _LegacyChunk(payload))
     row = json.loads(path.read_text())
-    assert row.get("content", row.get("text")) == "visible"
-    assert row.get("type") == expected_type
+    assert row["text"] == "visible"
+    assert "_lionagi_stream_chunk" not in row
     assert row["serialization_error"]
 
 

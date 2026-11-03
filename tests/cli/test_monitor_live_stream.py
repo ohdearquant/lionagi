@@ -30,15 +30,34 @@ def test_stream_tail_renders_normalized_text_and_keeps_legacy_shapes(tmp_path):
         run_dir,
         "branch",
         [
-            {"type": "text", "content": "normalized text"},
-            {"type": "thinking", "content": "private reasoning", "text": "hidden thinking"},
-            {"type": "tool_use", "content": "private input", "text": "hidden tool"},
-            {"type": "tool_result", "tool_output": {"text": "private output"}},
+            {"_lionagi_stream_chunk": True, "type": "text", "content": "normalized text"},
+            {
+                "_lionagi_stream_chunk": True,
+                "type": "thinking",
+                "content": "private reasoning",
+                "text": "hidden thinking",
+            },
+            {
+                "_lionagi_stream_chunk": True,
+                "type": "tool_use",
+                "content": "private input",
+                "text": "hidden tool",
+            },
+            {
+                "_lionagi_stream_chunk": True,
+                "type": "tool_result",
+                "tool_output": {"text": "private output"},
+            },
             {"type": "content_block_delta", "delta": {"text": "legacy delta"}},
             {"text": "legacy text"},
             {"type": "text", "text": "legacy typed text"},
-            {"type": "text", "content": "fallback text", "serialization_error": "unserializable"},
-            {"type": "text", "content": "A" * 140},
+            {
+                "_lionagi_stream_chunk": True,
+                "type": "text",
+                "content": "fallback text",
+                "serialization_error": "unserializable",
+            },
+            {"_lionagi_stream_chunk": True, "type": "text", "content": "A" * 140},
         ],
     )
 
@@ -50,6 +69,24 @@ def test_stream_tail_renders_normalized_text_and_keeps_legacy_shapes(tmp_path):
         "fallback text",
         "A" * 120,
     ]
+
+
+def test_stream_tail_keeps_old_reader_behavior_for_legacy_type_names(tmp_path):
+    rows = [
+        {"type": "result", "text": "legacy result"},
+        {"type": "thinking", "delta": {"text": "legacy delta"}},
+        {"type": "tool_use", "text": "legacy tool"},
+        {"type": "result", "content": "legacy metadata", "text": "legacy content field"},
+        {"_lionagi_stream_chunk": False, "type": "thinking", "text": "false marker"},
+        {"_lionagi_stream_chunk": 1, "type": "result", "text": "integer marker"},
+        {"_lionagi_stream_chunk": "true", "type": "error", "text": "string marker"},
+        {"text": "legacy plain"},
+    ]
+    _write_live_buffer(tmp_path / "run", "branch", rows)
+    old_reader_output = [
+        ((row.get("delta") or {}).get("text") or row.get("text") or "")[:120] for row in rows
+    ]
+    assert monitor._stream_tail(tmp_path / "run", "branch", n_lines=20) == old_reader_output
 
 
 @pytest.mark.asyncio
@@ -77,9 +114,17 @@ async def test_detail_view_reads_the_live_run_and_keeps_legacy_fallback(
         actual_dir,
         branch_id,
         [
-            {"type": "text", "content": "live output from the run"},
-            {"type": "thinking", "content": "hidden private reasoning"},
-            {"type": "tool_use", "tool_input": {"token": "hidden tool input"}},
+            {"_lionagi_stream_chunk": True, "type": "text", "content": "live output from the run"},
+            {
+                "_lionagi_stream_chunk": True,
+                "type": "thinking",
+                "content": "hidden private reasoning",
+            },
+            {
+                "_lionagi_stream_chunk": True,
+                "type": "tool_use",
+                "tool_input": {"token": "hidden tool input"},
+            },
         ],
     )
     if not legacy:
