@@ -1612,6 +1612,7 @@
     "lionagi/cli/_schedule_parsing.py": [
       "add_schedule_subparser",
       "build_create_body",
+      "normalize_host",
       "suggest_schedule_flag"
     ],
     "lionagi/cli/_team_service.py": [
@@ -3126,8 +3127,7 @@
     ],
     "lionagi/studio/_host.py": [
       "admitted_host_names",
-      "is_unspecified_host",
-      "normalize_host"
+      "is_unspecified_host"
     ],
     "lionagi/studio/_timezone_rules.py": [
       "read_tzif",
