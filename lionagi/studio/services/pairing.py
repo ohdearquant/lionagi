@@ -66,8 +66,8 @@ async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict
 
     ``token_source`` says which bearer ``token`` is: ``"launch"`` for this daemon's
     launch bearer, which stops working when the daemon restarts, or ``"configured"``
-    for the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential that a
-    page keeps in memory only.
+    for the configured ``LIONAGI_STUDIO_AUTH_TOKEN``, a long-lived credential. The
+    page stores whichever it receives, bound to the daemon's API base.
     """
     # Only a page on an origin CORS admits (by default the hosted app), or on an
     # origin a launcher in this process named for its page and asking through

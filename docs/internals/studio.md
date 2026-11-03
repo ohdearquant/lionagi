@@ -89,13 +89,12 @@ else the launch bearer, plus a decision capability bound to the page's origin
 (see below). The answer also carries `token_source`: `"launch"` for the launch
 bearer, `"configured"` for the configured token.
 
-The page stores the bearer only when the daemon says it is the launch bearer
-(`token_source: "launch"`). A configured `LIONAGI_STUDIO_AUTH_TOKEN` is never
-stored: it stays in memory for that page load, and a reload shows the
-access-required screen again. So does an answer without `token_source`, from a
-daemon released before the field. A stored launch bearer is kept in
-`localStorage` for the page's own origin, bound to the daemon's API base, and
-survives reloads, tabs and bookmarks. Before the app mounts, the page checks a
+The page stores the bearer it is given, whatever `token_source` says
+(`"launch"`, `"configured"`, missing or any other value); it does not read the
+field. An answer from a daemon released before the field carries none, and its
+bearer is stored the same way. The stored bearer is kept in `localStorage` for
+the page's own origin, bound to the daemon's API base, and survives reloads,
+tabs and bookmarks. Before the app mounts, the page checks a
 stored bearer with one authenticated request (`GET /api/casts/`), so nothing
 renders on it unchecked. Only a 2xx answer mounts the app. The first 401, to
 that check or to any later request that carried it, clears that value; a bearer
@@ -106,15 +105,18 @@ seconds (`PAIRING_TIMEOUT_MS` in `apps/studio/frontend/src/lib/pairing.ts`), sho
 the same screen and keeps the stored bearer for Retry, and a check that does not
 reach the daemon keeps it too.
 
-Why storing the launch bearer is acceptable: a daemon with no configured token
+Why storing the bearer is acceptable: a daemon with no configured token
 already admits any local caller that sends no `Origin`, a command-line client
 for one, and pages on loopback origins, so the launch bearer gates only pages on
 other origins. The stored value is readable only by scripts served from the
-page's own origin, which receive it at every pairing anyway, and it stops
-working when the daemon restarts. A configured token is a long-lived operator
-credential that the operator chose, so the page does not extend where it lives.
-The capability is kept in `sessionStorage` for that tab, so it survives a reload
-and is gone with the tab.
+page's own origin, which receive it at every pairing anyway. It is bound to one
+API base, so a request to any other base does not carry it, and the first
+refusal forgets it. A launch bearer also stops working when the daemon
+restarts. A configured token is a long-lived operator credential, so it stays in
+the browser until the daemon refuses it or the site's data is cleared; an
+operator who does not want it kept there clears the site's data or pairs in a
+private window. The capability is kept in `sessionStorage` for that tab, so it
+survives a reload and is gone with the tab.
 
 **The reconnect socket** (`reconnect.py`) — a unix socket in a `studio/`
 directory beside the StateDB file, created with mode 0600 inside a 0700
