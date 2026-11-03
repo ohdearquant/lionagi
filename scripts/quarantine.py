@@ -80,9 +80,14 @@ def load_manifest(
             ) from exc
         if quarantined_on.isoformat() != raw_date:
             raise QuarantineError(f"{path}:{line_number}: date must use the YYYY-MM-DD form")
-        if not nodeid.startswith("tests/") or "::" not in nodeid:
+        test_file = nodeid.split("::", 1)[0]
+        if (
+            not nodeid.startswith(("tests/", "lionhub/tests/"))
+            or "::" not in nodeid
+            or ".." in Path(test_file).parts
+        ):
             raise QuarantineError(
-                f"{path}:{line_number}: nodeid must be an exact test under tests/"
+                f"{path}:{line_number}: nodeid must be an exact test under tests/ or lionhub/tests/"
             )
         if nodeid in seen:
             raise QuarantineError(f"{path}:{line_number}: duplicate nodeid {nodeid}")

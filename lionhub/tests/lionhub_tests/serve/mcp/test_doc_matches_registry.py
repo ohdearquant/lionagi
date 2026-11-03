@@ -16,7 +16,7 @@ import pytest
 
 from lionhub.serve.mcp.verbs import ABSENT, VERBS
 
-DOC = Path(__file__).resolve().parents[2] / "docs" / "reference" / "mcp-server.md"
+DOC = Path(__file__).resolve().parents[5] / "docs" / "reference" / "mcp-server.md"
 
 # Verb names as the document writes them: backticked, in a table's first cell.
 _ROW_NAME = re.compile(r"^\|\s*`([a-z][a-z0-9.\-]*)`\s*\|")

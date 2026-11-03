@@ -21,8 +21,7 @@ import json
 import pytest
 
 from lionhub.serve.mcp import dispatch
-
-from .stdio_client import StdioMCPClient
+from tests.mcp.stdio_client import StdioMCPClient
 
 # A path that cannot exist, so the op is refused while reading it rather than
 # spawned. Absolute because the server refuses a relative prompt_file by rule.

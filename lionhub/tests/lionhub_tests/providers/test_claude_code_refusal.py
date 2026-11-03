@@ -18,14 +18,7 @@ from lionagi._provider_errors import (
     classify_provider_error,
 )
 from lionhub.providers.anthropic import claude_code as cc
-
-REFUSAL = {
-    "type": "result",
-    "subtype": "success",
-    "is_error": True,
-    "api_error_status": 429,
-    "result": "You've hit your session limit · resets 3am",
-}
+from tests.providers._refusal_fixture import REFUSAL
 
 
 def _cli(tmp_path, lines: list[dict], code: int) -> str:
