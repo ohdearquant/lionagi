@@ -22,27 +22,27 @@ V2 implementation and adoption require acceptance of this record and the tests i
 
 **P1 — A bounded result is not a bounded query.** At the source baseline the page query uses
 a limited CTE, selected-session correlated aggregates, a CROSS JOIN and a final ORDER BY
-(`lionagi/studio/services/sessions.py:540-594`). Status filtering uses an IN predicate with
-a NULL arm for completed (`lionagi/studio/services/sessions.py:371-376`). OFFSET remains
-(`lionagi/studio/services/sessions.py:545`) and a separate exact count is read
-(`lionagi/studio/services/sessions.py:406`, `lionagi/studio/services/sessions.py:1741-1742`).
+(`lionagi/studio/services/sessions.py::_user_label_selection`). Status filtering uses an IN predicate with
+a NULL arm for completed (`lionagi/studio/services/sessions.py::SessionFilter.__init__`). OFFSET remains
+(`lionagi/studio/services/sessions.py::list_sessions`) and a separate exact count is read
+(`lionagi/studio/services/sessions.py::SessionFilter.where`, `lionagi/studio/services/sessions.py::get_session_messages_after`).
 A later `list_sessions` implementation includes a `recent_unfiltered` path and a query-plan
 fallback when its required index or ordering plan is unavailable. The existing projection
 growth test measures the page statement rather than the entire route
-(`tests/apps_studio_server/test_session_listing_projection.py:188`,
-`tests/apps_studio_server/test_session_listing_projection.py:217`).
+(`tests/apps_studio_server/test_session_listing_projection.py:188@35a520d4`,
+`tests/apps_studio_server/test_session_listing_projection.py::test_projection_work_stays_bounded_as_unrelated_sessions_grow`).
 
 **P2 — Contains can reject an arbitrary prefix before producing a result.** The filter
 uses escaped, case-insensitive contains on name fields and playbook
-(`lionagi/studio/services/sessions.py:356-366`, `lionagi/studio/services/sessions.py:350-355`).
-The page applies those predicates before LIMIT (`lionagi/studio/services/sessions.py:540-545`).
+(`lionagi/studio/services/sessions.py::SessionFilter`, `lionagi/studio/services/sessions.py::_escape_like`).
+The page applies those predicates before LIMIT (`lionagi/studio/services/sessions.py::_user_label_selection`).
 A returned-row limit therefore does not limit rejected candidates. The existing tag
-predicate can also group rows across the tag table (`lionagi/studio/services/sessions.py:396-401`).
+predicate can also group rows across the tag table (`lionagi/studio/services/sessions.py::SessionFilter.where`).
 
 **P3 — Existing clients rely on numeric totals and numbered transport.** Runs returns
 page/per_page, total, total_pages, has_next and has_prev; sessions returns limit/offset,
-total and truncated (`lionagi/studio/services/runs.py:257`,
-`lionagi/studio/services/sessions.py:1741-1748`). The runs client requires those numeric fields
+total and truncated (`lionagi/studio/services/runs.py::paginate_runs`,
+`lionagi/studio/services/sessions.py::get_session_messages_after`). The runs client requires those numeric fields
 (`apps/studio/frontend/src/lib/api.ts:998`). The visible history control already uses
 Load more, but its pager increments page numbers and consumes has_next
 (`apps/studio/frontend/src/components/fleet/FleetView.tsx:489`,
@@ -51,25 +51,25 @@ Load more, but its pager increments page numbers and consumes has_next
 **P4 — Mutable sort keys do not define a historical snapshot.** Current recent order is
 updated_at descending; cost orders reported values before NULL, including reported zero,
 then updated_at. Neither includes an id tie-break
-(`lionagi/studio/services/sessions.py:427-429`). Fresh schemas require updated_at, but legacy
+(`lionagi/studio/services/sessions.py::SessionFilter.where`). Fresh schemas require updated_at, but legacy
 additive migration permits NULL (`lionagi/state/schema.sql:124`,
-`lionagi/state/schema_migrations.py:10`). Cursor keys must come from stored values,
+`lionagi/state/schema_migrations.py:10@35a520d4`). Cursor keys must come from stored values,
 before the listing DTO's NULL-to-zero timestamp fallback
-(`lionagi/studio/services/sessions.py:611`).
+(`lionagi/studio/services/sessions.py::list_sessions`).
 
 **P5 — Query labels and cursor encodings are not authorization.** Authentication and
-origin controls run before API routes (`lionagi/studio/app.py:592`). File-store guards and
-configured store resolution precede listing (`lionagi/studio/services/_db.py:27`,
-`lionagi/studio/services/_db.py:64`, `lionagi/studio/services/sessions.py:555`). A project
-label is an ordinary user predicate (`lionagi/studio/services/sessions.py:430`). This
+origin controls run before API routes (`lionagi/studio/app.py::create_app.require_studio_bearer_token`). File-store guards and
+configured store resolution precede listing (`lionagi/studio/services/_db.py::store_path`,
+`lionagi/studio/services/_db.py::require_file_store`, `lionagi/studio/services/sessions.py::list_sessions`). A project
+label is an ordinary user predicate (`lionagi/studio/services/sessions.py::SessionFilter.where`). This
 deployment exposes the configured store to an admitted caller; it does not establish a
 new row-level tenant boundary.
 
 **P6 — Progress must include rejected candidates.** A candidate window can return no
 matches while later candidates remain. Continuation based only on the last returned row
 cannot advance such a window. Separately, persisted page fields and totals currently
-come from different connections (`lionagi/studio/services/sessions.py:450`,
-`lionagi/studio/services/sessions.py:563`); a shared response snapshot requires new work.
+come from different connections (`lionagi/studio/services/sessions.py::count_sessions`,
+`lionagi/studio/services/sessions.py::list_sessions`); a shared response snapshot requires new work.
 
 Accepted records constrain this proposal without selecting its new wire details:
 
@@ -123,7 +123,7 @@ An unsupported version fails validation. Supplying a reserved v2 control (`curso
 `exact_total`, even false) with v1 fails validation instead of silently altering behavior.
 Do not otherwise broaden or tighten legacy unknown-parameter handling: runs currently
 forbids extras, while sessions uses individual query arguments
-(`lionagi/studio/services/runs.py:35-36`, `lionagi/studio/services/sessions.py:1723-1735`).
+(`lionagi/studio/services/runs.py::_RunListQuery`, `lionagi/studio/services/sessions.py::get_session_by_cc_id`).
 
 | Endpoint | Preserved v1 contract |
 | --- | --- |
@@ -144,14 +144,14 @@ exact_total: bool = False
 
 Sessions retains `limit` (default 500, maximum 500); runs retains `per_page` (default 20,
 maximum 500). Those existing bounds are defined at
-`lionagi/studio/services/sessions.py:300`, `lionagi/studio/services/sessions.py:1724-1728`,
-and `lionagi/studio/services/runs.py:40`. A requested row count must be at least one.
+`lionagi/studio/services/sessions.py::_fetch_action_link_ids`, `lionagi/studio/services/sessions.py::get_session_by_cc_id`,
+and `lionagi/studio/services/runs.py::_RunListQuery`. A requested row count must be at least one.
 `candidate_limit` is server policy reported in the response, not a request override.
 
 Sessions gains no runs filters. Runs preserves current status alias expansion, kind
 validation/expansion, playbook/name contains, project/project-null, and AND-composed tags
-(`lionagi/studio/services/runs.py:69`, `lionagi/studio/services/runs.py:86`,
-`lionagi/studio/services/sessions.py:381`). Canonicalization follows effective predicates:
+(`lionagi/studio/services/runs.py::_normalize_status_filter`, `lionagi/studio/services/runs.py::_normalize_kind_filter`,
+`lionagi/studio/services/sessions.py::SessionFilter.where`). Canonicalization follows effective predicates:
 deduplicate and sort set-like inputs, expand existing aliases, and discard project when
 project_null selects the NULL predicate. Preserve text matching and escaping; do not
 introduce a different Unicode-folding policy. Ineffective empty inputs remain ineffective.
@@ -199,7 +199,7 @@ cost:
 
 The last tie-break is the existing Session id using its database text ordering/collation,
 not nullable run provenance (`lionagi/state/schema.sql:110`,
-`lionagi/studio/services/sessions.py:540-548`). Reported zero precedes unknown cost. Negative
+`lionagi/studio/services/sessions.py::_user_label_selection`). Reported zero precedes unknown cost. Negative
 finite values keep ordinary numeric order. NULL updated_at is distinct from numeric zero.
 Capture the raw key before DTO conversion. Unsupported nonnumeric/nonfinite stored numeric
 keys or invalid ids encountered within the bounded candidate/lookahead traversal produce
@@ -273,7 +273,7 @@ Both bodies contain only `detail` with `code`, `message`, and `restart_required:
 A well-formed token naming an unavailable key receives the restart response without
 trusting its payload. Foreign contexts share one response; do not expose foreign ids.
 Authentication refusal precedes token processing and keeps the existing authentication
-response, including configured-token 401 (`lionagi/studio/app.py:613`).
+response, including configured-token 401 (`lionagi/studio/app.py::create_app.require_studio_bearer_token`).
 
 Every page must execute the existing authentication/origin boundary, resolve the configured
 store independently of the token, establish current trusted scope, and validate cursor
@@ -343,15 +343,15 @@ remain unchanged.
 
 Tag matching must use candidate-constrained probes on `(session_id, tag)`; this primary
 key already exists (`lionagi/state/schema.sql:97`). Do not reuse the global grouped tag
-subquery in the default bounded path (`lionagi/studio/services/sessions.py:396-401`). Only
+subquery in the default bounded path (`lionagi/studio/services/sessions.py::SessionFilter.where`). Only
 returned-row tag hydration may enumerate all tags for those rows. Request tag count and
 returned tag fanout remain explicit work dimensions.
 
 This contract bounds candidate rows and residual evaluations, not arbitrary metadata
 bytes, predicate input size, lock waits, or latency. Branch and progression counts retain
 existing membership semantics. Current projection counts selected branches and JSON array
-lengths (`lionagi/studio/services/sessions.py:581-591`), including duplicate and pruned
-membership tested at `tests/apps_studio_server/test_session_listing_projection.py:80`.
+lengths (`lionagi/studio/services/sessions.py::list_sessions`), including duplicate and pruned
+membership tested at `tests/apps_studio_server/test_session_listing_projection.py::test_projection_preserves_branch_and_membership_counts`.
 Selected-row fanout and membership payload can be large and must be measured separately.
 ADR-0117's proposed progression ordinal index does not supply a sessions seek index
 (`docs/adr/ADR-0117-normalized-progression-membership-and-online-cutover.md:138`).
@@ -382,7 +382,7 @@ V2 returns the same endpoint row field and effective row limit with this envelop
 
 Sessions substitutes `sessions` and `limit` and omits the run-specific diagnostic. Runs
 recomputes status_ended_at_mismatches on returned rows, preserving its page-local meaning
-from `lionagi/studio/services/runs.py:276`. V2 does not emit v1 page/offset echoes,
+from `lionagi/studio/services/runs.py::paginate_runs`. V2 does not emit v1 page/offset echoes,
 total_pages, has_next, has_prev or truncated.
 
 The envelope invariants are:
@@ -415,8 +415,8 @@ interrupt the ongoing database work rather than leave an abandoned count running
 
 Current page/count helpers independently open connections, and tag hydration opens
 another connection and executes lazy table/index creation
-(`lionagi/studio/services/sessions.py:450`, `lionagi/studio/services/sessions.py:563`,
-`lionagi/studio/services/run_tags.py:24`, `lionagi/studio/services/run_tags.py:89`).
+(`lionagi/studio/services/sessions.py::count_sessions`, `lionagi/studio/services/sessions.py::list_sessions`,
+`lionagi/studio/services/run_tags.py` `CREATE TABLE IF NOT EXISTS run_tags (`, `lionagi/studio/services/run_tags.py::tags_for_sessions`).
 V2 requires shared-transaction read helpers; it must not reuse these behaviors unchanged.
 On an otherwise compatible store without a run_tags table, tag membership and hydration
 are empty; nonempty tag filters therefore match none. Listing performs no lazy DDL.
@@ -424,7 +424,7 @@ are empty; nonempty tag filters therefore match none. Listing performs no lazy D
 The snapshot guarantee covers persisted fields, membership/count and cursor state.
 Process liveness remains a live observation and is not part of the SQLite snapshot;
 the current run projection already makes that observation separately
-(`lionagi/studio/services/runs.py:224`). An exact count or large selected-row payload can
+(`lionagi/studio/services/runs.py::list_runs`). An exact count or large selected-row payload can
 extend transaction duration; “one response snapshot” is not a latency guarantee.
 
 Clients may display `No matches in this window. Continue search.` when candidates remain.
@@ -475,8 +475,8 @@ CREATE INDEX idx_sessions_listing_cost_unknown
 
 They are absent at the source baseline. Current time/status indexes omit the id tie-break,
 and current session index declarations contain no equivalent cost path
-(`lionagi/state/schema.sql:203`, `lionagi/state/schema_meta.py:237-238`,
-`lionagi/state/schema_migrations.py:281`). An index's presence alone does not prove that
+(`lionagi/state/schema.sql:203`, `lionagi/state/schema_meta.py` `Index("idx_sessions_last_msg_id", sessions.c.last_msg_id)`,
+`lionagi/state/schema_migrations.py::MIGRATION_INDEXES`). An index's presence alone does not prove that
 the chosen seek query avoids a prefix scan, tie-group sort or full-store sort. Test every
 NULL/equality/cost-partition boundary with the actual route SQL and supported SQLite runtime.
 
@@ -497,7 +497,7 @@ Add indexes and the singleton identity through the canonical schema/version/migr
 lifecycle, including fresh schema, upgrade and repeated-open parity. Runtime MetaData is
 the authority, and compatibility DDL must agree. Existing-table index additions need the
 explicit migration path because create_all does not repair them
-(`lionagi/state/schema_migrations.py:270`, `lionagi/state/db.py:1743-1751`, `lionagi/state/db.py:1864-1867`). Listing reads must
+(`lionagi/state/schema_migrations.py:270@6fe53aff`, `lionagi/state/db.py::StateDB.checkpoint`, `lionagi/state/db.py::StateDB._refuse_newer_schema`). Listing reads must
 not run a migration or fabricate an incarnation on an old read-only store.
 
 Missing required index, identity or keyring capability returns HTTP 503:
@@ -519,7 +519,7 @@ not retry automatically or silently substitute v1. V1 remains explicitly selecta
 An absent configured file returns an exhausted empty page, with exact zero only if
 requested, and creates no database. If a supplied cursor's store has disappeared, return
 the D2 restart response. Non-file backends retain the existing unsupported-store response
-(`lionagi/studio/app.py:567`); this ADR does not add backend support.
+(`lionagi/studio/app.py::create_app._store_not_addressable_handler`); this ADR does not add backend support.
 
 The final result ORDER BY remains explicit. A final sort over at most the requested
 returned rows is allowed and must be visible in plan/work evidence. A candidate sort
@@ -582,7 +582,7 @@ they exist or pass at the source baseline. Existing v1 tests remain in force.
 
 | Contract | Test that fails if broken |
 | --- | --- |
-| V1 shapes, defaults, matching offsets, totals, search and sort remain unchanged | `test_v1_default_and_explicit_version_identical`; `test_v1_matching_offsets_unchanged`; existing `test_runs_list_search_composes_with_pagination` at `tests/apps_studio_server/test_runs_list.py:405`. |
+| V1 shapes, defaults, matching offsets, totals, search and sort remain unchanged | `test_v1_default_and_explicit_version_identical`; `test_v1_matching_offsets_unchanged`; existing `test_runs_list_search_composes_with_pagination` at `tests/apps_studio_server/test_runs_list.py::test_runs_list_search_composes_with_pagination`. |
 | Selector, endpoint-specific controls and response discriminator | `test_v2_selector_validation_and_schema`; `test_v1_rejects_v2_controls`; `test_v2_sessions_does_not_add_filters`; `test_v2_run_page_diagnostics`. |
 | Complete raw ordering, NULLs, zero, equal timestamp/cost, deleted frontier | `test_v2_recent_keyset_equal_and_null_timestamps`; `test_v2_cost_keyset_zero_null_equal_cost_and_timestamp`; `test_v2_deleted_frontier_uses_saved_tuple`; `test_v2_raw_key_not_dto_fallback`. |
 | Codec/types/signature/context/errors without information echo | `test_v2_cursor_codec_roundtrip_and_tamper`; `test_v2_cursor_context_binding`; `test_v2_cursor_errors_do_not_echo_input`; `test_v2_cursor_allows_limit_and_count_change`. |

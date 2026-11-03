@@ -23,7 +23,7 @@ governed by ADR-0120/ADR-0121; no reader should implement the old “only extern
 LionAGI has three in-process hook mechanisms with distinct scopes, ratified by
 ADR-0047: the session-scoped `HookBus` (`lionagi/hooks/`, observe/audit plane with one
 hard-wired blocking point at `TOOL_PRE`), the tool-scoped preprocessor/postprocessor
-chain (`lionagi/agent/spec.py` `HooksMixin`, full-payload mutation), and the
+chain (`lionagi/agent/spec.py::HooksMixin`, full-payload mutation), and the
 service-scoped `HookRegistry` on `iModel` events. All three register in-process Python
 callables. The only way to run an *external program* as a hook today is
 `lionagi/agent/settings.py`'s `_make_shell_hook`: argv-only subprocess, stdin JSON,
