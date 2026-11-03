@@ -21,6 +21,11 @@
     "lionagi/cli/_runs.py": [
       "os.environ.get:_RUN_ID_ENV_VAR"
     ],
+    "lionagi/cli/_schedule_parsing.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_URL\""
+    ],
     "lionagi/cli/agent.py": [
       "os.environ.get:JOB_MARKER_ENV_VAR",
       "os.environ.get:_API_ACCOUNT_ENV"
@@ -75,10 +80,7 @@
     ],
     "lionagi/studio/cli.py": [
       "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
       "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:\"LIONAGI_STUDIO_URL\"",
       "os.environ.get:\"STUDIO_API_URL\"",
       "os.environ.get:\"XDG_CONFIG_HOME\"",
       "os.environ:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
@@ -1612,6 +1614,7 @@
     "lionagi/cli/_schedule_parsing.py": [
       "add_schedule_subparser",
       "build_create_body",
+      "normalize_host",
       "suggest_schedule_flag"
     ],
     "lionagi/cli/_team_service.py": [
@@ -3126,8 +3129,7 @@
     ],
     "lionagi/studio/_host.py": [
       "admitted_host_names",
-      "is_unspecified_host",
-      "normalize_host"
+      "is_unspecified_host"
     ],
     "lionagi/studio/_timezone_rules.py": [
       "read_tzif",

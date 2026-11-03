@@ -6,14 +6,18 @@ Shared by the human command path and the machine one. The chain-depth cap, the
 action-kind vocabulary and the identifier check are defined here; the scheduler
 imports these names from this module, and this module imports nothing from
 lionagi.studio, so importing it does not load the Studio scheduler.
+Host normalization and URL authority resolution are shared here, as is base URL
+resolution and its one-time warning for an explicit URL ending in /api.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import ipaddress
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -21,6 +25,59 @@ from typing import Any
 from lionagi._log_channels import warn
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.ln import now_utc
+
+_warned_api_suffix = False
+
+
+def _url_authority(host: str) -> str:
+    """*host* as the authority of a URL: something a client can connect to.
+
+    An unspecified address (`0.0.0.0`, `::`) names no host a client opens, so a
+    URL built on it is one the daemon refuses as a Host: it maps to the loopback
+    address of the same family. An IPv6 literal is bracketed, or its own colons
+    read as the port separator and the URL fails to parse. Anything else is left
+    as the caller wrote it.
+
+    Every value is read through `normalize_host` first, so a URL is built from the
+    address the value names rather than from its spelling: a blank value is a URL
+    with no host at all (`http://:8765` does not even parse), `[localhost]` is a
+    bracketed name, and an IPv4-mapped address is the IPv4 address a client
+    connects to. The authority here is also the Host the URL sends, so each of
+    these has to be one the daemon's Host guard admits under the same value.
+    """
+    normalized = normalize_host(host)
+    if not normalized:
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
+    return f"[{normalized}]" if address.version == 6 else normalized
+
+
+def _base_url() -> str:
+    if url := os.environ.get("LIONAGI_STUDIO_URL"):
+        url = url.rstrip("/")
+        # Endpoint paths below add /api themselves; strip a base URL that
+        # already carries it to avoid hitting /api/api/... and 404ing.
+        if url.endswith("/api"):
+            url = url.removesuffix("/api")
+            global _warned_api_suffix
+            if not _warned_api_suffix:
+                _warned_api_suffix = True
+                warn(
+                    f"LIONAGI_STUDIO_URL ends with /api; using {url} as the Studio "
+                    "root because endpoint paths add /api themselves. If your proxy "
+                    "prefix intentionally ends in /api, point LIONAGI_STUDIO_URL at "
+                    "the Studio root instead."
+                )
+        return url
+    host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
+    port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
+    return f"http://{_url_authority(host)}:{port}"
+
 
 _MAX_CHAIN_DEPTH = 10
 
@@ -42,6 +99,29 @@ _MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+\Z")
 # same character set as model specs: they name agents, projects, and playbooks
 # and have no legitimate use for leading '-'.
 _IDENT_RE = _MODEL_RE
+
+
+def normalize_host(raw: str) -> str:
+    """*raw* in canonical form: whitespace and one bracket pair removed, lowercase.
+
+    A value that is an IP address becomes the compressed lowercase form
+    ``ipaddress`` prints, with an IPv4-mapped address unwrapped to its IPv4
+    address (``::ffff:192.168.1.5`` -> ``192.168.1.5``). Anything else -- a name,
+    a value carrying a port -- is returned stripped and lowercased. A value that
+    is empty or holds nothing but brackets stays empty rather than becoming a
+    name of its own.
+    """
+    host = (raw or "").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1].strip()
+    host = host.lower()
+    if not host:
+        return ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return str(getattr(address, "ipv4_mapped", None) or address)
 
 
 def _validate_identifier(value: str, field_name: str) -> None:

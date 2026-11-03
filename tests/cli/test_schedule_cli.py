@@ -1200,7 +1200,9 @@ def test_base_url_strips_trailing_api_suffix(monkeypatch, caplog, env_url):
     import lionagi.studio.cli as sched_mod
 
     monkeypatch.setenv("LIONAGI_STUDIO_URL", env_url)
-    monkeypatch.setattr(sched_mod, "_warned_api_suffix", False)
+    from lionagi.cli import _schedule_parsing
+
+    monkeypatch.setattr(_schedule_parsing, "_warned_api_suffix", False)
 
     with caplog.at_level(logging.WARNING):
         first = sched_mod._base_url()
@@ -1220,7 +1222,9 @@ def test_base_url_no_warning_without_api_suffix(monkeypatch, caplog):
     import lionagi.studio.cli as sched_mod
 
     monkeypatch.setenv("LIONAGI_STUDIO_URL", "https://studio.example.com")
-    monkeypatch.setattr(sched_mod, "_warned_api_suffix", False)
+    from lionagi.cli import _schedule_parsing
+
+    monkeypatch.setattr(_schedule_parsing, "_warned_api_suffix", False)
 
     with caplog.at_level(logging.WARNING):
         assert sched_mod._base_url() == "https://studio.example.com"
