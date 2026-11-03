@@ -171,6 +171,81 @@ def test_a_missing_feature_exits_with_the_environment_code(
     assert "No run was started" in summary
 
 
+_NOT_STARTED = (
+    "No run was started, so this is an unusable environment rather than a failed run. "
+    "Install the missing dependency, then re-run."
+)
+
+# What the report says for each kind of error: the name of what is missing, and the guidance
+# that follows it. A module error carries none. A declared dependency's hint is a short install
+# command, and the provider hub's is a whole sentence, so the guidance has to read correctly
+# after either one.
+REPORTED_REQUIREMENTS = {
+    "missing-module": (
+        lambda: ModuleNotFoundError("No module named 'sniffio'", name="sniffio"),
+        "sniffio",
+        "",
+    ),
+    "install-command-hint": (
+        MISSING_FEATURES["optional-dependency"][0],
+        "ollama",
+        " Guidance: pip install lionagi[ollama]",
+    ),
+    "sentence-hint": (
+        MISSING_FEATURES["provider-hub"][0],
+        "lionhub",
+        f" Guidance: {_HUB_HINT}",
+    ),
+    "distribution-name-only": (
+        MISSING_FEATURES["no-import-root"][0],
+        "some-distribution",
+        " Guidance: pip install some-distribution",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("make_error", "missing", "guidance"),
+    REPORTED_REQUIREMENTS.values(),
+    ids=REPORTED_REQUIREMENTS.keys(),
+)
+def test_the_startup_report_names_what_is_missing_then_gives_the_guidance(
+    monkeypatch, reported, make_error, missing, guidance
+):
+    """The sentence names what is missing; the hint follows it as its own sentence rather than
+    sitting in parentheses inside the first one."""
+
+    def _boom(argv=None):
+        raise make_error()
+
+    monkeypatch.setattr(cli_main, "_run", _boom)
+
+    assert cli_main.main([]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert reported == [
+        f"cannot start: {missing} is not installed in this environment. {_NOT_STARTED}{guidance}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("make_error", "missing", "guidance"),
+    REPORTED_REQUIREMENTS.values(),
+    ids=REPORTED_REQUIREMENTS.keys(),
+)
+def test_the_command_loader_report_names_what_is_missing_then_gives_the_guidance(
+    monkeypatch, reported, make_error, missing, guidance
+):
+    def _boom(selected):
+        raise make_error()
+
+    monkeypatch.setattr(cli_main, "build_cli_parser", _boom)
+
+    assert cli_main.main(["doctor"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert reported == [
+        f"command 'doctor' cannot run: {missing} is not installed in this environment. "
+        f"{_NOT_STARTED}{guidance}"
+    ]
+
+
 @pytest.mark.parametrize("make_error", [make for make, _ in MISSING_FEATURES.values()])
 def test_a_missing_feature_after_a_run_was_allocated_is_not_an_environment_fault(
     monkeypatch, reported, make_error

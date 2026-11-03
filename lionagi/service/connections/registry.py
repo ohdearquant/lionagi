@@ -508,7 +508,7 @@ class EndpointRegistry:
         fragment: ProviderFragment,
         declaration: EndpointDeclaration,
         error: Exception,
-    ) -> Exception:
+    ) -> MissingFeatureError | ProviderActivationError:
         """The typed error for ``error``, raised by ``declaration``'s factory, chained from it.
 
         A ``MissingFeatureError`` or ``ProviderActivationError`` the factory raised itself is
@@ -540,7 +540,7 @@ class EndpointRegistry:
         fragment: ProviderFragment,
         declaration: EndpointDeclaration,
         error: BaseException,
-    ) -> Exception | None:
+    ) -> MissingFeatureError | None:
         """A ``MissingFeatureError`` for the dependency ``error`` reports absent, or ``None``.
 
         ``error`` counts only when it is a ``ModuleNotFoundError`` whose ``name`` equals, exactly,
@@ -569,7 +569,10 @@ class EndpointRegistry:
 
     @classmethod
     def _log_activation_failure(
-        cls, fragment: ProviderFragment, declaration: EndpointDeclaration, failure: Exception
+        cls,
+        fragment: ProviderFragment,
+        declaration: EndpointDeclaration,
+        failure: MissingFeatureError | ProviderActivationError,
     ) -> None:
         """Log the first failure of one declaration. The message holds no exception text; the
         original exception is the ``__cause__`` of what selection raises."""
@@ -586,7 +589,7 @@ class EndpointRegistry:
             "provider %r endpoint %r could not be activated (%s); selecting it raises %s",
             fragment.key,
             declaration.key,
-            getattr(failure, "reason", type(failure).__name__),
+            failure.reason,
             type(failure).__name__,
         )
 

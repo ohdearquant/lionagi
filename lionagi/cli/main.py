@@ -8,6 +8,7 @@ import argparse
 import signal
 import sys
 import traceback
+from typing import get_args
 
 from lionagi._auto import build_cli_parser, seed_for
 from lionagi._feature_errors import MissingFeatureError
@@ -21,18 +22,28 @@ from ._util import (
     run_was_allocated,
 )
 
+# The errors that mean the installation lacks something the command needs: the union for
+# annotations, the tuple for ``except`` clauses. The tuple is read from the union, so adding a
+# type is one edit.
+_EnvironmentFault = ModuleNotFoundError | MissingFeatureError
+_ENVIRONMENT_FAULTS = get_args(_EnvironmentFault)
 
-def _missing_requirement(exc: ModuleNotFoundError | MissingFeatureError) -> str:
-    """What the environment lacks, as the report names it.
 
-    A ``ModuleNotFoundError`` names its module. A ``MissingFeatureError`` is what the
-    provider registry raises for a selected provider whose declared dependency, or whose
-    bundled provider hub, is not installed: it names the missing import root when it has one
-    and otherwise the distribution, and it carries the guidance for putting it right.
+def _missing_requirement(exc: _EnvironmentFault) -> tuple[str, str]:
+    """What the environment lacks, as the report names it, and the guidance that follows it.
+
+    A ``ModuleNotFoundError`` names its module and carries no guidance. A
+    ``MissingFeatureError`` is what the provider registry raises for a selected provider whose
+    declared dependency, or whose bundled provider hub, is not installed: it names the missing
+    import root when it has one and otherwise the distribution, and it carries the guidance for
+    putting it right. That guidance is a short install command for a declared dependency and a
+    whole sentence for the hub, so the report states it as a sentence of its own after the one
+    that names what is missing, never inside it. The guidance is returned with its leading
+    space, to be appended to the report as it stands, and is empty when there is none.
     """
     if isinstance(exc, MissingFeatureError):
-        return f"{exc.name or exc.missing_distribution} ({exc.install_hint})"
-    return exc.name or "a required module"
+        return exc.name or exc.missing_distribution, f" Guidance: {exc.install_hint}"
+    return exc.name or "a required module", ""
 
 
 def _load_orchestrate():
@@ -137,17 +148,17 @@ def _handle_play_check(argv: list[str]) -> int:
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
-        except (ModuleNotFoundError, MissingFeatureError) as exc:
+        except _ENVIRONMENT_FAULTS as exc:
             # The profile is fine; this installation cannot load it. Nothing has
             # run, so this is the environment, and returning the ordinary
             # failure code here would make it indistinguishable from a check
             # that found a genuinely broken playbook.
-            missing = _missing_requirement(exc)
+            missing, guidance = _missing_requirement(exc)
             log_error(
                 f"playbook '{name}' references agent profile '{agent_name}', "
                 f"which needs {missing}, and it is not installed in this "
                 f"environment. Nothing was checked and no run was started. "
-                f"Install the missing dependency, then re-run."
+                f"Install the missing dependency, then re-run.{guidance}"
             )
             return EXIT_CODE_ENVIRONMENT_ERROR
         except Exception as exc:  # noqa: BLE001 — match runtime behaviour
@@ -381,14 +392,14 @@ def _run(argv: list[str] | None = None) -> int:
     selected = seed_for(_argv[0]) if _argv else None
     try:
         build = build_cli_parser(selected)
-    except (ModuleNotFoundError, MissingFeatureError) as exc:
+    except _ENVIRONMENT_FAULTS as exc:
         # An environment fault, not a command-scoped one — nothing ran, so
         # exit 78 rather than the 1 a started-and-failed run would return.
-        missing = _missing_requirement(exc)
+        missing, guidance = _missing_requirement(exc)
         log_error(
             f"command {_argv[0]!r} cannot run: {missing} is not installed in this "
             "environment. No run was started, so this is an unusable environment "
-            "rather than a failed run. Install the missing dependency, then re-run."
+            f"rather than a failed run. Install the missing dependency, then re-run.{guidance}"
         )
         return EXIT_CODE_ENVIRONMENT_ERROR
     except Exception as exc:
@@ -472,7 +483,7 @@ def _run(argv: list[str] | None = None) -> int:
     return 1
 
 
-def _report_broken_environment(exc: ModuleNotFoundError | MissingFeatureError) -> int:
+def _report_broken_environment(exc: _EnvironmentFault) -> int:
     """Report a missing import as an environment fault, not a failed run.
 
     A ``ModuleNotFoundError`` reaching the top of the CLI means some import
@@ -492,11 +503,11 @@ def _report_broken_environment(exc: ModuleNotFoundError | MissingFeatureError) -
     stderr still receives the diagnosis rather than the middle of a stack.
     """
     traceback.print_exc()
-    missing = _missing_requirement(exc)
+    missing, guidance = _missing_requirement(exc)
     log_error(
         f"cannot start: {missing} is not installed in this environment. "
         "No run was started, so this is an unusable environment rather than a "
-        "failed run. Install the missing dependency, then re-run."
+        f"failed run. Install the missing dependency, then re-run.{guidance}"
     )
     return EXIT_CODE_ENVIRONMENT_ERROR
 
@@ -516,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     begin_invocation()
     try:
         return _run(argv)
-    except (ModuleNotFoundError, MissingFeatureError) as exc:
+    except _ENVIRONMENT_FAULTS as exc:
         if run_was_allocated():
             raise
         return _report_broken_environment(exc)

@@ -333,6 +333,70 @@ def test_play_check_separates_a_missing_module_from_a_bad_profile(
     assert expected_text in caplog.text
 
 
+_PLAY_CHECK_NOT_INSTALLED = (
+    "playbook 'withagent' references agent profile 'someprofile', which needs {missing}, "
+    "and it is not installed in this environment. Nothing was checked and no run was "
+    "started. Install the missing dependency, then re-run.{guidance}"
+)
+
+
+@pytest.mark.parametrize(
+    ("raised", "missing", "guidance"),
+    [
+        (ModuleNotFoundError("No module named 'thing'", name="thing"), "thing", ""),
+        (
+            MissingFeatureError(
+                feature="providers",
+                missing_distribution="thing-dist",
+                install_hint="pip install lionagi[thing]",
+                import_root="thing",
+            ),
+            "thing",
+            " Guidance: pip install lionagi[thing]",
+        ),
+        (
+            MissingFeatureError(
+                feature="providers",
+                missing_distribution="lionagi",
+                install_hint=(
+                    "the bundled provider hub is missing from this installation; "
+                    "reinstall the matching lionagi release to restore it"
+                ),
+                import_root="lionhub",
+            ),
+            "lionhub",
+            " Guidance: the bundled provider hub is missing from this installation; "
+            "reinstall the matching lionagi release to restore it",
+        ),
+    ],
+    ids=["missing-module", "install-command-hint", "sentence-hint"],
+)
+def test_play_check_names_what_is_missing_then_gives_the_guidance(
+    tmp_path, monkeypatch, raised, missing, guidance
+):
+    """The report names what the profile needs; the hint of a typed error follows it as its own
+    sentence, whether the hint is a short install command or a whole sentence."""
+    pb_path = tmp_path / "withagent.playbook.yaml"
+    pb_path.write_text("name: withagent\nmodel: claude/sonnet\nprompt: do z\nagent: someprofile\n")
+
+    from lionagi.cli import orchestrate as _orch
+
+    def fake_resolve(name):
+        return (pb_path, None) if name == "withagent" else _orch._resolve_playbook_path(name)
+
+    def fake_load(name):
+        raise raised
+
+    reported: list[str] = []
+    monkeypatch.setattr(_orch, "_resolve_playbook_path", fake_resolve)
+    monkeypatch.setattr("lionagi.cli.main._resolve_playbook_path", fake_resolve, raising=False)
+    monkeypatch.setattr("lionagi.cli._providers.load_agent_profile", fake_load)
+    monkeypatch.setattr("lionagi.cli.main.log_error", reported.append)
+
+    assert _handle_play_shortcut(["play", "check", "withagent"]) == EXIT_CODE_ENVIRONMENT_ERROR
+    assert reported == [_PLAY_CHECK_NOT_INSTALLED.format(missing=missing, guidance=guidance)]
+
+
 def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
     """A playbook without `artifacts:` exits 0 and reports verification skipped."""
     pb_path = tmp_path / "plain.playbook.yaml"

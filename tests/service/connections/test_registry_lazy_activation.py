@@ -733,7 +733,13 @@ def _alpha_with_a_registering_b(monkeypatch):
         ],
     )
     beta = _fragment("beta", [_declaration("x", _factory(calls, "beta/x"))])
-    _install(monkeypatch, alpha, beta)
+    catalog = _install(monkeypatch, alpha, beta)
+    # ``_AlphaB`` is registered under the identity of the ``b`` declaration only because its
+    # module and qualified name were set to match; renaming either side must fail here.
+    assert (
+        catalog.endpoint("alpha", "b").diagnostic_id
+        == f"{_AlphaB.__module__}:{_AlphaB.__qualname__}"
+    )
     return calls
 
 
@@ -802,7 +808,7 @@ def test_a_failure_first_seen_by_a_listing_is_cached_for_later_selections(
 @pytest.mark.parametrize(
     "error", [*DEFECTS.values(), _ABSENT_DEPENDENCY], ids=[*DEFECTS, "absent-declared-dependency"]
 )
-def test_failed_providers_reports_every_activation_failure_a_selection_translates(
+def test_failed_providers_row_carries_the_typed_error_a_selection_of_that_endpoint_raises(
     monkeypatch, cold_registry, error
 ):
     _failing_alpha(monkeypatch, error)
