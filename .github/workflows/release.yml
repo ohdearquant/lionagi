@@ -100,7 +100,8 @@ jobs:
     - name: Run tests
       run: |
         source .venv/bin/activate
-        uv run pytest --maxfail=1 --disable-warnings tests/ lionhub/tests/
+        uv run python scripts/test_roots.py > /dev/null
+        uv run pytest --maxfail=1 --disable-warnings
 
   deploy:
     permissions:

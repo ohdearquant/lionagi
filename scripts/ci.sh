@@ -12,6 +12,7 @@ NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
 QUARANTINE_SCRIPT="$REPO_ROOT/scripts/quarantine.py"
 PY_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_python_hygiene.py"
 COVERAGE_CHECK_SCRIPT="$REPO_ROOT/scripts/check_suite_coverage.py"
+TEST_ROOTS_SCRIPT="$REPO_ROOT/scripts/test_roots.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -95,7 +96,12 @@ test-python() {
   # early end loud either way by checking distinct test IDs.
   local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
-  [ ${#targets[@]} -gt 0 ] || targets=(tests/ lionhub/tests/)
+  if [ ${#targets[@]} -eq 0 ]; then
+    local UV_PROJECT="$REPO_ROOT" roots root
+    export UV_PROJECT
+    roots=$(uv run python "$TEST_ROOTS_SCRIPT") || return 1
+    while IFS= read -r root; do targets+=("$REPO_ROOT/$root"); done <<< "$roots"
+  fi
   local junit
   junit="$(_junit_report_path)"
   local rc=0
@@ -116,7 +122,12 @@ test-python-cov() {
   # --max-worker-restart and the coverage check: see test-python.
   local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
-  [ ${#targets[@]} -gt 0 ] || targets=(tests/ lionhub/tests/)
+  if [ ${#targets[@]} -eq 0 ]; then
+    local UV_PROJECT="$REPO_ROOT" roots root
+    export UV_PROJECT
+    roots=$(uv run python "$TEST_ROOTS_SCRIPT") || return 1
+    while IFS= read -r root; do targets+=("$REPO_ROOT/$root"); done <<< "$roots"
+  fi
   local junit
   junit="$(_junit_report_path)"
   local rc=0
@@ -135,6 +146,8 @@ test-python-cov() {
 
 test-python-quarantine() {
   echo "==> quarantined pytest lane"
+  local UV_PROJECT="$REPO_ROOT" roots root
+  export UV_PROJECT
   local quarantine_count
   quarantine_count=$(uv run python "$QUARANTINE_SCRIPT" count)
   if [ "$quarantine_count" -eq 0 ]; then
@@ -143,6 +156,9 @@ test-python-quarantine() {
   fi
 
   # --max-worker-restart and the coverage check: see test-python.
+  roots=$(uv run python "$TEST_ROOTS_SCRIPT") || return 1
+  local targets=()
+  while IFS= read -r root; do targets+=("$REPO_ROOT/$root"); done <<< "$roots"
   local junit
   junit="$(_junit_report_path)"
   local rc=0
@@ -152,8 +168,8 @@ test-python-quarantine() {
     -m flaky_quarantine \
     --disable-warnings \
     -o junit_family=legacy --junitxml="$junit" \
-    tests/ lionhub/tests/ || rc=$?
-  _check_suite_coverage "$junit" "flaky_quarantine" tests/ lionhub/tests/ || rc=1
+    "${targets[@]}" || rc=$?
+  _check_suite_coverage "$junit" "flaky_quarantine" "${targets[@]}" || rc=1
   _discard_temporary_junit "$junit"
   return $rc
 }

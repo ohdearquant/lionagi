@@ -54,7 +54,11 @@ TAG_GUARD_RUN = (
 UV_INSTALL_RUN = (
     'curl -LsSf https://astral.sh/uv/install.sh | sh\necho "$HOME/.cargo/bin" >> $GITHUB_PATH\n'
 )
-TEST_RUN = "source .venv/bin/activate\nuv run pytest --maxfail=1 --disable-warnings tests/ lionhub/tests/\n"
+TEST_RUN = (
+    "source .venv/bin/activate\n"
+    "uv run python scripts/test_roots.py > /dev/null\n"
+    "uv run pytest --maxfail=1 --disable-warnings\n"
+)
 VERIFY_RUN = (
     'if [ "${DOCKER_RESULT}" != success ]; then\n'
     "  echo '::error::image publication or digest verification did not succeed'\n"
