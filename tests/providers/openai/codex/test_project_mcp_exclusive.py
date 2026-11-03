@@ -311,35 +311,23 @@ async def test_new_project_server_is_disabled_on_each_launch_and_copy(fixture):
 
 
 @pytest.mark.asyncio
-async def test_selected_and_allowed_project_names_are_retained(fixture):
+async def test_allowed_project_names_are_retained(fixture):
     project, env, calls = fixture
     _project_config(
         project.parent,
-        '[mcp_servers.selected]\ncommand = "project-selected"\n'
         '[mcp_servers.permitted]\ncommand = "project-permitted"\n'
         '[mcp_servers.excluded]\ncommand = "project-excluded"\n',
     )
+    # `permitted` is selected by name and not forwarded, so a project layer may declare it:
+    # the same-name refusal covers forwarded servers only, and this run starts.
     request = _request(project, env, allowed_names=["permitted", "keep"])
     await _run(request)
     args = _config_args(calls[-1])
+    # The forwarded server still reaches codex beside the retained project servers.
     assert any(arg.startswith("mcp_servers.selected.command=") for arg in args)
     assert "mcp_servers.excluded.enabled=false" in args
-    assert "mcp_servers.selected.enabled=false" not in args
     assert "mcp_servers.permitted.enabled=false" not in args
     assert "mcp_servers.keep.enabled=false" not in args
-
-
-@pytest.mark.asyncio
-async def test_selected_project_fields_remain_available_to_codex_merge(fixture):
-    project, env, calls = fixture
-    config = _project_config(
-        project.parent, '[mcp_servers.selected]\ncommand = "project"\nargs = ["project-arg"]\n'
-    )
-    await _run(_request(project, env))
-    args = _config_args(calls[-1])
-    assert 'mcp_servers.selected.command="selected-mcp"' in args
-    assert not any(arg.startswith("mcp_servers.selected.args=") for arg in args)
-    assert 'args = ["project-arg"]' in config.read_text()
 
 
 @pytest.mark.asyncio
@@ -849,9 +837,7 @@ async def test_endpoint_per_call_selection_replaces_configured_names(fixture):
     project, env, calls = fixture
     _project_config(
         project.parent,
-        '[mcp_servers.selected]\ncommand = "old"\n'
-        '[mcp_servers.new]\ncommand = "new"\n'
-        '[mcp_servers.extra]\ncommand = "extra"\n',
+        '[mcp_servers.selected]\ncommand = "old"\n[mcp_servers.extra]\ncommand = "extra"\n',
     )
     endpoint = codex_mod.CodexCLIEndpoint()
     request = _request(project, env)
@@ -864,17 +850,13 @@ async def test_endpoint_per_call_selection_replaces_configured_names(fixture):
     args = _config_args(calls[-1])
     assert "mcp_servers.selected.enabled=false" in args
     assert "mcp_servers.extra.enabled=false" in args
-    assert "mcp_servers.new.enabled=false" not in args
     assert 'mcp_servers.new.command="per-call"' in args
 
 
 @pytest.mark.asyncio
 async def test_endpoint_kwargs_override_request_selection(fixture):
     project, env, calls = fixture
-    _project_config(
-        project.parent,
-        '[mcp_servers.requested]\ncommand = "old"\n[mcp_servers.called]\ncommand = "new"\n',
-    )
+    _project_config(project.parent, '[mcp_servers.requested]\ncommand = "old"\n')
     endpoint = codex_mod.CodexCLIEndpoint(
         exclusive_mcp_names=["configured"],
         config_overrides={"mcp_servers.configured.command": "configured"},
@@ -891,7 +873,6 @@ async def test_endpoint_kwargs_override_request_selection(fixture):
     await _run(payload["request"])
     args = _config_args(calls[-1])
     assert "mcp_servers.requested.enabled=false" in args
-    assert "mcp_servers.called.enabled=false" not in args
     assert 'mcp_servers.called.command="called"' in args
 
 
@@ -1025,3 +1006,250 @@ async def test_factory_empty_named_mcp_config_set_ignores_user_config(fixture):
     )
     await _run(payload["request"])
     assert "--ignore-user-config" in calls[-1][0]
+
+
+# A forwarded server and a config layer's server of the same name: codex merges the two key
+# by key, so the layer's credentials, headers, arguments and environment would reach the
+# forwarded server. The collision is refused before a process starts.
+
+_FILE_URL = "https://config-layer.invalid/mcp"
+_FILE_TOKEN_VAR = "CONFIG_LAYER_TOKEN_VAR"
+_FILE_URL_SERVER = (
+    f'[mcp_servers.colliding]\nurl = "{_FILE_URL}"\nbearer_token_env_var = "{_FILE_TOKEN_VAR}"\n'
+)
+_FILE_STDIO_SERVER = (
+    '[mcp_servers.colliding]\ncommand = "config-layer-command"\nargs = ["--config-layer-arg"]\n'
+    '[mcp_servers.colliding.env]\nCONFIG_LAYER_ENV = "config-layer-env-value"\n'
+)
+_FORWARDED_URL = "https://forwarded.invalid/mcp"
+_FORWARDED_URL_SERVER = {"colliding": {"url": _FORWARDED_URL}}
+_FORWARDED_STDIO_SERVER = {"colliding": {"command": "forwarded-command"}}
+# Neither side's field values may appear in a refusal.
+_FIELD_VALUES = (
+    _FILE_URL,
+    _FILE_TOKEN_VAR,
+    _FORWARDED_URL,
+    "config-layer-command",
+    "--config-layer-arg",
+    "CONFIG_LAYER_ENV",
+    "config-layer-env-value",
+    "forwarded-command",
+)
+_COLLISIONS = [
+    pytest.param(_FILE_URL_SERVER, _FORWARDED_URL_SERVER, id="url-over-url"),
+    pytest.param(_FILE_STDIO_SERVER, _FORWARDED_STDIO_SERVER, id="stdio-over-stdio"),
+    pytest.param(_FILE_STDIO_SERVER, _FORWARDED_URL_SERVER, id="stdio-file-url-forwarded"),
+]
+_BOTH_PATHS = pytest.mark.parametrize("exclusive", [True, False], ids=["exclusive", "additive"])
+
+
+def _forward(env, servers, *, exclusive, **kwargs):
+    apply_forwarded_mcp_servers(kwargs, servers, provider="codex", exclusive=exclusive, env=env)
+    return kwargs
+
+
+def _user_config(env) -> Path:
+    return Path(env["CODEX_HOME"]) / "config.toml"
+
+
+def _declare_in_user_config(env, text: str) -> Path:
+    path = _user_config(env)
+    path.write_text(path.read_text(encoding="utf-8") + "\n" + text, encoding="utf-8")
+    return path
+
+
+def _assert_collision_refusal(error, path: Path) -> None:
+    text = str(error.value)
+    assert "colliding" in text
+    assert str(path) in text
+    assert "rename the forwarded server" in text.lower()
+    for value in _FIELD_VALUES:
+        assert value not in text
+
+
+@_BOTH_PATHS
+@pytest.mark.parametrize(("file_server", "forwarded"), _COLLISIONS)
+def test_forwarded_server_named_in_the_user_config_is_refused(
+    fixture, exclusive, file_server, forwarded
+):
+    _, env, _ = fixture
+    path = _declare_in_user_config(env, file_server)
+    with pytest.raises(ConfigurationError) as error:
+        _forward(env, forwarded, exclusive=exclusive)
+    _assert_collision_refusal(error, path)
+
+
+@_BOTH_PATHS
+@pytest.mark.parametrize(("file_server", "forwarded"), _COLLISIONS)
+def test_forwarded_server_named_in_the_system_config_is_refused(
+    fixture, exclusive, file_server, forwarded
+):
+    _, env, _ = fixture
+    path = project_layers._SYSTEM_CONFIG
+    path.write_text(file_server, encoding="utf-8")
+    with pytest.raises(ConfigurationError) as error:
+        _forward(env, forwarded, exclusive=exclusive)
+    _assert_collision_refusal(error, path)
+
+
+@pytest.mark.parametrize(("file_server", "forwarded"), _COLLISIONS)
+def test_forwarded_server_named_in_the_callers_profile_file_is_refused(
+    fixture, file_server, forwarded
+):
+    _, env, _ = fixture
+    path = Path(env["CODEX_HOME"]) / "custom.config.toml"
+    path.write_text(file_server, encoding="utf-8")
+    with pytest.raises(ConfigurationError) as error:
+        _forward(env, forwarded, exclusive=False, profile="custom")
+    _assert_collision_refusal(error, path)
+
+
+def test_a_profile_file_no_request_names_is_not_a_layer(fixture):
+    _, env, _ = fixture
+    (Path(env["CODEX_HOME"]) / "custom.config.toml").write_text(_FILE_URL_SERVER, encoding="utf-8")
+    kwargs = _forward(env, _FORWARDED_URL_SERVER, exclusive=False)
+    assert kwargs["config_overrides"]["mcp_servers.colliding.url"] == _FORWARDED_URL
+
+
+def test_a_generated_secret_profile_is_not_a_layer_to_refuse(fixture):
+    from lionhub.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
+
+    _, env, _ = fixture
+    name = f"{CODEX_MCP_PROFILE_PREFIX}{'0' * 32}"
+    (Path(env["CODEX_HOME"]) / f"{name}.config.toml").write_text(_FILE_URL_SERVER, encoding="utf-8")
+    kwargs = _forward(env, _FORWARDED_URL_SERVER, exclusive=False, profile=name)
+    assert kwargs["config_overrides"]["mcp_servers.colliding.url"] == _FORWARDED_URL
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_an_unparseable_user_config_is_left_to_the_launch_time_census(fixture, exclusive):
+    project, env, calls = fixture
+    path = _user_config(env)
+    path.write_text("model = \n", encoding="utf-8")
+    request = _request(project, env, servers=_FORWARDED_URL_SERVER, exclusive=exclusive)
+    if exclusive:
+        with pytest.raises(ConfigurationError) as error:
+            await _run(request)
+        assert str(path) in str(error.value)
+        assert not calls
+    else:
+        await _run(request)
+        assert len(calls) == 1
+
+
+@_BOTH_PATHS
+@pytest.mark.parametrize(("file_server", "forwarded"), _COLLISIONS)
+@pytest.mark.asyncio
+async def test_forwarded_server_named_in_a_project_layer_is_refused(
+    fixture, exclusive, file_server, forwarded
+):
+    project, env, calls = fixture
+    path = _project_config(project.parent, file_server)
+    request = _request(project, env, servers=forwarded, exclusive=exclusive)
+    with pytest.raises(ConfigurationError) as error:
+        await _run(request)
+    _assert_collision_refusal(error, path)
+    assert not calls
+
+
+@pytest.mark.asyncio
+async def test_forwarded_server_named_in_an_untrusted_project_layer_is_refused(fixture):
+    project, env, calls = fixture
+    config = _user_config(env)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'trust_level = "trusted"', 'trust_level = "untrusted"'
+        ),
+        encoding="utf-8",
+    )
+    path = _project_config(project.parent, _FILE_URL_SERVER)
+    request = _request(project, env, servers=_FORWARDED_URL_SERVER, exclusive=False)
+    with pytest.raises(ConfigurationError) as error:
+        await _run(request)
+    _assert_collision_refusal(error, path)
+    assert not calls
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_unparseable_project_layer_is_refused_for_a_forwarded_server(fixture, exclusive):
+    project, env, calls = fixture
+    path = _project_config(project.parent, "model = \n")
+    request = _request(project, env, servers=_FORWARDED_URL_SERVER, exclusive=exclusive)
+    with pytest.raises(ConfigurationError) as error:
+        await _run(request)
+    assert str(path) in str(error.value)
+    assert not calls
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_user_config_collision_is_not_refused_when_the_run_ignores_the_user_config(
+    fixture, exclusive
+):
+    project, env, calls = fixture
+    _declare_in_user_config(env, _FILE_URL_SERVER)
+    kwargs = _forward(env, _FORWARDED_URL_SERVER, exclusive=exclusive, ignore_user_config=True)
+    await _run(CodexCodeRequest(prompt="synthetic", repo=project, env=env, **kwargs))
+    assert "--ignore-user-config" in calls[-1][0]
+    assert f'mcp_servers.colliding.url="{_FORWARDED_URL}"' in _config_args(calls[-1])
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_project_layer_collision_is_refused_when_the_run_ignores_the_user_config(
+    fixture, exclusive
+):
+    project, env, calls = fixture
+    _declare_in_user_config(env, _FILE_URL_SERVER)
+    path = _project_config(project.parent, _FILE_URL_SERVER)
+    kwargs = _forward(env, _FORWARDED_URL_SERVER, exclusive=exclusive, ignore_user_config=True)
+    with pytest.raises(ConfigurationError) as error:
+        await _run(CodexCodeRequest(prompt="synthetic", repo=project, env=env, **kwargs))
+    assert str(path) in str(error.value)
+    assert not calls
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_system_config_collision_is_still_refused_when_the_run_ignores_the_user_config(
+    fixture, exclusive
+):
+    _, env, _ = fixture
+    path = project_layers._SYSTEM_CONFIG
+    path.write_text(_FILE_URL_SERVER, encoding="utf-8")
+    with pytest.raises(ConfigurationError) as error:
+        _forward(env, _FORWARDED_URL_SERVER, exclusive=exclusive, ignore_user_config=True)
+    _assert_collision_refusal(error, path)
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_servers_that_share_no_name_with_a_layer_forward_as_before(
+    fixture, monkeypatch, exclusive
+):
+    """With no name in common the request and the command line are what they are with the
+    collision check out of the way."""
+    project, env, calls = fixture
+    _declare_in_user_config(env, _FILE_URL_SERVER.replace("colliding", "other"))
+    _project_config(project.parent, _FILE_STDIO_SERVER.replace("colliding", "project_other"))
+    project_layers._SYSTEM_CONFIG.write_text(
+        _FILE_URL_SERVER.replace("colliding", "system_other"), encoding="utf-8"
+    )
+    servers = {**_FORWARDED_URL_SERVER, "stdio": {"command": "forwarded-command", "args": ["a"]}}
+
+    async def run_once():
+        kwargs = _forward(env, servers, exclusive=exclusive)
+        await _run(CodexCodeRequest(prompt="synthetic", repo=project, env=env, **kwargs))
+        return kwargs, calls[-1][0]
+
+    checked = await run_once()
+    for module, name in (
+        (project_layers, "refuse_forwarded_name_in_config_layers"),
+        (codex_mod, "refuse_forwarded_name_in_project_layers"),
+    ):
+        monkeypatch.setattr(module, name, lambda *args, **kwargs: None, raising=False)
+    unchecked = await run_once()
+    assert checked == unchecked
+    assert f'mcp_servers.colliding.url="{_FORWARDED_URL}"' in _config_args(calls[-1])

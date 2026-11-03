@@ -407,7 +407,14 @@ neither can be read. An empty set whose allowlist names none of those servers
 carries `--ignore-user-config` instead, and nothing is disabled by name. If the
 request names a codex profile, or its config overrides select one (`profile`), its
 build is refused either way: the flag drops the profile, and the disables by name do
-not reach a server only the profile declares. A `codex/<name>` model string that
+not reach a server only the profile declares. Disabling by name keeps the user config
+loaded, and codex merges a config file's server with a forwarded server of the same name
+key by key, so a forwarded server whose name the system config, the user config, a named
+profile file or a project layer already declares is refused with a `ConfigurationError`
+(rename the forwarded server, or remove that entry from the file). The managed config
+(`managed_config.toml`), configuration delivered by device management and an enterprise
+cloud configuration bundle are layers this process cannot read, so a same-named server
+declared only there is not caught. A `codex/<name>` model string that
 names a profile file is read by lionagi before codex starts, so under the flag its
 model settings still apply (`model` and every key starting with `model_`, provider
 routing included), and a profile that sets anything else, `sandbox_mode` or
