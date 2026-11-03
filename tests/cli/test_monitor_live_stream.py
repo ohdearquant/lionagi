@@ -105,6 +105,18 @@ def test_stream_tail_waits_for_a_newline_and_keeps_terminated_malformed_fallback
     assert monitor._stream_tail(tmp_path, "branch") == ["1", "2", "3", "4"]
 
 
+def test_stream_tail_splits_only_on_line_feed(tmp_path):
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    path = stream / "branch.buffer.jsonl"
+    path.write_bytes(b"malformed\rline\n")
+    assert monitor._stream_tail(tmp_path, "branch") == ["malformed\rline"]
+    path.write_bytes(b"malformed\rline\r\n")
+    assert monitor._stream_tail(tmp_path, "branch") == ["malformed\rline"]
+    path.write_bytes(b"")
+    assert monitor._stream_tail(tmp_path, "branch") == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("view", ["session", "play"])
 @pytest.mark.parametrize("legacy", [False, True], ids=["distinct-run-id", "legacy-no-run-id"])

@@ -218,6 +218,20 @@ async def test_fallback_keeps_string_subclass_text_without_calling_its_str(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029), chr(0x85)])
+async def test_reader_preserves_unicode_separators_from_producer(tmp_path, separator):
+    from lionagi.cli.monitor import _stream_tail
+
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    path = stream / "branch.buffer.jsonl"
+    content = f"before{separator}after"
+    await _append_chunk(path, StreamChunk(type="text", content=content))
+    assert separator in path.read_text(encoding="utf-8")
+    assert _stream_tail(tmp_path, "branch") == [content]
+
+
+@pytest.mark.asyncio
 async def test_reader_displays_the_actual_nonfinite_fallback(tmp_path):
     from lionagi.cli.monitor import _stream_tail
 

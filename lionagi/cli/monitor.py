@@ -300,12 +300,13 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     try:
         import json as _json
 
-        data = buf_path.read_text(encoding="utf-8", errors="replace")
-        tail = data.splitlines()[-n_lines:]
+        with buf_path.open(encoding="utf-8", errors="replace", newline="") as stream:
+            data = stream.read()
+        tail = data.removesuffix("\n").split("\n")[-n_lines:] if data else []
         if data and not data.endswith("\n"):
             tail = tail[:-1]
         texts: list[str] = []
-        for line in tail:
+        for line in (line.removesuffix("\r") for line in tail):
             try:
                 obj = _json.loads(line)
                 if obj.get("_lionagi_stream_chunk") is True:
