@@ -693,7 +693,7 @@ def test_the_active_prepare_path_is_still_the_one_cited() -> None:
         "current.with_updates(prompt_context=extended_ctx)",
     )
     _in_span("lionagi/operations/chat/chat.py", 68, 68, "_prepare_run_kwargs(")
-    _in_span("lionagi/operations/run/run.py", 580, 580, "_prepare_run_kwargs(")
+    _in_span("lionagi/operations/run/run.py", 631, 631, "_prepare_run_kwargs(")
     _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
 
 
@@ -711,7 +711,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"writeback_failed": 0,',
     )
     _in_span(_BRANCH, 298, 310, "def last_context_report(self):", "``skipped``")
-    _in_span("lionagi/cli/monitor.py", 669, 680, '"blocks_injected",')
+    _in_span("lionagi/cli/monitor.py", 680, 691, '"blocks_injected",')
 
 
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
