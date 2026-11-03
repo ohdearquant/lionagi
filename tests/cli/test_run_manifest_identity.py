@@ -24,24 +24,23 @@ def isolated_runs(tmp_path, monkeypatch):
 
 @pytest.fixture
 def forbid_allocation_writes(monkeypatch):
-    """Record but do not execute allocator writes, even on the unfixed code."""
+    """Record allocator writes without touching the filesystem."""
     calls = []
 
-    def deny(path):
+    def record_directory(path):
         calls.append(("mkdir", path))
         return path
 
     def no_manifest(self, data):
         calls.append(("manifest", self.manifest_path))
 
-    monkeypatch.setattr(runs_mod, "ensure_lionagi_dir", deny)
+    monkeypatch.setattr(runs_mod, "ensure_lionagi_dir", record_directory)
     monkeypatch.setattr(runs_mod.RunDir, "write_manifest", no_manifest)
     monkeypatch.setattr(runs_mod, "mark_run_allocated", lambda: calls.append(("mark", None)))
     return calls
 
 
 _INVALID_IDS = [
-    pytest.param("", id="empty"),
     pytest.param(".", id="dot"),
     pytest.param("..", id="dot-dot"),
     pytest.param("child/nested", id="slash"),
@@ -80,8 +79,7 @@ def test_invalid_run_id_is_refused_before_filesystem_writes(
 def test_linked_run_directory_is_refused_before_allocation_writes(
     isolated_runs, forbid_allocation_writes, monkeypatch, tmp_path, source, target_kind
 ):
-    # Both targets are temporary fixtures. The recorder prevents writes
-    # through either link, even when the test is run on the old source.
+    # Neither symlink target may receive allocation writes.
     target = isolated_runs / "other" if target_kind == "inside-root" else tmp_path / "outside"
     target.mkdir()
     (isolated_runs / "linked").symlink_to(target, target_is_directory=True)
@@ -98,6 +96,28 @@ def test_linked_run_directory_is_refused_before_allocation_writes(
     assert ("run_id" if source == "explicit" else "LIONAGI_RUN_ID") in str(caught.value)
     assert "LIONAGI_RUN_ID" not in env
     assert forbid_allocation_writes == []
+
+
+@pytest.mark.parametrize(
+    ("argument", "inherited", "expected"),
+    [
+        pytest.param(None, "", "generated-run", id="empty-environment"),
+        pytest.param("", "parent-run", "parent-run", id="empty-argument-inherits"),
+        pytest.param("", "", "generated-run", id="both-empty"),
+    ],
+)
+def test_empty_run_ids_fall_through_and_consume_handoff(
+    isolated_runs, monkeypatch, argument, inherited, expected
+):
+    monkeypatch.setenv("LIONAGI_RUN_ID", inherited)
+    monkeypatch.setattr(runs_mod, "_new_run_id", lambda: "generated-run")
+
+    run = runs_mod.allocate_run(run_id=argument)
+
+    assert run.run_id == expected
+    assert run.state_root == isolated_runs / expected
+    assert run.read_manifest()["run_id"] == expected
+    assert "LIONAGI_RUN_ID" not in runs_mod.os.environ
 
 
 @pytest.mark.parametrize("source", ["explicit", "inherited", "generated"])

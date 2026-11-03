@@ -612,8 +612,8 @@ def allocate_run(
     MCP reason ``not_resolved``) until :meth:`RunDir.with_execution_provenance` binds it."""
     global _ALLOCATED_RUN_ID
 
-    inherited_run_id = os.environ.pop(_RUN_ID_ENV_VAR, None)
-    if run_id is not None:
+    inherited_run_id = os.environ.pop(_RUN_ID_ENV_VAR, None) or None
+    if run_id:
         rid, source = run_id, "run_id argument"
     elif inherited_run_id is not None:
         rid, source = inherited_run_id, _RUN_ID_ENV_VAR
@@ -2690,7 +2690,12 @@ def _resolved_run_state_dir(run_id: str) -> Path | None:
     return path
 
 
+def _manifest_run_id_matches(run_id: str, data: dict) -> bool:
+    """Allow an omitted ID or one matching the run directory."""
+    return "run_id" not in data or data["run_id"] == run_id
+
+
 def _validate_manifest_run_id(run_id: str, data: dict) -> None:
     """Prevent caller data from changing the run identity in a manifest."""
-    if "run_id" in data and data["run_id"] != run_id:
+    if not _manifest_run_id_matches(run_id, data):
         raise ValueError(f"manifest run_id {data['run_id']!r} does not match run {run_id!r}")

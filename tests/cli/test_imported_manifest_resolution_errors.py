@@ -83,9 +83,7 @@ async def test_resolution_failure_propagates_without_terminal_transition(
     faulted = []
 
     def resolve_with_fault(path, *args, **kwargs):
-        # Before the change only the full file path was resolved; after it the
-        # parent is resolved separately. An inaccessible parent makes both
-        # forms fail, exercising the same filesystem condition on both paths.
+        # An inaccessible parent prevents resolving the manifest path.
         targeted = path == target_manifest or (fault == "directory" and path == target_dir)
         if targeted:
             faulted.append(path)
