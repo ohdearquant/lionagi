@@ -341,7 +341,7 @@ Then the moves:
 3. LNDL and its Middle to `lionhub.lndl` (A3).
 4. `providers` last, under its record.
 
-Each move change carries D6's six items, unchanged.
+Each move change carries D6's seven items, unchanged.
 
 ### What this amendment does not decide
 
