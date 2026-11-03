@@ -7,6 +7,7 @@ The ``li kill`` command and the Studio cancel path share them.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -36,6 +37,19 @@ from ._util import BOOT_TIME_TOLERANCE
 from ._util import pid_alive as _pid_alive
 from ._util import recorded_identity_mode as _recorded_identity_mode
 from ._util import recorded_pid_is_foreign as _recorded_pid_is_foreign
+
+
+class _CancelPersistenceError(RuntimeError):
+    """A cancellation state write failed, so the outcome is indeterminate."""
+
+    def __init__(self, *, entity_type: str, entity_id: str, signal_sent: bool) -> None:
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.signal_sent = signal_sent
+        super().__init__(
+            f"Cancel-path state write failed for {entity_type} {entity_id}; "
+            "termination outcome is indeterminate"
+        )
 
 
 def read_pid_from_entity(entity: dict[str, Any]) -> int | None:
@@ -302,6 +316,7 @@ def _terminate_pid(
     *,
     expected_session_id: str | None = None,
     expected_create_time: float | None = None,
+    _signal_record: list[int] | None = None,
 ) -> str:
     """SIGTERM then SIGKILL, or return a refusal describing the observed identity."""
     if not _pid_alive(pid):
@@ -332,6 +347,8 @@ def _terminate_pid(
 
     try:
         os.kill(pid, signal.SIGTERM)
+        if _signal_record is not None:
+            _signal_record.append(signal.SIGTERM)
     except ProcessLookupError:
         return "already_dead"
     except PermissionError as exc:
@@ -378,6 +395,8 @@ def _terminate_pid(
 
     try:
         os.kill(pid, signal.SIGKILL)
+        if _signal_record is not None:
+            _signal_record.append(signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
 
@@ -455,6 +474,7 @@ async def _persist_cancel(
     reason_code: str,
     reason_summary: str,
     evidence: dict[str, Any],
+    _state_record: list[bool] | None = None,
 ) -> None:
     """Write the entity's terminal status + status_transition row.
 
@@ -501,7 +521,7 @@ async def _persist_cancel(
         target_status = "cancelled"
 
     try:
-        await db.update_status(
+        applied = await db.update_status(
             entity_type,
             entity_id,
             new_status=target_status,
@@ -526,6 +546,8 @@ async def _persist_cancel(
                 else None
             ),
         )
+        if applied and _state_record is not None:
+            _state_record.append(True)
     except TransitionRejectedError:
         # The entity went terminal between the pre-check and this write —
         # nothing to cancel, same as the pre-check `return`s above.
@@ -541,10 +563,14 @@ async def kill_one(
     user_reason: str,
     grace_seconds: float = 5.0,
     verbose: bool = False,
+    offload_signals: bool = False,
+    _signal_record: list[int] | None = None,
+    _state_record: list[bool] | None = None,
 ) -> dict[str, Any]:
     """Kill one entity: terminate process, persist cancellation."""
     from lionagi.state.reasons import RunReasons
 
+    signal_record = _signal_record if _signal_record is not None else []
     meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
     if entity_type == "session":
         from lionagi.state.lifecycle.service import _RUNNER_IDENTITY_FIELDS
@@ -578,7 +604,15 @@ async def kill_one(
     degraded = _degraded_run(entity_id) if pid is None and entity_type == "session" else None
 
     if degraded is not None:
-        pid, signal_used = _signal_degraded_process(degraded[1], grace_seconds=grace_seconds)
+        if offload_signals:
+            pid, signal_used = await asyncio.to_thread(
+                _signal_degraded_process,
+                degraded[1],
+                grace_seconds=grace_seconds,
+                _signal_record=signal_record,
+            )
+        else:
+            pid, signal_used = _signal_degraded_process(degraded[1], grace_seconds=grace_seconds)
     elif pid is not None:
         # Only boot_mismatch can still be pending here; it stays out of the early return
         # because the stale sweep treats it as evidence the process is gone, unlike a kill.
@@ -592,13 +626,18 @@ async def kill_one(
             except (TypeError, ValueError):
                 expected_create_time = None
             try:
-                signal_used = _terminate_pid(
-                    pid,
-                    grace_seconds=grace_seconds,
-                    expected_cmd="lionagi",
-                    expected_session_id=expected_session_id,
-                    expected_create_time=expected_create_time,
-                )
+                kwargs = {
+                    "grace_seconds": grace_seconds,
+                    "expected_cmd": "lionagi",
+                    "expected_session_id": expected_session_id,
+                    "expected_create_time": expected_create_time,
+                }
+                if offload_signals:
+                    signal_used = await asyncio.to_thread(
+                        _terminate_pid, pid, **kwargs, _signal_record=signal_record
+                    )
+                else:
+                    signal_used = _terminate_pid(pid, **kwargs)
             except RuntimeError as exc:
                 warn(str(exc))
                 signal_used = "permission_denied"
@@ -650,6 +689,10 @@ async def kill_one(
         # during the grace period. Guard the write with the original snapshot,
         # including absent identity keys, rather than re-reading after signalling.
         if not generation_present:
+            if offload_signals:
+                raise _CancelPersistenceError(
+                    entity_type=entity_type, entity_id=entity_id, signal_sent=bool(signal_record)
+                )
             cancel_status = "unavailable"
             cancel_error = "session generation was not available in the snapshot"
         else:
@@ -662,10 +705,24 @@ async def kill_one(
                     reason_summary=reason_summary,
                     evidence=evidence,
                 )
-            except TimeoutError:
+                if cancel_status == "applied" and _state_record is not None:
+                    _state_record.append(True)
+            except TimeoutError as exc:
+                if offload_signals:
+                    raise _CancelPersistenceError(
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        signal_sent=bool(signal_record),
+                    ) from exc
                 cancel_status = "unavailable"
                 cancel_error = "session cancellation did not finish before the deadline"
             except Exception as exc:
+                if offload_signals:
+                    raise _CancelPersistenceError(
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        signal_sent=bool(signal_record),
+                    ) from exc
                 cancel_status = "unavailable"
                 cancel_error = f"guarded cancellation unavailable: {exc}"
         # "already_terminal": the signalled execution recorded its own end during the
@@ -677,16 +734,35 @@ async def kill_one(
                 "rejected": "session cancellation was rejected",
             }.get(cancel_status, f"guarded cancellation returned {cancel_status!r}")
     else:
-        await _persist_cancel(
-            db,
-            entity_type,
-            entity_id,
-            reason_code=reason_code,
-            reason_summary=reason_summary,
-            evidence=evidence,
-        )
+        try:
+            kwargs = {
+                "reason_code": reason_code,
+                "reason_summary": reason_summary,
+                "evidence": evidence,
+            }
+            if offload_signals:
+                kwargs["_state_record"] = _state_record
+            await _persist_cancel(db, entity_type, entity_id, **kwargs)
+        except Exception as exc:
+            if offload_signals:
+                raise _CancelPersistenceError(
+                    entity_type=entity_type, entity_id=entity_id, signal_sent=bool(signal_record)
+                ) from exc
+            raise
     if degraded is not None:
-        _settle_degraded_run(*degraded)
+        try:
+            if offload_signals:
+                await asyncio.to_thread(
+                    _settle_degraded_run, *degraded, _state_record=_state_record
+                )
+            else:
+                _settle_degraded_run(*degraded)
+        except Exception as exc:
+            if offload_signals:
+                raise _CancelPersistenceError(
+                    entity_type=entity_type, entity_id=entity_id, signal_sent=bool(signal_record)
+                ) from exc
+            raise
 
     result = {
         "entity_type": entity_type,
@@ -738,6 +814,7 @@ def _signal_degraded_process(
     manifest: dict[str, Any],
     *,
     grace_seconds: float,
+    _signal_record: list[int] | None = None,
 ) -> tuple[int | None, str]:
     """Signal the process a degraded run recorded on its run.json; ``(pid, signal)``.
 
@@ -763,12 +840,14 @@ def _signal_degraded_process(
             # the kill cannot say it stopped one, alive or dead: nothing is signalled or written.
             return pid, "no_recorded_identity"
         try:
-            signal_used = _terminate_pid(
-                pid,
-                grace_seconds=grace_seconds,
-                expected_cmd="lionagi",
-                expected_create_time=expected_create_time,
-            )
+            kwargs = {
+                "grace_seconds": grace_seconds,
+                "expected_cmd": "lionagi",
+                "expected_create_time": expected_create_time,
+            }
+            if _signal_record is not None:
+                kwargs["_signal_record"] = _signal_record
+            signal_used = _terminate_pid(pid, **kwargs)
         except RuntimeError as exc:
             warn(str(exc))
             signal_used = "permission_denied"
@@ -851,7 +930,9 @@ def imported_degraded_process_is_live(run_id: str) -> bool:
     return verdict in ("ours", "unverifiable")
 
 
-def _settle_degraded_run(path: Path, manifest: dict[str, Any]) -> None:
+def _settle_degraded_run(
+    path: Path, manifest: dict[str, Any], *, _state_record: list[bool] | None = None
+) -> None:
     """Mark a stopped degraded run cancelled on its run.json, unless it wrote its own end.
 
     A process that took the SIGTERM wrote its own terminal status on the way out; one that was
@@ -893,6 +974,8 @@ def _settle_degraded_run(path: Path, manifest: dict[str, Any]) -> None:
         current["status"] = "cancelled"
         current["ended_at"] = time.time()
         _atomic_write_json(path, current)
+        if _state_record is not None:
+            _state_record.append(True)
 
 
 def _kill_degraded_run(path: Path, manifest: dict[str, Any], *, grace_seconds: float) -> int:
