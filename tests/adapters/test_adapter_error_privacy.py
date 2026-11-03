@@ -110,6 +110,8 @@ def test_unlisted_pydantic_validation_error_does_not_expose_input(kind):
     expected_data = {"item_0": "<redacted>"}
     assert captured.value.data == ([expected_data] if kind == "csv" else expected_data)
     assert captured.value.message == "Validation failed"
+    assert captured.value.details["category"] == "parse"
+    assert captured.value.details["unexpected"] is True
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
 

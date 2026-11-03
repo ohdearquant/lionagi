@@ -125,6 +125,7 @@ class JsonAdapter(AdapterBase, Adapter[T]):
             if not isinstance(e, ValidationError):
                 cls._handle_error(e, "parse", unexpected=True)
             safe = cls._validation_error(e, json_data)
+            safe.details.update(category="parse", unexpected=True)
             error = AdapterParseError(safe.message, details=safe.details)
         raise error from None
 
