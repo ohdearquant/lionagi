@@ -482,7 +482,11 @@ class _Recorder:
 
 
 class _StubDeclaration:
-    """The one thing ``match`` asks of a catalog's endpoint declaration."""
+    """What ``match`` asks of a catalog's endpoint declaration: its factory, and its key and
+    requirements when the factory fails."""
+
+    key = "stub-endpoint"
+    requirements = ()
 
     def __init__(self, cls):
         self._cls = cls
@@ -492,16 +496,20 @@ class _StubDeclaration:
 
 
 class _StubFragment:
-    """The one thing ``match`` asks of a catalog's provider fragment: its declarations."""
+    """What ``match`` asks of a catalog's provider fragment: its declarations and its key."""
 
-    def __init__(self, endpoints):
+    def __init__(self, endpoints, key="stub-provider"):
         self.endpoints = endpoints
+        self.key = key
 
 
 class _StubCatalog:
-    """The two catalog methods ``match`` uses, recording every call. A declared provider's
-    fragment lists the stub's own declaration and the classes the registry already holds
-    for that provider, so the stub's default is the result whichever class registered first."""
+    """The two catalog methods ``match`` uses, recording every call, and the source it names
+    in a failure. A declared provider's fragment lists the stub's own declaration and the
+    classes the registry already holds for that provider. The stub selects its declaration
+    for every endpoint name except ``UNLISTED_ENDPOINT``, which it declares no endpoint for."""
+
+    source = "a stub catalog"
 
     def __init__(self, declared):
         self._declared = {name: _StubDeclaration(cls) for name, cls in declared.items()}
@@ -518,10 +526,12 @@ class _StubCatalog:
             for entry in list(EndpointRegistry._entries)
             if lowered == entry.meta.provider or lowered in entry.meta.provider_aliases
         ]
-        return _StubFragment([self._declared[lowered], *registered])
+        return _StubFragment([self._declared[lowered], *registered], key=lowered)
 
     def endpoint(self, provider, name=None):
         self.endpoint_calls.append((provider, name))
+        if name == UNLISTED_ENDPOINT:
+            return None
         return self._declared[provider.lower()]
 
 
@@ -574,20 +584,24 @@ def test_declared_provider_with_no_endpoint_builds_the_catalog_default(monkeypat
 
 
 @pytest.mark.parametrize("row", KEY_CASES)
-def test_a_named_endpoint_never_consults_the_catalog(monkeypatch, row):
+def test_a_named_endpoint_is_selected_from_the_catalog(monkeypatch, row):
+    # A declared provider is answered by the catalog's declarations, named endpoint or not;
+    # the registered classes are not consulted.
     catalog = _install_catalog(monkeypatch, _StubCatalog({row.provider: _Recorder}))
     result = match_endpoint(provider=row.provider, endpoint=row.endpoint)
-    assert type(result) is _class_of(row)
-    assert catalog.fragment_calls == []
-    assert catalog.endpoint_calls == []
+    assert type(result) is _Recorder
+    assert catalog.fragment_calls == [row.provider]
+    assert catalog.endpoint_calls == [(row.provider, row.endpoint)]
 
 
-def test_an_unlisted_endpoint_never_consults_the_catalog(monkeypatch):
+def test_an_unlisted_endpoint_of_a_declared_provider_routes_generic(monkeypatch):
+    # The catalog selects no endpoint for the request, so the provider's default declaration is
+    # activated to show the provider is healthy, and the generic endpoint answers.
     catalog = _install_catalog(monkeypatch, _StubCatalog({"openai": _Recorder}))
     result = match_endpoint(provider="openai", endpoint=UNLISTED_ENDPOINT)
     assert type(result) is Endpoint
-    assert catalog.fragment_calls == []
-    assert catalog.endpoint_calls == []
+    assert catalog.fragment_calls == ["openai"]
+    assert catalog.endpoint_calls == [("openai", UNLISTED_ENDPOINT), ("openai", None)]
 
 
 def test_provider_the_catalog_does_not_declare_keeps_the_registry_scan(monkeypatch):
@@ -650,35 +664,49 @@ def test_catalog_load_failure_keeps_the_registry_scan(monkeypatch, make_error, p
     assert loads == [provider]
 
 
-class _UnimportableDeclaration:
+class _UnimportableDeclaration(_StubDeclaration):
     """A declaration whose implementation module fails to import."""
 
+    def __init__(self):
+        super().__init__(None)
+        self.factory_calls = 0
+
     def factory(self):
+        self.factory_calls += 1
         raise ImportError("No module named 'a_broken_provider_module'")
 
 
-def test_declared_default_that_fails_to_import_keeps_the_registry_scan(monkeypatch):
+def test_declared_default_that_fails_to_import_raises_an_activation_error(monkeypatch):
     catalog = _install_catalog(monkeypatch, _StubCatalog({}))
     catalog._declared["openai"] = _UnimportableDeclaration()
-    result = match_endpoint(provider="openai", endpoint="")
-    assert type(result) is _first_registered_class("openai")
+    with pytest.raises(ProviderActivationError) as raised:
+        match_endpoint(provider="openai", endpoint="")
+    assert (raised.value.provider, raised.value.source, raised.value.reason) == (
+        "openai",
+        "a stub catalog",
+        "activation_failed",
+    )
+    assert isinstance(raised.value.__cause__, ImportError)
     assert catalog.endpoint_calls == [("openai", "")]
 
 
-def test_unimportable_declaration_beside_the_default_is_skipped(register_throwaway, monkeypatch):
-    # The provider's first registered class is its declared default. Another declaration of the
-    # provider names an implementation module that fails to import: it is left out when the
-    # declared classes are collected, and the declared default is still built.
+def test_unimportable_declaration_beside_the_default_is_never_imported(
+    register_throwaway, monkeypatch
+):
+    # The provider's declared default is selected and built. Another declaration of the
+    # provider names an implementation module that fails to import: nothing calls its factory.
     first = register_throwaway("runtime-pin-provider", "alpha")
     catalog = _install_catalog(monkeypatch, _StubCatalog({"runtime-pin-provider": first}))
     declared = catalog._declared["runtime-pin-provider"]
-    fragment = _StubFragment([declared, _UnimportableDeclaration()])
+    beside = _UnimportableDeclaration()
+    fragment = _StubFragment([declared, beside], key="runtime-pin-provider")
     monkeypatch.setattr(catalog, "fragment", lambda name: fragment)
     result = match_endpoint(provider="runtime-pin-provider", endpoint="", model="a-model")
     assert type(result) is first
     assert result.config is None
     assert result.kwargs == {"model": "a-model"}
     assert catalog.endpoint_calls == [("runtime-pin-provider", "")]
+    assert beside.factory_calls == 0
 
 
 # -- 4. an endpoint the provider does not list ------------------------------

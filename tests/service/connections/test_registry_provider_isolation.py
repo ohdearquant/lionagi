@@ -159,12 +159,15 @@ def stored_model():
     return iModel(provider=ROW.key, model="any-model", api_key="unused").to_dict()
 
 
-def test_load_finishes_and_logs_one_warning_naming_the_provider(failed_provider):
+def test_load_finishes_and_logs_one_warning_per_failed_endpoint(failed_provider):
     _completed(failed_provider)
     messages = [record.getMessage() for record in failed_provider.warnings]
-    assert len(messages) == 1
-    assert ROW.key in messages[0]
-    assert "activation_failed" in messages[0]
+    # Each declared endpoint of the provider fails on its own and logs once, naming the provider.
+    assert len(messages) == len(ROW.endpoints)
+    for declared in ROW.endpoints:
+        [message] = [m for m in messages if f"endpoint {declared.key!r}" in m]
+        assert ROW.key in message
+        assert "activation_failed" in message
 
 
 def test_other_providers_select_the_same_endpoints(failed_provider):
@@ -274,12 +277,12 @@ def test_two_failed_providers_are_listed_in_catalog_order(two_failed_providers):
     ]
 
 
-def test_two_failed_providers_log_one_warning_each(two_failed_providers):
+def test_two_failed_providers_log_one_warning_per_failed_endpoint(two_failed_providers):
     _completed(two_failed_providers)
     messages = [record.getMessage() for record in two_failed_providers.warnings]
-    assert len(messages) == 2
-    assert [ROW.key in m for m in messages].count(True) == 1
-    assert [OTHER_ROW.key in m for m in messages].count(True) == 1
+    assert len(messages) == len(ROW.endpoints) + len(OTHER_ROW.endpoints)
+    assert [ROW.key in m for m in messages].count(True) == len(ROW.endpoints)
+    assert [OTHER_ROW.key in m for m in messages].count(True) == len(OTHER_ROW.endpoints)
 
 
 @pytest.mark.parametrize(
@@ -388,11 +391,12 @@ def test_register_refuses_a_built_in_name_when_nothing_failed():
 
 
 @pytest.mark.parametrize("how", ["entry-list", "same-name-other-class"])
-def test_a_first_entry_the_catalog_does_not_declare_is_what_an_empty_endpoint_resolves_to(how):
+def test_a_first_entry_the_catalog_does_not_declare_leaves_the_declared_default_selected(how):
     """``register`` accepts a class under a declared name only when it has the module and
     qualified name of a declared endpoint, so a first entry the catalog does not declare
     comes from a class that is not the object the catalog loads, or from an entry put into
-    the registry's entry list without passing ``register``."""
+    the registry's entry list without passing ``register``. A declared provider is answered
+    by its declarations alone, so the entry does not change the selection."""
     declared = type(match_endpoint("groq", ""))
     with EndpointRegistry._lock:
         EndpointRegistry._remove_entries(
@@ -419,7 +423,7 @@ def test_a_first_entry_the_catalog_does_not_declare_is_what_an_empty_endpoint_re
         with EndpointRegistry._lock:
             EndpointRegistry._entries.insert(0, registry_module._RegistryEntry(meta, other))
     assert other is not declared
-    assert type(match_endpoint("groq", "")) is other
+    assert type(match_endpoint("groq", "")) is declared
 
 
 def test_register_accepts_a_name_the_bundled_catalog_does_not_declare():

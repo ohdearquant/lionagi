@@ -43,7 +43,8 @@ def _setup_ollama_endpoint(has_ollama: bool, kwargs: dict) -> None:
     drop any api_key, and allow loopback addresses in the SSRF guard."""
     if not has_ollama:
         raise ModuleNotFoundError(
-            "ollama is not installed, please install it with `pip install lionagi[ollama]`"
+            "ollama is not installed, please install it with `pip install lionagi[ollama]`",
+            name="ollama",
         )
     kwargs.pop("api_key", None)
     kwargs.setdefault("allow_local_network", True)
