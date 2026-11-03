@@ -16,7 +16,17 @@ import pytest
 
 from lionhub.serve.mcp.verbs import ABSENT, VERBS
 
-DOC = Path(__file__).resolve().parents[5] / "docs" / "reference" / "mcp-server.md"
+
+def _find_reference_doc(source: Path) -> Path:
+    """Find the reference document without depending on this test's nesting depth."""
+    for parent in source.resolve().parents:
+        reference = parent / "docs" / "reference" / "mcp-server.md"
+        if (parent / "pyproject.toml").is_file() and reference.is_file():
+            return reference
+    raise FileNotFoundError(f"Cannot find docs/reference/mcp-server.md above {source}")
+
+
+DOC = _find_reference_doc(Path(__file__))
 
 # Verb names as the document writes them: backticked, in a table's first cell.
 _ROW_NAME = re.compile(r"^\|\s*`([a-z][a-z0-9.\-]*)`\s*\|")
@@ -144,3 +154,29 @@ def test_stated_unavailable_count_matches_registry(doc_text):
         f"{DOC.name} says {word} ({_NUMBER_WORDS[word]}) names are catalogued as "
         f"unavailable; the registry catalogues {len(ABSENT)}."
     )
+
+
+def test_doc_lookup_uses_repo_marker_at_any_depth(tmp_path):
+    root = tmp_path / "checkout"
+    docs = root / "docs" / "reference"
+    docs.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname = 'root'\n")
+    reference = docs / "mcp-server.md"
+    reference.write_text("reference")
+    nested = root / "packages" / "component" / "nested" / "tests"
+    nested.mkdir(parents=True)
+    (root / "packages" / "component" / "pyproject.toml").write_text("[project]\nname = 'child'\n")
+    source = nested / "test_mcp.py"
+    source.write_text("")
+    assert _find_reference_doc(source) == reference
+
+
+def test_doc_lookup_refuses_when_no_repository_marker_exists(tmp_path):
+    reference_dir = tmp_path / "docs" / "reference"
+    reference_dir.mkdir(parents=True)
+    (reference_dir / "mcp-server.md").write_text("reference")
+    source = tmp_path / "nested" / "test_mcp.py"
+    source.parent.mkdir()
+    source.write_text("")
+    with pytest.raises(FileNotFoundError, match="docs/reference/mcp-server.md"):
+        _find_reference_doc(source)

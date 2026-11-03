@@ -82,7 +82,7 @@ if "lionagi.config" in sys.modules:
     # exported is already bound and removing it above changed nothing. lionagi.config imports
     # lionagi._paths, so this check goes first to name the settings that were read.
     raise RuntimeError(
-        "lionagi.config was imported before tests/conftest.py could remove "
+        "lionagi.config was imported before tests/_shared_conftest.py could remove "
         "LIONAGI_STATE_DB_URL; this session's settings may name the caller's store."
     )
 
@@ -91,7 +91,7 @@ if "lionagi._paths" in sys.modules:
     # did nothing and every run-directory write in this session lands in the
     # real one. Fail here rather than let the suite report itself as isolated.
     raise RuntimeError(
-        "lionagi._paths was imported before tests/conftest.py could redirect "
+        "lionagi._paths was imported before tests/_shared_conftest.py could redirect "
         "LIONAGI_HOME; the run directory used by this session is not isolated."
     )
 
@@ -103,14 +103,12 @@ import pytest
 
 from scripts.quarantine import apply_quarantine_markers, load_manifest
 
-# Load shared scripted/mock fixtures from the library for both test trees
-# can ask for ``mocked_branch``, ``scripted_branch``, ``test_data_loader``, etc.
-# Sub-conftests can override specific fixtures (see tests/docs/conftest.py).
 _QUARANTINE = load_manifest()
 
 
 def pytest_collection_modifyitems(config, items):
     """Apply quarantine markers from the checked-in exact-nodeid manifest."""
+    # Both test roots register this shared hook; mark the collection only once.
     if getattr(config, "_lionagi_quarantine_applied", False):
         return
     config._lionagi_quarantine_applied = True
@@ -207,8 +205,15 @@ if _RSS_LOG_DIR:
 
     os.makedirs(_RSS_LOG_DIR, exist_ok=True)
 
-    @pytest.hookimpl(hookwrapper=True)
-    def pytest_runtest_protocol(item, nextitem):
+
+@pytest.hookimpl(hookwrapper=True)
+def _trace_rss(item, nextitem):
+    # Both test roots can register this wrapper in the same pytest session.
+    if getattr(item, "_lionagi_rss_recording", False):
+        yield
+        return
+    item._lionagi_rss_recording = True
+    try:
         worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
         log_path = os.path.join(_RSS_LOG_DIR, f"rss-{worker}.jsonl")
         before = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
@@ -246,9 +251,16 @@ if _RSS_LOG_DIR:
                 )
                 + "\n"
             )
+    finally:
+        del item._lionagi_rss_recording
+
+
+if _RSS_LOG_DIR:
+    pytest_runtest_protocol = _trace_rss
 
 
 def pytest_addoption(parser):
+    # Both test roots register this shared hook; argparse permits only one option.
     if getattr(parser, "_lionagi_skip_missing_option_added", False):
         return
     parser.addoption(

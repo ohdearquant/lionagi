@@ -6,13 +6,13 @@ includes both `lionagi` and `lionhub`.
 
 ## Layout
 
-| Path | Contents |
+| Path (from repository root) | Contents |
 | --- | --- |
-| `src/lionhub/orchestration/` | Orchestration, engines, dispatch, and work forms. |
-| `src/lionhub/providers/` | Provider implementations and shared provider helpers. |
-| `src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
-| `src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
-| `tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
+| `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, and work forms. |
+| `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
+| `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
+| `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
 
 ## Moved imports
 
@@ -46,3 +46,8 @@ uv run pytest lionhub/tests
 
 Some integration tests exercise optional dependencies or local subprocesses.
 Tests that also cover core behavior remain under the repository's `tests/` tree.
+The LionHub tests currently depend on the repository's `tests/` package: they
+share `tests/_shared_conftest.py` and use helpers from `tests/providers/` and
+`tests/mcp/`. Run them from a complete repository checkout with both test trees
+available. A separately distributed LionHub test suite will need those shared
+fixtures and helpers supplied or moved with it.

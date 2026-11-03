@@ -97,10 +97,14 @@ jobs:
         uv venv
         uv sync --all-extras
     
+    # Validate modern test roots; older release tags may not have the helper.
     - name: Run tests
       run: |
         source .venv/bin/activate
-        uv run pytest --maxfail=1 --disable-warnings tests/ lionhub/tests/
+        if [ -f scripts/test_roots.py ]; then
+          uv run python scripts/test_roots.py > /dev/null
+        fi
+        uv run pytest --maxfail=1 --disable-warnings
 
   deploy:
     permissions:
