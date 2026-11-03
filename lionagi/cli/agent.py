@@ -2719,8 +2719,13 @@ async def _run_agent(
             # rate-limit replenisher tasks that hang anyio.run forever).
             with CancelScope(shield=True):
                 # Engine session id, used by teardown to tell a genuine failure
-                # from a wrapper exception racing a still-live engine session.
-                _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)
+                # from a wrapper exception racing a still-live engine session. Only an
+                # id the CLI reported in this process: one restored from the saved
+                # branch belongs to an earlier turn, whose status says nothing of
+                # this one.
+                _engine_session_uid = getattr(
+                    branch.chat_model.endpoint, "reported_session_id", None
+                )
                 registry = getattr(branch, "_context_providers", None)
                 injection_stats = getattr(registry, "stats", None) if registry is not None else None
                 _fold_injection_stats(_injection_totals, injection_stats)

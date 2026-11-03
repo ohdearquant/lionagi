@@ -247,3 +247,95 @@ async def test_fresh_run_empty_result_still_exits_zero(monkeypatch, tmp_path):
     assert terminal_status == "completed", (
         f"Fresh run with empty output should still be 'completed', got {terminal_status!r}"
     )
+
+
+# Test: a restored CLI session id is not this run's engine session at teardown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream_reports_session", "teardown_gets_session", "final_status"),
+    [(False, False, "failed"), (True, True, "completed")],
+    ids=["before-any-session-event", "after-a-session-event"],
+)
+async def test_a_resumed_turn_failing_before_the_cli_reports_a_session_stays_failed(
+    monkeypatch, tmp_path, stream_reports_session, teardown_gets_session, final_status
+):
+    """The id restored from the saved branch is the session to resume, not one this run's CLI
+    has reported. A provider error before any session event must not be settled by the status
+    of the previous turn's session, which is already completed in the store; once the stream
+    has reported the session, the run is settled by that session as before."""
+    import lionagi.cli._runs as runs_mod
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch, iModel
+    from lionagi._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session
+    from lionagi.state.db import StateDB
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    previous_turn_session = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+
+    saved = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    saved.chat_model.endpoint.session_id = previous_turn_session
+    branch_path = tmp_path / f"{saved.id}.json"
+    branch_path.write_text(json.dumps(saved.to_dict()))
+
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=previous_turn_session,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="completed",
+        )
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", branch_path))
+
+    async def operate_fails(self, instruction=None, **kw):
+        if stream_reports_session:
+            # What the run's stream does on a session event.
+            self.chat_model.endpoint.session_id = previous_turn_session
+        raise ProviderError("the CLI ended with an error")
+
+    monkeypatch.setattr(Branch, "operate", operate_fails)
+
+    teardown_calls: list[dict] = []
+    contexts: list[dict] = []
+
+    async def setup(branch, **kw):
+        ctx = await runs_mod.setup_agent_persist(branch, **kw)
+        contexts.append(ctx)
+        return ctx
+
+    async def teardown(ctx, *, status="completed", **kw):
+        final = await runs_mod.teardown_agent_persist(ctx, status=status, **kw)
+        teardown_calls.append({"engine_session_uid": kw.get("engine_session_uid"), "final": final})
+        return final
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
+
+    with pytest.raises(ProviderError):
+        await agent_mod._run_agent(None, "follow up", resume=str(saved.id), no_mcp_config=True)
+
+    assert len(contexts) == 1 and contexts[0] is not None
+    assert [call["engine_session_uid"] for call in teardown_calls] == [
+        previous_turn_session if teardown_gets_session else None
+    ]
+    assert [call["final"] for call in teardown_calls] == [final_status]
+    async with StateDB() as db:
+        session = await db.get_session(contexts[0]["session_id"])
+    assert session["status"] == final_status
