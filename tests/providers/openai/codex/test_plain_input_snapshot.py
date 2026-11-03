@@ -1155,7 +1155,6 @@ _CHECK_AND_SPAWN_PATH: dict[str, set[str]] = {
         "_refuse_a_profile_under_containment",
         "_refuse_ambiguous_approval",
         "_refuse_oversized_cli_inputs",
-        "_refuse_oversized_command",
         "as_cmd_args",
         "_build_declarative_args",
         "_settled",
@@ -1170,6 +1169,7 @@ _CHECK_AND_SPAWN_PATH: dict[str, set[str]] = {
         "env_as_the_spawn_encodes_it",
         "ndjson_from_cli",
         "build_declarative_cli_args",
+        "refuse_oversized_command",
     },
 }
 
@@ -1227,6 +1227,11 @@ def test_the_check_and_spawn_path_read_the_snapshot_and_no_raw_field():
     for filename, targets in _CHECK_AND_SPAWN_PATH.items():
         found = _snapshot_reads(files[filename], targets)
         assert found, f"no function of {filename} was scanned, so the check is vacuous"
+        missing = sorted(targets - found.keys())
+        assert not missing, (
+            f"{filename} defines no function named {missing}, so the guard did not scan "
+            "what the registry lists; register each function in the file that defines it"
+        )
         checked += len(found)
         raw = {
             name: reads for name, reads in found.items() if reads and name not in _ALLOWED_READERS

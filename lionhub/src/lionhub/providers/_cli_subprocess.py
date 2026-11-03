@@ -1945,3 +1945,70 @@ def make_cli_flag(
 
 
 print_readable = partial(as_readable, md=True, display_str=True)
+
+
+# A system prompt, a `-c` override or any other long value reaches a CLI as a single
+# command-line argument. macOS refuses an argument list, environment included, past ARG_MAX
+# (1,048,576 bytes from `getconf ARG_MAX`); Linux refuses one argument past MAX_ARG_STRLEN, 32
+# pages (131,072 bytes with 4 KiB pages). So an argument of this many bytes does not start the
+# CLI on macOS or on Linux with 4 KiB pages. A shorter one can still be refused there when the
+# process starts, with the operating system's error. The bound is the same on every platform,
+# so it also refuses an argument Linux with larger pages would take.
+CLI_ARGUMENT_MAX_BYTES = 1_048_576
+
+
+def refuse_oversized_argument(argument: bytes, what: str, cli: str) -> None:
+    """Refuse ``argument`` when it is ``CLI_ARGUMENT_MAX_BYTES`` bytes or more. ``what`` names
+    it in the refusal and ``cli`` names the program it was meant for, e.g. ``"Codex CLI"``."""
+    size = len(argument)
+    if size >= CLI_ARGUMENT_MAX_BYTES:
+        raise ValueError(
+            f"{what} reaches the {cli} as one command-line argument of {size:,} bytes, "
+            f"and an argument of {CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not start the "
+            "CLI on macOS or on Linux with 4 KiB pages."
+        )
+
+
+def refuse_text_strict_utf8_cannot_encode(what: str, cli: str) -> ValueError:
+    """The refusal for text holding a character strict UTF-8 cannot encode — a lone
+    surrogate, which a child process cannot decode. Returned rather than raised so the
+    caller names the input at the point it encodes it."""
+    return ValueError(
+        f"{what} holds a character strict UTF-8 cannot encode: a lone surrogate cannot "
+        f"be passed to the {cli}."
+    )
+
+
+def nul_refusal_message(what: str) -> str:
+    return f"{what} holds a NUL character, which no command-line argument can hold."
+
+
+def refuse_oversized_command(cmd: list[str], cli: str) -> None:
+    """Refuse ``cmd`` when any argument after the program holds a NUL or is
+    ``CLI_ARGUMENT_MAX_BYTES`` bytes or more. ``cli`` names the program in a refusal."""
+    for position, argument in enumerate(cmd[1:], start=1):
+        flag = cmd[position - 1] if position > 1 else ""
+        if flag == "-c":
+            # Named by position: an override's key can hold a secret as its value can.
+            what = f"The -c override at argument {position}"
+        elif flag.startswith("-"):
+            what = f"The value of {flag}"
+        else:
+            what = f"Command-line argument {position}"
+        # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
+        # exec, so a path holding a byte that is not UTF-8 counts that byte once. The
+        # argument is read with `str.__str__` first, so a caller's own `encode` is never
+        # called here; a character the text cannot encode is refused after the handler,
+        # naming the argument by its position or its flag, since the codec's error holds
+        # the whole argument.
+        if not issubclass(type(argument), str):
+            raise TypeError(f"{what} must be text, not {type(argument).__name__}")
+        try:
+            encoded = os.fsencode(str.__str__(argument))
+        except UnicodeEncodeError:
+            encoded = None
+        if encoded is None:
+            raise refuse_text_strict_utf8_cannot_encode(what, cli)
+        if b"\x00" in encoded:
+            raise ValueError(nul_refusal_message(what))
+        refuse_oversized_argument(encoded, what, cli)
