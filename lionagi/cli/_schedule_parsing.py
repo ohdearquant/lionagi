@@ -189,6 +189,8 @@ def _schedule_request_timeout_message(
 
 
 def _validate_chain_kinds(action: dict, label: str, parent_kind: str) -> str | None:
+    if not isinstance(parent_kind, str):
+        raise ValueError("action_kind must be a string")
     parent_kind = str.__str__(parent_kind)
     parent_kind = _ALIAS_ACTION_KINDS.get(parent_kind, parent_kind)
     for kind_key in ("kind", "action_kind"):

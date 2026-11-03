@@ -374,6 +374,19 @@ def test_chain_kind_refusal_agrees_between_parser_create_and_update(field, kind_
 
 
 @pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("parent_kind", [42, True, ("agent",)])
+def test_non_string_parent_kind_is_refused_at_service_boundary(field, parent_kind):
+    chain = {"kind": "agent", field: None}
+    created, create_error = _run_create(_create_data(action_kind=parent_kind, **{field: chain}))
+    updated, update_error = _run_update({field: chain}, existing=_existing(action_kind=parent_kind))
+
+    assert create_error is not None and "action_kind" in str(create_error)
+    assert update_error is not None and "action_kind" in str(update_error)
+    created.create_schedule.assert_not_called()
+    updated.update_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("field", FIELDS)
 @pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
 @pytest.mark.parametrize("target", ["command", "flow_yaml"])
 def test_target_bearing_kind_requires_matching_parent(field, kind_key, target):
