@@ -2027,3 +2027,59 @@ def test_accumulate_result_meta_keeps_a_split_that_covers_each_chunks_total():
     assert collected["cache_write_5m_tokens"] == 200
     assert collected["cache_write_1h_tokens"] == 50
     assert collected["usage_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_branch_restored_from_a_snapshot_resumes_the_cli_session(tmp_path, monkeypatch):
+    """After two turns the branch is written out and read back, as a new process does, and
+    the next turn resumes the CLI's own session and sends only the new instruction."""
+    import lionhub.providers.anthropic.claude_code as cc
+
+    session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+    spawned: list[list[str]] = []
+
+    async def fake_cli(cmd, **kwargs):
+        spawned.append(list(cmd))
+        answer = f"answer {len(spawned)}"
+        yield {
+            "type": "system",
+            "subtype": "init",
+            "session_id": session_id,
+            "model": "claude-sonnet-5-5",
+        }
+        yield {
+            "type": "assistant",
+            "message": {"id": f"m{len(spawned)}", "content": [{"type": "text", "text": answer}]},
+        }
+        yield {
+            "type": "result",
+            "subtype": "success",
+            "result": answer,
+            "is_error": False,
+            "session_id": session_id,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: "claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", fake_cli)
+
+    branch = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    for instruction in ("first instruction", "second instruction"):
+        await _collect(run(branch, instruction, RunParam()))
+
+    # Inside the process that ran them, the second turn resumed the first.
+    assert "--resume" not in spawned[0]
+    assert spawned[1][spawned[1].index("--resume") + 1] == session_id
+
+    restored = Branch.from_dict(json.loads(json.dumps(branch.to_dict(mode="json"))))
+    await _collect(run(restored, "third instruction", RunParam()))
+
+    argv = spawned[2]
+    assert argv[argv.index("--resume") + 1] == session_id
+    prompt = argv[argv.index("-p") + 1]
+    assert "third instruction" in prompt
+    for earlier in ("first instruction", "second instruction", "answer 1", "answer 2"):
+        assert earlier not in prompt

@@ -364,4 +364,11 @@ data = model.to_dict()
 restored = li.iModel.from_dict(data)
 ```
 
+A CLI model stores the CLI's own session id under `session_id` in its serialized endpoint, once
+it has one. `from_dict` restores it, so `restored.provider_session_id` is the same id and the
+next request resumes that session (`--resume <id>` for Claude Code) and sends only the new
+instruction rather than the whole conversation. The id is restored only when it is a UUID in its
+canonical form; any other stored value is ignored without an error, as is a snapshot that has
+none.
+
 Next: [Operations & extension](operations.md) — Middle protocol and param types

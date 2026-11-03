@@ -3,6 +3,7 @@
 
 import asyncio
 import contextlib
+import json
 import os
 from unittest.mock import patch
 
@@ -857,6 +858,83 @@ class TestiModel:
         # Check that match_endpoint was used to properly reconstruct
         assert restored.endpoint.config.provider == "anthropic"
         assert restored.endpoint.config.kwargs["model"] == "claude-3-5-sonnet-20241022"
+
+    def test_a_cli_models_session_id_survives_being_saved_and_restored(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = session_id
+
+        # Through JSON, as a snapshot written to a file and read back.
+        restored = iModel.from_dict(json.loads(json.dumps(imodel.to_dict())))
+
+        assert restored.provider_session_id == session_id
+        assert restored.endpoint.session_id == session_id
+        call = restored.create_api_calling(messages=[{"role": "user", "content": "next"}])
+        assert call.payload["request"].resume == session_id
+
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            "--dangerous",
+            "a b",
+            "x" * 10_240,
+            "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f\n--dangerous",
+            "{7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f}",
+            "7d1c2e905b3a4f6e9a8d0c1b2a3d4e5f",
+            "",
+            12345,
+            ["7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"],
+        ],
+        ids=[
+            "flag",
+            "space",
+            "ten-kilobytes",
+            "uuid-then-flag",
+            "braces",
+            "no-dashes",
+            "empty",
+            "integer",
+            "list",
+        ],
+    )
+    def test_a_stored_session_id_not_in_the_shape_the_cli_issues_is_ignored(self, stored):
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        data = json.loads(json.dumps(imodel.to_dict()))
+        data["endpoint"]["session_id"] = stored
+
+        restored = iModel.from_dict(data)
+
+        assert restored.provider_session_id is None
+        call = restored.create_api_calling(messages=[{"role": "user", "content": "next"}])
+        assert call.payload["request"].resume is None
+
+    def test_a_snapshot_without_a_stored_session_id_restores_with_none(self):
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        data = json.loads(json.dumps(imodel.to_dict()))
+        # A snapshot written before the id was stored has no such entry.
+        data["endpoint"].pop("session_id", None)
+
+        assert iModel.from_dict(data).provider_session_id is None
+
+    def test_a_stored_session_id_does_not_reach_a_model_that_is_not_a_cli(self):
+        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+        data = imodel.to_dict()
+        data["endpoint"]["session_id"] = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+
+        assert iModel.from_dict(data).provider_session_id is None
 
     @pytest.mark.asyncio
     async def test_imodel_unsupported_event_type(self):

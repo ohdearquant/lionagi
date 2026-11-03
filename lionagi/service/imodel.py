@@ -18,6 +18,7 @@ from lionagi.protocols.generic import Event, EventStatus, Log
 from lionagi.protocols.ids import to_uuid
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
+from .connections.agentic_endpoint import _stored_session_id
 from .connections.endpoint import (
     _event_reports_call_failure,
     _names_credential_setting,
@@ -925,7 +926,9 @@ class iModel:  # noqa: N801
         the registered subclass is recovered from, and the restored model carries it as
         ``copy`` does; ``to_dict`` does not write it. Without it the automatic source is used.
         A catalog that declares the stored provider but selects none of its endpoints for the
-        stored endpoint name raises ``ProviderNotFoundError``, as selection does.
+        stored endpoint name raises ``ProviderNotFoundError``, as selection does. The session
+        id a CLI endpoint stored is restored with it, so the model resumes the CLI's own session;
+        a stored value that is not a UUID in its canonical form is ignored without an error.
         """
         endpoint = Endpoint.from_dict(
             data.get("endpoint", {}),
@@ -972,6 +975,13 @@ class iModel:  # noqa: N801
                 e1.config._api_key = registered._api_key
         else:
             e1 = endpoint
+
+        # A CLI endpoint continues the CLI's own session, so the id it stored comes back with
+        # it. Only an id in the shape the CLI issues is taken; any other stored value is ignored.
+        if isinstance(e1, AgenticEndpoint) and (
+            session_id := _stored_session_id(data.get("endpoint"))
+        ):
+            e1.session_id = session_id
 
         # The executor's rate limits only: any other key would reach __init__ as an
         # endpoint setting, such as a base_url or an env, past the rules above.
