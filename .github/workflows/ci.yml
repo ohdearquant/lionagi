@@ -61,6 +61,7 @@ jobs:
     - uses: actions/checkout@v7
       with:
         persist-credentials: false
+        fetch-depth: 2
     - name: Install uv
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -79,6 +80,9 @@ jobs:
       run: sudo apt-get install -y ripgrep
     - name: Lint publication hygiene
       run: scripts/ci.sh lint-hygiene
+    - name: Check changed data files
+      if: ${{ github.event_name == 'pull_request' }}
+      run: scripts/ci.sh lint-data-files --base HEAD^1
 
   core-install:
     runs-on: ubuntu-latest
