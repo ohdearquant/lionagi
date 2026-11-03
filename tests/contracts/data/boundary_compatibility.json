@@ -613,7 +613,7 @@
       "__all__ = (\n    \"CancelScope\",\n    \"fail_after\",\n    \"move_on_after\",\n    \"fail_at\",\n    \"move_on_at\",\n    \"effective_deadline\",\n)"
     ],
     "lionagi/ln/concurrency/errors.py": [
-      "__all__ = (\n    \"cache_cancelled_exc_class\",\n    \"cancelled_exc_classes\",\n    \"get_cancelled_exc_class\",\n    \"is_cancelled\",\n    \"non_cancel_subgroup\",\n    \"shield\",\n    \"split_cancellation\",\n)"
+      "__all__ = (\n    \"cache_cancelled_exc_class\",\n    \"cancelled_exc_classes\",\n    \"get_cancelled_exc_class\",\n    \"is_cancelled\",\n    \"non_cancel_subgroup\",\n    \"shield\",\n    \"shield_quietly\",\n    \"split_cancellation\",\n)"
     ],
     "lionagi/ln/concurrency/patterns.py": [
       "__all__ = (\n    \"gather\",\n    \"race\",\n    \"bounded_map\",\n    \"CompletionStream\",\n    \"retry\",\n)"
@@ -2133,6 +2133,7 @@
       "is_cancelled",
       "non_cancel_subgroup",
       "shield",
+      "shield_quietly",
       "split_cancellation"
     ],
     "lionagi/ln/concurrency/patterns.py": [

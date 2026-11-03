@@ -402,7 +402,7 @@ Keeping that column current would retain the performance defect.
    first-occurrence message anchors (`lionagi/studio/services/sessions.py:852`) with indexed lowest-ordinal lookup, generation
    checks for new cursor formats, missing-message handling and existing hydration budgets.
 2. **Counts.** Replace JSON length queries at `lionagi/studio/services/sessions.py:634`,
-   `lionagi/studio/services/admin.py:992`, and full-list counts at `lionagi/cli/state.py:381`
+   `lionagi/studio/services/admin.py:993`, and full-list counts at `lionagi/cli/state.py:659`
    with cached membership counts. Preserve branch aggregation versus session-order semantics.
    Role counts and surviving-message counts remain distinct and must not be replaced by the
    membership count (`lionagi/studio/services/sessions.py:1471`).

@@ -51,6 +51,8 @@ from sqlalchemy import text
 from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
 from sqlalchemy.engine import make_url
 
+from lionagi.ln.concurrency.errors import shield_quietly
+
 from .callbacks import HANDLER_BUDGET_SECONDS
 from .deliveries import (
     ConsumerNotRegisteredError,
@@ -722,7 +724,7 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
             wrapped.add_done_callback(
                 lambda done: _observe_durable_task(done, target.key[2], "keeper")
             )
-            await asyncio.shield(wrapped)
+            await shield_quietly(wrapped)
         return
     if expected.startswith("sqlite-memory:"):
         if target.db._engine is not target.engine or target.db._engine is None:
@@ -748,11 +750,11 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
         wrapped = asyncio.wrap_future(future)
         if isinstance(target, _Worker) and target.strict_outcomes:
             try:
-                await asyncio.wait_for(asyncio.shield(wrapped), timeout=HANDLER_BUDGET_SECONDS)
+                await asyncio.wait_for(shield_quietly(wrapped), timeout=HANDLER_BUDGET_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("Late ACK stuck for %s: transaction remains reserved", target.key[2])
                 # Cancelling the proxy does not prove the owner-loop ACK settled.
-                await asyncio.shield(wrapped)
+                await shield_quietly(wrapped)
         else:
             await asyncio.wait_for(wrapped, timeout=HANDLER_BUDGET_SECONDS)
         return
@@ -1036,7 +1038,7 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
         if not done:
             task.cancel()
         try:
-            result = await asyncio.shield(task)
+            result = await shield_quietly(task)
         except asyncio.CancelledError:
             if not task.done():
                 raise
@@ -1052,7 +1054,7 @@ async def _settle_late_awaitable(worker: _Worker, awaitable: Awaitable[Any]) -> 
             worker.late_cancelled = True
         while task is not None and not task.done():
             try:
-                await asyncio.shield(task)
+                await shield_quietly(task)
             except asyncio.CancelledError:
                 continue
             except BaseException:
@@ -1637,7 +1639,7 @@ class TerminalReconciler:
             raise
         try:
             result = await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(worker.future)), timeout=self.timeout
+                shield_quietly(asyncio.wrap_future(worker.future)), timeout=self.timeout
             )
         except asyncio.TimeoutError:
             with _workers_lock:
@@ -1723,7 +1725,7 @@ class TerminalReconciler:
                 return AttemptResult("not_owed")
             preparation = asyncio.ensure_future(self.prepare(row, db))
             try:
-                prepared = await asyncio.wait_for(asyncio.shield(preparation), timeout=self.timeout)
+                prepared = await asyncio.wait_for(shield_quietly(preparation), timeout=self.timeout)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 admission.retain(preparation)
                 preparation.cancel()
@@ -1753,7 +1755,7 @@ class TerminalReconciler:
                     ack_delivery(db, transition_id, self.consumer)
                 )
                 try:
-                    await asyncio.shield(acknowledgement)
+                    await shield_quietly(acknowledgement)
                 except asyncio.CancelledError:
                     # The transaction might have committed; prevent another
                     # same-process attempt until its actual result is observed.

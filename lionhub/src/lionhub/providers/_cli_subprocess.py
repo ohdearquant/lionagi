@@ -47,6 +47,7 @@ from lionagi.ln._proc import (
     _await_child_exit as _wait_owned_child_exit,
 )
 from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.service._subagent_admission import (
     AGENT_DEPTH_ENV,
@@ -1458,7 +1459,7 @@ async def ndjson_from_cli(
     _retain_cli_task(spawn, admission)
     spawn_permitted.set()
     try:
-        proc, spawned = await asyncio.shield(spawn)
+        proc, spawned = await shield_quietly(spawn)
     except BaseException:
 
         def _end_late_spawn(task: asyncio.Future) -> None:
@@ -1729,11 +1730,11 @@ async def ndjson_from_cli(
 
         # Same pipe-gating hazard as above: proc.wait() here would block on the
         # orphans' copy of the pipe after a grace-bounded end of stream.
-        rc = await asyncio.shield(exit_task)
+        rc = await shield_quietly(exit_task)
         if rc != 0:
             drain_truncated = False
             try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
+                await asyncio.wait_for(shield_quietly(stderr_task), timeout=2.0)
             except asyncio.TimeoutError:
                 drain_truncated = True
             except asyncio.CancelledError:

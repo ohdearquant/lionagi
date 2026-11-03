@@ -814,11 +814,11 @@ everything since; facts past the range belong to the next wake.
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
   not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1680`, `:1716-1721`;
-  `lionagi/cli/orchestrate/flow.py:2089-2134`). A schedule holds `github_cursor`, a reader
+  `lionagi/cli/orchestrate/flow.py:2090-2135`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py:6076-6078`, `:6212`;
-  `lionagi/studio/scheduler/engine.py:2153-2156`; ADR-0070, Accepted); a direct `update_schedule` or
+  `lionagi/studio/scheduler/engine.py:2157-2160`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
