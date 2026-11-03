@@ -545,36 +545,78 @@ describe("a bearer kept across reloads", () => {
     expect(await redeemPairingCode(BASE)).toBe("paired");
   }
 
-  it("never stores a configured token, and holds it in memory for this load only", async () => {
+  it("stores a configured token bound to the base, and offers it to the gate on the next load", async () => {
     await pairAnswering({ token: "configured-token", token_source: "configured" });
 
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+      base: BASE,
+      token: "configured-token",
+    });
     expect(pairedBearer(BASE)).toBe("configured-token");
-    expect((await reload()).pairedBearer(BASE)).toBeUndefined();
+    const reloaded = await reload();
+    expect(reloaded.storedBearerToCheck(BASE)).toBe("configured-token");
+    expect(reloaded.pairedBearer(BASE)).toBe("configured-token");
+    expect(reloaded.storedBearerToCheck(OTHER)).toBeUndefined();
+    expect(reloaded.pairedBearer(OTHER)).toBeUndefined();
   });
 
-  it("stores nothing when the daemon does not say which bearer it sent", async () => {
-    await pairAnswering({ token: "unlabelled-token" });
+  it("stores the bearer of a daemon that does not say which bearer it sent", async () => {
+    // The answer of a daemon released before `token_source` existed: a token and
+    // a decision capability, nothing else.
+    await pairAnswering({ token: "unlabelled-token", decision_token: "decision-capability" });
 
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+      base: BASE,
+      token: "unlabelled-token",
+    });
     expect(pairedBearer(BASE)).toBe("unlabelled-token");
+    const reloaded = await reload();
+    expect(reloaded.storedBearerToCheck(BASE)).toBe("unlabelled-token");
+    expect(reloaded.pairedBearer(BASE)).toBe("unlabelled-token");
+    expect(reloaded.pairedBearer(OTHER)).toBeUndefined();
+    // The decision capability stays in sessionStorage, out of localStorage.
+    expect(String(storage.getItem(BEARER_KEY))).not.toContain("decision-capability");
+    expect(storage.getItem("studio.decisionToken")).toBeNull();
+    expect(pairedDecisionToken(BASE)).toBe("decision-capability");
   });
 
-  it("stores nothing for a token_source other than launch", async () => {
-    await pairAnswering({ token: "odd-token", token_source: "Launch" });
+  it.each([["Launch"], [""], ["something-new"]])(
+    "stores the bearer whatever token_source says: %j",
+    async (source) => {
+      await pairAnswering({ token: "odd-token", token_source: source });
 
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
-  });
+      expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+        base: BASE,
+        token: "odd-token",
+      });
+      expect((await reload()).storedBearerToCheck(BASE)).toBe("odd-token");
+    },
+  );
 
-  it("removes a stored launch bearer when the page pairs with a configured token", async () => {
+  it("replaces a stored launch bearer when the page pairs with a configured token", async () => {
     await pair("launch-bearer");
     expect(storage.getItem(BEARER_KEY)).not.toBeNull();
     pendingPage("#pair=second-code");
 
     await pairAnswering({ token: "configured-token", token_source: "configured" });
 
-    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(JSON.parse(String(storage.getItem(BEARER_KEY)))).toEqual({
+      base: BASE,
+      token: "configured-token",
+    });
     expect(pairedBearer(BASE)).toBe("configured-token");
+    expect((await reload()).pairedBearer(BASE)).toBe("configured-token");
+  });
+
+  it("forgets a stored configured token as it does a launch bearer", async () => {
+    await pairAnswering({ token: "configured-token", token_source: "configured" });
+    expect(storage.getItem(BEARER_KEY)).not.toBeNull();
+
+    forgetPairedBearer("configured-token");
+
+    expect(storage.getItem(BEARER_KEY)).toBeNull();
+    expect(pairedBearer(BASE)).toBeUndefined();
+    expect((await reload()).storedBearerToCheck(BASE)).toBeUndefined();
   });
 
   it("offers a stored bearer for the gate's check only when this load has not paired", async () => {
