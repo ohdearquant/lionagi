@@ -1565,8 +1565,16 @@ distinguish from success.
 is indistinguishable from one issued through `li kill --recursive`: running
 children are signalled deepest-first so none are orphaned, and
 `_persist_cancel`'s guard against a non-`running` row means a race that lets
-the process finish naturally during the approval window degrades to
-`already_terminal` rather than a double- or wrong-run cancel. `resume_run`
+the same generation finish naturally degrades to `already_terminal` rather
+than a double cancel. A conflicting generation or rejected state update is
+reported as `not_stopped` with its reason and observed side effects. An
+indeterminate state-write failure reports an unknown `run_untouched` value.
+Process signalling
+waits off the Studio event loop. If the request task is cancelled while signalling,
+the command and its final audit finish before cancellation reaches the caller. Each
+target has its own TERM grace before escalation; the complete command has no fixed
+wall-clock bound because targets are processed in order and persistence can take time.
+`resume_run`
 is a distinct operation from un-pausing: the session lifecycle policy
 (`lionagi/state/lifecycle/policy.py`) has no edge back out of a terminal
 status such as `cancelled`, so resuming never reopens the old run's status —

@@ -1120,6 +1120,17 @@ class OperatorCoordinator:
         if not proposal.get("_claimedExecution"):
             return self._proposal_result(proposal)
 
+        if proposal["commandType"] == "cancel":
+            from .cancel_run import _await_deferred_cancel
+
+            return await _await_deferred_cancel(
+                self._execute_claimed_proposal(conversation_id, proposal_id, proposal)
+            )
+        return await self._execute_claimed_proposal(conversation_id, proposal_id, proposal)
+
+    async def _execute_claimed_proposal(
+        self, conversation_id: str, proposal_id: str, proposal: dict[str, Any]
+    ) -> Any:
         try:
             # Re-fingerprint after the durable execution claim and immediately
             # before invoking the application service. A changed or removed
@@ -1144,6 +1155,32 @@ class OperatorCoordinator:
         try:
             result = await self.command_executor(proposal["commandType"], proposal["command"])
         except Exception as exc:  # noqa: BLE001
+            if proposal["commandType"] == "cancel":
+                from lionagi.cli._kill_service import _CancelPersistenceError
+
+                if isinstance(exc, _CancelPersistenceError):
+                    from .cancel_run import _DeferredCancelResult
+
+                    try:
+                        proposal = await self.store.complete_proposal(
+                            proposal_id,
+                            status="failed",
+                            error_code="cancel_state_write_failed",
+                            result={
+                                "status": "indeterminate",
+                                "reason": "cancel_state_write_failed",
+                                "message": str(exc),
+                                "signal_sent": exc.signal_sent,
+                                "failed_entity_kind": exc.entity_type,
+                                "run_untouched": None,
+                            },
+                            audit=True,
+                        )
+                    except Exception as persist_exc:  # noqa: BLE001
+                        raise OperatorAuditUnavailableError(
+                            "Command outcome is indeterminate; reconciliation is required"
+                        ) from persist_exc
+                    return _DeferredCancelResult(self._proposal_result(proposal), exc)
             # A launch that failed before recording an invocation has nothing
             # durable to point at; one that failed after has an invocation_id
             # attached by _execute_application_command.
@@ -1227,6 +1264,8 @@ class OperatorCoordinator:
                     "message": (
                         "The approved target changed before execution"
                         if proposal.get("errorCode") == "stale_context"
+                        else "Cancellation state could not be recorded; the outcome is indeterminate"
+                        if proposal.get("errorCode") == "cancel_state_write_failed"
                         else "Permission was not granted"
                     ),
                     "retryable": False,
