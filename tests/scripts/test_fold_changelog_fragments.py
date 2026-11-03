@@ -288,3 +288,18 @@ def test_a_refusal_changes_nothing(tmp_path, capsys, changelog_text, bad, culpri
     assert culprit in message[0]
     assert (tmp_path / "CHANGELOG.md").read_bytes() == before_bytes
     assert fragment_names(tmp_path) == sorted(fragments)
+
+
+def test_the_repository_fragments_fold(tmp_path):
+    """The fragments in this repository fold, so a promotion is never refused by one.
+
+    The fold runs on a copy, which leaves the working tree untouched.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    (tmp_path / "changelog.d").mkdir()
+    for path in (repo / "changelog.d").iterdir():
+        (tmp_path / "changelog.d" / path.name).write_bytes(path.read_bytes())
+    (tmp_path / "CHANGELOG.md").write_bytes((repo / "CHANGELOG.md").read_bytes())
+
+    assert fold.main(tmp_path) == 0
+    assert fragment_names(tmp_path) == ["README.md"]
