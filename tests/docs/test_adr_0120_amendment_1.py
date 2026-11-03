@@ -313,7 +313,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:479-507" in flat
-    assert "lionagi/operations/run/run.py:835-846" in flat
+    assert "lionagi/operations/run/run.py:920-931" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:599-616" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
