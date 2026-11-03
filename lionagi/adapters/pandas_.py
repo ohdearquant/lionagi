@@ -60,13 +60,15 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                 missing_cols = set(required_columns) - set(df.columns)
                 if missing_cols:
                     raise AdapterValidationError(
-                        f"DataFrame is missing required columns: {sorted(missing_cols)}",
-                        data={"columns": list(df.columns), "required": required_columns},
+                        f"DataFrame is missing {len(missing_cols)} required column(s)",
                     )
         except (AdapterResourceError, AdapterValidationError):
             raise
-        except Exception as e:
-            cls._handle_error(e, "validation", data={"columns": list(df.columns)})
+        except Exception:
+            error = cls._record_validation_error({"columns": []}, truncated=True)
+        else:
+            return
+        raise error from None
 
     @classmethod
     def _convert_dataframe_to_records(cls, df: Any, many: bool) -> list[dict] | dict:
@@ -81,8 +83,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                 resource="DataFrame",
                 message="Cannot access first row of empty DataFrame",
             )
-        except Exception as e:
-            cls._handle_error(e, "validation", data={"shape": df.shape})
+        except Exception:
+            error = cls._record_validation_error({"shape": ()}, truncated=True)
+        raise error from None
 
     @classmethod
     def _validate_and_convert_models(
@@ -99,12 +102,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                 return [dispatch_adapt_meth(adapt_meth, r, adapt_kw, subj_cls) for r in records]
             return dispatch_adapt_meth(adapt_meth, records, adapt_kw, subj_cls)
         except validation_errors as e:
-            cls._handle_error(
-                e,
-                "validation",
-                data=records[0] if many and isinstance(records, list) else records,
-                errors=e.errors() if hasattr(e, "errors") else None,
-            )
+            data = records[0] if many and type(records) is list and records else records
+            error = cls._validation_error(e, data)
+        raise error from None
 
     @classmethod
     def _models_to_dataframe(
@@ -118,8 +118,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         try:
             records = [dispatch_adapt_meth(adapt_meth, i, adapt_kw, type(i)) for i in items]
             return pd.DataFrame(records, **kw)
-        except Exception as e:
-            cls._handle_error(e, "validation", data={"item_count": len(items)})
+        except Exception:
+            error = cls._record_validation_error({"item_count": 0}, truncated=True)
+        raise error from None
 
     @classmethod
     def from_obj(
@@ -150,8 +151,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
             )
         except AdapterError:
             raise
-        except Exception as e:
-            cls._handle_error(e, "validation", unexpected=True)
+        except Exception:
+            error = cls._record_validation_error(unexpected=True)
+        raise error from None
 
     @classmethod
     def to_obj(
@@ -169,8 +171,9 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
             return cls._models_to_dataframe(items, adapt_meth, adapt_kw, **kw)
         except AdapterError:
             raise
-        except Exception as e:
-            cls._handle_error(e, "validation", unexpected=True)
+        except Exception:
+            error = cls._record_validation_error(unexpected=True)
+        raise error from None
 
 
 __all__ = ("DataFrameAdapter",)

@@ -215,11 +215,11 @@ _ALLOWLIST: dict[str, str] = {
     ),
     # A class base the scan cannot read: a base subscripted by a type parameter. Each
     # declares no hash authority of its own; the refused node is the subscript.
-    "lionagi.adapters._base:305:15": "``Protocol[T]``, a protocol parameterized by a type",
-    "lionagi.adapters._base:482:20": "``Protocol[T]``, a protocol parameterized by a type",
+    "lionagi.adapters._base:355:15": "``Protocol[T]``, a protocol parameterized by a type",
+    "lionagi.adapters._base:568:20": "``Protocol[T]``, a protocol parameterized by a type",
     "lionagi.adapters.async_postgres_adapter:21:39": "``AsyncPostgresAdapter[T]``, an imported adapter",
     "lionagi.adapters.csv_:26:31": "``Adapter[T]``, the runtime-checkable protocol base",
-    "lionagi.adapters.json_:26:32": "``Adapter[T]``, the runtime-checkable protocol base",
+    "lionagi.adapters.json_:27:32": "``Adapter[T]``, the runtime-checkable protocol base",
     "lionagi.adapters.pandas_:37:37": "``Adapter[T]``, the runtime-checkable protocol base",
     "lionagi.adapters.toml_:33:32": "``Adapter[T]``, the runtime-checkable protocol base",
     "lionagi.ln._cache:19:23": "``Generic[K, V]``, the typing generic base",

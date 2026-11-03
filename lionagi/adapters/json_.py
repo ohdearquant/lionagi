@@ -17,6 +17,7 @@ from ._base import (
     AdapterBase,
     AdapterError,
     AdapterValidationError,
+    _safe_adapter_data,
     dispatch_adapt_meth,
 )
 
@@ -72,7 +73,8 @@ class JsonAdapter(AdapterBase, Adapter[T]):
                 return [dispatch_adapt_meth(adapt_meth, i, adapt_kw, subj_cls) for i in data]
             return dispatch_adapt_meth(adapt_meth, data, adapt_kw, subj_cls)
         except validation_errors as e:
-            cls._handle_error(e, "validation", data=data, errors=e.errors())
+            error = cls._validation_error(e, data)
+        raise error from None
 
     @classmethod
     def from_obj(
@@ -93,8 +95,26 @@ class JsonAdapter(AdapterBase, Adapter[T]):
                 raise AdapterValidationError(
                     "Expected JSON array for many=True",
                     adapter="json",
-                    data=json_data,
-                    details={"data_type": type(json_data).__name__, "expected": "list"},
+                    data=_safe_adapter_data(json_data),
+                    details={
+                        "data_type": next(
+                            (
+                                label
+                                for kind, label in (
+                                    (dict, "dict"),
+                                    (list, "list"),
+                                    (str, "str"),
+                                    (int, "int"),
+                                    (float, "float"),
+                                    (bool, "bool"),
+                                    (type(None), "NoneType"),
+                                )
+                                if type(json_data) is kind
+                            ),
+                            "other",
+                        ),
+                        "expected": "list",
+                    },
                 )
             return cls._validate(json_data, subj_cls, many, adapt_meth, adapt_kw, validation_errors)
         except AdapterError:

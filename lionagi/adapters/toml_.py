@@ -73,7 +73,8 @@ class TomlAdapter(AdapterBase, Adapter[T]):
                 return [dispatch_adapt_meth(adapt_meth, i, adapt_kw, subj_cls) for i in data_list]
             return dispatch_adapt_meth(adapt_meth, data, adapt_kw, subj_cls)
         except validation_errors as e:
-            cls._handle_error(e, "validation", data=data, errors=e.errors())
+            error = cls._validation_error(e, data)
+        raise error from None
 
     @classmethod
     def from_obj(
