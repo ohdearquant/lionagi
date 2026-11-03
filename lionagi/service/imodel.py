@@ -956,9 +956,9 @@ class iModel:  # noqa: N801
         ``copy`` does; ``to_dict`` does not write it. Without it the automatic source is used.
         A catalog that declares the stored provider but selects none of its endpoints for the
         stored endpoint name raises ``ProviderNotFoundError``, as selection does. The session
-        id a CLI endpoint stored is restored with it, so the model resumes the CLI's own session;
-        the endpoint's ``reported_session_id`` stays None until the stream reports an id. A stored
-        value that is not a UUID in its canonical lowercase form is ignored without an error.
+        id the Claude Code CLI endpoint stored is restored with it, so the model resumes the CLI's
+        own session; its ``reported_session_id`` stays None until the stream reports an id. A
+        stored value that is no lowercase UUID, or that another CLI stored, restores nothing.
         """
         endpoint = Endpoint.from_dict(
             data.get("endpoint", {}),
@@ -1006,9 +1006,9 @@ class iModel:  # noqa: N801
         else:
             e1 = endpoint
 
-        # A CLI endpoint continues the CLI's own session, so the id it stored comes back with
-        # it, recorded as restored: no stream in this process has reported it. The endpoint
-        # takes only an id in the shape the CLI issues; any other stored value restores nothing.
+        # The Claude Code CLI endpoint continues the CLI's own session, so the id it stored comes
+        # back with it, recorded as restored: no stream in this process has reported it. It takes
+        # only an id in the shape the CLI issues; any other value, or another CLI, restores nothing.
         stored_endpoint = data.get("endpoint")
         if (
             isinstance(e1, AgenticEndpoint)

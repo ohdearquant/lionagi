@@ -358,9 +358,9 @@ async def _stream_resending_unheld_session(
     event reports, is the one later turns resume. A refusal of an id a stream in this process
     reported is raised as it is, and so is any other failure and a failure of the second send.
 
-    While the first send can still be refused, its chunks are held until the first one that is
-    neither a usage ``result`` nor an ``error``, then handed out in order. A refusal discards
-    them, so nothing of the refused send reaches the caller.
+    While the first send can still be refused, its chunks are held until one is neither a usage
+    ``result`` nor an ``error``, then released in order. A refused send reaches neither the branch,
+    the stream buffer nor this generator's consumer; the model's per-chunk hooks do see its chunks.
     """
     endpoint = model.endpoint
     # The id the turn resumes must be the one the model holds, which run() sets ``kw["resume"]``

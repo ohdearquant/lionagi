@@ -940,6 +940,30 @@ class TestiModel:
 
         assert iModel.from_dict(data).provider_session_id is None
 
+    def test_a_stored_session_id_does_not_reach_a_cli_whose_refusal_is_not_recovered(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        history = [
+            {"role": "user", "content": "first instruction"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second instruction"},
+        ]
+        saved = iModel(provider="gemini_code", model="gemini-4-argon", api_key="test-key")
+        saved.endpoint.session_id = session_id
+        stored = json.loads(json.dumps(saved.to_dict()))
+        assert stored["endpoint"]["session_id"] == session_id
+
+        restored = iModel.from_dict(stored)
+
+        # A lowercase UUID passes the shape check, but only the Claude Code CLI's refusal of a
+        # stored id is recognized and recovered, so no other CLI resumes one.
+        assert restored.endpoint.session_id is None
+        assert restored.provider_session_id is None
+        assert restored.endpoint.reported_session_id is None
+        request = restored.create_api_calling(messages=history).payload["request"]
+        assert request.resume is None
+        for earlier in ("first instruction", "first answer", "second instruction"):
+            assert earlier in request.prompt
+
     def test_a_restored_session_id_is_not_one_this_process_has_seen_reported(self):
         session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
         reported_later = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"

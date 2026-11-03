@@ -28,6 +28,10 @@ class AgenticEndpoint(Endpoint):
     # See docs/internals/runtime.md.
     streams_first_output_early: ClassVar[bool] = False
 
+    # Whether ``restore_session_id`` restores a stored id. Only the Claude Code CLI sets it: the
+    # refusal of a stored id the CLI no longer holds is recognized and recovered for that CLI alone.
+    restores_session_id: ClassVar[bool] = False
+
     DEFAULT_CONCURRENCY_LIMIT: ClassVar[int] = 3
     DEFAULT_QUEUE_CAPACITY: ClassVar[int] = 10
 
@@ -53,13 +57,18 @@ class AgenticEndpoint(Endpoint):
     def restore_session_id(self, value: Any) -> None:
         """Set the id a snapshot stored, which the next request resumes.
 
-        Only a string in the lowercase UUID shape the CLI issues is an id. Any other value, a
-        flag or a non-string included, restores nothing, without an error, and leaves the
-        endpoint with no id to resume. Unlike ``session_id``, this does not mark the id as
-        reported by the CLI in this process, so ``reported_session_id`` stays None until the
-        stream reports one.
+        Only an endpoint class with ``restores_session_id`` set restores an id, and only a string
+        in the lowercase UUID shape the CLI issues is an id. Any other value, a flag or a
+        non-string included, and any value given to an endpoint that does not opt in, restores
+        nothing, without an error, and leaves the endpoint with no id to resume. Unlike
+        ``session_id``, this does not mark the id as reported by the CLI in this process, so
+        ``reported_session_id`` stays None until the stream reports one.
         """
-        is_id = isinstance(value, str) and _SESSION_ID_SHAPE.fullmatch(value) is not None
+        is_id = (
+            self.restores_session_id
+            and isinstance(value, str)
+            and _SESSION_ID_SHAPE.fullmatch(value) is not None
+        )
         self._session_id = value if is_id else None
         self._session_id_reported = False
 
