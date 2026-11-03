@@ -4,6 +4,7 @@
 
 import pytest
 
+from lionhub.providers._cli_subprocess import CLI_ARGUMENT_MAX_BYTES
 from lionhub.providers.anthropic import claude_code as claude
 from lionhub.providers.openai import codex
 
@@ -11,7 +12,9 @@ _SECRET = "-SECRET-TOKEN-zz9"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["y" * 1_048_576, "bad\x00value"], ids=["oversize", "nul"])
+@pytest.mark.parametrize(
+    "bad", ["y" * CLI_ARGUMENT_MAX_BYTES, "bad\x00value"], ids=["oversize", "nul"]
+)
 async def test_claude_repeated_tool_value_is_not_named_as_a_flag(tmp_path, monkeypatch, bad):
     monkeypatch.setattr(claude, "resolve_claude_cli", lambda: "claude")
     request = claude.ClaudeCodeRequest(
@@ -51,7 +54,7 @@ async def test_claude_known_flag_spelling_as_list_value_does_not_leak_other_valu
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(claude, "resolve_claude_cli", lambda: "claude")
-    oversized = "y" * 1_048_576
+    oversized = "y" * CLI_ARGUMENT_MAX_BYTES
     request = claude.ClaudeCodeRequest(
         repo=tmp_path, prompt="hello", disallowed_tools=[_SECRET, "--model", oversized]
     )
@@ -59,12 +62,14 @@ async def test_claude_known_flag_spelling_as_list_value_does_not_leak_other_valu
         async for _ in claude._ndjson_from_cli(request):
             pass
     message = str(caught.value)
-    assert "value of --model" in message or "Command-line argument" in message
+    assert "value of --model" in message
     assert _SECRET not in message
     assert "y" * 100 not in message
 
 
-@pytest.mark.parametrize("bad", ["y" * 1_048_576, "bad\x00value"], ids=["oversize", "nul"])
+@pytest.mark.parametrize(
+    "bad", ["y" * CLI_ARGUMENT_MAX_BYTES, "bad\x00value"], ids=["oversize", "nul"]
+)
 def test_codex_value_is_not_named_as_a_flag(bad):
     with pytest.raises(ValueError) as caught:
         codex._refuse_oversized_command(["codex", "--add-dir", _SECRET, bad])

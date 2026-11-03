@@ -146,3 +146,29 @@ async def test_surrogateescaped_path_still_reaches_transport(tmp_path, fake_tran
     cmd, _ = fake_transport[0]
     assert path in cmd
     assert os.fsencode(path) == b"folder-\xff"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["mcp_config", "settings"])
+@pytest.mark.parametrize("prefix", ["", " \t\n"], ids=["direct", "leading-whitespace"])
+@pytest.mark.parametrize("bad", ["\udcff", "\ud800"], ids=["surrogate-escape", "lone-high"])
+async def test_inline_json_refuses_unencodable_text_without_retaining_it(
+    tmp_path, fake_transport, field, prefix, bad
+):
+    value = prefix + '{"value":"' + _SECRET + bad + '"}'
+    with pytest.raises(ValueError) as caught:
+        request = cc.ClaudeCodeRequest(prompt="hello", repo=tmp_path, **{field: value})
+        await _start(request)
+    _assert_value_free(caught.value)
+    assert "surrogate" in str(caught.value).lower()
+    assert fake_transport == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["mcp_config", "settings"])
+async def test_inline_json_valid_utf8_reaches_transport(tmp_path, fake_transport, field):
+    value = ' \t{"value":"ordinary-\u03a9"}'
+    request = cc.ClaudeCodeRequest(prompt="hello", repo=tmp_path, **{field: value})
+    await _start(request)
+    assert len(fake_transport) == 1
+    assert value in fake_transport[0][0]

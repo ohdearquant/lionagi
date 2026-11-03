@@ -1999,8 +1999,12 @@ def nul_refusal_message(what: str) -> str:
 def refuse_oversized_command(
     cmd: list[str], cli: str, *, known_flags: frozenset[str] = frozenset()
 ) -> None:
-    """Refuse ``cmd`` when any argument after the program holds a NUL or is
-    ``CLI_ARGUMENT_MAX_BYTES`` bytes or more. ``cli`` names the program in a refusal."""
+    """Refuse arguments holding a NUL or at least ``CLI_ARGUMENT_MAX_BYTES`` bytes.
+
+    ``cli`` names the program. Only a preceding token in ``known_flags`` is
+    named as a flag; otherwise the argument is named by position. A known
+    ``-c`` override is named by position even when its key looks printable.
+    """
     for position, argument in enumerate(cmd[1:], start=1):
         previous = cmd[position - 1] if position > 1 else ""
         flag = str.__str__(previous) if isinstance(previous, str) else ""

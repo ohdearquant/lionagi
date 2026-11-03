@@ -622,9 +622,15 @@ class ClaudeCodeRequest(BaseModel):
             raise failure
         for name, field in type(self).model_fields.items():
             extra = field.json_schema_extra
-            if name in _CLI_PATH_FIELDS or not isinstance(extra, dict) or "cli_flag" not in extra:
+            if not isinstance(extra, dict) or "cli_flag" not in extra:
                 continue
             value = getattr(self, name)
+            if name in _CLI_PATH_FIELDS and not (
+                name in {"mcp_config", "settings"}
+                and isinstance(value, str)
+                and str.__str__(value).lstrip().startswith("{")
+            ):
+                continue
             if isinstance(value, str):
                 failure = _unencodable_claude_text(value, f"The {name} value")
                 if failure is not None:
