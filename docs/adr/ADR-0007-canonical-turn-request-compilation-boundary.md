@@ -549,83 +549,83 @@ code is the starting state rather than a delta row. The current behavior, read a
 lines:
 
 - the compiler does not exist. `lionagi/operations/types.py` holds the operation parameter
-  dataclasses (`ChatParam` at `:102`, `RunParam` at `:141`) and the parse-error types
-  (`ParseError` at `:32`), the `UnparsedResponse` string, and the `Middle` protocol at `:182`;
+  dataclasses (`ChatParam` at `lionagi/operations/types.py::ChatParam`, `RunParam` at `lionagi/operations/types.py::RunParam`) and the parse-error types
+  (`ParseError` at `lionagi/operations/types.py::ParseError`), the `UnparsedResponse` string, and the `Middle` protocol at `lionagi/operations/types.py::Middle`;
   `TurnRequest`, `ContextBlock`, `CompiledMessage`, `CompiledChatRequest`, `compile_chat_request`
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
-  (`lionagi/operations/chat/_prepare.py:202`, called from `lionagi/operations/chat/chat.py:68`
-  and `lionagi/operations/run/run.py:580`), and `prepare_messages_for_chat()` still stands
-  separately (`lionagi/protocols/messages/prepare.py:100`);
+  (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`, called from `lionagi/operations/chat/chat.py::chat`
+  and `lionagi/operations/run/run.py::run`), and `prepare_messages_for_chat()` still stands
+  separately (`lionagi/protocols/messages/prepare.py::prepare_messages_for_chat`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
-  (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
+  (`lionagi/protocols/context_providers.py::ContextProviderRegistry.gather` and `lionagi/protocols/context_providers.py::ContextProviderRegistry.gather`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
-  (`lionagi/operations/chat/_prepare.py:208`), and joined into the first instruction's guidance,
-  or prefixed to its plain content, with no marker (`:391-392`, `:500-528`); when no instruction
-  renders, nonblank blocks are sent as one user message of their own (`:576-577`); with
+  (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`), and joined into the first instruction's guidance,
+  or prefixed to its plain content, with no marker (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs.f`, `lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`); when no instruction
+  renders, nonblank blocks are sent as one user message of their own (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`); with
   ADR-0127's prompt-cache option on, they are kept on the turn's instruction and sent after it as
-  one more block (`:232-233`, `:529-530`). The prompt therefore shows the kept
+  one more block (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`). The prompt therefore shows the kept
   state alone and never says material was dropped;
-- outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
-  and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
-  exposes one turn's names (`lionagi/session/branch.py:298-310`). Those are event counts: they
+- outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py::ContextProviderRegistry.__init__`)
+  and render per session (`lionagi/cli/monitor.py::_format_khive_injection_line`), and `branch.last_context_report`
+  exposes one turn's names (`lionagi/session/branch.py::Branch.last_context_report`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
 - an eviction path exists outside the compiler: the context tool's `evict` and
   `evict_action_results` actions remove messages from the active view
-  (`lionagi/tools/context/context.py:390-404`, `:406-423`) by excluding them from
-  `metadata["current_progression"]` (`:164-171`), which `Branch.progression` returns in place of
-  the manager's progression when it is present (`lionagi/session/branch.py:255-261`). An evicted
+  (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`) by excluding them from
+  `metadata["current_progression"]` (`lionagi/tools/context/context.py::ContextTool.bind._ensure_cp`), which `Branch.progression` returns in place of
+  the manager's progression when it is present (`lionagi/session/branch.py::Branch.progression`). An evicted
   message vanishes from the compiled prompt with no marker and no left-out entry, so
   "an empty `left_out` means nothing was left out" is false today for any evicted message;
 - a compaction path exists there too: the context tool's `compact` action replaces a span of
   messages with one assistant summary carrying `[CONTEXT COMPACTION]` and excludes the originals
-  from the active view (`lionagi/tools/context/context.py:484-571`, the summary at `:553-564`).
+  from the active view (`lionagi/tools/context/context.py::ContextTool.bind.context_tool`, the summary at `lionagi/tools/context/context.py::ContextTool.bind.context_tool`).
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionhub/src/lionhub/providers/openai/codex.py:2902-2905`); a list's tail replaced by an item counting the
-  entries left out (`:3024-3027`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:3056-3061`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionhub/src/lionhub/providers/openai/codex.py::_cut_text`); a list's tail replaced by an item counting the
+  entries left out (`lionhub/src/lionhub/providers/openai/codex.py::_bounded_leaves`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`lionhub/src/lionhub/providers/openai/codex.py::_bounded_leaves`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionhub/src/lionhub/providers/openai/codex.py:3116-3119`, called from `:3305`), so the
+  file-change item (`lionhub/src/lionhub/providers/openai/codex.py::_bounded_changes`, called from `lionhub/src/lionhub/providers/openai/codex.py::stream_codex_cli`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
   first retained message under a system message is not an Instruction
-  (`lionagi/operations/chat/_prepare.py:408`, quoted by D2 §3 above), and it raises
+  (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:561-574`). That guard tests the current turn, the last entry appended to the
+  or images (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
-  `_last_index` (`:450-451`, `:496-497`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:618-631`). No section boundary refuses
+  `_last_index` (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`lionagi/operations/chat/_prepare.py::_has_real_instruction_text`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action
-  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:323-328`,
-  `:349-354`); all of them meet in one minimal-YAML rendering, where caller prompt context and
+  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`,
+  `lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`); all of them meet in one minimal-YAML rendering, where caller prompt context and
   tool output share the same "Context" field
-  (`lionagi/protocols/messages/instruction.py:207-219`). Material and instruction are one
+  (`lionagi/protocols/messages/instruction.py::InstructionContent._format_text_content`). Material and instruction are one
   untyped list. With ADR-0127's prompt-cache option on
-  (`lionagi/operations/chat/_prepare.py:225`), the system text and the tool set, rendered once
-  (`:240-246`), go out as their own system blocks instead (`:389-390`, `:438-445`), a round's
+  (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`), the system text and the tool set, rendered once
+  (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`), go out as their own system blocks instead (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs.f`, `lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`), a round's
   tool results go out as a text block of their own at the head of the user message after the
-  round (`:292-301`, `:329-331`, `:346-348`), and the rest still meet in the instruction;
+  round (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`), and the rest still meet in the instruction;
 - a second, narrower removal exists inside one ReAct turn's later calls: the current request
   renders the caller's context once, on the first rendered instruction carrying it, and later
   rendered instructions, the current turn included, go out with those items removed
-  (`lionagi/operations/chat/_prepare.py:258-320`). Only that request's copies change, and no
+  (`lionagi/operations/chat/_prepare.py::_prepare_run_kwargs`). Only that request's copies change, and no
   marker or record states the removal. No item leaves the request, since each renders once, so
   it is a de-duplication rather than a left-out: D2 §2 now states it as a compiler step, and D7
   records why it carries no `left_out` entry;
 - per-section bounds: none. The registry has one total (`_DEFAULT_BUDGET = 2000`,
-  `lionagi/protocols/context_providers.py:25`) and per-provider maxima; nothing bounds the
+  `lionagi/protocols/context_providers.py::_DEFAULT_BUDGET`) and per-provider maxima; nothing bounds the
   system section, and the history section is shaped before compilation by the active view rather
   than by a bound. What exists for history and tool results is the model-window lookup
-  (`lookup_context_window()`, `lionagi/service/token_budget.py:18`, reached through
-  `get_context_window()` at `:72-99`, the limit `get_token_budget()` at `:102` measures usage
-  against), whose result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
+  (`lookup_context_window()`, `lionagi/service/token_budget.py::lookup_context_window`, reached through
+  `get_context_window()` at `lionagi/service/token_budget.py::get_context_window`, the limit `get_token_budget()` at `lionagi/service/token_budget.py::get_token_budget` measures usage
+  against), whose result informs the nudger (`lionagi/agent/nudge.py::NudgeEngine._build_context`) rather than the compiler, so it never
   cuts or records anything.
 
 ### D7 — Every bound has two visible states

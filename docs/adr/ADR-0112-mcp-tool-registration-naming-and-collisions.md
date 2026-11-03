@@ -138,9 +138,9 @@ what was measured and not a proof that there is no fourth:
   the same name. Calls a caller believes are going to the first server go to the last one.
 - **With a one-entry MCP dict, regardless of the flag.** When this ADR was written
   (this item's line numbers are at `0b6cabda`), `ActionManager.__contains__`
-  (`manager.py:67-74`) had arms for `Tool`, `str` and callable and returned `False`
-  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` was `False` for
-  a dict even when that name was registered, the `update=False` guard passed, and `:106`
+  (`lionagi/protocols/action/manager.py::ActionManager.__init__`) had arms for `Tool`, `str` and callable and returned `False`
+  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `lionagi/protocols/action/manager.py::ActionManager.register_tool` was `False` for
+  a dict even when that name was registered, the `update=False` guard passed, and `lionagi/protocols/action/manager.py::ActionManager.__contains__`
   overwrote. The displacement was the same as the `update=True` case and it needed no
   flag. ADR-0011 lines 330-332 record this behavior. #2950 later added the `dict` arm
   that delta #8 asks for, so a one-entry dict whose name is already registered now
@@ -148,7 +148,7 @@ what was measured and not a proof that there is no fourth:
 
 The second and third are the shadowing shape. Both are reachable without any private API:
 `update=True` is documented on two public functions, and the dict form is reachable
-through `Branch.register_tools([{...}])` (`branch.py:677-680` → `:670-675`). All three are decided
+through `Branch.register_tools([{...}])` (`lionagi/session/branch.py::Branch.register_tools` → `lionagi/session/branch.py::Branch._register_tool`). All three are decided
 by config ordering or argument type rather than by anything a caller expressed, and none
 announces itself.
 
@@ -218,8 +218,8 @@ def qualified_mcp_name(server_name: str, tool_name: str) -> str:
 
 The name matters and is not `mcp_tool_name`. That identifier is already bound to a `str`
 on this exact path — a local in `_validate_prebuilt_mcp_tool_admission`
-(`manager.py:153`, read at `:156` and `:171`) and a parameter of
-`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1484`). A module-level function of that
+(`lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`, read at `lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission` and `lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`) and a parameter of
+`is_synthetic_mcp_wrapper_schema` (`lionagi/service/connections/mcp_wrapper.py::is_synthetic_mcp_wrapper_schema`). A module-level function of that
 name would be shadowed inside the one function that most needs it, and a later call from
 there would raise `TypeError: 'str' object is not callable` at runtime and only at
 runtime, on the admission path. Rename the helper rather than the locals: the locals are
@@ -315,12 +315,12 @@ actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 **Exact semantics.**
 
 - `_original_tool_name` is set on both construction paths, unconditionally
-  (`manager.py:430`, `:491`). Under D1 the registry key is the qualified name and this field
+  (`lionagi/protocols/action/manager.py::ActionManager.register_mcp_server`). Under D1 the registry key is the qualified name and this field
   carries the wire name.
 - Before D1 (this item's line numbers are at `0b6cabda`), the same assignment was a no-op,
-  because the field always equaled the registry key (`manager.py:361`, `:399`).
-- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:2137`) is the routing
-  reader. The second is `_validate_prebuilt_mcp_tool_admission` (`manager.py:154`), on the
+  because the field always equaled the registry key (`lionagi/protocols/action/manager.py::ActionManager.register_mcp_server`).
+- It has **two** readers, not one. The invoker above (`lionagi/service/connections/mcp_wrapper.py::create_mcp_tool.mcp_callable`) is the routing
+  reader. The second is `_validate_prebuilt_mcp_tool_admission` (`lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`), on the
   security path, with its own fallback to the config key.
   Its behavior under D1 is already correct — it prefers the wire name, which is what
   admission should be checking — but a reader auditing that path should not have to
@@ -556,8 +556,8 @@ ADR is **narrowed, not discharged**:
 - The request-options clause is discharged by D5, at the registry layer.
 - The **dependency-direction clause is untouched and remains open in full**, and it is
   larger than a single site. `manager.py` imports from
-  `lionagi.service.connections.mcp_wrapper` at **nine** places (`:12`, `:132`, `:148`,
-  `:374`, `:395`, `:443`, `:546`, `:590`, `:651`) — one under `TYPE_CHECKING` and eight lazily
+  `lionagi.service.connections.mcp_wrapper` at **nine** places (`lionagi/protocols/action/manager.py` `from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig`, `lionagi/protocols/action/manager.py::ActionManager.register_tool`, `lionagi/protocols/action/manager.py::ActionManager._validate_prebuilt_mcp_tool_admission`,
+  `lionagi/protocols/action/manager.py::ActionManager.register_mcp_server`, `lionagi/protocols/action/manager.py::ActionManager.load_mcp_config`, `lionagi/protocols/action/manager.py::load_mcp_tools`, `lionagi/protocols/action/manager.py::_bind_mcp_transport`) — one under `TYPE_CHECKING` and eight lazily
   inside function bodies. The lazy form defers the import; it does not remove the
   dependency, which is what 0011's clause is about. The service-factory design remains
   the standing answer for that clause, and its cost is nine call sites rather than the

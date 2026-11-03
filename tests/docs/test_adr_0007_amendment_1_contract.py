@@ -9,15 +9,18 @@ with their reasons) and what the code does today (the two refusals on the active
 path, the eviction and compaction paths, and the omission markers one layer
 down).
 
-Record statements are pinned as sentences; code citations are pinned as symbol
-or statement text found inside the exact line range the record cites. That is
-deliberate: the record cites lines, so an edit that moves a cited line makes the
-record wrong, and this module fails until the record is re-cited in the same
-change. Removing the cited symbol fails it too.
+Record statements are pinned as sentences; code citations are pinned as statement
+text found inside the def, class or module-level binding the record cites by
+symbol (``path.py::Class.method``). That is deliberate: the record names the
+symbol that holds the code, so moving a cited statement out of that symbol makes
+the record wrong, and this module fails until the record is re-cited in the same
+change. Removing the cited symbol fails it too. No check here depends on a line
+number.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -66,30 +69,54 @@ def _decision_block(heading: str) -> str:
     return body
 
 
-def _source_span(relative: str, start: int, end: int) -> str:
-    """The text of exactly lines ``start``..``end`` of a cited file.
+def _symbol_source(relative: str, qualname: str) -> str:
+    """The source of the def, class or module-level binding named ``qualname``.
 
-    The pinned symbol has to sit inside that range, so moving the cited line
-    fails the test until the record is re-cited, as the module docstring says.
+    Nested defs are named by their dotted path (``outer.inner``), as the record does.
     """
-    lines = (REPO_ROOT / relative).read_text(encoding="utf-8").splitlines()
-    assert 1 <= start <= end <= len(lines), f"{relative} has no lines {start}-{end}"
-    return "\n".join(lines[start - 1 : end])
+    text = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    module = ast.parse(text)
+
+    def find(node: ast.AST, prefix: str) -> ast.AST | None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                dotted = prefix + child.name
+                if dotted == qualname:
+                    return child
+                found = find(child, dotted + ".")
+            elif isinstance(child, ast.stmt):
+                found = find(child, prefix)
+            else:
+                continue
+            if found is not None:
+                return found
+        return None
+
+    node = find(module, "")
+    if node is None:
+        for stmt in module.body:
+            targets = [getattr(stmt, "target", None)]
+            if isinstance(stmt, ast.Assign):
+                targets = stmt.targets
+            if any(isinstance(t, ast.Name) and t.id == qualname for t in targets):
+                node = stmt
+                break
+    assert node is not None, f"{relative} holds no {qualname}"
+    segment = ast.get_source_segment(text, node)
+    assert segment is not None
+    return segment
 
 
-def _in_span(relative: str, start: int, end: int, *needles: str) -> None:
-    # The range pinned here has to be one the amendment cites for this file: the
-    # file's path, then the range, with no other source path between them, so a bare
-    # ``:N`` continuation counts for the file named before it and for no other.
-    cite = f":{start}" if start == end else f":{start}-{end}"
-    pattern = (
-        rf"{re.escape(relative)}(?:(?!lionagi/[A-Za-z0-9_/.]+\.py)[\s\S])*?"
-        rf"(?<![0-9]){re.escape(cite)}(?![0-9-])"
+def _in_symbol(relative: str, qualname: str, *needles: str) -> None:
+    # The symbol pinned here has to be one the amendment cites for this file, spelled
+    # out as ``path::qualname`` and not as a longer qualname that starts with it.
+    token = f"{relative}::{qualname}"
+    assert re.search(rf"{re.escape(token)}(?![\w.])", _amendment_body()), (
+        f"the amendment does not cite {token}"
     )
-    assert re.search(pattern, _amendment_body()), f"the amendment does not cite {relative}{cite}"
-    span = _source_span(relative, start, end)
+    source = _symbol_source(relative, qualname)
     for needle in needles:
-        assert needle in span, f"{needle!r} not found in {relative}:{start}-{end}"
+        assert needle in source, f"{needle!r} not found in {token}"
 
 
 def _count_phrase(text: str, phrase: str) -> int:
@@ -531,64 +558,59 @@ _PREPARE_MSGS = "lionagi/protocols/messages/prepare.py"
 
 
 def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
-    _in_span(
+    _in_symbol(
         _PREPARE,
-        408,
-        408,
+        "_prepare_run_kwargs",
         'raise ValueError("First message in progression must be an Instruction or System")',
+        "raise EmptyOutgoingContentError(",
     )
-    _in_span(_PREPARE, 561, 574, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
-    _in_span(_PREPARE, 450, 451, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 496, 497, "if i == _last_index:", "_current_turn_rendered = rendered")
-    _in_span(
+    _in_symbol(
         _PREPARE,
-        561,
-        574,
+        "_prepare_run_kwargs",
+        "_current_turn_rendered = None",
+        "if i == _last_index:",
+        "_current_turn_rendered = rendered",
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
-    _in_span(
+    _in_symbol(
         _PREPARE,
-        618,
-        631,
+        "_has_real_instruction_text",
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
 
 
 def test_eviction_path_and_its_metadata_key_are_where_cited() -> None:
-    _in_span(
+    _in_symbol(
         _CONTEXT,
-        164,
-        171,
+        "ContextTool.bind._ensure_cp",
         'if "current_progression" not in branch.metadata:',
         'branch.metadata["current_progression"] = cp',
     )
-    _in_span(_CONTEXT, 390, 404, 'if action == "evict":', "cp.exclude(uids)")
-    _in_span(
+    _in_symbol(
         _CONTEXT,
-        406,
-        423,
+        "ContextTool.bind.context_tool",
+        'if action == "evict":',
+        "cp.exclude(uids)",
         'if action == "evict_action_results":',
         "cp.exclude(to_evict)",
     )
-    _in_span(
+    _in_symbol(
         _BRANCH,
-        255,
-        261,
+        "Branch.progression",
         "agent-managed subset",
         'cp = self.metadata.get("current_progression")',
     )
 
 
 def test_compaction_path_replaces_a_span_with_one_summary() -> None:
-    _in_span(_CONTEXT, 484, 571, 'if action == "compact":')
-    _in_span(
+    _in_symbol(
         _CONTEXT,
-        553,
-        564,
+        "ContextTool.bind.context_tool",
+        'if action == "compact":',
         "[CONTEXT COMPACTION]",
         "cp.insert(summary_at, note.id)",
         "cp.exclude(collapse)",
@@ -596,20 +618,26 @@ def test_compaction_path_replaces_a_span_with_one_summary() -> None:
 
 
 def test_codex_omission_markers_are_the_three_cited_shapes() -> None:
-    _in_span(_CODEX, 2902, 2905, "[output truncated:", "characters omitted here]")
-    _in_span(_CODEX, 3024, 3027, "items not shown]")
-    _in_span(_CODEX, 3056, 3061, 'note = "[omitted]"', "keys not shown")
+    _in_symbol(_CODEX, "_cut_text", "[output truncated:", "characters omitted here]")
+    _in_symbol(
+        _CODEX,
+        "_bounded_leaves",
+        "items not shown]",
+        'note = "[omitted]"',
+        "keys not shown",
+    )
     # The file-change echo repeats the mapping's shape; its payload is the
     # ``{"omitted": ...}`` entry the amendment now names as its own shape.
-    _in_span(_CODEX, 3116, 3119, '{"omitted":', "changes not shown")
+    _in_symbol(_CODEX, "_bounded_changes", '{"omitted":', "changes not shown")
 
 
 def test_amendment_counts_three_codex_marker_shapes_and_cites_each() -> None:
     normalized = _normalized(_amendment_body())
     assert "in three shapes" in normalized
-    for cited in (":2902-2905", ":3024-3027", ":3056-3061"):
-        assert cited in normalized, f"{cited} is not cited for its marker shape"
-    assert ":3116-3119" in normalized
+    assert f"`{_CODEX}::_cut_text`" in normalized
+    # The list shape and the mapping shape both come from the one bounding helper.
+    assert normalized.count(f"`{_CODEX}::_bounded_leaves`") == 2
+    assert f"`{_CODEX}::_bounded_changes`" in normalized
     # The fourth site is the same mapping shape, said so, not a fourth shape.
     assert "A fourth site repeats the mapping's shape rather than adding a new one" in normalized
     # The ``{"omitted": ...}`` entry the file-change echo appends is described as its
@@ -644,13 +672,12 @@ def test_the_skipped_block_renders_the_same_marker() -> None:
 def test_react_context_removal_is_listed_in_the_starting_state() -> None:
     normalized = _normalized(_amendment_body())
     assert "a second, narrower removal exists inside one ReAct turn's later calls" in normalized
-    assert "(`lionagi/operations/chat/_prepare.py:258-320`)" in normalized
-    # The removal the sentence cites is where the cited range shows it: the first
+    assert f"(`{_PREPARE}::_prepare_run_kwargs`)" in normalized
+    # The removal the sentence cites is where the cited symbol shows it: the first
     # carrier keeps the context and the later carriers drop it.
-    _in_span(
+    _in_symbol(
         _PREPARE,
-        258,
-        320,
+        "_prepare_run_kwargs",
         "_leave_out = set(carriers[1:])",
         "_without_context(ins, shown)",
         "if i in _leave_out:",
@@ -658,101 +685,104 @@ def test_react_context_removal_is_listed_in_the_starting_state() -> None:
 
 
 def test_the_file_change_echo_call_site_is_where_cited() -> None:
-    _in_span(_CODEX, 3305, 3305, "_bounded_changes(changes)")
+    _in_symbol(_CODEX, "stream_codex_cli", "_bounded_changes(changes)")
 
 
-def test_amendment_cites_the_value_error_guard_by_line() -> None:
+def test_amendment_cites_the_value_error_guard_by_symbol() -> None:
     normalized = _normalized(_amendment_body())
     assert "raises a `ValueError` when the" in normalized
-    assert "(`lionagi/operations/chat/_prepare.py:408`, quoted by D2 §3 above)" in normalized
+    assert f"(`{_PREPARE}::_prepare_run_kwargs`, quoted by D2 §3 above)" in normalized
 
 
 def test_operations_types_module_holds_the_operation_shapes() -> None:
-    _in_span(_TYPES, 32, 32, "class ParseError(ValueError):")
-    _in_span(_TYPES, 102, 102, "class ChatParam(MorphParam):")
-    _in_span(_TYPES, 141, 141, "class RunParam(ChatParam):")
-    _in_span(_TYPES, 182, 182, "class Middle(Protocol):")
+    _in_symbol(_TYPES, "ParseError", "class ParseError(ValueError):")
+    _in_symbol(_TYPES, "ChatParam", "class ChatParam(MorphParam):")
+    _in_symbol(_TYPES, "RunParam", "class RunParam(ChatParam):")
+    _in_symbol(_TYPES, "Middle", "class Middle(Protocol):")
     source = (REPO_ROOT / _TYPES).read_text(encoding="utf-8")
     for absent in ("CompiledChatRequest", "TurnRequest", "SectionAuthority", "SectionBound"):
         assert absent not in source, f"{absent} now exists; the amendment's 'today' list is stale"
 
 
 def test_the_active_prepare_path_is_still_the_one_cited() -> None:
-    _in_span(_PREPARE, 202, 202, "def _prepare_run_kwargs(")
-    _in_span(_PREPARE, 208, 208, "context_blocks: Sequence[str] | None = None")
-    _in_span(_PREPARE, 391, 392, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
-    _in_span(_PREPARE, 232, 233, "ins.metadata[_TURN_CONTEXT] = list(context_blocks)")
-    _in_span(_PREPARE, 529, 530, "rendered = _with_context(rendered, entry.context)")
-    _in_span(_PREPARE, 576, 577, "if needs_block_fold and pending_blocks.strip():")
-    _in_span(_PREPARE, 576, 577, 'chat_msgs.append({"role": "user", "content": pending_blocks})')
-    _in_span(_PREPARE, 323, 328, "_collect_action_dicts(_act_res, projection)")
-    _in_span(
+    _in_symbol(
         _PREPARE,
-        349,
-        354,
+        "_prepare_run_kwargs",
+        "def _prepare_run_kwargs(",
+        "context_blocks: Sequence[str] | None = None",
+        "ins.metadata[_TURN_CONTEXT] = list(context_blocks)",
+        "rendered = _with_context(rendered, entry.context)",
+        "if needs_block_fold and pending_blocks.strip():",
+        'chat_msgs.append({"role": "user", "content": pending_blocks})',
+        "_collect_action_dicts(_act_res, projection)",
         "current.with_updates(prompt_context=extended_ctx)",
     )
-    _in_span("lionagi/operations/chat/chat.py", 68, 68, "_prepare_run_kwargs(")
-    _in_span("lionagi/operations/run/run.py", 580, 580, "_prepare_run_kwargs(")
-    _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
+    _in_symbol(
+        _PREPARE,
+        "_prepare_run_kwargs.f",
+        'injected = "\\n".join(context_blocks) if context_blocks else ""',
+    )
+    _in_symbol("lionagi/operations/chat/chat.py", "chat", "_prepare_run_kwargs(")
+    _in_symbol("lionagi/operations/run/run.py", "run", "_prepare_run_kwargs(")
+    _in_symbol(_PREPARE_MSGS, "prepare_messages_for_chat", "def prepare_messages_for_chat(")
 
 
 def test_the_registry_and_counters_are_where_cited() -> None:
-    _in_span(_PROVIDERS, 115, 117, "if entry.max_tokens and tokens > entry.max_tokens:")
-    _in_span(_PROVIDERS, 115, 117, "report.skipped.append(entry.name)")
-    _in_span(_PROVIDERS, 129, 132, "if total + tokens > self.budget:")
-    _in_span(_PROVIDERS, 25, 25, "_DEFAULT_BUDGET = 2000")
-    _in_span(
+    _in_symbol(
         _PROVIDERS,
-        63,
-        70,
+        "ContextProviderRegistry.gather",
+        "if entry.max_tokens and tokens > entry.max_tokens:",
+        "report.skipped.append(entry.name)",
+        "if total + tokens > self.budget:",
+    )
+    _in_symbol(_PROVIDERS, "_DEFAULT_BUDGET", "_DEFAULT_BUDGET = 2000")
+    _in_symbol(
+        _PROVIDERS,
+        "ContextProviderRegistry.__init__",
         '"recall_turns": 0,',
         '"blocks_injected": 0,',
         '"writeback_failed": 0,',
     )
-    _in_span(_BRANCH, 298, 310, "def last_context_report(self):", "``skipped``")
-    _in_span("lionagi/cli/monitor.py", 669, 680, '"blocks_injected",')
+    _in_symbol(
+        _BRANCH, "Branch.last_context_report", "def last_context_report(self):", "``skipped``"
+    )
+    _in_symbol("lionagi/cli/monitor.py", "_format_khive_injection_line", '"blocks_injected",')
 
 
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
-    _in_span(
+    _in_symbol(
         _INSTRUCTION,
-        207,
-        219,
+        "InstructionContent._format_text_content",
         '"Context": self.prompt_context,',
         'doc = {k: v for k, v in doc.items() if v not in (None, "", [], {})}',
     )
-    _in_span(
-        "lionagi/service/token_budget.py",
-        18,
-        18,
-        "def lookup_context_window(",
-    )
-    _in_span(
-        "lionagi/service/token_budget.py",
-        72,
-        99,
+    budget = "lionagi/service/token_budget.py"
+    _in_symbol(budget, "lookup_context_window", "def lookup_context_window(")
+    _in_symbol(
+        budget,
+        "get_context_window",
         "def get_context_window(branch: Branch) -> int:",
         "return lookup_context_window(",
     )
-    _in_span(
-        "lionagi/service/token_budget.py",
-        102,
-        102,
-        "def get_token_budget(branch: Branch)",
+    _in_symbol(budget, "get_token_budget", "def get_token_budget(branch: Branch)")
+    _in_symbol(
+        "lionagi/agent/nudge.py", "NudgeEngine._build_context", "get_token_budget(self.branch)"
     )
-    _in_span("lionagi/agent/nudge.py", 207, 207, "get_token_budget(self.branch)")
     assert "the model-window lookup" in _normalized(_amendment_body())
 
 
 def test_the_prompt_cache_mode_is_where_cited() -> None:
-    _in_span(_PREPARE, 225, 225, "places_cache = ")
-    _in_span(_PREPARE, 389, 390, "if places_cache:", "return g")
-    _in_span(_PREPARE, 438, 445, 'kw["system_blocks"] = stable')
-    _in_span(_PREPARE, 240, 246, "if places_cache:", "tool_section = minimal_yaml(")
+    _in_symbol(
+        _PREPARE,
+        "_prepare_run_kwargs",
+        "places_cache = ",
+        "if places_cache:",
+        'kw["system_blocks"] = stable',
+        "tool_section = minimal_yaml(",
+    )
+    _in_symbol(_PREPARE, "_prepare_run_kwargs.f", "if places_cache:", "return g")
     normalized = _normalized(_amendment_body())
-    assert (
-        "With ADR-0127's prompt-cache option on (`lionagi/operations/chat/_prepare.py:225`)"
-        in normalized
+    assert f"With ADR-0127's prompt-cache option on (`{_PREPARE}::_prepare_run_kwargs`)" in (
+        normalized
     )
     assert "which the compiler's section bounds supply" in normalized
