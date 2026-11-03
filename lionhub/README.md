@@ -6,13 +6,13 @@ includes both `lionagi` and `lionhub`.
 
 ## Layout
 
-| Path | Contents |
+| Path (from repository root) | Contents |
 | --- | --- |
-| `src/lionhub/orchestration/` | Orchestration, engines, dispatch, and work forms. |
-| `src/lionhub/providers/` | Provider implementations and shared provider helpers. |
-| `src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
-| `src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
-| `tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
+| `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, and work forms. |
+| `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
+| `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
+| `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
 
 ## Moved imports
 
