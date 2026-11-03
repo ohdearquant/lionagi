@@ -499,9 +499,7 @@ async def test_a_worker_model_disables_the_servers_its_child_config_declares(
     codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
     child_home = tmp_path / "child-codex-home"
     child_home.mkdir()
-    (child_home / "config.toml").write_text(
-        '[mcp_servers.kept]\ncommand = "kept-mcp"\n\n[mcp_servers.leak]\ncommand = "leak-mcp"\n'
-    )
+    (child_home / "config.toml").write_text('[mcp_servers.leak]\ncommand = "leak-mcp"\n')
     model = _codex_model_with_child_home(child_home)
 
     _hand_mcp_servers(model, {"kept": {"command": "kept-mcp"}}, label="w1", exclusive=True)

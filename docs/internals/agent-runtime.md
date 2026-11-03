@@ -137,8 +137,8 @@ and one implementation.
   read; servers enabled by managed or cloud configuration are outside it.
   An explicit per-call MCP override replaces the configured selection for that
   call; servers declared only in project configuration stay disabled unless
-  that override names them. Selected servers can still merge fields from a
-  same-name project definition.
+  that override names them. A selected server that a project layer also
+  declares by name is refused (see the same-name rule below).
   A request carrying an exclusive selection may configure only selected servers;
   an MCP override naming another server is refused at launch.
   An exclusive selection also replaces the MCP configuration already carried
@@ -181,6 +181,27 @@ and one implementation.
   `env` or `http_headers` on one is refused with `ConfigurationError` rather
   than started without them. So is one whose config overrides select a
   profile (`profile`), since the run would then name two.
+- Same-name rule (codex). Codex builds its config by merging layers key by key:
+  a `-c mcp_servers.<name>.<field>` override writes only its own key, and a
+  profile file is a layer that merges as well. A config file that already
+  declares `[mcp_servers.<name>]` therefore keeps every key it sets that the
+  forwarded server of that name does not (a bearer token variable, headers,
+  `args`, `env`), so the forwarded server would start with the file's
+  credentials, and a stdio entry merged with a URL one is a config codex cannot
+  load. lionagi refuses that collision with a `ConfigurationError` that names
+  the server and the file, never a value from either side; the remedy is to
+  rename the forwarded server or remove that entry from the file. The
+  exclusive and the additive path both refuse. Disabling the other servers by
+  name keeps the user config loaded, so the user config is one of the layers
+  checked, unless the run ignores it. The system config, the user config under
+  the codex home the child's environment names and a profile file the caller
+  named (never the generated one) are read when the set is forwarded; a layer
+  that cannot be read there is left to the launch-time census. The project
+  layers depend on the directory the child runs in, so they are read before each
+  launch, counted whether or not the project is trusted. The managed config
+  (`managed_config.toml`), configuration delivered by device management and an
+  enterprise cloud configuration bundle are layers this process cannot read, so
+  a same-named server declared only there is not caught.
 - `_forward_mcp_to_cli_request` reaches the per-turn request kwargs a CLI
   provider subprocess actually reads (unlike `_load_mcp`, which only reaches
   lionagi-native `branch.acts` tools, inert for CLI providers). With

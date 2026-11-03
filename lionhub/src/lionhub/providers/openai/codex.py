@@ -83,6 +83,7 @@ from ._codex_project_layers import (
     parse_failure,
     project_layers,
     project_mcp_server_names,
+    refuse_forwarded_name_in_project_layers,
     refuse_unsafe_exclusive_profile,
     system_mcp_server_names,
 )
@@ -2634,6 +2635,25 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
         )
 
 
+def _refuse_forwarded_project_collisions(
+    plain: _PlainRequest, cwd: Path, env: Mapping[str, str]
+) -> None:
+    """Refuse a launch whose forwarded MCP server shares a name with one a project layer
+    declares. Codex merges the two key by key, so the layer's settings would reach the
+    forwarded server. A forwarded server is one the run's ``mcp_servers.<name>`` overrides
+    give a ``command`` or a ``url``; the project layers depend on ``cwd``, so they are read
+    here, before each process starts."""
+    servers = _command_line_layer(plain).get("mcp_servers")
+    if not isinstance(servers, Mapping):
+        return
+    forwarded = [
+        name
+        for name, fields in servers.items()
+        if isinstance(fields, Mapping) and ("command" in fields or "url" in fields)
+    ]
+    refuse_forwarded_name_in_project_layers(forwarded, cwd, env)
+
+
 # --------------------------------------------------------------------------- NDJSON stream
 
 
@@ -2732,6 +2752,7 @@ def _exclusive_cmd_args(
             set(plain.exclusive_mcp_names),
             include_user=True,
         )
+        _refuse_forwarded_project_collisions(plain, cwd, child_env)
         # The caller's own -c options retain their existing precedence.
         plain = replace(
             plain,
@@ -2794,6 +2815,9 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         def prepare_argv(child_env):
             return _exclusive_cmd_args(request, plain, cwd, child_env)
     else:
+        _refuse_forwarded_project_collisions(
+            plain, cwd, os.environ if plain.env is None else plain.env
+        )
         cmd = [CODEX_CLI, *request._cmd_args(plain, cwd)]
         _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;

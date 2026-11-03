@@ -14,6 +14,13 @@ one whose project layers declare ``mcp_servers``, before each process starts: ev
 the readable user and project layers and disables proven unselected servers by
 name, refusing when it cannot prove how a layer is loaded.
 
+A server forwarded to the run is refused when a layer already declares a server of the
+same name, since Codex merges the two key by key (``refuse_forwarded_name_in_config_layers``
+for the system, user and profile files, ``refuse_forwarded_name_in_project_layers`` for the
+project layers). The managed config, configuration delivered by device management and an
+enterprise cloud config bundle are not readable here, so a name declared only there is not
+caught.
+
 The walk starts where Codex starts: the working directory as Codex resolves ``-C``
 (the logical path when an ancestor below the top level is a symlink, else the
 canonical one), with the ``.codex`` that resolves to CODEX_HOME skipped. It does not
@@ -30,7 +37,7 @@ from __future__ import annotations
 import os
 import re
 import stat
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 
 from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
@@ -47,6 +54,8 @@ __all__ = (
     "parse_failure",
     "project_layers",
     "project_mcp_server_names",
+    "refuse_forwarded_name_in_config_layers",
+    "refuse_forwarded_name_in_project_layers",
     "refuse_unsafe_exclusive_profile",
     "system_mcp_server_names",
 )
@@ -396,6 +405,92 @@ def refuse_unsafe_exclusive_profile(
                     f"Cannot enforce an exclusive Codex MCP selection: profile {profile!r} "
                     f"at {source} changes MCP servers, project trust or root markers."
                 )
+
+
+def refuse_forwarded_name_in_config_layers(
+    names: Collection[str],
+    env: Mapping[str, str] | None,
+    *,
+    profile: object = None,
+    ignore_user_config: bool = False,
+) -> None:
+    """Refuse a forwarded MCP server whose name a config file this process reads declares.
+
+    Codex merges its config layers key by key, and a ``-c`` override writes only its own
+    key. A server a layer declares under ``mcp_servers`` therefore keeps every setting the
+    forwarded server of the same name does not set, a bearer token variable, headers,
+    arguments or environment included, and a stdio entry merged with a URL one is a
+    config codex cannot load. The layers read here are the system config, the user config
+    under the codex home ``env`` names (``None`` is this process's environment) unless the
+    run ignores the user config, and the profile file a caller named, never one this
+    package generated. A layer that cannot be read or parsed is skipped here: an exclusive
+    run over such a layer is refused at launch, where the census reads it again.
+    """
+    if not names:
+        return
+    from lionhub.providers.openai._codex_profile import (
+        _read_codex_config,
+        codex_home_for_env,
+        is_generated_codex_profile,
+    )
+
+    layers = [_SYSTEM_CONFIG]
+    if not ignore_user_config:
+        home = codex_home_for_env(env)
+        layers.append(home / "config.toml")
+        if (
+            isinstance(profile, str)
+            and re.fullmatch(r"[A-Za-z0-9_-]+", profile)
+            and not is_generated_codex_profile(profile)
+        ):
+            layers.append(home / f"{profile}.config.toml")
+    for path in layers:
+        try:
+            config = _read_codex_config(path)
+        except ValueError:
+            continue
+        _refuse_declared_names(path, None if config is None else config.get("mcp_servers"), names)
+
+
+def refuse_forwarded_name_in_project_layers(
+    names: Collection[str], cwd: str | os.PathLike[str], env: Mapping[str, str]
+) -> None:
+    """Refuse a forwarded MCP server whose name a project layer of ``cwd`` declares.
+
+    The layers are those ``project_layers(cwd, env)`` yields, counted whether or not their
+    project is trusted, since trust is not fully readable here. A layer that cannot be
+    parsed refuses, since what it declares is then unknown. See
+    ``refuse_forwarded_name_in_config_layers`` for why a shared name is refused.
+    """
+    if not names:
+        return
+    for path, text in project_layers(cwd, env):
+        try:
+            config = _tomllib.loads(text)
+        except (_tomllib.TOMLDecodeError, RecursionError):
+            raise ConfigurationError(
+                f"the Codex project config {path} cannot be parsed here, so whether it declares "
+                f"the forwarded MCP server(s) {sorted(names)!r} is unknown. Make it a file this "
+                "Python's TOML parser reads, or remove it"
+            ) from None
+        _refuse_declared_names(path, config.get("mcp_servers"), names)
+
+
+def _refuse_declared_names(path: Path, servers: object, names: Collection[str]) -> None:
+    """Refuse when ``servers``, a layer's ``mcp_servers`` table, holds any of ``names``. Names
+    the servers and the file, never a setting of either side."""
+    if not isinstance(servers, Mapping):
+        return
+    shared = sorted(set(names) & set(servers))
+    if shared:
+        raise ConfigurationError(
+            f"Cannot forward MCP server(s) {shared!r} to codex: {path} already declares "
+            "them under `mcp_servers`. Codex merges a config file's server with a forwarded "
+            "server of the same name key by key, so every setting the file gives that entry "
+            "and the forwarded server does not, credentials and headers included, would "
+            "apply to the forwarded server. Rename the forwarded server, or remove that "
+            f"entry from {path}."
+        )
 
 
 def system_mcp_server_names(allowed: set[str]) -> set[str]:
