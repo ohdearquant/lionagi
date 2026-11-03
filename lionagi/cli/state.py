@@ -1602,7 +1602,14 @@ async def _import_runs() -> dict[str, int]:
                 counts["errors"] += 1
                 continue
 
-            run_id = manifest.get("run_id") or run_dir.name
+            if "run_id" in manifest and manifest["run_id"] != run_dir.name:
+                print(
+                    f"  [error] {run_dir.name!r}: manifest run_id "
+                    f"{manifest['run_id']!r} does not match its directory"
+                )
+                counts["errors"] += 1
+                continue
+            run_id = run_dir.name
 
             existing = await db.get_session(run_id)
             if existing is not None:

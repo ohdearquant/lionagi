@@ -703,15 +703,16 @@ async def kill_one(
 
 def _run_manifest_path(run_id: str) -> Path | None:
     """Return the run.json path a run id names, or None when the id is not safe to join."""
-    from ._runs import RUNS_ROOT
+    from ._runs import _resolved_run_state_dir
 
     # a run id names one directory under RUNS_ROOT: anything that is not a single path
     # component is no run id, and is never joined onto the path
-    if not run_id or run_id in (".", "..") or Path(run_id).name != run_id:
+    run_dir = _resolved_run_state_dir(run_id)
+    if run_dir is None:
         return None
     # and reached through no link, to another run's directory or out of the root: the run.json
     # read, and later written, is the one in the directory the id names
-    path = RUNS_ROOT.resolve() / run_id / "run.json"
+    path = run_dir / "run.json"
     if path.resolve() != path:
         return None
     return path
