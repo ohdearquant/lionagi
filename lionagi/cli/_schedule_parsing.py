@@ -156,6 +156,22 @@ _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
 )
 
 
+def _merge_chain_action(schedule: dict, chain_action: dict) -> dict:
+    """The schedule a chained run fires: *schedule* overlaid with its ``on_success`` or
+    ``on_fail`` action, whose short keys replace the action fields they name, None included.
+    Only the keys a chain action may carry are overlaid; any other stored key leaves the
+    parent's field in place."""
+    chain_action = {k: v for k, v in chain_action.items() if k in _CHAIN_ACTION_ALLOWED_KEYS}
+    chain_schedule = {**schedule, **chain_action}
+    chain_schedule["action_kind"] = chain_action.get(
+        "kind", chain_action.get("action_kind", schedule["action_kind"])
+    )
+    for key in ("model", "prompt", "agent", "playbook"):
+        if key in chain_action:
+            chain_schedule[f"action_{key}"] = chain_action[key]
+    return chain_schedule
+
+
 def _is_schedule_request_timeout(exc: OSError) -> bool:
     """Return whether urllib stopped because the request exceeded its deadline."""
     return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
@@ -170,6 +186,23 @@ def _schedule_request_timeout_message(
         f"(elapsed {elapsed_seconds:.1f}s; limit {limit_seconds:g}s). "
         "The request may still have completed; verify schedule state before retrying."
     )
+
+
+def _validate_chain_kinds(action: dict, label: str, parent_kind: str) -> str | None:
+    parent_kind = _ALIAS_ACTION_KINDS.get(parent_kind, parent_kind)
+    for kind_key in ("kind", "action_kind"):
+        if kind_key not in action:
+            continue
+        value = action[kind_key]
+        if not isinstance(value, str):
+            return f"{label}.{kind_key}: must be a valid action kind"
+        value = str.__str__(value)
+        if value not in _VALID_ACTION_KINDS and value not in _ALIAS_ACTION_KINDS:
+            return f"{label}.{kind_key}: must be a valid action kind"
+        normalized = _ALIAS_ACTION_KINDS.get(value, value)
+        if normalized in {"command", "flow_yaml"} and normalized != parent_kind:
+            return f"{label}.{kind_key}: target-bearing action kind must match its parent kind"
+    return None
 
 
 def _validate_chain_action_node(
@@ -198,21 +231,11 @@ def _validate_chain_action_node(
         allowed = ", ".join(sorted(_CHAIN_ACTION_ALLOWED_KEYS))
         return f"{label}: unknown key(s) {sorted(unknown)}; allowed: {allowed}"
 
-    effective_kind = _ALIAS_ACTION_KINDS.get(parent_kind, parent_kind)
-    for kind_key in ("kind", "action_kind"):
-        if kind_key not in action:
-            continue
-        value = action[kind_key]
-        if not isinstance(value, str):
-            return f"{label}.{kind_key}: must be a valid action kind"
-        value = str.__str__(value)
-        if value not in _VALID_ACTION_KINDS and value not in _ALIAS_ACTION_KINDS:
-            return f"{label}.{kind_key}: must be a valid action kind"
-        normalized = _ALIAS_ACTION_KINDS.get(value, value)
-        if normalized in {"command", "flow_yaml"} and normalized != parent_kind:
-            return f"{label}.{kind_key}: target-bearing action kind must match its parent kind"
-        if kind_key == "kind" or "kind" not in action:
-            effective_kind = normalized
+    err = _validate_chain_kinds(action, label, parent_kind)
+    if err:
+        return err
+    effective_kind = action.get("kind", action.get("action_kind", parent_kind))
+    effective_kind = _ALIAS_ACTION_KINDS.get(effective_kind, effective_kind)
 
     if self_field not in action:
         warn(
@@ -249,6 +272,32 @@ def _validate_chain_action_node(
             if err:
                 return err
     return None
+
+
+def _validate_reachable_chain_actions(schedule: dict[str, Any]) -> str | None:
+    """Check each chain node the engine's shallow merge can reach, up to its depth cap."""
+
+    def walk(parent: dict, depth: int, path: str, previous_action: dict | None) -> str | None:
+        if depth >= _MAX_CHAIN_DEPTH:
+            return None
+        for field in ("on_success", "on_fail"):
+            action = parent.get(field)
+            if not action:
+                continue
+            label = f"{path}.{field}" if path else field
+            if previous_action is not None and field not in previous_action:
+                label += " (inherited)"
+            if not isinstance(action, dict):
+                return f"{label}: must be a JSON object, got {type(action).__name__}"
+            err = _validate_chain_kinds(action, label, parent["action_kind"])
+            if err:
+                return err
+            err = walk(_merge_chain_action(parent, action), depth + 1, label, action)
+            if err:
+                return err
+        return None
+
+    return walk(schedule, 0, "", None)
 
 
 def _parse_chain_action(
@@ -422,6 +471,8 @@ def build_create_body(args: argparse.Namespace) -> tuple[dict[str, Any] | None, 
         if err:
             return None, err
         body["on_fail"] = parsed
+    if err := _validate_reachable_chain_actions(body):
+        return None, err
     return body, None
 
 

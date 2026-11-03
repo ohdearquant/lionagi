@@ -218,6 +218,13 @@ def _svc_validate_chain_action(value: Any, field: str, parent_kind: str) -> None
         raise ValueError(err)
 
 
+def _svc_validate_reachable_chains(schedule: dict[str, Any]) -> None:
+    from lionagi.cli._schedule_parsing import _validate_reachable_chain_actions
+
+    if err := _validate_reachable_chain_actions(schedule):
+        raise ValueError(err)
+
+
 def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None:
     """Service-boundary check: reject a syntactically invalid cron expression.
     `required=True` also rejects a missing/empty one — otherwise the schedule
@@ -1142,6 +1149,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_command_args(data.get("action_command_args"))
     _svc_validate_chain_action(data.get("on_success"), "on_success", data["action_kind"])
     _svc_validate_chain_action(data.get("on_fail"), "on_fail", data["action_kind"])
+    _svc_validate_reachable_chains(data)
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
@@ -1274,9 +1282,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         kind_changed = "action_kind" in fields and fields["action_kind"] != schedule.get(
             "action_kind"
         )
-        for field in ("on_success", "on_fail"):
-            if field in fields or kind_changed:
+        if {"on_success", "on_fail"} & fields.keys() or kind_changed:
+            for field in ("on_success", "on_fail"):
                 _svc_validate_chain_action(effective.get(field), field, effective["action_kind"])
+            _svc_validate_reachable_chains(effective)
         # Checked only when the update sets a field it reads, so a row stored before the check
         # can still be paused or edited elsewhere.
         if {"action_kind", "action_prompt", "action_playbook"} & set(fields):

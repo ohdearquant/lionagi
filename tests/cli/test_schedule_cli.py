@@ -1425,6 +1425,34 @@ def test_schedule_create_parent_kind_is_used_for_chain(monkeypatch):
     assert outcome["body"]["on_success"]["kind"] == "command"
 
 
+def test_schedule_create_refuses_incompatible_inherited_sibling_before_api(monkeypatch, capsys):
+    import lionagi.studio.cli as schedule_cli
+    from lionagi.cli.main import main
+
+    api_calls = []
+    monkeypatch.setattr(schedule_cli, "_api", lambda *args, **kwargs: api_calls.append(1))
+    rc = main(
+        [
+            "schedule",
+            "create",
+            "chain-test",
+            "--cron",
+            "0 * * * *",
+            "--action-kind",
+            "command",
+            "--action-command",
+            "echo",
+            "--on-success",
+            '{"kind":"agent","on_success":null}',
+            "--on-fail",
+            '{"kind":"command","on_fail":null}',
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 1 and not api_calls
+    assert "on_success.on_fail" in captured.err and "inherited" in captured.err
+
+
 def test_schedule_create_on_success_round_trips_to_body(monkeypatch):
     """--on-success JSON parses and lands on the posted body as a dict."""
     outcome = _run_create(

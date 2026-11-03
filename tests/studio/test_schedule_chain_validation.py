@@ -533,3 +533,57 @@ def test_repeating_parent_kind_does_not_revalidate_legacy_chain(field):
     updated, error = _run_update({"action_kind": "command"}, existing=stored)
     assert error is None
     updated.update_schedule.assert_awaited_once_with("sid-chain-1", action_kind="command")
+
+
+@pytest.mark.parametrize("operation", ["create", "update"])
+@pytest.mark.parametrize("first,second", [("on_success", "on_fail"), ("on_fail", "on_success")])
+def test_rejects_sibling_inheritance_with_incompatible_effective_parent(operation, first, second):
+    first_chain = {"kind": "agent", first: None}
+    second_chain = {"kind": "command", second: None}
+    data = _create_data(
+        action_kind="command",
+        action_command="echo inherited",
+        **{first: first_chain, second: second_chain},
+    )
+    if operation == "create":
+        with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+            db, error = _run_create(data)
+        write = db.create_schedule
+    else:
+        stored = _existing(
+            action_kind="command", action_command="echo inherited", **{second: second_chain}
+        )
+        db, error = _run_update({first: first_chain}, existing=stored)
+        write = db.update_schedule
+    assert error is not None
+    assert f"{first}.{second}" in str(error) and "inherited" in str(error)
+    write.assert_not_called()
+
+
+def test_accepts_compatible_sibling_inheritance():
+    data = _create_data(
+        action_kind="command",
+        action_command="echo inherited",
+        on_success={"kind": "agent", "on_success": None},
+        on_fail={"kind": "agent", "on_fail": None},
+    )
+    with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+        created, error = _run_create(data)
+    assert error is None
+    created.create_schedule.assert_awaited_once()
+
+
+def test_scheduler_and_admission_share_chain_merge():
+    from lionagi.cli._schedule_parsing import _merge_chain_action as admission_merge
+    from lionagi.studio.scheduler.engine import _merge_chain_action as scheduler_merge
+
+    assert scheduler_merge is admission_merge
+
+
+def test_reachable_walk_stops_at_scheduler_depth_limit():
+    from lionagi.cli import _schedule_parsing as parsing
+
+    parent = {"action_kind": "agent", "on_success": {"kind": "agent"}, "on_fail": {"kind": "agent"}}
+    with patch.object(parsing, "_merge_chain_action", wraps=parsing._merge_chain_action) as merge:
+        assert parsing._validate_reachable_chain_actions(parent) is None
+    assert merge.call_count == 2 ** (parsing._MAX_CHAIN_DEPTH + 1) - 2

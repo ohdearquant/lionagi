@@ -875,6 +875,7 @@ async def _seed_dispatched_run_with_session(
     inv_id: str,
     sess_id: str,
     session_status: str,
+    run_fields: dict | None = None,
 ) -> None:
     await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
     await db.create_invocation(
@@ -892,7 +893,7 @@ async def _seed_dispatched_run_with_session(
     )
     await claim_and_advance(
         db,
-        _run_row(run_id, sid, fired_at=1000.0, invocation_id=inv_id),
+        _run_row(run_id, sid, fired_at=1000.0, invocation_id=inv_id, **(run_fields or {})),
         schedule_id=sid,
         schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
     )
@@ -964,6 +965,40 @@ async def test_reconciled_chain_keeps_parent_command_target(tmp_path, monkeypatc
     engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
     await engine._reconcile_dispatched_orphans()
 
+    assert len(children) == 1
+    assert children[0]["action_kind"] == "command"
+    assert children[0]["action_command"] == "echo inherited"
+
+
+@pytest.mark.asyncio
+async def test_reconciled_legacy_child_may_refire_root_chain(tmp_path, monkeypatch):
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    sid, run_id = "sched-sibling", "run-sibling-child"
+    async with StateDB(db_path) as db:
+        await _seed_dispatched_run_with_session(
+            db,
+            sid=sid,
+            run_id=run_id,
+            inv_id="inv-sibling",
+            sess_id="sess-sibling",
+            session_status="failed",
+            run_fields={"chain_depth": 1, "action_kind": "agent"},
+        )
+        await db.update_schedule(
+            sid,
+            action_kind="command",
+            action_command="echo inherited",
+            on_success={"kind": "agent", "on_success": None},
+            on_fail={"kind": "command", "on_fail": None},
+        )
+
+    engine = SchedulerEngine(svc=_DBSchedulerStateService())
+    children = []
+    engine._tracked_fire = lambda sched, *args, **kwargs: children.append(sched)
+    await engine._reconcile_dispatched_orphans()
     assert len(children) == 1
     assert children[0]["action_kind"] == "command"
     assert children[0]["action_command"] == "echo inherited"
