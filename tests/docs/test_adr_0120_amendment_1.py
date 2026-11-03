@@ -431,7 +431,7 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1672" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py:1680" in flat
     assert "lionagi/state/schema.sql:493" in flat
     assert "lionagi/state/db.py:6076-6078" in flat
     assert "`:6212`" in flat
