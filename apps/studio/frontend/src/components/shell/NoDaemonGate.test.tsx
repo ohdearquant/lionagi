@@ -247,7 +247,7 @@ describe("NoDaemonGate", () => {
   function storeBearer(token: string) {
     window.localStorage.setItem(
       BEARER_KEY,
-      JSON.stringify({ base: "http://127.0.0.1:8765", token }),
+      JSON.stringify({ base: "http://127.0.0.1:8765", token, token_source: "launch" }),
     );
   }
 
@@ -262,6 +262,28 @@ describe("NoDaemonGate", () => {
   function checkCalls() {
     return fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/casts/"));
   }
+
+  it("checks a tab-only bearer before mounting", async () => {
+    const values = new Map<string, string>([
+      [BEARER_KEY, JSON.stringify({ base: "http://127.0.0.1:8765", token: "configured" })],
+    ]);
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    });
+    daemonCheckingBearer(() => Promise.resolve(jsonResponse({})));
+
+    await mount();
+    await settle();
+
+    expect(checkCalls()).toHaveLength(1);
+    expect(checkCalls()[0][1]).toMatchObject({
+      headers: { Authorization: "Bearer configured" },
+    });
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull();
+    expect(window.localStorage.getItem(BEARER_KEY)).toBeNull();
+  });
 
   it("checks a stored bearer before mounting and, on a 401, forgets it and asks to pair again", async () => {
     storeBearer("stale-bearer");

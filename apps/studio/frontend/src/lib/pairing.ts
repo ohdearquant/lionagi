@@ -6,16 +6,14 @@
  * launch. `li studio` opens the page with a one-time code in the URL fragment
  * (`#pair=<code>`), which a browser never sends to a server. The code is read
  * once at startup and removed from the address bar, then exchanged with the
- * daemon for the bearer and a decision capability. The bearer is kept in
- * `localStorage` for the page's own origin, bound to the daemon's API base,
- * whichever bearer the daemon sent: its launch bearer or a configured
- * `LIONAGI_STUDIO_AUTH_TOKEN`. It survives reloads, tabs and bookmarks until the
- * daemon refuses it, and the page then forgets it and `li studio` pairs it
- * again. The gate checks a stored bearer with one request before the app
- * mounts. A stored bearer is readable only by scripts on the page's own origin
- * and is sent to no other API base. A configured token is an operator
- * credential: an operator who does not want it kept in a browser clears that
- * site's data or pairs in a private window. The decision capability is
+ * daemon for the bearer and a decision capability. Only a bearer identified as
+ * `launch` is kept in `localStorage`, bound to that daemon's API base. A
+ * configured bearer, or one whose source is missing or unknown, is kept in
+ * `sessionStorage` for the tab. Storage failures leave it in memory for this
+ * page load. The gate checks a stored bearer before the app mounts, and a
+ * refusal forgets it. An unmarked bearer saved by an older version is never
+ * reused and is removed when storage permits; the page needs a new pairing.
+ * The decision capability is
  * kept in `sessionStorage` for that tab: it survives a reload of the tab, is
  * gone with the tab, and is not readable over HTTP. It is sent in
  * `X-Studio-Decision-Token` on the two Operator decision requests, and to no
@@ -72,12 +70,24 @@ function writeDecisionCapability(value: Paired | undefined): void {
  * The bearer an earlier load of this page stored, if it is well formed. A
  * storage that refuses the read, or holds anything else, yields nothing.
  */
-function readStoredBearer(): Paired | undefined {
+function readStoredBearer(storage: "localStorage" | "sessionStorage"): Paired | undefined {
   if (typeof window === "undefined") return undefined;
   try {
-    const raw = window.localStorage.getItem(BEARER_STORAGE_KEY);
+    const store = window[storage];
+    const raw = store.getItem(BEARER_STORAGE_KEY);
     if (raw === null) return undefined;
-    const parsed = JSON.parse(raw) as { base?: unknown; token?: unknown } | null;
+    let parsed: { base?: unknown; token?: unknown; token_source?: unknown } | null;
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      if (storage === "localStorage") store.removeItem(BEARER_STORAGE_KEY);
+      return undefined;
+    }
+    // An unmarked record could contain a configured credential from an older page.
+    if (storage === "localStorage" && parsed?.token_source !== "launch") {
+      store.removeItem(BEARER_STORAGE_KEY);
+      return undefined;
+    }
     if (
       parsed == null ||
       typeof parsed.base !== "string" ||
@@ -92,15 +102,25 @@ function readStoredBearer(): Paired | undefined {
   }
 }
 
-function writeStoredBearer(value: Paired | undefined): void {
+function writeStoredBearer(
+  storage: "localStorage" | "sessionStorage",
+  value: Paired | undefined,
+): void {
   if (typeof window === "undefined") return;
   try {
-    if (value === undefined) window.localStorage.removeItem(BEARER_STORAGE_KEY);
-    else window.localStorage.setItem(BEARER_STORAGE_KEY, JSON.stringify(value));
+    if (value === undefined) window[storage].removeItem(BEARER_STORAGE_KEY);
+    else
+      window[storage].setItem(
+        BEARER_STORAGE_KEY,
+        JSON.stringify(storage === "localStorage" ? { ...value, token_source: "launch" } : value),
+      );
   } catch {
     // Storage unavailable: the bearer lives for this page load only.
   }
 }
+
+// Remove an unmarked bearer even when this page has no request to authenticate.
+readStoredBearer("localStorage");
 
 /** Read `pair` from the fragment once and remove it, keeping any other fragment. */
 export function takePairingCodeFromLocation(): void {
@@ -176,23 +196,25 @@ async function sendPairingCode(
   if (!response.ok) return "refused";
   let token: unknown;
   let decisionToken: unknown;
+  let tokenSource: unknown;
   try {
     const body = (await response.json()) as {
       token?: unknown;
       decision_token?: unknown;
+      token_source?: unknown;
     } | null;
     token = body?.token;
     decisionToken = body?.decision_token;
+    tokenSource = body?.token_source;
   } catch {
     return "refused";
   }
   if (typeof token !== "string" || !token) return "refused";
   paired = { base: apiBase, token };
-  // The bearer is stored whichever bearer the daemon sent (its launch bearer, a
-  // configured token, or an older daemon's answer that says nothing about it),
-  // replacing any bearer stored earlier. It is bound to this API base and
-  // forgotten on the first refusal.
-  writeStoredBearer(paired);
+  const destination = tokenSource === "launch" ? "localStorage" : "sessionStorage";
+  const other = destination === "localStorage" ? "sessionStorage" : "localStorage";
+  if (readStoredBearer(other)?.base === apiBase) writeStoredBearer(other, undefined);
+  writeStoredBearer(destination, paired);
   writeDecisionCapability(
     typeof decisionToken === "string" && decisionToken
       ? { base: apiBase, token: decisionToken }
@@ -207,9 +229,11 @@ async function sendPairingCode(
  * exactly this API base.
  */
 export function pairedBearer(apiBase: string): string | undefined {
-  if (paired !== undefined) return paired.base === apiBase ? paired.token : undefined;
-  const stored = readStoredBearer();
-  return stored !== undefined && stored.base === apiBase ? stored.token : undefined;
+  if (paired?.base === apiBase) return paired.token;
+  const local = readStoredBearer("localStorage");
+  const session = readStoredBearer("sessionStorage");
+  if (session?.base === apiBase) return session.token;
+  return local?.base === apiBase ? local.token : undefined;
 }
 
 /**
@@ -217,9 +241,8 @@ export function pairedBearer(apiBase: string): string | undefined {
  * has not paired: the one the gate checks with the daemon before the app mounts.
  */
 export function storedBearerToCheck(apiBase: string): string | undefined {
-  if (paired !== undefined) return undefined;
-  const stored = readStoredBearer();
-  return stored !== undefined && stored.base === apiBase ? stored.token : undefined;
+  if (paired?.base === apiBase) return undefined;
+  return pairedBearer(apiBase);
 }
 
 /**
@@ -228,9 +251,13 @@ export function storedBearerToCheck(apiBase: string): string | undefined {
  * stored since, or this load paired with since, is kept. The decision
  * capability is left alone.
  */
-export function forgetPairedBearer(refused: string): void {
-  if (paired?.token === refused) paired = undefined;
-  if (readStoredBearer()?.token === refused) writeStoredBearer(undefined);
+export function forgetPairedBearer(refused: string, apiBase?: string): void {
+  const matches = (value: Paired | undefined) =>
+    value?.token === refused && (apiBase === undefined || value.base === apiBase);
+  if (matches(paired)) paired = undefined;
+  for (const storage of ["localStorage", "sessionStorage"] as const) {
+    if (matches(readStoredBearer(storage))) writeStoredBearer(storage, undefined);
+  }
 }
 
 /**
@@ -251,6 +278,7 @@ export function resetPairingForTests(): void {
   pendingCode = undefined;
   redeeming = undefined;
   paired = undefined;
-  writeStoredBearer(undefined);
+  writeStoredBearer("localStorage", undefined);
+  writeStoredBearer("sessionStorage", undefined);
   writeDecisionCapability(undefined);
 }
