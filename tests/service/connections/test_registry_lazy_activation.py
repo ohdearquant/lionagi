@@ -695,13 +695,91 @@ def test_a_listing_does_not_call_again_a_factory_that_failed_in_a_selection(
         with pytest.raises(ProviderActivationError):
             match_endpoint("alpha", "a")
         EndpointRegistry.list_providers()
-    # The listing neither calls the failed factory again nor repeats its warning; the failed
-    # provider registers nothing further and the healthy one still loads.
-    assert calls == ["alpha/a", "beta/x"]
+    # The listing neither calls the failed factory again nor repeats its warning; the provider's
+    # other declaration and the healthy provider still load.
+    assert calls == ["alpha/a", "alpha/b", "beta/x"]
     assert len(_warnings(caplog)) == 1
     assert EndpointRegistry.failed_providers() == [
         {"provider": "alpha", "endpoint": "a", "source": _SOURCE, "reason": "activation_failed"}
     ]
+
+
+class _AlphaB(_Stub):
+    """An endpoint class with the module and qualified name of the ``b`` declaration that
+    ``_alpha_with_a_registering_b`` installs, so registering it under ``alpha`` is allowed."""
+
+
+_AlphaB.__module__ = "stub_module_b"
+_AlphaB.__qualname__ = "Endpoint"
+
+
+def _alpha_with_a_registering_b(monkeypatch):
+    """Install ``alpha``, whose ``a`` factory raises and whose ``b`` factory registers a real
+    endpoint entry, beside a healthy ``beta``. Returns the factory call log."""
+    monkeypatch.setattr(EndpointRegistry, "_alias_owners", dict(EndpointRegistry._alias_owners))
+    calls = []
+
+    def register_b():
+        calls.append("alpha/b")
+        if not any(entry.cls is _AlphaB for entry in EndpointRegistry._entries):
+            EndpointRegistry.register("alpha", "b")(_AlphaB)
+        return _AlphaB
+
+    alpha = _fragment(
+        "alpha",
+        [
+            _declaration("a", _raising(calls, "alpha/a", ImportError("an internal import failed"))),
+            _declaration("b", register_b),
+        ],
+    )
+    beta = _fragment("beta", [_declaration("x", _factory(calls, "beta/x"))])
+    _install(monkeypatch, alpha, beta)
+    return calls
+
+
+@pytest.mark.parametrize("selected_first", [False, True], ids=["cold", "after-a-selection"])
+def test_a_listing_lists_the_healthy_endpoint_of_a_provider_whose_other_endpoint_fails(
+    monkeypatch, cold_registry, selected_first
+):
+    calls = _alpha_with_a_registering_b(monkeypatch)
+    if selected_first:
+        match_endpoint("alpha", "b")
+    rows = [
+        (row["provider"], row["endpoint"])
+        for row in EndpointRegistry.list_providers()
+        if row["provider"] == "alpha"
+    ]
+    # The rows do not depend on whether a selection activated ``alpha/b`` before the listing.
+    assert rows == [("alpha", "b")]
+    assert "alpha/b" in calls
+    assert EndpointRegistry.failed_providers() == [
+        {"provider": "alpha", "endpoint": "a", "source": _SOURCE, "reason": "activation_failed"}
+    ]
+
+
+def test_a_provider_whose_declarations_all_fail_has_one_failed_row_for_its_first(
+    monkeypatch, cold_registry
+):
+    calls = []
+    second = RuntimeError("the second factory has a defect")
+    alpha = _fragment(
+        "alpha",
+        [
+            _declaration("a", _raising(calls, "alpha/a", ImportError("an internal import failed"))),
+            _declaration("b", _raising(calls, "alpha/b", second)),
+        ],
+    )
+    _install(monkeypatch, alpha)
+    assert EndpointRegistry.failed_providers() == [
+        {"provider": "alpha", "endpoint": "a", "source": _SOURCE, "reason": "activation_failed"}
+    ]
+    assert calls == ["alpha/a", "alpha/b"]
+    # The second failure is kept for its own declaration: a selection raises it without a
+    # second call of its factory.
+    with pytest.raises(ProviderActivationError) as raised:
+        match_endpoint("alpha", "b")
+    assert (raised.value.endpoint, raised.value.__cause__) == ("b", second)
+    assert calls == ["alpha/a", "alpha/b"]
 
 
 def test_a_failure_first_seen_by_a_listing_is_cached_for_later_selections(
@@ -716,7 +794,7 @@ def test_a_failure_first_seen_by_a_listing_is_cached_for_later_selections(
             with pytest.raises(ProviderActivationError) as caught:
                 match_endpoint("alpha", "a")
             raised.append(caught.value)
-    assert calls == ["alpha/a", "beta/x"]
+    assert calls == ["alpha/a", "alpha/b", "beta/x"]
     assert len(_warnings(caplog)) == 1
     assert all(failure.__cause__ is error for failure in raised)
 
@@ -757,12 +835,12 @@ def test_a_listing_completes_and_is_not_repeated_when_a_declaration_fails(
     calls = _failing_alpha(monkeypatch, error)
     rows = EndpointRegistry.list_providers()
     assert EndpointRegistry._loaded is True
-    # The healthy provider loaded after the failed one, and the rows still describe the
-    # providers that were registered.
-    assert calls == ["alpha/a", "beta/x"]
+    # The provider's other declaration and the healthy provider loaded, and the rows still
+    # describe the providers that were registered.
+    assert calls == ["alpha/a", "alpha/b", "beta/x"]
     assert rows == EndpointRegistry.list_providers()
     EndpointRegistry.failed_providers()
-    assert calls == ["alpha/a", "beta/x"]
+    assert calls == ["alpha/a", "alpha/b", "beta/x"]
 
 
 def test_failed_providers_follow_catalog_order_whichever_failed_first_in_a_selection(

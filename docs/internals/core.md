@@ -797,8 +797,10 @@ other endpoints register. When the catalog cannot load, nothing is refused.
 activation failed when the registry loaded every provider, with `provider`,
 `endpoint` (or `None`), `source` and `reason`, and no exception text; it is empty
 when every provider activated. The failure it reports is the error a selection of
-that endpoint raises, a `ProviderActivationError` or a `MissingFeatureError`, and
-a provider that failed registers nothing further. The rows of `list_providers()`
+that endpoint raises, a `ProviderActivationError` or a `MissingFeatureError`. A
+declaration that fails does not stop the provider's other declarations or the other
+providers from loading, and a provider's row reports its first failed declaration.
+The rows of `list_providers()`
 describe every built-in class, so `list_providers()` and `failed_providers()`
 import every declared provider, as before. Both list the bundled catalog's
 providers in the catalog's order, whichever providers a selection had imported

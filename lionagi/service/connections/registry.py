@@ -989,9 +989,11 @@ class EndpointRegistry:
             # registration decorators. A catalog that cannot load leaves no built-in
             # provider registered, and one warning says why. Each declaration is activated
             # the way a selection activates it, so its failure is translated to the typed
-            # error a selection raises, kept per declaration and logged once there; a
-            # provider whose activation fails is recorded and registers nothing further, and
-            # the other providers still load.
+            # error a selection raises, kept per declaration and logged once there. A failed
+            # declaration does not stop the provider's other declarations or the other
+            # providers from loading, so the rows that follow do not depend on which
+            # declarations a selection activated first. A provider is recorded once, with
+            # the error of its first failed declaration.
             failed: list[_FailedProvider] = []
             try:
                 catalog = default_provider_catalog()
@@ -1008,18 +1010,21 @@ class EndpointRegistry:
                 )
             else:
                 for provider in catalog.providers:
+                    first_failure = None
                     for declaration in provider.endpoints:
                         try:
                             cls._activate(catalog, provider, declaration)
                         except (MissingFeatureError, ProviderActivationError) as error:
-                            failed.append(
-                                _FailedProvider(
-                                    provider=provider.key,
-                                    names=(provider.key, *provider.aliases),
-                                    error=error.with_traceback(None),
-                                )
+                            if first_failure is None:
+                                first_failure = error.with_traceback(None)
+                    if first_failure is not None:
+                        failed.append(
+                            _FailedProvider(
+                                provider=provider.key,
+                                names=(provider.key, *provider.aliases),
+                                error=first_failure,
                             )
-                            break
+                        )
             # Test-only scripted provider (provider="scripted"): a leaf core module,
             # always loadable, gated behind LIONAGI_CHAT_PROVIDER=scripted. Imported after
             # the declared providers so it stays last among the registered entries. A lookup

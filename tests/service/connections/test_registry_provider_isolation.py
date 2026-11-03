@@ -159,12 +159,15 @@ def stored_model():
     return iModel(provider=ROW.key, model="any-model", api_key="unused").to_dict()
 
 
-def test_load_finishes_and_logs_one_warning_naming_the_provider(failed_provider):
+def test_load_finishes_and_logs_one_warning_per_failed_endpoint(failed_provider):
     _completed(failed_provider)
     messages = [record.getMessage() for record in failed_provider.warnings]
-    assert len(messages) == 1
-    assert ROW.key in messages[0]
-    assert "activation_failed" in messages[0]
+    # Each declared endpoint of the provider fails on its own and logs once, naming the provider.
+    assert len(messages) == len(ROW.endpoints)
+    for declared in ROW.endpoints:
+        [message] = [m for m in messages if f"endpoint {declared.key!r}" in m]
+        assert ROW.key in message
+        assert "activation_failed" in message
 
 
 def test_other_providers_select_the_same_endpoints(failed_provider):
@@ -274,12 +277,12 @@ def test_two_failed_providers_are_listed_in_catalog_order(two_failed_providers):
     ]
 
 
-def test_two_failed_providers_log_one_warning_each(two_failed_providers):
+def test_two_failed_providers_log_one_warning_per_failed_endpoint(two_failed_providers):
     _completed(two_failed_providers)
     messages = [record.getMessage() for record in two_failed_providers.warnings]
-    assert len(messages) == 2
-    assert [ROW.key in m for m in messages].count(True) == 1
-    assert [OTHER_ROW.key in m for m in messages].count(True) == 1
+    assert len(messages) == len(ROW.endpoints) + len(OTHER_ROW.endpoints)
+    assert [ROW.key in m for m in messages].count(True) == len(ROW.endpoints)
+    assert [OTHER_ROW.key in m for m in messages].count(True) == len(OTHER_ROW.endpoints)
 
 
 @pytest.mark.parametrize(
