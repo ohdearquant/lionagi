@@ -686,6 +686,7 @@ class iModel:  # noqa: N801
 
         stream_error = None
         failed = False
+        validation_details = None
         try:
             await self.executor.pile.ainclude(api_call)
             if self.executor.processor is None or self.executor.processor.is_stopped():
@@ -714,9 +715,9 @@ class iModel:  # noqa: N801
                         # surface it after iteration so the caller sees the error.
                         stream_error = _terminal_stream_error(api_call)
                     except Exception as e:
-                        if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
-                            raise
                         if isinstance(e, ValidationError):
+                            raise
+                        if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                             raise
                         raise ValueError(f"Failed to stream API call: {e}") from e
             else:
@@ -734,11 +735,13 @@ class iModel:  # noqa: N801
                         yield result if result is not None else i
                     stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
-                    if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
-                        raise
                     if isinstance(e, ValidationError):
                         raise
+                    if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
+                        raise
                     raise ValueError(f"Failed to stream API call: {e}") from e
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
         finally:
             # Runs on every exit from the point this generator owns the call: a
             # clean end, a consumer that stops early, cancellation (including
@@ -748,12 +751,14 @@ class iModel:  # noqa: N801
             # Pop without yielding — yield-in-finally would swallow CancelledError
             # during generator cleanup, breaking anyio.fail_after timeout enforcement.
             self.executor.pile.pop(api_call.id, None)
+        if validation_details is not None:
+            raise ValueError(f"Failed to stream API call: {validation_details}") from None
         if stream_error is not None:
+            if isinstance(stream_error, ValidationError):
+                raise stream_error from None
             if isinstance(stream_error, CredentialMissingError) or self._is_routing_error(
                 stream_error
             ):
-                raise stream_error from None
-            if isinstance(stream_error, ValidationError):
                 raise stream_error from None
             raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         if not failed and api_call.status == EventStatus.COMPLETED:
@@ -863,13 +868,13 @@ class iModel:  # noqa: N801
             # Preserve typed pre-send refusals instead of hiding them in the generic wrapper.
             raise
         except Exception as e:
-            if self._is_routing_error(e):
-                raise
-            if api_call is not None:
-                self._store_served_model(api_call, None)
             if isinstance(e, ValidationError):
                 validation_details = _safe_validation_details(e)
             else:
+                if self._is_routing_error(e):
+                    raise
+                if api_call is not None:
+                    self._store_served_model(api_call, None)
                 raise ValueError(f"Failed to invoke API call: {e}") from e
         except BaseException:
             # Cancelled (a caller's timeout included) before any response was read.
@@ -877,6 +882,8 @@ class iModel:  # noqa: N801
                 self._store_served_model(api_call, None)
             raise
         if validation_details is not None:
+            if api_call is not None:
+                self._store_served_model(api_call, None)
             raise ValueError(f"Failed to invoke API call: {validation_details}") from None
 
     @property

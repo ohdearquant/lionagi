@@ -1120,7 +1120,7 @@ the credential (`lionagi/service/connections/endpoint_config.py:138`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:103`, `lionagi/service/imodel.py:776`,
+(`lionagi/operations/chat/chat.py:103`, `lionagi/service/imodel.py:781`,
 `lionagi/service/connections/api_calling.py:329-338`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:956`,
 `lionagi/service/connections/endpoint.py:979`). Response JSON returns directly;
@@ -1293,8 +1293,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:960`) and
-`from_dict` reads it back (`lionagi/service/imodel.py:1077`). Direct endpoints have
+preserves its id: `to_dict` writes it (`lionagi/service/imodel.py:967`) and
+`from_dict` reads it back (`lionagi/service/imodel.py:1084`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 

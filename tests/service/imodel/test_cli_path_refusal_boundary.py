@@ -394,3 +394,121 @@ async def test_validation_error_in_invoke_cleanup_has_a_clean_chain():
         caught = error
     if not isinstance(caught, ValueError) or _chain_contains(caught, marker):
         pytest.fail("cleanup validation was not safely wrapped", pytrace=False)
+
+
+@pytest.mark.asyncio
+async def test_nonvalidation_in_invoke_cleanup_does_not_retain_validation_input():
+    from types import SimpleNamespace
+
+    from lionagi.protocols.generic import EventStatus
+
+    marker = "sensitive fixture content"
+    validation = ValidationError.from_exception_data(
+        "OtherModel", [{"type": "int_parsing", "loc": (), "input": marker}]
+    )
+    cleanup_error = RuntimeError("cleanup failed")
+
+    class BrokenMetadata(dict):
+        def pop(self, *_args):
+            raise cleanup_error
+
+    def fail_key_check():
+        raise validation
+
+    call = SimpleNamespace(
+        endpoint=SimpleNamespace(_require_api_key=fail_key_check),
+        status=EventStatus.FAILED,
+        metadata=BrokenMetadata(),
+    )
+    model = iModel(provider="claude_code", model="test-model", api_key="test-key")
+    caught = None
+    try:
+        await model.invoke(api_call=call)
+    except Exception as error:
+        caught = error
+    if caught is not cleanup_error or _chain_contains(caught, marker):
+        pytest.fail("invoke cleanup exposed input or changed cleanup error", pytrace=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_site", ["start", "pile"])
+async def test_nonvalidation_in_stream_cleanup_does_not_retain_validation_input(
+    monkeypatch, failure_site
+):
+    marker = "sensitive fixture content"
+    validation = ValidationError.from_exception_data(
+        "OtherModel", [{"type": "int_parsing", "loc": (), "input": marker}]
+    )
+    cleanup_error = RuntimeError("cleanup failed")
+    model = iModel(provider="claude_code", model="test-model", api_key="test-key")
+    call = await model.create_event(prompt="hello")
+
+    async def fail_step(*_args, **_kwargs):
+        raise validation
+
+    def fail_cleanup(*_args):
+        raise cleanup_error
+
+    if failure_site == "start":
+        monkeypatch.setattr(model.executor, "start", fail_step)
+    else:
+        monkeypatch.setattr(type(model.executor.pile), "ainclude", fail_step)
+    monkeypatch.setattr(model, "_store_served_model", fail_cleanup)
+    caught = None
+    try:
+        async for _ in model.stream(api_call=call):
+            pass
+    except Exception as error:
+        caught = error
+    if caught is not cleanup_error or _chain_contains(caught, marker):
+        pytest.fail("stream cleanup exposed input or changed cleanup error", pytrace=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["invoke", "stream", "stream-with-limit"])
+async def test_validation_never_calls_routing_error_predicate(monkeypatch, mode):
+    marker = "sensitive fixture content"
+    validation = ValidationError.from_exception_data(
+        "OtherModel", [{"type": "int_parsing", "loc": (), "input": marker}]
+    )
+    model = iModel(
+        provider="claude_code",
+        model="test-model",
+        api_key="test-key",
+        concurrency_limit=2 if mode == "stream-with-limit" else None,
+    )
+    routing_calls = []
+
+    def fail_routing(*_args):
+        routing_calls.append(True)
+        raise RuntimeError("routing check failed")
+
+    if mode == "invoke":
+
+        async def fail_event(**_kwargs):
+            raise validation
+
+        monkeypatch.setattr(model, "create_event", fail_event)
+    else:
+        call = await model.create_event(prompt="hello")
+
+        async def fail_stream(*_args):
+            raise validation
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(type(call), "stream", fail_stream)
+
+    monkeypatch.setattr(model, "_is_routing_error", fail_routing)
+    caught = None
+    try:
+        if mode == "invoke":
+            await model.invoke(prompt="hello")
+        else:
+            async for _ in model.stream(api_call=call):
+                pass
+    except Exception as error:
+        caught = error
+    finally:
+        await model.close()
+    if not isinstance(caught, ValueError) or _chain_contains(caught, marker) or routing_calls:
+        pytest.fail("routing check exposed a validation input", pytrace=False)
