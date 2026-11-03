@@ -585,11 +585,11 @@ lines:
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionhub/src/lionhub/providers/openai/codex.py:2902-2905`); a list's tail replaced by an item counting the
-  entries left out (`:3024-3027`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:3056-3061`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionhub/src/lionhub/providers/openai/codex.py:2913-2916`); a list's tail replaced by an item counting the
+  entries left out (`:3035-3038`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:3067-3072`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionhub/src/lionhub/providers/openai/codex.py:3116-3119`, called from `:3305`), so the
+  file-change item (`lionhub/src/lionhub/providers/openai/codex.py:3127-3130`, called from `:3316`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the

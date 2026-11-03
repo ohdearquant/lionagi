@@ -35,6 +35,7 @@ from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
     build_declarative_cli_args,
+    declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
     ndjson_from_cli,
@@ -42,6 +43,7 @@ from lionhub.providers._cli_subprocess import (
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
     refuse_oversized_command,
+    refuse_text_strict_utf8_cannot_encode,
     resolve_cli_workspace,
 )
 from lionhub.providers._cli_subprocess import (
@@ -158,6 +160,20 @@ CLAUDE_MAX_PIPED_INPUT_BYTES = 10_000_000
 # --------------------------------------------------------------------------- request model
 #: The tools a ``light`` Claude Code agent runs without: every built-in that writes a file.
 LIGHT_DISALLOWED_TOOLS = ("Edit", "Write", "NotebookEdit")
+
+
+_CLI_PATH_FIELDS = frozenset(
+    {"system_prompt_file", "append_system_prompt_file", "mcp_config", "settings", "add_dir"}
+)
+
+
+def _unencodable_claude_text(value: str, what: str) -> ValueError | None:
+    """Return a value-free refusal without retaining the codec's input-bearing error."""
+    try:
+        str.__str__(value).encode("utf-8")
+    except UnicodeEncodeError:
+        return refuse_text_strict_utf8_cannot_encode(what, "Claude Code CLI")
+    return None
 
 
 class ClaudeCodeRequest(BaseModel):
@@ -599,6 +615,33 @@ class ClaudeCodeRequest(BaseModel):
         (``CLAUDE_MAX_PIPED_INPUT_BYTES``) applies. A command line holds far less, and a long
         history passed there fails the spawn before any turn runs.
         """
+        # Path arguments may contain POSIX surrogateescaped bytes; text that the
+        # CLI must decode, including the stdin prompt, must be strict UTF-8.
+        failure = _unencodable_claude_text(self.prompt, "The prompt")
+        if failure is not None:
+            raise failure
+        for name, field in type(self).model_fields.items():
+            extra = field.json_schema_extra
+            if name in _CLI_PATH_FIELDS or not isinstance(extra, dict) or "cli_flag" not in extra:
+                continue
+            value = getattr(self, name)
+            if isinstance(value, str):
+                failure = _unencodable_claude_text(value, f"The {name} value")
+                if failure is not None:
+                    raise failure
+            elif extra.get("cli_kind") == "list_args" and isinstance(value, list):
+                for index, item in enumerate(value, start=1):
+                    if isinstance(item, str):
+                        failure = _unencodable_claude_text(item, f"The {name} entry {index}")
+                        if failure is not None:
+                            raise failure
+        for name in ("worktree", "debug"):
+            value = getattr(self, name)
+            if isinstance(value, str):
+                failure = _unencodable_claude_text(value, f"The {name} value")
+                if failure is not None:
+                    raise failure
+
         args: list[str] = ["-p"]
         if not self._prompt_on_stdin():
             args.append(self.prompt)
@@ -674,7 +717,19 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [resolve_claude_cli(), *request.as_cmd_args()]
-    refuse_oversized_command(cmd, "Claude Code CLI")
+    flags = declarative_cli_flags(ClaudeCodeRequest) | {
+        "-p",
+        "--output-format",
+        "--permission-mode",
+        "--dangerously-skip-permissions",
+        "--max-turns",
+        "--worktree",
+        "--debug",
+        "--mcp-config",
+        "--model",
+        "--verbose",
+    }
+    refuse_oversized_command(cmd, "Claude Code CLI", known_flags=flags)
     stdin_data: str | None = None
     if request._prompt_on_stdin():
         stdin_data = request.prompt

@@ -52,15 +52,15 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
-    CLI_ARGUMENT_MAX_BYTES as _CLI_ARGUMENT_MAX_BYTES,  # noqa: F401
-)
-from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
     build_declarative_cli_args,
+    declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
+    make_cli_flag,
     ndjson_from_cli,
+    nul_refusal_message,
     print_readable,
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
@@ -70,12 +70,6 @@ from lionhub.providers._cli_subprocess import (
     resolve_cli_workspace,
     reveal_redacted,
     validate_message_prompt,
-)
-from lionhub.providers._cli_subprocess import (
-    make_cli_flag as _cli,
-)
-from lionhub.providers._cli_subprocess import (
-    nul_refusal_message as _nul_refusal_message,
 )
 
 from ._codex_profile import (
@@ -372,7 +366,24 @@ CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 # The refusals shared with the other CLI providers name the program they guard; here they
 # name the Codex CLI.
 _refuse_oversized_argument = functools.partial(refuse_oversized_argument, cli="Codex CLI")
-_refuse_oversized_command = functools.partial(refuse_oversized_command, cli="Codex CLI")
+
+
+def _refuse_oversized_command(cmd: list[str]) -> None:
+    flags = declarative_cli_flags(CodexCodeRequest) | {
+        "--json",
+        "--add-dir",
+        "--sandbox",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-s",
+        "--enable",
+        "--disable",
+        "-i",
+        "-C",
+        "-c",
+    }
+    refuse_oversized_command(cmd, "Codex CLI", known_flags=flags)
+
+
 _refuse_text_strict_utf8_cannot_encode = functools.partial(
     refuse_text_strict_utf8_cannot_encode, cli="Codex CLI"
 )
@@ -433,7 +444,7 @@ def _argument_text_failure(text: str, what: str) -> ValueError | None:
     None: strict UTF-8 must encode it, and it may not hold a NUL, which exec refuses."""
     failure = _strict_utf8_failure(text, what)
     if failure is None and "\x00" in text:
-        failure = ValueError(_nul_refusal_message(what))
+        failure = ValueError(nul_refusal_message(what))
     return failure
 
 
@@ -1137,17 +1148,17 @@ class CodexCodeRequest(BaseModel):
     model: str | None = Field(
         default="gpt-5.3-codex",
         description="Codex model to use",
-        json_schema_extra=_cli("-m", 10),
+        json_schema_extra=make_cli_flag("-m", 10),
     )
     profile: str | None = Field(
         default=None,
         description="Configuration profile from ~/.codex/config.toml",
-        json_schema_extra=_cli("-p", 11),
+        json_schema_extra=make_cli_flag("-p", 11),
     )
     oss: bool = Field(
         default=False,
         description="Use local open-source model provider (Ollama)",
-        json_schema_extra=_cli("--oss", 12, "bool"),
+        json_schema_extra=make_cli_flag("--oss", 12, "bool"),
     )
     search: bool = Field(
         default=False,
@@ -1185,7 +1196,7 @@ class CodexCodeRequest(BaseModel):
     add_dir: list[str] | None = Field(
         default=None,
         description="Additional directories to grant write access",
-        json_schema_extra=_cli("--add-dir", 30, "repeat"),
+        json_schema_extra=make_cli_flag("--add-dir", 30, "repeat"),
     )
 
     # ── process (runtime-only, never rendered as CLI args) ─────────
@@ -1308,17 +1319,17 @@ class CodexCodeRequest(BaseModel):
     output_schema: str | Path | None = Field(
         default=None,
         description="Path to JSON Schema file for structured output",
-        json_schema_extra=_cli("--output-schema", 50),
+        json_schema_extra=make_cli_flag("--output-schema", 50),
     )
     output_last_message: str | Path | None = Field(
         default=None,
         description="Write the final message to a file",
-        json_schema_extra=_cli("--output-last-message", 51),
+        json_schema_extra=make_cli_flag("--output-last-message", 51),
     )
     color: CodexColorMode | None = Field(
         default=None,
         description="ANSI color mode",
-        json_schema_extra=_cli("--color", 52),
+        json_schema_extra=make_cli_flag("--color", 52),
     )
 
     # ── features (order 60–69) ────────────────────────────────────
@@ -1329,22 +1340,22 @@ class CodexCodeRequest(BaseModel):
             "run in per-task artifact dirs that are not git repos, where codex would "
             "otherwise refuse with 'Not inside a trusted directory'."
         ),
-        json_schema_extra=_cli("--skip-git-repo-check", 60, "bool"),
+        json_schema_extra=make_cli_flag("--skip-git-repo-check", 60, "bool"),
     )
     ephemeral: bool = Field(
         default=False,
         description="Don't persist session to disk",
-        json_schema_extra=_cli("--ephemeral", 61, "bool"),
+        json_schema_extra=make_cli_flag("--ephemeral", 61, "bool"),
     )
     no_alt_screen: bool = Field(
         default=False,
         description="Disable alternate screen mode for TUI",
-        json_schema_extra=_cli("--no-alt-screen", 62, "bool"),
+        json_schema_extra=make_cli_flag("--no-alt-screen", 62, "bool"),
     )
     include_plan_tool: bool = Field(
         default=False,
         description="Include the plan tool in the conversation",
-        json_schema_extra=_cli("--include-plan-tool", 63, "bool"),
+        json_schema_extra=make_cli_flag("--include-plan-tool", 63, "bool"),
     )
     ignore_user_config: bool = Field(
         default=False,
@@ -1364,19 +1375,19 @@ class CodexCodeRequest(BaseModel):
             "flag. A `profile`, or overrides that select one, are refused with the flag, since "
             "codex then loads no profile."
         ),
-        json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
+        json_schema_extra=make_cli_flag("--ignore-user-config", 64, "bool"),
     )
 
     # ── feature flags (order 70–79) ───────────────────────────────
     enable_features: list[str] | None = Field(
         default=None,
         description="Feature flags to enable",
-        json_schema_extra=_cli("--enable", 70, "repeat"),
+        json_schema_extra=make_cli_flag("--enable", 70, "repeat"),
     )
     disable_features: list[str] | None = Field(
         default=None,
         description="Feature flags to disable",
-        json_schema_extra=_cli("--disable", 71, "repeat"),
+        json_schema_extra=make_cli_flag("--disable", 71, "repeat"),
     )
     contain_account_integrations: bool = Field(
         default=False,

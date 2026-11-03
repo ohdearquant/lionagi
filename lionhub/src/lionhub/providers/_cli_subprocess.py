@@ -1944,6 +1944,19 @@ def make_cli_flag(
     return d
 
 
+def declarative_cli_flags(model: type) -> frozenset[str]:
+    """Collect the fixed flag spellings emitted by a declarative CLI builder."""
+    return frozenset(
+        flag
+        for field in model.model_fields.values()
+        for flag in (
+            (field.json_schema_extra or {}).get("cli_flag"),
+            (field.json_schema_extra or {}).get("cli_neg_flag"),
+        )
+        if isinstance(flag, str)
+    )
+
+
 print_readable = partial(as_readable, md=True, display_str=True)
 
 
@@ -1983,15 +1996,18 @@ def nul_refusal_message(what: str) -> str:
     return f"{what} holds a NUL character, which no command-line argument can hold."
 
 
-def refuse_oversized_command(cmd: list[str], cli: str) -> None:
+def refuse_oversized_command(
+    cmd: list[str], cli: str, *, known_flags: frozenset[str] = frozenset()
+) -> None:
     """Refuse ``cmd`` when any argument after the program holds a NUL or is
     ``CLI_ARGUMENT_MAX_BYTES`` bytes or more. ``cli`` names the program in a refusal."""
     for position, argument in enumerate(cmd[1:], start=1):
-        flag = cmd[position - 1] if position > 1 else ""
-        if flag == "-c":
+        previous = cmd[position - 1] if position > 1 else ""
+        flag = str.__str__(previous) if isinstance(previous, str) else ""
+        if flag == "-c" and flag in known_flags:
             # Named by position: an override's key can hold a secret as its value can.
             what = f"The -c override at argument {position}"
-        elif flag.startswith("-"):
+        elif flag in known_flags:
             what = f"The value of {flag}"
         else:
             what = f"Command-line argument {position}"
