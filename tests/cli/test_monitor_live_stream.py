@@ -101,6 +101,8 @@ def test_stream_tail_waits_for_a_newline_and_keeps_terminated_malformed_fallback
     assert monitor._stream_tail(tmp_path, "branch") == ["malformed legacy line"]
     path.write_text('{"text":"not yet complete"}')
     assert monitor._stream_tail(tmp_path, "branch") == []
+    path.write_text("".join(json.dumps({"text": str(i)}) + "\n" for i in range(5)) + partial)
+    assert monitor._stream_tail(tmp_path, "branch") == ["1", "2", "3", "4"]
 
 
 @pytest.mark.asyncio
