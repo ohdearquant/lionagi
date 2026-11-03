@@ -1191,6 +1191,7 @@ CI_CHANGES_FILTERS = {
         "pyproject.toml",
         "uv.lock",
         "tests/conftest.py",
+        "tests/_shared_conftest.py",
         "tests/state/conftest.py",
         "tests/state/test_compatibility_*.py",
         ".github/workflows/ci.yml",

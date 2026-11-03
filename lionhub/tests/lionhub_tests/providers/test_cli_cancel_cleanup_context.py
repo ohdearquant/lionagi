@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from lionhub.providers import _cli_subprocess as cli
-from tests.providers.test_cli_observer_bounded_cleanup import (
+from lionhub_tests.providers.test_cli_observer_bounded_cleanup import (
     fake_observer_boundary as fake_observer_boundary,
 )
 

@@ -626,6 +626,7 @@ jobs:
             - 'lionagi/testing/**'
             - 'lionagi/version.py'
             - 'tests/conftest.py'
+            - 'tests/_shared_conftest.py'
             - 'tests/state/conftest.py'
             - 'tests/state/test_compatibility_*.py'
             - '.github/workflows/ci.yml'
