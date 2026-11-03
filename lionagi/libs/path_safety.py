@@ -120,6 +120,15 @@ def contain_relative_path(value: str | Path, root: Path, field_name: str = "path
     return contain_and_resolve(value, root)
 
 
+def _path_error_category(error: ValueError | OSError | RuntimeError) -> type[Exception]:
+    """Select a stable, constructible category without retaining a filesystem error."""
+    if isinstance(error, ValueError):
+        return ValueError
+    if isinstance(error, OSError):
+        return OSError
+    return RuntimeError
+
+
 def contain_path_in_root(
     value: str | Path,
     root: Path,
@@ -132,8 +141,8 @@ def contain_path_in_root(
     resolution_error = None
     try:
         resolved = (root / entry).resolve()
-    except (OSError, RuntimeError) as exc:
-        resolution_error = type(exc)
+    except (ValueError, OSError, RuntimeError) as exc:
+        resolution_error = _path_error_category(exc)
     if resolution_error is not None:
         raise resolution_error(f"{field_name} path cannot be resolved") from None
     try:

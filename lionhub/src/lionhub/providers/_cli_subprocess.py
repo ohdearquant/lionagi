@@ -31,7 +31,7 @@ from lionagi._errors import (
     _ExclusiveMcpSelectionError,
 )
 from lionagi._provider_errors import ProviderTeardownError, _WorkerSpawnAdmissionError
-from lionagi.libs.path_safety import contain_and_resolve, has_traversal
+from lionagi.libs.path_safety import _path_error_category, contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import (
     SignalGate,
@@ -1813,8 +1813,8 @@ def _resolve_cli_path(path: Path, field_name: str) -> Path:
     failure = None
     try:
         resolved = path.resolve()
-    except (OSError, RuntimeError) as exc:
-        failure = type(exc)
+    except (ValueError, OSError, RuntimeError) as exc:
+        failure = _path_error_category(exc)
     if failure is not None:
         raise failure(f"{field_name} cannot be resolved") from None
     return resolved
@@ -1828,8 +1828,8 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     inspection_failure = None
     try:
         is_directory = repo.is_dir()
-    except OSError as exc:
-        inspection_failure = type(exc)
+    except (ValueError, OSError, RuntimeError) as exc:
+        inspection_failure = _path_error_category(exc)
     if inspection_failure is not None:
         raise inspection_failure("cwd cannot be inspected") from None
     if not is_directory:
@@ -1849,7 +1849,7 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     try:
         resolved = contain_and_resolve(ws_path, repo)
     except (ValueError, OSError, RuntimeError) as exc:
-        failure = type(exc)
+        failure = _path_error_category(exc)
     if failure is not None:
         raise failure("Workspace path cannot be resolved within repository bounds") from None
     return resolved

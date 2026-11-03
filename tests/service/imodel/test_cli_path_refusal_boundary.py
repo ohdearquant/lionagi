@@ -512,3 +512,114 @@ async def test_validation_never_calls_routing_error_predicate(monkeypatch, mode)
         await model.close()
     if not isinstance(caught, ValueError) or _chain_contains(caught, marker) or routing_calls:
         pytest.fail("routing check exposed a validation input", pytrace=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["invoke", "stream"])
+@pytest.mark.parametrize("cleanup_kind", ["runtime", "cancel"])
+async def test_validation_cleanup_preserves_cleanup_failure_and_clean_chain(
+    monkeypatch, mode, cleanup_kind
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from lionagi.protocols.generic import EventStatus
+
+    marker = "sensitive fixture content"
+    validation = ValidationError.from_exception_data(
+        "OtherModel", [{"type": "int_parsing", "loc": (), "input": marker}]
+    )
+    cleanup = (
+        RuntimeError("cleanup failed") if cleanup_kind == "runtime" else asyncio.CancelledError()
+    )
+    model = iModel(provider="claude_code", model="test-model", api_key="test-key")
+
+    def fail_cleanup(*_args):
+        raise cleanup
+
+    if mode == "invoke":
+
+        def fail_key_check():
+            raise validation
+
+        call = SimpleNamespace(
+            endpoint=SimpleNamespace(_require_api_key=fail_key_check),
+            status=EventStatus.FAILED,
+            metadata={},
+        )
+    else:
+        call = await model.create_event(prompt="hello")
+
+        async def fail_pile(*_args, **_kwargs):
+            raise validation
+
+        monkeypatch.setattr(type(model.executor.pile), "ainclude", fail_pile)
+
+    monkeypatch.setattr(model, "_store_served_model", fail_cleanup)
+    caught = None
+    try:
+        if mode == "invoke":
+            await model.invoke(api_call=call)
+        else:
+            async for _ in model.stream(api_call=call):
+                pass
+    except BaseException as error:
+        caught = error
+    pending, seen = [caught], set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if (
+            isinstance(current, ValidationError)
+            or marker in str(current)
+            or marker in repr(current)
+        ):
+            pytest.fail("cleanup exception chain retained validation input", pytrace=False)
+        pending.extend((current.__cause__, current.__context__))
+    if caught is not cleanup:
+        pytest.fail("cleanup failure lost its identity or precedence", pytrace=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["invoke", "stream", "stream-with-limit"])
+async def test_nonvalidation_routing_error_keeps_its_original_identity(monkeypatch, mode):
+    model = iModel(
+        provider="claude_code",
+        model="test-model",
+        api_key="test-key",
+        concurrency_limit=2 if mode == "stream-with-limit" else None,
+    )
+    original = RuntimeError("routing error")
+
+    def is_routing(error):
+        return error is original
+
+    if mode == "invoke":
+
+        async def fail_event(**_kwargs):
+            raise original
+
+        monkeypatch.setattr(model, "create_event", fail_event)
+    else:
+        call = await model.create_event(prompt="hello")
+
+        async def fail_stream(*_args):
+            raise original
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(type(call), "stream", fail_stream)
+    monkeypatch.setattr(model, "_is_routing_error", is_routing)
+    caught = None
+    try:
+        if mode == "invoke":
+            await model.invoke(prompt="hello")
+        else:
+            async for _ in model.stream(api_call=call):
+                pass
+    except Exception as error:
+        caught = error
+    finally:
+        await model.close()
+    assert caught is original

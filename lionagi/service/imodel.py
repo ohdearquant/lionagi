@@ -654,6 +654,10 @@ class iModel:  # noqa: N801
             self.provider_metadata["served_model"] = served_model
 
     async def stream(self, api_call=None, **kw) -> AsyncGenerator:
+        """Stream a call, with cleanup exceptions taking precedence over validation refusals.
+
+        Cleanup BaseExceptions outside Exception, including cancellation, propagate unchanged.
+        """
         validation_details = None
         try:
             async with aclosing(self._stream_impl(api_call=api_call, **kw)) as chunks:
@@ -747,12 +751,16 @@ class iModel:  # noqa: N801
             # clean end, a consumer that stops early, cancellation (including
             # while waiting for the concurrency slot), an endpoint failure, and
             # a processor start that raises.
+            if validation_details is not None:
+                try:
+                    raise ValueError(f"Failed to stream API call: {validation_details}") from None
+                finally:
+                    self._store_served_model(api_call, served_model)
+                    self.executor.pile.pop(api_call.id, None)
             self._store_served_model(api_call, served_model)
             # Pop without yielding — yield-in-finally would swallow CancelledError
             # during generator cleanup, breaking anyio.fail_after timeout enforcement.
             self.executor.pile.pop(api_call.id, None)
-        if validation_details is not None:
-            raise ValueError(f"Failed to stream API call: {validation_details}") from None
         if stream_error is not None:
             if isinstance(stream_error, ValidationError):
                 raise stream_error from None
@@ -779,6 +787,10 @@ class iModel:  # noqa: N801
         self.input_token_scale = max(self.input_token_scale, reported / counted)
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
+        """Invoke a call, with cleanup exceptions taking precedence over validation refusals.
+
+        Cleanup BaseExceptions outside Exception, including cancellation, propagate unchanged.
+        """
         validation_details = None
         try:
             return await self._invoke_impl(api_call=api_call, **kw)
@@ -882,9 +894,11 @@ class iModel:  # noqa: N801
                 self._store_served_model(api_call, None)
             raise
         if validation_details is not None:
-            if api_call is not None:
-                self._store_served_model(api_call, None)
-            raise ValueError(f"Failed to invoke API call: {validation_details}") from None
+            try:
+                raise ValueError(f"Failed to invoke API call: {validation_details}") from None
+            finally:
+                if api_call is not None:
+                    self._store_served_model(api_call, None)
 
     @property
     def is_cli(self) -> bool:

@@ -57,7 +57,7 @@ def test_uninspectable_repo_omits_path_and_original_error(monkeypatch, tmp_path)
         resolve_cli_workspace(repo, None)
     except Exception as error:
         caught = error
-    if not isinstance(caught, PermissionError):
+    if type(caught) is not OSError:
         pytest.fail("workspace inspection changed error type", pytrace=False)
     if marker in str(caught) or caught.__context__ is not None or caught.__cause__ is not None:
         pytest.fail("workspace inspection retained private input or original error", pytrace=False)
