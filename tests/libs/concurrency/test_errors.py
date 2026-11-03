@@ -284,3 +284,87 @@ async def test_shield_quietly_failure_stays_retrievable_after_the_caller_was_can
     await asyncio.wait({inner})
     with pytest.raises(RuntimeError, match="late failure"):
         await inner
+
+
+def _callback_count(fut):
+    """Done callbacks on *fut*, counted as the standard library's own repr reads them."""
+    return len(fut._callbacks or ())
+
+
+async def _cancelled_wait(shield_fn, inner):
+    """Wait on *inner* through *shield_fn* and cancel the wait while *inner* is pending."""
+    caller = asyncio.ensure_future(_await_shielded(shield_fn, inner))
+    await _settle()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    await _settle()
+
+
+async def test_shield_quietly_cancelled_waits_leave_at_most_one_callback_on_a_pending_future():
+    inner = asyncio.get_running_loop().create_future()
+    before = _callback_count(inner)
+
+    with _recording_loop_handler() as calls:
+        for _ in range(5):
+            await _cancelled_wait(shield_quietly, inner)
+        assert not inner.done()
+        assert _callback_count(inner) <= before + 1
+
+        inner.set_exception(RuntimeError("late failure"))
+        await _settle()
+        del inner
+        gc.collect()
+
+    assert calls == []
+
+
+async def test_shield_quietly_cancelled_waits_leave_at_most_one_callback_on_a_running_task():
+    release = asyncio.Event()
+
+    async def fail_later():
+        await release.wait()
+        raise RuntimeError("late failure")
+
+    inner = asyncio.ensure_future(fail_later())
+    await _settle()
+    before = _callback_count(inner)
+
+    with _recording_loop_handler() as calls:
+        for _ in range(5):
+            await _cancelled_wait(shield_quietly, inner)
+        assert _callback_count(inner) <= before + 1
+
+        release.set()
+        await asyncio.wait({inner})
+        await _settle()
+        del inner
+        gc.collect()
+
+    assert calls == []
+
+
+async def test_shield_quietly_a_cancelled_wait_does_not_disturb_a_wait_that_is_still_live():
+    inner = asyncio.get_running_loop().create_future()
+    live = asyncio.ensure_future(_await_shielded(shield_quietly, inner))
+    await _settle()
+
+    for _ in range(3):
+        await _cancelled_wait(shield_quietly, inner)
+
+    assert not live.done()
+    inner.set_result("done")
+    assert await live == "done"
+
+
+async def test_shield_quietly_inner_cancelled_after_a_cancelled_wait_is_not_reported():
+    inner = asyncio.get_running_loop().create_future()
+
+    with _recording_loop_handler() as calls:
+        await _cancelled_wait(shield_quietly, inner)
+        inner.cancel()
+        await _settle()
+        gc.collect()
+
+    assert calls == []
+    assert inner.cancelled()

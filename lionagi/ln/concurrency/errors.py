@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Awaitable, Callable
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 import anyio
 
@@ -24,6 +24,7 @@ __all__ = (
     "is_cancelled",
     "non_cancel_subgroup",
     "shield",
+    "shield_quietly",
     "split_cancellation",
 )
 
@@ -76,6 +77,12 @@ async def shield(func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwa
     return result  # type: ignore[return-value]
 
 
+def _mark_exception_retrieved(inner: asyncio.Future[Any]) -> None:
+    """Done callback that marks *inner*'s exception retrieved so that nothing reports it later."""
+    if not inner.cancelled():
+        inner.exception()
+
+
 def shield_quietly(arg: Awaitable[T]) -> asyncio.Future[T]:
     """``asyncio.shield`` that never reports the inner's failure to the loop's exception handler.
 
@@ -86,9 +93,18 @@ def shield_quietly(arg: Awaitable[T]) -> asyncio.Future[T]:
     CPython 3.14.7 and 3.14.8 differ from other releases: when the caller was cancelled first and
     the inner then fails, they pass the failure to the loop's exception handler, and the default
     handler logs the exception text. A site that shields work whose failure it handles itself
-    must not do that. Here the inner's exception is marked retrieved when the caller is gone, so
-    nothing is reported then or when the inner is collected; a later ``await`` of the inner
-    still raises it.
+    must not do that. Here the inner's exception is marked retrieved when it fails, so nothing is
+    reported then or when the inner is collected: a caller that is still waiting gets it, and when
+    every caller has been cancelled one shared function marks it retrieved. A later ``await`` of
+    the inner still raises it.
+
+    A cancelled wait removes its own callback from a pending inner, as ``asyncio.shield`` does,
+    and leaves that one shared function in its place, so any number of cancelled waits leave at
+    most one callback of this helper on the inner.
+
+    The helper is used on every Python version because it also stops "exception was never
+    retrieved" for a shielded failure nobody awaits, so it is not a workaround to remove after
+    3.14.8.
     """
     inner = asyncio.ensure_future(arg)
     if inner.done():
@@ -109,7 +125,17 @@ def shield_quietly(arg: Awaitable[T]) -> asyncio.Future[T]:
         else:
             outer.set_result(inner.result())
 
+    def _outer_done(outer: asyncio.Future[T]) -> None:
+        if inner.done():
+            return
+        # The caller is gone and the inner is still pending. Removing the shared function first
+        # keeps it from being added a second time, however many waits are cancelled.
+        inner.remove_done_callback(_inner_done)
+        inner.remove_done_callback(_mark_exception_retrieved)
+        inner.add_done_callback(_mark_exception_retrieved)
+
     inner.add_done_callback(_inner_done)
+    outer.add_done_callback(_outer_done)
     return outer
 
 

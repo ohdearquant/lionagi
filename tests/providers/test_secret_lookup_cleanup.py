@@ -652,6 +652,79 @@ async def test_terminate_failure_still_drains_waits_and_closes_stdout(
     }
 
 
+class _CleanupFailure(RuntimeError):
+    """Stands for any error a cleanup can raise."""
+
+
+def _warnings(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.name == secret_lookup.logger.name and record.levelno >= logging.WARNING
+    ]
+
+
+async def test_cleanup_failing_after_the_caller_was_cancelled_is_logged_by_type_only(caplog):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def failing_cleanup():
+        started.set()
+        await release.wait()
+        raise _CleanupFailure(_SECRET)
+
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    caller = asyncio.ensure_future(secret_lookup._await_cleanup(failing_cleanup()))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    caller.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, timeout=5.0)
+
+    records = _warnings(caplog)
+    assert len(records) == 1
+    assert "_CleanupFailure" in records[0].getMessage()
+    assert _SECRET not in records[0].getMessage()
+    assert _SECRET not in caplog.text
+    assert not records[0].exc_info
+
+
+@pytest.mark.parametrize("path", ["ordinary", "strict"])
+async def test_lookup_cancelled_during_a_failing_cleanup_logs_the_failure_once_by_type(
+    install_fake, monkeypatch, caplog, path
+):
+    monkeypatch.setattr(secret_lookup, "_REAP_TIMEOUT_SECONDS", 0.5)
+    proc = install_fake(
+        _Child(
+            stall_read=True,
+            stall_wait=False,
+            overflow=path == "strict",
+            fail_on="wait",
+            hold_failure=True,
+        )
+    )
+    caplog.set_level(logging.DEBUG, logger=secret_lookup.logger.name)
+    bound = 10.0
+    task = asyncio.create_task(_lookup(path, proc))
+    await asyncio.wait_for(proc.killed.wait(), timeout=bound)
+    await asyncio.wait_for(proc.stdout.drain_started.wait(), timeout=bound)
+    await asyncio.wait_for(proc.wait_started.wait(), timeout=bound)
+    task.cancel()
+    await asyncio.sleep(0)
+    proc.failure_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=bound)
+
+    records = _warnings(caplog)
+    assert [record.getMessage() for record in records] == [
+        "secret lookup cleanup failed after cancellation (OSError)"
+    ]
+    assert not records[0].exc_info
+    assert _SECRET not in caplog.text
+
+
 @pytest.mark.parametrize("ignore_drain_failure", [False, True])
 async def test_terminate_failure_is_raised_once_the_child_is_reaped(
     install_fake, monkeypatch, ignore_drain_failure
