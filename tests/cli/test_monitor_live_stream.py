@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from lionagi.cli import monitor
+from lionagi.cli import _runs, monitor
 from lionagi.state import db as db_mod
 from lionagi.state.db import StateDB
 
@@ -34,8 +34,10 @@ def test_stream_tail_renders_normalized_text_and_keeps_legacy_shapes(tmp_path):
             {"type": "thinking", "content": "private reasoning", "text": "hidden thinking"},
             {"type": "tool_use", "content": "private input", "text": "hidden tool"},
             {"type": "tool_result", "tool_output": {"text": "private output"}},
-            {"delta": {"text": "legacy delta"}},
+            {"type": "content_block_delta", "delta": {"text": "legacy delta"}},
             {"text": "legacy text"},
+            {"type": "text", "text": "legacy typed text"},
+            {"type": "text", "content": "fallback text", "serialization_error": "unserializable"},
             {"type": "text", "content": "A" * 140},
         ],
     )
@@ -44,6 +46,8 @@ def test_stream_tail_renders_normalized_text_and_keeps_legacy_shapes(tmp_path):
         "normalized text",
         "legacy delta",
         "legacy text",
+        "legacy typed text",
+        "fallback text",
         "A" * 120,
     ]
 
@@ -61,7 +65,8 @@ async def test_detail_view_reads_the_live_run_and_keeps_legacy_fallback(
     monkeypatch.setattr(
         db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
     )
-    monkeypatch.setattr(monitor, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(_runs, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(monitor, "RUNS_ROOT", runs_root, raising=False)
     monkeypatch.setattr(monitor, "_stdout_is_tty", lambda: False)
 
     session_id = str(uuid.uuid4())
@@ -121,3 +126,82 @@ async def test_detail_view_reads_the_live_run_and_keeps_legacy_fallback(
     assert "hidden private reasoning" not in output
     assert "hidden tool input" not in output
     assert "wrong session directory" not in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view", ["session", "play"])
+@pytest.mark.parametrize(
+    "kind", ["empty", "dotdot", "traversal", "absolute", "nul", "linked-out", "linked-alias"]
+)
+async def test_present_invalid_or_linked_run_id_never_falls_back(tmp_path, monkeypatch, view, kind):
+    db_path = tmp_path / "state.db"
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setattr(_runs, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(monitor, "RUNS_ROOT", runs_root, raising=False)
+    monkeypatch.setattr(monitor, "_stdout_is_tty", lambda: False)
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(
+        db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
+    )
+    session_id = str(uuid.uuid4())
+    branch_id = str(uuid.uuid4())
+    _write_live_buffer(runs_root / session_id, branch_id, [{"text": "wrong legacy fallback"}])
+    outside = tmp_path / "outside"
+    _write_live_buffer(outside, branch_id, [{"text": "wrong external target"}])
+    other_run = runs_root / "other-run"
+    _write_live_buffer(other_run, branch_id, [{"text": "wrong aliased target"}])
+    (runs_root / "link-out").symlink_to(outside, target_is_directory=True)
+    (runs_root / "link-alias").symlink_to(other_run, target_is_directory=True)
+    run_id = {
+        "empty": "",
+        "dotdot": "..",
+        "traversal": "../outside",
+        "absolute": str(outside),
+        "nul": "bad\x00name",
+        "linked-out": "link-out",
+        "linked-alias": "link-alias",
+    }[kind]
+    async with StateDB(db_path) as db:
+        progression = str(uuid.uuid4())
+        await db.create_progression(progression)
+        await db.create_session(
+            {
+                "id": session_id,
+                "run_id": run_id,
+                "progression_id": progression,
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
+        if view == "session":
+            output = await monitor._detail_session(db, await db.get_session(session_id))
+        else:
+            show_id, play_id = str(uuid.uuid4()), str(uuid.uuid4())
+            await db.create_show(
+                {"id": show_id, "topic": "fixture", "status": "active", "show_dir": str(tmp_path)}
+            )
+            await db.create_play(
+                {
+                    "id": play_id,
+                    "show_id": show_id,
+                    "name": "fixture-play",
+                    "status": "running",
+                    "session_id": session_id,
+                    "started_at": time.time(),
+                }
+            )
+            output = await monitor._detail_play(db, await db.get_play(play_id))
+    assert "wrong legacy fallback" not in output
+    assert "wrong external target" not in output
+    assert "wrong aliased target" not in output
+
+
+def test_missing_run_id_uses_session_id_but_invalid_present_id_does_not(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(_runs, "RUNS_ROOT", runs)
+    (runs / "session").mkdir()
+    assert monitor._session_run_dir("session", None) == (runs / "session").resolve()
+    for invalid in ("", ".", "..", "bad/name", "bad\x00name", 42):
+        assert monitor._session_run_dir("session", invalid) is None

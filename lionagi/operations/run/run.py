@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -17,6 +18,7 @@ from pydantic import JsonValue
 
 from lionagi._provider_errors import WorkerLivenessError, classify_provider_error
 from lionagi.ln import acreate_path, json_dumps
+from lionagi.ln._json_dump import _to_json_value
 from lionagi.ln.concurrency import current_time, fail_after, run_sync
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
@@ -29,6 +31,7 @@ from lionagi.service._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 from lionagi.service.connections import AgenticEndpoint
 from lionagi.service.connections.agentic_endpoint import _UNHELD_SESSION_TEXT
+from lionagi.service.types.stream_chunk import StreamChunk
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
@@ -69,15 +72,63 @@ async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> No
     await run_sync(partial(os.replace, str(tmp_fp), str(fp)))
 
 
-async def _append_chunk(buffer_path, chunk) -> None:
-    """Append one streamed chunk to the live JSONL buffer.
+def _buffer_text(value: Any) -> str | None:
+    """Extract a plain string without invoking a subclass's conversion hook."""
+    return str.__str__(value) if isinstance(value, str) else None
 
-    A non-finite float is refused here rather than written as `null`, which
-    a replay reader can't tell apart from a genuine null.
-    """
-    line = json_dumps(chunk.to_dict(), check_non_finite=True) + "\n"
+
+async def _append_chunk(buffer_path, chunk) -> None:
+    """Append a strict JSON projection, retaining text if serialization fails."""
+    payload = None
+    try:
+        payload = chunk if isinstance(chunk, StreamChunk) else chunk.to_dict()
+        line = json_dumps(_to_json_value(payload))
+    except Exception as exc:
+        nonfinite = (
+            type(exc) is ValueError
+            and exc.args
+            and type(exc.args[0]) is str
+            and exc.args[0].startswith("cannot serialize non-finite float at ")
+        )
+        failure = "non-finite float" if nonfinite else "unserializable value"
+        if isinstance(chunk, StreamChunk):
+            kind = _buffer_text(chunk.type) or "error"
+            content = _buffer_text(chunk.content) or ""
+            fallback = {"type": kind, "content": content, "serialization_error": failure}
+        else:
+            data = payload if type(payload) is dict else {}
+            if payload is None:
+                # A failing legacy adapter may still expose its text directly.
+                # Read only these fields and never call its serializer again.
+                for name in ("type", "content", "text"):
+                    try:
+                        value = getattr(chunk, name, None)
+                    except Exception:
+                        value = None
+                    if (value := _buffer_text(value)) is not None:
+                        data[name] = value
+            kind = _buffer_text(data.get("type"))
+            text = _buffer_text(data.get("content"))
+            if text is None:
+                text = _buffer_text(data.get("text"))
+            if text is None and type(data.get("delta")) is dict:
+                text = _buffer_text(data["delta"].get("text"))
+            text = text or ""
+            if kind in (
+                "system",
+                "thinking",
+                "text",
+                "tool_use",
+                "tool_result",
+                "result",
+                "error",
+            ):
+                fallback = {"type": kind, "content": text, "serialization_error": failure}
+            else:
+                fallback = {"text": text, "serialization_error": failure}
+        line = json.dumps(fallback, ensure_ascii=True, separators=(",", ":"))
     async with await anyio.open_file(buffer_path, "a") as f:
-        await f.write(line)
+        await f.write(line + "\n")
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
@@ -735,10 +786,13 @@ async def run(
 
         try:
             try:
+                if bfp is not None:
+                    async with await anyio.open_file(bfp, "w"):
+                        pass
                 async for chunk in stream_gen:
                     # The buffer holds the chunks this loop reads, so a send the stream
                     # discards (see _stream_resending_unheld_session) never reaches it.
-                    if bfp is not None and hasattr(chunk, "to_dict"):
+                    if bfp is not None:
                         await _append_chunk(bfp, chunk)
                     if branch._hooks is not None:
                         await emit_api_stream_chunk(branch, model, chunk)

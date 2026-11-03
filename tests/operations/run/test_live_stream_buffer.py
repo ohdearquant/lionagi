@@ -136,12 +136,83 @@ async def test_append_serializes_a_real_stream_chunk(tmp_path):
     assert rows[0]["metadata"] == {"step": 1}
 
 
+@pytest.mark.asyncio
+async def test_append_preserves_every_normalized_chunk_field(tmp_path):
+    path = tmp_path / "buffer.jsonl"
+    chunk = StreamChunk(
+        type="tool_use",
+        content="summary",
+        tool_name="lookup",
+        tool_id="call-1",
+        tool_input={"terms": ["one", "two"]},
+        tool_output={"count": 2},
+        is_error=True,
+        is_delta=True,
+        metadata={"nested": {"step": 1}},
+    )
+    await _append_chunk(path, chunk)
+    assert json.loads(path.read_text()) == {
+        "type": "tool_use",
+        "content": "summary",
+        "tool_name": "lookup",
+        "tool_id": "call-1",
+        "tool_input": {"terms": ["one", "two"]},
+        "tool_output": {"count": 2},
+        "is_error": True,
+        "is_delta": True,
+        "metadata": {"nested": {"step": 1}},
+    }
+
+
 class _LegacyChunk:
     def __init__(self, payload):
         self.payload = payload
 
     def to_dict(self):
         return self.payload
+
+
+@pytest.mark.asyncio
+async def test_raising_legacy_serializer_keeps_accessible_text(tmp_path):
+    class BrokenLegacyChunk:
+        type = "text"
+        content = "still visible"
+
+        def to_dict(self):
+            raise ValueError("no projection")
+
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(path, BrokenLegacyChunk())
+    row = json.loads(path.read_text())
+    assert row["type"] == "text"
+    assert row["content"] == "still visible"
+    assert row["serialization_error"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_keeps_string_subclass_text_without_calling_its_str(tmp_path):
+    class Text(str):
+        def __str__(self):
+            raise AssertionError("must not call user conversion")
+
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(
+        path, StreamChunk(type="text", content=Text("visible"), metadata={"bad": object()})
+    )
+    assert json.loads(path.read_text())["content"] == "visible"
+
+
+@pytest.mark.asyncio
+async def test_reader_displays_the_actual_nonfinite_fallback(tmp_path):
+    from lionagi.cli.monitor import _stream_tail
+
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    await _append_chunk(
+        stream / "branch.buffer.jsonl",
+        StreamChunk(type="text", content="visible fallback", metadata={"bad": float("nan")}),
+    )
+    assert _stream_tail(tmp_path, "branch") == ["visible fallback"]
 
 
 @pytest.mark.asyncio
@@ -152,16 +223,178 @@ async def test_append_keeps_legacy_to_dict_serialization(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["text", {"text": "value"}, ["text", 7], 7, 1.25])
+async def test_plain_legacy_values_keep_their_original_json_bytes(tmp_path, value):
+    from lionagi.ln import json_dumps
+
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(path, _LegacyChunk(value))
+    assert path.read_text() == json_dumps(value, check_non_finite=True) + "\n"
+
+
+@pytest.mark.asyncio
+async def test_leaf_with_both_adapters_uses_to_dict_once(tmp_path):
+    class Both:
+        calls = []
+
+        def to_dict(self):
+            self.calls.append("to_dict")
+            return {"chosen": "to_dict"}
+
+        def model_dump(self):
+            self.calls.append("model_dump")
+            return {"chosen": "model_dump"}
+
+    leaf = Both()
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(path, StreamChunk(type="text", content="visible", metadata={"leaf": leaf}))
+    assert json.loads(path.read_text())["metadata"]["leaf"] == {"chosen": "to_dict"}
+    assert leaf.calls == ["to_dict"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_fragment_gets_a_marked_fallback(tmp_path):
+    import orjson
+
+    path = tmp_path / "buffer.jsonl"
+    chunk = StreamChunk(type="text", content="visible", metadata={"bad": orjson.Fragment(b"NaN")})
+    await _append_chunk(path, chunk)
+    row = json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(value))
+    assert row["content"] == "visible"
+    assert row["serialization_error"]
+
+
+@pytest.mark.asyncio
+async def test_append_propagates_file_write_errors(tmp_path, monkeypatch):
+    import anyio
+
+    monkeypatch.setattr(anyio, "open_file", AsyncMock(side_effect=OSError("disk")))
+    with pytest.raises(OSError, match="disk"):
+        await _append_chunk(tmp_path / "buffer.jsonl", StreamChunk(type="text", content="visible"))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["legacy", "normalized"])
-async def test_append_rejects_nonfinite_without_creating_a_file(tmp_path, kind):
+@pytest.mark.parametrize(
+    "bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "negative-inf"]
+)
+async def test_append_writes_a_marked_text_fallback_for_nonfinite_values(tmp_path, kind, bad):
     path = tmp_path / "buffer.jsonl"
     chunk = (
-        _LegacyChunk({"usage": {"rate": float("nan")}})
+        _LegacyChunk({"text": "visible", "usage": {"rate": bad}})
         if kind == "legacy"
-        else StreamChunk(type="result", metadata={"usage": {"rate": float("nan")}})
+        else StreamChunk(type="text", content="visible", metadata={"usage": {"rate": bad}})
     )
-    with pytest.raises(ValueError, match="non-finite float"):
-        await _append_chunk(path, chunk)
+    await _append_chunk(path, chunk)
+    row = json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(value))
+    assert row.get("content", row.get("text")) == "visible"
+    assert "non-finite" in row["serialization_error"].lower()
+    assert "usage" not in row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_type"),
+    [
+        ({"delta": {"text": "visible"}, "bad": object()}, None),
+        ({"type": "text", "content": "visible", "bad": object()}, "text"),
+        ({"type": "thinking", "content": "visible", "bad": object()}, "thinking"),
+    ],
+)
+async def test_legacy_fallback_preserves_text_and_known_chunk_type(
+    tmp_path, payload, expected_type
+):
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(path, _LegacyChunk(payload))
+    row = json.loads(path.read_text())
+    assert row.get("content", row.get("text")) == "visible"
+    assert row.get("type") == expected_type
+    assert row["serialization_error"]
+
+
+@pytest.mark.asyncio
+async def test_append_marks_an_unserializable_leaf_and_continues(tmp_path):
+    class Unserializable:
+        def __repr__(self):
+            raise AssertionError("must not render the leaf")
+
+    path = tmp_path / "buffer.jsonl"
+    await _append_chunk(
+        path, StreamChunk(type="text", content="visible", metadata={"x": Unserializable()})
+    )
+    await _append_chunk(path, StreamChunk(type="text", content="next"))
+    rows = [
+        json.loads(line, parse_constant=lambda value: pytest.fail(value))
+        for line in path.read_text().splitlines()
+    ]
+    assert len(rows) == 2
+    assert rows[0]["type"] == "text" and rows[0]["content"] == "visible"
+    assert rows[0]["serialization_error"]
+    assert rows[1]["content"] == "next"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["legacy", "normalized"])
+async def test_stateful_leaf_is_converted_once_before_nonfinite_fallback(tmp_path, kind):
+    class ChangingLeaf:
+        calls = 0
+
+        def to_dict(self):
+            self.calls += 1
+            return {"rate": float("nan") if self.calls == 1 else 1.0}
+
+    leaf = ChangingLeaf()
+    path = tmp_path / "buffer.jsonl"
+    chunk = (
+        _LegacyChunk({"text": "visible", "metadata": {"leaf": leaf}})
+        if kind == "legacy"
+        else StreamChunk(type="text", content="visible", metadata={"leaf": leaf})
+    )
+    await _append_chunk(path, chunk)
+    row = json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(value))
+    assert leaf.calls == 1
+    assert row.get("content", row.get("text")) == "visible"
+    assert "non-finite" in row["serialization_error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_existing_buffer_is_truncated_before_the_first_chunk(tmp_path):
+    started, release, written, finish = (asyncio.Event() for _ in range(4))
+    branch = Branch()
+    branch.chat_model = _paused_model(written, finish)
+
+    async def stream(api_call=None):
+        started.set()
+        await release.wait()
+        yield StreamChunk(type="text", content="fresh")
+        written.set()
+        await finish.wait()
+
+    branch.chat_model.stream = stream
+    run_dir = _run_dir(tmp_path)
+    path = run_dir.stream_buffer_path(str(branch.id))
+    path.parent.mkdir(parents=True)
+    path.write_text('{"text":"stale"}\n')
+    gen = run(
+        branch,
+        "hello",
+        RunParam(
+            stream_persist=True, persist_dir=run_dir.stream_dir, snapshot_dir=run_dir.branches_dir
+        ),
+    )
+    assert isinstance(await gen.__anext__(), Instruction)
+    collector = asyncio.create_task(_collect(gen))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert path.read_text() == ""
+        release.set()
+        await asyncio.wait_for(written.wait(), 5)
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        assert [row["content"] for row in rows] == ["fresh"]
+    finally:
+        release.set()
+        finish.set()
+        await asyncio.wait_for(collector, 5)
     assert not path.exists()
 
 

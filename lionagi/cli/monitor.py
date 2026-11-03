@@ -20,7 +20,7 @@ from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
-from ._runs import RUNS_ROOT
+from ._runs import _resolved_run_state_dir
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 from ._util import pid_alive as _pid_alive_int
 
@@ -279,6 +279,11 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
     return entity_type, row
 
 
+def _session_run_dir(session_id: str, run_id: Any) -> Path | None:
+    """Resolve the recorded run, using the session ID only for legacy rows."""
+    return _resolved_run_state_dir(session_id if run_id is None else run_id)
+
+
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     """Return the last N lines from a stream buffer file."""
     buf_path = run_dir / "stream" / f"{branch_id}.buffer.jsonl"
@@ -293,8 +298,14 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
         for line in tail:
             try:
                 obj = _json.loads(line)
-                # Claude stream chunks carry 'delta.text' or 'text'
-                text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
+                kind = obj.get("type")
+                if kind in ("system", "thinking", "tool_use", "tool_result", "result", "error"):
+                    continue
+                if kind == "text" and isinstance(obj.get("content"), str):
+                    text = obj["content"]
+                else:
+                    # Older records use delta.text or text, sometimes with their own type.
+                    text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
                 if text:
                     texts.append(text[:120])
             except (ValueError, AttributeError):
@@ -610,8 +621,8 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
         lines.append("")
         lines.extend(_render_branch_lines(branch_rows))
 
-    run_dir = RUNS_ROOT / sess["id"]
-    if run_dir.exists():
+    run_dir = _session_run_dir(sess["id"], sess.get("run_id"))
+    if run_dir is not None and run_dir.exists():
         branches_dir = run_dir / "branches"
         if branches_dir.exists():
             branch_files = sorted(
@@ -876,7 +887,7 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     session_id = play.get("session_id")
     if session_id:
         srow = await db.fetch_one(
-            "SELECT status, model, provider, effort FROM sessions WHERE id = ?",
+            "SELECT status, model, provider, effort, run_id FROM sessions WHERE id = ?",
             (session_id,),
         )
         if srow:
@@ -893,8 +904,8 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
                 lines.append("")
                 lines.extend(_render_branch_lines(branch_rows, indent="    "))
 
-            run_dir = RUNS_ROOT / session_id
-            if run_dir.exists():
+            run_dir = _session_run_dir(session_id, srow["run_id"])
+            if run_dir is not None and run_dir.exists():
                 branches_dir = run_dir / "branches"
                 if branches_dir.exists():
                     branch_files = sorted(
