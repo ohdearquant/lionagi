@@ -95,7 +95,7 @@ test-python() {
   # early end loud either way by checking distinct test IDs.
   local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
-  [ ${#targets[@]} -gt 0 ] || targets=(tests/)
+  [ ${#targets[@]} -gt 0 ] || targets=(tests/ lionhub/tests/)
   local junit
   junit="$(_junit_report_path)"
   local rc=0
@@ -116,7 +116,7 @@ test-python-cov() {
   # --max-worker-restart and the coverage check: see test-python.
   local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
-  [ ${#targets[@]} -gt 0 ] || targets=(tests/)
+  [ ${#targets[@]} -gt 0 ] || targets=(tests/ lionhub/tests/)
   local junit
   junit="$(_junit_report_path)"
   local rc=0
@@ -152,8 +152,8 @@ test-python-quarantine() {
     -m flaky_quarantine \
     --disable-warnings \
     -o junit_family=legacy --junitxml="$junit" \
-    tests/ || rc=$?
-  _check_suite_coverage "$junit" "flaky_quarantine" tests/ || rc=1
+    tests/ lionhub/tests/ || rc=$?
+  _check_suite_coverage "$junit" "flaky_quarantine" tests/ lionhub/tests/ || rc=1
   _discard_temporary_junit "$junit"
   return $rc
 }

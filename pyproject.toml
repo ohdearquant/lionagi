@@ -202,6 +202,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
     "UP045",  # X | None annotation (3.10 compat)
     "N",      # naming relaxed in tests
 ]
+"lionhub/tests/**" = ["S", "A", "B", "E402", "E721", "E731", "F401", "F601", "F841", "UP045", "N"]
 "cookbooks/**" = ["S101", "B904", "N"]
 "scripts/**" = ["S", "E731"]
 # LOG_CONFIG property mirrors the legacy Settings.Config.LOG attribute name.
@@ -242,7 +243,7 @@ addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n aut
 # pytest_asyncio.fixture.
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
-testpaths = ["tests"]
+testpaths = ["tests", "lionhub/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

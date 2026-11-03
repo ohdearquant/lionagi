@@ -8,7 +8,8 @@
   `lionagi.orchestration`; #3753 moves `lionagi.engines`; #3754 moves `lionagi.dispatch` and
   `lionagi.work`, with ADR-0001 Amendment 2 for D5's class paths. `integrations` is held (D6). Wave 2
   has begun: #3769 moves `lionagi.mcp` to `lionhub.serve.mcp` (Amendment 1 A4 item 1). The rest of
-  wave 2, wave 3 (D6) and the removal release (D4) remain.
+  wave 2, wave 3 (D6) and the removal release (D4) remain. Tests covering only the packages already
+  moved are under `lionhub/tests`, and `lionhub/README.md` documents the current layout.
 - **Area**: governance
 - **Date**: 2026-10-25
 - **Relations**: follows ADR-0122 D1 (layer order), D7's interim single-distribution rule and
@@ -794,6 +795,7 @@ Every move change carries:
 6. Citations of moved files in records a test checks against the code (ADR-0120's outbox lines) moved
    to the new path. Other records, archived records and recorded benchmark runs keep the paths they
    were written with.
+7. The maintainer's instruction of 2026-11-03: "as you move stuff into Lion Hub, I would like you to also migrate its tests into lionhub/ , additionally write a readme as well". Each package move carries that package's tests into `lionhub/tests` in the same change, and `lionhub/README.md` stays current with the layout and the MOVED table.
 
 `lionhub`'s paths become public with the first release that ships them. Until then they can change on
 the development line at no cost to anyone; from then on they are kept until 2.0, and the table maps

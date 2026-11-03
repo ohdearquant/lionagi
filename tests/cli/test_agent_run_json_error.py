@@ -22,7 +22,7 @@ from lionagi.cli._runs import (
 )
 from lionagi.state.reasons import RunReasons
 from tests.cli.test_agent_context_from import _wire_agent_stubs
-from tests.providers.test_claude_code_refusal import REFUSAL
+from tests.providers._refusal_fixture import REFUSAL
 
 # The store error teardown keeps when a store read or write fails it.
 _LOCKED = sqlite3.OperationalError("database is locked")
