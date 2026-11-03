@@ -555,7 +555,7 @@ lines:
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
   (`lionagi/operations/chat/_prepare.py:202`, called from `lionagi/operations/chat/chat.py:68`
-  and `lionagi/operations/run/run.py:580`), and `prepare_messages_for_chat()` still stands
+  and `lionagi/operations/run/run.py:636`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
@@ -568,7 +568,7 @@ lines:
   one more block (`:232-233`, `:529-530`). The prompt therefore shows the kept
   state alone and never says material was dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
-  and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
+  and render per session (`lionagi/cli/monitor.py:698-709`), and `branch.last_context_report`
   exposes one turn's names (`lionagi/session/branch.py:298-310`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;

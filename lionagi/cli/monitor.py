@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import re
@@ -13,6 +14,7 @@ import time
 from functools import cache
 from pathlib import Path
 from typing import Any
+from unicodedata import category
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
@@ -20,7 +22,7 @@ from lionagi.ln.concurrency import sleep
 from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
-from ._runs import RUNS_ROOT
+from ._runs import _resolved_run_state_dir
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
 from ._util import pid_alive as _pid_alive_int
 
@@ -279,6 +281,18 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
     return entity_type, row
 
 
+def _session_run_dir(session_id: str, run_id: Any) -> Path | None:
+    """Resolve the recorded run, using the session ID only for legacy rows."""
+    try:
+        return _resolved_run_state_dir(session_id if run_id is None else run_id)
+    except RuntimeError:
+        return None  # pathlib reports symlink loops as RuntimeError on Python < 3.13.
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+        raise
+
+
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     """Return the last N lines from a stream buffer file."""
     buf_path = run_dir / "stream" / f"{branch_id}.buffer.jsonl"
@@ -287,19 +301,34 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     try:
         import json as _json
 
-        lines = buf_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        tail = lines[-n_lines:]
+        with buf_path.open(encoding="utf-8", errors="replace", newline="") as stream:
+            data = stream.read()
+        tail = data.removesuffix("\n").split("\n")[-n_lines:] if data else []
+        if data and not data.endswith("\n"):
+            tail = tail[:-1]
         texts: list[str] = []
-        for line in tail:
+        for line in (line.removesuffix("\r") for line in tail):
             try:
                 obj = _json.loads(line)
-                # Claude stream chunks carry 'delta.text' or 'text'
-                text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
+                if obj.get("_lionagi_stream_chunk") is True:
+                    if obj.get("type") != "text":
+                        continue
+                    text = obj.get("content") if isinstance(obj.get("content"), str) else ""
+                else:
+                    # Older records use delta.text or text, sometimes with their own type.
+                    text = (obj.get("delta") or {}).get("text") or obj.get("text") or ""
                 if text:
                     texts.append(text[:120])
             except (ValueError, AttributeError):
                 texts.append(line[:120])
-        return texts
+        return [
+            "".join(
+                char
+                for char in text
+                if char == "\t" or category(char) not in {"Cc", "Cf", "Zl", "Zp"}
+            )
+            for text in texts
+        ]
     except OSError:
         return []
 
@@ -610,8 +639,8 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
         lines.append("")
         lines.extend(_render_branch_lines(branch_rows))
 
-    run_dir = RUNS_ROOT / sess["id"]
-    if run_dir.exists():
+    run_dir = _session_run_dir(sess["id"], sess.get("run_id"))
+    if run_dir is not None and run_dir.exists():
         branches_dir = run_dir / "branches"
         if branches_dir.exists():
             branch_files = sorted(
@@ -876,7 +905,7 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     session_id = play.get("session_id")
     if session_id:
         srow = await db.fetch_one(
-            "SELECT status, model, provider, effort FROM sessions WHERE id = ?",
+            "SELECT status, model, provider, effort, run_id FROM sessions WHERE id = ?",
             (session_id,),
         )
         if srow:
@@ -893,8 +922,8 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
                 lines.append("")
                 lines.extend(_render_branch_lines(branch_rows, indent="    "))
 
-            run_dir = RUNS_ROOT / session_id
-            if run_dir.exists():
+            run_dir = _session_run_dir(session_id, srow["run_id"])
+            if run_dir is not None and run_dir.exists():
                 branches_dir = run_dir / "branches"
                 if branches_dir.exists():
                     branch_files = sorted(
