@@ -57,10 +57,25 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
                     resource="DataFrame",
                 )
             if required_columns:
-                missing_cols = set(required_columns) - set(df.columns)
+                columns = df.columns
+                missing_cols = set(required_columns) - set(columns)
                 if missing_cols:
+                    column_count = len(columns)
+                    required_count = len(required_columns)
+                    # The data dict and its two lists consume three nodes.
+                    available = 128 - 3
+                    shown_columns = min(column_count, available)
+                    shown_required = min(required_count, available - shown_columns)
+                    details = {"columns_count": column_count, "required_count": required_count}
+                    if shown_columns < column_count or shown_required < required_count:
+                        details["truncated"] = True
                     raise AdapterValidationError(
                         f"DataFrame is missing {len(missing_cols)} required column(s)",
+                        data={
+                            "columns": ["<redacted>"] * shown_columns,
+                            "required": ["<redacted>"] * shown_required,
+                        },
+                        details=details,
                     )
         except (AdapterResourceError, AdapterValidationError):
             raise

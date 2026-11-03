@@ -246,12 +246,86 @@ def test_dataframe_missing_columns_do_not_expose_names_or_data():
     pd = pytest.importorskip("pandas")
     from lionagi.adapters.pandas_ import DataFrameAdapter
 
-    frame = pd.DataFrame([{_MARKER: "value"}])
+    frame = pd.DataFrame([{_MARKER: "value", _MARKER + "-other": "value"}])
     with pytest.raises(AdapterValidationError) as captured:
-        DataFrameAdapter.from_obj(_Validated, frame, required_columns=[_MARKER + "-absent"])
+        DataFrameAdapter.from_obj(
+            _Validated,
+            frame,
+            required_columns=[_MARKER, _MARKER + "-absent", _MARKER + "-also-absent"],
+        )
     if _contains_marker(captured.value):
         pytest.fail("missing-column error exposed column names", pytrace=False)
-    assert "1" in str(captured.value)
+    assert captured.value.data == {
+        "columns": ["<redacted>"] * 2,
+        "required": ["<redacted>"] * 3,
+    }
+    assert captured.value.details["columns_count"] == 2
+    assert captured.value.details["required_count"] == 3
+    assert not captured.value.details.get("truncated", False)
+    assert "2" in captured.value.message
+
+
+def test_dataframe_missing_column_shape_without_optional_dependency(monkeypatch):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    class Frame:
+        empty = False
+        columns = [_MARKER, _MARKER + "-other"]
+
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+    with pytest.raises(AdapterValidationError) as captured:
+        pandas_adapter.DataFrameAdapter._validate_dataframe_structure(
+            Frame(), True, [_MARKER, _MARKER + "-absent"]
+        )
+    assert captured.value.data == {
+        "columns": ["<redacted>"] * 2,
+        "required": ["<redacted>"] * 2,
+    }
+    if _contains_marker(captured.value):
+        pytest.fail("missing-column error exposed column names", pytrace=False)
+
+
+def test_dataframe_missing_columns_bounded_with_exact_counts(monkeypatch):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    class Frame:
+        empty = False
+        columns = [f"{_MARKER}-column-{i}" for i in range(100)]
+
+    required = [f"{_MARKER}-required-{i}" for i in range(100)]
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+    with pytest.raises(AdapterValidationError) as captured:
+        pandas_adapter.DataFrameAdapter._validate_dataframe_structure(Frame(), True, required)
+    error = captured.value
+    assert set(error.data) == {"columns", "required"}
+    assert type(error.data["columns"]) is list
+    assert type(error.data["required"]) is list
+    assert all(x == "<redacted>" for x in error.data["columns"] + error.data["required"])
+    assert 1 + 2 + sum(len(v) for v in error.data.values()) <= 128
+    assert error.details["columns_count"] == 100
+    assert error.details["required_count"] == 100
+    assert error.details["truncated"] is True
+    if _contains_marker(error):
+        pytest.fail("bounded error exposed column names", pytrace=False)
+
+
+@pytest.mark.parametrize("required_count,truncated", [(124, False), (125, True)])
+def test_dataframe_missing_columns_budget_boundary(monkeypatch, required_count, truncated):
+    from lionagi.adapters import pandas_ as pandas_adapter
+
+    class Frame:
+        empty = False
+        columns = ["present"]
+
+    required = [f"absent-{i}" for i in range(required_count)]
+    monkeypatch.setattr(pandas_adapter, "_require_pandas", lambda: None)
+    with pytest.raises(AdapterValidationError) as captured:
+        pandas_adapter.DataFrameAdapter._validate_dataframe_structure(Frame(), True, required)
+    error = captured.value
+    assert len(error.data["columns"]) == 1
+    assert len(error.data["required"]) == min(required_count, 124)
+    assert error.details["required_count"] == required_count
+    assert error.details.get("truncated", False) is truncated
 
 
 @pytest.mark.parametrize("stage", ["structure", "conversion"])
