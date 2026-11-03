@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 import toml
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -54,6 +55,7 @@ from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
+    _resolve_cli_path,
     build_declarative_cli_args,
     declarative_cli_flags,
     discover_cli,
@@ -1141,6 +1143,8 @@ def _linked_worktree_git_writable_roots(cwd: Path) -> tuple[Path, ...]:
 class CodexCodeRequest(BaseModel):
     """Configuration + prompt for an OpenAI Codex CLI invocation."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Codex CLI")
 
@@ -1684,38 +1688,39 @@ class CodexCodeRequest(BaseModel):
         exist, or that this process cannot list and enter leaves the walk with
         nothing it can read, so a caller cannot tell which codex configs apply
         and containment cannot be enforced. Each is refused before the request
-        is used, naming the directory and the reason, chained from the error
-        the filesystem raised.
+        is used, naming the reason without retaining the path or filesystem error.
         """
         if not self._contains_account_integrations():
             return
-        repo = str(self.repo)
+        unresolved = False
         try:
             self.repo.resolve()
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError):
+            unresolved = True
+        if unresolved:
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory "
-                f"{repo!r}: it cannot be resolved ({exc})"
-            ) from exc
-        # The same validation the spawn path uses, so the refusal names the
-        # directory the same way and is chained from the value error it raises.
+                "contain_account_integrations cannot use the working directory: it cannot be resolved"
+            ) from None
+        unavailable = False
         try:
             resolve_cli_workspace(self.repo, None)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError):
+            unavailable = True
+        if unavailable:
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory: {exc}"
-            ) from exc
+                "contain_account_integrations cannot use the working directory: it is unavailable"
+            ) from None
         if not os.access(self.repo, os.R_OK | os.X_OK):
             raise ContainmentRefusedError(
-                f"contain_account_integrations cannot use the working directory "
-                f"{repo!r}: this process cannot list and enter it"
+                "contain_account_integrations cannot use the working directory: "
+                "this process cannot list and enter it"
             )
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
         try:
-            repo_root = self.repo.resolve()
-        except RuntimeError:
+            repo_root = _resolve_cli_path(self.repo, "working directory")
+        except (RuntimeError, OSError):
             if self._contains_account_integrations():
                 # Deferred to __init__, which raises the refusal outside
                 # pydantic's validation and so keeps its own type.

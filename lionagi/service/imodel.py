@@ -6,11 +6,11 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import AsyncGenerator, Callable, Mapping
-from contextlib import nullcontext
+from contextlib import aclosing, nullcontext
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from lionagi._errors import CredentialMissingError, InputTokenCapError
 from lionagi.ln import is_coro_func, now_utc
@@ -40,6 +40,16 @@ if TYPE_CHECKING:
 
 # A request under this many counted tokens does not calibrate input_token_scale.
 _CALIBRATION_FLOOR = 4_000
+
+
+def _safe_validation_details(error: ValidationError) -> str:
+    """Count validation failures without rendering caller-controlled details."""
+    try:
+        count = ValidationError.error_count(error)
+    except Exception:
+        return "validation failed"
+    label = "error" if count == 1 else "errors"
+    return f"{count} validation {label}"
 
 
 def reported_input_tokens(usage: Any) -> int | None:
@@ -644,6 +654,17 @@ class iModel:  # noqa: N801
             self.provider_metadata["served_model"] = served_model
 
     async def stream(self, api_call=None, **kw) -> AsyncGenerator:
+        validation_details = None
+        try:
+            async with aclosing(self._stream_impl(api_call=api_call, **kw)) as chunks:
+                async for chunk in chunks:
+                    yield chunk
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
+        if validation_details is not None:
+            raise ValueError(f"Failed to stream API call: {validation_details}") from None
+
+    async def _stream_impl(self, api_call=None, **kw) -> AsyncGenerator:
         served_model = None
         # What the stream's events report about the request, for _calibrate_input_scale.
         usage: dict[str, Any] = {}
@@ -695,6 +716,8 @@ class iModel:  # noqa: N801
                     except Exception as e:
                         if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                             raise
+                        if isinstance(e, ValidationError):
+                            raise
                         raise ValueError(f"Failed to stream API call: {e}") from e
             else:
                 try:
@@ -713,6 +736,8 @@ class iModel:  # noqa: N801
                 except Exception as e:
                     if isinstance(e, CredentialMissingError) or self._is_routing_error(e):
                         raise
+                    if isinstance(e, ValidationError):
+                        raise
                     raise ValueError(f"Failed to stream API call: {e}") from e
         finally:
             # Runs on every exit from the point this generator owns the call: a
@@ -727,6 +752,8 @@ class iModel:  # noqa: N801
             if isinstance(stream_error, CredentialMissingError) or self._is_routing_error(
                 stream_error
             ):
+                raise stream_error from None
+            if isinstance(stream_error, ValidationError):
                 raise stream_error from None
             raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         if not failed and api_call.status == EventStatus.COMPLETED:
@@ -747,6 +774,16 @@ class iModel:  # noqa: N801
         self.input_token_scale = max(self.input_token_scale, reported / counted)
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
+        validation_details = None
+        try:
+            return await self._invoke_impl(api_call=api_call, **kw)
+        except ValidationError as exc:
+            validation_details = _safe_validation_details(exc)
+        if validation_details is not None:
+            raise ValueError(f"Failed to invoke API call: {validation_details}") from None
+
+    async def _invoke_impl(self, api_call: APICalling = None, **kw) -> APICalling:
+        validation_details = None
         try:
             restored_resume = None
             if api_call is None:
@@ -830,12 +867,17 @@ class iModel:  # noqa: N801
                 raise
             if api_call is not None:
                 self._store_served_model(api_call, None)
-            raise ValueError(f"Failed to invoke API call: {e}") from e
+            if isinstance(e, ValidationError):
+                validation_details = _safe_validation_details(e)
+            else:
+                raise ValueError(f"Failed to invoke API call: {e}") from e
         except BaseException:
             # Cancelled (a caller's timeout included) before any response was read.
             if api_call is not None:
                 self._store_served_model(api_call, None)
             raise
+        if validation_details is not None:
+            raise ValueError(f"Failed to invoke API call: {validation_details}") from None
 
     @property
     def is_cli(self) -> bool:

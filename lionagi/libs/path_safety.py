@@ -61,22 +61,22 @@ def check_path_safe(
     (incl. Windows drive-letter paths). Raises ValueError on any violation."""
     entry = value.lstrip("@") if strip_at else value
     if "\x00" in entry:
-        raise ValueError(f"{field_name} entry {value!r} contains NUL bytes")
+        raise ValueError(f"{field_name} contains NUL bytes")
     p = Path(entry)
     if reject_absolute and p.is_absolute():
         raise ValueError(
-            f"{field_name} entry {value!r} is an absolute path — "
+            f"{field_name} is an absolute path — "
             "only repo-relative paths inside the repository are allowed. "
             "Absolute paths can grant CLI access to arbitrary files."
         )
     if reject_absolute and len(entry) >= 2 and entry[1] == ":":
         raise ValueError(
-            f"{field_name} entry {value!r} is a Windows drive-letter path — "
+            f"{field_name} is a Windows drive-letter path — "
             "only repo-relative paths inside the repository are allowed."
         )
     if has_traversal(p):
         raise ValueError(
-            f"{field_name} entry {value!r} contains directory traversal ('..') — "
+            f"{field_name} contains directory traversal ('..') — "
             "only paths that remain inside the repository are allowed."
         )
     return value
@@ -129,15 +129,24 @@ def contain_path_in_root(
 ) -> str:
     """Resolve path against root, raise ValueError if it escapes."""
     entry = str(value).lstrip("@") if strip_at else str(value)
-    resolved = (root / entry).resolve()
+    resolution_error = None
+    try:
+        resolved = (root / entry).resolve()
+    except (OSError, RuntimeError) as exc:
+        resolution_error = type(exc)
+    if resolution_error is not None:
+        raise resolution_error(f"{field_name} path cannot be resolved") from None
     try:
         resolved.relative_to(root)
-    except ValueError as exc:
+    except ValueError:
+        outside = True
+    else:
+        outside = False
+    if outside:
         raise ValueError(
-            f"{field_name} entry {value!r} resolves to {resolved} which is "
-            f"outside the repository root {root} (possible symlink escape). "
+            f"{field_name} resolves outside the repository root (possible symlink escape). "
             "Only paths that remain inside the repository are allowed."
-        ) from exc
+        )
     return str(value)
 
 
@@ -159,7 +168,7 @@ def check_add_dir_safe(value: str, field_name: str) -> str:
     p = Path(value)
     if has_traversal(p):
         raise ValueError(
-            f"{field_name} entry {value!r} contains directory traversal ('..') — "
+            f"{field_name} contains directory traversal ('..') — "
             "use an explicit absolute path to grant access to directories outside "
             "the repository instead of relative traversal sequences."
         )
