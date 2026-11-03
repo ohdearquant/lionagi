@@ -73,7 +73,7 @@ def _check(base: str) -> int:
     try:
         if base == _git("rev-parse", "HEAD").decode("ascii").strip():
             print("Base is HEAD; the changed-path population is empty.")
-        paths = _git("diff", "--name-only", "-z", "--diff-filter=ACMR", base, "HEAD").split(b"\0")
+        paths = _git("diff", "--name-only", "-z", "--diff-filter=ACMRT", base, "HEAD").split(b"\0")
     except GitError:
         print("Changed paths: unavailable")
         raise

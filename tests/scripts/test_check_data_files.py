@@ -14,16 +14,11 @@ import pytest
 import yaml
 
 from scripts import check_data_files
+from scripts.check_data_files import LARGE_JSON_EXCEPTIONS, STREAM_FILE_PREFIXES
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_data_files.py"
-ALLOWED_JSON = "tests/contracts/data/cli.json"
-JSON_EXCEPTIONS = [
-    "apps/studio/frontend/package-lock.json",
-    "benchmarks/comparisons/benchmark_results_20251015_141023.json",
-    "tests/contracts/data/cli.json",
-    "tests/contracts/data/http.json",
-]
+ALLOWED_JSON = sorted(LARGE_JSON_EXCEPTIONS)[0]
 
 
 def _git(repo: Path, env: dict[str, str], *args: str) -> str:
@@ -85,7 +80,7 @@ def _run(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedPro
     )
 
 
-@pytest.mark.parametrize("name", ["tests/x.jsonl", "TESTS/X.JSONL", "tests/x.ndjson"])
+@pytest.mark.parametrize("name", ["tests/x.jsonl", "DATA/X.JSONL", "tests/x.ndjson"])
 def test_added_stream_file_outside_allowed_locations_fails(repository, name):
     repo, env, base = repository
     _write(repo, name, b"row\n")
@@ -96,12 +91,10 @@ def test_added_stream_file_outside_allowed_locations_fails(repository, name):
     assert "Changed paths: 1" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["benchmarks/x/y.jsonl", "lion1/tests/fixtures/x.ndjson", "lionagi/testing/data/x.JSONL"],
-)
-def test_allowed_stream_file_passes(repository, name):
+@pytest.mark.parametrize("prefix", STREAM_FILE_PREFIXES)
+def test_allowed_stream_file_passes(repository, prefix):
     repo, env, base = repository
+    name = f"{prefix}x.JSONL"
     _write(repo, name, b"row\n")
     _commit(repo, env)
     result = _run(repo, env, "--base", base)
@@ -142,7 +135,24 @@ def test_deleted_stream_file_is_outside_population(repository):
     assert "Changed paths: 0" in result.stdout
 
 
-@pytest.mark.parametrize("name", JSON_EXCEPTIONS)
+def test_symlink_replaced_with_data_file_is_checked(repository):
+    repo, env, _ = repository
+    name = "tests/changed.jsonl"
+    path = repo / name
+    path.symlink_to("missing-target")
+    base = _commit(repo, env, "add symlink")
+    path.unlink()
+    path.write_bytes(b"row\n")
+    head = _commit(repo, env, "replace symlink with file")
+    status = _git(repo, env, "diff", "--name-status", "--no-renames", base, head)
+    assert status == f"T\t{name}"
+    result = _run(repo, env, "--base", base)
+    assert result.returncode == 1
+    assert name in result.stdout and "rule A" in result.stdout
+    assert "Changed paths: 1" in result.stdout
+
+
+@pytest.mark.parametrize("name", sorted(LARGE_JSON_EXCEPTIONS))
 def test_each_modified_large_json_exception_passes(repository, name):
     repo, env, base = repository
     if name != ALLOWED_JSON:
@@ -298,11 +308,25 @@ def test_lint_workflow_runs_check_on_pull_requests_with_merge_base():
 
 def test_stream_allowlist_rule_without_subprocess(monkeypatch, capsys):
     def git(*args):
-        return b"benchmarks/data.jsonl\0" if args[0] == "diff" else b"head\n"
+        return f"{STREAM_FILE_PREFIXES[0]}data.jsonl\0".encode() if args[0] == "diff" else b"head\n"
 
     monkeypatch.setattr(check_data_files, "_git", git)
     assert check_data_files._check("base") == 0
     assert "Changed paths: 1" in capsys.readouterr().out
+
+
+def test_type_changed_stream_file_is_checked_without_subprocess(monkeypatch, capsys):
+    def git(*args):
+        if args[0] == "diff":
+            filter_arg = next(arg for arg in args if arg.startswith("--diff-filter="))
+            return b"tests/changed.jsonl\0" if "T" in filter_arg.partition("=")[2] else b""
+        return b"head\n"
+
+    monkeypatch.setattr(check_data_files, "_git", git)
+    assert check_data_files._check("base") == 1
+    output = capsys.readouterr().out
+    assert "tests/changed.jsonl" in output and "rule A" in output
+    assert "Changed paths: 1" in output
 
 
 def test_nul_split_preserves_complete_names_without_subprocess(monkeypatch, capsys):
@@ -365,7 +389,7 @@ def test_default_without_resolvable_base_names_attempts_without_subprocess(monke
 
 def test_json_blob_size_boundary_and_exception_paths_without_subprocess(monkeypatch, capsys):
     sizes = {"tests/at-limit.json": 262144, "tests/over.json": 262145}
-    paths = [*JSON_EXCEPTIONS, *sizes]
+    paths = [*sorted(LARGE_JSON_EXCEPTIONS), *sizes]
 
     def git(*args):
         if args[0] == "rev-parse":
@@ -379,7 +403,7 @@ def test_json_blob_size_boundary_and_exception_paths_without_subprocess(monkeypa
     monkeypatch.setattr(check_data_files, "_git", git)
     assert check_data_files._check("base") == 1
     output = capsys.readouterr().out
-    assert "Changed paths: 6" in output
+    assert f"Changed paths: {len(paths)}" in output
     assert "tests/over.json" in output and "262145" in output
     assert "tests/at-limit.json" not in output
-    assert all(path not in output for path in JSON_EXCEPTIONS)
+    assert all(path not in output for path in LARGE_JSON_EXCEPTIONS)
