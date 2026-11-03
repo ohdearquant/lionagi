@@ -56,7 +56,9 @@ UV_INSTALL_RUN = (
 )
 TEST_RUN = (
     "source .venv/bin/activate\n"
-    "uv run python scripts/test_roots.py > /dev/null\n"
+    "if [ -f scripts/test_roots.py ]; then\n"
+    "  uv run python scripts/test_roots.py > /dev/null\n"
+    "fi\n"
     "uv run pytest --maxfail=1 --disable-warnings\n"
 )
 VERIFY_RUN = (
@@ -1435,3 +1437,70 @@ def test_daily_check_guidance_does_not_claim_the_issue_is_current():
     assert "right now" not in text
     assert "currently-behind" not in text
     assert "behind at the last daily reading" in text
+
+
+def _simulate_release_test_step(root):
+    """Exercise only this step's fixed shell forms without launching a process."""
+    from scripts.test_roots import TestRootConfigError, configured_test_roots
+
+    step = next(s for s in workflow()["jobs"]["test"]["steps"] if s.get("name") == "Run tests")
+    active = True
+    pytest_calls = []
+    for line in step["run"].splitlines():
+        line = line.strip()
+        if line == "if [ -f scripts/test_roots.py ]; then":
+            active = (root / "scripts/test_roots.py").is_file()
+        elif line == "fi":
+            active = True
+        elif not active or not line:
+            continue
+        elif line == "source .venv/bin/activate":
+            assert (root / ".venv/bin/activate").is_file()
+        elif line == "uv run python scripts/test_roots.py > /dev/null":
+            if not (root / "scripts/test_roots.py").is_file():
+                return pytest_calls, "missing helper"
+            try:
+                configured_test_roots(root)
+            except TestRootConfigError:
+                return pytest_calls, "invalid roots"
+        elif line.startswith("uv run pytest"):
+            pytest_calls.append(line)
+        else:
+            raise AssertionError(f"unexpected test command: {line}")
+    return pytest_calls, None
+
+
+def _release_source_fixture(root, *, has_helper, roots):
+    (root / ".venv/bin").mkdir(parents=True)
+    (root / ".venv/bin/activate").touch()
+    (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths = " + json.dumps(roots) + "\n",
+        encoding="utf-8",
+    )
+    if has_helper:
+        (root / "scripts").mkdir()
+        (root / "scripts/test_roots.py").touch()
+
+
+@pytest.mark.parametrize("version", ["0.35.1", "0.37.0"])
+def test_release_test_step_accepts_historical_tag_without_helper(tmp_path, version):
+    # Both named tags configure this root and predate test_roots.py.
+    _release_source_fixture(tmp_path, has_helper=False, roots=["tests"])
+    calls, error = _simulate_release_test_step(tmp_path)
+    assert error is None, (version, error)
+    assert calls == ["uv run pytest --maxfail=1 --disable-warnings"]
+
+
+def test_release_test_step_refuses_a_missing_configured_root_when_helper_exists(tmp_path):
+    _release_source_fixture(tmp_path, has_helper=True, roots=["tests", "lionhub/tests"])
+    calls, error = _simulate_release_test_step(tmp_path)
+    assert error == "invalid roots"
+    assert calls == []
+
+
+def test_release_test_step_allows_existing_configured_root_when_helper_exists(tmp_path):
+    _release_source_fixture(tmp_path, has_helper=True, roots=["tests"])
+    calls, error = _simulate_release_test_step(tmp_path)
+    assert error is None
+    assert calls == ["uv run pytest --maxfail=1 --disable-warnings"]
