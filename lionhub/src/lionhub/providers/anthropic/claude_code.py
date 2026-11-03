@@ -41,6 +41,7 @@ from lionhub.providers._cli_subprocess import (
     print_readable,
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
+    refuse_oversized_command,
     resolve_cli_workspace,
 )
 from lionhub.providers._cli_subprocess import (
@@ -143,6 +144,11 @@ ClaudeInputFormat = Literal["text", "stream-json"]
 
 
 __all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint")
+
+#: The most input the Claude Code CLI reads from a pipe, in bytes. Its documentation states the
+#: cap as 10 MB ("Piped stdin is capped at 10MB"); past it the CLI exits with an error after the
+#: process has started, so the request refuses first.
+CLAUDE_MAX_PIPED_INPUT_BYTES = 10_000_000
 
 
 # --------------------------------------------------------------------------- flag metadata
@@ -577,14 +583,26 @@ class ClaudeCodeRequest(BaseModel):
 
     # ── CLI command builder ───────────────────────────────────────
 
+    def _prompt_on_stdin(self) -> bool:
+        """Whether the prompt is written to the CLI's stdin rather than passed as an argument.
+
+        It is, unless the input format is ``stream-json``: that format reads JSON messages from
+        stdin, so there the prompt stays an argument.
+        """
+        return self.input_format != "stream-json"
+
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for the Claude Code CLI."""
-        args: list[str] = [
-            "-p",
-            self.prompt,
-            "--output-format",
-            self.output_format,
-        ]
+        """Build argument list for the Claude Code CLI.
+
+        The prompt is not in the list unless the input format is ``stream-json``: ``-p`` then
+        stands alone and the CLI reads the prompt from stdin, where the CLI's own cap
+        (``CLAUDE_MAX_PIPED_INPUT_BYTES``) applies. A command line holds far less, and a long
+        history passed there fails the spawn before any turn runs.
+        """
+        args: list[str] = ["-p"]
+        if not self._prompt_on_stdin():
+            args.append(self.prompt)
+        args.extend(["--output-format", self.output_format])
 
         source = self
         if self.workload == "light":
@@ -656,6 +674,19 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [resolve_claude_cli(), *request.as_cmd_args()]
+    refuse_oversized_command(cmd, "Claude Code CLI")
+    stdin_data: str | None = None
+    if request._prompt_on_stdin():
+        stdin_data = request.prompt
+        # Counted with surrogatepass so a lone surrogate adds its bytes here instead of raising
+        # an error that holds the whole prompt; the spawner's strict encode refuses it.
+        size = len(stdin_data.encode("utf-8", "surrogatepass"))
+        if size > CLAUDE_MAX_PIPED_INPUT_BYTES:
+            raise ValueError(
+                f"The prompt is {size:,} bytes, past the 10 MB ({CLAUDE_MAX_PIPED_INPUT_BYTES:,} "
+                "bytes) of piped input the Claude Code CLI takes. Start a new session and hand "
+                "it the earlier result as a file."
+            )
     # The CLI states a refusal (a session limit, say) on stdout as an error result and then exits
     # nonzero with nothing on stderr; the exit alone would read as a crash, so the result it gave
     # rides the raised error, classified.
@@ -667,6 +698,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 cmd,
                 cwd=workspace,
                 env=request.env,
+                stdin_data=stdin_data,
                 tail_repair=_claude_tail_repair,
                 on_spawn=request.on_spawn,
                 engine="claude",

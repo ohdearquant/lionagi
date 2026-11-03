@@ -52,6 +52,9 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
+    CLI_ARGUMENT_MAX_BYTES as _CLI_ARGUMENT_MAX_BYTES,  # noqa: F401
+)
+from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
     build_declarative_cli_args,
@@ -61,12 +64,18 @@ from lionhub.providers._cli_subprocess import (
     print_readable,
     raise_if_env_is_not_a_string_map,
     redact_runtime_fields_in_place,
+    refuse_oversized_argument,
+    refuse_oversized_command,
+    refuse_text_strict_utf8_cannot_encode,
     resolve_cli_workspace,
     reveal_redacted,
     validate_message_prompt,
 )
 from lionhub.providers._cli_subprocess import (
     make_cli_flag as _cli,
+)
+from lionhub.providers._cli_subprocess import (
+    nul_refusal_message as _nul_refusal_message,
 )
 
 from ._codex_profile import (
@@ -359,55 +368,13 @@ def _call_markup_error_chunk(session: CLISession, event: Mapping[str, Any]) -> S
 #: after the process has started; the request refuses first.
 CODEX_MAX_TURN_INPUT_CHARS = 1_048_576
 
-# The system prompt and each `-c` override reach the CLI as single command-line arguments.
-# macOS refuses an argument list, environment included, past ARG_MAX (1,048,576 bytes from
-# `getconf ARG_MAX`); Linux refuses one argument past MAX_ARG_STRLEN, 32 pages (131,072 bytes
-# with 4 KiB pages). So an argument of this many bytes does not start the CLI on macOS or on
-# Linux with 4 KiB pages. A shorter one can still be refused there when the process starts,
-# with the operating system's error. The bound is the same on every platform, so it also
-# refuses an argument Linux with larger pages would take.
-_CLI_ARGUMENT_MAX_BYTES = 1_048_576
-
-
-def _refuse_oversized_argument(argument: bytes, what: str) -> None:
-    size = len(argument)
-    if size >= _CLI_ARGUMENT_MAX_BYTES:
-        raise ValueError(
-            f"{what} reaches the Codex CLI as one command-line argument of {size:,} bytes, "
-            f"and an argument of {_CLI_ARGUMENT_MAX_BYTES:,} bytes or more does not start the "
-            "CLI on macOS or on Linux with 4 KiB pages."
-        )
-
-
-def _refuse_oversized_command(cmd: list[str]) -> None:
-    """Refuse ``cmd`` when any argument after the program holds a NUL or is
-    ``_CLI_ARGUMENT_MAX_BYTES`` bytes or more."""
-    for position, argument in enumerate(cmd[1:], start=1):
-        flag = cmd[position - 1] if position > 1 else ""
-        if flag == "-c":
-            # Named by position: an override's key can hold a secret as its value can.
-            what = f"The -c override at argument {position}"
-        elif flag.startswith("-"):
-            what = f"The value of {flag}"
-        else:
-            what = f"Command-line argument {position}"
-        # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
-        # exec, so a path holding a byte that is not UTF-8 counts that byte once. The
-        # argument is read with `str.__str__` first, so a caller's own `encode` is never
-        # called here; a character the text cannot encode is refused after the handler,
-        # naming the argument by its position or its flag, since the codec's error holds
-        # the whole argument.
-        if not issubclass(type(argument), str):
-            raise TypeError(f"{what} must be text, not {type(argument).__name__}")
-        try:
-            encoded = os.fsencode(str.__str__(argument))
-        except UnicodeEncodeError:
-            encoded = None
-        if encoded is None:
-            raise _refuse_text_strict_utf8_cannot_encode(what)
-        if b"\x00" in encoded:
-            raise ValueError(_nul_refusal_message(what))
-        _refuse_oversized_argument(encoded, what)
+# The refusals shared with the other CLI providers name the program they guard; here they
+# name the Codex CLI.
+_refuse_oversized_argument = functools.partial(refuse_oversized_argument, cli="Codex CLI")
+_refuse_oversized_command = functools.partial(refuse_oversized_command, cli="Codex CLI")
+_refuse_text_strict_utf8_cannot_encode = functools.partial(
+    refuse_text_strict_utf8_cannot_encode, cli="Codex CLI"
+)
 
 
 def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
@@ -436,16 +403,6 @@ def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
     return True, value
 
 
-def _refuse_text_strict_utf8_cannot_encode(what: str) -> ValueError:
-    """The refusal for text holding a character strict UTF-8 cannot encode — a lone
-    surrogate, which a child process cannot decode. Returned rather than raised so the
-    caller names the input at the point it encodes it."""
-    return ValueError(
-        f"{what} holds a character strict UTF-8 cannot encode: a lone surrogate cannot "
-        "be passed to the Codex CLI."
-    )
-
-
 def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     """The refusal for ``text`` when strict UTF-8 cannot encode it, else None.
 
@@ -458,10 +415,6 @@ def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     except UnicodeEncodeError:
         return _refuse_text_strict_utf8_cannot_encode(what)
     return None
-
-
-def _nul_refusal_message(what: str) -> str:
-    return f"{what} holds a NUL character, which no command-line argument can hold."
 
 
 def _equals_in_key_refusal(index: int) -> ValueError:

@@ -2038,9 +2038,11 @@ async def test_a_branch_restored_from_a_snapshot_resumes_the_cli_session(tmp_pat
 
     session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
     spawned: list[list[str]] = []
+    prompts: list[str | None] = []
 
     async def fake_cli(cmd, **kwargs):
         spawned.append(list(cmd))
+        prompts.append(kwargs.get("stdin_data"))
         answer = f"answer {len(spawned)}"
         yield {
             "type": "system",
@@ -2080,7 +2082,7 @@ async def test_a_branch_restored_from_a_snapshot_resumes_the_cli_session(tmp_pat
 
     argv = spawned[2]
     assert argv[argv.index("--resume") + 1] == session_id
-    prompt = argv[argv.index("-p") + 1]
+    prompt = prompts[2]
     assert "third instruction" in prompt
     for earlier in ("first instruction", "second instruction", "answer 1", "answer 2"):
         assert earlier not in prompt
@@ -2163,11 +2165,14 @@ def _cli_that_can_lose_a_session(
     and resuming that id fails the way the CLI does, in the form ``how`` names: ``stderr`` (nonzero
     exit, text on stderr), ``result`` (an error result event, then a clean end) or ``result-exit``
     (an error result event, then a nonzero exit). The error result carries ``refused_usage`` when
-    that is given. A run that resumes nothing starts the session ``_NEW_SESSION``.
+    that is given. A run that resumes nothing starts the session ``_NEW_SESSION``. Each command
+    line is appended to ``spawned`` and the prompt written to the child's stdin to
+    ``state["prompts"]``, at the same position.
     """
 
     async def fake_cli(cmd, **kwargs):
         spawned.append(list(cmd))
+        state.setdefault("prompts", []).append(kwargs.get("stdin_data"))
         resumed = cmd[cmd.index("--resume") + 1] if "--resume" in cmd else None
         if state.get("lost") and resumed == _HELD_SESSION:
             said = f"No conversation found with session ID: {_HELD_SESSION}"
@@ -2261,7 +2266,7 @@ async def test_a_restored_session_the_cli_no_longer_holds_is_sent_again_in_full(
     refused, again = spawned[2], spawned[3]
     assert refused[refused.index("--resume") + 1] == _HELD_SESSION
     assert "--resume" not in again
-    prompt = again[again.index("-p") + 1]
+    prompt = state["prompts"][3]
     for earlier in (
         "first instruction",
         "second instruction",
