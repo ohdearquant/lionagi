@@ -607,8 +607,7 @@ async def run(
 
             bfp = await acreate_path(
                 param.persist_dir,
-                str(branch.id) + ".buffer",
-                ".jsonl",
+                str(branch.id) + ".buffer.jsonl",
                 file_exist_ok=True,
             )
 
