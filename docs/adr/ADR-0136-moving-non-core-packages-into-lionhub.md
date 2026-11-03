@@ -212,7 +212,7 @@ removal version and stale-file checks cover the row.
 **The plugin runtime.** `lionagi.plugins` (6 modules, 1,458 lines) is the core's extension mechanism under
 ADR-0088. Its consumers are tool misses and diagnostics for registered tools in `ActionManager`
 (`protocols/action/manager.py:197-215, 251`), provider misses and provider revalidation in `EndpointRegistry`
-(`service/connections/registry.py:395, 725, 740, 748, 868`). A provider miss currently consults every
+(`service/connections/registry.py:398, 731, 746, 754, 874`). A provider miss currently consults every
 active declared provider module, not only the requested one. Discovery is lazy, trust is read on first use, and
 no caller registers anything (ADR-0088 D3). The runtime imports nothing above the core. Moving it would need an
 automatic bootstrap that preserves all of this in a fresh process; ADR-0088 D8 defers entry points, and no other

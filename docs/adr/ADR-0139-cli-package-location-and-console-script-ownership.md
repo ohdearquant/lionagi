@@ -86,7 +86,7 @@ and schedule declaration/export
 `lionagi/cli/machine_schedule.py:324`,
 `lionagi/cli/machine_schedule.py:384`).
 There is additionally a literal dynamic import of the mixed Studio CLI module;
-it is not one of the eleven static statements (`lionagi/cli/main.py:33`).
+it is not one of the eleven static statements (`lionagi/cli/main.py:58`).
 The full 46-file partition is specified in D2.
 
 **P3. Command declarations are not command discovery.**
@@ -112,7 +112,7 @@ ADR-0062 records composition, routing, execution locus, parsing and output
 contracts. The current implementation additionally has explicit machine-mode
 routing and lazy selected-command construction
 (`docs/adr/ADR-0062-cli-command-surface-ownership.md:66`,
-`lionagi/cli/main.py:305`, `lionagi/cli/main.py:367`).
+`lionagi/cli/main.py:330`, `lionagi/cli/main.py:392`).
 Relocation preserves the behavior at this HEAD and subsequent separately adopted
 behavior changes.
 
@@ -286,7 +286,7 @@ as already allocated by the adjacent records
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:173`).
 The implementation defines the detailed schedule-service API there.
 Ordinary schedule handling must no longer use the dynamic mixed-module import
-at `lionagi/cli/main.py:33`.
+at `lionagi/cli/main.py:58`.
 
 **The step-6 residual set is these 37 existing files**, relative to
 `lionagi/cli/`. Mixed files contain their retained adapters after extraction.
@@ -385,7 +385,7 @@ These signatures and their current lazy behavior are at
 `lionagi/_auto.py:374`, `lionagi/_auto.py:389`, and `lionagi/_auto.py:433`.
 The composition root imports this catalog directly before selection.
 MCP projection and machine-command classification use the same catalog, not copies
-(`lionagi/cli/main.py:12`, `lionagi/cli/main.py:367`,
+(`lionagi/cli/main.py:13`, `lionagi/cli/main.py:392`,
 `lionagi/cli/machine.py:824`,
 `lionhub/src/lionhub/serve/mcp/projection.py:32`).
 
@@ -590,8 +590,8 @@ None is superseded behaviorally by this record.
 The source HEAD, not the older illustrative command tree, is the characterization
 baseline. Preserve early machine routing, invocation accounting, missing-module
 handling and command-specific errors
-(`lionagi/cli/main.py:305`, `lionagi/cli/main.py:370`,
-`lionagi/cli/main.py:488`).
+(`lionagi/cli/main.py:330`, `lionagi/cli/main.py:395`,
+`lionagi/cli/main.py:515`).
 `li --version` continues reporting the core version. Its current source is
 `lionagi.version.__version__`; independent hub version reporting requires a
 separate behavior decision (`lionagi/_auto.py:427`).
