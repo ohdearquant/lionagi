@@ -853,7 +853,11 @@ class iModel:  # noqa: N801
             and isinstance(new_endpoint, AgenticEndpoint)
             and isinstance(self.endpoint, AgenticEndpoint)
         ):
-            new_endpoint.session_id = self.endpoint.session_id
+            # An id restored from a snapshot and not yet reported stays unreported in the copy.
+            if self.endpoint.reported_session_id is None:
+                new_endpoint.restore_session_id(self.endpoint.session_id)
+            else:
+                new_endpoint.session_id = self.endpoint.session_id
         # served_model reports this model's last call. A copy is a new model (a new
         # id) that has made none; from_dict restores the same model, so it keeps it.
         new = iModel(
@@ -928,7 +932,8 @@ class iModel:  # noqa: N801
         A catalog that declares the stored provider but selects none of its endpoints for the
         stored endpoint name raises ``ProviderNotFoundError``, as selection does. The session
         id a CLI endpoint stored is restored with it, so the model resumes the CLI's own session;
-        a stored value that is not a UUID in its canonical form is ignored without an error.
+        the endpoint's ``reported_session_id`` stays None until the stream reports an id. A stored
+        value that is not a UUID in its canonical lowercase form is ignored without an error.
         """
         endpoint = Endpoint.from_dict(
             data.get("endpoint", {}),
@@ -977,11 +982,12 @@ class iModel:  # noqa: N801
             e1 = endpoint
 
         # A CLI endpoint continues the CLI's own session, so the id it stored comes back with
-        # it. Only an id in the shape the CLI issues is taken; any other stored value is ignored.
+        # it, recorded as restored: no stream in this process has reported it. Only an id in the
+        # shape the CLI issues is taken; any other stored value is ignored.
         if isinstance(e1, AgenticEndpoint) and (
             session_id := _stored_session_id(data.get("endpoint"))
         ):
-            e1.session_id = session_id
+            e1.restore_session_id(session_id)
 
         # The executor's rate limits only: any other key would reach __init__ as an
         # endpoint setting, such as a base_url or an env, past the rules above.

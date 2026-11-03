@@ -2083,3 +2083,67 @@ async def test_a_branch_restored_from_a_snapshot_resumes_the_cli_session(tmp_pat
     assert "third instruction" in prompt
     for earlier in ("first instruction", "second instruction", "answer 1", "answer 2"):
         assert earlier not in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_restored_session_id_counts_as_reported_only_once_the_stream_reports_one(
+    tmp_path, monkeypatch
+):
+    """The restored id is what the turn resumes, but only a session event of this process
+    makes it the process's own engine session, whether it repeats the restored id or not."""
+    import lionhub.providers.anthropic.claude_code as cc
+
+    stored_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+    new_id = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+    reports = [new_id, stored_id]
+    spawned: list[list[str]] = []
+    reported_at_spawn: list[str | None] = []
+    holder: dict[str, Branch] = {}
+
+    async def fake_cli(cmd, **kwargs):
+        spawned.append(list(cmd))
+        reported_at_spawn.append(holder["branch"].chat_model.endpoint.reported_session_id)
+        session_id = reports[len(spawned) - 1]
+        yield {"type": "system", "subtype": "init", "session_id": session_id}
+        yield {
+            "type": "assistant",
+            "message": {"id": f"m{len(spawned)}", "content": [{"type": "text", "text": "ok"}]},
+        }
+        yield {
+            "type": "result",
+            "subtype": "success",
+            "result": "ok",
+            "is_error": False,
+            "session_id": session_id,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cc, "resolve_claude_cli", lambda: "claude")
+    monkeypatch.setattr(cc, "ndjson_from_cli", fake_cli)
+
+    saved = Branch(
+        chat_model=iModel(provider="claude_code", model="claude-sonnet-5-5", api_key="test-key")
+    )
+    saved.chat_model.endpoint.session_id = stored_id
+    restored = Branch.from_dict(json.loads(json.dumps(saved.to_dict(mode="json"))))
+    holder["branch"] = restored
+    endpoint = restored.chat_model.endpoint
+
+    assert restored.chat_model.provider_session_id == stored_id
+    assert endpoint.reported_session_id is None
+
+    await _collect(run(restored, "first instruction", RunParam()))
+
+    argv = spawned[0]
+    assert argv[argv.index("--resume") + 1] == stored_id
+    assert reported_at_spawn[0] is None
+    assert endpoint.reported_session_id == new_id
+
+    # A restored id the stream repeats is reported too.
+    again = Branch.from_dict(json.loads(json.dumps(saved.to_dict(mode="json"))))
+    holder["branch"] = again
+    await _collect(run(again, "second instruction", RunParam()))
+
+    assert reported_at_spawn[1] is None
+    assert again.chat_model.endpoint.reported_session_id == stored_id

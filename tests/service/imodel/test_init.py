@@ -888,6 +888,8 @@ class TestiModel:
             "",
             12345,
             ["7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"],
+            "7D1C2E90-5B3A-4F6E-9A8D-0C1B2A3D4E5F",
+            "7d1c2e90-5b3a-4f6e-9a8d-0C1B2A3D4E5F",
         ],
         ids=[
             "flag",
@@ -899,6 +901,8 @@ class TestiModel:
             "empty",
             "integer",
             "list",
+            "uppercase",
+            "mixed-case",
         ],
     )
     def test_a_stored_session_id_not_in_the_shape_the_cli_issues_is_ignored(self, stored):
@@ -935,6 +939,51 @@ class TestiModel:
         data["endpoint"]["session_id"] = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
 
         assert iModel.from_dict(data).provider_session_id is None
+
+    def test_a_restored_session_id_is_not_one_this_process_has_seen_reported(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        reported_later = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = session_id
+        assert imodel.endpoint.reported_session_id == session_id
+
+        restored = iModel.from_dict(json.loads(json.dumps(imodel.to_dict())))
+
+        # The restored id is still the one to resume and the one to save again ...
+        assert restored.provider_session_id == session_id
+        call = restored.create_api_calling(messages=[{"role": "user", "content": "next"}])
+        assert call.payload["request"].resume == session_id
+        assert restored.to_dict()["endpoint"]["session_id"] == session_id
+        # ... but no stream in this process has reported it.
+        assert restored.endpoint.reported_session_id is None
+
+        # The stream reports the same id, then a new one.
+        restored.endpoint.session_id = session_id
+        assert restored.endpoint.reported_session_id == session_id
+        restored.endpoint.session_id = reported_later
+        assert restored.endpoint.reported_session_id == reported_later
+        assert restored.provider_session_id == reported_later
+
+    def test_a_restored_id_stays_unreported_in_a_copy_that_shares_the_session(self):
+        session_id = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
+        imodel = iModel(
+            provider="claude_code",
+            model="claude-3-5-sonnet-20241022",
+            api_key="test-key",
+        )
+        imodel.endpoint.session_id = session_id
+        restored = iModel.from_dict(json.loads(json.dumps(imodel.to_dict())))
+
+        shared = restored.copy(share_session=True)
+        assert shared.provider_session_id == session_id
+        assert shared.endpoint.reported_session_id is None
+
+        # An id the stream reported stays reported in the copy.
+        assert imodel.copy(share_session=True).endpoint.reported_session_id == session_id
 
     @pytest.mark.asyncio
     async def test_imodel_unsupported_event_type(self):
