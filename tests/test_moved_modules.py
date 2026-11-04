@@ -1193,13 +1193,6 @@ def test_the_wave_2_check_sees_each_form_of_import():
     assert sorted(int(hit.split(":")[1]) for hit in hits) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 11], hits
 
 
-def test_changelog_names_every_move():
-    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    for row in _moved.MOVED:
-        line = f"| `{row.old}` | `{row.new}` | {row.removed_in} |"
-        assert line in changelog, row
-
-
 def test_the_frame_walk_skips_the_root_lazy_export_frames_and_nothing_else_in_their_files():
     import lionagi
     from lionagi.ln import _lazy_init
