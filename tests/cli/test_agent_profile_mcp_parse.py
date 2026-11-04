@@ -107,6 +107,45 @@ def test_unrelated_unreadable_frontmatter_keeps_existing_leniency():
     assert profile.mcp is None
 
 
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '? "m\\\n  cp"\n: none\n',
+        '{? "m\\\n  cp": none}\n',
+        '[? "m\\\n  cp": none]\n',
+    ],
+)
+@pytest.mark.parametrize("ending", ["---\nbody\n", ""])
+def test_unreadable_frontmatter_with_multiline_escaped_key_is_refused(declaration, ending):
+    text = f"---\n\tbad: x\n{declaration}{ending}"
+    with pytest.raises(ConfigurationError) as caught:
+        _parse_profile("reviewer", text)
+    assert "invalid YAML" in str(caught.value)
+    assert "backslash" in str(caught.value)
+    assert "fix" in str(caught.value).lower()
+
+
+@pytest.mark.parametrize("content", ["ordinary \\\\ path", "mixed-case McP text"])
+def test_unreadable_frontmatter_with_any_backslash_or_mcp_text_is_refused(content):
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", f"---\ninvalid: @value\ndescription: '{content}'\n---\nbody")
+
+
+def test_unreadable_frontmatter_without_mcp_or_backslash_warns_and_keeps_body(monkeypatch):
+    warnings = []
+    monkeypatch.setattr("lionagi.cli._logging.warn", warnings.append)
+    profile = _parse_profile("reviewer", "---\ninvalid: @value\n---\nbody")
+    assert profile.mcp is None
+    assert "body" in profile.raw_body
+    assert any("frontmatter" in warning and "ignored" in warning for warning in warnings)
+
+
+def test_readable_frontmatter_allows_mcp_and_backslash_in_description():
+    profile = _parse_profile("reviewer", "---\ndescription: 'MCP docs at \\local'\n---\nbody")
+    assert profile.mcp is None
+    assert "body" in profile.raw_body
+
+
 def test_unrelated_duplicate_key_keeps_existing_yaml_behavior():
     profile = _parse_profile("reviewer", "---\nmodel: first\nmodel: second\n---\nReview.")
     assert profile.model == "second"
@@ -123,9 +162,9 @@ def test_mcp_example_in_body_is_not_frontmatter():
     assert profile.mcp is None
 
 
-def test_mcp_mention_in_comment_does_not_change_unreadable_other_frontmatter():
-    profile = _parse_profile("reviewer", "---\n# mcp: none\nmodel: [\n---\nReview.")
-    assert profile.mcp is None
+def test_mcp_mention_in_comment_refuses_unreadable_frontmatter():
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", "---\n# mcp: none\nmodel: [\n---\nReview.")
 
 
 @pytest.mark.parametrize(
@@ -184,9 +223,9 @@ def test_alias_mcp_key_in_unreadable_frontmatter_is_refused(frontmatter):
         _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
 
 
-def test_escaped_mcp_mention_in_comment_does_not_refuse_unrelated_frontmatter():
-    profile = _parse_profile("reviewer", '---\n# "m\\u0063p": none\nmodel: [\n---\nReview.')
-    assert profile.mcp is None
+def test_escaped_mcp_mention_in_comment_refuses_unreadable_frontmatter():
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", '---\n# "m\\u0063p": none\nmodel: [\n---\nReview.')
 
 
 def test_escaped_mcp_example_in_unreadable_block_scalar_is_refused():
@@ -233,14 +272,24 @@ def test_mcp_key_after_same_line_syntax_error_is_refused(frontmatter):
 @pytest.mark.parametrize(
     "frontmatter",
     [
-        "model: @invalid # comment, mcp: none\n",
-        'model: @invalid, note: "example, mcp: none"\n',
         "model: @invalid, other: value\n",
     ],
 )
 def test_unrelated_unreadable_same_line_text_remains_lenient(frontmatter):
     profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
     assert profile.mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: @invalid # comment, mcp: none\n",
+        'model: @invalid, note: "example, mcp: none"\n',
+    ],
+)
+def test_unreadable_same_line_mcp_in_comment_or_value_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
 
 
 @pytest.mark.parametrize("content", ["mcp: none", "example {mcp: none}"])
@@ -275,12 +324,16 @@ def test_mcp_key_after_same_line_flow_opener_is_refused(frontmatter):
         "model: @invalid, note: 'example {mcp: none}'\n",
         'model: @invalid {other: "mcp: none"}\n',
         "model: @invalid # example {mcp: none}\n",
-        "model: @invalid {other: value}\n",
     ],
 )
-def test_unrelated_unreadable_flow_text_remains_lenient(frontmatter):
-    profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
-    assert profile.mcp is None
+def test_unreadable_flow_mcp_text_in_quotes_or_comments_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+
+def test_unreadable_flow_without_mcp_or_backslash_stays_lenient():
+    text = "---\nmodel: @invalid {other: value}\n---\nReview."
+    assert _parse_profile("reviewer", text).mcp is None
 
 
 @pytest.mark.parametrize(
@@ -311,9 +364,9 @@ def test_plain_scalar_quote_does_not_hide_later_mcp_key(frontmatter):
         'model: @invalid, {"note":"example, mcp: none"}\n',
     ],
 )
-def test_real_quoted_values_with_mcp_text_remain_lenient(frontmatter):
-    profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
-    assert profile.mcp is None
+def test_real_quoted_values_with_mcp_text_in_unreadable_block_are_refused(frontmatter):
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
 
 
 @pytest.mark.parametrize("key", ["mcp: none", '"m\\u0063p": none'])
@@ -332,12 +385,30 @@ def test_long_unreadable_flow_key_is_detected_with_linear_scanner_input(key, mon
     text = "---\nmodel: @invalid," + "a," * 4_000 + key + "\n---\nReview."
     with pytest.raises(ConfigurationError, match="mcp"):
         _parse_profile("reviewer", text)
-    assert scanned_chars < 5 * len(text)
+    assert scanned_chars == 0
 
 
-def test_long_unreadable_flow_with_mcp_only_in_quoted_value_stays_lenient():
-    text = "---\nmodel: @invalid," + "a," * 4_000 + 'note: "mcp: none"\n---\nReview.'
+def test_long_unreadable_flow_without_signals_uses_no_recovery_scans(monkeypatch):
+    import yaml
+
+    scans = 0
+    real_scan = yaml.scan
+
+    def counted_scan(source, *args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return real_scan(source, *args, **kwargs)
+
+    monkeypatch.setattr(yaml, "scan", counted_scan)
+    text = "---\nmodel: @invalid," + "a," * 4_000 + "other: value\n---\nReview."
     assert _parse_profile("reviewer", text).mcp is None
+    assert scans == 0
+
+
+def test_long_unreadable_flow_with_mcp_only_in_quoted_value_is_refused():
+    text = "---\nmodel: @invalid," + "a," * 4_000 + 'note: "mcp: none"\n---\nReview.'
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", text)
 
 
 @pytest.mark.parametrize(
@@ -353,9 +424,10 @@ def test_explicit_or_aliased_keys_after_malformed_flow_are_refused(frontmatter):
         _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
 
 
-def test_explicit_key_and_anchor_text_inside_quoted_value_stays_lenient():
+def test_explicit_key_and_anchor_text_inside_unreadable_block_is_refused():
     text = '---\nmodel: @invalid, note: "example ? mcp, &policy mcp"\n---\nReview.'
-    assert _parse_profile("reviewer", text).mcp is None
+    with pytest.raises(ConfigurationError, match="invalid YAML"):
+        _parse_profile("reviewer", text)
 
 
 def test_unclosed_valid_yaml_does_not_rescan_each_line(monkeypatch):

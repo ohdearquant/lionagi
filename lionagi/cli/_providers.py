@@ -976,130 +976,45 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     def refuse(*, unreadable: bool = False) -> None:
         if unreadable:
             raise ConfigurationError(
-                f"agent profile {name!r}: frontmatter could not be parsed and names mcp"
+                f"agent profile {name!r}: frontmatter could not be parsed (invalid YAML); "
+                "it mentions mcp or contains a backslash; fix the YAML to proceed"
             )
         raise ConfigurationError(f"agent profile {name!r}: mcp frontmatter is invalid or repeated")
 
     def mentions_mcp_key(block: str, *, readable: bool = False) -> bool:
+        # In unreadable YAML, no fragment can be reliably identified as a key
+        # or value. Refuse either signal even in comments or scalar text.
+        if not readable:
+            return "mcp" in block.lower() or "\\" in block
+
+        # An unclosed frontmatter block can itself be readable YAML. Preserve
+        # its existing key-token behavior, including anchors and aliases.
         anchors: dict[str, str] = {}
-
-        def scan(source: str) -> tuple[bool, bool]:
-            expecting_key = False
-            pending_anchor = None
-            try:
-                for token in yaml.scan(source, Loader=yaml.SafeLoader):
-                    if isinstance(token, yaml.AnchorToken):
-                        pending_anchor = token.value
-                    elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
-                        anchors[pending_anchor] = token.value
-                        pending_anchor = None
-                    elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
-                        pending_anchor = None
-                    if isinstance(token, yaml.KeyToken):
-                        expecting_key = True
-                    elif expecting_key and isinstance(token, yaml.ScalarToken):
-                        expecting_key = False
-                        if token.value == "mcp":
-                            return True, False
-                    elif expecting_key and isinstance(token, yaml.AliasToken):
-                        expecting_key = False
-                        if anchors.get(token.value) == "mcp":
-                            return True, False
-                    elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
-                        expecting_key = False
-            except yaml.YAMLError:
-                return False, False
-            return False, True
-
-        found, complete = scan(block)
-        if found:
-            return True
-        # A complete token stream has already examined every key. In particular,
-        # a missing closing frontmatter delimiter does not require a scanner per
-        # body line when its YAML token stream itself is readable.
-        if complete and readable:
+        expecting_key = False
+        pending_anchor = None
+        try:
+            for token in yaml.scan(block, Loader=yaml.SafeLoader):
+                if isinstance(token, yaml.AnchorToken):
+                    pending_anchor = token.value
+                elif pending_anchor is not None and isinstance(token, yaml.ScalarToken):
+                    anchors[pending_anchor] = token.value
+                    pending_anchor = None
+                elif pending_anchor is not None and not isinstance(token, yaml.TagToken):
+                    pending_anchor = None
+                if isinstance(token, yaml.KeyToken):
+                    expecting_key = True
+                elif expecting_key and isinstance(token, yaml.ScalarToken):
+                    expecting_key = False
+                    if token.value == "mcp":
+                        return True
+                elif expecting_key and isinstance(token, yaml.AliasToken):
+                    expecting_key = False
+                    if anchors.get(token.value) == "mcp":
+                        return True
+                elif expecting_key and not isinstance(token, (yaml.TagToken, yaml.AnchorToken)):
+                    expecting_key = False
+        except yaml.YAMLError:
             return False
-
-        def flow_fragments(line: str):
-            quote = None
-            scalar_start = True
-            starts = []
-            i = 0
-            while i < len(line):
-                char = line[i]
-                if quote == '"' and char == "\\":
-                    i += 2
-                    continue
-                if quote == "'" and char == "'" and line[i : i + 2] == "''":
-                    i += 2
-                    continue
-                if quote:
-                    if char == quote:
-                        quote = None
-                        scalar_start = False
-                elif char in ("'", '"') and scalar_start:
-                    quote = char
-                elif char == "#" and (i == 0 or line[i - 1].isspace()):
-                    break
-                elif char == "?" and i + 1 < len(line) and line[i + 1].isspace():
-                    # A malformed flow may still contain an explicit YAML key.
-                    # Probe it independently without rescanning the whole suffix.
-                    starts.append((i, True))
-                    scalar_start = True
-                elif char in ",[]{}":
-                    starts.append((i + 1, False))
-                    scalar_start = True
-                elif char == ":" and (i + 1 == len(line) or line[i + 1] in " \t,[]{}'\""):
-                    scalar_start = True
-                elif scalar_start and char in "!&":
-                    if char == "&":
-                        starts.append((i, True))
-                    if char == "!" and line[i : i + 2] == "!<":
-                        end = line.find(">", i + 2)
-                        i = end if end >= 0 else len(line)
-                    else:
-                        while i + 1 < len(line) and line[i + 1] not in " \t,[]{}":
-                            i += 1
-                elif not char.isspace() and not (
-                    scalar_start and char in "-?" and i + 1 < len(line) and line[i + 1].isspace()
-                ):
-                    scalar_start = False
-                i += 1
-            # Include the next flow segment as local context, but never scan
-            # a suffix past it. Each character is in at most two fragments.
-            for index, (start, explicit_key) in enumerate(starts):
-                next_index = index + (1 if explicit_key else 2)
-                end = starts[next_index][0] - 1 if next_index < len(starts) else i
-                yield line[start:end]
-
-        # An earlier malformed token can prevent the scanner from reaching a
-        # later key. Retry every line and bounded flow-delimited fragment. A
-        # broken block scalar cannot reliably identify its content, so key-shaped
-        # lines inside it are candidates too; quoted values and comments stay excluded.
-        # Only fragments which can
-        # contain the literal key, an escaped spelling, or an alias need a YAML
-        # scanner; each character appears in at most two fragments, even on a
-        # long flow-style line.
-        for line in block.splitlines():
-            stripped = line.lstrip(" \t")
-            # Strip spaces and tabs so malformed indentation cannot hide a key;
-            # flow fragments still need the original delimiters.
-            if scan(stripped)[0]:
-                return True
-            fragments = tuple(flow_fragments(line))
-            # A malformed line can use an alias before a later anchor. Collect
-            # candidate anchors first so retry order cannot hide a key alias.
-            if "*" in line and "&" in line:
-                for fragment in fragments:
-                    if "&" in fragment and ("mcp" in fragment or "\\" in fragment):
-                        if scan(fragment)[0]:
-                            return True
-            if any(
-                scan(fragment)[0]
-                for fragment in fragments
-                if "mcp" in fragment or "\\" in fragment or "*" in fragment
-            ):
-                return True
         return False
 
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
