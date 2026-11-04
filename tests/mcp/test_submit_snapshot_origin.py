@@ -168,7 +168,8 @@ def test_named_snapshot_shaped_config_remains_explicit(submitted, op):
     async def check():
         env = await _setup(parsed)
         assert env.mcp_config_explicit is True
-        assert set(env.mcp_servers) == {"ambient", "jobs"}
+        assert set(env.mcp_servers) == {"ambient"}
+        assert env.withheld_mcp_servers == ("jobs",)
         with pytest.raises(ConfigurationError, match="isolated.*mcp: none.*--mcp-config"):
             await orch.build_worker_branch(env, agent_id="b", role="isolated")
 

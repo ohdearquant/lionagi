@@ -1919,11 +1919,19 @@ async def _run_agent(
 
         from lionagi.agent.factory import _canonical_provider, _reject_unforwardable_explicit_mcp
 
-        _reject_unforwardable_explicit_mcp(
-            provider,
-            named_explicitly=mcp_resolution.explicit,
-            asked_for_servers=bool(mcp_resolution.servers),
-        )
+        try:
+            _reject_unforwardable_explicit_mcp(
+                provider,
+                named_explicitly=mcp_resolution.explicit,
+                asked_for_servers=bool(mcp_resolution.servers),
+            )
+        except ConfigurationError as exc:
+            if not mcp_resolution.snapshot_marker:
+                raise
+            raise ConfigurationError(
+                f"{exc} This file looks like a submit snapshot; an MCP server started "
+                "before this version must be restarted."
+            ) from None
         # Settings are looked up under the provider the name resolves to, so an alias such as
         # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
         canonical = _canonical_provider(provider)

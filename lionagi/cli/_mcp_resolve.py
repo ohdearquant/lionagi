@@ -69,6 +69,9 @@ class McpResolution:
     # that must tell "someone asked for these servers" from "these were lying
     # around" cannot recover the difference from ``servers`` or ``source``.
     explicit: bool = False
+    # A marker in the same parsed file as ``servers`` can only restrict worker
+    # access. It does not establish provenance or turn a named file ambient.
+    snapshot_marker: bool = False
 
     @property
     def ok(self) -> bool:
@@ -231,7 +234,14 @@ def resolve_spawn_mcp_servers(
             raise McpConfigError(f"{flag} {str(selected)!r} is not a readable file ({path})")
         data = _read_config(path)
         if explicit is not None:
-            return McpResolution(data["mcpServers"], None, path, searched_from, explicit=True)
+            marked = SNAPSHOT_SOURCE_KEY in data
+            if marked:
+                _snapshot_path(data, SNAPSHOT_SOURCE_KEY, path)
+                if SNAPSHOT_SEARCHED_FROM_KEY in data:
+                    _snapshot_path(data, SNAPSHOT_SEARCHED_FROM_KEY, path)
+            return McpResolution(
+                data["mcpServers"], None, path, searched_from, explicit=True, snapshot_marker=marked
+            )
         if SNAPSHOT_SOURCE_KEY not in data:
             return McpResolution(data["mcpServers"], None, path, searched_from)
         # A snapshot written before the search directory was recorded falls back to this one.

@@ -97,8 +97,10 @@ persistence, so a later status update cannot erase or redefine them.
 A run submitted through the MCP server receives its generated snapshot through an internal
 ambient-origin carrier. The carrier, not the file's contents, determines that the set was found
 rather than named, so the job-control policy under `_hand_mcp_servers` still applies. A file the
-caller names with `--mcp-config` is explicit even if it contains snapshot metadata. A contained
-profile drops an ambient snapshot and refuses a caller-named config. A checkpoint or agent branch
+caller names with `--mcp-config` is explicit even if it contains snapshot metadata. The one
+exception is that a named file carrying the snapshot marker has job-control servers withheld from
+orchestration workers, as for an ambient set. A contained profile drops an ambient snapshot and
+refuses a caller-named config. A checkpoint or agent branch
 records the snapshot origin and path so resume reuses the same choice. A selector-less
 submitted resume takes no new snapshot: its job handle reports that the recorded choice will
 be replayed and leaves declared server names unknown. A flow resume refuses new MCP selectors
@@ -359,10 +361,11 @@ registered and behind a launcher such as `uv run` or `env`, recognised by
 `_is_job_control_server`; any program named `li` run with `mcp` is taken for
 it) is withheld and the rest of the found set reaches them, and a planned
 worker's system prompt names each withheld alias, so its absence is explained
-rather than met as a missing tool. Naming `--mcp-config` is the opt-in: it
-grants everything the file lists, job control included, for a worker meant to
-orchestrate in turn. A submission's snapshot is the exception: it is read as
-found even when named (above), so the policy still applies to it. Once a worker set exists it is the worker's whole set, handed over
+rather than met as a missing tool. Naming an unmarked file with `--mcp-config`
+opts in to everything the file lists, job control included, for a worker meant
+to orchestrate in turn. A named file carrying the snapshot marker remains
+explicit for the orchestrator but has job-control servers withheld from workers
+like an ambient snapshot. Once a worker set exists it is the worker's whole set, handed over
 exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
 of the servers it would discover itself. Every worker, a reactively spawned node included, is passed through
 `_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker

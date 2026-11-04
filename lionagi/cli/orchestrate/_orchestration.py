@@ -701,7 +701,7 @@ def _worker_mcp_policy(
 ) -> tuple[dict | None, tuple[str, ...]]:
     """Return the exact set leaf workers get, and the names withheld from it.
 
-    A caller-named ``--mcp-config`` is an explicit grant of everything it lists.
+    An unmarked caller-named ``--mcp-config`` grants everything it lists.
     A config found by discovery is not, so lionagi's own job-control server stays
     with the coordinator and the rest of the found set reaches the workers. The
     set returned is a worker's whole set: it is handed over exclusively, so the
@@ -1097,7 +1097,7 @@ async def setup_orchestration(
     run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
     worker_mcp_servers, withheld_mcp_servers = _worker_mcp_policy(
         run_mcp_servers,
-        explicit=mcp_resolution.explicit,
+        explicit=mcp_resolution.explicit and not mcp_resolution.snapshot_marker,
     )
 
     if not model_spec:
