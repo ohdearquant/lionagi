@@ -11,7 +11,7 @@
 
 ## Context
 
-Line citations not attributed to a named revision are re-derived at `9d787391fedde2c131190dc9ee81855b5b97f366`.
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 ADR-0055 D3 stores an ordered collection of message identifiers as one JSON-array text value.
 This gives a simple full reconstruction and idempotent append, but append work grows with the
@@ -22,7 +22,7 @@ a session progression in one transaction (`lionagi/state/db.py:4523`).
 
 Bulk insertion already avoids one rewrite per message: it decodes a string-ID collection,
 deduplicates a batch with a set and rewrites the collection once
-(`lionagi/state/db.py:3590`). This improves amortization but retains full-history work per batch.
+(`lionagi/state/db.py:3608`). This improves amortization but retains full-history work per batch.
 
 ### Measured cost and population
 
@@ -73,8 +73,8 @@ the embedded task. A recent-file window does not cap an active transcript's life
 
 Other writers also have no lifetime ceiling. Resume reuses existing progression IDs
 (`lionagi/cli/_runs.py:2236-2237`); flow branches share a session progression
-(`lionagi/cli/orchestrate/_orchestration.py:2268`, `lionagi/cli/_runs.py:1922`); run import can create or replace complete
-unbounded orders (`lionagi/cli/state.py:247`, `lionagi/cli/state.py:284`). The small current population justifies a
+(`lionagi/cli/orchestrate/_orchestration.py:2268`, `lionagi/cli/_runs.py:1922`); run import creates complete
+unbounded orders (`lionagi/cli/state.py:507`, `lionagi/cli/state.py:555`, `lionagi/cli/state.py:560`). The small current population justifies a
 staged rollout, not a permanent assumption that these histories remain small.
 
 Read amplification persists for idle histories. A detail page loads entire arrays before taking
@@ -246,8 +246,9 @@ in the uncopied prefix. Successful new IDs receive contiguous positions at or ab
 cost intentionally remains during this finite phase. A target failure must not be hidden behind
 a committed JSON-only append presented as a successful dual write.
 
-Creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression does not reset
-its representation or content (`lionagi/state/db.py:3405`). Newly created progressions may use
+In native stores, creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression
+does not reset its representation or content (`lionagi/state/db.py:3450-3454`). In compatibility
+mode, creation refuses an existing row (`lionagi/state/db.py:3426-3437`, `lionagi/state/db.py:1533-1543`). Newly created progressions may use
 `items` only after the store's compatibility gate enables that default. Their supplied collection
 is materialized in input order, preserving duplicates, and their initial JSON value is an exact
 frozen prefix. Empty creation uses an empty prefix. No count is inferred from message existence.

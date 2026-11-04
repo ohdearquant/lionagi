@@ -9,14 +9,14 @@
 
 **Source HEAD**: `1717674a2140d3571fcb90e3f68204845048ef80`.
 
-Line citations not attributed to a named revision are re-derived at `9d787391fedde2c131190dc9ee81855b5b97f366`.
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 Destination paths, interfaces and tests below are requirements, not claims of existing implementation.
 The decision takes effect only when adopted. ADR-0138 is also Proposed at this revision
 (`docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:3`).
 
 ## Amendment 1 (2026-10-30) — two more modules relocate whole at step 3
 
-Line citations not attributed to a named revision are re-derived at `9d787391fedde2c131190dc9ee81855b5b97f366`.
+Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
 
 Purpose: add two modules to D2's step-3 whole-module moves, so that no module moved at step 3 imports the retained CLI package and the schedule parsing that the CLI and Studio share has one owner.
 
@@ -303,7 +303,7 @@ boundaries, and step 6 moves the remaining CLI
 | `lionagi/cli/_project.py:19` | `lionhub.orchestration.project` | Entire module and project-detection helper closure. |
 | `lionagi/cli/_providers.py:184` | `lionhub.orchestration.spawn` | Entire module: construction, profiles, and common argument declarations. |
 | `lionagi/cli/_runs.py:37` | `lionhub.orchestration.runs` | Entire module, including its sole run-allocation and persistence state. |
-| `lionagi/cli/_schedule_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.schedule.parsing` | Entire module: flow-option declarations, create-request builder, schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. Imports no execution handler. |
+| `lionagi/cli/_schedule_parsing.py:1` (created by the in-place preparation; absent at 04e03ffe) | `lionhub.orchestration.schedule.parsing` | Entire module: create-request builder, schedule subparser, base-URL resolution, timeout wording, schedule reason normalization and flag suggestion. Imports no execution handler. |
 | `lionagi/cli/_util.py:14` | `lionhub.orchestration.job` | Entire module: status codes, invocation state, process identity and entity lookup. |
 | `lionagi/cli/orchestrate/_checkpoint.py:21` | `lionhub.orchestration.flow.checkpoint` | Entire module and checkpoint state. |
 
@@ -320,6 +320,12 @@ Copying these bindings into a facade is not equivalent.
 | Source at this HEAD | Step-3 public owner | Extraction; retained adapter |
 | --- | --- | --- |
 | `lionagi/cli/orchestrate/_orchestration.py:2137` (at `1717674a`) | `lionhub.orchestration.runs` | `register_branch_hook` and its dependency on the same message-handler implementation; retain the orchestration execution adapter. |
+
+This historical extraction has already happened in place: at the citation reference,
+`register_branch_hook` is defined in `lionagi/cli/_runs.py:1922` and imported by the
+orchestration adapter (`lionagi/cli/orchestrate/_orchestration.py:58`). It moves with the
+whole `_runs` module above, not as a second extraction or a duplicate implementation.
+The retained adapter keeps its binding to the same function after the move.
 
 The table fixes ownership and the source groups, not new command semantics.
 Extraction introduces public service names for private helpers used across the
@@ -352,6 +358,11 @@ The shared dependency closure is part of step 3:
   reaches the full orchestration adapter for this parser
   (`lionagi/studio/scheduler/subprocess.py:279`,
   `lionagi/cli/orchestrate/__init__.py:29`, `lionagi/cli/orchestrate/__init__.py:425`).
+  At the citation reference it imports the in-place orchestration parser directly
+  (`lionagi/studio/scheduler/subprocess.py:251`); the parser and MCP argument helper live in
+  `lionagi/cli/_orchestrate_parsing.py:42` and `:10`, and the adapter reexports them at
+  `lionagi/cli/orchestrate/__init__.py:26-27`. The scheduler continues to derive its reserved
+  flow flags from that parser, and the retained adapter keeps those same function bindings.
 
 In step 3, after catalog creation, extract the wheel-owned adapters
 `lionhub.cli.schedule` and `lionhub.cli.studio` from the mixed
