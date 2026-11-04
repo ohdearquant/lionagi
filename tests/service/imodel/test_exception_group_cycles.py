@@ -135,6 +135,27 @@ def test_cycle_without_validation_keeps_group_identity(fallback_group, location)
     _assert_safe_graph(result, base_group)
 
 
+def test_validation_root_rebuilds_validation_free_cyclic_sibling(fallback_group):
+    imodel, base_group, group_type = fallback_group
+    ordinary = LookupError("ordinary")
+    cycle = group_type("cycle", [ordinary])
+    cycle.exceptions = (cycle, ordinary)
+    root = group_type("root", [_validation_error(), cycle])
+
+    result = _sanitize_with_step_limit(imodel, root)
+
+    assert result is not root
+    validation, rebuilt_cycle = result.exceptions
+    assert type(validation) is ValueError
+    assert isinstance(rebuilt_cycle, group_type)
+    assert rebuilt_cycle is not cycle
+    placeholder, same_ordinary = rebuilt_cycle.exceptions
+    assert type(placeholder) is ValueError
+    assert str(placeholder) == _CYCLE_MESSAGE
+    assert same_ordinary is ordinary
+    _assert_safe_graph(result, base_group)
+
+
 @pytest.mark.parametrize("link", ["__cause__", "__context__"])
 def test_all_validation_linked_group_is_removed(fallback_group, link):
     imodel, base_group, group_type = fallback_group

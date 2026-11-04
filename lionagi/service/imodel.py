@@ -88,7 +88,7 @@ def _rebuild_validation_group(
 ) -> BaseException | None:
     """Rebuild validation-containing groups without recursion.
 
-    A back edge in a rebuilt group becomes a fixed error in either mode. A group
+    A back edge in a rebuilt group becomes a fixed error in either mode. A root
     without validation members remains unchanged, including any existing cycle.
     Linked groups drop validation leaves; top-level groups replace them.
     """
