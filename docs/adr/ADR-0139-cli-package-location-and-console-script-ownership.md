@@ -357,7 +357,7 @@ The shared dependency closure is part of step 3:
 - Shared parser construction must not import execution handlers. At `1717674a`, the scheduler
   reaches the full orchestration adapter for this parser
   (`lionagi/studio/scheduler/subprocess.py:279`,
-  `lionagi/cli/orchestrate/__init__.py:425`).
+  `lionagi/cli/orchestrate/__init__.py:29`, `lionagi/cli/orchestrate/__init__.py:425`).
   At the citation reference it imports the in-place orchestration parser directly
   (`lionagi/studio/scheduler/subprocess.py:251`); the parser and MCP argument helper live in
   `lionagi/cli/_orchestrate_parsing.py:42` and `:10`, and the adapter reexports them at
