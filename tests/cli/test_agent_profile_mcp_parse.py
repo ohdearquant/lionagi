@@ -190,3 +190,37 @@ def test_mcp_key_after_same_line_syntax_error_is_refused(frontmatter):
 def test_unrelated_unreadable_same_line_text_remains_lenient(frontmatter):
     profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
     assert profile.mcp is None
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: @invalid {mcp: none}\n",
+        "model: @invalid [mcp: none]\n",
+        'model: @invalid {"m\\u0063p": none}\n',
+        'model: @invalid ["m\\u0063p": none]\n',
+    ],
+)
+def test_mcp_key_after_same_line_flow_opener_is_refused(frontmatter):
+    with pytest.raises(ConfigurationError) as raised:
+        _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+
+    assert "reviewer" in str(raised.value)
+    assert "mcp" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        'model: @invalid, note: "example {mcp: none}"\n',
+        'model: @invalid, note: "example [mcp: none]"\n',
+        "model: @invalid, note: 'example {mcp: none}'\n",
+        'model: @invalid {other: "mcp: none"}\n',
+        "model: @invalid # example {mcp: none}\n",
+        "model: @invalid\nprompt: |\n  example {mcp: none}\n",
+        "model: @invalid {other: value}\n",
+    ],
+)
+def test_unrelated_unreadable_flow_text_remains_lenient(frontmatter):
+    profile = _parse_profile("reviewer", f"---\n{frontmatter}---\nReview.")
+    assert profile.mcp is None

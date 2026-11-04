@@ -1026,7 +1026,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
             except yaml.YAMLError:
                 return False
 
-        def comma_fragments(line: str):
+        def flow_fragments(line: str):
             quote = None
             i = 0
             while i < len(line):
@@ -1044,12 +1044,12 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                     quote = char
                 elif char == "#" and (i == 0 or line[i - 1].isspace()):
                     break
-                elif char == ",":
+                elif char in ",[{":
                     yield line[i + 1 :]
                 i += 1
 
         # An earlier malformed token can prevent the scanner from reaching a
-        # later key. Retry lines and comma-delimited suffixes, excluding block
+        # later key. Retry lines and flow-delimited suffixes, excluding block
         # scalar text, quoted values and comments.
         scalar_indent: int | None = None
         for number, line in enumerate(block.splitlines()):
@@ -1061,7 +1061,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 scalar_indent = None
             if number in scalar_lines:
                 continue
-            if scan(line) or any(scan(fragment) for fragment in comma_fragments(line)):
+            if scan(line) or any(scan(fragment) for fragment in flow_fragments(line)):
                 return True
             if starts_block_scalar(line):
                 scalar_indent = indent
