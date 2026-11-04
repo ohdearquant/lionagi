@@ -13,7 +13,7 @@ This record decides how the Studio application's backend relates to the daemon: 
 
 ## Context
 
-Source references (`path:line`) explicitly attributed to a historical revision or covered by a section's historical revision note refer to development-line commit `b4a3bebf`, except references to `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py`, and `lionagi/cli/_schedule_parsing.py`, which refer to `fa46d0e8`. Line citations not attributed to a named revision are re-derived at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`. `ADR-0136` denotes `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md` throughout. Proposed paths, interfaces, configuration names, and verification tests describe the decision, not existing implementation.
+Source references (`path:line`) explicitly attributed to a historical revision or covered by a section's historical revision note refer to development-line commit `b4a3bebf`, except references to `lionagi/studio/cli.py`, `lionagi/cli/machine_schedule.py`, and `lionagi/cli/_schedule_parsing.py`, which refer to `fa46d0e8`. Line citations not attributed to a named revision are re-derived at `833df408616ec23147b829d70427dda97ba5706e`. `ADR-0136` denotes `docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md` throughout. Proposed paths, interfaces, configuration names, and verification tests describe the decision, not existing implementation.
 
 Adoption of this record requires the accompanying Amendment 2 to ADR-0136. During 1.x, the application remains at its current `lionagi.studio` paths inside the single distribution. Wave 2 establishes the daemon, route, identity, and shared-service boundaries. At 2.0, the application moves to `apps/studio/backend/src/`, outside both library wheels. The core never gains a dependency on application code. The ADR-0136 D2 exempt set is `{cli, studio}` until Amendment 2 step 6 moves the CLI, `{studio}` from that step through the last 1.x release, and empty from 2.0, when the application leaves the wheel (`ADR-0136 D1`, `ADR-0136 D2`; `tests/test_moved_modules.py:669` at `b4a3bebf`).
 
@@ -80,7 +80,7 @@ Allocate every operation in the existing lifespan as follows. Shared modules sup
 | Reconnect socket and proof key, `lionagi/studio/app.py:388-389`, :417-419 | Daemon | Start and stop once; the key leaves only over the same-user reconnect socket, and the host's health route answers a reconnect challenge with the port proof under that key (an HMAC of challenge and port, `lionagi/studio/app.py:651-668`), never the key. |
 | Transcript mirror, `lionagi/studio/app.py:225-300`, :390, :421 | Daemon | Call a wheel-owned mirror service, keep its stop event and task, and use the current shutdown backstop. |
 | Maintenance warmup, `lionagi/studio/app.py:321-344`, :391-392, :420 | Daemon | Schedule off the readiness path; cancel and await it during shutdown. |
-| Detached launch shutdown, `lionagi/studio/app.py:398`, :423 | Daemon | Cancel and await launch tasks so their existing terminal-row behavior remains intact (`lionagi/studio/services/launches.py:252-259`). |
+| Detached launch shutdown, `lionagi/studio/app.py:398`, :423 | Daemon | Cancel and await launch tasks so their existing terminal-row behavior remains intact (`lionagi/studio/services/launches.py:256-263`). |
 
 Construct and validate the selected application before starting process resources. The successful startup order remains: snapshot, traceback and warnings, notification registration, logging context, scheduler start, daemon reconciliation, optional backend recovery, `begin_serving`, reconnect channel, mirror, deferred warmup, and readiness to serve. Without the backend, omit only backend recovery. Do not rely on a framework to automatically execute the lifespan of a nested mounted application; the root lifecycle explicitly enters the returned backend hook at the designated position.
 
@@ -115,7 +115,7 @@ The following table allocates all 29 registered modules. Each source is under `l
 | `lionagi/studio/services/mcp_servers.py:598` | Backend | Application server-configuration management. |
 | `lionagi/studio/services/teams.py:57` | Backend | Application presentation of team records. |
 | `lionagi/studio/services/invocations.py:368`, :474 | Daemon | Invocation and artifact inspection. |
-| `lionagi/studio/services/launches.py:394`, :412 | Daemon | Submit and cancel daemon-supervised execution. |
+| `lionagi/studio/services/launches.py:398`, :416 | Daemon | Submit and cancel daemon-supervised execution. |
 | `lionagi/studio/services/projects.py:288` | Backend | Application project editing and assignment. Shared project lookup is F5. |
 | `lionagi/studio/services/identity.py:26` | Daemon | Authenticate the process reached by a launcher. |
 | `lionagi/studio/services/pairing.py:43`, :63, :119-126 | Daemon | Redeem codes, revoke capabilities, and preserve the retired issuance endpoint. |
