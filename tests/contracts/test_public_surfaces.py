@@ -179,6 +179,13 @@ def test_cli_registry_has_21_commands():
     assert live["name_map_count"] == 23
 
 
+def test_kill_quarantine_surface_counts_are_locked_by_hand():
+    cli = _capture.capture_cli()
+    mcp = _capture.capture_mcp()
+    assert len(cli["per_command_detail"]["kill"]["subparsers"]["kill"]["actions"]) == 9
+    assert len(mcp["projections"]["kill"]["schema"]["properties"]) == 8
+
+
 def test_cli_surface_matches_baseline():
     expected = _load("cli")
     live = _capture.capture_cli()

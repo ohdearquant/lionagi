@@ -6778,6 +6778,21 @@
             },
             {
               "option_strings": [
+                "--resolve-quarantine"
+              ],
+              "dest": "resolve_quarantine",
+              "required": false,
+              "nargs": null,
+              "default": null,
+              "choices": [
+                "aborted",
+                "cancelled",
+                "failed"
+              ],
+              "help": "Record an operator disposition for a quarantined row without signalling its PID; requires --reason."
+            },
+            {
+              "option_strings": [
                 "--recursive"
               ],
               "dest": "recursive",

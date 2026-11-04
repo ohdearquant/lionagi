@@ -337,3 +337,39 @@ async def test_probe_holds_sqlite_writer_reservation(tmp_path):
         row = await get(entity_id)
         assert row["node_metadata"]["pid"] == 123
         assert row["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("kind", ["session", "invocation"])
+async def test_disposition_snapshot_stays_isolated_while_transition_waits(
+    tmp_path, kind, monkeypatch
+):
+    async with StateDB(tmp_path / "state.db") as db:
+        entity_id, snapshot, get = await _make_quarantined(db, kind)
+        service = db._lifecycle_service()
+        original_transition = service._transition
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def paused_transition(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await original_transition(*args, **kwargs)
+
+        monkeypatch.setattr(service, "_transition", paused_transition)
+        task = asyncio.create_task(
+            service.guarded_quarantine_disposition(
+                entity_type=kind,
+                entity_id=entity_id,
+                snapshot=snapshot,
+                target_status="failed",
+                operator_reason="reviewed",
+                identity_unverifiable=lambda _: True,
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            snapshot["node_metadata"]["pid"] = 999
+        finally:
+            release.set()
+        result = await asyncio.wait_for(task, 5)
+        assert result.result == "applied"
+        assert (await get(entity_id))["status"] == "failed"

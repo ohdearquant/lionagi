@@ -14,13 +14,12 @@ import math
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, get_args
 
 from sqlalchemy import JSON, Boolean, bindparam, text
 
-from lionagi.ln import short_id
+from lionagi.ln import copy, short_id
 from lionagi.ln.concurrency import fail_after
 
 from ..compat import _quote
@@ -541,7 +540,7 @@ class SQLAlchemyLifecycleService:
 
         # The database operation may wait for a lock; isolate the selected row
         # from any mutations in the caller while that wait is in progress.
-        snapshot = deepcopy(dict(snapshot))
+        snapshot = copy(dict(snapshot))
         generation = (
             _validate_cli_worker_generation(snapshot.get("cli_worker_generation"))
             if entity_type == "session"
