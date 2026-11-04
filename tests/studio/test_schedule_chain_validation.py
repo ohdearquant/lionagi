@@ -419,6 +419,36 @@ def test_direct_kind_validation_refuses_non_string_parent(parent_kind):
     assert "private-value" not in str(caught.value)
 
 
+@pytest.mark.parametrize("legacy_kind", [42, ["private-value"], {"private-value": True}])
+def test_unrelated_update_leaves_non_string_legacy_kind_alone(legacy_kind):
+    updated, error = _run_update(
+        {"description": "updated"}, existing=_existing(action_kind=legacy_kind)
+    )
+    assert error is None
+    updated.update_schedule.assert_awaited_once_with("sid-chain-1", description="updated")
+
+
+@pytest.mark.parametrize("legacy_kind", [42, ["private-value"], {"private-value": True}])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("on_success", None),
+        ("on_fail", None),
+        ("action_prompt", "updated"),
+        ("action_playbook", "updated"),
+        ("action_extra_args", []),
+        ("action_flow_yaml", "nodes: []"),
+        ("action_command", "echo updated"),
+    ],
+)
+def test_kind_dependent_update_refuses_non_string_legacy_kind(legacy_kind, field, value):
+    updated, error = _run_update({field: value}, existing=_existing(action_kind=legacy_kind))
+    assert error is not None
+    assert "action_kind" in str(error) and type(legacy_kind).__name__ in str(error)
+    assert "private-value" not in str(error)
+    updated.update_schedule.assert_not_called()
+
+
 @pytest.mark.parametrize("field", FIELDS)
 @pytest.mark.parametrize("kind_key", ["kind", "action_kind"])
 @pytest.mark.parametrize("target", ["command", "flow_yaml"])

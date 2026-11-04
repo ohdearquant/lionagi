@@ -1250,7 +1250,18 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             raise ValueError(f"Field(s) {sorted(cleared)} cannot be cleared to null")
 
         effective = {**schedule, **fields}
-        _svc_validate_action_kind_type(effective.get("action_kind"))
+        kind_dependent_fields = {
+            "action_kind",
+            "on_success",
+            "on_fail",
+            "action_prompt",
+            "action_playbook",
+            "action_extra_args",
+            "action_flow_yaml",
+            "action_command",
+        }
+        if kind_dependent_fields & fields.keys():
+            _svc_validate_action_kind_type(effective.get("action_kind"))
 
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
