@@ -621,6 +621,75 @@ async def test_fire_chain_depth_nonzero_does_not_track_running():
     assert schedule["id"] not in engine._running
 
 
+@pytest.mark.parametrize("success", [False, True])
+def test_chain_selection_ignores_unselected_invalid_value(success, caplog):
+    from lionagi.studio.scheduler.engine import _selected_chain_action
+
+    selected = "on_success" if success else "on_fail"
+    other = "on_fail" if success else "on_success"
+    action = {"kind": "agent"}
+    schedule = _minimal_schedule(**{selected: action, other: "private-legacy"})
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        assert _selected_chain_action(schedule, success) is action
+    assert not caplog.records
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value", ["private-legacy", ["private-legacy"], 7, True, None, "", [], 0, False]
+)
+@pytest.mark.parametrize("success", [False, True])
+async def test_fire_skips_unusable_stored_chain_without_changing_outcome(
+    value, success, caplog, tmp_path
+):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    field = "on_success" if success else "on_fail"
+    expected_status = "completed" if success else "failed"
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(action_cwd=str(tmp_path), **{field: value})
+    original_fire = engine._fire
+    engine._fire = AsyncMock()  # type: ignore[method-assign]
+    resolved = (expected_status, "reason", "summary", [], {})
+    with (
+        caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"),
+        patch("lionagi.studio.scheduler.subprocess.build_argv", return_value=(["li"], None)),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0 if success else 1, "")),
+        ),
+        patch(
+            "lionagi.studio.scheduler.engine.resolve_invocation_terminal",
+            new=AsyncMock(return_value=resolved),
+        ),
+    ):
+        await original_fire(
+            schedule,
+            "run-private",
+            trigger_context={},
+            expect_next_fire_at=schedule.get("next_fire_at"),
+        )
+
+    terminal = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args and c.args[0] == "schedule_run" and c.kwargs.get("new_status") != "running"
+    ]
+    assert len(terminal) == 1 and terminal[0].kwargs["new_status"] == expected_status
+    (_, telemetry), _ = svc.merge_invocation_node_metadata.await_args
+    signal = "ScheduleRunSucceeded" if success else "ScheduleRunFailed"
+    assert telemetry["coordination"]["signals"]["emitted"] == {signal: 1}
+    engine._fire.assert_not_awaited()
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    if value:
+        assert len(warnings) == 1 and schedule["id"] in warnings[0] and field in warnings[0]
+        assert "private-legacy" not in warnings[0]
+    else:
+        assert not warnings
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
 @pytest.mark.asyncio
 async def test_fire_on_success_chain_fires():
     """on_success chain action causes a recursive _fire() call."""

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -900,6 +901,61 @@ async def _seed_dispatched_run_with_session(
     # Launch confirmed, mirroring spawn_and_wait's on_launched callback --
     # the scheduler then crashes before recording the run's own outcome.
     await db.update_schedule_run(run_id, dispatched_at=1000.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value", ["private-legacy", ["private-legacy"], 7, True, None, "", [], 0, False]
+)
+@pytest.mark.parametrize("status,field", [("completed", "on_success"), ("failed", "on_fail")])
+async def test_reconcile_skips_unusable_chain_and_continues_to_next_orphan(
+    tmp_path, monkeypatch, caplog, value, status, field
+):
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    async with StateDB(db_path) as db:
+        for i in range(2):
+            await _seed_dispatched_run_with_session(
+                db,
+                sid=f"sched-{i}",
+                run_id=f"run-{i}",
+                inv_id=f"inv-{i}",
+                sess_id=f"session-{i}",
+                session_status=status,
+            )
+        await db.update_schedule("sched-0", **{field: value})
+    svc = _DBSchedulerStateService()
+    list_rows = svc.list_dispatched_running_schedule_runs
+
+    async def bad_row_first():
+        return sorted(await list_rows(), key=lambda row: row["id"])
+
+    svc.list_dispatched_running_schedule_runs = bad_row_first
+    engine = SchedulerEngine(svc=svc)
+    with (
+        caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"),
+        patch.object(engine, "_tracked_fire") as tracked,
+    ):
+        await engine._reconcile_dispatched_orphans()
+    tracked.assert_not_called()
+    async with StateDB(db_path) as db:
+        for i in range(2):
+            assert (await db.get_schedule_run(f"run-{i}"))["status"] == status
+            invocation = await db.get_invocation(f"inv-{i}")
+            assert invocation["status"] == status
+            metadata = invocation.get("node_metadata") or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            signal = "ScheduleRunSucceeded" if status == "completed" else "ScheduleRunFailed"
+            assert metadata["coordination"]["signals"]["emitted"] == {signal: 1}
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    if value:
+        assert len(warnings) == 1 and "sched-0" in warnings[0] and field in warnings[0]
+        assert "private-legacy" not in warnings[0]
+    else:
+        assert not warnings
 
 
 @pytest.mark.asyncio

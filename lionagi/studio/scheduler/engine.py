@@ -442,6 +442,20 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
     return None
 
 
+def _selected_chain_action(schedule: dict, success: bool) -> dict | None:
+    """Return the selected stored chain if it can be used by the scheduler."""
+    field = "on_success" if success else "on_fail"
+    action = schedule.get(field)
+    if not action:
+        return None
+    if not isinstance(action, dict):
+        _log.warning(
+            "Schedule %s has an unusable %s chain action; skipping", schedule.get("id"), field
+        )
+        return None
+    return action
+
+
 class SchedulerEngine:
     def __init__(
         self,
@@ -1347,11 +1361,7 @@ class SchedulerEngine:
                 continue
             await self._check_max_runs(schedule, chain_depth)
             if chain_depth < _MAX_CHAIN_DEPTH:
-                chain_action = None
-                if run_status == "completed" and schedule.get("on_success"):
-                    chain_action = schedule["on_success"]
-                elif run_status != "completed" and schedule.get("on_fail"):
-                    chain_action = schedule["on_fail"]
+                chain_action = _selected_chain_action(schedule, run_status == "completed")
 
                 if chain_action:
                     chain_schedule = _merge_chain_action(schedule, chain_action)
@@ -3343,11 +3353,7 @@ class SchedulerEngine:
             await self._check_max_runs(schedule, chain_depth)
 
             if chain_depth < _MAX_CHAIN_DEPTH:
-                chain_action = None
-                if success and schedule.get("on_success"):
-                    chain_action = schedule["on_success"]
-                elif not success and schedule.get("on_fail"):
-                    chain_action = schedule["on_fail"]
+                chain_action = _selected_chain_action(schedule, success)
 
                 if chain_action:
                     chain_schedule = _merge_chain_action(schedule, chain_action)

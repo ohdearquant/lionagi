@@ -818,7 +818,7 @@ everything since; facts past the range belong to the next wake.
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py:6076-6078`, `:6212`;
-  `lionagi/studio/scheduler/engine.py:2141-2144`; ADR-0070, Accepted); a direct `update_schedule` or
+  `lionagi/studio/scheduler/engine.py:2151-2154`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
